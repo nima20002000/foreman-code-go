@@ -10,7 +10,7 @@ import { requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatRe
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 import { openWorkflowLifecycleLocked } from './repeatLifecycle.js'
 import { sameRepeatValue, compileRepeatLayout } from './repeatResolution.js'
-import { assertWorkflowRunSettlementLocked } from './workflowRepositoryServices.js'
+import { assertWorkflowRunSettlementLocked, type WorkflowRestartApprovals } from './workflowRepositoryServices.js'
 import type { RunOwnership } from './ownership.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { RepeatCheckpoint } from './repeatGraph.js'
@@ -33,15 +33,17 @@ async function retainOwner(sql: GraphTransactionSql, owner: RunOwnership): Promi
   })
 }
 
-/** Settled handoff attempts need transport closure, while their checkpoint remains resumable. */
-export async function settleWorkForRestart(owner: RunOwnership): Promise<boolean> {
+/** Retain settled/unsubmitted work and checkpoint-bound approval waits across restart. */
+export async function settleWorkForRestart(owner: RunOwnership, approvals?: WorkflowRestartApprovals): Promise<boolean> {
   return owner.oneShotConnection().transaction(async (sql) => {
     const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
     if (!snapshot.version.definition.handoffs || snapshot.stopRequested || snapshot.cleanupPending
       || !['running', 'waiting'].includes(snapshot.run.executionState)) return false
+    const waiting = [...new Set(approvals?.interactions.map(item => item.executionId) ?? [])]
     const pending = (await sql.query<{ pending: boolean }>(`select exists(
       select 1 from harness_executions e where e.run_id=$1 and (
         e.record->>'state' is null or e.record->>'state' not in ('completed','queued')
+          and not (e.record->>'state'='waiting' and e.id=any($2::text[]))
         or e.record->>'state'='queued' and (not exists(select 1 from workflow_native_entries n
           where n.execution_id=e.id and n.run_id=e.run_id and n.phase='reserved')
           or exists(select 1 from run_graph_effects f where f.run_id=e.run_id
@@ -53,10 +55,10 @@ export async function settleWorkForRestart(owner: RunOwnership): Promise<boolean
             where p.run_id=e.run_id and p.execution_id=e.id
               and p.record#>>'{original,type}'='history'
               and p.record#>'{original,history,terminalTurn,result}'=e.record->'result')))) as pending`,
-    [owner.runId])).rows[0]
+    [owner.runId, waiting])).rows[0]
     if (pending?.pending !== false) return false
     await retainOwner(sql, owner)
-    await assertWorkflowRunSettlementLocked(sql, snapshot.run, owner, 'restart')
+    await assertWorkflowRunSettlementLocked(sql, snapshot.run, owner, 'restart', approvals)
     return true
   })
 }

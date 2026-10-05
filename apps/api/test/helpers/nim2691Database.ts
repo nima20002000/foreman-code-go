@@ -42,7 +42,8 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   catch (error) { cleanupErrors.push(error) }
   if (cleanupErrors.length) {
     if ('error' in outcome) cleanupErrors.unshift(outcome.error)
-    throw new AggregateError(cleanupErrors, 'Task database execution or cleanup failed.')
+    throw new AggregateError(cleanupErrors, 'Task database execution or cleanup failed.',
+      { cause: 'error' in outcome ? outcome.error : cleanupErrors[0] })
   }
   if ('error' in outcome) throw outcome.error
   return outcome.value

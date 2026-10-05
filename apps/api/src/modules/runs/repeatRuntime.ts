@@ -325,7 +325,6 @@ export interface RepeatRuntimeLifecycle {
   settleRun(stopped: boolean, interrupted: boolean): Promise<void>
   /** These are the existing post-terminal cleanup/finalization paths, not fake ack. */
   requestCleanup(): Promise<void>
-  requestRestartCleanup?(): Promise<void>
   finishNative(): Promise<void>
   finishCleanup(): Promise<void>
 }
@@ -452,7 +451,10 @@ export async function executeRepeatRuntime(input: {
         // independently, then existing exact native cleanup and wrapper drain run below.
         let onAbort: (() => void) | undefined
         try {
-          await Promise.race([invoke(state), new Promise<never>((_resolve, reject) => {
+          const invocation = invoke(state)
+          tasks.add(invocation)
+          void invocation.then(() => { tasks.delete(invocation) }, () => { tasks.delete(invocation) })
+          await Promise.race([invocation, new Promise<never>((_resolve, reject) => {
             onAbort = () => reject(signal.reason)
             signal.addEventListener('abort', onAbort, { once: true })
             if (signal.aborted) onAbort()
@@ -501,8 +503,6 @@ export async function executeRepeatRuntime(input: {
     if (input.signal.aborted && input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART') {
       // The owning engine closes the original native sessions before releasing
       // ownership. Restart is not a synthetic Stop or terminal business result.
-      if (input.lifecycle.requestRestartCleanup) await input.lifecycle.requestRestartCleanup()
-      else await input.lifecycle.requestCleanup()
       failed.abort(error)
       await drain(true)
       throw error

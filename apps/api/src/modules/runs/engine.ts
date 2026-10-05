@@ -28,6 +28,7 @@ import type { WorkflowOrchestrator } from './port.js'
 import { RunnerAdmission } from './runnerAdmission.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
+import type { WorkflowRestartApprovals } from './workflowRepositoryServices.js'
 
 /** One engine, Run owner, checkpoint thread and repository for all current V3
  * graphs. Optional bounded blocks are compiled into this same LangGraph; an
@@ -235,7 +236,6 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
           },
           settleRun: async () => { await this.cleanupOwned(owner) },
           requestCleanup: () => this.runs.requestCleanup(runId, owner),
-          requestRestartCleanup: () => this.requestRestartCleanup(owner),
           finishNative: () => this.nativeExecutions.finishRun(runId),
           finishCleanup: () => this.runs.finishCleanup(runId, false, owner),
         },
@@ -392,10 +392,19 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
             const run = await this.runs.get(runId)
             const version = run && await this.workflows.getVersion(run.workflowVersionId)
             const accepted = CurrentRunVersionSnapshotSchema.parse({ run, version })
+            let approvals: WorkflowRestartApprovals | undefined
+            if (accepted.version.definition.handoffs) {
+              const checkpoint = await readWorkflowCheckpoint(runId, accepted.version, this.checkpointer)
+              const interactions = checkpoint.tasks.some(task => task.interrupts?.length)
+                ? await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint) : []
+              if (interactions.length && isAtomicApprovalCheckpointSaver(this.checkpointer)) {
+                approvals = { saver: this.checkpointer, interactions }
+              }
+            }
             // Freeze handoff tasks before classifying their queued reservations.
             // These tasks do not abort Jobs, which require the cleanup fence first.
             if (accepted.version.definition.handoffs) this.activeRuns.get(runId)?.abort(reason)
-            await this.requestRestartCleanup(owner)
+            await this.requestRestartCleanup(owner, approvals)
           }
         })))
         const intentErrors = intents.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
@@ -428,9 +437,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     return attempt
   }
 
-  private async requestRestartCleanup(owner: RunOwnership): Promise<void> {
+  private async requestRestartCleanup(owner: RunOwnership, approvals?: WorkflowRestartApprovals): Promise<void> {
     const { version } = await this.runs.getRepeatSnapshot(owner.runId, owner)
-    if (version.definition.handoffs && await settleWorkForRestart(owner)) return
+    if (version.definition.handoffs && await settleWorkForRestart(owner, approvals)) return
     await this.runs.requestCleanup(owner.runId, owner)
   }
 }

@@ -32,6 +32,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       `On successful completion, return exactly one complete JSON object with exactly ${saved ? 'routing, data, and artifactOutputs' : 'routing and data'}.`,
       'routing.kind is request, return, or finish.',
       `For a NEW work request, use {"kind":"request","outcome":<one of ${JSON.stringify(outcomes)}>}; only saved named outcomes are permitted.`,
+      'A request routing object has exactly kind and outcome. Never include requestId in a new request; requestId belongs only to return routing.',
       'After reactivation, use executionContext.parentRequest.requestId from the trusted workflow execution context for the outstanding caller.',
       'If executionContext.parentRequest is null, this activation has no outstanding caller.',
       'For a work_request activation, use work.request.requestId.',

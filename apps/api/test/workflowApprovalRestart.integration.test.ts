@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkActivationInputSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { INTERRUPT } from '@langchain/langgraph'
+import { ApprovalPostgresSaver } from '../src/infrastructure/approvalCheckpointSaver.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { approvalFaultFixture, approvalResponse } from './helpers/eng06ApprovalFaults.js'
@@ -14,7 +16,7 @@ afterEach(async () => {
 })
 
 describe.skipIf(!postgresEnabled)('pending workflow approval restart', () => {
-  it('restores the original join checkpoint and delivers approval through a recomposed engine', async () => {
+  it.each([false, true])('restores the original join checkpoint through a recomposed engine (active invocation: %s)', async (active) => {
     const definition = makeCurrentWorkflowFixture(randomUUID(), 'parallel')
     definition.version.definition.handoffs = { contractVersion: 1 }
     const joinNode = definition.version.definition.nodes[3]!
@@ -24,7 +26,24 @@ describe.skipIf(!postgresEnabled)('pending workflow approval restart', () => {
     })
     closes.push(f.close)
     const runId = f.f.run.id
-    await f.engine.start(runId)
+    let releaseWrite!: () => void
+    let notifyInterrupt!: () => void
+    const heldWrite = new Promise<void>(resolve => { releaseWrite = resolve })
+    const committedInterrupt = new Promise<void>(resolve => { notifyInterrupt = resolve })
+    class HeldInterruptSaver extends ApprovalPostgresSaver {
+      override async putWrites(...args: Parameters<ApprovalPostgresSaver['putWrites']>): Promise<void> {
+        await super.putWrites(...args)
+        if (args[1].some(([channel]) => channel === INTERRUPT)) {
+          notifyInterrupt()
+          await heldWrite
+        }
+      }
+    }
+    const initial = active ? f.compose(new HeldInterruptSaver(f.db.pool, undefined, { schema: f.db.schema })) : f
+    const starting = initial.engine.start(runId)
+    const startOutcome = starting.then(() => undefined, (error: unknown) => error)
+    if (active) await committedInterrupt
+    else await starting
     expect(await f.runs.get(runId)).toMatchObject({ executionState: 'waiting', outcome: 'pending' })
     const [pending] = (await f.pending()).filter((item) => item.status === 'pending')
     expect(pending).toBeDefined()
@@ -37,7 +56,15 @@ describe.skipIf(!postgresEnabled)('pending workflow approval restart', () => {
     const checkpoint = await f.saver.getTuple(f.config)
     expect(checkpoint).toBeDefined()
     const counts = { ...f.provider.counts }
-    await f.engine.shutdown()
+    if (active) {
+      const closing = initial.engine.shutdown()
+      try {
+        await vi.waitFor(() => expect(f.provider.closedSessions.has(pending!.nativeSessionId)).toBe(true),
+          { timeout: 10000 })
+      } finally { releaseWrite() }
+      await closing
+      expect(await startOutcome).toMatchObject({ code: 'ENGINE_RESTART' })
+    } else await initial.engine.shutdown()
     let runtime = f.compose()
     expect(runtime.engine).not.toBe(f.engine)
     expect(runtime.native).not.toBe(f.native)

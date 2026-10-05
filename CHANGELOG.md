@@ -20,6 +20,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Preserve original approval checkpoints when restart begins before the active graph invocation releases its Run owner.
+- Drain graph finalization writes along with activation tasks before Stop or restart releases ownership.
 - Keep resumed native observation on one writer lease until another approval or terminal result, so original MCP artifact calls remain authorized.
 - Cancel pending artifact adoption before restart locks the Run, then recover the same published output after recomposition.
 - Pass pinned file references through strict download validation during artifact adoption while retaining hash, size, scope and byte verification.

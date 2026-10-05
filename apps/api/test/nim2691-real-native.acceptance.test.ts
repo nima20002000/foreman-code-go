@@ -951,7 +951,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       for (const result of resources) if (result.status === 'rejected') cleanupErrors.push(result.reason)
       if (cleanupErrors.length) {
         if (failure) cleanupErrors.unshift(failure.error)
-        throw new AggregateError(cleanupErrors, 'Native workflow verification or cleanup failed.')
+        throw new AggregateError(cleanupErrors, 'Native workflow verification or cleanup failed.',
+          { cause: failure?.error ?? cleanupErrors[0] })
       }
       await rm(directory, { recursive: true, force: true })
       if (failure) throw failure.error

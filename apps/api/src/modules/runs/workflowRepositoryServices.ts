@@ -1,7 +1,7 @@
 import { assertOriginalWorkflowTerminal } from '../interactions/workflowTerminalSource.js'
 import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
-import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, type DurableInteraction, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
 import {
   AcceptedWorkflowRunV3Schema, AcceptedCurrentNodeResultSchema, canonicalGraphJson, RUN_GRAPH_LIMITS,
   type AcceptedWorkflowRunV3, type WorkflowVersionV3,
@@ -22,6 +22,41 @@ import { visitRepeatNativeAttemptsLocked } from './repeatNativeAttempts.js'
 import { hasWorkflowExecutionCapacityLocked } from './workflowExecutionBudget.js'
 import { readWorkflowNativeEntryLocked, workflowNativeReservation } from './workflowNativeEntry.js'
 import { readWorkflowTerminalReceiptLocked } from './workflowTerminalReceipt.js'
+import type { AtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
+import { lockInteraction } from '../interactions/wave25/context.js'
+import { assertSavedPendingApprovalOriginalLocked } from '../interactions/nativeApprovalProof.js'
+
+export interface WorkflowRestartApprovals {
+  saver: AtomicApprovalCheckpointSaver
+  interactions: readonly DurableInteraction[]
+}
+
+async function assertRestartApprovalsLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
+  approval: WorkflowRestartApprovals): Promise<string[]> {
+  const expected = structuredClone(approval.interactions)
+  if (!expected.length || expected.length > 1000 || new Set(expected.map(item => item.id)).size !== expected.length) {
+    return conflict('GRAPH_INTERRUPT_INVALID')
+  }
+  const check = async () => {
+    const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
+    const checkpoints: string[] = []
+    for (const item of expected) {
+      const current = await lockInteraction(sql, item.id)
+      const stored = await readRepeatExecutionLocked(sql, snapshot, item.executionId)
+      if (!sameRepeatValue(current, item) || item.runId !== run.id || item.graphThreadId !== run.id
+        || stored.execution.state !== 'waiting' || stored.execution.nativeSessionId !== item.nativeSessionId
+        || stored.execution.agentId !== item.requestingAgentId) return conflict('GRAPH_INTERRUPT_INVALID')
+      await assertSavedPendingApprovalOriginalLocked(sql, current)
+      checkpoints.push(await approval.saver.inspectApprovalInterrupt(sql, current))
+    }
+    return checkpoints
+  }
+  const checkpoints = await check()
+  beforeGraphCommit(sql, async () => {
+    if (!sameRepeatValue(await check(), checkpoints)) return conflict('GRAPH_INTERRUPT_NOT_CURRENT')
+  })
+  return [...new Set(expected.map(item => item.executionId))]
+}
 
 function conflict(code: string): never {
   throw new DomainError(code, 'The current workflow operation conflicts with its exact durable evidence.', 409)
@@ -92,19 +127,22 @@ export async function allowTechnicalRetryLocked(sql: GraphTransactionSql, run: A
   } catch (error) { poisonGraphTransaction(sql); throw error }
 }
 
-/** Every live attempt is checked, not only each logical node's final resolution.
- * Absence of an attempt cannot prove native closure; each existing attempt must
- * have its positive bound-close, unbound-dispose, or pre-submission seal proof. */
+/** Cleanup requires native closure for every attempt. Restart can also retain
+ * waiting executions verified against their original approval checkpoint. */
 export async function assertWorkflowRunSettlementLocked(sql: GraphTransactionSql,
-  run: AcceptedWorkflowRunV3, owner: RunOwnership, intent: 'success' | 'cleanup' | 'restart' = 'success'): Promise<void> {
+  run: AcceptedWorkflowRunV3, owner: RunOwnership, intent: 'success' | 'cleanup' | 'restart' = 'success',
+  approvals?: WorkflowRestartApprovals): Promise<void> {
   assertGraphTransaction(sql); owner.assertOwned()
   if (owner.runId !== run.id) return conflict('RUN_OWNERSHIP_LOST')
+  if (approvals && intent !== 'restart') return conflict('GRAPH_INTERRUPT_INVALID')
+  const retained = approvals ? await assertRestartApprovalsLocked(sql, run, approvals) : []
   await visitRepeatNativeAttemptsLocked(sql, run.id, { kind: 'run' }, async (ids) => {
     if (intent !== 'restart') return assertSettlementLocked(sql, run, ids, owner)
     const settled: string[] = []
     for (const id of ids) {
       const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
       const stored = await readRepeatExecutionLocked(sql, snapshot, id)
+      if (retained.includes(id)) continue
       if (stored.execution.state !== 'queued') {
         if (stored.execution.result?.outcome === 'succeeded' && !stored.accepted) {
           await readWorkflowTerminalReceiptLocked(sql, snapshot, stored)
@@ -129,18 +167,26 @@ export async function assertWorkflowRunSettlementLocked(sql: GraphTransactionSql
       await check()
       beforeGraphCommit(sql, check)
     }
-    if (settled.length) await assertSettlementLocked(sql, run, settled, owner)
+    if (settled.length) {
+      await assertSettlementLocked(sql, run, settled, owner)
+      if (retained.length) {
+        for (const id of settled) await assertApprovalTerminalSettlement(sql, run.id, id)
+      }
+    }
   })
-  if (intent !== 'cleanup') await assertApprovalTerminalSettlement(sql, run.id)
+  if (intent !== 'cleanup' && !retained.length) await assertApprovalTerminalSettlement(sql, run.id)
   const pending = (await sql.query<{ pending: boolean }>(`select (
-    exists(select 1 from durable_interactions i where i.run_id=$1 and i.status not in ('delivered','canceled'))
+    exists(select 1 from durable_interactions i where i.run_id=$1 and i.status not in ('delivered','canceled')
+      and not (i.execution_id=any($2::text[])))
     or exists(select 1 from review_jobs j join durable_interactions i on i.id=j.interaction_id
-      where i.run_id=$1 and j.state not in ('completed','failed'))
+      where i.run_id=$1 and j.state not in ('completed','failed') and not (i.execution_id=any($2::text[])))
     or exists(select 1 from worker_credential_bindings b left join management_principals p on p.id=b.principal_id
-      where b.run_id=$1 and (b.revoked_at is null or p.id is null or p.revoked_at is null))
+      where b.run_id=$1 and (b.revoked_at is null or p.id is null or p.revoked_at is null)
+      and not (b.execution_id=any($2::text[])))
     or exists(select 1 from approval_execution_state b join harness_executions e on e.id=b.execution_id
-      where e.run_id=$1 and (b.active_started_at is not null or b.approval_wait_started_at is not null))
-    ) as pending`, [run.id])).rows[0]
+      where e.run_id=$1 and (b.active_started_at is not null or b.approval_wait_started_at is not null)
+      and not (e.id=any($2::text[])))
+    ) as pending`, [run.id, retained])).rows[0]
   if (pending?.pending !== false) return conflict('REPEAT_CLEANUP_PENDING')
 }
 
