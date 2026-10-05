@@ -616,7 +616,7 @@ describe('actual anchored runtime leaf filesystem',()=>{
   })
 })
 
-async function restartedInstalledFixture(options: { accepted?: boolean; acknowledged?: boolean; sessionCaptured?: boolean } = {}) {
+async function restartedInstalledFixture(captureOptions: { accepted?: boolean; acknowledged?: boolean; sessionCaptured?: boolean } = {}) {
   const f = await sourceFixture()
   const runtimeLeaf = await attestInstalledWorkflowRuntimeLeaf(f)
   const originalConnection = DeviceConnectionIdentitySchema.strip().parse({ ...f.context.binding, bootId: randomUUID() })
@@ -631,7 +631,7 @@ async function restartedInstalledFixture(options: { accepted?: boolean; acknowle
   const path = join(registryRoot, createHash('sha256').update(owner).digest('hex'), launchId)
   const shared = { format: 1, id: launchId, owner, boot: originalConnection.bootId }
   writeRecord(join(path, 'intent.json'), { ...shared, parent, controlKey: 'a'.repeat(64) })
-  if (options.accepted !== false) {
+  if (captureOptions.accepted !== false) {
     writeRecord(join(path, 'birth.json'), { ...shared, guardian, containment: boundary })
     writeRecord(join(path, 'provider.json'), { ...shared, guardian, provider, capture: 'captured' })
   }
@@ -643,11 +643,11 @@ async function restartedInstalledFixture(options: { accepted?: boolean; acknowle
   const journalPath = join(f.root, 'workflow-operations.json')
   const journal = await RemoteOperationJournal.open(journalPath, { initializeNewInstallation: true })
   journals.push(journal)
-  if (options.accepted !== false) {
+  if (captureOptions.accepted !== false) {
     await journal.accept(f.intent, originalConnection, randomUUID())
     await journal.reserveEntry(f.intent.operationId)
   }
-  if (options.accepted !== false && options.acknowledged !== false) {
+  if (captureOptions.accepted !== false && captureOptions.acknowledged !== false) {
     await journal.acknowledgeStart(f.intent.operationId, native)
     await journal.reserveTurn(f.intent.operationId, { correlationId: `execution:${f.intent.executionId}`, promptDigest: 'b'.repeat(64) })
     await journal.acknowledgeTurn(f.intent.operationId, 'original-turn')
@@ -655,7 +655,7 @@ async function restartedInstalledFixture(options: { accepted?: boolean; acknowle
   }
   const recovery = new InstalledWorkflowRecovery(join(f.root, 'workflow-recovery'), registry)
   recovery.rememberEntry({ version: 1, intent: f.intent, connection: originalConnection, owner, initialLaunchId: launchId })
-  if (options.sessionCaptured !== false) {
+  if (captureOptions.sessionCaptured !== false) {
     recovery.remember({ version: 1, intent: f.intent, connection: originalConnection, native, session,
       launch: RemoteWorkflowPhysicalReadoutSchema.shape.launch.parse(launch), runtimeLeaf,
       approvedRoots: f.approvedRoots,
@@ -986,7 +986,7 @@ async function constructionFixture() {
       authorizationRevision: binding.authorizationRevision, endpoint: 'wss://unit.invalid/device',
       mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' },
     configuration: { path: file, ownerUid: process.getuid!() }, currentBinding,
-    captureRequest: namespace => applicationChannel?.captureRequest(namespace) ?? { binding, request: readMain },
+    captureRequest: namespace => applicationChannel?.captureRequest(namespace) ?? { binding: currentBinding(), request: readMain },
     sources: f.sources, approvedRoots: async () => f.approvedRoots,
     codexSuiteRevision: 'codex-live-4', signal: new AbortController().signal, registry: n.registry, journal: openJournal }
   const host = await createInstalledWorkflowHost(options)
@@ -1015,6 +1015,89 @@ function delayedFacts(readMain: Awaited<ReturnType<typeof constructionFixture>>[
 }
 
 describe('installed workflow construction concurrency', () => {
+  it.each(['qualification', 'thread acknowledgement'] as const)(
+    'closes an original pending %s on reconnect while the worker remains alive', async stage => {
+      const f = await constructionFixture()
+      const entered = deferred()
+      const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async (_input, signal) => {
+        entered.resolve()
+        if (!signal) throw new Error('Expected original preparation cancellation')
+        await new Promise<void>(resolve => {
+          if (signal.aborted) resolve()
+          else signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        if (stage === 'qualification') signal.throwIfAborted()
+        return f.session
+      })
+      const dispose = vi.spyOn(CodexAppServerSessionManager.prototype, 'dispose').mockResolvedValue(undefined)
+      const closed = { ...f.launch, lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }
+      vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => ({ ...f.registry.scope(owner), launchId: f.launch.launchId }))
+      vi.spyOn(f.registry, 'abandonReservedLaunch').mockResolvedValue(false)
+      const closeOwner = vi.spyOn(f.registry, 'closeOwner').mockImplementation(async () => {
+        f.snapshot.mockReturnValue({ revision: 'closed', launches: [closed] })
+        return true
+      })
+      vi.spyOn(f.registry, 'closedRegistration').mockReturnValue(closed)
+      vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
+        endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+      }))
+      const access = { kind: 'scoped-worker-mcp', token: 'original-token', executionId: f.intent.executionId,
+        agentId: f.request.configuration.agentId, operationId: f.intent.operationId, attemptId: f.intent.attemptId,
+        bindingHash: f.intent.bindingHash }
+      const pending = f.handler({ method: 'prepare', intent: f.intent, placement: f.placement,
+        request: f.request, executionPlacement: f.nativePlacement, applicationAccess: access }, f.context)
+      const rejected = expect(pending).rejects.toThrow()
+      try {
+        await entered.promise
+        const before = await f.journal.status(f.intent.operationId)
+        expect(before).toMatchObject({ status: 'known', receipt: { entryAttempted: true } })
+        if (before.status !== 'known') throw new Error('Expected registered preparation')
+        expect(before.receipt.native).toBeUndefined()
+        const binding = { ...f.context.binding, connectionGeneration: f.context.binding.connectionGeneration + 1,
+          connectionEpoch: randomUUID() }
+        f.currentBinding.mockReturnValue(binding)
+        const context = { binding, signal: new AbortController().signal }
+        const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop-original-preparation',
+          operationId: f.intent.operationId, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+          bindingHash: f.intent.bindingHash, owner: f.intent.owner, action: { kind: 'stop' } }
+        f.deny()
+        await expect(f.handler({ method: 'control', intent: f.intent, placement: f.placement, command }, context))
+          .rejects.toThrow('Main denied')
+        expect(closeOwner).not.toHaveBeenCalled()
+        const authority = f.readMain.getMockImplementation()!
+        f.readMain.mockImplementation(async raw => {
+          const parsed = ExecutionAuthorityRequestSchema.safeParse(raw)
+          if (!parsed.success) return authority(raw)
+          return { payload: { version: 1, action: parsed.data.action, operationId: f.intent.operationId,
+            attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: f.intent.owner } }
+        })
+        const response = await f.handler({ method: 'control', intent: f.intent, placement: f.placement, command }, context)
+        const receipt = RemoteOperationReceiptSchema.parse((response.payload as { receipt: unknown }).receipt)
+        expect(hasPositiveRemoteEntryClosure(receipt)).toBe(true)
+        expect(receipt.native).toBeUndefined()
+        expect(receipt.connection).toEqual(DeviceConnectionIdentitySchema.strip().parse(f.context.binding))
+        await rejected
+        expect(create).toHaveBeenCalledOnce()
+        expect(dispose).toHaveBeenCalled()
+        expect(closeOwner).toHaveBeenCalledWith(`execution:${f.intent.executionId}`, expect.any(AbortSignal))
+        const owner = { ...f.owner, preparationKind: 'workflow' as const, preparationClosed: true }
+        expect(await f.host.preparationClosed(owner)).toBe(true)
+        expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
+        expect((await f.handler({ method: 'status', intent: f.intent, placement: f.placement }, context)).payload)
+          .toMatchObject({ status: 'known', receipt: { terminal: { kind: 'cancelled' } } })
+        await f.host.close()
+        await f.journal.close()
+        const restored = await RemoteOperationJournal.open(join(f.root, 'construction-journal'))
+        journals.push(restored)
+        const persisted = await restored.status(f.intent.operationId)
+        expect(persisted.status === 'known' && hasPositiveRemoteEntryClosure(persisted.receipt)).toBe(true)
+        expect(await restored.isRetired(f.intent.operationId)).toBe(true)
+      } finally {
+        await f.host.close()
+        await rejected
+      }
+    })
+
   it('authorizes and delivers Stop through the installed handler while all worker-to-Main ordinary slots are occupied', async () => {
     const f = await constructionFixture()
     class Socket extends EventEmitter {

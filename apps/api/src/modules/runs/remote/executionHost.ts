@@ -43,6 +43,7 @@ export class RemoteExecutionHost {
   }>()
   private readonly inspections = new Map<string, Set<AbortController>>()
   private readonly launchControllers = new Map<string, AbortController>()
+  private readonly pendingEntries = new Map<string, Set<Promise<unknown>>>()
   private readonly bindings = new Map<string, { intent: DispatchIntent; placement: AcceptedNodePlacement }>()
   private readonly residents = new Map<string, Resident>()
   constructor(private readonly ports: RemoteExecutionHostPorts) {}
@@ -165,7 +166,22 @@ export class RemoteExecutionHost {
     } finally { controllers.delete(controller); if (!controllers.size) this.inspections.delete(intent.operationId) }
   }
   prepare(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined }) {
-    return this.track(() => this.prepareOwned(raw))
+    const intent = DispatchIntentSchema.parse(raw.intent)
+    const task = this.track(() => this.prepareOwned(raw))
+    const entries = this.pendingEntries.get(intent.operationId) ?? new Set<Promise<unknown>>()
+    entries.add(task)
+    this.pendingEntries.set(intent.operationId, entries)
+    const completed = () => {
+      entries.delete(task)
+      if (!entries.size) this.pendingEntries.delete(intent.operationId)
+    }
+    void task.then(completed, completed)
+    return task
+  }
+  async abortPreparation(operationId: string): Promise<void> {
+    this.launchControllers.get(operationId)?.abort(new Error('Original native preparation requires recovery.'))
+    for (const controller of this.inspections.get(operationId) ?? []) controller.abort()
+    await Promise.allSettled(this.pendingEntries.get(operationId) ?? [])
   }
   private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined }) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)

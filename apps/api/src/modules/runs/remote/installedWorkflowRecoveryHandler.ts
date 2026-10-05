@@ -12,7 +12,7 @@ import { assertOriginalPhysicalDirectories, matchingOriginalRegistryLaunch,
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import { pagePhysicalReadout } from './workflowPhysicalReadout.js'
 import { commandInputHash } from '@graphql/contracts/command-identity-node'
-import { remoteNonEntryClosureDigest } from '@graphql/contracts/remote-execution-entry-closure-node'
+import { hasPositiveRemoteNonEntryClosure, remoteNonEntryClosureDigest } from '@graphql/contracts/remote-execution-entry-closure-node'
 import { randomUUID } from 'node:crypto'
 
 async function closedEntryReply(frame: RemoteExecutionRpcRequest, journal: RemoteOperationJournal) {
@@ -97,6 +97,11 @@ export async function recoverInstalledWorkflowReply(input: {
   await input.authorize(action)
   input.assertCurrent()
   if (!receipt.native) {
+    if (!receipt.entryAttempted && receipt.terminal) {
+      if (!hasPositiveRemoteNonEntryClosure(receipt)) throw new Error('Original preparation closure changed')
+      if (frame.method === 'control') await journal.control(frame.command)
+      return closedEntryReply(frame, journal)
+    }
     if (!receipt.entryAttempted) {
       if (orphanedEntry || frame.method === 'control' && frame.command.action.kind === 'stop') {
         const owner = `execution:${frame.intent.executionId}`
