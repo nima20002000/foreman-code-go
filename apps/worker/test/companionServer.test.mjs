@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
+import { runInNewContext } from 'node:vm';
 import { createCompanionServer } from '../src/companionServer.mjs';
 
 async function fixture(t, options = {}) {
@@ -39,13 +40,67 @@ test('loopback GUI requires its exact host, origin and session before executing 
   assert.equal(html.includes(f.gui.session), false);
 });
 
-test('GUI routes only genuine request/status/pair commands, with private code supplied as input', async (t) => {
+test('served companion page reads status through its session header', { timeout: 5000 }, async (t) => {
+  const f = await fixture(t, { htmlFile: new URL('../artifacts/companion.html', import.meta.url) });
+  const page = await fetch(f.gui.url);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  const elements = new Map();
+  const rendered = Promise.withResolvers();
+  elements.set('state', {
+    dataset: {},
+    set textContent(value) { rendered.resolve(value); },
+  });
+  const getElementById = (id) => {
+    if (!elements.has(id)) {
+      elements.set(id, {
+        dataset: {},
+        addEventListener() {},
+        replaceChildren() {},
+        append() {},
+        toggleAttribute() {},
+      });
+    }
+    return elements.get(id);
+  };
+  const location = new URL(f.gui.url);
+  const statuses = [];
+  // Execute the served client with DOM stubs and real HTTP requests.
+  runInNewContext(html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1], {
+    URLSearchParams,
+    location,
+    history: {
+      replaceState(_state, _title, path) { location.href = new URL(path, location).href; },
+    },
+    document: { getElementById, createElement: () => ({ style: {} }) },
+    fetch: async (path, options) => {
+      // Node fetch needs the origin that a browser sends automatically.
+      const response = await fetch(new URL(path, f.gui.origin), {
+        ...options,
+        headers: { ...options.headers, origin: f.gui.origin },
+      });
+      statuses.push(response.status);
+      return response;
+    },
+  });
+  assert.equal(await rendered.promise, 'Unsupported');
+  assert.deepEqual(statuses, [200]);
+  assert.deepEqual(f.calls, [{ command: 'doctor', input: undefined }]);
+  assert.equal(location.hash, '');
+});
+
+test('legacy session header authorizes identity, pairing and status requests', async (t) => {
   const f = await fixture(t);
-  assert.deepEqual(await (await f.post('/api/identity-request')).json(), { code: 'GQLWR1.public' });
+  const identity = await f.post('/api/identity-request');
+  assert.equal(identity.status, 200);
+  assert.deepEqual(await identity.json(), { code: 'GQLWR1.public' });
   const paired = await f.post('/api/pair', { enrollmentCode: 'GQLWE1.private-test-code' });
+  assert.equal(paired.status, 200);
   assert.deepEqual(await paired.json(), { paired: true });
   assert.deepEqual(f.calls, [{ command: 'identity-request', input: undefined }, { command: 'pair', input: 'GQLWE1.private-test-code' }]);
-  const status = await (await f.post('/api/status')).json();
+  const statusResponse = await f.post('/api/status');
+  assert.equal(statusResponse.status, 200);
+  const status = await statusResponse.json();
   assert.equal(status.service.active, false);
   assert.equal((await f.post('/api/service', { enabled: true })).status, 404);
   assert.equal((await f.post('/api/pair', { enrollmentCode: 'x'.repeat(8193) })).status, 400);

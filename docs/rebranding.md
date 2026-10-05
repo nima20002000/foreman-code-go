@@ -57,6 +57,8 @@ Intentional residual identifiers:
 - `graphql-api` health identity, `/__graphql_dev_identity`, API/MCP routes,
   serialized fields such as `graphqlTools`, managed preset `graphql`, protocol
   events, native file-only server names, and persisted credential bindings.
+- `X-Graphql-Companion-Session` remains the companion's session header so installed
+  pages and servers share the same pairing contract.
 - `~/.local/share/graphql` storage/launcher roots, worker app/state directories,
   `graphql-worker.service`, `graphql-operator-api.service`, production paths and
   desktop identities, `/graphql.svg` icon URLs, companion launcher/desktop filenames, worker artifact

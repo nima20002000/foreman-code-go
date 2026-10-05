@@ -145,7 +145,7 @@ footer p { margin: 0; font-size: .8125rem; }
     let response;
     try {
       response = await fetch(path, { method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'no-referrer',
-        headers: { 'Content-Type': 'application/json', 'X-Foreman Code-Companion-Session': session }, body: JSON.stringify(body) });
+        headers: { 'Content-Type': 'application/json', 'X-Graphql-Companion-Session': session }, body: JSON.stringify(body) });
     } catch { throw new Error('The companion is not reachable. Reopen it from the installed launcher.'); }
     let data = null;
     try { data = await response.json(); } catch { /* non-JSON reply */ }
