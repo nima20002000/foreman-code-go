@@ -47,10 +47,11 @@ export class OpenCodeFileCleanupJournal {
     syncDirectory(this.root)
   }
 
-  recover(onClosed: (context: FileToolContext) => Promise<void>, signal: AbortSignal): Promise<void> {
+  recover(onClosed: (context: FileToolContext) => Promise<void>, signal: AbortSignal,
+    retainedTurnIds: ReadonlySet<string> = new Set()): Promise<void> {
     const previous = recoveries.get(this.root) ?? Promise.resolve()
     // The previous caller receives its failure; subsequent recovery can retry independently.
-    const task = previous.catch(() => undefined).then(() => this.recoverReady(onClosed, signal))
+    const task = previous.catch(() => undefined).then(() => this.recoverReady(onClosed, signal, retainedTurnIds))
     recoveries.set(this.root, task)
     void task.finally(() => {
       if (recoveries.get(this.root) === task) recoveries.delete(this.root)
@@ -58,7 +59,8 @@ export class OpenCodeFileCleanupJournal {
     return task
   }
 
-  private async recoverReady(onClosed: (context: FileToolContext) => Promise<void>, signal: AbortSignal): Promise<void> {
+  private async recoverReady(onClosed: (context: FileToolContext) => Promise<void>, signal: AbortSignal,
+    retainedTurnIds: ReadonlySet<string>): Promise<void> {
     const errors: unknown[] = []
     for (const name of await readdir(this.root)) {
       if (!/^[0-9a-f-]{36}\.json$/.test(name)) continue
@@ -67,6 +69,9 @@ export class OpenCodeFileCleanupJournal {
       if (!raw) continue
       const record = recordSchema.parse(raw)
       if (this.conversationId && record.context.scope.chat.conversationId !== this.conversationId) continue
+      // A live bridge releases its own descriptors after the native generation closes.
+      if (record.boot === bootIdentity() && record.api.pid === process.pid && identityAlive(record.api)
+        && record.context.turnId && retainedTurnIds.has(record.context.turnId)) continue
       if (record.boot === bootIdentity() && identityAlive(record.api) && identityAlive(record.native)) continue
       try {
         if (record.recovery) {

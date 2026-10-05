@@ -42,7 +42,7 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
 
   // Native protocol, namespace checks, disk bytes, admissions and file services
   // use the production implementations. No model inference is needed to prepare inputs.
-  async function fixture(attachments: 'none' | 'image', recovery?: 'replacement' | 'api_crash') {
+  async function fixture(attachments: 'none' | 'image', recovery?: 'replacement' | 'api_crash' | 'native_replacement') {
     const attach = attachments === 'image'
     const root = join(directory, randomUUID())
     const workspace = join(root, 'workspace')
@@ -127,6 +127,29 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
       await expect(prepareOpenCodeChatFiles(runtime, { ...identity, ownerAgentId: randomUUID() }, server,
         'graphql', AbortSignal.timeout(10_000))).rejects.toMatchObject({ code: 'FILE_ADMISSION_MISMATCH' })
       await server.assertFileSourceIsolation!(files.bytes.root, AbortSignal.timeout(10_000))
+      if (recovery === 'native_replacement') {
+        await turn!.finish('definite_rejection', AbortSignal.timeout(10_000))
+        turn = undefined
+        const observer = allocation.manager.startTurn(session, { prompt: message.content,
+          clientCorrelationId: correlation, onSubmitted: async () => {
+            throw new Error('Observer detached after native submission.')
+          } }, AbortSignal.timeout(30_000))[Symbol.asyncIterator]()
+        await expect(observer.next()).rejects.toThrow('Observer detached after native submission.')
+        const ownerRoot = server.ownedFileRoot!
+        const retainedRoots = await readdir(ownerRoot)
+        expect(retainedRoots).toHaveLength(1)
+        const previousPid = server.nativePid
+        await server.dispose()
+        await allocation.manager.capabilities(AbortSignal.timeout(30_000))
+        await allocation.manager.capabilities(AbortSignal.timeout(30_000))
+        expect(server.nativePid).not.toBe(previousPid)
+        expect(await readdir(ownerRoot)).toEqual([])
+        expect(await readdir(join(files.bytes.root, 'opencode-file-cleanup'))).toEqual([])
+        const stored = await server.request(`/session/${session.nativeSessionId}/message/${identity.nativeTurnId}`
+          + `?directory=${encodeURIComponent(workspace)}`)
+        expect(stored.status).toBe(200)
+        expect((await stored.json() as { info: { id: string } }).info.id).toBe(identity.nativeTurnId)
+      }
       if (recovery === 'api_crash') {
         const turnRoot = dirname(dirname(fileURLToPath(turn!.inputs.imageParts[0]!.url)))
         const admission = await resolveOpenCodeFileAdmission(database.pool, initial.conversationId, identity)
@@ -224,6 +247,9 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
   })
   it('reclaims prepared inputs after an abrupt API crash before native submission', async () => {
     await fixture('image', 'api_crash')
+  })
+  it('releases retained bridges once when replacing the native process in the same production manager', async () => {
+    await fixture('image', 'native_replacement')
   })
   it('prepares plain chat with inherited references using an API-owned vault', async () => {
     await fixture('none')

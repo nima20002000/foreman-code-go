@@ -1413,7 +1413,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async ready(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
-    await this.options.chatFiles?.recover?.(signal)
+    const retainedTurnIds = new Set([...this.pendingFileCleanup].map(files => files.nativeTurnId))
+    for (const state of this.sessions.values()) {
+      if (state.turn?.files) retainedTurnIds.add(state.turn.messageID)
+    }
+    await this.options.chatFiles?.recover?.(signal, retainedTurnIds)
     await this.options.server.ensure(signal)
     if (harnessProfile('opencode', this.options.server.expectedVersion) === null) throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode native mode requires a qualified version.')
     if (this.readyGeneration === this.generation) return

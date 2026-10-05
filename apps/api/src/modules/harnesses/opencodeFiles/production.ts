@@ -28,11 +28,11 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
   admissions: OpenCodeFileAdmissions = { resolve: resolveOpenCodeFileAdmission, adoptPublished: adoptOpenCodePublications }): OpenCodeChatFiles {
   const journal = new OpenCodeFileCleanupJournal(config.fileStorageRoot ?? defaultFileStorageRoot(), conversationId)
   return {
-    recover: signal => journal.recover(async context => {
+    recover: (signal, retainedTurnIds) => journal.recover(async context => {
       await pool.query(`update file_tool_sessions set revoked_at=coalesce(revoked_at,now())
         where record->>'binding'=$1`, [bindingIdentity(context)])
       await admissions.adoptPublished(pool, context)
-    }, signal),
+    }, signal, retainedTurnIds),
     async resolve(identity, signal) {
     signal.throwIfAborted()
     const admission = await admissions.resolve(pool, conversationId, identity)
