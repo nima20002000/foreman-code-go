@@ -703,14 +703,16 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('thread/start')).length, 1)
   })
 
-  it('F14: retention is bounded with monotonic cursors, without truncating a delivered large event', async () => {
+  it('retains large qualified events with bounded history and monotonic cursors', async () => {
     const session = await manager.createSession(source)
     const large = 'x'.repeat(1_100_000)
-    await emit(f.directory, { method: 'test/notification', params: { threadId: session.nativeSessionId, large } })
-    await until(async () => (await manager.history(session)).events.some((event) => event.payload.large === large))
-    const batch = Array.from({ length: 1_100 }, (_, value) => JSON.stringify({ method: 'test/notification', params: { threadId: session.nativeSessionId, value } })).join('\n') + '\n'
+    await emit(f.directory, { method: 'thread/name/updated',
+      params: { threadId: session.nativeSessionId, threadName: large } })
+    await until(async () => (await manager.history(session)).events.some((event) => event.payload.threadName === large))
+    const batch = Array.from({ length: 1_100 }, (_, value) => JSON.stringify({ method: 'thread/name/updated',
+      params: { threadId: session.nativeSessionId, threadName: `thread-name-${value}` } })).join('\n') + '\n'
     await appendFile(join(f.directory, 'inbox-agent-a.jsonl'), batch)
-    await until(async () => (await manager.history(session)).events.some((event) => event.payload.value === 1099))
+    await until(async () => (await manager.history(session)).events.some((event) => event.payload.threadName === 'thread-name-1099'))
     const history = await manager.history(session)
     assert(history.events.length <= 1024)
     assert((history.firstRetainedSequence ?? 0) > 0)
