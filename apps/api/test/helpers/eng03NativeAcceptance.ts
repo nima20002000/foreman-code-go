@@ -148,7 +148,9 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   const root = await mkdtemp(join(tmpdir(), `eng03-a-${scenario.toLowerCase()}-`))
   const projectDirectory = join(root, 'project')
   const runtimeDirectory = join(root, 'runtime')
-  const artifactPath = join(process.env.ENG03_A_EVIDENCE_DIR ?? join(tmpdir(), 'eng03-a-evidence'), `${scenario}-${suffix}.json`)
+  const artifactDirectory = process.env.ENG03_A_EVIDENCE_DIR
+    ?? fileURLToPath(new URL('../../../../.logs/eng03-a-evidence/', import.meta.url))
+  const artifactPath = join(artifactDirectory, `${scenario}-${suffix}.json`)
   await Promise.all([mkdir(projectDirectory), mkdir(runtimeDirectory), mkdir(join(artifactPath, '..'), { recursive: true })])
   const admin = new pg.Pool({ connectionString: baseUrl, max: 1 })
   let pool: pg.Pool | undefined
