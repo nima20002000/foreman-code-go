@@ -165,7 +165,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     sourceSha: (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim(),
     binaries: { codex: { path: codexBinary, version: await version(codexBinary) },
       opencode: { path: openCodeBinary, version: await version(openCodeBinary) } },
-    models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-5.6-luna',
+    models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-6-luna',
       opencode: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna' },
     expected: { overlap: true, joinedInputs: 2, outcome: 'succeeded' } }
   try {
@@ -193,7 +193,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const configurations: AgentConfigurationVersion[] = nodeNames.map((name, index) => {
       const fallback = harnesses[index] === 'codex'
         ? { harness: 'codex', model: evidence.models && (evidence.models as { codex: string }).codex,
-          reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' }
+          reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' }
         : { harness: 'opencode', model: (evidence.models as { opencode: string }).opencode,
           variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false }
       const override = name === 'A' || name === 'B' ? options.harnessOverrides?.[name] : undefined

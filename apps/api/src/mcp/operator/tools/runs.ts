@@ -23,7 +23,11 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_list', () => context.services.runs.list(context.principal, input)))
   if (operatorToolAvailable(context, 'run_get')) server.registerTool('run_get', {
-    description: 'Read an authorized Run, result, execution attempts and activity from one backend snapshot. Current execution semantics 3 only; compact metadata is available from run_graph_snapshot_v1 (graph protocol 1). Includes persisted Stop causes and cleanup status.', inputSchema: RunGetInputSchema,
+    description: 'Read an authorized Run, result, execution attempts and activity from one backend snapshot. '
+      + 'Current execution semantics 3 only; compact metadata is available from run_graph_snapshot_v1 (graph protocol 1). '
+      + 'Includes persisted Stop causes and cleanup status. '
+      + 'A Run waiting for approval may still have progressing sibling executions.',
+    inputSchema: RunGetInputSchema,
     outputSchema: SavedRunDetailsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_get', () => context.services.runs.get(context.principal, input.workspaceId, input.runId)))

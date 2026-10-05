@@ -25,6 +25,7 @@ import type { RunOwnership } from './ownership.js'
 import type { WorkflowOrchestrator } from './port.js'
 import { RunnerAdmission } from './runnerAdmission.js'
 import { componentLogger } from '../../infrastructure/logger.js'
+import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
 
 /** One engine, Run owner, checkpoint thread and repository for all current V3
  * graphs. Optional bounded blocks are compiled into this same LangGraph; an
@@ -111,12 +112,34 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private queueResume(runId: string, requestedIds?: readonly string[], claim?: GraphResumeClaim): Promise<void> {
     if (this.closing) return Promise.reject(new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503))
     const ids = requestedIds ? [...requestedIds] : undefined
+    const owner = this.activeOwners.get(runId)
+    if (claim && owner && this.activeTasks.has(runId)) {
+      return this.consumeActiveApproval(owner, claim, ids, this.activeRuns.get(runId)!.signal)
+    }
     const previous = this.resumeTasks.get(runId) ?? this.activeTasks.get(runId) ?? Promise.resolve()
     const task = previous.catch(() => undefined).then(() =>
       this.trackRun(runId, (controller) => this.drive(runId, controller, ids, claim)),
     ).finally(() => { if (this.resumeTasks.get(runId) === task) this.resumeTasks.delete(runId) })
     this.resumeTasks.set(runId, task)
     return task
+  }
+
+  private async consumeActiveApproval(owner: RunOwnership, claim: GraphResumeClaim,
+    requestedIds: readonly string[] | undefined, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    if (requestedIds && !requestedIds.includes(claim.interaction.id)) throw new DomainError(
+      'GRAPH_INTERRUPT_NOT_CURRENT', 'The resume claim differs from the notified interaction.', 409)
+    // Consume the persisted interrupt without invoking a second graph over active siblings.
+    await consumeDeliveredApprovals(owner, this.checkpointer, this.interactions, [claim.interaction], claim,
+      async (sql, run) => {
+        signal.throwIfAborted()
+        await this.authorize(sql, run)
+        signal.throwIfAborted()
+      })
+    const continuation = this.queueResume(owner.runId, requestedIds)
+    void continuation.catch((error: unknown) => {
+      componentLogger('engine').error({ err: error }, 'approval continuation failed')
+    })
   }
 
   private async drive(runId: string, controller: AbortController, requestedIds?: readonly string[],
@@ -126,6 +149,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     if (!owner) throw new DomainError('RUN_ALREADY_OWNED', 'This Run is owned by another engine.', 409)
     this.activeOwners.set(runId, owner)
     let runtimeEntered = false
+    let stopObservingInterrupts: (() => void) | undefined
     try {
       owner.assertOwned(); controller.signal.throwIfAborted()
       let snapshot = await this.runs.getRepeatSnapshot(runId, owner)
@@ -163,6 +187,17 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       owner.assertOwned(); controller.signal.throwIfAborted()
       const { run } = snapshot
       runtimeEntered = true
+      if (isAtomicApprovalCheckpointSaver(this.checkpointer)) {
+        const version = snapshot.version
+        stopObservingInterrupts = this.checkpointer.observeApprovalInterrupts(runId, async () => {
+          owner.assertOwned()
+          controller.signal.throwIfAborted()
+          const checkpoint = await readWorkflowCheckpoint(runId, version, this.checkpointer)
+          await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint)
+          owner.assertOwned()
+          controller.signal.throwIfAborted()
+        })
+      }
       await executeRepeatEngineStart({ owner, signal: controller.signal,
         checkpointer: this.checkpointer, admission: this.workerAdmission,
         configuredParallelism: this.configuredParallelism, runtimeRoot: this.workspaceRoot,
@@ -213,6 +248,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // consumed approval is not callback failure merely because cleanup or a
       // sibling reviewer still needs to finish; reconcile() retries this thread.
     } finally {
+      stopObservingInterrupts?.()
       // Shutdown publishes this barrier before queuing cleanup SQL. A drive may
       // finish naturally during that write; its owner must remain usable. A
       // failed intent retains the owner for the same shutdown retry.

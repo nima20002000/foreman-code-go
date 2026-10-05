@@ -1,13 +1,7 @@
-import { makeCurrentWorkflowFixture, RunStartV3InputSchema, RunStartV3ResultSchema } from '@foreman-code/contracts/wave25'
-import { randomUUID } from 'node:crypto'
+import { makeCurrentWorkflowFixture, RunStartV3ResultSchema } from '@foreman-code/contracts/wave25'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { buildApp } from '../src/app.js'
-import type { OperatorServices } from '../src/mcp/operator/types.js'
-import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
-import { RunManagementService } from '../src/modules/runs/management.js'
-import { createCurrentNativeProductionFactory } from '../src/modules/runs/workflowProduction.js'
+import { streamingOperator } from './helpers/streamingRunOperator.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
@@ -18,49 +12,6 @@ const closes: Array<() => Promise<void>> = []
 afterEach(async () => {
   try { while (closes.length) await closes.pop()!() } finally { vi.restoreAllMocks() }
 })
-
-async function streamingOperator(f: Awaited<ReturnType<typeof checkpointRuntimeFixture>>) {
-  const access = new PostgresAccessService(f.db.pool)
-  const reader = await access.issue({ name: 'Streaming Run reader', audience: 'operator',
-    expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['runs:read'],
-      scope: { workspaceIds: [f.f.scope.workspaceId] } }] })
-  const writer = await access.issue({ name: 'Streaming Run writer', audience: 'operator',
-    expiresAt: new Date(Date.now() + 600_000), grants: [
-      { actions: ['runs:start', 'runs:read'],
-        scope: { workspaceIds: [f.f.scope.workspaceId], workflowIds: [f.f.scope.workflowId] } },
-      { actions: ['workspace_locations:read', 'workspace_locations:update'],
-        scope: { workspaceIds: [f.f.scope.workspaceId] } },
-    ] })
-  // A public Start qualifies the accepted directory through the real filesystem path.
-  vi.mocked(f.locations.revalidateSnapshot).mockRestore()
-  const location = await f.locations.set(writer.principal, 'http', {
-    workspaceId: f.f.scope.workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
-    runnerId: f.locations.runnerId, rootPath: f.db.directory,
-  })
-  const row = (await f.db.pool.query<{ revision: string }>(
-    'select revision::text from workflows where id=$1', [f.f.scope.workflowId])).rows[0]!
-  const input = RunStartV3InputSchema.parse({
-    workspaceId: f.f.scope.workspaceId, workflowId: f.f.scope.workflowId, workflowVersionId: f.f.version.id,
-    commandId: randomUUID(), executionSemanticsVersion: 3, expectedWorkflowRevision: Number(row.revision),
-    expectedAgentConfigurationVersionIds: f.f.version.agentConfigurationVersionIds,
-    expectedLocationRevision: location.value.locationRevision, input: {},
-  })
-  const commands = new PostgresCommandCoordinator(f.db.pool)
-  const dispatchErrors: unknown[] = []
-  const binding = createCurrentNativeProductionFactory({ isRuntimeOpen: () => true,
-    reportDispatchFailure: (_runId, _code, error) => dispatchErrors.push(error) })({
-    primaryPool: f.db.pool, commands, runs: f.runs, workflows: f.workflows, locations: f.locations,
-    engine: f.engine, nativeExecutions: f.native, interactions: f.service, checkpointer: f.checkpointer,
-  })
-  const services = {
-    commands,
-    runs: new RunManagementService(f.db.pool, commands, f.runs, f.engine, f.locations, binding),
-  } as OperatorServices
-  const app = buildApp({ readiness: { database: { ping: async () => { await f.db.pool.query('select 1') } },
-    checkpoints: { ping: async () => undefined } }, operator: { access, services } })
-  closes.push(() => app.close())
-  return { app, reader, writer, input, dispatchErrors }
-}
 
 // Only the external transport is deterministic; capture, PostgreSQL and graph writers are real.
 describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
@@ -169,6 +120,7 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     const f = await checkpointRuntimeFixture(2, 1, { approvalNodeIds: [], insertRun: false })
     closes.push(f.close)
     const operator = await streamingOperator(f)
+    closes.push(() => operator.app.close())
     const entered = deferred()
     const release = deferred()
     const streamingSessions = new Set<string>()

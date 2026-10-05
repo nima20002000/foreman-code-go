@@ -14,6 +14,7 @@ interface StoredWrite { task_id: string; channel: string; type: string; blob: Bu
 export interface AtomicApprovalCheckpointSaver extends BaseCheckpointSaver {
   inspectApprovalInterrupt(sql: GraphTransactionSql, interaction: Pick<DurableInteraction, 'id' | 'runId' | 'graphThreadId' | 'graphInterruptId'>): Promise<string>
   consumeApprovalInterrupt(sql: GraphTransactionSql, interaction: DurableInteraction): Promise<void>
+  observeApprovalInterrupts(runId: string, observer: () => Promise<void>): () => void
 }
 export function isAtomicApprovalCheckpointSaver(saver: BaseCheckpointSaver): saver is AtomicApprovalCheckpointSaver {
   return saver instanceof ApprovalPostgresSaver
@@ -27,9 +28,9 @@ function object(value: unknown): Record<string, unknown> {
 
 /** The SAME production PostgresSaver, not a second checkpoint table or MemorySaver.
  * Pinned ABI: checkpoint-postgres 1.0.5's protected _dumpWrites, serializer,
- * schema-qualified checkpoint_writes and reserved write indexes. Ordinary saver
- * methods are unchanged. This entry point NEVER calls put()/putWrites(), whose
- * private pool transaction would break the Run-owner atomic boundary.
+ * schema-qualified checkpoint_writes and reserved write indexes. Interrupt
+ * persistence notifies the live Run owner after COMMIT. Approval consumption
+ * uses the owner's transaction rather than the saver's private pool transaction.
  */
 export class ApprovalPostgresSaver extends PostgresSaver implements AtomicApprovalCheckpointSaver {
   private readonly approvalSchema: string
@@ -37,10 +38,29 @@ export class ApprovalPostgresSaver extends PostgresSaver implements AtomicApprov
   // Publication stages receipts until its commit finalizer. This is not a
   // durable receipt or continuation authority, and cannot cross a transaction.
   private readonly transactionWrites = new WeakMap<GraphTransactionSql, Set<string>>()
+  private readonly interruptObservers = new Map<string, () => Promise<void>>()
   constructor(pool: pg.Pool, serde?: SerializerProtocol, options: { schema: string } = { schema: 'public' }) {
     if (!/^[a-z_][a-z0-9_]*$/.test(options.schema)) throw new Error('Invalid checkpoint schema')
     super(pool, serde, options)
     this.approvalSchema = options.schema
+  }
+
+  observeApprovalInterrupts(runId: string, observer: () => Promise<void>): () => void {
+    if (this.interruptObservers.has(runId)) throw new DomainError(
+      'RUN_ALREADY_OWNED', 'Another Run owner is observing this checkpoint.', 409)
+    this.interruptObservers.set(runId, observer)
+    return () => {
+      if (this.interruptObservers.get(runId) === observer) this.interruptObservers.delete(runId)
+    }
+  }
+
+  override async putWrites(...args: Parameters<PostgresSaver['putWrites']>): Promise<void> {
+    const [config, writes] = args
+    const rootInterrupt = (config.configurable?.checkpoint_ns ?? '') === ''
+      && writes.some(([channel]) => channel === INTERRUPT)
+    const observer = rootInterrupt ? this.interruptObservers.get(config.configurable?.thread_id) : undefined
+    await super.putWrites(...args)
+    await observer?.()
   }
 
   private async readApprovalInterrupt(sql: GraphTransactionSql,
