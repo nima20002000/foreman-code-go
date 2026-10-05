@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { dirname } from 'node:path'
 import pg from 'pg'
 import { expect, it } from 'vitest'
 import { createFixtureDatabase, createFixtureSchema, dropFixtureDatabase, dropFixtureSchema } from './helpers/testResources.js'
@@ -73,7 +74,7 @@ it('rejects a prepared acceptance API bound to a different database before start
 
 it('checks persisted execution destinations again after reconnecting to the prepared database', async () => {
   const fixture = await agent3Database()
-  const outside = createTestRoot()
+  const outside = createTestRoot(dirname(process.env.GRAPHQL_TEST_ROOT!))
   let restarted: pg.Pool | undefined
   try {
     const saved = await seedAgent3(fixture.pool, fixture.directory,
@@ -109,7 +110,7 @@ it('checks persisted execution destinations again after reconnecting to the prep
 
 it('checks accepted Run locations and native directories independently of the current workspace location', async () => {
   const fixture = await agent3Database()
-  const outside = createTestRoot()
+  const outside = createTestRoot(dirname(process.env.GRAPHQL_TEST_ROOT!))
   try {
     const outsideRun = await seedAgent3(fixture.pool, outside.directory,
       makeCurrentWorkflowFixture(randomUUID(), 'single'))
