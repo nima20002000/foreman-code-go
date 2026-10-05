@@ -104,7 +104,7 @@ it('recovers accepted media from native disk in a fresh API and manager, then de
       throw new Error('Initial native chat did not complete: ' + JSON.stringify({
         turn,
         state: conversation?.turn_state,
-        error: conversation?.record.error,
+        error: conversation?.last_error,
         modelCalls: f.calls.length,
       }), { cause })
     }
