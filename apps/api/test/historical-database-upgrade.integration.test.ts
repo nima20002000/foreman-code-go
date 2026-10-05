@@ -5,6 +5,7 @@ import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { currentWorkflowWriterMigration } from '../src/infrastructure/currentWorkflowWriterMigration.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { RunHistoryService } from '../src/modules/runs/history.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
@@ -53,9 +54,10 @@ describe.skipIf(!postgresEnabled)('historical database upgrade', () => {
         grants: [{ actions: ['runs:read'], scope: { workspaceIds: ['another-workspace'] } }],
         expiresAt: new Date(Date.now() + 300000) })
       const history = new RunHistoryService(db.pool)
+      const commands = new PostgresCommandCoordinator(db.pool)
       app = buildApp({ readiness: { database: { ping: async () => { await db.pool.query('select 1') } },
         checkpoints: { ping: async () => undefined } },
-      operator: { access, services: { runs: { history } } as unknown as OperatorServices } })
+      operator: { access, services: { runs: { history }, commands } as unknown as OperatorServices } })
       for (const scope of scopes) {
         const url = `/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}`
           + `/runs/${scope.runId}/snapshot`
@@ -69,9 +71,11 @@ describe.skipIf(!postgresEnabled)('historical database upgrade', () => {
         expect(remote.result?.isError).not.toBe(true)
         expect(graphRpcValue(remote.result)).toEqual(expected)
         expect((await app.inject({ method: 'GET', url, headers: graphHeaders(denied.token) })).statusCode).toBe(403)
-        expect((await graphRpc(app, denied.token, 'tools/call', {
+        const rejected = await graphRpc(app, denied.token, 'tools/call', {
           name: 'run_board_snapshot_get', arguments: scope,
-        })).result?.isError).toBe(true)
+        })
+        expect(rejected.result?.isError).toBe(true)
+        expect(graphRpcValue(rejected.result)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
       }
       expect(await records()).toEqual(retained)
       await expect(db.pool.query('update workflow_versions set version=version+1 where id=$1',
