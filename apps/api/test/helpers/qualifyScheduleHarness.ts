@@ -37,10 +37,18 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
       if (!await processes.closeOwner(recovery.owner)) throw new Error('Native qualification process closure is unconfirmed.')
     },
   })
+  const installationChecks: { durationMs: number; aborted: boolean }[] = []
+  const assertInstallation = async (...args: Parameters<NativeHarnessFactories['assertInstallationUnchanged']>) => {
+    const started = performance.now()
+    try { await factories.assertInstallationUnchanged(...args) }
+    finally {
+      installationChecks.push({ durationMs: Math.round(performance.now() - started), aborted: args[1]?.aborted ?? false })
+    }
+  }
   const wrap = (suite: typeof codexQualificationSuite) => withQualificationIdentity(
     withNativeQualificationOwnership(suite, processes, () => {
       const binding = registry.pinDefault(suite.harness)
-      return signal => factories.assertInstallationUnchanged(binding, signal)
+      return signal => assertInstallation(binding, signal)
     }), registry.installations, () => registry.pinDefault(suite.harness))
   const suites = { codex: wrap(codexQualificationSuite), opencode: wrap(opencodeQualificationSuite) }
   const repository = new HarnessQualificationRepository(f.database.pool)
@@ -51,7 +59,7 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     f.commands, new PostgresSettingsRepository(f.database.pool), undefined, undefined,
     (_harness, _binary, timeoutMs) => scopedCompatibilityProbe({ registry: processes,
       pin: harness => registry.pinDefault(harness),
-      assertInstallation: (binding, signal) => factories.assertInstallationUnchanged(binding, signal),
+      assertInstallation,
       workingDirectory: f.runtimeRoot, timeoutMs }),
     (_harness, signal) => registry.refreshMain(signal))
   const checks = new HostHarnessInstanceProfileChecks(new HarnessInstanceSettingsRepository(f.database.pool),
@@ -60,6 +68,19 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
       throw new Error('Main-local qualification does not request a worker.')
     }, f.runtimeRoot))
   const failures: unknown[] = []
+  const observations = new Map<string, { lifecycle: string; guardian: boolean; provider: boolean }>()
+  const observer = setInterval(() => {
+    try {
+      for (const launch of processes.snapshot().launches) {
+        observations.set(`${launch.owner}:${launch.lifecycle}`, {
+          lifecycle: launch.lifecycle, guardian: !!launch.guardian, provider: !!launch.provider,
+        })
+      }
+    } catch (error) {
+      failures.push(error)
+      clearInterval(observer)
+    }
+  }, 100)
   try {
     const submitted = (await service.run(principal, 'http', 'codex')).qualification
     await service.join()
@@ -73,7 +94,11 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     }
   } catch (error) {
     failures.push(error)
+    console.error('Native schedule qualification diagnostics', JSON.stringify({
+      installationChecks, observations: [...observations.values()],
+    }))
   } finally {
+    clearInterval(observer)
     factories.stopAuxiliaries()
     const closed = await Promise.allSettled([checks.close(), service.shutdown(), factories.disposeAuxiliaries()])
     for (const result of closed) {
