@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { AcceptedVerificationJobSpecSchema, PreparedJobSpecRecordSchema,
-  VerificationJobExecutionSchema } from './jobVerification.js'
+  VerificationJobExecutionSchema, jobPolicyRequirementsRecord } from './jobVerification.js'
 import { acceptedJobSpecDigests, jobSpecDigests } from './jobsNode.js'
 import { JobRuntimeApprovalRecordSchema, JobRuntimeQualificationRpcRequestRecordSchema,
   JobRuntimeQualificationRpcResponseRecordSchema, JobVerificationRuntimeNativeAdmissionSchema,
-  JobVerificationRuntimeMeasurementSchema, JobVerificationOfflineSeedReceiptSchema } from './jobVerificationRuntime.js'
+  JobVerificationRuntimeMeasurementSchema, JobVerificationOfflineSeedReceiptSchema, JobVerificationProfileSchema } from './jobVerificationRuntime.js'
 import { RemoteJobExecutionRpcRequestRecordSchema, RemoteVerificationJobDispatchRequestSchema } from './remoteJobExecution.js'
 import { JobExecutionSchema } from './jobs.js'
 import { verificationFixture, verificationMeasurementFixture, verificationId as id,
@@ -95,7 +95,17 @@ describe('verification records at qualification and Job transport boundaries', (
 
   it('carries the full verification candidate and measured result without promoting a build result', () => {
     const measured = JobVerificationRuntimeMeasurementSchema.parse(verificationMeasurementFixture())
-    const candidate = { qualificationId: id, operationId: id, approvalId: id, fingerprint: measured.fingerprint,
+    const fingerprint = measured.fingerprint
+    const profile = JobVerificationProfileSchema.parse({ schemaVersion: 2, id: fingerprint.profileId,
+      workspaceId: fingerprint.root.binding.workspaceId, revision: fingerprint.profileRevision,
+      name: 'Ordinary verification', root: fingerprint.root, sourceCommit: fingerprint.sourceCommit,
+      specDigest: fingerprint.specDigest, status: 'unqualified', measurement: null,
+      approvalConfig: fingerprint.approvalConfig, createdAt: requestedAt, updatedAt: requestedAt,
+      spec: { rootId: fingerprint.root.binding.rootId, bindingRevision: fingerprint.root.binding.bindingRevision,
+        resources: fingerprint.resources, policy: jobPolicyRequirementsRecord(verificationFixture().spec.policy),
+        suites: measured.suites.map(suite => suite.suite), approvalConfig: fingerprint.approvalConfig } })
+    const candidate = { qualificationId: id, operationId: id, approvalId: id, fingerprint, profile,
+      approvedAt: measured.approvedAt,
       findmntBinary: '/usr/bin/findmnt', findmntBinarySha256: digest, backingFile: null, backingBytes: null,
       volumeCapacityBytes: measured.fingerprint.quota.volumeCapacityBytes,
       controllerEnvironment: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/runtime', LANG: 'C.UTF-8' },
@@ -103,11 +113,19 @@ describe('verification records at qualification and Job transport boundaries', (
       spoolBytes: 131072, ttlSeconds: 3600 }
     const request = { version: 3, operation: 'run', admission: admission(), candidate }
     expect(JobRuntimeQualificationRpcRequestRecordSchema.parse(request)).toEqual(request)
+    for (const operation of ['start', 'status']) {
+      expect(JobRuntimeQualificationRpcRequestRecordSchema.parse({ ...request, operation, intent: 'execute' })).toEqual({ ...request, operation, intent: 'execute' })
+      const status = { ...request, operation, phase: 'running', result: null }
+      expect(JobRuntimeQualificationRpcResponseRecordSchema.parse(status)).toEqual(status)
+      expect(JobRuntimeQualificationRpcResponseRecordSchema.safeParse({ ...status, phase: 'complete' }).success).toBe(false)
+      expect(JobRuntimeQualificationRpcRequestRecordSchema.safeParse({ ...request, operation,
+        candidate: { ...candidate, operationId: '22222222-2222-4222-8222-222222222222' } }).success).toBe(false)
+    }
+
     expect(JobRuntimeQualificationRpcRequestRecordSchema.safeParse({ ...request,
       admission: { ...request.admission, runtimeApprovalRevision: 2 } }).success).toBe(false)
     expect(JobRuntimeQualificationRpcRequestRecordSchema.safeParse({ ...request,
       candidate: { ...candidate, operationId: '22222222-2222-4222-8222-222222222222' } }).success).toBe(false)
-    const fingerprint = measured.fingerprint
     const runtime = {
       ...fingerprint.limits, policyId: fingerprint.profileId, policyRevision: fingerprint.profileRevision,
       qualificationId: measured.identity.qualificationId, imageDigest: fingerprint.imageDigest,

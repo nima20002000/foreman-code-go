@@ -456,13 +456,39 @@ export const JobVerificationRuntimeQualificationRpcResponseSchema = z.discrimina
     context.addIssue({ code: 'custom', message: 'Measured verification cannot change its approved operation or lifetime.' })
   }
 })
-export const JobRuntimeQualificationRpcRequestRecordSchema = z.union([
+const qualificationRpcRequestSchema = z.union([
   JobRuntimeQualificationRpcRequestSchema, ProvisionedJobRuntimeQualificationRpcRequestSchema,
   JobVerificationRuntimeQualificationRpcRequestSchema,
 ])
-export const JobRuntimeQualificationRpcResponseRecordSchema = z.union([
+const qualificationRpcResponseSchema = z.union([
   JobRuntimeQualificationRpcResponseSchema, ProvisionedJobRuntimeQualificationRpcResponseSchema,
   JobVerificationRuntimeQualificationRpcResponseSchema,
+])
+export const JobRuntimeQualificationRpcRequestRecordSchema = z.union([
+  qualificationRpcRequestSchema,
+  z.object({ version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    operation: z.enum(['start', 'status']), intent: z.enum(['execute', 'reconcile']).default('execute'), admission: JobRuntimeNativeAdmissionRecordSchema,
+    candidate: JobQualificationCandidateRecordSchema }).strict().superRefine((value, context) => {
+      const request = { version: value.version, admission: value.admission, candidate: value.candidate, operation: 'run' }
+      if (!qualificationRpcRequestSchema.safeParse(request).success) {
+        context.addIssue({ code: 'custom', message: 'Qualification initiation and status retain the original admission.' })
+      }
+    }),
+])
+export const JobRuntimeQualificationRpcResponseRecordSchema = z.union([
+  qualificationRpcResponseSchema,
+  z.object({ version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    operation: z.enum(['start', 'status']), admission: JobRuntimeNativeAdmissionRecordSchema,
+    candidate: JobQualificationCandidateRecordSchema, phase: z.enum(['not_started', 'received', 'running', 'complete']),
+    result: JobRuntimeQualificationResultRecordSchema.nullable() }).strict().superRefine((value, context) => {
+      const valid = qualificationRpcRequestSchema.safeParse({ version: value.version, operation: 'run',
+        admission: value.admission, candidate: value.candidate }).success
+      const resultValid = value.result === null || qualificationRpcResponseSchema.safeParse({ version: value.version,
+        operation: 'run', admission: value.admission, candidate: value.candidate, result: value.result }).success
+      if (!valid || !resultValid || (value.phase === 'complete') !== (value.result !== null)) {
+        context.addIssue({ code: 'custom', message: 'Qualification status cannot replace its scope or measured result.' })
+      }
+    }),
 ])
 export const JobRuntimeProfileListRecordSchema = z.object({
   profiles: z.array(z.object({ profile: JobRuntimeProfileRecordSchema, ready: z.boolean(),

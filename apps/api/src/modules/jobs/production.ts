@@ -1,3 +1,4 @@
+import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { createMainJobExecutionHost } from './mainExecution.js'
 import { createVerificationSystemInput } from './verificationSystemInput.js'
@@ -9,7 +10,7 @@ import { constants } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
-import { reserveInstalledJobQualification } from './installedRuntimeQualification.js'
+import { reserveInstalledJobQualification, recoverInstalledJobRuntimeQualifications } from './installedRuntimeQualification.js'
 import { createJobQualificationCarrier } from './qualificationCarrier.js'
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
@@ -171,7 +172,12 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   if (installedConfiguration && input.nativeRegistry) {
     qualificationJournal = openMainJobJournal({ sql: input.pool, path: journalPath, mainId: input.mainId,
       initialization: 'bootstrap' })
-    try { await qualificationJournal }
+    try {
+      const journal = await qualificationJournal
+      if (input.nativeRegistry) await recoverInstalledJobRuntimeQualifications({ journal, registry: input.nativeRegistry,
+        host: { hostRef: { kind: 'main', mainId: input.mainId }, registration: null,
+          mainInstallationId: input.mainId, bootId: bootIdentity() } })
+    }
     catch (error) {
       componentLogger('jobs').warn({ err: error }, 'Main Job journal requires recovery')
     }
@@ -196,7 +202,11 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
       if (!input.nativeRegistry || original.nativeAdmission.hostRef.kind !== 'main') throw new DomainError('JOB_RUNTIME_OWNER_UNAVAILABLE', 'The actual original local diagnostic native owner is unavailable.', 409)
       const journal = await getMainJournal()
       const admission = original.nativeAdmission
-      return reserveInstalledJobQualification({ candidate: original.candidate, admission, journal,
+      const retained = original.intent === 'reconcile' ? await journal.qualificationStatus(admission.operationId) : null
+      if (original.intent === 'reconcile' && !retained) throw new DomainError('JOB_RUNTIME_RECOVERY_REQUIRED',
+        'The original qualification receipt is missing; fresh work cannot be launched.', 409)
+      return reserveInstalledJobQualification({ candidate: retained?.candidate ?? original.candidate, admission, journal,
+        ...(original.intent === 'reconcile' ? { entry: 'reconcile' as const } : {}),
         registry: input.nativeRegistry, signal: original.signal,
         host: { hostRef: admission.hostRef, registration: admission.registration, mainInstallationId: input.mainId, bootId: original.candidate.fingerprint.bootId, connection: null },
         assertAdmission: async supplied => { if (!sameWorkflowValue(supplied, admission)) throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'The original local diagnostic admission changed.', 409); await original.assertAdmission() },
@@ -343,7 +353,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     async close() {
       const failures: unknown[] = []
       const resources = [() => jobs.closeQueue(), () => metadataRecovery.close(),
-        async () => { await localExecution?.shutdown() }, () => dispatch.close(), () => outputs.close(),
+        async () => { await localExecution?.shutdown() }, () => dispatch.close(), () => outputs.close(), () => localHost.shutdown(),
         async () => { if (qualificationJournal) await (await qualificationJournal).close() }]
       for (const close of resources) {
         try {

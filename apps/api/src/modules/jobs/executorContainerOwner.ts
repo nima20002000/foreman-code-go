@@ -31,6 +31,7 @@ export interface OCIHostCertificate {
 export interface OCIContainerOwnership {
   scope: OCIOwnerScope
   assertCurrent(): Promise<void>
+  assertClosure?(): Promise<void>
   /** Persist the original container intent before create can enter native IO. */
   reserveContainerIntent(identity: string, fingerprint: string): Promise<void>
   /** Existing HRT/W08 journal receives exact ID before start; no second ledger. */
@@ -80,12 +81,14 @@ export async function proveOCIBoundaryEmpty(boundary: OCICgroupBoundary): Promis
 interface OCIInspection { Id: string; Config: { Labels: Record<string, string> }; State: { Pid: number; ConmonPid?: number; Running: boolean; Status: string } }
 /** One existing admitted OCI owner. It neither allocates a lease nor creates a registry. */
 export class OwnedOCIContainer {
+  private closing = false
   private containerId: string | null = null
   private certificate: OCIHostCertificate | null = null
   constructor(private readonly intent: { identity: string; labels: Record<string, string> }, private readonly commands: Pick<PodmanCommandRunner, 'run'>,
     private readonly ownership: OCIContainerOwnership) {}
   private async inspect(target: string): Promise<OCIInspection | null> {
-    await this.ownership.assertCurrent()
+    if (this.closing && this.ownership.assertClosure) await this.ownership.assertClosure()
+    else await this.ownership.assertCurrent()
     const response = await this.commands.run(['container', 'inspect', target])
     if (response.exitCode !== 0) return null
     const rows: OCIInspection[] = JSON.parse(response.stdout)
@@ -135,6 +138,7 @@ export class OwnedOCIContainer {
     return this.certificate
   }
   async close(graceMs: number): Promise<boolean> {
+    this.closing = true
     let row = await this.inspect(this.containerId ?? this.intent.identity)
     if (!row) return false // Missing receipt is uncertainty; never infer no launch.
     if (!this.containerId) await this.bind(row.Id)

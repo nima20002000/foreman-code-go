@@ -28,6 +28,7 @@ import { DomainError } from '../errors.js'
 import { captureJobRuntimeConfiguration, createQualificationNativeOwner, fingerprintQualificationPath, qualificationMountId,
   type InstalledJobRuntimeDescriptor, type JobQualificationAuthority, type QualificationNativeOwner } from './qualification.js'
 import type { OCIContainerOwnership } from './executorContainerOwner.js'
+import type { JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
 import type { JobSql } from './repository.js'
 
@@ -72,7 +73,8 @@ export interface InstalledRuntimeHostDependencies {
   /** Existing admitted original operation supplies process/OCI ownership, not config principal IDs. */
   reserve(input: Parameters<InstalledJobRuntimeHost['reserveQualification']>[0]): Promise<{
     native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'
-      | 'completedResult' | 'recordResult'>
+      | 'completedResult' | 'originalResult' | 'recordResult' | 'recoveryRequired' | 'originalContainer'
+      | 'reserveCleanupProcess' | 'spawnCleanupProcess' | 'recordQuotaClaim'>
     ownership: OCIContainerOwnership
     authority: JobQualificationAuthority
   }>
@@ -240,9 +242,12 @@ export async function inspectInstalledJobRuntimeCandidate(input: {
 }
 
 export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHostDependencies): InstalledJobRuntimeHost & {
+  shutdown(): Promise<void>
   inspect(profile: JobRuntimeProfileRecord): Promise<{
     descriptor: ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>; fingerprint: JobRuntimeFingerprintRecord }>
 } {
+  const lifetime = new AbortController()
+  const active = new Set<Promise<JobRuntimeQualificationResult>>()
   const snapshots = new Map<string, { configuration: InstalledJobRuntimeConfiguration | InstalledVerificationRuntimeConfiguration;
     descriptor: ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>; fingerprint: JobRuntimeFingerprintRecord }>()
   const key = (profile: Pick<JobRuntimeProfileRecord, 'id' | 'revision'>) => `${profile.id}:${profile.revision}`
@@ -298,32 +303,41 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
       catch (error) { if (error instanceof DomainError && error.status < 500) return null; throw error }
     },
     async capture(profile) { return (await current(dependencies.identity, profile)).fingerprint },
-    async runAdmitted(input) {
-      if (input.candidate.fingerprint.schemaVersion !== 3) throw new Error('Verification candidate required.')
-      await input.assertAdmission()
-      await current(dependencies.identity, input.profile)
-      return qualifyVerificationRuntime({ candidate: (await import('@foreman-code/contracts/job-verification-runtime'))
-        .JobVerificationQualificationCandidateSchema.parse(input.candidate), admission: input.nativeAdmission,
-        configuration: dependencies.configuration, signal: input.signal,
-        authority: {
-          readApproval: async id => {
-            if (id !== input.approval.id) return null
-            await input.assertAdmission()
-            return { status: 'approved', fingerprint: input.approval.fingerprintDigest, expiresAt: input.approval.expiresAt }
+    async runAdmitted(original) {
+      const input = { ...original, signal: AbortSignal.any([original.signal, lifetime.signal]) }
+      const task = (async () => {
+        if (input.candidate.fingerprint.schemaVersion !== 3) throw new Error('Verification candidate required.')
+        await input.assertAdmission()
+        await current(dependencies.identity, input.profile)
+        return qualifyVerificationRuntime({ candidate: (await import('@foreman-code/contracts/job-verification-runtime'))
+          .JobVerificationQualificationCandidateSchema.parse(input.candidate), admission: input.nativeAdmission,
+          configuration: dependencies.configuration, signal: input.signal,
+          authority: {
+            readApproval: async id => {
+              if (id !== input.approval.id) return null
+              await input.assertAdmission()
+              return { status: 'approved', fingerprint: input.approval.fingerprintDigest, expiresAt: input.approval.expiresAt }
+            },
+            assertCurrent: async candidate => {
+              if (hash(candidate) !== hash(input.candidate)) unavailable('original_approval_context_changed')
+              await input.assertAdmission()
+              await inspectInstalledJobRuntimeCandidate({ configuration: dependencies.configuration, candidate,
+                host: input.nativeAdmission })
+            },
+            reserve: async (candidate, signal) => {
+              const reserved = await dependencies.reserve({ ...input, candidate, signal,
+                operationId: input.approval.qualificationId })
+              return createQualificationNativeOwner(candidate, reserved.native, reserved.ownership, reserved.authority)
+            },
           },
-          assertCurrent: async candidate => {
-            if (hash(candidate) !== hash(input.candidate)) unavailable('original_approval_context_changed')
-            await input.assertAdmission()
-            await inspectInstalledJobRuntimeCandidate({ configuration: dependencies.configuration, candidate,
-              host: input.nativeAdmission })
-          },
-          reserve: async (candidate, signal) => {
-            const reserved = await dependencies.reserve({ ...input, candidate, signal,
-              operationId: input.approval.qualificationId })
-            return createQualificationNativeOwner(candidate, reserved.native, reserved.ownership, reserved.authority)
-          },
-        },
-      })
+        })
+      })()
+      active.add(task)
+      try { return await task } finally { active.delete(task) }
+    },
+    async shutdown() {
+      lifetime.abort()
+      await Promise.allSettled([...active])
     },
     async reserveQualification(input) {
       input.signal.throwIfAborted()

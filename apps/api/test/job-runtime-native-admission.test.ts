@@ -6,7 +6,7 @@ import type { PostgresSourceService } from '../src/modules/sources/service.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { JobRuntimeProfileSchema,JobRuntimeFingerprintSchema,JobRuntimeApprovalSchema,type JobRuntimeNativeAdmission } from '@foreman-code/contracts/job-runtime'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
-import { admitInstalledJobQualification,assertInstalledJobQualification } from '../src/modules/jobs/runtimeQualificationAdmission.js'
+import { admitInstalledJobQualification,assertInstalledJobQualification,assertInstalledJobQualificationRead } from '../src/modules/jobs/runtimeQualificationAdmission.js'
 import { jobDigest } from '../src/modules/jobs/service.js'
 import { jobSpec } from './helpers/jobFixture.js'
 import type { JobSql } from '../src/modules/jobs/repository.js'
@@ -48,7 +48,7 @@ describe('Main persisted qualification admission (no native IO)',()=>{
   })
   it('assert never mints an absent lease',async()=>{
     const f=setup()
-    await expect(admitInstalledJobQualification(f.sql,f.input,true)).rejects.toMatchObject({code:'JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT'})
+    await expect(admitInstalledJobQualification(f.sql,f.input,{ access: 'launch', requireExisting: true })).rejects.toMatchObject({code:'JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT'})
     expect(f.state.nativeAdmission).toBeNull()
   })
   it.each(['owner','expired','revoked','profile','root','host','receipt'] as const)('denies changed %s before minting',async change=>{
@@ -62,6 +62,17 @@ describe('Main persisted qualification admission (no native IO)',()=>{
     if(change==='receipt')f.state.receipt={...f.state.receipt,qualificationId:'22222222-2222-4222-8222-222222222222'}
     await expect(admitInstalledJobQualification(f.sql,f.input)).rejects.toThrow()
     expect(f.state.nativeAdmission).toBeNull()
+  })
+  it('result reconciliation retains the admitted lease and still enforces live scoped permission', async () => {
+    const f = setup()
+    const original = await admitInstalledJobQualification(f.sql, f.input)
+    await expect(assertInstalledJobQualificationRead(f.sql, f.input, original)).resolves.toBeUndefined()
+    expect(f.state.nativeAdmission).toEqual(original)
+    await expect(assertInstalledJobQualificationRead(f.sql, f.input,
+      { ...original, leaseId: '22222222-2222-4222-8222-222222222222' })).rejects.toThrow()
+    f.state.revoked = true
+    await expect(assertInstalledJobQualificationRead(f.sql, f.input, original)).rejects.toThrow()
+    expect(f.state.nativeAdmission).toEqual(original)
   })
   it('retained lease cannot survive changed current context or be replaced',async()=>{
     const f=setup(),first=await admitInstalledJobQualification(f.sql,f.input)

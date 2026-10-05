@@ -64,6 +64,14 @@ export async function qualifyVerificationRuntime(input: {
   await input.authority.assertCurrent(candidate)
   const owner = await input.authority.reserve(candidate, input.signal)
   if (owner.completedResult) return JobVerificationRuntimeQualificationResultSchema.parse(owner.completedResult)
+  if (owner.recoveryRequired) {
+    const closed = await owner.close()
+    const result = { outcome: 'denied' as const, closure: closed ? 'confirmed' as const : 'unconfirmed' as const,
+      reasons: owner.originalResult?.outcome === 'denied' ? owner.originalResult.reasons
+        : ['Original qualification was interrupted; its retained owner was reconciled.'] }
+    if (closed) await owner.recordResult?.(result)
+    return result
+  }
   const run = async (binary: string, argv: string[], timeoutMs = 30000) => {
     input.signal.throwIfAborted()
     await input.authority.assertCurrent(candidate)
@@ -96,6 +104,9 @@ export async function qualifyVerificationRuntime(input: {
       claims.push({ path, file, namespace })
       await file.writeFile(JSON.stringify({ kind: 'qualification', qualificationId: candidate.qualificationId, operationId: candidate.operationId }))
       await file.sync()
+      const claim = await file.stat()
+      if (!owner.recordQuotaClaim) throw new Error('Protected qualification quota journal required.')
+      await owner.recordQuotaClaim({ path, namespace, device: claim.dev, inode: claim.ino })
       await mkdir(namespace, { mode: 0o700 })
       await verifyJobQuotaOwnership({ pool, binding: fingerprint.root.binding, slot, directory: namespace,
         signal: input.signal, read: readQuota })
@@ -293,20 +304,13 @@ export async function qualifyVerificationRuntime(input: {
   } catch (error) {
     denial = error instanceof Error ? error : new Error('Physical verification qualification failed.')
   } finally {
-    if (!closed) closed = await owner.close()
-    if (closed) {
-      for (const claim of claims.reverse()) {
-        await rm(claim.namespace, { recursive: true, force: true })
-        const named = await lstat(claim.path)
-        const retained = await claim.file.stat()
-        if (named.dev !== retained.dev || named.ino !== retained.ino) throw new Error('Original qualification quota claim changed.')
-        await rm(claim.path)
-        await claim.file.close()
-      }
-    } else {
-      for (const claim of claims) await claim.file.close()
+    if (!closed) {
+      try { closed = await owner.close() }
+      catch (error) { denial = error instanceof Error ? error : new Error('Qualification closure failed.') }
     }
+    for (const claim of claims) await claim.file.close()
   }
+
   if (!closed || denial) return { outcome: 'denied' as const, closure: closed ? 'confirmed' as const : 'unconfirmed' as const,
     reasons: [(denial?.message ?? 'Physical verification closure is unconfirmed.').slice(0, 500)] }
   if (!result) throw new Error('Physical qualification produced no result.')

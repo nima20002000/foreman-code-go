@@ -9,7 +9,7 @@ import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadl
 import { DeviceApplicationError } from './deviceApplicationError.js'
 export { DeviceApplicationError } from './deviceApplicationError.js'
 
-export interface DeviceExtensionContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; bytes?: Uint8Array }
+export interface DeviceExtensionContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; connectionSignal?: AbortSignal; bytes?: Uint8Array }
 export interface DeviceExtensionRegistration extends DeviceExtensionDescriptor {
   /** Domain handler MUST validate its execution/job/transfer grant and immutable target. */
   handle?(payload: unknown, context: DeviceExtensionContext): Promise<DeviceApplicationResult>
@@ -217,7 +217,7 @@ export class DeviceApplicationChannel {
       if (!registration?.handle || assembly.abort.signal.aborted) return
       let result: DeviceApplicationResult
       try {
-        result = await withDeviceDeadline(this.track(registration.handle(payload, { binding: Object.freeze({ ...this.binding }), signal: assembly.abort.signal, ...(bytes ? { bytes } : {}) })), assembly.abort.signal, 900_000)
+        result = await withDeviceDeadline(this.track(registration.handle(payload, { binding: Object.freeze({ ...this.binding }), signal: assembly.abort.signal, connectionSignal: this.abort.signal, ...(bytes ? { bytes } : {}) })), assembly.abort.signal, 900_000)
         await this.authorized()
       } catch (error) {
         if (assembly.abort.signal.aborted || this.abort.signal.aborted) return

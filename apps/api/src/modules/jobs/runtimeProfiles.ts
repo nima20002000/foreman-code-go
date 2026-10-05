@@ -167,6 +167,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     let measurement:ReturnType<typeof JobRuntimeMeasurementRecordSchema.parse>|undefined
     let result:JobRuntimeQualificationResult|undefined
     let claimed=false
+    let reconcile=false
     try {
       const outcome = await this.commands.execute({principal,source,operation:'job.runtime-profile.qualify',commandId,targetKey:workspaceId,payload:{approvalId},dedicatedConnection:true,
       authorize:sql=>this.authorize(sql,principal,workspaceId,true).then(()=>undefined),prepare:async()=>{
@@ -179,15 +180,24 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
           if(owner.run_command_id&&(owner.run_command_id!==commandId||owner.run_principal_id!==principal.id))throw new DomainError('JOB_RUNTIME_QUALIFICATION_IN_PROGRESS','Reconcile the original approved qualification command.',409)
           if(owner.measurement)measurement=JobRuntimeMeasurementRecordSchema.parse(owner.measurement)
           if(owner.run_result)result=owner.run_result
-          if(owner.run_command_id&&!result&&!measurement)throw new DomainError('JOB_RUNTIME_RECOVERY_REQUIRED','The original physical qualification requires owner reconciliation before another probe.',409)
+          if(owner.run_command_id&&!result&&!measurement) {
+            if (!this.producer.reconcile) throw new DomainError('JOB_RUNTIME_RECOVERY_REQUIRED',
+              'The original physical qualification requires owner reconciliation before another probe.',409)
+            reconcile = true
+          }
           await sql.query('update job_runtime_qualification_approvals set run_command_id=$2,run_principal_id=$3 where id=$1',[approvalId,commandId,principal.id])
           const next={...value,status:'qualifying' as const};await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb where id=$1',[approvalId,JSON.stringify(next)]);await this.put(sql,{...profile,status:'qualifying'});return next
         })
         claimed=true
         const profile = await this.transaction(async sql => { await this.authorize(sql,principal,workspaceId,true); return this.record(sql,workspaceId,approval.profileId) })
         if (!result) {
-          const deadline = qualificationDeadline(qualificationTimeoutMs(profile,approval))
-          try { result = await this.producer.run(approval,deadline.signal) }
+          const timeoutMs = reconcile ? Math.max(1, Date.parse(approval.expiresAt) - Date.now())
+            : qualificationTimeoutMs(profile,approval)
+          const deadline = qualificationDeadline(timeoutMs)
+          try {
+            result = reconcile ? await this.producer.reconcile!(approval,deadline.signal)
+              : await this.producer.run(approval,deadline.signal)
+          }
           finally { deadline.dispose() }
         }
         if(result.outcome==='qualified') {

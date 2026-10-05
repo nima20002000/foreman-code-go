@@ -47,6 +47,23 @@ describe('authenticated namespace carrier mechanics', () => {
       expect(pair.revalidate).toHaveBeenCalled()
     } finally { await pair.close() }
   })
+  it('keeps the connection lifetime alive after a short request and aborts it on disconnect', async () => {
+    let requestSignal: AbortSignal | undefined
+    let connectionSignal: AbortSignal | undefined
+    const pair = setup(async (_payload, context) => {
+      requestSignal = context.signal
+      connectionSignal = context.connectionSignal
+      return { payload: { initiated: true } }
+    })
+    try {
+      expect((await pair.main.request('execution-v1', { start: true })).payload).toEqual({ initiated: true })
+      await flush()
+      expect(requestSignal?.aborted).toBe(true)
+      expect(connectionSignal?.aborted).toBe(false)
+      await pair.close()
+      expect(connectionSignal?.aborted).toBe(true)
+    } finally { await pair.close() }
+  })
   it('chunk ACK is not execution acceptance or completion', async () => {
     let release!: () => void; const entered = vi.fn()
     const pair = setup(async () => { entered(); await new Promise<void>((resolve) => { release = resolve }); return { payload: { accepted: true } } })

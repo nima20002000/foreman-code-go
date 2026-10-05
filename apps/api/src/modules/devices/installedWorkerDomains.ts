@@ -1,3 +1,4 @@
+import { recoverInstalledJobRuntimeQualifications } from '../jobs/installedRuntimeQualification.js'
 import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
 import { JOB_OUTPUT_NAMESPACE } from '../files/jobs/workerProtocol.js'
 import { componentLogger } from '../../infrastructure/logger.js'
@@ -169,8 +170,19 @@ export async function createInstalledWorkerDomains(input: {
       return { payload: await sources.handle(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) }) }
     } }, ...(native.kind === 'configured' ? native.extensions : []))
   }
-  if (input.jobConfiguration && approved) extensions.push(createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
-    currentBinding: current, request, journal: jobJournal, registry: jobRegistry, signal: lifetime.signal }))
+  if (input.jobConfiguration && approved) {
+    await recoverInstalledJobRuntimeQualifications({ journal: await jobJournal(), registry: jobRegistry,
+      host: { hostRef: { kind: 'device', mainId: input.pairing.mainId, deviceId: input.pairing.deviceId },
+        registration: { workerInstallationId: input.pairing.workerInstallationId, keyRevision: input.pairing.keyRevision,
+          authorizationRevision: input.pairing.authorizationRevision },
+        mainInstallationId: input.pairing.mainId, bootId: input.bootId } })
+  }
+  let qualification: ReturnType<typeof createWorkerQualificationExtension> | undefined
+  if (input.jobConfiguration && approved) {
+    qualification = createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
+    currentBinding: current, request, journal: jobJournal, registry: jobRegistry, signal: lifetime.signal })
+    extensions.push(qualification)
+  }
   extensions.push({ namespace: 'harness-discovery-v1', version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
     async handle(payload, context) {
       HarnessDiscoveryRequestSchema.parse(payload)
@@ -252,6 +264,7 @@ export async function createInstalledWorkerDomains(input: {
       try { await jobInputs?.close() } catch (error) { failures.push(error) }
       try { if (native?.kind === 'configured') await native.close() } catch (error) { failures.push(error) }
       await Promise.allSettled([...active])
+      await qualification?.drain()
       try { await receiver?.receiver.close() } catch (error) { failures.push(error) }
       if (!failures.length) {
         for (const opening of [journalOpening, jobJournalOpening]) {
