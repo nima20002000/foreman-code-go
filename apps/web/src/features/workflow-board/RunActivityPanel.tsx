@@ -1,6 +1,6 @@
 import { RunActions } from './actions'
 import { useEffect, useRef } from 'react'
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from '@tanstack/react-query'
 import type { WorkflowRunSummary } from '@graphql/contracts'
 import { sameCanonicalGraphScope } from '@graphql/contracts/wave25'
 import { Alert, Button, EmptyState, Icon, LoadingState, StatusBadge } from '../../shared/ui/nocturne'
@@ -13,6 +13,17 @@ import { useWorkflowBoard } from './context'
 
 import { boardRunListKey } from './keys'
 import { refreshFirstInspectionPage } from './inspect/queries'
+
+async function refreshBoardRuns(client: QueryClient, workspaceId: string, workflowId: string) {
+  const key = boardRunListKey(workspaceId, workflowId)
+  const cached = client.getQueryData<InfiniteData<Awaited<ReturnType<typeof readBoardRuns>>, string | null>>(key)
+  if (cached?.pageParams[0] === null) {
+    await client.invalidateQueries({ queryKey: key, exact: true })
+  } else {
+    // A capped history may have evicted the initial page and its cursor.
+    await refreshFirstInspectionPage(client, key)
+  }
+}
 
 export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRunSummary[] }) {
   const board = useWorkflowBoard()!
@@ -46,9 +57,13 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => readBoardRuns(workspaceId, workflowId, pageParam, { signal }),
     getNextPageParam: (page, _pages, _param, params) => page.pageInfo.nextCursor && !params.includes(page.pageInfo.nextCursor) ? page.pageInfo.nextCursor : undefined,
-    maxPages: 5, staleTime: Infinity, refetchOnMount: 'always',
+    maxPages: 5, staleTime: Infinity, refetchOnMount: false,
     refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false,
   })
+  useEffect(() => {
+    const key = boardRunListKey(workspaceId, workflowId)
+    if (client.getQueryData(key)) void refreshBoardRuns(client, workspaceId, workflowId)
+  }, [client, workspaceId, workflowId])
   const denied = useProtectedAccessError(runs)
   const listed = denied || runs.isError ? [] : [...new Map(runs.data?.pages.flatMap((page) => page.items.map((run) => [run.id, run] as const)) ?? []).values()]
   const fresh = denied ? [] : summaries.filter((run) => run.workspaceId === workspaceId && run.workflowId === workflowId)
@@ -59,7 +74,7 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
   useEffect(() => {
     if (previousSummaryRuns.current === summaryRuns) return
     previousSummaryRuns.current = summaryRuns
-    if (!denied) void client.invalidateQueries({ queryKey: boardRunListKey(workspaceId, workflowId), exact: true })
+    if (!denied) void refreshBoardRuns(client, workspaceId, workflowId)
   }, [summaryRuns, client, denied, workspaceId, workflowId])
   const inspect = (runId: string) => discovery.mutate({ runId, generation: sessionGeneration(), ticket: ++request.current })
   const listedIds = new Set(listed.map((item) => item.id))
