@@ -52,6 +52,8 @@ class MemoryConversations {
   async nextQueued() { return undefined }
   async turn(_id: string, requestId: string) { return this.turns.find((turn) => turn.requestId === requestId) }
   async turnContent(_id: string, requestId: string) { return `content-${requestId}` }
+  async turnSessionMode() { return undefined }
+  async turnPrincipalId() { return undefined }
   async cancelQueued() { await this.beforeCancel?.(); this.cancels++; return true }
   async beginSessionCreation(_id: string, requestId: string) {
     if (this.row?.active_request_id !== requestId || this.row.record.sessionCreation) return false

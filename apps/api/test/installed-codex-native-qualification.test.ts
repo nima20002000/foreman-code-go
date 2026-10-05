@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm, writeFile, readdir } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
@@ -99,7 +99,7 @@ describe('explicit actual-suite worker qualification adapter', () => {
       expect(f.registry.closeOwner).toHaveBeenCalledTimes(2)
       expect(proof.completedNativeQualification?.record.checks.map(check => check.id)).toEqual([...CODEX_COMPLETED_QUALIFICATION_CHECKS])
       await expect(requireHarnessQualification('codex', '0.132.0', f.binary)).rejects.toMatchObject({ result: { error: { code: 'HARNESS_UNQUALIFIED' } } })
-      expect((await readdir(f.directory)).some(name => name.startsWith('codex-qualification-'))).toBe(false)
+      await expect(stat(f.run.mock.calls[0]![0].workDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
     } finally { await release(f) }
   })
   it('retains a completed static failure without inventing authentication or issuing a model turn', async () => {
@@ -142,10 +142,11 @@ describe('explicit actual-suite worker qualification adapter', () => {
     try {
       f.registry.closeOwner.mockResolvedValueOnce(true).mockResolvedValue(false)
       await expect(f.qualifier.qualify(f.value, { checkId: f.checkId, signal: new AbortController().signal })).rejects.toBeInstanceOf(AggregateError)
-      expect((await readdir(f.directory)).some(name => name.startsWith('codex-qualification-'))).toBe(true)
+      const directory = f.run.mock.calls[0]![0].workDirectory
+      expect((await stat(directory)).isDirectory()).toBe(true)
       f.registry.closeOwner.mockResolvedValue(true)
       await f.qualifier.close()
-      expect((await readdir(f.directory)).some(name => name.startsWith('codex-qualification-'))).toBe(false)
+      await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' })
       expect(f.registry.reserveLaunch).toHaveBeenCalledTimes(2)
     } finally { await release(f) }
   })
@@ -165,7 +166,9 @@ describe('explicit actual-suite worker qualification adapter', () => {
         f.qualifier.qualify({ ...f.value, instanceId: randomUUID() }, { checkId: randomUUID(), signal: new AbortController().signal })])
       expect(results.every(proof => proof.qualified)).toBe(true)
       expect(f.registry.reserveLaunch).toHaveBeenCalledTimes(4)
-      expect((await readdir(f.directory)).some(name => name.startsWith('codex-qualification-'))).toBe(false)
+      for (const [call] of f.run.mock.calls) {
+        await expect(stat(call.workDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
+      }
     } finally { await release(f) }
   })
   it('rejects foreign check IDs, target changes and channel replacement before suite admission', async () => {

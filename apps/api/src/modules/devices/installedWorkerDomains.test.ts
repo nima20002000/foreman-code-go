@@ -7,10 +7,14 @@ import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
 import { ApprovedRootAllowlistSchema } from '@foreman-code/contracts/workspace-root-policies'
 import { extensionDescriptors } from './deviceApplicationChannel.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
+import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 
 describe('actual installed worker mount availability, no physical acceptance', () => {
   it('mounts the guarded native profile-check endpoint for an installed workflow configuration', async () => {
     const stateDirectory = await mkdtemp('/var/tmp/worker-profile-check-')
+    const journal = await RemoteOperationJournal.open(join(stateDirectory, 'workflow-operations.json'),
+      { initializeNewInstallation: true })
+    await journal.close()
     const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(), deviceId: randomUUID(),
       workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, endpoint: 'wss://unconnected.example/device/connect',
       mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: new Date(Date.now() + 60000).toISOString() })

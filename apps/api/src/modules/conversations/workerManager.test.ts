@@ -145,7 +145,7 @@ it('maps the admitted Main startup directory to the actual selected worker direc
 it('retains a pre-message credential admission until the prepared owner is disposed', async () => {
   const f = workerConversationFixture('operator', 'claude')
   const configuration = f.configuration
-  const binding = f.binding
+  const binding = { ...f.binding, appMcpAccess: 'scoped' as const }
   const bridge = new MainWorkerConversationBridge()
   const requests: WorkerConversationRpcRequest[] = []
   const manager = new WorkerConversationManager({ binding, configuration, bridge,

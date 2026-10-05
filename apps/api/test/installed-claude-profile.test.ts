@@ -57,7 +57,7 @@ describe('installed worker Claude metadata and saved profile admission', () => {
     await expect(inspectInstalledClaude(f.input)).rejects.toThrow('integrity')
     await writeFile(f.lock, f.lockText)
     await writeFile(f.path, JSON.stringify({ ...f.selected, claude: { ...f.selected.claude, binary: '/missing-selection' } }), { mode: 0o600 })
-    await expect(inspectInstalledClaude(f.input)).rejects.toThrow('launcher')
+    await expect(inspectInstalledClaude(f.input)).rejects.toMatchObject({ code: 'ENOENT' })
     await chmod(f.path, 0o644)
     await expect(inspectInstalledClaude(f.input)).rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
   })

@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, rename, rm, stat } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { ApprovedRootAllowlistSchema } from '@foreman-code/contracts/workspace-root-policies'
@@ -11,7 +10,7 @@ import { workerOperatorDirectory } from './workerOperatorDirectory.js'
 import { DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
 
 it.each(['codex', 'claude'])('%s uses a read-only approved folder and rejects its replacement or permission change', async harness => {
-  const root = await mkdtemp(join(tmpdir(), 'conversation-root-'))
+  const root = await mkdtemp('/var/tmp/conversation-root-')
   const base = join(root, 'base')
   const project = join(base, 'project')
   const runtime = join(root, 'runtime')
@@ -44,7 +43,7 @@ it.each(['codex', 'claude'])('%s uses a read-only approved folder and rejects it
 })
 
 it.each(['operator', 'agent'] as const)('%s checks every additional writable folder before native startup and while it is owned', async role => {
-  const root = await mkdtemp(join(tmpdir(), 'conversation-writable-root-'))
+  const root = await mkdtemp('/var/tmp/conversation-writable-root-')
   const f = workerConversationFixture(role)
   const base = join(root, 'projects')
   const project = join(base, 'project')
@@ -83,7 +82,7 @@ it.each(['operator', 'agent'] as const)('%s checks every additional writable fol
 })
 
 it('creates a private Operator folder on the approved worker root and keeps other chats separate', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'worker-operator-root-'))
+  const root = await mkdtemp('/var/tmp/worker-operator-root-')
   const f = workerConversationFixture('operator')
   if (f.binding.owner.kind !== 'operator') throw new Error('Operator fixture required')
   const base = join(root, 'projects')
