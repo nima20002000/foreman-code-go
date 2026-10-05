@@ -59,6 +59,7 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     new ProductionHostHarnessProfileQualifier(registry, factories, () => {
       throw new Error('Main-local qualification does not request a worker.')
     }, f.runtimeRoot))
+  const failures: unknown[] = []
   try {
     const submitted = (await service.run(principal, 'http', 'codex')).qualification
     await service.join()
@@ -70,10 +71,15 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
       }))
       if (!checked.value.proof.qualified) throw new Error('The saved native profile did not qualify.')
     }
+  } catch (error) {
+    failures.push(error)
   } finally {
     factories.stopAuxiliaries()
     const closed = await Promise.allSettled([checks.close(), service.shutdown(), factories.disposeAuxiliaries()])
-    const failures = closed.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
-    if (failures.length) throw new AggregateError(failures, 'Native schedule qualification cleanup failed.')
+    for (const result of closed) {
+      if (result.status === 'rejected') failures.push(result.reason)
+    }
   }
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) throw new AggregateError(failures, 'Native schedule qualification or cleanup failed.')
 }
