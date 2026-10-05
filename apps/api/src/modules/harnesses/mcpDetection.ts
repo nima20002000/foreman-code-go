@@ -12,6 +12,7 @@ import type { ChildProcessEnvironment } from './port.js'
 
 import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
+import { HarnessExecutionError } from './errors.js'
 import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 
 export const MCP_INSPECTION_TIMEOUT_MS = 30_000
@@ -186,6 +187,10 @@ export class McpDetectionService {
       })
     } catch (error) {
       if (error instanceof DomainError && error.code === 'MCP_INSPECTION_CONTEXT_MISMATCH') throw error
+      const reportedCode = error instanceof DomainError ? error.code
+        : error instanceof HarnessExecutionError ? error.result.error?.code : undefined
+      const failureCode = reportedCode && /^[A-Z][A-Z0-9_]{0,95}$/u.test(reportedCode)
+        ? reportedCode : 'NATIVE_MCP_INSPECTION_FAILED'
       return ScopedMcpDetectionSchema.parse({
         detection: McpDetectionSchema.parse({
           harness: input.harness, serverName: this.serverName, state: 'check_failed',
@@ -193,7 +198,8 @@ export class McpDetectionService {
           credentialArrangement: { kind: 'unknown' },
           detail: signal.aborted ? 'Native MCP inspection was canceled or exceeded its deadline.' : details.check_failed,
         }),
-        runnerId: input.runnerId, workingDirectory: input.workingDirectory, providerVersion: 'unknown', nativeFilters: {},
+        runnerId: input.runnerId, workingDirectory: input.workingDirectory, providerVersion: 'unknown',
+        nativeFilters: { diagnostics: [failureCode] },
       })
     } finally {
       clearTimeout(timeout)
@@ -213,7 +219,8 @@ export class McpDetectionService {
     if (!['connected', 'status_unavailable', 'authentication_required'].includes(result.detection.state)) {
       throw new DomainError('APP_MCP_PREFLIGHT_FAILED', result.detection.state === 'not_detected'
         ? `Foreman Code MCP is not installed for ${input.harness === 'codex' ? 'Codex' : 'OpenCode'}. Add it in Harness Settings › Connections, then start again.`
-        : `Foreman Code MCP credential injection refused: ${result.detection.state}.`, 409)
+        : `Foreman Code MCP credential injection refused: ${result.detection.state}.`, 409,
+      { inspectionCodes: result.nativeFilters.diagnostics ?? [] })
     }
     input.signal?.throwIfAborted()
     return result

@@ -39,8 +39,8 @@ export function codexNativeOutputSandboxProbeCommand(input: {
   directPath: string; descendantPath: string; witnessPath: string; marker: string
 }): string {
   const script = `import errno,json,os,subprocess,sys\ndef attempt(p):\n try:\n  with open(p,'x') as f: f.write(${JSON.stringify(input.marker)})\n  return {'denied':False,'errno':None}\n except OSError as e: return {'denied':e.errno in (errno.EACCES,errno.EPERM,errno.EROFS),'errno':e.errno}\ndirect=attempt(${JSON.stringify(input.directPath)})\nchild="import errno,json,sys\\ntry:\\n with open(sys.argv[1],'x') as f: f.write(sys.argv[2])\\n print(json.dumps({'denied':False,'errno':None}))\\nexcept OSError as e: print(json.dumps({'denied':e.errno in (errno.EACCES,errno.EPERM,errno.EROFS),'errno':e.errno}))"\nresult=subprocess.run([sys.executable,'-c',child,${JSON.stringify(input.descendantPath)},${JSON.stringify(input.marker)}],capture_output=True,text=True)\nproof={'marker':${JSON.stringify(input.marker)},'uid':os.getuid(),'tmpdir':os.environ.get('TMPDIR'),'direct':direct,'descendant':json.loads(result.stdout),'descendantExitCode':result.returncode}\nwith open(${JSON.stringify(input.witnessPath)},'x') as f: json.dump(proof,f)\nprint(json.dumps(proof))`
-  // Standard single-quote shell encoding; native code receives no host secret.
-  return `/usr/bin/python3 -c '${script.replaceAll("'", "'\\''")}'`
+  const encoded = Buffer.from(script, 'utf8').toString('base64')
+  return `/usr/bin/python3 -c 'import base64;exec(base64.b64decode("${encoded}").decode("utf-8"))'`
 }
 
 /** Command items include the selected shell's argv display; the script payload stays exact. */

@@ -20,7 +20,7 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
 import { buildProductionApp } from '../src/production.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, appLauncherPath, appLauncherTokenName, appMcpServerName,
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, isSupportedAppMcpServerName, appLauncherPath, appLauncherTokenName, appMcpServerName,
   installAppLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexMcpConnections } from '../src/modules/harnesses/codexMcpConnections.js'
@@ -39,8 +39,13 @@ import { LocalNativeArtifactOutputSchema } from '../src/modules/runs/remote/nati
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { nativeOpenCodeMcpToolName } from '../src/modules/harnesses/openCodePermissionPolicy.js'
 import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@foreman-code/contracts/worker-native-output'
+import { graphRpcValue } from './eng04-graph-composition-fixture.js'
+import { DomainError } from '../src/modules/errors.js'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
+const appServerName = process.env.NATIVE_ACCEPTANCE_APP_MCP_SERVER ?? APP_MCP_SERVER_NAME
+if (!isSupportedAppMcpServerName(appServerName)) throw new Error('Select a supported native application MCP connection.')
+const appTokenName = appServerName === 'graphql' ? 'GRAPHQL_MCP_TOKEN' : APP_MCP_TOKEN
 
 async function taskPort(): Promise<number> {
   const server = createServer()
@@ -203,7 +208,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         let production = buildProductionApp(config, database, checkpoints, false)
         const redact = nativePersistenceRedactor(Object.values(process.env)
           .filter((value): value is string => typeof value === 'string' && value.length >= 8))
-        const startupErrors: Array<{ code: string; message: string; cause: string | null }> = []
+        const startupErrors: Array<{ code: string; message: string; cause: string | null; inspectionCodes: string[] }> = []
         const recordFailure = (error: unknown) => {
           if (nativeFailures.length < 16) nativeFailures.push({ stage: 'engine',
             error: describeNativeFailure(error, [...secrets]) })
@@ -212,7 +217,10 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           startupErrors.push({ code: redact.text(code),
             message: redact.text(error instanceof Error ? error.message : 'Unknown engine failure').slice(0, 2048),
             cause: error instanceof Error && error.cause instanceof Error
-              ? redact.text(error.cause.message).slice(0, 2048) : null })
+              ? redact.text(error.cause.message).slice(0, 2048) : null,
+            inspectionCodes: error instanceof DomainError && Array.isArray(error.details?.inspectionCodes)
+              ? error.details.inspectionCodes.filter((value): value is string =>
+                typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/u.test(value)) : [] })
         }
         const observeEngine = (runtime: typeof production) => {
           const start = runtime.engine.start.bind(runtime.engine)
@@ -259,10 +267,10 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             const effect = artifactPolicy === 'deny_publish' ? 'allow' : artifactPolicy
             if (effect) permissionRules = [{ permission: '*', pattern: '*', effect: 'deny' },
               ...Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES).map(toolName => ({
-                permission: nativeOpenCodeMcpToolName(toolName, APP_MCP_SERVER_NAME), pattern: '*', effect,
+                permission: nativeOpenCodeMcpToolName(toolName, appServerName), pattern: '*', effect,
               }))]
             if (artifactPolicy === 'deny_publish') permissionRules.push({
-              permission: nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES.publish, APP_MCP_SERVER_NAME),
+              permission: nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES.publish, appServerName),
               pattern: '*', effect: 'deny',
             })
             harness = { ...harness, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules } }
@@ -419,8 +427,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               scope: { workspaceIds: [workspace.id] } }] })
           const readonly = await connect(reader.token)
           expect((await readonly.listTools()).tools.map(tool => tool.name)).not.toContain(CURRENT_WORKFLOW_TOOLS.save)
-          await expect(readonly.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: saveInput }))
-            .rejects.toMatchObject({ code: -32602 })
+          const saveDenied = await readonly.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: saveInput })
+          expect(saveDenied.isError).toBe(true)
+          expect(graphRpcValue(saveDenied)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
           expect((await pool.query('select 1 from workflow_versions where workflow_id=$1', [managed.workflow.id])).rowCount).toBe(0)
           const owner = await connect(writer.token)
           const capabilities = await owner.callTool({ name: CURRENT_WORKFLOW_TOOLS.capabilities, arguments: {} })
@@ -454,11 +463,13 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             }] })
           const denied = await connect(reader.token)
           expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('run_start')
-          await expect(denied.callTool({ name: 'run_start', arguments: startInput }))
-            .rejects.toMatchObject({ code: -32602 })
-          await expect(denied.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
-            arguments: { commandId: randomUUID(), filename: 'forbidden.md', mediaType: 'text/markdown' } }))
-            .rejects.toMatchObject({ code: -32602 })
+          const startDenied = await denied.callTool({ name: 'run_start', arguments: startInput })
+          expect(startDenied.isError).toBe(true)
+          expect(graphRpcValue(startDenied)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+          const outputDenied = await denied.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
+            arguments: { commandId: randomUUID(), filename: 'forbidden.md', mediaType: 'text/markdown' } })
+          expect(outputDenied.isError).toBe(true)
+          expect(graphRpcValue(outputDenied)).toMatchObject({ error: { code: 'ROLE_NOT_ALLOWED' } })
           expect((await pool.query('select 1 from local_workflow_native_outputs')).rowCount).toBe(0)
           expect((await pool.query('select 1 from runs where workflow_id=$1', [managed.workflow.id])).rowCount).toBe(0)
           const client = await connect(writer.token)
@@ -554,7 +565,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               let permitted = request.permission === 'bash'
                 && Array.isArray(request.patterns) && request.patterns.length === 1 && request.patterns[0] === 'pwd'
               if (artifacts) permitted = Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES)
-                .some(toolName => request.permission === nativeOpenCodeMcpToolName(toolName, APP_MCP_SERVER_NAME))
+                .some(toolName => request.permission === nativeOpenCodeMcpToolName(toolName, appServerName))
                 && Array.isArray(request.patterns) && request.patterns.length === 1 && request.patterns[0] === '*'
               if (interaction.nativeRequestType !== 'permission.asked' || !permitted) {
                 throw new Error('The native provider asked for a permission other than the exact read-only pwd command.')
