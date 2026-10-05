@@ -1,5 +1,6 @@
 /* global process */
 import { readFile } from 'node:fs/promises'
+import { serializeError } from '../../dist/infrastructure/logger.js'
 import { createDatabase } from '../../dist/infrastructure/database.js'
 import { createCheckpointStore } from '../../dist/infrastructure/checkpoints.js'
 import { buildProductionApp } from '../../dist/production.js'
@@ -46,7 +47,7 @@ async function close() {
     if (reconciliationFailure) throw reconciliationFailure
     process.exit(0)
   } catch (error) {
-    process.stderr.write(`${error.stack ?? error.message}\n`)
+    process.stderr.write(`${JSON.stringify(serializeError(error))}\n`)
     process.exit(1)
   }
 }
