@@ -863,7 +863,7 @@ export class AgentChatService {
         // Binding/activation failure after successful creation must never authorize a replacement.
         if (!runtime.session && (!creationRequested || definiteNonCreation(error, row))) {
           if (!await this.repository.recordNonSubmission(row.id, row.active_request_id!, 'session_creation', failure(error))) {
-            throw new Error('Non-creation ownership was lost.')
+            throw new Error('Non-creation ownership was lost.', { cause: error })
           }
           await this.release(row.id) // A cleanup failure keeps the original durable fence.
           throw new RejectedSessionCreation(error)
@@ -1063,7 +1063,7 @@ export class AgentChatService {
         const current = await this.repository.get(id)
         if (error instanceof NativeDeliveryError && error.delivery === 'not_sent') {
           if (!await this.repository.recordNonSubmission(id, turn.requestId, error.operation, failure(error))) {
-            throw new Error('Non-submission ownership was lost.')
+            throw new Error('Non-submission ownership was lost.', { cause: error })
           }
           await this.release(id)
         }
@@ -1199,7 +1199,7 @@ export class AgentChatService {
     } catch (error) {
       if (!definiteNonCreation(error, row)) throw error
       if (!await this.repository.recordNonSubmission(row.id, requestId, 'session_creation', failure(error))) {
-        throw new Error('Non-creation ownership was lost.')
+        throw new Error('Non-creation ownership was lost.', { cause: error })
       }
       await this.release(row.id)
       await this.settle(row.id, requestId, failure(error), undefined, true)

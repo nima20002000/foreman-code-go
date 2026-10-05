@@ -28,7 +28,7 @@ export function codexInputDeliveryEvidence(pending: PendingNativeInteraction, op
     && event.sequence > resolved.sequence && ['item.completed', 'item.snapshot'].includes(event.type)
     && event.payload.threadId === pending.session.nativeSessionId
     && event.payload.turnId === pending.turn.nativeTurnId)
-  let consumed = false
+  let consumed: boolean
   if (pending.nativeRequestType === 'item/tool/requestUserInput') {
     consumed = completed.some(event => {
       const item = event.payload.item

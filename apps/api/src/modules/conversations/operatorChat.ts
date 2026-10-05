@@ -980,7 +980,7 @@ export class OperatorChatService {
               } catch (error) {
                 if (!definiteCreationFailure(error)) throw error
                 if (!await this.repository.recordNonSubmission(row.id, requestId, 'session_creation', failure(error))) {
-                  throw new Error('Non-creation ownership was lost.')
+                  throw new Error('Non-creation ownership was lost.', { cause: error })
                 }
                 await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' } : failure(error),
                   undefined, !row.cancel_requested)
