@@ -13,7 +13,7 @@ import { identity } from '../sources/privateFilesystem.js'
 import * as privateFilesystem from '../sources/privateFilesystem.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { RemoteJobExecutionHost, type RemoteJobExecutionHostPorts } from '../runs/remote/jobExecutionHost.js'
-import { createInstalledJobExecutionPorts } from './executorInstalled.js'
+import { createInstalledJobExecutionPorts, authorizeJobContainerEntry } from './executorInstalled.js'
 import { JobRuntimeNativeAdmissionSchema } from '@foreman-code/contracts/job-runtime'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { buildComputerFixture } from '../../../test/helpers/buildComputerFixture.js'
@@ -22,6 +22,7 @@ import { QualificationReceiptSchema } from './qualificationJournal.js'
 import { jobDigest } from './service.js'
 import * as installed from './installedRuntimeHost.js'
 import * as git from './privateGitMounts.js'
+import { podmanIsolationCreateArgv } from './executorPodman.js'
 import type { QualifiedJobProfile } from './executor.js'
 
 const roots: string[] = [], journals: RemoteOperationJournal[] = [], hosts: RemoteJobExecutionHost[] = []
@@ -195,4 +196,35 @@ describe('installed Job original Git/scheduler propagation', () => {
     await (f.ports.supervisor as (execution: typeof other) => Promise<unknown>)(other)
     await expect(f.ports.source.verify(other.acceptedSpec, new AbortController().signal)).rejects.toThrow('original installed Job admission')
   })
+})
+
+
+describe('fresh authorization of generated Podman create commands', () => {
+  it.each(['cancelled', 'expired', 'revoked', 'cancelled-during-inspection'] as const)(
+    'denies %s before native container creation', async reason => {
+      const f = await fixture()
+      const spec = f.execution.acceptedSpec
+      const result = f.qualified.result
+      if (!result || result.outcome !== 'qualified' || result.measurement.schemaVersion !== 1) {
+        throw new Error('Build runtime fixture required')
+      }
+      const argv = podmanIsolationCreateArgv({ identity: 'original-job',
+        sourceRoot: f.source.privateRepositoryRoot, runtimeRoot: spec.target.destination.managedRuntimeRoot,
+        cwd: spec.target.destination.canonicalCwd, argv: spec.argv, profile: result.measurement.runtime,
+        spoolBytes: spec.policy.maxWorkerSpoolBytes, labels: {}, inputRoot: join(f.source.privateRepositoryRoot, '.graphql-job-inputs'),
+        gitDirectory: f.mounts.git.directory, schedulerDirectory: f.mounts.scheduler.directory })
+      const cancel = () => f.journal.jobControl({ schemaVersion: 1, protocolVersion: 1, commandId: 'stop-before-create',
+        operationId: f.execution.operationId, executionId: f.execution.id, attemptId: f.execution.attemptId,
+        subject: f.intent.subject, bindingHash: f.intent.bindingHash, owner: f.execution.owner, action: { kind: 'stop' } })
+      if (reason === 'cancelled') await cancel()
+      const authorize = vi.fn(async () => { if (reason === 'revoked') throw new Error('Current grant revoked') })
+      const inspect = vi.fn(async () => { if (reason === 'cancelled-during-inspection') await cancel() })
+      const pending = authorizeJobContainerEntry({ argv, execution: f.execution,
+        measurementExpiresAt: reason === 'expired' ? new Date(0).toISOString() : new Date(Date.now() + 60000).toISOString(),
+        readStatus: () => f.journal.jobStatus(f.execution.operationId), authorize, inspect,
+        memoryHeadroom: async () => ({ running: 0, availableBytes: 32 * 2 ** 30 }) })
+      await expect(pending).rejects.toThrow(reason === 'expired' ? 'expired' : reason === 'revoked' ? 'revoked' : 'fenced')
+      if (reason === 'cancelled' || reason === 'expired') expect(authorize).not.toHaveBeenCalled()
+      if (reason === 'cancelled-during-inspection') expect(inspect).toHaveBeenCalledOnce()
+    })
 })
