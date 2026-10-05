@@ -9,7 +9,7 @@ import { promisify } from 'node:util'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
-import { preserveOperatorConfiguration, publish, readEnvironment, readProductionIdentity, renderEnvironment,
+import { deployProductionApi, preserveOperatorConfiguration, publish, readEnvironment, readProductionIdentity, renderEnvironment,
   waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 
 const source = fileURLToPath(new URL('../', import.meta.url))
@@ -90,7 +90,7 @@ async function stageRelease() {
   await mkdir(releases, { recursive: true, mode: 0o700 })
   const release = await mkdtemp(join(releases, 'release-'))
   await mkdir(join(release, 'apps'), { recursive: true })
-  await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod', '--legacy', join(release, 'apps/api')])
+  await deployProductionApi(run, join(release, 'apps/api'))
   await cp(join(source, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
   await mkdir(join(release, 'scripts'), { recursive: true })
   for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs']) {

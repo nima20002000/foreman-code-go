@@ -6,6 +6,24 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
+export async function deployProductionApi(run, destination) {
+  const failures = []
+  try {
+    await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod', '--legacy', destination])
+  } catch (error) {
+    failures.push(error)
+  }
+  // Legacy deployment records production-only settings in the source workspace.
+  // Restore them through pnpm before another workspace command checks its dependencies.
+  try {
+    await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
+  } catch (error) {
+    failures.push(error)
+  }
+  if (failures.length === 1) throw failures[0]
+  if (failures.length) throw new AggregateError(failures, 'Production deployment and workspace restoration failed.')
+}
+
 export async function publish(path, content, mode = 0o600) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   const directory = await mkdtemp(`${path}.temporary-`)

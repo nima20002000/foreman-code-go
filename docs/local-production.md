@@ -19,6 +19,9 @@ The API serves the built web app on the same origin. There is no Vite server or 
 loader at runtime. Each release includes its Node executable, compiled API,
 production dependencies, contracts, web assets, and the existing MCP bridge.
 Services do not depend on the source checkout remaining on disk.
+Staging restores the source workspace's full frozen dependency installation after
+production deployment, including a failed deployment. Later workspace commands
+can run non-interactively without being switched to production-only dependencies.
 
 The installer replaces the existing `graphql-operator-api.service` dev command
 with the compiled production API, adds `graphql-production-db.service`, and enables
