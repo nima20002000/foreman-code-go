@@ -173,6 +173,8 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   observeBoundary?(session: NativeSessionReference, signal?: AbortSignal): Promise<void>
   historyPage?(session: NativeSessionReference, before?: string, signal?: AbortSignal): Promise<NativeHistory>
   reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory>
+  /** Release resident turn resources after the caller commits its result and history. */
+  retireTurn?(session: NativeSessionReference, correlationId: string): Promise<void>
   /** Read-only recovery of the exact response; missing evidence remains uncertain. */
   reconcileResponse?(session: NativeSessionReference, response: NativeResponseIdentity, signal?: AbortSignal): Promise<NativeHistory>
   close(session: NativeSessionReference): Promise<void>

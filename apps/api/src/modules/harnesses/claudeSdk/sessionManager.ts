@@ -92,6 +92,7 @@ interface Runtime {
   toolOwners: Map<string, Turn>
   restoredReceipts: Map<string, ClaudeMessageSubmission>
   historyScanOffsets: Map<string, number>
+  retiredTurns: boolean
   active?: Turn
   controlPending?: boolean
   pumping?: Promise<void>
@@ -130,6 +131,7 @@ export function createClaudeNativeSessionManager(options: {
   supportedInteractionKinds?: readonly string[]
   pendingInteractions?: (session: NativeSessionReference) => readonly import('@graphql/contracts').PendingNativeInteraction[]
   responseDeliveries?: (session: NativeSessionReference) => NonNullable<NativeHistory['responseDeliveries']>
+  messageSubmitted?: (correlationId: string) => Promise<boolean>
 }): ClaudeNativeSessionManager {
   // The provider enum addition is integrated by the designated shared-contract writer.
   const harness = 'claude' as AgentHarness
@@ -288,6 +290,7 @@ export function createClaudeNativeSessionManager(options: {
       toolOwners: new Map(),
       restoredReceipts: new Map(),
       historyScanOffsets: new Map(),
+      retiredTurns: false,
       initialized,
       resolveInit,
       rejectInit,
@@ -363,6 +366,7 @@ export function createClaudeNativeSessionManager(options: {
       runtime.turns = new Map(retained.turns)
       runtime.restoredReceipts = new Map(retained.restoredReceipts)
       runtime.historyScanOffsets = new Map(retained.historyScanOffsets)
+      runtime.retiredTurns = retained.retiredTurns
       runtime.events = [...retained.events]
       runtime.nextSequence = retained.nextSequence
     }
@@ -822,6 +826,7 @@ export function createClaudeNativeSessionManager(options: {
         if (prepared && (await prepared.opening) === existing) prepared = undefined
         const resumed = await open(start, session, signal)
         rolloverSources.delete(session.nativeSessionId)
+        retired.delete(session.nativeSessionId)
         return resumed
       })()
       rollovers.set(session.nativeSessionId, rollover)
@@ -847,9 +852,29 @@ export function createClaudeNativeSessionManager(options: {
       runtime.turns.set(turn.correlationId, turn)
       runtime.active = turn
       // Subscribe before offering. A returned iterable does not fabricate admission.
-      void runtime.sdk.offer({ promptUuid: turn.promptUuid, content: input.prompt }, signal).catch((error: unknown) => {
+      const offer = async () => {
+        if (options.messageSubmitted && await options.messageSubmitted(turn.correlationId)) {
+          throw new ClaudeInputNotDeliveredError('This correlation was already submitted; use read-only reconciliation.')
+        }
+        if (!options.messageSubmitted && runtime.retiredTurns) {
+          for (let offset = 0; ; offset += 256) {
+            const rows = await options.runner.history({ ...options.scope, nativeSessionId: session.nativeSessionId },
+              options.scope, signal, { offset, limit: 256 })
+            if (rows.some(row => row && typeof row === 'object' && (row as { uuid?: string }).uuid === turn.promptUuid
+              && (row as { type?: string }).type === 'user')) {
+              throw new ClaudeInputNotDeliveredError('This correlation was already submitted; use read-only reconciliation.')
+            }
+            if (rows.length < 256) break
+          }
+        }
+        await runtime.sdk.offer({ promptUuid: turn.promptUuid, content: input.prompt }, signal)
+      }
+      void offer().catch((error: unknown) => {
         turn.events.close(error)
-        runtime.failure = error
+        if (error instanceof ClaudeInputNotDeliveredError) {
+          runtime.turns.delete(turn.correlationId)
+          if (runtime.active === turn) delete runtime.active
+        } else runtime.failure = error
       })
       return subscribe(turn, signal)
     },
@@ -925,6 +950,23 @@ export function createClaudeNativeSessionManager(options: {
       const runtime = runtimeFor(session, { readOnly: true })
       return { events: [...runtime.events], pendingInteractions: [...(options.pendingInteractions?.(session) ?? [])], firstRetainedSequence: runtime.events[0]?.sequence ?? runtime.nextSequence, nextSequence: runtime.nextSequence }
     },
+    async retireTurn(session, correlationId) {
+      const runtime = runtimeFor(session, { readOnly: true })
+      const turn = runtime.turns.get(correlationId)
+      if (!turn?.terminal || !turn.nativeMessageId) return
+      if (runtime.active === turn) delete runtime.active
+      turn.observing = false
+      turn.events.close(undefined, true)
+      runtime.turns.delete(correlationId)
+      initialTurns.delete(correlationId)
+      for (const owners of [runtime.messageOwners, runtime.toolOwners]) {
+        for (const [id, owner] of owners) if (owner === turn) owners.delete(id)
+      }
+      if (runtime.restoredReceipts.size >= 256) runtime.restoredReceipts.delete(runtime.restoredReceipts.keys().next().value!)
+      runtime.restoredReceipts.set(correlationId, { kind: 'message', nativeSessionId: session.nativeSessionId,
+        nativeMessageId: turn.nativeMessageId, clientCorrelationId: correlationId })
+      runtime.retiredTurns = true
+    },
     async reconcile(session, correlationId, signal): Promise<NativeHistory> {
       const runtime = runtimeFor(session, { readOnly: true })
       const turn = runtime.turns.get(correlationId)
@@ -952,7 +994,9 @@ export function createClaudeNativeSessionManager(options: {
           runtime.historyScanOffsets.set(correlationId, offset + 256)
         }
         if (accepted) {
-          if (!runtime.restoredReceipts.has(correlationId) && runtime.restoredReceipts.size >= 256) throw new HarnessExecutionError('CLAUDE_RECOVERY_WINDOW_EXHAUSTED', 'The bounded native receipt recovery window is full.')
+          if (!runtime.restoredReceipts.has(correlationId) && runtime.restoredReceipts.size >= 256) {
+            runtime.restoredReceipts.delete(runtime.restoredReceipts.keys().next().value!)
+          }
           runtime.restoredReceipts.set(correlationId, { kind: 'message', nativeSessionId: session.nativeSessionId, nativeMessageId: expectedUuid, clientCorrelationId: correlationId })
         }
         runtime.historyScanOffsets.delete(correlationId)

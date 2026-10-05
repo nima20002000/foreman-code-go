@@ -124,6 +124,33 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
 }
 
 describe('Claude response ownership through SDK callbacks', () => {
+  it('retires settled turn resources across rollover and rejects an evicted input using persisted history', async () => {
+    const f = fixture()
+    try {
+      let session = await f.manager.attachSession(saved, start)
+      for (let index = 0; index < 300; index++) {
+        session = await f.manager.attachSession(session, start)
+        const correlationId = `settled-${index}`
+        const output = drain(f.manager.startTurn(session, f.input(correlationId)))
+        const message = await f.nextMessage()
+        await f.assistant(`answer-${index}`, [{ type: 'text', text: 'settled answer' }], message.uuid)
+        await f.result(message.uuid)
+        await output
+        await f.manager.retireTurn!(session, correlationId)
+        const history = await f.manager.reconcile(session, correlationId)
+        expect(history.terminalResult).toBeUndefined()
+        expect(history.nativeSubmission?.nativeMessageId).toBe(message.uuid)
+      }
+      expect(f.query).toHaveBeenCalledTimes(2)
+      const replay = drain(f.manager.startTurn(session, f.input('settled-0')))
+      await expect(replay).rejects.toThrow('already submitted')
+      expect(f.offers).toHaveBeenCalledTimes(300)
+      const resumedHistory = await f.manager.reconcile(session, 'settled-0')
+      expect(resumedHistory.nativeSubmission?.nativeMessageId).toBe(claudePromptUuid('settled-0'))
+      expect(resumedHistory.terminalResult).toBeUndefined()
+    } finally { await f.manager.dispose?.() }
+  }, 30_000)
+
   it('keeps tool callbacks and replies owned through a parent-linked compaction summary', async () => {
     const f = fixture()
     try {

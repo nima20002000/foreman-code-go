@@ -82,6 +82,10 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     pending_interaction: null as unknown, response_delivery: 'offered' }
   let receipts: unknown[] = []
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+    if (sql.includes("payload#>>'{nativeSubmission,clientCorrelationId}'")) {
+      const submitted = row.payload.nativeSubmission?.clientCorrelationId === values[1]
+      return { rows: submitted ? [{ submitted: true }] : [], rowCount: submitted ? 1 : 0 }
+    }
     if (sql.includes('set pending_interaction=')) {
       row.pending_interaction = values[2] ? JSON.parse(String(values[2])) : null
       return { rows: [], rowCount: 1 }

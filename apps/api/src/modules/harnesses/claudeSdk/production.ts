@@ -172,6 +172,7 @@ export function productionClaudeManager(input: {
       cancelPendingRequests: () => domain.bridge.cancelPendingRequests(),
       pendingInteractions: session => domain.bridge.pendingInteractions(session),
       responseDeliveries: session => domain.bridge.deliveryEvidence(session),
+      messageSubmitted: correlationId => domain.authority.messageSubmitted(correlationId),
       ownerForStart: () => ({ ownerId: input.binding.kind === 'workflow' ? input.binding.runId : input.binding.conversationId,
         attemptId: callbackAuthority.attemptId, generation: input.recovery.launchId ?? callbackAuthority.attemptId }),
       // Filled by the common factory's construction callback below, before any SDK query.

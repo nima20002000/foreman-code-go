@@ -128,6 +128,12 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
         && Boolean(matchingChatResponseAcknowledgment(control, row.result.providerAcknowledgment))
     })
   }
+  async messageSubmitted(correlationId: string): Promise<boolean> {
+    if (this.binding.kind === 'workflow') return false
+    return (await this.database.query(`select 1 from operator_conversation_turns
+      where conversation_id=$1 and payload#>>'{nativeSubmission,clientCorrelationId}'=$2 limit 1`,
+    [this.binding.conversationId, correlationId])).rowCount === 1
+  }
   async request(identity: ClaudeCallbackIdentity, toolName: string, _input: Record<string, unknown>, signal: AbortSignal): Promise<ClaudeInteractionAnswer> {
     await this.validate(identity)
     signal.throwIfAborted()
