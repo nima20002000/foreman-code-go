@@ -25,6 +25,7 @@ import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService as WorkerCredentialService } from '../../src/modules/interactions/wave25/credentials.js'
 import { CodexAppServerSessionManager } from '../../src/modules/harnesses/codexAppServer.js'
+import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 import { OpenCodeNativeSessionManager } from '../../src/modules/harnesses/opencodeServer.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from '../../src/modules/harnesses/mcpDetection.js'
@@ -438,6 +439,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         new PostgresRepeatReviewerBindings(livePool), workflowCapture.capture, reviewCapture.capture)
       const observeExact = approvals.observeExact.bind(approvals)
       approvals.observeExact = async (input) => {
+        const began = performance.now()
         try { return await observeExact(input) }
         catch (error) {
           const errors = (evidence.nativeObservationErrors ??= []) as unknown[]
@@ -445,13 +447,14 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
             if (!(failure instanceof Error)) return { name: typeof failure }
             return {
               name: failure.name,
+              code: failure instanceof HarnessExecutionError ? failure.result.error?.code ?? null : null,
               message: nativePersistenceRedactor([]).text(failure.message).slice(0, 512),
               cause: failure.cause instanceof Error
                 ? nativePersistenceRedactor([]).text(failure.cause.message).slice(0, 512) : undefined,
             }
           }) : []
           if (errors.length < 16) errors.push({ executionId: input.execution.id,
-            occurredAt: new Date().toISOString(),
+            occurredAt: new Date().toISOString(), elapsedMs: Math.round(performance.now() - began),
             failures,
             ...describeNativeFailure(error, nativeSecrets) })
           throw error
