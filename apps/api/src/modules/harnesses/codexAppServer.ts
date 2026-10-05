@@ -2768,7 +2768,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     runtime.events.push(event)
     const item = isObject(payload.item) ? payload.item : undefined
     runtimeTimingPoint('harness', 'native.event', { nativeSessionId: runtime.session.nativeSessionId,
-      ...(runtime.input.kind !== 'operator'
+      ...(isWorkflowStart(runtime.input)
         ? { runId: runtime.input.request.runId, executionId: runtime.input.request.executionId } : {}),
       eventType: type, sequence: event.sequence,
       ...(typeof payload.nativeMethod === 'string' ? { nativeMethod: payload.nativeMethod } : {}),
