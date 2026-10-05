@@ -104,7 +104,7 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
 
 it('refuses conflicting launcher token aliases without exposing either credential', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'launcher-conflict-'))
-  cleanup.push(() => rm(directory, { recursive: true, force: true }))
+  cleanup.push(() => removeFixtureDirectory(directory))
   const launcher = join(directory, 'launcher.mjs')
   await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
   const client = new Client({ name: 'launcher-conflict', version: '1' })

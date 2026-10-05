@@ -141,7 +141,7 @@ describe('disposable test resources', () => {
     const resource = createTestRoot()
     try {
       expect(() => testEnvironment({ FOREMAN_CODE_APP_MCP_DIRECTORY: '/canonical',
-        GRAPHQL_APP_MCP_DIRECTORY: '/legacy' }, { ...resource,
+        GRAPHQL_APP_MCP_DIRECTORY: '/legacy' }, { ...resource, name: 'graphql_test_unit',
         databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })).toThrow('conflicts')
     } finally { removeTestRoot(resource) }
   })
