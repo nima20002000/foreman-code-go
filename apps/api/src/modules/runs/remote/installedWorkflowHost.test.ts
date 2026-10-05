@@ -570,7 +570,7 @@ describe('actual anchored runtime leaf filesystem',()=>{
   })
 })
 
-async function restartedInstalledFixture(options: { acknowledged?: boolean; sessionCaptured?: boolean } = {}) {
+async function restartedInstalledFixture(options: { accepted?: boolean; acknowledged?: boolean; sessionCaptured?: boolean } = {}) {
   const f = await sourceFixture()
   const runtimeLeaf = await attestInstalledWorkflowRuntimeLeaf(f)
   const originalConnection = DeviceConnectionIdentitySchema.strip().parse({ ...f.context.binding, bootId: randomUUID() })
@@ -585,8 +585,10 @@ async function restartedInstalledFixture(options: { acknowledged?: boolean; sess
   const path = join(registryRoot, createHash('sha256').update(owner).digest('hex'), launchId)
   const shared = { format: 1, id: launchId, owner, boot: originalConnection.bootId }
   writeRecord(join(path, 'intent.json'), { ...shared, parent, controlKey: 'a'.repeat(64) })
-  writeRecord(join(path, 'birth.json'), { ...shared, guardian, containment: boundary })
-  writeRecord(join(path, 'provider.json'), { ...shared, guardian, provider, capture: 'captured' })
+  if (options.accepted !== false) {
+    writeRecord(join(path, 'birth.json'), { ...shared, guardian, containment: boundary })
+    writeRecord(join(path, 'provider.json'), { ...shared, guardian, provider, capture: 'captured' })
+  }
   const launch: NativeLaunchObservation = { owner, launchId, bootId: originalConnection.bootId,
     guardian: { pid: guardian.pid, startTicks: guardian.startTicks }, provider, boundary, lifecycle: 'active' }
   const session: NativeSessionReference = { harness: 'codex', nativeSessionId: 'original-session', providerVersion: '0.154.0' }
@@ -595,9 +597,11 @@ async function restartedInstalledFixture(options: { acknowledged?: boolean; sess
   const journalPath = join(f.root, 'workflow-operations.json')
   const journal = await RemoteOperationJournal.open(journalPath, { initializeNewInstallation: true })
   journals.push(journal)
-  await journal.accept(f.intent, originalConnection, randomUUID())
-  await journal.reserveEntry(f.intent.operationId)
-  if (options.acknowledged !== false) {
+  if (options.accepted !== false) {
+    await journal.accept(f.intent, originalConnection, randomUUID())
+    await journal.reserveEntry(f.intent.operationId)
+  }
+  if (options.accepted !== false && options.acknowledged !== false) {
     await journal.acknowledgeStart(f.intent.operationId, native)
     await journal.reserveTurn(f.intent.operationId, { correlationId: `execution:${f.intent.executionId}`, promptDigest: 'b'.repeat(64) })
     await journal.acknowledgeTurn(f.intent.operationId, 'original-turn')
@@ -638,6 +642,19 @@ async function restartedInstalledFixture(options: { acknowledged?: boolean; sess
 }
 
 describe('installed worker cold recovery', () => {
+  it('settles an interrupted write-ahead registration before journal acceptance without a replacement launch', async () => {
+    const f = await restartedInstalledFixture({ accepted: false, acknowledged: false, sessionCaptured: false })
+    await f.journal.close()
+    const host = await f.startHost()
+    const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
+    try {
+      const reply = await host.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement }, f.context)
+      const receipt = RemoteOperationReceiptSchema.parse((reply.payload as { receipt: unknown }).receipt)
+      expect(hasPositiveRemoteNonEntryClosure(receipt)).toBe(true)
+      expect(f.registry.snapshot().launches[0]?.lifecycle).toBe('closed')
+      expect(create).not.toHaveBeenCalled()
+    } finally { await host.close() }
+  })
   it('stops an unentered retained operation without qualification or a native launch', async () => {
     const f = await restartedInstalledFixture()
     const intent = { ...f.intent, executionId: 'unentered-execution', operationId: 'unentered-operation', attemptId: 'unentered-attempt' }

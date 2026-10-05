@@ -43,6 +43,11 @@ export class InstalledWorkflowRecovery {
     return readRecord(this.path(operationId)) !== undefined || readRecord(`${this.path(operationId)}.entry`) !== undefined
   }
 
+  readEntry(operationId: string) {
+    const raw = readRecord(`${this.path(operationId)}.entry`)
+    return raw === undefined ? undefined : EntryCaptureSchema.parse(raw)
+  }
+
   rememberEntry(raw: InstalledWorkflowEntryCapture) {
     const capture = EntryCaptureSchema.parse(raw)
     if (capture.owner !== `execution:${capture.intent.executionId}`) throw new Error('Workflow entry owner changed')

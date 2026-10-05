@@ -13,6 +13,7 @@ import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNa
 import { pagePhysicalReadout } from './workflowPhysicalReadout.js'
 import { commandInputHash } from '@graphql/contracts/command-identity-node'
 import { remoteNonEntryClosureDigest } from '@graphql/contracts/remote-execution-entry-closure-node'
+import { randomUUID } from 'node:crypto'
 
 export async function recoverInstalledWorkflowReply(input: {
   frame: RemoteExecutionRpcRequest
@@ -28,8 +29,23 @@ export async function recoverInstalledWorkflowReply(input: {
 }) {
   const { frame, journal, binding } = input
   if (await journal.isRetired(frame.intent.operationId)) return undefined
-  const state = await journal.status(frame.intent.operationId)
-  if (state.status !== 'known') return undefined
+  let state = await journal.status(frame.intent.operationId)
+  let orphanedEntry = false
+  if (state.status !== 'known') {
+    const entry = input.recovery.readEntry(frame.intent.operationId)
+    if (!entry) return undefined
+    if (!isDeepStrictEqual(entry.intent, frame.intent) || entry.connection.mainId !== binding.mainId
+      || entry.connection.deviceId !== binding.deviceId || entry.connection.workerInstallationId !== binding.workerInstallationId
+      || entry.connection.keyRevision !== binding.keyRevision
+      || entry.connection.authorizationRevision !== binding.authorizationRevision) {
+      throw new Error('Original unentered workflow capture changed')
+    }
+    await input.authorize('read')
+    input.assertCurrent()
+    const receipt = await journal.accept(entry.intent, entry.connection, randomUUID())
+    state = { status: 'known', receipt }
+    orphanedEntry = true
+  }
   let receipt = state.receipt
   const renewed = frame.method === 'renew-owner'
     && isDeepStrictEqual({ ...receipt.intent, owner: frame.transition.nextOwner }, frame.intent)
@@ -63,11 +79,12 @@ export async function recoverInstalledWorkflowReply(input: {
   input.assertCurrent()
   if (!receipt.native) {
     if (!receipt.entryAttempted) {
-      if (frame.method === 'control' && frame.command.action.kind === 'stop') {
+      if (orphanedEntry || frame.method === 'control' && frame.command.action.kind === 'stop') {
         const owner = `execution:${frame.intent.executionId}`
         if (input.registry.snapshot().launches.some(launch => launch.owner === owner)
           && !await input.registry.closeOwner(owner, input.signal)) throw new Error('Original preparation owner closure is unconfirmed')
-        await journal.control(frame.command)
+        if (frame.method === 'control') await journal.control(frame.command)
+        else await journal.revokeFence(frame.intent.operationId)
         await journal.terminal(frame.intent.operationId, { kind: 'not_started',
           closureEvidenceDigest: remoteNonEntryClosureDigest(receipt.intent) })
         return { payload: await journal.status(frame.intent.operationId) }
