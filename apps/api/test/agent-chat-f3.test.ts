@@ -59,6 +59,14 @@ class MemoryConversations {
     return true
   }
   async bindSession(_id: string, version: string, nativeId: string) { this.row!.provider_version = version; this.row!.native_session_id = nativeId }
+  async recordNonSubmission(_id: string, requestId: string,
+    operation: 'session_creation' | 'turn_submission', result: ExecutionResult) {
+    if (!this.row || this.row.active_request_id !== requestId || this.row.active_native_turn_id
+      || operation === 'session_creation' && this.row.native_session_id) return false
+    this.row.record.nativeNonSubmission = { requestId, operation, result }
+    this.row.turn_state = 'uncertain'
+    return true
+  }
   async markStartupDelivered() { this.row!.record.startupDelivered = true }
   async markSessionUnavailable(_id: string, message: string, reason: 'native_session_missing' | 'harness_unavailable' = 'native_session_missing') {
     this.unavailable.push({ message, reason }); this.row!.record.sessionUnavailable = message; this.row!.record.sessionUnavailableReason = reason
@@ -77,6 +85,7 @@ class MemoryConversations {
         || result.outcome === 'succeeded') return false
       delete this.row.record.sessionCreation
     }
+    delete this.row!.record.nativeNonSubmission
     this.turns.find((value) => value.requestId === requestId)!.delivery = result.outcome === 'succeeded' ? 'completed' : result.outcome
     this.row!.last_result = result; this.row!.active_request_id = null; this.row!.active_native_turn_id = null; this.row!.turn_state = 'idle'
     return true

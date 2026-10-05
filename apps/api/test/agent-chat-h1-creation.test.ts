@@ -58,6 +58,7 @@ async function fixture(harness: 'codex' | 'opencode' = 'codex') {
       if (store.row.active_request_id !== values[1] || store.row.native_session_id
         || store.row.record.sessionCreation?.requestId !== values[1]) return result(0)
       delete store.row.record.sessionCreation
+      delete store.row.record.nativeNonSubmission
       return result(1)
     }
     if (normalized.includes("jsonb_build_object('sessionCreation'")) {
