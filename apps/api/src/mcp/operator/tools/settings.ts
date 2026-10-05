@@ -64,7 +64,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'agent_defaults_get', () => settings.getAgentDefaults(context.principal)))
   if (operatorToolAvailable(context, 'workflow_defaults_get')) server.registerTool('workflow_defaults_get', {
-    description: 'Read defaults copied into newly created workflows, including approval routing. Graph edges do not grant approval authority.',
+    description: 'Read defaults copied into newly created workflows, including user, orchestrator or explicit native harness approval handling. Native handling requires compatible saved settings on each Agent. Graph edges do not grant approval authority.',
     inputSchema: z.object({}).strict(), outputSchema: ManagedWorkflowDefaultsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'workflow_defaults_get', () => settings.getWorkflowDefaults(context.principal)))
@@ -74,7 +74,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'agent_defaults_update', () => settings.updateAgentDefaults(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workflow_defaults_update')) server.registerTool('workflow_defaults_update', {
-    description: 'Revision-check and replace defaults for future workflows. Existing workflows and in-flight approvals do not change.',
+    description: 'Revision-check and replace defaults for future workflows. approvalHandler accepts user, orchestrator or native; native handling still requires explicitly configured native approval on each Agent and preserves its permission rules. Existing workflows and in-flight approvals do not change.',
     inputSchema: WorkflowDefaultsUpdateInputSchema, outputSchema: WorkflowDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_defaults_update', () => settings.updateWorkflowDefaults(context.principal, 'mcp', input)))

@@ -9,7 +9,8 @@ import { inheritedAgentEnvironment } from './secrets.js'
 import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
 import { runCommand } from './process.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
-import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeCommand } from './qualification/suites/codexNativeOutputSandbox.js'
+import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeCommand,
+  matchesCodexNativeProbeCommand } from './qualification/suites/codexNativeOutputSandbox.js'
 import { DomainError } from '../errors.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 
@@ -135,7 +136,8 @@ export async function qualifyCodexOutputProtection(input: {
       } finally { signal.removeEventListener('abort', aborted) }
     }
     const observed = commands.filter((entry) => entry.threadId === threadId && entry.turnId === turnId)
-    if (terminals.get(turnId) !== 'completed' || observed.length !== 1 || observed[0]!.item.command !== command
+    if (terminals.get(turnId) !== 'completed' || observed.length !== 1
+      || !matchesCodexNativeProbeCommand(observed[0]!.item.command, command, environment.SHELL ?? '/bin/bash')
       || observed[0]!.item.status !== 'completed' || observed[0]!.item.exitCode !== 0) {
       throw new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',
         'The original native sandbox probe did not execute the required command.', 409, {

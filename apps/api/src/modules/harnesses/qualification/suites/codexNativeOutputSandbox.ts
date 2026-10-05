@@ -5,7 +5,7 @@ import type { CodexNativeOutputSandbox } from '../../codexNativeOutput.js'
 import type { NativeQualificationSuiteInput } from '../nativeOwnership.js'
 import { collectChecks, requireCondition, type Check } from './checks.js'
 
-export const CODEX_NATIVE_OUTPUT_SANDBOX_SUITE_REVISION = 'codex-native-output-protection-1'
+export const CODEX_NATIVE_OUTPUT_SANDBOX_SUITE_REVISION = 'codex-native-output-protection-2'
 export interface CodexNativeSandboxProbeObservation {
   /** Actual qualified command item from the original diagnostic session/turn, not assistant text. */
   nativeSessionId: string; nativeTurnId: string; itemId: string
@@ -17,6 +17,7 @@ export interface CodexNativeSandboxProbePort {
   capturePolicy(signal: AbortSignal): Promise<{
     binarySha256: string; providerVersion: string; schemaIdentity: string
     nativeSessionId: string; nativeTurnId: string
+    nativeShell: string
     sandboxType: string; effectiveSandbox: CodexNativeOutputSandbox
   }>
   executeExactCommand(command: string, signal: AbortSignal): Promise<CodexNativeSandboxProbeObservation>
@@ -39,6 +40,16 @@ export function codexNativeOutputSandboxProbeCommand(input: {
   const script = `import errno,json,os,subprocess,sys\ndef attempt(p):\n try:\n  with open(p,'x') as f: f.write(${JSON.stringify(input.marker)})\n  return {'denied':False,'errno':None}\n except OSError as e: return {'denied':e.errno in (errno.EACCES,errno.EPERM,errno.EROFS),'errno':e.errno}\ndirect=attempt(${JSON.stringify(input.directPath)})\nchild="import errno,json,sys\\ntry:\\n with open(sys.argv[1],'x') as f: f.write(sys.argv[2])\\n print(json.dumps({'denied':False,'errno':None}))\\nexcept OSError as e: print(json.dumps({'denied':e.errno in (errno.EACCES,errno.EPERM,errno.EROFS),'errno':e.errno}))"\nresult=subprocess.run([sys.executable,'-c',child,${JSON.stringify(input.descendantPath)},${JSON.stringify(input.marker)}],capture_output=True,text=True)\nproof={'marker':${JSON.stringify(input.marker)},'uid':os.getuid(),'tmpdir':os.environ.get('TMPDIR'),'direct':direct,'descendant':json.loads(result.stdout),'descendantExitCode':result.returncode}\nwith open(${JSON.stringify(input.witnessPath)},'x') as f: json.dump(proof,f)\nprint(json.dumps(proof))`
   // Standard single-quote shell encoding; native code receives no host secret.
   return `/usr/bin/python3 -c '${script.replaceAll("'", "'\\''")}'`
+}
+
+/** Command items include the selected shell's argv display; the script payload stays exact. */
+export function matchesCodexNativeProbeCommand(observed: unknown, expected: string, shell: string): boolean {
+  if (observed === expected) return true
+  if (!isAbsolute(shell) || /[\s'"\\$`]/u.test(shell)) return false
+  const singleQuoted = `'${expected.replaceAll("'", "'\\''")}'`
+  const doubleQuoted = `"${expected.replace(/[\\"$`]/gu, '\\$&')}"`
+  return [singleQuoted, doubleQuoted].some(argument =>
+    observed === `${shell} -lc ${argument}` || observed === `${shell} -c ${argument}`)
 }
 const missing = async (path: string) => {
   try { await access(path); return false } catch (error) {
@@ -74,14 +85,17 @@ export async function runCodexNativeOutputSandboxChecks(input: NativeQualificati
       const captured = await input.probe.capturePolicy(signal); await assertCurrent()
       requireCondition(captured.binarySha256 === input.binarySha256 && captured.providerVersion === input.version
         && /^[a-f0-9]{64}$/.test(input.schemaIdentity) && captured.schemaIdentity === input.schemaIdentity
-        && captured.nativeSessionId && captured.nativeTurnId && captured.sandboxType === 'workspaceWrite', 'Native policy does not match exact qualified binary/schema/workspace-write.')
+        && captured.nativeSessionId && captured.nativeTurnId && isAbsolute(captured.nativeShell)
+        && captured.sandboxType === 'workspaceWrite', 'Native policy does not match exact qualified binary/schema/workspace-write.')
       requireCondition(captured.effectiveSandbox.cwd === input.workDirectory, 'Actual native cwd changed.')
       assertCodexProtectedOutputPlacement(input.protectedDirectory, captured.effectiveSandbox)
       for (const root of captured.effectiveSandbox.writableRoots) requireCondition(await realpath(root) === root, 'Actual writable root is not canonical.')
       if (!captured.effectiveSandbox.excludeTmpdirEnvVar && captured.effectiveSandbox.tmpdir) {
         requireCondition(await realpath(captured.effectiveSandbox.tmpdir) === captured.effectiveSandbox.tmpdir, 'Actual writable TMPDIR is not canonical.')
       }
-      evidence.effectiveSandbox = structuredClone(captured.effectiveSandbox); evidence.schemaIdentity = captured.schemaIdentity
+      evidence.effectiveSandbox = structuredClone(captured.effectiveSandbox)
+      evidence.schemaIdentity = captured.schemaIdentity
+      evidence.nativeShell = captured.nativeShell
       // Show host write succeeds with the same UID; chmod/private ownership alone is no sandbox proof.
       await writeFile(hostPath, marker, { flag: 'wx', mode: 0o600 }); await unlink(hostPath)
       await assertCurrent()
@@ -93,7 +107,8 @@ export async function runCodexNativeOutputSandboxChecks(input: NativeQualificati
       await assertCurrent()
       const command = codexNativeOutputSandboxProbeCommand({ directPath, descendantPath, witnessPath, marker })
       const observed = await input.probe.executeExactCommand(command, signal); await assertCurrent()
-      requireCondition(observed.command === command && observed.status === 'completed' && observed.exitCode === 0
+      requireCondition(matchesCodexNativeProbeCommand(observed.command, command, policy.nativeShell)
+        && observed.status === 'completed' && observed.exitCode === 0
         && observed.nativeSessionId === policy.nativeSessionId && observed.nativeTurnId === policy.nativeTurnId
         && observed.itemId, 'No exact original completed native command item was observed.')
       const result = JSON.parse(observed.aggregatedOutput.trim()) as Record<string, unknown>

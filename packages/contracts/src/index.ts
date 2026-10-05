@@ -286,6 +286,16 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   designatedOrchestrator: z.boolean().default(false),
 }).strict().superRefine((value, context) => {
   if (!value.workflowApprovalHandler) return;
+  if (value.workflowApprovalHandler === "native") {
+    const configuration = value.configuration;
+    const native = configuration.harness === "opencode"
+      ? configuration.autoApprove || configuration.advanced?.permissionHandling === "native_auto"
+      : configuration.harness === "codex" && (configuration.advanced?.approvalPolicy === "never"
+        || configuration.advanced?.approvalsReviewer === "auto_review");
+    if (!native) context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration"],
+      message: "native workflow handling requires explicit native approval settings on each Agent" });
+    return;
+  }
   if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review"
     && value.workflowApprovalHandler !== "orchestrator") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with this workflow approval handler" });

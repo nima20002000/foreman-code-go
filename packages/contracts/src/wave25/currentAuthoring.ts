@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { CurrentAgentWorkflowNodeSchema } from './workflowShape.js'
+import { ApprovalHandlerSchema, CurrentAgentWorkflowNodeSchema } from './workflowShape.js'
 import { CommandIdSchema, ExpectedRevisionSchema, WorkflowCreateInputSchema, ManagedAgentSchema } from '../management/index.js'
 import { GraphIdSchema } from './protocol.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
@@ -96,6 +96,7 @@ export const CURRENT_WORKFLOW_TOOLS = Object.freeze({
 })
 export const CurrentWorkflowCapabilitiesSchema = z.object({
   executionSemanticsVersion: z.literal(3), repeatOptional: z.literal(true),
+  approvalHandlers: z.array(ApprovalHandlerSchema),
   forms: z.tuple([z.literal('sequential'), z.literal('parallel_all_required'), z.literal('conditional'),
     z.literal('approval'), z.literal('bounded_repeat')]),
   savedAuthoring: z.literal(true), persistedReadback: z.literal(true),
@@ -121,6 +122,7 @@ export const CurrentWorkflowCapabilitiesSchema = z.object({
 })
 export const CURRENT_WORKFLOW_CAPABILITIES = CurrentWorkflowCapabilitiesSchema.parse({
   executionSemanticsVersion: 3, repeatOptional: true,
+  approvalHandlers: ApprovalHandlerSchema.options,
   forms: ['sequential', 'parallel_all_required', 'conditional', 'approval', 'bounded_repeat'],
   savedAuthoring: true, persistedReadback: true, runtimeAdmission: false, stopAvailable: false, meaningfulEdit: false,
   editIntents: { stage: true, read: true, discard: true, publishWhenSettled: true, stopUnsettled: false,

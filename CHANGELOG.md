@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Explicit native harness approval handling for workflows, configured through the Board and Operator MCP with compatible pinned Agent settings and saved permission rules.
 - Publish declared artifact outputs from local and connected Codex/OpenCode workflow turns through authenticated MCP and retain their original publication records for recovery.
 - Restore checkpoint-bound OpenCode approval sessions after verified restart without creating replacement native turns.
 
@@ -19,6 +20,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Validate Codex sandbox probe command payloads within the selected shell wrapper while retaining original session, terminal and filesystem checks.
 - Bind Orchestrator approvals to the accepted requester ancestry across delegated work, review returns and handoff-limit continuations.
 - Settle permanent failures and enforce one execution budget across retries, queued activations, returns and denial continuations.
 - Resolve choice branches and exhausted connections in separate causal join rounds, with replay-safe dispatch when branches arrive concurrently.
