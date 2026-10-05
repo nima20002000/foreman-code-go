@@ -199,6 +199,8 @@ export class NativeConversationControlCommands<State> {
           throw unconfirmed(requestId, this.contract.prefix)
         }
       } catch {
+        const completed = await completedByObservation()
+        if (completed) return completed.state
         // A lost storage write leaves the original response fenced against another native send.
         throw unconfirmed(requestId, this.contract.prefix)
       }
