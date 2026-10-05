@@ -109,7 +109,8 @@ export async function closeInstalledNativeOutputWriters(input: {
 }): Promise<NativeLaunchObservation> {
   const { owner, captured } = input
   const status = await input.journal.status(input.intent.operationId)
-  if (!isDeepStrictEqual(owner.intent, input.intent) || !isDeepStrictEqual(owner.binding, input.binding)
+  if (!isDeepStrictEqual({ ...owner.intent, owner: input.intent.owner }, input.intent)
+    || !isDeepStrictEqual(owner.binding, input.binding)
     || !isDeepStrictEqual(owner.session, input.session) || captured.owner !== `execution:${input.intent.executionId}`
     || status.status !== 'known' || !isDeepStrictEqual(status.receipt.intent, input.intent)
     || status.receipt.native?.sessionId !== owner.session.nativeSessionId
@@ -228,6 +229,7 @@ export interface CapturedWorkflowMainRequest {
 }
 export interface InstalledWorkflowNativeOutputContext {
   intent: DispatchIntent
+  currentIntent(): DispatchIntent
   placement: AcceptedNodePlacement
   binding: Readonly<DeviceSessionBinding>
   materialization: SourceMaterializationRecord
@@ -500,6 +502,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           installations.assertCurrent(selection)}
         const outputContext: InstalledWorkflowNativeOutputContext = {
           intent: structuredClone(actual.intent), placement: structuredClone(actual.placement),
+          currentIntent: () => structuredClone(actual.intent),
           binding: Object.freeze(structuredClone(actual.context.binding)),
           materialization: structuredClone(actual.capture.facts.executionPlacement.materialization),
           applicationAccess: () => {
@@ -691,7 +694,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           await authorize(actual.intent,actual.placement,'start');actual.capture=await actual.reader.capture()
           if(!isDeepStrictEqual(nativeRequest.configuration,actual.capture.facts.configuration))unavailable('accepted_configuration_conflict')
           const relay=await prepareWorkerApplicationAccess({request:async(namespace,payload,options)=>
-            forBinding(actual.context.binding)(namespace,payload,options)},actual.intent,actual.placement,access,signal)
+            forBinding(actual.context.binding)(namespace,payload,options)},actual.intent,actual.placement,access,signal,
+          { currentIntent: () => actual.intent })
           actual.applicationAccess=structuredClone(access)
           actual.relay=relay
           actual.leaseExpiresAt=relay.expiresAt

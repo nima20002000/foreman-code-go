@@ -191,6 +191,24 @@ describe('positive installed native closure consumption',()=>{
     expect(await closeInstalledNativeOutputWriters({ ...f, binding, owner })).toEqual(closed)
     expect(f.closeOwner).toHaveBeenCalledWith('execution:execution')
   })
+  it('closes the original output writers after Main renews only their dispatch owner', async () => {
+    const f = await closureFixture()
+    const binding = { ...f.connection, connectionEpoch: randomUUID() }
+    const owner = { intent: structuredClone(f.intent), binding, session: f.session,
+      nativeTurnId: 'original-turn', runtimeGeneration: 1 }
+    const status = await f.journal.status(f.intent.operationId)
+    if (status.status !== 'known' || !status.receipt.native) throw new Error('Expected original writers')
+    const nextOwner = { grantId: 'renewed-owner', epoch: '2' }
+    await f.journal.reconcileOwner({ commandId: 'renew', operationId: f.intent.operationId,
+      previousOwner: f.intent.owner, nextOwner, native: status.receipt.native, evidenceDigest: 'a'.repeat(64) })
+    const intent = { ...f.intent, owner: nextOwner }
+    f.closeOwner.mockResolvedValue(true)
+    const closed = { ...f.launch, lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }
+    f.closeRegistration.mockImplementation(async () => { f.snapshot.mockReturnValue({ revision: 'closed', launches: [closed] }) })
+    expect(await closeInstalledNativeOutputWriters({ ...f, intent, binding, owner })).toEqual(closed)
+    expect(owner.intent).toEqual(f.intent)
+    expect(f.closeOwner).toHaveBeenCalledWith(`execution:${f.intent.executionId}`)
+  })
   it('does not promote provider success when the original physical owner closure is unconfirmed',async()=>{
     const f=await closureFixture()
     expect(await settleInstalledWorkflowNativeOwner(f)).toBeNull()
