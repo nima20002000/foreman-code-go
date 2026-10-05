@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.22] - 2026-10-05
+
+### Fixed
+
+- Return only the configured MCP entry in shared native replay fixtures, keeping canonical and legacy naming collision checks intact and restoring native output and late child-completion coverage.
+
 ## [0.0.21] - 2026-10-05
 
 ### Fixed
