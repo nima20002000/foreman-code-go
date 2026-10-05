@@ -78,7 +78,9 @@ it('same-process ephemeral reload uses separately admitted diagnostics with no s
     expect(f.admit).toHaveBeenCalledTimes(1)
     const scope = f.admit.mock.calls[0]![0]
     expect(scope.owner).not.toBe(f.writer.owner)
-    expect(f.commands).toHaveLength(2)
+    expect(f.commands.map(command => command.args)).toEqual([
+      ['mcp', 'get', 'foreman-code', '--json'], ['mcp', 'get', 'graphql', '--json'],
+    ])
     for (const command of f.commands) {
       expect(command.recovery).toBe(scope)
       expect(command.environment).toEqual({ HOST_ONLY: 'host-config' })
