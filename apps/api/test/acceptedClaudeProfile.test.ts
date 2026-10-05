@@ -89,6 +89,9 @@ it.each(['codex', 'opencode'] as const)('admits the exact selected %s profile wi
   expect(accepted.override.driverId).toBe(driver)
   expect(accepted.currentBinding.pin).toBeUndefined()
   expect(Object.isFrozen(accepted.override.configuration)).toBe(true)
+  f.proof.connectionGeneration = 'previous-process'
+  await expect(admission.admit('actual-owner', f.selector)).rejects.toThrow('stale')
+  expect((await admission.admitObservation('saved-session-owner', f.selector)).override).toEqual(accepted.override)
   f.value.instanceRevision = 'new-profile-revision'
   await expect(admission.revalidate('actual-owner', accepted)).rejects.toThrow('stale')
 })

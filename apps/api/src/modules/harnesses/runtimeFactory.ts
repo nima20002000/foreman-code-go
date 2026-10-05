@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { captureOriginalCodexSession, type OriginalCodexSession } from './originalCodexSession.js'
-import { createAdmittedNativeManager } from './admittedManager.js'
+import { createAdmittedNativeManager, type NativeManagerAdmission } from './admittedManager.js'
 import type { ClaudeOwnedVersionObservation } from './claudeSdk/currentPin.js'
 import { createAdmittedClaudeManager } from './claudeSdk/admittedManager.js'
 import { allocateClaudeNativeHarness, type ClaudeNativeAllocation, type ClaudeNativeAllocationResult } from './claudeSdk/composition.js'
@@ -104,9 +104,10 @@ export class NativeHarnessFactories {
     }
   }
 
-  allocateAdmitted(harness: 'codex' | 'opencode', prepare: (signal: AbortSignal) => Promise<NativeHarnessAllocation>) {
-    const result = createAdmittedNativeManager<NativeHarnessSessionManager>(harness, async signal => {
-      const accepted = await prepare(signal)
+  allocateAdmitted(harness: 'codex' | 'opencode',
+    prepare: (signal: AbortSignal, admission: NativeManagerAdmission) => Promise<NativeHarnessAllocation>) {
+    const result = createAdmittedNativeManager<NativeHarnessSessionManager>(harness, async (signal, admission) => {
+      const accepted = await prepare(signal, admission)
       signal.throwIfAborted()
       return this.allocate(accepted)
     })

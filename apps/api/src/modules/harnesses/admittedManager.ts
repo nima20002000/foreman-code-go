@@ -1,22 +1,32 @@
 import type { AgentHarness } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { NativeMcpInspector } from './mcpDetection.js'
-import type { NativeHarnessSessionManager } from './port.js'
+import type { NativeHarnessSessionManager, NativeSessionStart } from './port.js'
+import type { NativeSessionReference } from '@graphql/contracts'
 import { unavailableNativeResponse } from './responseAvailability.js'
 import { NativeDeliveryError } from './errors.js'
+
+export type NativeManagerAdmission = { purpose: 'execution' } | {
+  purpose: 'observation'
+  session: NativeSessionReference
+  start: NativeSessionStart
+}
 
 /** One async domain admission behind the existing synchronous role factory.
  * The returned lifetime owns initialization and its actual adapter cleanup. */
 export function createAdmittedNativeManager<T extends NativeHarnessSessionManager>(harness: AgentHarness,
-  initialize: (signal: AbortSignal) => Promise<{ manager: T; inspector?: NativeMcpInspector }>) {
+  initialize: (signal: AbortSignal, admission: NativeManagerAdmission) => Promise<{
+    manager: T; inspector?: NativeMcpInspector
+  }>) {
   const lifetime = new AbortController()
   let allocation: { manager: T; inspector?: NativeMcpInspector } | undefined
   let opening: Promise<{ manager: T; inspector?: NativeMcpInspector }> | undefined
   let disposal: Promise<void> | undefined
   const stopped = new Map<string, Parameters<NonNullable<NativeHarnessSessionManager['stopAutomaticResponses']>>[0]>()
-  const actual = async (signal?: AbortSignal): Promise<T> => {
+  const actual = async (signal?: AbortSignal,
+    admission: NativeManagerAdmission = { purpose: 'execution' }): Promise<T> => {
     signal?.throwIfAborted(); lifetime.signal.throwIfAborted()
-    opening ??= Promise.resolve().then(() => initialize(lifetime.signal)).then(async result => {
+    opening ??= Promise.resolve().then(() => initialize(lifetime.signal, admission)).then(async result => {
       allocation = result
       if (lifetime.signal.aborted || result.manager.harness !== harness) {
         await result.manager.dispose?.()
@@ -117,9 +127,15 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     }
     manager.reconcileSteers = async (session, inputs, signal) => (await actual(signal)).reconcileSteers?.(session, inputs, signal) ?? []
   }
-  if (harness === 'opencode') manager.historyPage = async (session, before, signal) => {
-    const current = await actual(signal)
-    return current.historyPage ? current.historyPage(session, before, signal) : current.history(session, signal)
+  if (harness === 'opencode') {
+    manager.attachSessionForObservation = async (session, start, signal) => {
+      const current = await actual(signal, { purpose: 'observation', session, start })
+      return current.attachSessionForObservation!(session, start, signal)
+    }
+    manager.historyPage = async (session, before, signal) => {
+      const current = await actual(signal)
+      return current.historyPage ? current.historyPage(session, before, signal) : current.history(session, signal)
+    }
   }
   const inspector: NativeMcpInspector = { async inspect(request) {
     await actual(request.signal)

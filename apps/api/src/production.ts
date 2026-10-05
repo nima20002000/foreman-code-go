@@ -73,6 +73,7 @@ import type { GraphSqlClient } from './modules/run-graph/connection.js'
 import { currentOperatorAuthority } from './modules/access/runAuthority.js'
 import { requireAuthorization } from './modules/access/policy.js'
 import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from './modules/harnesses/instanceSettings/acceptedProfile.js'
+import { authorizeOperatorProfileObservation } from './modules/harnesses/operatorProfileObservation.js'
 import type { AcceptedProfileSelector } from './modules/harnesses/instanceSettings/acceptedProfile.js'
 import { HarnessExecutionRequestSchema, OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
 import { inspectClaudeOperatorConfiguration } from './modules/harnesses/claudeSdk/operatorConfigurationInspection.js'
@@ -534,6 +535,8 @@ export function buildProductionApp(
         if (!row?.principal_id) throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The accepted Run principal is unavailable.', 409)
         const principal = (await currentOperatorAuthority(client, row.principal_id)).principal
         requireAuthorization(principal, 'runs:start', { workspaceId: current.run.workspaceId, workflowId: current.run.workflowId })
+      } else if (binding.kind === 'operator-observation') {
+        await authorizeOperatorProfileObservation(client, binding, selector)
       } else if (binding.kind === 'operator-inspection') {
         const principal = await access.currentHarnessInspectionPrincipal(binding.principalId, client)
         requireAuthorization(principal, 'harnesses:read')
@@ -555,7 +558,9 @@ export function buildProductionApp(
         if (!current) throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Claude replay requires its current installed profile metadata port.', 500)
         return current(binding, value, client)
       }
-      if (!await harnessRegistry.profileEvidence(value, client)) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The exact accepted native profile proof is stale.', 409)
+      if (binding.kind !== 'operator-observation' && !await harnessRegistry.profileEvidence(value, client)) {
+        throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The exact accepted native profile proof is stale.', 409)
+      }
       return { registry: harnessRegistry.pinOverride(value), applicationInstallationId: value.target.applicationInstallationId,
         suiteRevision: `${value.driverId}-profile-check-v1` }
     },
