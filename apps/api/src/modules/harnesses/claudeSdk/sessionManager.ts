@@ -931,7 +931,6 @@ export function createClaudeNativeSessionManager(options: {
       const runtime = runtimeFor(session)
       const compact = runtime.commands?.includes('compact') === true
       const plan = !!runtime.sdk.setPermissionMode
-      const unsupported = { supported: false, reason: 'Context profiles require native model/account qualification.' }
       return { compact: { supported: compact, reason: compact ? null : 'Native initialization did not advertise compact.' },
         plan: { supported: plan, reason: plan ? null : 'The owned SDK query has no Plan control.' },
         autoCompact: { supported: true, reason: null }, autoCompactBudget: { supported: runtime.context?.capacityTokens != null, reason: runtime.context?.capacityTokens != null ? null : 'Native model capacity is not known yet.' },
