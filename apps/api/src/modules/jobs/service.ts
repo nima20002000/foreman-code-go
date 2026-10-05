@@ -234,10 +234,6 @@ export class JobService {
         const placementOverride = input.placementOverride ?? null
         const placement = placementOverride ?? (isAutoJobSpec(definition.spec)
           ? { kind: 'auto' as const } : { kind: 'explicit' as const, target: definition.spec.target })
-        // Overrides require the selector to resolve against the saved security requirements.
-        if (placementOverride) {
-          throw new DomainError('JOB_PLACEMENT_OVERRIDE_UNAVAILABLE', 'Start placement overrides are not enabled for build Jobs.', 409)
-        }
         const ticket = JobQueueTicketSchema.parse({ schemaVersion: 1, id: randomUUID(), workspaceId,
           revision: 1, commandId: input.commandId, commandDigest: jobDigest(input), principalId: live.id,
           definition, executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(),

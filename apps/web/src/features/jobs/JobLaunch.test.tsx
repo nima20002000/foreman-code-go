@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { it, expect, vi } from 'vitest'
+import { beforeEach, it, expect, vi } from 'vitest'
 import type { JobStart } from '@graphql/contracts/jobs'
 import type { JobQueueTicket } from '@graphql/contracts/job-admission'
 import { server } from '../../mocks/server'
@@ -10,6 +10,40 @@ import { JobLaunch } from './JobLaunch'
 import { definition, execution, queueTicket } from './fixtures'
 import { jobKeys } from './query'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
+beforeEach(() => {
+  server.use(http.get(`${root}/choices`, () => HttpResponse.json({ sources: [], policies: [], targets: [] })))
+})
+
+it('sends a Start placement override and retains it across an uncertain retry without editing the definition', async () => {
+  const bodies: Array<Parameters<typeof import('./client').jobsClient.start>[1]> = []
+  server.use(
+    http.get(`${root}/choices`, () => HttpResponse.json({ sources: [], policies: [], targets: [
+      { id: 'selected-root', label: 'Build computer', target: definition.spec.target, ready: true, reasons: [] },
+    ] })),
+    http.post(`${root}/validate`, () => HttpResponse.json({ valid: true, reasons: [], sideEffects: false })),
+    http.post(`${root}/executions`, async ({ request }) => {
+      bodies.push(await request.json() as typeof bodies[number])
+      return HttpResponse.error()
+    }),
+  )
+  const original = structuredClone(definition)
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <JobLaunch workspaceId={definition.workspaceId} definition={definition} onClose={vi.fn()} onAccepted={vi.fn()} />
+  </QueryClientProvider>)
+  await screen.findByRole('option', { name: 'Build computer' })
+  await screen.findByText('Ready to start')
+  const placement = screen.getByRole('combobox', { name: 'Start placement' })
+  await userEvent.selectOptions(placement, 'selected-root')
+  await userEvent.click(screen.getByRole('button', { name: 'Start job' }))
+  await screen.findByText('Start not confirmed')
+  expect(placement).toBeDisabled()
+  await userEvent.click(screen.getByRole('button', { name: 'Retry same start request' }))
+  await waitFor(() => expect(bodies).toHaveLength(2))
+  expect(bodies[0]).toMatchObject({ definitionId: definition.id, expectedRevision: definition.revision,
+    placementOverride: { kind: 'explicit', target: definition.spec.target } })
+  expect(bodies[1]).toEqual(bodies[0])
+  expect(definition).toEqual(original)
+})
 
 it('shows the owner-review requirement and permits closing when no queue request was admitted', async () => {
   const close = vi.fn()

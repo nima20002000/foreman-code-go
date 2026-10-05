@@ -25,7 +25,7 @@ export function JobsDirectory({ workspaceId, onSelectExecution }: { workspaceId:
     </section>
     <section aria-label="Job queue"><h2>Job queue</h2>
       <p>All active requests and recent completed requests in this workspace.</p>
-      <p>Workflow-node queuing, Start placement overrides and start estimates are unavailable.</p>
+      <p>Workflow-node queuing and start estimates are unavailable.</p>
       {queue.isError && <Alert title="Queue unavailable" tone="danger">{jobError(queue.error)}</Alert>}
       {queue.isPending && <p role="status">Loading queue…</p>}
       {queue.data?.length === 0 && <p>No queued requests.</p>}

@@ -57,7 +57,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     const settings = new BuildComputerSettings(database.pool, commands, async () => ({
       state: 'ready', reasons: [], remoteExecutionEnabled: options.startupEnabled ?? true,
     }))
-    const inventory = { candidates: vi.fn(async () => computers.map(computer => computer.candidate)) }
+    const inventory = { candidates: vi.fn(async () => ({ candidates: computers.map(computer => computer.candidate), diagnosticCodes: [] })) }
     const workerExecution = new WorkerExecutionPolicy({ enabled: options.startupEnabled ?? true, managedBy: 'startup' })
     const placement = new JobComputerSelection(settings, inventory, workerExecution)
     const accept = vi.fn(async (_sql: JobSql, _principal: ManagementPrincipal, _workspace: string, spec: ResolvedJobDefinitionSpec) => ({
@@ -258,7 +258,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     await f.enroll(2, true, 100)
     const definition = await f.jobs.saveDefinition(writer.principal, 'http', f.workspaceId,
       { commandId: randomUUID(), expectedRevision: null, name: 'Fixed build', spec: f.computers[0]!.candidate.spec })
-    f.inventory.candidates.mockImplementation(async () => [f.computers[0]!.candidate])
+    f.inventory.candidates.mockImplementation(async () => ({ candidates: [f.computers[0]!.candidate], diagnosticCodes: [] }))
     await expect(f.jobs.start(writer.principal, 'http', f.workspaceId,
       { commandId: randomUUID(), definitionId: definition.id, expectedRevision: 1 }))
       .rejects.toMatchObject({ code: 'JOB_BUILD_COMPUTER_UNAVAILABLE' })

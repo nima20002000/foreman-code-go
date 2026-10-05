@@ -240,7 +240,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     await f.settings.update(authority.principal, 'http', { commandId: randomUUID(), target,
       expectedRevision: preference.preference.revision, buildEnabled: true, buildPriority: 100 })
     const executionPolicy = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
-    const placement = new JobComputerSelection(f.settings, { candidates: async () => [candidate] }, executionPolicy)
+    const placement = new JobComputerSelection(f.settings, { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) }, executionPolicy)
     let afterMaterialization: (() => Promise<void>) | undefined
     const delivered: string[] = []
     function create() {

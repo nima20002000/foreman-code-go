@@ -117,9 +117,9 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
       expectedRevision: 0, buildEnabled: true, buildPriority: 100 })
   }
   const inventory = { candidates: vi.fn(async (_sql: JobSql, _principal: ManagementPrincipal,
-    _workspaceId: string, spec: import('@graphql/contracts/jobs').JobDefinitionSpec) => computers.map(computer => ({
+    _workspaceId: string, spec: import('@graphql/contracts/jobs').JobDefinitionSpec) => ({ candidates: computers.map(computer => ({
       ...computer.candidate, spec: { ...computer.candidate.spec, argv: spec.argv },
-    }))) }
+    })), diagnosticCodes: [] })) }
   const workerExecution = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
   const placement = new JobComputerSelection(settings, inventory, workerExecution)
   const reservations = new PostgresSourceReservations()

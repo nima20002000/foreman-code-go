@@ -62,7 +62,7 @@ it('shows scoped Auto waiting and the original deadline with an unknown start es
   expect(within(queue).getByText('Compatible computers')).toBeInTheDocument()
   expect(within(queue).getByText('Workspace queue position')).toBeInTheDocument()
   expect(within(queue).getByText('Unknown')).toBeInTheDocument()
-  expect(within(queue).getByText(/Workflow-node queuing, Start placement overrides and start estimates are unavailable/))
+  expect(within(queue).getByText(/Workflow-node queuing and start estimates are unavailable/))
     .toBeInTheDocument()
 })
 

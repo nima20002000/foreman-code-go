@@ -256,13 +256,14 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   const preparation = new CanonicalJobPreparationService(preparationSources)
   const placement = new JobComputerSelection(buildComputers, {
     candidates: async (...args) => {
-      const candidates = await preparationSources.candidates(...args)
-      return candidates.map(candidate => {
+      const discovery = await preparationSources.candidates(...args)
+      const candidates = discovery.candidates.map(candidate => {
         const target = candidate.spec.target.hostRef
         const available = target.kind === 'main' ? Boolean(input.infrastructure?.localExecution)
           : Boolean(input.endpoint().captureRequest(target.deviceId, 'execution-v1'))
         return available ? candidate : { ...candidate, ready: false, reasons: [...candidate.reasons, 'executor_unavailable'] }
       })
+      return { ...discovery, candidates }
     },
   }, workerExecution)
   const publication = new JobPublicationAuthority(dispatch, preparation)

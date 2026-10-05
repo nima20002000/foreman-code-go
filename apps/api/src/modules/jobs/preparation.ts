@@ -174,7 +174,8 @@ export class JobQueuePreparation {
       .flatMap(barrier => barrier.hosts))
     let claim
     try {
-      claim = await this.ports.placement.claim(sql, principal, JobDefinitionSchema.parse(ticket.definition), ticket, excluded)
+      claim = await this.ports.placement.claim(sql, principal, JobDefinitionSchema.parse(ticket.definition), ticket,
+        { excludedHosts: excluded, placementOverride: ticket.placementOverride, limits: ticket.resources.limits })
     } catch (error) {
       if (!(error instanceof DomainError)) throw error
       const reason = jobEligibilityReason(error.code)

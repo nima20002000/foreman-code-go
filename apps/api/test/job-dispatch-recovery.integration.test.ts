@@ -46,7 +46,7 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
     const settings = new BuildComputerSettings(pool, commands, async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
     await settings.update(writer.principal, 'http', { target: automatic.target, commandId: randomUUID(),
       expectedRevision: 0, buildEnabled: true, buildPriority: 100 })
-    const placement = new JobComputerSelection(settings, { candidates: async () => [automatic.candidate] }, workerExecution)
+    const placement = new JobComputerSelection(settings, { candidates: async () => ({ candidates: [automatic.candidate], diagnosticCodes: [] }) }, workerExecution)
 
     dispatch = new PostgresJobDispatch(pool, new RemoteJobCarrierDispatch(pool, { request }, undefined), {
       revalidate: async () => {}, authorizeControl: async () => {}, observe: async () => { throw new Error('No receipt was returned.') },

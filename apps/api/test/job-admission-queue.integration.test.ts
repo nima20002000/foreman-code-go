@@ -363,6 +363,49 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect((await f.jobs.getExecution(reader.principal, f.workspaceId, automatic.executionId)).acceptedSpec.target)
       .toEqual(f.computers[1]!.candidate.spec.target)
   })
+  it.each(['fixed-to-explicit', 'fixed-to-auto', 'auto-to-explicit'] as const)(
+    'places %s through the selector and retains the saved definition and idempotent request', async mode => {
+      const f = await fixture({ computerCount: 2 })
+      await f.settings.update(f.principal, 'http', { target: f.computers[0]!.target,
+        commandId: randomUUID(), expectedRevision: 1, buildEnabled: true, buildPriority: 1 })
+      const definition = await f.save(mode === 'auto-to-explicit' ? f.computers[0]!.auto : f.computers[0]!.candidate.spec)
+      const placementOverride = mode === 'fixed-to-auto' ? { kind: 'auto' as const }
+        : { kind: 'explicit' as const, target: f.computers[1]!.candidate.spec.target }
+      const input = { ...command(definition), placementOverride }
+      const result = await f.jobs.enqueue(f.principal, 'mcp', f.workspaceId, input)
+      const id = admissionTicketId(result)
+      await f.jobs.wakeQueue()
+      f.online(0)
+      f.online(1)
+      await f.jobs.wakeQueue()
+      const ticket = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, id)
+      const execution = await f.jobs.getExecution(reader.principal, f.workspaceId, ticket.executionId)
+      expect(ticket).toMatchObject({ state: 'accepted', definition, placement: placementOverride, placementOverride })
+      expect(execution.acceptedSpec).toMatchObject({ target: f.computers[1]!.candidate.spec.target,
+        definitionVersionId: definition.versionId, source: definition.spec.source,
+        argv: definition.spec.argv, outputs: definition.spec.outputs,
+        policy: { imageDigest: definition.spec.policy.imageDigest, network: definition.spec.policy.network } })
+      expect(await f.jobs.getDefinition(f.principal, f.workspaceId, definition.id)).toEqual(definition)
+      expect(await f.jobs.enqueue(f.principal, 'http', f.workspaceId, input))
+        .toEqual({ kind: 'accepted', ticketId: ticket.id, executionId: ticket.executionId })
+      await expect(f.jobs.enqueue(f.principal, 'mcp', f.workspaceId, { ...input,
+        placementOverride: { kind: 'explicit', target: f.computers[0]!.candidate.spec.target } }))
+        .rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
+      expect(f.accept).toHaveBeenCalledOnce()
+    })
+  it('keeps an override blocked when its computer does not satisfy the saved network policy', async () => {
+    const f = await fixture({ computerCount: 2 })
+    const definition = await f.save(f.computers[0]!.candidate.spec)
+    f.computers[1]!.candidate.spec.policy.network = 'approved-dependency-fetch'
+    f.online(0)
+    f.online(1)
+    const result = await f.jobs.enqueue(f.principal, 'mcp', f.workspaceId, { ...command(definition),
+      placementOverride: { kind: 'explicit', target: f.computers[1]!.candidate.spec.target } })
+    await f.jobs.wakeQueue()
+    expect(await f.jobs.getQueueTicket(reader.principal, f.workspaceId, admissionTicketId(result)))
+      .toMatchObject({ state: 'blocked', reservationId: null, waitingReasons: ['incompatible'] })
+    expect(f.accept).not.toHaveBeenCalled()
+  })
   it('terminates admission after principal revocation rather than reporting busy', async () => {
     const authority = await access.issue({ name: 'Revocable queue writer', audience: 'operator',
       expiresAt: new Date(Date.now() + 300000), grants: writer.principal.grants })
@@ -420,11 +463,11 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const retained = await reservations.reserve(database.pool, { ownerKind: 'capture', ownerId: randomUUID(),
       scopeId: f.computers[0]!.candidate.sourceReservation.scopeId, reservedBytes: SOURCE_AGGREGATE_LIMITS.bytes / 2 })
     await reservations.retain(database.pool, retained, 'retained')
-    f.inventory.candidates.mockImplementation(async (_sql, _principal, _workspace, spec) => [{
+    f.inventory.candidates.mockImplementation(async (_sql, _principal, _workspace, spec) => ({ candidates: [{
       ...f.computers[0]!.candidate, spec: { ...f.computers[0]!.candidate.spec, argv: spec.argv },
       sourceReservation: { ...f.computers[0]!.candidate.sourceReservation,
         reservedBytes: spec.argv[1] === 'large-build.mjs' ? SOURCE_AGGREGATE_LIMITS.bytes * 0.75 : 2097152 },
-    }])
+    }], diagnosticCodes: [] }))
     f.online()
     await f.jobs.wakeQueue()
     expect((await f.jobs.getQueueTicket(reader.principal, f.workspaceId, firstSmall.id)).state).toBe('accepted')
@@ -509,11 +552,23 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       headers: { authorization: `Bearer ${reader.token}` }, payload: { ...body, commandId: randomUUID() } })
     expect(deniedHttp.statusCode).toBe(403)
     expect(deniedHttp.json().error.code).toBe('ACCESS_DENIED')
-    const override = await client.callTool({ name: 'job_start', arguments: {
-      ...input, commandId: randomUUID(), placementOverride: { kind: 'auto' },
+    const overrideInput = { ...input, commandId: randomUUID(),
+      placementOverride: { kind: 'explicit', target: f.computers[0]!.candidate.spec.target } }
+    expect((await readOnly.callTool({ name: 'job_start', arguments: overrideInput })).isError).toBe(true)
+    const override = await client.callTool({ name: 'job_start', arguments: overrideInput })
+    expect(override.isError).not.toBe(true)
+    const overrideAdmission = z.object({ admission: JobPendingAdmissionSchema }).parse(override.structuredContent)
+    const overrideTicket = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, overrideAdmission.admission.ticket.id)
+    expect(overrideTicket).toMatchObject({ placement: overrideInput.placementOverride,
+      placementOverride: overrideInput.placementOverride, definition })
+    expect((await client.callTool({ name: 'job_start', arguments: overrideInput })).structuredContent)
+      .toMatchObject({ admission: { ticket: { id: overrideTicket.id } } })
+    const overrideRead = await readOnly.callTool({ name: 'job_queue_get', arguments: {
+      workspaceId: f.workspaceId, ticketId: overrideTicket.id,
     } })
-    expect(override.isError).toBe(true)
-    expect(JSON.stringify(override.content)).toContain('JOB_PLACEMENT_OVERRIDE_UNAVAILABLE')
+    expect(overrideRead.structuredContent).toEqual({ ticket: overrideTicket })
+    await f.jobs.cancelQueued(writer.principal, 'mcp', f.workspaceId, { commandId: randomUUID(),
+      ticketId: overrideTicket.id, expectedRevision: overrideTicket.revision })
     const cancelInput = { workspaceId: f.workspaceId, commandId: randomUUID(), ticketId: persisted.id,
       expectedRevision: persisted.revision }
     expect((await readOnly.callTool({ name: 'job_queue_cancel', arguments: cancelInput })).isError).toBe(true)

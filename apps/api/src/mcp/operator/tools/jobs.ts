@@ -30,7 +30,8 @@ const actions:Record<JobToolName,ManagementAction> = {
 export const JOB_QUEUE_CAPABILITY_DETAIL = 'Standalone build Jobs require owner-reviewed Main queue configuration and support saved Auto or fixed placement. '
   + 'Requests wait for capacity before source preparation. '
   + 'Auto selects an authorized eligible computer with available capacity by build priority; fixed placement waits for its saved computer. '
-  + 'Workflow-node queuing, Start placement overrides and start estimates are not implemented. '
+  + 'Start placement overrides select Auto or an explicit computer/root against the saved security and resource requirements, without editing the definition. '
+  + 'Workflow-node queuing and start estimates are not implemented. '
   + 'Queue reads require jobs:read and have no side effects; enqueue requires jobs:start and cancellation requires jobs:cancel. '
   + 'Live grants, saved revisions, command retries and original execution identities remain enforced.'
 export interface JobMcpContext {principal:ManagementPrincipal;services:{jobs?:JobService;commands:PostgresCommandCoordinator}}

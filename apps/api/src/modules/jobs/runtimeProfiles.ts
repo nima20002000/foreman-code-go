@@ -14,6 +14,7 @@ import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
 import { jobDigest } from './service.js'
+import { readJobRuntimeProfileVersion } from './runtimeProfileVersion.js'
 import type { JobRuntimeInventory } from './sourcePreparation.js'
 import { PostgresJobRuntimeHumanAuthority } from './runtimeHumanAuthority.js'
 import type { JobRuntimeHumanAuthority, JobRuntimeQualificationProducer, JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
@@ -217,14 +218,8 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
   async revalidate(sql:JobSql,principal:ManagementPrincipal,root:SourceRootRecord,spec:ResolvedJobDefinitionSpec) {
     requireAuthorization(principal,'source_roots:read',{workspaceId:root.binding.workspaceId})
     requireAuthorization(await readLiveManagementPrincipal(sql,principal.id),'source_roots:read',{workspaceId:root.binding.workspaceId})
-    const currentProfile=await this.record(sql,root.binding.workspaceId,spec.policy.isolationPolicyId)
-    if(currentProfile.status==='revoked')throw new DomainError('JOB_RUNTIME_UNQUALIFIED','The runtime profile authority was revoked.',403)
-    const version=(await sql.query<{record:unknown}>('select record from job_runtime_profile_versions where profile_id=$1 and revision=$2 for share',[spec.policy.isolationPolicyId,spec.policy.isolationPolicyRevision])).rows[0]
-    if(!version)throw new DomainError('JOB_RUNTIME_UNQUALIFIED','The exact immutable runtime policy version is missing.',409)
-    const saved=JobRuntimeProfileSchema.parse(version.record)
-    const evidence=(await sql.query<{measurement:unknown}>('select measurement from job_runtime_qualification_approvals where profile_id=$1 and profile_revision=$2 and workspace_id=$3 and record->>\'status\'=\'complete\' order by id',[saved.id,saved.revision,root.binding.workspaceId])).rows
-      .map(row=>JobRuntimeMeasurementSchema.parse(row.measurement)).find(value=>Date.parse(value.expiresAt)>Date.now()&&value.specDigest===saved.specDigest)
-    const profile:JobRuntimeProfile={...saved,status:'qualified',measurement:evidence??null}
+    const profile = await readJobRuntimeProfileVersion(sql, root.binding.workspaceId,
+      spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision)
     const sameNamespace=canonical(profile.root.selection.hostRef)===canonical(root.selection.hostRef)&&canonical(profile.root.registration)===canonical(root.registration)&&profile.root.selection.rootPolicyId===root.selection.rootPolicyId&&profile.root.selection.rootPolicyRevision===root.selection.rootPolicyRevision&&canonical(profile.root.binding.filesystem)===canonical(root.binding.filesystem)&&profile.root.binding.canonicalPath===root.binding.canonicalPath
     if(profile.status!=='qualified'||!profile.measurement||profile.revision!==spec.policy.isolationPolicyRevision||canonical(profile.policy)!==canonical(spec.policy)||!sameNamespace)throw new DomainError('JOB_RUNTIME_UNQUALIFIED','The exact policy/root/host has no current actual qualification.',409)
     const current=await this.producer.revalidate(sql,profile)

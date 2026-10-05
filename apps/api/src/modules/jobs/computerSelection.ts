@@ -1,5 +1,5 @@
 import {
-  isAutoJobSpec, ResolvedJobDefinitionSpecSchema, JobComputerSelectionSchema,
+  isAutoJobSpec, AutoJobDefinitionSpecSchema, ResolvedJobDefinitionSpecSchema, JobComputerSelectionSchema,
   jobPolicyRequirements,
   type JobDefinition, type JobDefinitionSpec, type ResolvedJobDefinitionSpec,
   type PreparedJobSpec,
@@ -13,7 +13,7 @@ import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
 import { SOURCE_AGGREGATE_LIMITS } from '../sources/reservations.js'
-import { JobComputerEligibilityReasonSchema, type JobComputerEligibility } from '@graphql/contracts/job-admission'
+import { JobComputerEligibilityReasonSchema, type JobComputerEligibility, type JobPlacementIntent } from '@graphql/contracts/job-admission'
 
 export interface JobPreparationIdentity { executionId: string; attemptId: string; operationId: string }
 export interface JobComputerCandidate {
@@ -23,9 +23,13 @@ export interface JobComputerCandidate {
   reasons: string[]
   sourceReservation: { scopeId: string; reservedBytes: number }
 }
+export interface JobComputerDiscovery {
+  candidates: JobComputerCandidate[]
+  diagnosticCodes: string[]
+}
 export interface JobComputerInventory {
   candidates(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
-    spec: JobDefinitionSpec): Promise<JobComputerCandidate[]>
+    spec: JobDefinitionSpec, placement?: JobPlacementIntent): Promise<JobComputerDiscovery>
 }
 type EnrolledCandidate = JobComputerCandidate & { preference: BuildComputerPreference }
 export interface JobComputerClaim {
@@ -133,18 +137,30 @@ export class JobComputerSelection {
   }
 
   async claim(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
-    identity: JobPreparationIdentity, excludedHosts: ReadonlySet<string> = new Set()): Promise<JobComputerClaim> {
+    identity: JobPreparationIdentity, options: {
+      excludedHosts?: ReadonlySet<string>
+      placementOverride?: JobPlacementIntent | null
+      limits?: JobRuntimeProfile['limits']
+    } = {}): Promise<JobComputerClaim> {
     const prior = (await sql.query('select 1 from job_computer_selections where execution_id=$1', [identity.executionId])).rowCount
     if (prior) {
       const spec = await readJobComputerSelection(sql, definition, identity)
       return { spec, compatibleTargetCount: 1, reasons: [], diagnosticCodes: [], waitingHosts: [],
         selectedHost: buildComputerKey(buildComputerTarget(spec.target)), exceedsMaximum: false }
     }
-    const candidates = await this.inventory.candidates(sql, principal, definition.workspaceId, definition.spec)
+    let request = definition.spec
+    if (options.placementOverride) {
+      request = AutoJobDefinitionSpecSchema.parse({ ...request, target: { kind: 'auto' },
+        policy: isAutoJobSpec(request) ? request.policy : jobPolicyRequirements(request.policy), limits: options.limits })
+    }
+    const discovery = await this.inventory.candidates(sql, principal, definition.workspaceId, request,
+      options.placementOverride ?? undefined)
     const enrolled: EnrolledCandidate[] = []
-    const reasons: string[] = []
-    for (const candidate of candidates) {
-      if (!compatibleJobComputer(candidate, definition.spec)) {
+    const reasons: string[] = [...discovery.diagnosticCodes]
+    for (const candidate of discovery.candidates) {
+      if (!compatibleJobComputer(candidate, request)
+        || (options.placementOverride?.kind === 'explicit'
+          && canonical(candidate.spec.target) !== canonical(options.placementOverride.target))) {
         reasons.push('incompatible')
         continue
       }
@@ -170,7 +186,7 @@ export class JobComputerSelection {
       const preference = await this.settings.requireEnabled(sql, buildComputerTarget(candidate.spec.target))
       const hostKey = buildComputerKey(preference.target)
       waitingHosts.push(hostKey)
-      if (excludedHosts.has(hostKey)) {
+      if (options.excludedHosts?.has(hostKey)) {
         reasons.push('busy')
         continue
       }
@@ -181,7 +197,9 @@ export class JobComputerSelection {
         reasons.push('busy')
         continue
       }
-      const selection = { mode: isAutoJobSpec(definition.spec) ? 'auto' : 'fixed',
+      let mode: 'auto' | 'fixed' = isAutoJobSpec(request) ? 'auto' : 'fixed'
+      if (options.placementOverride?.kind === 'explicit') mode = 'fixed'
+      const selection = { mode,
         buildPriority: preference.buildPriority, settingsRevision: preference.revision }
       await sql.query(`insert into job_computer_selections
         (execution_id,workspace_id,definition_version_id,attempt_id,operation_id,host_key,spec,limits,selection,source_scope,source_bytes)
@@ -197,7 +215,7 @@ export class JobComputerSelection {
       !candidate.reasons.some(code => jobEligibilityReason(code) === 'authorization_revoked'))
     const normalized = diagnosticCodes.map(jobEligibilityReason)
       .filter(reason => reason !== 'request_exceeds_maximum' || exceedsMaximum)
-      .filter(reason => reason !== 'authorization_revoked' || !isAutoJobSpec(definition.spec) || !authorizedCandidate)
+      .filter(reason => reason !== 'authorization_revoked' || !isAutoJobSpec(request) || !authorizedCandidate)
     return { spec: null, compatibleTargetCount, diagnosticCodes, waitingHosts: [...new Set(waitingHosts)],
       selectedHost: null, exceedsMaximum, reasons: [...new Set(normalized)] }
   }

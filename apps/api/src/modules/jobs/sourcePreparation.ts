@@ -8,7 +8,9 @@ import { ApprovedSourceSchema, SourceRootRecordSchema, SourceMaterializationReco
 import { JobTargetSchema, PreparedJobSpecSchema, isAutoJobSpec, jobPolicyRequirements,
   type JobDefinitionSpec, type ResolvedJobDefinitionSpec, type JobAuthoringChoices, type JobExecution } from '@graphql/contracts/jobs'
 import { JobRuntimeProfileSchema } from '@graphql/contracts/job-runtime'
-import type { JobComputerCandidate } from './computerSelection.js'
+import type { JobPlacementIntent } from '@graphql/contracts/job-admission'
+import type { JobComputerCandidate, JobComputerDiscovery } from './computerSelection.js'
+import { readJobRuntimeProfileVersion } from './runtimeProfileVersion.js'
 import type { PostgresSourceService } from '../sources/service.js'
 import { sourceBindingHash, sourceMaterializationDigest } from '../sources/bindingHash.js'
 import { sourceSha256 } from '../sources/manifest.js'
@@ -69,15 +71,18 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
     return { valid: true, reasons: [], sideEffects: false as const, source }
   }
   async candidates(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
-    spec: JobDefinitionSpec): Promise<JobComputerCandidate[]> {
+    spec: JobDefinitionSpec, placement?: JobPlacementIntent): Promise<JobComputerDiscovery> {
     const { source } = await this.validateAuto(sql, principal, workspaceId, spec)
     const roots = (await sql.query<{ record: unknown }>(`select b.record from source_root_catalog c
       join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
       where c.workspace_id=$1 order by c.root_id limit 100`, [workspaceId])).rows.map(row => SourceRootRecordSchema.parse(row.record))
-    const profiles = (await sql.query<{ record: unknown }>(
+    const profiles = isAutoJobSpec(spec) ? (await sql.query<{ record: unknown }>(
       'select record from job_runtime_profiles where workspace_id=$1 order by id limit 100', [workspaceId],
     )).rows.map(row => JobRuntimeProfileSchema.parse(row.record))
+      : [await readJobRuntimeProfileVersion(sql, workspaceId,
+        spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision)]
     const candidates: JobComputerCandidate[] = []
+    const diagnosticCodes: string[] = []
     if (!isAutoJobSpec(spec)) {
       const fixedTarget = spec.target
       const root = roots.find(root => root.selection.rootPolicyId === fixedTarget.destination.rootPolicyId)
@@ -90,13 +95,27 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
       }
     }
     for (const root of roots) {
+      if (placement?.kind === 'explicit'
+        && (root.selection.rootPolicyId !== placement.target.destination.rootPolicyId
+          || canonical(root.selection.hostRef) !== canonical(placement.target.hostRef))) continue
       if (root.binding.accessMode !== 'exclusive-write' || root.source.snapshotId !== spec.source.snapshotId
         || root.source.manifestDigest !== spec.source.manifestDigest || root.source.approvedSourceId !== spec.source.approvedSourceId) continue
+      const matchingProfiles = profiles.filter(profile =>
+        canonical(profile.root.selection.hostRef) === canonical(root.selection.hostRef)
+        && profile.root.selection.rootPolicyId === root.selection.rootPolicyId
+        && (isAutoJobSpec(spec)
+          ? canonical(jobPolicyRequirements(profile.policy)) === canonical(spec.policy)
+            && canonical(profile.limits) === canonical(spec.limits)
+          : canonical(profile.policy) === canonical(spec.policy)))
+      if (!matchingProfiles.length) continue
       let target: ResolvedJobDefinitionSpec['target']
       try { target = await this.target(sql, principal, root) } catch (error) {
         const fixedRoot = !isAutoJobSpec(spec) && root.selection.rootPolicyId === spec.target.destination.rootPolicyId
         if (fixedRoot) throw error
-        if (error instanceof DeviceAccessError || error instanceof DomainError && error.status === 409) continue
+        if (error instanceof DeviceAccessError || error instanceof DomainError && [403, 409].includes(error.status)) {
+          diagnosticCodes.push(error.code)
+          continue
+        }
         throw error
       }
       if (!isAutoJobSpec(spec) && canonical(target) !== canonical(spec.target)) {
@@ -105,13 +124,7 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
         }
         continue
       }
-      for (const profile of profiles) {
-        if (canonical(profile.root.selection.hostRef) !== canonical(root.selection.hostRef)
-          || profile.root.selection.rootPolicyId !== root.selection.rootPolicyId) continue
-        if (isAutoJobSpec(spec)) {
-          if (canonical(jobPolicyRequirements(profile.policy)) !== canonical(spec.policy)
-            || canonical(profile.limits) !== canonical(spec.limits)) continue
-        } else if (canonical(profile.policy) !== canonical(spec.policy)) continue
+      for (const profile of matchingProfiles) {
         const resolved: ResolvedJobDefinitionSpec = {
           source: spec.source, argv: spec.argv, inputs: spec.inputs, outputs: spec.outputs,
           ...(spec.relativeCwd ? { relativeCwd: spec.relativeCwd } : {}), target, policy: profile.policy,
@@ -142,7 +155,7 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
         candidates.push(candidate)
       }
     }
-    return candidates
+    return { candidates, diagnosticCodes: [...new Set(diagnosticCodes)] }
   }
   private async target(sql:JobSql,principal:ManagementPrincipal,root:SourceRootRecord) {
     const policy=await this.roots.resolve(sql,principal,{workspaceId:root.binding.workspaceId,...root.selection})
@@ -205,9 +218,13 @@ export class CanonicalJobPreparationService extends JobPreparationService {
       const { valid, reasons, sideEffects } = await this.canonicalSources.validateAuto(sql, principal, workspaceId, spec)
       return { valid, reasons, sideEffects }
     }
-    const result=await super.validate(sql,principal,workspaceId,spec)
-    if(result.valid)await this.canonicalSources.validateSelection(sql,principal,workspaceId,spec)
-    return result
+    try {
+      await this.canonicalSources.validateSelection(sql,principal,workspaceId,spec)
+      return { valid: true, reasons: [], sideEffects: false as const }
+    } catch (error) {
+      if (!(error instanceof DomainError) || error.status !== 409) throw error
+      return { valid: false, reasons: [error.code], sideEffects: false as const }
+    }
   }
 }
 
