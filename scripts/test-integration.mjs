@@ -394,7 +394,11 @@ async function main() {
         mkdirSync(dirname(saved), { recursive: true })
         copyFileSync(log, saved)
         console.error(`[integration] ${label}FAIL ${file} (slot ${slot.index}, exit ${code}); ${elapsedMs} ms; log: ${saved}`)
-        for (const name of failedCasesFromLog(readFileSync(log, 'utf8'))) console.error(`[integration]   × ${name}`)
+        const output = readFileSync(log, 'utf8')
+        for (const name of failedCasesFromLog(output)) console.error(`[integration]   × ${name}`)
+        // Keep actionable errors in the queue log when its temporary checkout is removed.
+        const detail = output.slice(-32_768).split(/\r?\n/).slice(-160).join('\n')
+        console.error(`[integration] failure output for ${file}:\n${detail}`)
         if (error) console.error(`[integration] ${error.message}`)
         if (result.resetError) console.error(`[integration] ${result.resetError.message}`)
       }
