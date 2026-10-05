@@ -57,6 +57,14 @@ test('acceptance retains the general test database fallback when no native datab
   assert.equal(configuration.opencodeBinary, undefined)
 })
 
+test('acceptance keeps executable lookup deferred and respects explicit provider paths', () => {
+  assert.equal(nativeAcceptanceConfiguration({ PATH: '' }).opencodeBinary, undefined)
+  assert.equal(nativeAcceptanceConfiguration({ OPENCODE_BINARY: '/installed/opencode' }).opencodeBinary,
+    '/installed/opencode')
+  assert.equal(nativeAcceptanceConfiguration({ OPENCODE_BINARY: '/installed/opencode',
+    ENG03_A_OPENCODE_BINARY: '/qualified/opencode' }).opencodeBinary, '/qualified/opencode')
+})
+
 test('the native gate includes local-human isolation and production recovery by default', () => {
   assert.deepEqual(nativeAcceptanceFiles([]), [
     'test/eng03-c-native.acceptance.test.ts',

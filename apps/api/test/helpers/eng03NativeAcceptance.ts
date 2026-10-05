@@ -65,7 +65,7 @@ const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
 type Scenario = 'E03-P01' | 'E03-P02' | 'E03-P03' | 'E03-L01' | 'E03-L02' | 'E03-L03' | 'E03-L04' | 'E03-A01'
 const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? fileURLToPath(new URL('../../node_modules/.bin/codex', import.meta.url))
-const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? '/home/nima/.local/bin/opencode'
+const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? process.env.OPENCODE_BINARY ?? 'opencode'
 
 export interface Eng03NativeRuntime {
   engine: LangGraphWorkflowEngine

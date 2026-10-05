@@ -23,7 +23,7 @@ export function nativeAcceptanceConfiguration(environment) {
   return {
     databaseUrl: environment.ENG03_A_TEST_DATABASE_URL ?? environment.TEST_DATABASE_URL,
     evidenceRoot: environment.ENG03_A_EVIDENCE_DIR ?? join(root, '.logs', 'native-acceptance'),
-    opencodeBinary: environment.ENG03_A_OPENCODE_BINARY,
+    opencodeBinary: environment.ENG03_A_OPENCODE_BINARY ?? environment.OPENCODE_BINARY,
   }
 }
 
