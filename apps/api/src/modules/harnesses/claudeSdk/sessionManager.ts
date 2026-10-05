@@ -553,6 +553,7 @@ export function createClaudeNativeSessionManager(options: {
         }
       }
       if (!resume && !previous && runtime.sdk.initializationResult) await inspectSettings(runtime)
+      if (runtime.failure) throw runtime.failure
       await applyPreferences(runtime, start.sessionPreferences ?? sessionPreferences ?? SessionPreferencesSchema.parse({}), signal)
       if (initial) {
         runtime.active = initial.turn
@@ -577,13 +578,14 @@ export function createClaudeNativeSessionManager(options: {
       }
     } catch (error) {
       startup.release()
-      runtime.rejectInit(error)
+      const failure = runtime.failure ?? error
+      runtime.rejectInit(failure)
       await runtime.sdk?.close()
       await runtime.pumping
       if (runtime.session && resident.get(runtime.session.nativeSessionId) === runtime) resident.delete(runtime.session.nativeSessionId)
       all.delete(runtime)
-      initial?.turn.events.close(error)
-      throw error
+      initial?.turn.events.close(failure)
+      throw failure
     }
   }
   async function pump(runtime: Runtime): Promise<void> {
