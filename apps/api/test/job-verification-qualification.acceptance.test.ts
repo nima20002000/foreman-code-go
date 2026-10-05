@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { describe, expect, it } from 'vitest'
@@ -11,13 +11,19 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { BrowserAuthentication } from '../src/modules/browser-auth/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { createProductionJobs } from '../src/modules/jobs/production.js'
 import { createJobRuntimeProfileService } from '../src/modules/jobs/runtimeProfileFactory.js'
 import { createInstalledJobRuntimeHost, readProtectedRuntimeConfiguration } from '../src/modules/jobs/installedRuntimeHost.js'
 import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES } from '../src/modules/jobs/installedVerificationRuntime.js'
-import { reserveInstalledJobQualification } from '../src/modules/jobs/installedRuntimeQualification.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
-import { createProductionSources } from '../src/modules/sources/production.js'
+import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
+import { JobBuildQueueConfigurationSchema, JobAdmissionResultSchema } from '@foreman-code/contracts/job-admission'
+import { JobAuthoringChoicesRecordSchema, JobExecutionRecordSchema, ResolvedVerificationJobSpecSchema } from '@foreman-code/contracts/job-verification'
+import { jobRuntimeProfilePolicy } from '@foreman-code/contracts/job-verification-runtime'
+import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
+import { openPrivateRoot, identity } from '../src/modules/sources/privateFilesystem.js'
+import { sourceSha256 } from '../src/modules/sources/manifest.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { registerJobRuntimeProfileRoutes } from '../src/routes/jobRuntimeProfiles.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
@@ -27,26 +33,30 @@ describe('installed ordinary verification qualification through authenticated MC
   it('requests, human approves, runs every ordinary suite, and restores persisted readiness after host restart', async () => {
     const configurationPath = process.env.FOREMAN_CODE_VERIFICATION_QUALIFICATION_CONFIGURATION
     const profilePath = process.env.FOREMAN_CODE_VERIFICATION_QUALIFICATION_PROFILE
-    if (!configurationPath || !profilePath) {
-      throw new Error('Provide protected FOREMAN_CODE_VERIFICATION_QUALIFICATION_CONFIGURATION and PROFILE inputs.')
+    const queuePath = process.env.FOREMAN_CODE_VERIFICATION_QUALIFICATION_QUEUE
+    if (!configurationPath || !profilePath || !queuePath) {
+      throw new Error('Provide protected FOREMAN_CODE_VERIFICATION_QUALIFICATION_CONFIGURATION, PROFILE and QUEUE inputs.')
     }
     const ownerUid = process.getuid!()
     const installed = await readProtectedRuntimeConfiguration({ path: configurationPath, ownerUid },
       InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
     const spec = await readProtectedRuntimeConfiguration({ path: profilePath, ownerUid }, JobVerificationProfileInputSchema)
+    const queue = await readProtectedRuntimeConfiguration({ path: queuePath, ownerUid }, JobBuildQueueConfigurationSchema)
     expect(spec.suites).toEqual(['install', 'typecheck', 'lint', 'unit', 'build'])
     expect(installed.descriptor.target.hostRef.kind).toBe('main')
     const db = await currentDatabase()
     const clients: Client[] = []
     let app: ReturnType<typeof buildApp> | undefined
     let journal: RemoteOperationJournal | undefined
+    let runtime: Awaited<ReturnType<typeof createProductionJobs>> | undefined
     try {
       const workspaceId = installed.root.binding.workspaceId
       const mainId = installed.descriptor.target.mainInstallationId
       const access = new PostgresAccessService(db.pool)
       const owner = await access.issue({ name: 'Physical verification owner', audience: 'operator',
-        grants: [{ actions: ['job_definitions:read', 'job_definitions:write', 'sources:read', 'source_roots:read'],
-          scope: { workspaceIds: [workspaceId] } }], expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) })
+        grants: [{ actions: ['job_definitions:read', 'job_definitions:write', 'sources:read', 'source_roots:read', 'jobs:start', 'jobs:read', 'job_artifacts:read'],
+          scope: { workspaceIds: [workspaceId] } },
+          { actions: ['settings:read', 'settings:update', 'workspace_locations:read'], scope: {} }], expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) })
       const reader = await access.issue({ name: 'Physical verification reader', audience: 'operator',
         grants: [{ actions: ['job_definitions:read'], scope: { workspaceIds: [workspaceId] } }],
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) })
@@ -54,6 +64,7 @@ describe('installed ordinary verification qualification through authenticated MC
       const configuration = { ...installed, root }
       const location = { path: join(db.directory, 'job-runtime.json'), ownerUid }
       await writeFile(location.path, JSON.stringify(configuration), { mode: 0o600 })
+      await writeFile(join(db.directory, 'job-queue.json'), JSON.stringify(queue), { mode: 0o600 })
       await db.pool.query('update application_installation set id=$1 where singleton=true', [mainId])
       await db.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
         [workspaceId, JSON.stringify({ id: workspaceId, name: 'Physical verification' })])
@@ -72,41 +83,47 @@ describe('installed ordinary verification qualification through authenticated MC
         [root.binding.rootId, workspaceId, manifest.manifestDigest, root.binding.bindingRevision])
       await db.pool.query('insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record) values($1,$2,$3,$4,$5::jsonb)',
         [root.binding.rootId, root.binding.bindingRevision, workspaceId, manifest.snapshotId, JSON.stringify(root)])
+      const commands = new PostgresCommandCoordinator(db.pool)
+      const registry = new NativeProcessRegistry(join(db.directory, 'native-processes'))
+      runtime = await createProductionJobs({ pool: db.pool, commands,
+        locations: new WorkspaceLocationService(db.pool, commands), mainId,
+        runtimeRoot: db.directory, storageRoot: join(db.directory, 'files'), nativeRegistry: registry,
+        endpoint: () => { throw new Error('Main-local qualification and Jobs cannot contact a device.') } })
+      const runtimeDirectory = await openPrivateRoot(configuration.descriptor.runtimeRoot)
+      let runtimeFilesystem
+      try { runtimeFilesystem = await identity(runtimeDirectory) } finally { await runtimeDirectory.close() }
+      const roots = ApprovedRootAllowlistSchema.parse({ schemaVersion: 1, hostRef: root.selection.hostRef,
+        applicationInstallationId: mainId, configurationRevision: '1',
+        bases: [{ baseId: root.binding.rootId, canonicalPath: root.binding.canonicalPath,
+          filesystem: root.binding.filesystem, accessModes: ['read-write'] }],
+        managedRuntimeRoot: configuration.descriptor.runtimeRoot, runtimeFilesystem })
+      await writeFile(join(db.directory, 'approved-roots.json'), JSON.stringify(roots), { mode: 0o600 })
+      await runtime.policies.publishApprovedHostConfiguration(db.pool, roots, { mainId,
+        hostRef: roots.hostRef, applicationInstallationId: mainId, configurationRevision: '1',
+        configurationDigest: sourceSha256(Buffer.from(JSON.stringify(roots))) })
+      const policy = WorkspaceRootPolicySchema.parse({ schemaVersion: 1, rootPolicyId: root.selection.rootPolicyId,
+        rootPolicyRevision: root.selection.rootPolicyRevision, workspaceId, hostRef: root.selection.hostRef,
+        applicationInstallationId: mainId, registration: null, locationRevision: root.selection.locationRevision,
+        ownerPrincipalId: owner.principal.id, allowedBaseId: root.binding.rootId, configurationRevision: '1',
+        relativePath: '', accessMode: 'read-write', canonicalProjectRoot: root.binding.canonicalPath,
+        filesystem: root.binding.filesystem, directoryIdentityHash: sourceSha256(Buffer.from(JSON.stringify(root.binding.filesystem))),
+        managedRuntimeRoot: roots.managedRuntimeRoot, runtimeFilesystem, attestationId: root.attestationId,
+        attestationDigest: root.attestationDigest })
       await db.pool.query(`insert into workspace_root_policies(root_policy_id,root_policy_revision,
         workspace_id,host_scope,location_revision,record) values($1,$2,$3,$4,$5,$6::jsonb)`,
-      [root.selection.rootPolicyId, root.selection.rootPolicyRevision, workspaceId, `main:${mainId}`,
-        root.selection.locationRevision, JSON.stringify(root)])
-      const commands = new PostgresCommandCoordinator(db.pool)
-      const unavailableCarrier = (): never => { throw new Error('Main-local qualification must not contact a device.') }
-      const sources = await createProductionSources({ pool: db.pool, commands,
-        locations: new WorkspaceLocationService(db.pool, commands), mainId, runtimeRoot: db.directory,
-        endpoint: unavailableCarrier, dispatch: unavailableCarrier })
-      journal = await RemoteOperationJournal.open(join(db.directory, 'qualification.json'), { initializeNewInstallation: true })
-      const registry = new NativeProcessRegistry(join(db.directory, 'native-processes'))
-      const host = () => createInstalledJobRuntimeHost({ identity: db.pool, configuration: location,
-        reserve: original => reserveInstalledJobQualification({ candidate: original.candidate,
-          admission: original.nativeAdmission, host: { hostRef: original.nativeAdmission.hostRef,
-            registration: original.nativeAdmission.registration, mainInstallationId: original.nativeAdmission.mainInstallationId,
-            bootId: original.nativeAdmission.bootId, connection: original.nativeAdmission.connection }, journal: journal!, registry,
-          signal: original.signal, assertAdmission: async supplied => {
-            expect(supplied).toEqual(original.nativeAdmission)
-            await original.assertAdmission()
-          }, authority: {
-            assertCurrent: async candidate => { expect(candidate).toEqual(original.candidate); await original.assertAdmission() },
-            readApproval: async id => {
-              if (id !== original.approval.id) return null
-              await original.assertAdmission()
-              return { status: 'approved', fingerprint: original.approval.fingerprintDigest, expiresAt: original.approval.expiresAt }
-            },
-            reserve: async () => { throw new Error('Installed original native reservation required.') },
-          } }) })
-      const installedHost = host()
-      const profiles = createJobRuntimeProfileService({ pool: db.pool, commands, sources: sources.sources, host: installedHost })
+      [policy.rootPolicyId, policy.rootPolicyRevision, workspaceId, `main:${mainId}`,
+        policy.locationRevision, JSON.stringify(policy)])
+      for (const entry of manifest.entries) {
+        await runtime.snapshots.write(manifest.snapshotId, entry,
+          await readFile(join(configuration.qualificationSource.directory, entry.path)))
+      }
+      await runtime.snapshots.commit(manifest)
+      const profiles = runtime.profiles
       const origin = 'http://127.0.0.1:5173'
       app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
         browserAuth: new BrowserAuthentication(db.pool, access, { origin,
           secret: 'physical-qualification-browser-secret'.repeat(3), ownerPrincipalId: owner.principal.id }),
-        operator: { access, services: { commands, jobRuntimeProfiles: profiles } as OperatorServices } })
+        operator: { access, services: { commands, jobRuntimeProfiles: profiles, jobs: runtime.jobs } as OperatorServices } })
       registerJobRuntimeProfileRoutes(app, profiles)
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
       const connect = async (token: string) => {
@@ -149,17 +166,68 @@ describe('installed ordinary verification qualification through authenticated MC
       expect(completed.readiness.ready).toBe(true)
       expect((await db.pool.query('select record from job_runtime_profiles where id=$1', [profile.id])).rows[0].record)
         .toEqual(completed.profile)
-      const restarted = host()
+      const settings = await runtime.buildComputers.update(owner.principal, 'mcp', {
+        target: buildComputerTarget({ hostRef: root.selection.hostRef, registration: null, mainInstallationId: mainId }),
+        commandId: randomUUID(), expectedRevision: 0, buildEnabled: true, buildPriority: 100 })
+      expect(settings.state).toBe('ready')
+      const choices = JobAuthoringChoicesRecordSchema.parse(await runtime.jobs.choices(owner.principal, workspaceId, 'mcp'))
+      const template = choices.verificationTemplates!.find(item => item.profileId === profile.id && item.suite === 'install')!
+      expect(template.ready).toBe(true)
+      const definition = await runtime.jobs.saveDefinition(owner.principal, 'mcp', workspaceId, {
+        commandId: randomUUID(), expectedRevision: null, name: 'Main offline install', spec: ResolvedVerificationJobSpecSchema.parse({
+          source: choices.sources[0]!, target: choices.targets[0]!.target, argv: template.argv,
+          inputs: [], outputs: template.outputs!, policy: jobRuntimeProfilePolicy(completed.profile),
+          verification: { suite: template.suite, resources: template.resources,
+            parameters: template.parameters, credentialRefs: [] },
+        }),
+      })
+      expect((await readonly.callTool({ name: 'job_start', arguments: {
+        workspaceId, commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision } })).isError).toBe(true)
+      const started = await operator.callTool({ name: 'job_start', arguments: {
+        workspaceId, commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision } },
+      { timeout: template.policy.preparationTimeoutMs + 60000 })
+      expect(started.isError, JSON.stringify(started.content)).not.toBe(true)
+      const admission = JobAdmissionResultSchema.parse((started.structuredContent as { admission: unknown }).admission)
+      let executionId: string
+      if (admission.kind === 'pending-admission') executionId = admission.ticket.executionId
+      else if (admission.kind === 'accepted') executionId = admission.executionId
+      else executionId = admission.execution.id
+      const deadline = Date.now() + template.policy.preparationTimeoutMs + template.policy.executionTimeoutMs
+        + template.policy.publicationTimeoutMs + template.policy.cleanupTimeoutMs
+      let execution
+      while (Date.now() < deadline) {
+        await runtime.jobs.wakeQueue()
+        const row = (await db.pool.query('select record from job_executions where id=$1', [executionId])).rows[0]
+        if (row) {
+          execution = JobExecutionRecordSchema.parse(row.record)
+          await runtime.dispatch.wake(execution.id)
+          execution = JobExecutionRecordSchema.parse((await db.pool.query('select record from job_executions where id=$1',
+            [execution.id])).rows[0].record)
+          if (execution.process.phase === 'terminal' && !['pending', 'collecting'].includes(execution.publication)) break
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+      expect(execution).toMatchObject({ schemaVersion: 2, process: { phase: 'terminal', outcome: 'succeeded', processStopped: true },
+        publication: 'complete', acceptedSpec: { target: { hostRef: { kind: 'main' } } } })
+      const executionReadback = await operator.callTool({ name: 'job_get', arguments: { workspaceId, executionId: execution!.id } })
+      expect(executionReadback.isError, JSON.stringify(executionReadback.content)).not.toBe(true)
+      expect((executionReadback.structuredContent as { execution: unknown }).execution).toEqual(execution)
+      expect((await runtime.jobs.listArtifacts(owner.principal, workspaceId, execution!.id, 'mcp')).map(output => output.path).sort())
+        .toEqual(template.outputs!.map(output => output.path).sort())
+      const restarted = createInstalledJobRuntimeHost({ identity: db.pool, configuration: location,
+        reserve: async () => { throw new Error('Metadata restart cannot reserve native work.') } })
       expect(await restarted.currentMetadata(db.pool, completed.profile)).toBeNull()
       await restarted.capture!(completed.profile)
       const restartedProfiles = createJobRuntimeProfileService({ pool: db.pool, commands,
-        sources: sources.sources, host: restarted })
+        sources: runtime.sources, host: restarted })
       expect(await restartedProfiles.readiness(db.pool, completed.profile)).toEqual({ ready: true, reasons: [] })
+      journal = await RemoteOperationJournal.open(join(db.directory, 'job-runtime-operations.json'))
       expect((await journal.qualificationStatus(completed.approval.qualificationId))?.phase).toBe('closed')
       expect((await journal.qualificationStatus(completed.approval.qualificationId))?.result?.outcome).toBe('qualified')
     } finally {
       await Promise.allSettled(clients.map(client => client.close()))
       await app?.close()
+      await runtime?.close()
       await journal?.close()
       await db.close()
     }

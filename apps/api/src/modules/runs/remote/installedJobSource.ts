@@ -10,11 +10,11 @@ import { verifyPrivateSourceRepository, preparePrivateJobRepositoryMounts } from
 import { verifyMaterializedWorkingDirectory } from '../../sources/workingDirectory.js'
 import { verifyApprovedRootAllowlist } from '../../sources/rootAttestation.js'
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
-import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { JobApplicationConnection } from './jobApplicationBridge.js'
 
 /** Main metadata and physical verification remain distinct. No source is created. */
-export function createInstalledJobSource(input: { journal: RemoteOperationJournal; application: WorkerJobApplicationSink;
-  currentBinding(): Readonly<DeviceSessionBinding>; approvedRoots(): Promise<ApprovedRootAllowlist> }): JobSourcePort<import('@foreman-code/contracts/job-verification').JobAcceptedSpecRecord> {
+export function createInstalledJobSource(input: { journal: RemoteOperationJournal; application: Pick<WorkerJobApplicationSink, 'resolveAcceptedSource'>;
+  currentBinding(): JobApplicationConnection; approvedRoots(): Promise<ApprovedRootAllowlist> }): JobSourcePort<import('@foreman-code/contracts/job-verification').JobAcceptedSpecRecord> {
   return { async verify(spec, signal) {
     signal.throwIfAborted()
     const matches = (await input.journal.jobOperations()).filter(receipt => same(receipt.execution.acceptedSpec, spec))
@@ -26,11 +26,21 @@ export function createInstalledJobSource(input: { journal: RemoteOperationJourna
     if (!same(accepted.execution.acceptedSpec, original.execution.acceptedSpec) || accepted.execution.workspaceId !== original.execution.workspaceId
       || !same(accepted.execution.workflow, original.execution.workflow)) throw new Error('Original accepted Job execution changed')
     const roots = await input.approvedRoots(), record = accepted.materialization, receipt = record.receipt
-    if (roots.hostRef.kind !== 'device' || roots.hostRef.mainId !== binding.mainId || roots.hostRef.deviceId !== binding.deviceId
-      || roots.applicationInstallationId !== binding.workerInstallationId
-      || roots.managedRuntimeRoot !== spec.target.destination.managedRuntimeRoot
-      || receipt.binding.canonicalPath !== join(roots.managedRuntimeRoot, 'source-materializations', accepted.root.selection.rootPolicyId))
-      throw new Error('Original Job source is outside its human-approved runtime root')
+    const selected = roots.hostRef
+    if (selected.mainId !== binding.mainId || roots.managedRuntimeRoot !== spec.target.destination.managedRuntimeRoot
+      || receipt.binding.canonicalPath !== join(roots.managedRuntimeRoot, 'source-materializations', accepted.root.selection.rootPolicyId)) {
+      throw new Error('Original Job source is outside its approved runtime root.')
+    }
+    if (selected.kind === 'device') {
+      if (!('deviceId' in binding) || selected.deviceId !== binding.deviceId
+        || roots.applicationInstallationId !== binding.workerInstallationId) {
+        throw new Error('Original source belongs to another installed worker.')
+      }
+    } else if (!('kind' in binding) || binding.kind !== 'main'
+      || roots.applicationInstallationId !== binding.mainInstallationId
+      || spec.target.hostRef.kind !== 'main' || receipt.binding.deviceId !== null) {
+      throw new Error('Original source belongs to another installed Main.')
+    }
     await verifyApprovedRootAllowlist(roots)
     const recheck = async () => {
       signal.throwIfAborted()

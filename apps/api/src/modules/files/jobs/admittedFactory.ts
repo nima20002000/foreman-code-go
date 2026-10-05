@@ -19,7 +19,13 @@ export function createAdmittedJobOutputs(input: {pool:pg.Pool;storageRoot:string
   const receiver=input.receiver??new ResumableByteTransferService(input.stagingRoot,{authorize:(intent,context)=>admission.authorizeTransfer(intent,context)},()=>input.clock?.().getTime()??Date.now())
   const artifacts=createCanonicalJobArtifactPort({pool:input.pool,storageRoot:input.storageRoot,
     ...(input.excludedRoots?{excludedRoots:input.excludedRoots}:{}),...(input.clock?{clock:input.clock}:{}),
-    authority:{authorizePublication:async(sql,request)=>{const actual=await input.authority.authorizePublication(sql,request);await admission.assertContext(sql,request,actual.execution);return actual}},
+    authority: { authorizePublication: async (sql, request) => {
+      const actual = await input.authority.authorizePublication(sql, request)
+      if (actual.execution.acceptedSpec.target.hostRef.kind === 'device') {
+        await admission.assertContext(sql, request, actual.execution)
+      }
+      return actual
+    } },
     reader:input.reader??new VerifiedJobOutputReader(receiver,admission)})
   const lifecycle=new JobOutputRsyncLifecycle(input.pool,admission,new PostgresJobPublicationLedger(input.pool),input.clock)
   const extension=createMainJobOutputRsyncExtension(admission,lifecycle,jobOutputDeviceExtension(admission,artifacts,receiver),input.rsync)
