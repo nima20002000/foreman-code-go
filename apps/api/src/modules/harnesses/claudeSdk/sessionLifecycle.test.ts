@@ -120,10 +120,42 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
     user_message_uuid: promptUuid, subtype: 'success', is_error: false, result: 'done', ...extra,
   })
   return { get frames() { return frames }, client, manager, callbacks, bridge, validate, close, query, offers, input,
-    nextMessage, assistant, result }
+    nextMessage, assistant, result, transcript }
 }
 
 describe('Claude response ownership through SDK callbacks', () => {
+  it('keeps tool callbacks and replies owned through a parent-linked compaction summary', async () => {
+    const f = fixture()
+    try {
+      const session = await f.manager.attachSession(saved, start)
+      const output = drain(f.manager.startTurn(session, f.input('compacted')))
+      const message = await f.nextMessage()
+      await f.assistant('before-compaction', [{ type: 'text', text: 'Before compaction' }], message.uuid)
+      f.transcript.push({ type: 'user', uuid: 'compact-summary', session_id: session.nativeSessionId,
+        parent_tool_use_id: null, parentUuid: 'frame-before-compaction', isCompactSummary: true,
+        message: { role: 'user', content: 'Summary of earlier context' } })
+      f.transcript.push({ type: 'assistant', uuid: 'frame-after-compaction', session_id: session.nativeSessionId,
+        parent_tool_use_id: null, parentUuid: 'compact-summary', message: { id: 'after-compaction' } })
+      const permission = f.callbacks.canUseTool!('Read', { file_path: '/work/file' }, {
+        signal: new AbortController().signal, toolUseID: 'compacted-tool', requestId: 'compacted-control',
+      })
+      await f.frames.offer({ type: 'assistant', uuid: 'frame-after-compaction', session_id: session.nativeSessionId,
+        parent_tool_use_id: null, message: { id: 'after-compaction', content: [
+          { type: 'tool_use', id: 'compacted-tool', name: 'Read', input: { file_path: '/work/file' } },
+        ] } })
+      expect(await permission).toMatchObject({ behavior: 'allow' })
+      f.transcript.push({ type: 'assistant', uuid: 'frame-final-compacted', session_id: session.nativeSessionId,
+        parent_tool_use_id: null, parentUuid: 'frame-after-compaction', message: { id: 'final-compacted' } })
+      await f.frames.offer({ type: 'assistant', uuid: 'frame-final-compacted', session_id: session.nativeSessionId,
+        parent_tool_use_id: null, message: { id: 'final-compacted', content: [{ type: 'text', text: 'After compaction' }] } })
+      await f.result(message.uuid)
+      expect((await output).find(event => event.payload.text === 'After compaction')?.payload.clientCorrelationId)
+        .toBe('compacted')
+      expect(f.validate.mock.calls.some(([identity]) => identity.toolUseId === 'compacted-tool'
+        && identity.nativeMessageId === message.uuid)).toBe(true)
+    } finally { await f.manager.dispose?.() }
+  })
+
   it('owns distinct tool-round messages while preserving delayed older and foreign event identities', async () => {
     const f = fixture()
     try {

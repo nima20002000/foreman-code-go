@@ -193,6 +193,7 @@ export function createClaudeSdkRunner(input: {
         ?? ((frame.event as { message?: { id?: unknown } } | undefined)?.message?.id)
       if (typeof messageId !== 'string' && typeof frame.uuid !== 'string') return undefined
       let owner: string | undefined
+      const ancestry = new Map<string, string | undefined>()
       // getSessionMessages returns the SDK's parentUuid-linked root conversation chain.
       // Tool-result user records continue it; a new prompt creates a new input boundary.
       for (let offset = 0; ; offset += 256) {
@@ -203,12 +204,22 @@ export function createClaudeSdkRunner(input: {
           const entry = raw as Record<string, unknown>
           if (entry.session_id !== frame.session_id || entry.parent_tool_use_id != null) continue
           const message = entry.message as { id?: unknown; content?: unknown } | undefined
+          const parentOwner = typeof entry.parentUuid === 'string' ? ancestry.get(entry.parentUuid) : owner
           if (entry.type === 'user') {
             const content = message?.content
             const toolResult = Array.isArray(content) && content.some(block => block && typeof block === 'object'
               && (block as { type?: unknown }).type === 'tool_result')
-            if (!toolResult) owner = typeof entry.uuid === 'string' ? entry.uuid : undefined
+            if (entry.isCompactSummary === true) {
+              owner = typeof entry.parentUuid === 'string' ? parentOwner : undefined
+            } else if (!toolResult) {
+              owner = typeof entry.uuid === 'string' ? entry.uuid : undefined
+            } else {
+              owner = parentOwner
+            }
+          } else {
+            owner = parentOwner
           }
+          if (typeof entry.uuid === 'string') ancestry.set(entry.uuid, owner)
           if (entry.type === 'assistant' && (entry.uuid === frame.uuid || messageId && message?.id === messageId)) {
             return owner && offered.has(owner) ? [owner] : undefined
           }
