@@ -7,7 +7,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { ApprovedSourceSchema, SourceRootRecordSchema, SourceMaterializationRecordSchema, type SourceRootRecord, type SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { JobTargetSchema, PreparedJobSpecSchema, isAutoJobSpec, jobPolicyRequirements,
   type JobDefinitionSpec, type ResolvedJobDefinitionSpec, type JobAuthoringChoices, type JobExecution } from '@foreman-code/contracts/jobs'
-import { JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
+import { JobRuntimeProfileRecordSchema } from '@foreman-code/contracts/job-verification-runtime'
 import type { JobPlacementIntent } from '@foreman-code/contracts/job-admission'
 import type { JobComputerCandidate, JobComputerDiscovery } from './computerSelection.js'
 import { readJobRuntimeProfileVersion } from './runtimeProfileVersion.js'
@@ -53,7 +53,7 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
     }
     const profiles = (await sql.query<{ record: unknown }>(
       'select record from job_runtime_profiles where workspace_id=$1 order by id limit 100', [workspaceId],
-    )).rows.map(row => JobRuntimeProfileSchema.parse(row.record))
+    )).rows.map(row => JobRuntimeProfileRecordSchema.parse(row.record)).filter(profile => profile.schemaVersion === 1)
     const autoPolicies = profiles.filter(profile => profile.status !== 'revoked').map(profile => ({
       policy: jobPolicyRequirements(profile.policy), limits: profile.limits,
     }))
@@ -78,9 +78,9 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
       where c.workspace_id=$1 order by c.root_id limit 100`, [workspaceId])).rows.map(row => SourceRootRecordSchema.parse(row.record))
     const profiles = isAutoJobSpec(spec) ? (await sql.query<{ record: unknown }>(
       'select record from job_runtime_profiles where workspace_id=$1 order by id limit 100', [workspaceId],
-    )).rows.map(row => JobRuntimeProfileSchema.parse(row.record))
+    )).rows.map(row => JobRuntimeProfileRecordSchema.parse(row.record)).filter(profile => profile.schemaVersion === 1)
       : [await readJobRuntimeProfileVersion(sql, workspaceId,
-        spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision)]
+        spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision)].filter(profile => profile.schemaVersion === 1)
     const candidates: JobComputerCandidate[] = []
     const diagnosticCodes: string[] = []
     if (!isAutoJobSpec(spec)) {

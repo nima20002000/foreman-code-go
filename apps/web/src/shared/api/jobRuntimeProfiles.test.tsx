@@ -1,4 +1,4 @@
-import { profile, approval } from '../../test/jobRuntimeFixture'
+import { profile, approval, verificationProfile } from '../../test/jobRuntimeFixture'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
@@ -11,6 +11,19 @@ function wrapper(){const client=new QueryClient({defaultOptions:{queries:{retry:
 afterEach(()=>{cleanup();for(const client of clients.splice(0))client.clear()})
 const base=`/api/management/workspaces/${profile.workspaceId}/jobs`
 describe('runtime profile browser client',()=>{
+  it('reads persisted verification resources and pending owner review without starting qualification', async () => {
+    let reads = 0
+    server.use(http.get(`${base}/runtime-profiles`, () => {
+      reads++
+      return HttpResponse.json({ profiles: [{ profile: verificationProfile, ready: false,
+        reasons: ['approval_review_required'], sideEffects: false }], approvals: [] })
+    }))
+    const read = renderHook(() => useJobRuntimeProfiles(profile.workspaceId), { wrapper: wrapper() })
+    await waitFor(() => expect(read.result.current.isSuccess).toBe(true))
+    expect(read.result.current.data?.profiles[0]).toEqual({ profile: verificationProfile, ready: false,
+      reasons: ['approval_review_required'], sideEffects: false })
+    expect(reads).toBe(1)
+  })
   it('reads exact scoped pending fingerprints through HTTP',async()=>{
     server.use(http.get(`${base}/runtime-profiles`,()=>HttpResponse.json({profiles:[{profile,ready:false,reasons:['RUNTIME_UNQUALIFIED'],sideEffects:false}],approvals:[approval]})))
     const read=renderHook(()=>useJobRuntimeProfiles(profile.workspaceId),{wrapper:wrapper()})

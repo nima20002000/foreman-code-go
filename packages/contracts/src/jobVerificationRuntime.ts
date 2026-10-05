@@ -186,9 +186,11 @@ export type JobVerificationProfileInput = z.infer<typeof JobVerificationProfileI
 export const JobRuntimeMeasurementRecordSchema = z.union([
   JobRuntimeMeasurementSchema, JobVerificationRuntimeMeasurementSchema,
 ])
+export type JobRuntimeMeasurementRecord = z.infer<typeof JobRuntimeMeasurementRecordSchema>
 export const JobRuntimeFingerprintRecordSchema = z.union([
   JobRuntimeFingerprintSchema, JobVerificationRuntimeFingerprintSchema,
 ])
+export type JobRuntimeFingerprintRecord = z.infer<typeof JobRuntimeFingerprintRecordSchema>
 export const JobVerificationProfileSchema = z.object({
   schemaVersion: z.literal(2),
   id: IdSchema, workspaceId: IdSchema, revision: DeviceSafeIntegerSchema.positive(),
@@ -307,6 +309,7 @@ export const JobVerificationRuntimeQualificationResultSchema = z.discriminatedUn
 export const JobRuntimeQualificationResultRecordSchema = z.union([
   JobRuntimeQualificationResultSchema, JobVerificationRuntimeQualificationResultSchema,
 ])
+export type JobRuntimeQualificationResultRecord = z.infer<typeof JobRuntimeQualificationResultRecordSchema>
 export const JobVerificationRuntimeQualificationRpcRequestSchema = z.discriminatedUnion('operation', [
   z.object({ version: z.literal(3), operation: z.literal('inspect'), profile: JobVerificationProfileSchema }).strict(),
   z.object({ version: z.literal(3), operation: z.enum(['run', 'authorize']),
