@@ -1,3 +1,4 @@
+import { FixtureServer, configuration as openCodeConfiguration, manager as openCodeManager, json } from './opencode-fixtures.js'
 import { describe, expect, it, vi } from 'vitest'
 import { withAdvancedDefaults } from '@foreman-code/contracts'
 import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
@@ -105,4 +106,28 @@ describe('production exact-host profile failure evidence', () => {
       expect(f.dispose).toHaveBeenCalledTimes(1)
     }
   })
+})
+
+it('returns a failed host-profile result with the observed OpenCode version and missing cleanup contract', async () => {
+  const f = fixture()
+  const configuration = withAdvancedDefaults(openCodeConfiguration())
+  const value: HostHarnessOverride = { ...f.value, driverId: 'opencode', configuration,
+    configurationFingerprint: commandInputHash(configuration) }
+  const server = new FixtureServer()
+  server.expectedVersion = '2.0.0'
+  server.beforeRequest = path => path === '/global/health' ? json({ healthy: true, version: '2.0.0' }) : undefined
+  delete server.paths['/question/{requestID}/reject']
+  const manager = openCodeManager(server)
+  const binding = { selection: value.target, instance: {}, installation: { driverRevision: 'driver',
+    protocolRevision: 'protocol', environmentGeneration: 'environment', connectionGeneration: 'connection' } }
+  const registry = { refreshMain: async () => {}, pinOverride: () => binding, installations: { assertCurrent: () => {} } }
+  const factories = { allocate: () => ({ harness: 'opencode', manager }), admitAuxiliary: () => {},
+    assertInstallationUnchanged: async () => {}, disposeAuxiliary: async () => manager.dispose() }
+  const qualifier = new ProductionHostHarnessProfileQualifier(registry as never, factories as never,
+    () => { throw new Error('Local profile must not dispatch to a worker.') }, '/workspace/project')
+  const result = await qualifier.qualify(value, { checkId: f.value.instanceId, signal: f.signal.signal })
+  expect(result).toMatchObject({ driverId: 'opencode', qualified: false,
+    failure: { code: 'OPENCODE_CONTRACT_UNSUPPORTED' } })
+  expect(result.failure?.message).toContain('OpenCode 2.0.0')
+  expect(result.failure?.message).toContain('/question/{requestID}/reject')
 })
