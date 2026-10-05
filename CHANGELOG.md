@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.12] - 2026-10-05
+
+### Fixed
+
+- Restore companion pairing and status requests after the Foreman Code rebrand by retaining the valid `X-Graphql-Companion-Session` header used by installed companions and servers.
+
 ## [0.0.11] - 2026-10-05
 
 ### Fixed
