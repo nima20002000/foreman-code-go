@@ -1,6 +1,6 @@
-/* global require, __dirname, console, process, setInterval, setTimeout */
+/* global require, __dirname, console, process, setInterval, setTimeout, fetch */
 /* eslint @typescript-eslint/no-require-imports: "off" -- Standalone executable fixture copied without compilation. */
-// Deterministic provider fault fixture. It never invokes a model or real tools.
+// Deterministic provider fault fixture; management calls use its native MCP configuration.
 const fs = require('node:fs')
 const path = require('node:path')
 const readline = require('node:readline')
@@ -188,6 +188,28 @@ setInterval(() => {
   for (const line of batch.split('\n').filter(Boolean)) {
     const message = JSON.parse(line)
     const owner = loadThread(message.params?.threadId)
+    if (message.method === 'fixture/management-call') {
+      void (async () => {
+        if (!owner) throw new Error('Native management session missing')
+        const configured = read('mcp.json', {})
+        const transport = configured.transport || {}
+        if (!configured.enabled || processDisabledMcp.has(configured.name)) throw new Error('Management MCP disabled')
+        const token = process.env[transport.bearer_token_env_var]
+        if (!transport.url || !token) throw new Error('Native management binding missing')
+        const response = await fetch(transport.url, {
+          method: 'POST', headers: { authorization: `Bearer ${token}`,
+            accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: message.id, method: 'tools/call',
+            params: { name: message.params.name, arguments: message.params.arguments } }),
+        })
+        const text = await response.text()
+        const data = text.split('\n').find(line => line.startsWith('data: '))
+        const body = JSON.parse(data ? data.slice(6) : text)
+        if (!response.ok || body.error || !body.result) throw new Error('Native management request failed')
+        log({ nativeManagementResult: { id: message.id, sessionId: owner.id, pid: process.pid, result: body.result } })
+      })().catch(error => log({ nativeManagementResult: { id: message.id, error: error.message } }))
+      continue
+    }
     if (message.id !== undefined && message.method && owner && !outstanding.has(message.id)) {
       outstanding.set(message.id, { threadId: owner.id, turnId: message.params.turnId || owner.turns.at(-1)?.id,
         remaining: 0 })
@@ -199,6 +221,7 @@ setInterval(() => {
         if (!owner.turns.some((value) => value.status === 'inProgress')) owner.status = { type: 'idle' }
         store(owner)
       }
+
     }
     send(message)
   }

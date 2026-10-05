@@ -67,7 +67,7 @@ export async function workspaceMcpFixture() {
       return { ...issued, client: await connect(issued.token) }
     }
     const owner = await issue()
-    return { pool, access, commands, defaults, parentPath, owner, connect, issue, close }
+    return { pool, access, commands, defaults, parentPath, owner, connect, issue, close, services, address }
   } catch (error) {
     await close()
     throw error
