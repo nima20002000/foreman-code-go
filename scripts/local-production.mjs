@@ -1,14 +1,15 @@
 import { execFile, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { access, chmod, copyFile, cp, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, chmod, copyFile, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseEnv, promisify } from 'node:util'
-import { setTimeout as delay } from 'node:timers/promises'
+import { promisify } from 'node:util'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
+import { preserveOperatorConfiguration, publish, readEnvironment, readProductionIdentity, renderEnvironment,
+  waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 
 const source = fileURLToPath(new URL('../', import.meta.url))
 const home = homedir()
@@ -36,14 +37,6 @@ function run(command, args, options = {}) {
   })
 }
 
-async function publish(path, content, mode = 0o600) {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  const temporary = `${path}.new`
-  await writeFile(temporary, content, { mode })
-  await chmod(temporary, mode)
-  await rename(temporary, path)
-}
-
 async function configureEnvironment() {
   for (const directory of [config, state, data, app, join(data, 'files'), join(data, 'workspaces'),
     join(state, 'runs'), join(state, 'mcp'), join(state, 'logs'), join(state, 'cache')]) {
@@ -51,21 +44,22 @@ async function configureEnvironment() {
     await chmod(directory, 0o700)
   }
   let password
-  try {
-    password = parseEnv(await readFile(envFile, 'utf8')).GRAPHQL_PRODUCTION_DB_PASSWORD
+  const previous = await readEnvironment(envFile)
+  if (previous) {
+    password = previous.GRAPHQL_PRODUCTION_DB_PASSWORD
     if (!password || !/^[a-f0-9]{64}$/.test(password)) {
       throw new Error('The production database password is missing or invalid. Restore production.env; do not reset the database.')
     }
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error
+  } else {
     const { stdout } = await capture('/usr/bin/docker', ['volume', 'ls', '--format', '{{.Name}}'])
     if (stdout.split('\n').includes('graphql-production-postgres')) {
       throw new Error('Production storage already exists. Restore production.env before updating; its password must stay stable.')
     }
     password = randomBytes(32).toString('hex')
   }
-  const environment = {
+  const owned = {
     NODE_ENV: 'production',
+    GRAPHQL_LOCAL_PRODUCTION: '1',
     HOST: '127.0.0.1',
     PORT: '3041',
     DATABASE_URL: `postgresql://graphql_production:${password}@127.0.0.1:55440/graphql_production`,
@@ -83,8 +77,9 @@ async function configureEnvironment() {
     NODE_OPTIONS: '',
     NODE_PATH: '',
   }
-  const text = Object.entries(environment).map(([key, value]) => `${key}=${value}`).join('\n') + '\n'
-  await publish(envFile, text)
+  const { loadConfig } = await import('../apps/api/dist/config.js')
+  const environment = await preserveOperatorConfiguration(join(config, 'operator.json'), previous, owned, loadConfig)
+  await publish(envFile, renderEnvironment(environment))
   return environment
 }
 
@@ -96,7 +91,7 @@ async function stageRelease() {
   await run('corepack', ['pnpm', '--filter', '@graphql/api', 'deploy', '--prod', '--legacy', join(release, 'apps/api')])
   await cp(join(source, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
   await mkdir(join(release, 'scripts'), { recursive: true })
-  for (const name of ['local-production.mjs', 'graphql-mcp.mjs']) {
+  for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs']) {
     await copyFile(join(source, 'scripts', name), join(release, 'scripts', name))
   }
   await mkdir(join(release, 'apps/worker/src'), { recursive: true })
@@ -145,13 +140,14 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=exec
+Delegate=yes
 WorkingDirectory=@APP@/current/apps/api
 EnvironmentFile=@HOME@/.config/graphql-production/production.env
 Environment=GRAPHQL_API_ENV_FILE=@HOME@/.config/graphql-production/production.env
 Environment=PATH=@PATH@
 ExecStart=@NODE@ @APP@/current/apps/api/dist/server.js
 ExecStartPost=@NODE@ @APP@/current/scripts/local-production.mjs health
-Restart=on-failure
+Restart=always
 RestartSec=3
 TimeoutStartSec=120
 TimeoutStopSec=60
@@ -193,24 +189,11 @@ X-GNOME-Autostart-enabled=true
 }
 
 async function waitForReady() {
-  const deadline = Date.now() + 90_000
-  let failure = 'API has not responded.'
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`${origin}/health/ready`, { signal: AbortSignal.timeout(2000) })
-      const health = await response.json()
-      if (response.ok && health.service === 'graphql-api' && health.checks?.database === 'ok'
-        && health.checks?.checkpoints === 'ok') {
-        const web = await fetch(`${origin}/workspaces`, { signal: AbortSignal.timeout(2000) })
-        if (web.ok && (await web.text()).includes('/assets/')) return
-        failure = 'The compiled dashboard is unavailable.'
-      } else failure = `Readiness returned HTTP ${response.status}.`
-    } catch (error) {
-      failure = error.message
-    }
-    await delay(500)
-  }
-  throw new Error(`${failure} Inspect journalctl --user -u ${units.api}.`)
+  const environment = await readEnvironment(envFile)
+  if (!environment) throw new Error('Production configuration is missing.')
+  const release = await realpath(current)
+  const expected = await readProductionIdentity(release, environment.DATABASE_URL)
+  await waitForProductionReady({ origin, expected })
 }
 
 async function install() {
@@ -263,7 +246,7 @@ async function openDashboard() {
 
 const command = process.argv[2]
 try {
-  if (command === 'install') await install()
+  if (command === 'install') await withInstallationLock(join(config, 'install.lock'), install)
   else if (command === 'health') await waitForReady()
   else if (command === 'open') await openDashboard()
   else throw new Error('Usage: node scripts/local-production.mjs install|health|open')

@@ -29,6 +29,9 @@ const EnvironmentSchema = z.object({
   OPENCODE_BINARY: z.string().trim().min(1).default('opencode'),
   GRAPHQL_LAPTOP_EXECUTION_ENABLED: z.enum(['0', '1']).default('0'),
   GRAPHQL_LOCAL_PRODUCTION: z.enum(['0', '1']).default('0'),
+  GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: z.enum(['0', '1']).optional(),
+  GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK: z.enum(['0', '1']).optional(),
+  GRAPHQL_OPENCODE_PARITY_QUALIFIED: z.enum(['0', '1']).optional(),
 })
 
 export interface ApiConfig {

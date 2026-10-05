@@ -32,8 +32,11 @@ owned by the user; closing its window does not stop the API.
 This installer creates no browser account or login secret. Integrate the implicit
 local-user change before verifying ready-to-work startup. MCP still requires its
 existing bearer credentials, roles, grants, and harness security. Host installation
-is an OS-user operation, outside Operator MCP. Production harness qualification
-and rollout restrictions remain in effect.
+is an OS-user operation, outside Operator MCP. The installer selects
+`GRAPHQL_LOCAL_PRODUCTION=1`: loopback production enables local harnesses through
+the same provider, account, model, approval and sandbox qualification used at
+every execution admission. Explicit harness disables remain in effect. Other
+production deployments retain their rollout restrictions.
 
 Production storage is independent of development and tests:
 
@@ -43,6 +46,7 @@ Production storage is independent of development and tests:
 | Compose project | `graphql-local-production` with `compose.production.yaml` |
 | Docker volume | External `graphql-production-postgres` |
 | Credentials | `~/.config/graphql-production/production.env` (0600) |
+| Operator settings | `~/.config/graphql-production/operator.json` (0600) |
 | Workspaces/uploads | `~/.local/share/graphql-production/{workspaces,files}` |
 | Runs/MCP routes/cache | `~/.local/state/graphql-production/{runs,mcp,cache}` |
 | Releases | `~/.local/lib/graphql-production/releases/`, selected by `current` |
@@ -56,6 +60,16 @@ credentials are written into repository `.env` files or test configuration. Norm
 tests connect to a different port and role; `db:down` uses a different Compose
 project and volume. Even production Compose `down --volumes` retains this external
 volume. Back up the database and workspace/upload files before updates.
+
+Updates preserve operator settings in `operator.json`, a JSON object of environment
+variable names and string values. Existing settings in `production.env` are copied
+there on the first update. Edit `operator.json`, then rerun the installer. Binary
+overrides, harness rollout choices and API/database timeouts are validated before
+activation. Host, ports, database credentials, storage isolation and other
+installer-owned settings stay in `production.env`; do not edit that generated file.
+One OS file lock serializes the complete installation, including migration,
+activation and readiness. Readiness verifies the database installation identity
+and selected compiled release before opening Chrome.
 
 Operations:
 
@@ -84,6 +98,23 @@ the service's main process, then check readiness and the new MainPID:
 ```sh
 systemctl --user kill --kill-whom=main --signal=KILL graphql-operator-api.service
 ```
+
+After installing and configuring qualified native profiles, run the installed
+service regression through the heavy-job queue:
+
+```sh
+corepack pnpm test:production:installed
+```
+
+This uses the installed compiled release and authenticated Operator MCP. It tests
+an Operator reply, Codex/OpenCode workflows, denied callers, native cancellation,
+a production PostgreSQL container restart, and recovery after killing the API's
+main process during native work. It verifies persisted readback and unchanged
+native execution/session bindings. It archives its own workspace and revokes its
+credentials; conversation and run history remain available for inspection. Run it
+when no personal work is active because the two recovery checks restart services.
+The API unit delegates its cgroup subtree to native guardians and restarts after
+both failure and unexpected clean shutdown. An explicit systemd stop stays stopped.
 
 To disable desktop autostart, remove
 `~/.config/autostart/graphql-production.desktop`. To stop and disable the backend,
