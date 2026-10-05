@@ -116,11 +116,16 @@ passwords, browser tokens, or cookies. API starts bind to loopback only. Set
 `FOREMAN_CODE_BROWSER_ORIGIN` and `FOREMAN_CODE_WEB_PORT` together for a custom local browser
 endpoint; requests from another origin or a non-loopback client are rejected.
 
-The migration removes browser authentication tables and creates a dedicated
-credential-free local principal. Existing principals and their grants, historical
-conversation ownership, and audit history remain intact. Conversations owned by a
-former browser principal retain that identity and are not adopted by the local human. Operator/agent MCP still requires explicit
-bearer credentials and enforces grants, scopes, revocation, and read-only access.
+The migration removes browser authentication tables and preserves the previous
+browser owner's principal, including the default development browser identity.
+Existing conversations, attachments, command retries, grants, and audit history
+keep their ownership. A fresh installation creates a credential-free local
+principal. Operator/agent MCP still requires explicit bearer credentials and
+enforces grants, scopes, revocation, and read-only access.
+The API and development proxy check local socket ownership and process ancestry
+to keep agent processes from obtaining human access by omitting credentials.
+This requires `ss` and readable process/cgroup metadata on Linux, or `lsof` and
+`ps` on macOS.
 Remote device credentials, harness sandbox security, human approval decisions,
 revision checks, idempotent commands, and audit records remain enforced.
 
