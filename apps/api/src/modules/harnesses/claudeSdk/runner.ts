@@ -1,4 +1,5 @@
 import { ClaudeInputNotDeliveredError } from './port.js'
+import { readClaudeCompactionResult, saveClaudeCompactionResult } from './compactionResults.js'
 import { readClaudeCompactionHistory } from './compactionHistory.js'
 import { ClaudeBoundedQueue } from './queue.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -140,6 +141,10 @@ export function createClaudeSdkRunner(input: {
       if (!fork.sessionId || fork.sessionId === source.nativeSessionId) throw new Error('Claude fork did not return a new native session')
       return { ...target, nativeSessionId: fork.sessionId }
     },
+    async compactionOutcome(session, scope, promptUuid) {
+      assertClaudeSessionScope(session, scope)
+      return readClaudeCompactionResult(session, promptUuid)
+    },
     async compactionHistory(session, scope, cursor, signal) {
       assertClaudeSessionScope(session, scope)
       return readClaudeCompactionHistory(session, cursor, signal)
@@ -233,6 +238,7 @@ export function createClaudeSdkRunner(input: {
         if (page.length < 256) return undefined
       }
     })
+    let compact: { promptUuid: string; boundary: boolean } | undefined
     let nativeSessionId: string | undefined
     let query: ClaudeSdkQuery | undefined
     let queryOpening: Promise<ClaudeSdkQuery> | undefined
@@ -269,9 +275,15 @@ export function createClaudeSdkRunner(input: {
         if (!message.promptUuid || offered.has(message.promptUuid)) throw new Error('Claude prompt identity missing or already offered; never replay uncertain input')
         session.assertInputCapacity()
         offered.add(message.promptUuid)
+        if (message.content === '/compact') compact = { promptUuid: message.promptUuid, boundary: false }
         await inputQueue.offer({ type: 'user', message: { role: 'user', content: message.content }, parent_tool_use_id: null, uuid: message.promptUuid }, signal)
         abort.signal.throwIfAborted()
         return { state: 'queue-offered', promptUuid: message.promptUuid }
+      },
+      async getContextUsage(options) {
+        abort.signal.throwIfAborted()
+        if (!query?.getContextUsage) throw new Error('Claude SDK context inspection is unavailable')
+        return query.getContextUsage(options)
       },
       async setPermissionMode(mode) {
         abort.signal.throwIfAborted()
@@ -345,6 +357,7 @@ export function createClaudeSdkRunner(input: {
       abort.signal.throwIfAborted()
       if (disposed) throw new Error('Claude runner disposed during query startup')
       // The Query itself owns close(), unlike a wrapping async generator's blocked return().
+      if (!query.getContextUsage) delete session.getContextUsage
       const iterator = query[Symbol.asyncIterator]()
       pump = (async () => {
         try {
@@ -357,6 +370,12 @@ export function createClaudeSdkRunner(input: {
               if (nativeSessionId && nativeSessionId !== frame.session_id) throw new Error('Claude native session identity changed')
               if (options.resume && options.resume.nativeSessionId !== frame.session_id) throw new Error('Claude resumed a different native session')
               nativeSessionId = frame.session_id
+            }
+            if (compact && frame?.type === 'system' && frame.subtype === 'compact_boundary') compact.boundary = true
+            if (compact && frame?.type === 'result' && nativeSessionId && frame.parent_tool_use_id == null) {
+              await saveClaudeCompactionResult({ ...options.scope, nativeSessionId }, compact.promptUuid,
+                frame.is_error === true ? 'failed' : compact.boundary ? 'completed' : 'no-op')
+              compact = undefined
             }
             const observation = await observeResponse(raw)
             if (observation) {

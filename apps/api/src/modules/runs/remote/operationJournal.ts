@@ -193,7 +193,8 @@ export class RemoteOperationJournal {
         return { dispatch: false, state: prior.state }
       }
       const state: CompactionState = { requestId: input.requestId, nativeSessionId: native.sessionId,
-        nativeOperationId: null, status: 'accepted', message: 'Native compaction is pending.', beforeTokens: null,
+        nativeOperationId: null, status: 'accepted', dispatchPhase: 'reserved',
+        reservationOwner: receipt.workerIncarnationId, message: 'Native compaction is pending.', beforeTokens: null,
         observedAt: new Date().toISOString() }
       data.nativeControls.push({ operationId, requestId: input.requestId, inputHash, native, state })
       return { dispatch: true, state }

@@ -15,7 +15,7 @@ export async function qualifyNativeCodexModel(
   signal?: AbortSignal,
   recovery?: NativeProcessRecovery,
   inspection?: CodexModelInspection,
-): Promise<void> {
+): Promise<{ contextWindow: number | null } | void> {
   const qualified = inspection?.qualified
     ?? await qualifyCodex(binary, undefined, workingDirectory, environment, true, signal, recovery)
   const { models } = await readNativeCodexModelCatalog({ ...inspection, qualified },
@@ -29,4 +29,7 @@ export async function qualifyNativeCodexModel(
     || (configuration.serviceTier === 'priority' && !tiers.includes('fast'))) {
     throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'The selected model does not advertise the requested effort or service tier.')
   }
+  const contextWindow = typeof model.context_window === 'number' && model.context_window > 0
+    ? model.context_window : null
+  return { contextWindow }
 }

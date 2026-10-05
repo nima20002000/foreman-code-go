@@ -323,7 +323,7 @@ export class OperatorChatService {
     const configuration = await this.repository.configuration(row.operator_configuration_version_id)
     if (!configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Conversation configuration is unavailable.', 409)
     const busy = !!row.active_request_id || !!row.pending_interaction
-    const runtime = !busy && row.native_session_id
+    const runtime = write && !busy && row.native_session_id
       ? await this.runtime(id, row, configuration, this.lifetime.signal, Boolean(this.runtimes.get(id)?.fileInputs))
       : this.runtimes.get(id)
     const session = runtime?.session ?? (row.native_session_id ? {

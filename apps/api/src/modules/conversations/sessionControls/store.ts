@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mergeContextSnapshot } from './context.js'
 import type pg from 'pg'
 import {
@@ -22,13 +23,21 @@ export interface SessionControlBinding {
   pendingCapabilities?: SessionControlCapabilities
 }
 
+const reservationOwner = randomUUID()
+
 export class SessionControlStore {
+  private readonly compacting = new Set<string>()
   private readonly commands: NativeConversationControlCommands<SessionControlState>
 
   constructor(private readonly pool: Pick<pg.Pool, 'query'>, private readonly role: 'operator' | 'agent') {
     this.commands = new NativeConversationControlCommands(pool, {
       operation: role === 'operator' ? 'operator_chat_control' : 'agent_chat_control',
       parse: value => SessionControlStateSchema.parse(value), prefix: 'SESSION', label: 'Session controls',
+      recoverOutcome: (state, payload, requestId) => {
+        const request = SessionControlRequestSchema.parse(payload)
+        if (request.kind !== 'compact') return state.lastRequestId === requestId
+        return state.compaction?.requestId === requestId && !compactionBlocksSend(state.compaction)
+      },
       auditOutcome: (state, payload) => {
         if (!payload || typeof payload !== 'object' || !('kind' in payload) || payload.kind !== 'compact') return 'succeeded'
         if (state.compaction?.status === 'failed') return 'failed'
@@ -57,7 +66,7 @@ export class SessionControlStore {
     state.nativeSessionId = session?.nativeSessionId ?? null
     state.nativeProviderVersion = session?.providerVersion ?? null
     state.defaults = defaults
-    state.capabilities = capabilities
+    if (manager || !session || state.profileKey !== binding.profileKey) state.capabilities = capabilities
     state.busyReason = binding.busyReason
     if (state.profileKey !== binding.profileKey) {
       if (compactionBlocksSend(state.compaction)) {
@@ -71,6 +80,13 @@ export class SessionControlStore {
       state.context = null
       state.applicability = 'new-session'
       state.compaction = null
+      await this.save(state)
+    }
+    if (state.compaction && compactionBlocksSend(state.compaction)
+      && state.compaction.dispatchPhase && state.compaction.dispatchPhase !== 'dispatched'
+      && (state.compaction.reservationOwner !== reservationOwner || !this.compacting.has(state.compaction.requestId))) {
+      state.compaction = { ...state.compaction, status: 'failed',
+        message: 'Compaction stopped before native dispatch. You can try again.', observedAt: new Date().toISOString() }
       await this.save(state)
     }
     if (state.compaction && compactionBlocksSend(state.compaction) && session && manager?.reconcileCompaction) {
@@ -145,22 +161,26 @@ export class SessionControlStore {
         } else {
           this.validatePreferences(state, input)
           if (input.kind === 'save-default') {
-            await this.pool.query(`insert into conversation_session_defaults(principal_id,role,subject,profile_key,record)
-              values($1,$2,$3,$4,$5::jsonb) on conflict(principal_id,role,subject,profile_key)
-              do update set record=excluded.record`,
-            [current.principalId, this.role, current.defaultSubject, current.profileKey, JSON.stringify(input.preferences)])
             state.defaults = input.preferences
-          } else {
-            state.desired = input.preferences
-            state.applicability = current.session ? 'new-session' : 'next-turn'
-            if (current.session && current.session.harness === 'codex' && !current.busyReason && current.manager?.applySessionPreferences) {
-              markDispatch()
-              await current.manager.applySessionPreferences(current.session, input.preferences, signal)
-              state.applicability = 'next-turn'
-            }
+            state.lastRequestId = input.requestId
+            await this.saveDefaults(current, state)
+            return state
           }
+          state.desired = input.preferences
+          state.applicability = current.session ? 'safe-resume' : 'next-turn'
         }
+        state.lastRequestId = input.requestId
         await this.save(state)
+        if (input.kind === 'preferences' && current.session && !current.busyReason
+          && current.manager?.applySessionPreferences) {
+          markDispatch()
+          await current.manager.applySessionPreferences(current.session, input.preferences, signal)
+          const applied = current.manager.appliedSessionPreferences?.(current.session)
+          if (applied) state.applied = applied
+          state.applicability = applied && JSON.stringify(applied) === JSON.stringify(state.desired)
+            ? 'applied' : 'next-turn'
+          await this.save(state)
+        }
         return state
       }, async () => this.read(await bind()))
   }
@@ -172,11 +192,12 @@ export class SessionControlStore {
       if (parsed.requestId !== requestId || parsed.nativeSessionId !== (binding.session?.nativeSessionId ?? null)) {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The native result does not match this compaction.', 409)
       }
-      state.compaction = parsed
+      state.compaction = { ...state.compaction, ...parsed }
       await this.save(state)
     }
     const initial = { requestId, nativeSessionId: binding.session?.nativeSessionId ?? null,
-      nativeOperationId: null, status: 'accepted' as const, beforeTokens: null,
+      nativeOperationId: null, status: 'accepted' as const, dispatchPhase: 'reserved' as const,
+      reservationOwner, beforeTokens: null,
       message: 'Compaction is starting.', observedAt: new Date().toISOString() }
     if (binding.busyReason) throw new DomainError('SESSION_BUSY', binding.busyReason, 409)
     if (!binding.session) {
@@ -188,17 +209,24 @@ export class SessionControlStore {
     }
     state.compaction = initial
     await this.claimCompaction(state)
-    markDispatch()
+    let dispatchAttempted = false
+    this.compacting.add(requestId)
     try {
-      await progress(await binding.manager.compactSession(binding.session, { requestId, clientCorrelationId: `session-control:${this.role}:${binding.conversationId}:${binding.principalId}:${requestId}`, onProgress: progress }, signal))
+      await progress(await binding.manager.compactSession(binding.session, { requestId, clientCorrelationId: `session-control:${this.role}:${binding.conversationId}:${binding.principalId}:${requestId}`, onProgress: progress, onDispatch: async () => {
+        await progress({ ...state.compaction!, dispatchPhase: 'dispatched' })
+        dispatchAttempted = true
+        markDispatch()
+      } }, signal))
     } catch (error) {
-      const definite = !!error && typeof error === 'object' && (
+      const definite = !dispatchAttempted || !!error && typeof error === 'object' && (
         'certainty' in error && error.certainty === 'definite'
         || 'deliveryState' in error && error.deliveryState === 'not-delivered'
         || 'method' in error && error.method === 'thread/compact/start' && 'uncertain' in error && error.uncertain === false
       )
       await progress({ ...state.compaction!, status: definite ? 'failed' : 'uncertain',
         message: definite ? 'The native provider rejected compaction.' : 'Compaction is unconfirmed. Recover by reading this conversation.' })
+    } finally {
+      this.compacting.delete(requestId)
     }
     return state
   }
@@ -213,7 +241,10 @@ export class SessionControlStore {
       throw new DomainError('SESSION_PREFERENCE_UNSUPPORTED', 'This native profile does not support the selected context option.', 422)
     }
     const budget = preferences.contextBudget ?? preferences.autoCompactTokens
-    if (budget !== null && capabilities.modelCapacity !== null && budget > capabilities.modelCapacity) {
+    const capacity = preferences.contextProfile === null
+      ? capabilities.nativeDefaultCapacity ?? capabilities.modelCapacity
+      : capabilities.contextProfiles.find(profile => profile.id === preferences.contextProfile)?.capacity ?? null
+    if (budget !== null && capacity !== null && budget > capacity) {
       throw new DomainError('SESSION_BUDGET_TOO_LARGE', 'The budget exceeds this model’s supported capacity.', 422)
     }
     if (preferences.contextBudget !== null && state.context?.usedTokens !== null
@@ -286,6 +317,23 @@ export class SessionControlStore {
       where conversation_id=idle.id and (record->>'revision')::bigint=$3`,
     [state.conversationId!, JSON.stringify(saved), revision])
     if (result.rowCount !== 1) throw new DomainError('SESSION_BUSY', 'The conversation changed or another turn started. Refresh its status.', 409)
+    state.revision = saved.revision
+  }
+
+  private async saveDefaults(binding: SessionControlBinding, state: SessionControlState) {
+    const revision = state.revision
+    const saved = { ...state, revision: revision + 1 }
+    const result = await this.pool.query(`with saved as (
+      update conversation_session_controls set record=$2::jsonb
+      where conversation_id=$1 and (record->>'revision')::bigint=$3 returning conversation_id
+    ) insert into conversation_session_defaults(principal_id,role,subject,profile_key,record)
+      select $4,$5,$6,$7,$8::jsonb from saved where true
+      on conflict(principal_id,role,subject,profile_key) do update set record=excluded.record`,
+    [state.conversationId, JSON.stringify(saved), revision, binding.principalId, this.role,
+      binding.defaultSubject, binding.profileKey, JSON.stringify(state.defaults)])
+    if (result.rowCount !== 1) {
+      throw new DomainError('SESSION_CONTROL_CONFLICT', 'Session settings changed. Refresh the conversation.', 409)
+    }
     state.revision = saved.revision
   }
 

@@ -114,6 +114,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   async compactSession(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal) {
     this.assertSession(session)
     if (!this.receipt?.native) throw new Error('Original native ownership is unavailable')
+    await input.onDispatch?.()
     const value = z.object({ compaction: CompactionStateSchema, status: StatusSchema }).strict().parse(
       await this.request('session-compact', { native: this.receipt.native,
         requestId: input.requestId, clientCorrelationId: input.clientCorrelationId }, signal))

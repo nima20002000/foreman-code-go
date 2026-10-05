@@ -1,3 +1,5 @@
+import { SessionControlStore } from '../src/modules/conversations/sessionControls/store.js'
+import { SessionPreferencesSchema } from '@graphql/contracts'
 import { SessionControlStateSchema, unavailableSessionControls } from '@graphql/contracts'
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
@@ -168,6 +170,86 @@ afterEach(async () => {
 })
 
 describe.skipIf(!connectionString)('Operator chat persistence and native binding with stubbed authority', () => {
+  it('releases definite preflight failures and crash-left reservations without native dispatch', async () => {
+    const conversation = await chat.create(owner)
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Seed this session' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    Object.assign(manager, {
+      sessionControlCapabilities: async () => ({ ...unavailableSessionControls('profile'), compact: { supported: true, reason: null } }),
+      compactSession: async () => { throw new Error('Native transcript preflight failed') },
+    })
+    const before = await chat.readSessionControls(conversation.id, owner)
+    const rejected = await chat.changeSessionControls(conversation.id, { kind: 'compact',
+      requestId: randomUUID(), expectedRevision: before.revision }, owner)
+    expect(rejected.compaction?.status).toBe('failed')
+    const reservation = { ...rejected, compaction: { ...rejected.compaction!, status: 'accepted',
+      dispatchPhase: 'reserved', reservationOwner: 'previous-process' } }
+    await pool.query('update conversation_session_controls set record=$2::jsonb where conversation_id=$1',
+      [conversation.id, JSON.stringify(reservation)])
+    await chat.shutdown()
+    chat = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', authority)
+    const recovered = await chat.readSessionControls(conversation.id, owner)
+    expect(recovered.compaction?.status).toBe('failed')
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Recovered task' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+  }, 30000)
+
+  it('retains desired preferences and recovers their receipt after native application fails', async () => {
+    const conversation = await chat.create(owner)
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Seed this session' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    const desired = SessionPreferencesSchema.parse({ autoCompact: 'off' })
+    let applications = 0
+    Object.assign(manager, {
+      sessionControlCapabilities: async () => ({ ...unavailableSessionControls('profile'), autoCompact: { supported: true, reason: null } }),
+      applySessionPreferences: async () => { applications++; throw new Error('Native response lost') },
+    })
+    const before = await chat.readSessionControls(conversation.id, owner)
+    const request = { kind: 'preferences' as const, preferences: desired,
+      requestId: randomUUID(), expectedRevision: before.revision }
+    await expect(chat.changeSessionControls(conversation.id, request, owner)).rejects.toMatchObject({ code: 'SESSION_CONTROL_UNCONFIRMED' })
+    await chat.shutdown()
+    chat = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', authority)
+    expect((await chat.readSessionControls(conversation.id, owner)).desired).toEqual(desired)
+    expect((await chat.changeSessionControls(conversation.id, request, owner)).desired).toEqual(desired)
+    expect(applications).toBe(1)
+  }, 30000)
+
+  it('reads persisted controls after restart with read-only ownership and no credentials', async () => {
+    const conversation = await chat.create(owner)
+    const before = await chat.readSessionControls(conversation.id, owner)
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Seed this session' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    await chat.shutdown()
+    await pool.query('update management_principals set grants=$2::jsonb where id=$1',
+      [owner.id, JSON.stringify([{ actions: ['operator_chat:read'], scope: {} }])])
+    authority.prepare = async () => { throw new Error('Read-only observation tried to issue a credential') }
+    chat = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', authority)
+    const read = await chat.readSessionControls(conversation.id, await access.currentOperator(owner.id))
+    expect(read.desired).toEqual(before.desired)
+    expect(manager.attachments).toBe(0)
+  }, 30000)
+
+  it('commits defaults only for the command that wins a concurrent revision update', async () => {
+    const conversation = await chat.create(owner)
+    const binding = { conversationId: conversation.id, principalId: owner.id, defaultSubject: 'application-operator',
+      profileKey: 'race-profile', busyReason: null,
+      pendingCapabilities: { ...unavailableSessionControls('race-profile'), autoCompact: { supported: true, reason: null } } }
+    const first = new SessionControlStore(pool, 'operator')
+    const second = new SessionControlStore(pool, 'operator')
+    const before = await first.read(binding)
+    const preferences = SessionPreferencesSchema.parse({ autoCompact: 'off' })
+    const results = await Promise.allSettled([first.execute(owner, 'mcp', {
+      kind: 'save-default', preferences, requestId: randomUUID(), expectedRevision: before.revision,
+    }, async () => binding), second.execute(owner, 'http', {
+      kind: 'preferences', preferences: SessionPreferencesSchema.parse({ autoCompact: 'on' }),
+      requestId: randomUUID(), expectedRevision: before.revision,
+    }, async () => binding)])
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    const persisted = await new SessionControlStore(pool, 'operator').read(binding)
+    expect(persisted.defaults).toEqual(results[0]!.status === 'fulfilled' ? preferences : before.defaults)
+  }, 30000)
+
   it('admits Plan and preferences before the first native message without creating a turn', async () => {
     const conversation = await chat.create(owner)
     const empty = await chat.readSessionControls(conversation.id, owner)
@@ -261,7 +343,11 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       async sessionControlCapabilities() {
         return { ...unavailableSessionControls('fixture'), compact: { supported: true, reason: null } }
       },
-      async compactSession() { dispatches++; throw new Error('Native acknowledgement was lost') },
+      async compactSession(_session: NativeSessionReference, input: { onDispatch?(): Promise<void> }) {
+        await input.onDispatch?.()
+        dispatches++
+        throw new Error('Native acknowledgement was lost')
+      },
       async reconcileCompaction(_session: NativeSessionReference, state: unknown) {
         const control = SessionControlStateSchema.shape.compaction.unwrap().parse(state)
         return confirmed ? { ...control, status: 'completed', message: 'Context compacted.' } : control

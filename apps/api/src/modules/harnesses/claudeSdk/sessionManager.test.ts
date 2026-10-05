@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { SessionPreferencesSchema } from '@graphql/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import type { NativeSessionStart } from '../port.js'
 import { ClaudeBoundedQueue } from './queue.js'
@@ -8,7 +12,7 @@ import type { ClaudeSdkClient, ClaudeSdkUserMessage } from './port.js'
 const scope = { deviceId: 'device-a', profilePath: '/profile-a', configRevision: 'revision-a', cwd: '/work' }
 const qualification = { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: true, history: true }
 const start = { kind: 'operator', correlationId: 'operator:one', configuration: {}, workingDirectory: '/work' } as NativeSessionStart
-function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionManager>[0]['decodeFactory'], extra: Partial<Pick<Parameters<typeof createClaudeNativeSessionManager>[0], 'liveCallbacks' | 'interactionPort' | 'qualification' | 'pendingInteractions' | 'inspectionStart' | 'expectedMcp' | 'credentialEnvironmentVariables' | 'appMcpAccess' | 'sdkOptions' | 'initializationTimeoutMs'>> = {}) {
+function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionManager>[0]['decodeFactory'], extra: Partial<Pick<Parameters<typeof createClaudeNativeSessionManager>[0], 'liveCallbacks' | 'interactionPort' | 'qualification' | 'pendingInteractions' | 'inspectionStart' | 'expectedMcp' | 'credentialEnvironmentVariables' | 'appMcpAccess' | 'sdkOptions' | 'initializationTimeoutMs' | 'scope'>> = {}) {
   const frames = new ClaudeBoundedQueue<unknown>(32)
   let messages: AsyncIterator<ClaudeSdkUserMessage>
   let ready!: () => void
@@ -728,4 +732,90 @@ describe('Claude native session manager admission', () => {
     await output.return?.(); await f.manager.dispose?.()
   })
 
+})
+
+it('applies preferences by idle exact-session resume and retains the admitted security configuration', async () => {
+  const security = { model: 'sonnet', permissionMode: 'default', tools: ['Read'],
+    sandbox: { enabled: true, allowUnsandboxedCommands: false }, settingSources: [], strictMcpConfig: true }
+  const f = fixture(undefined, { sdkOptions: security })
+  let frames = f.frames
+  f.client.query = input => {
+    f.queries(input)
+    frames = new ClaudeBoundedQueue(32)
+    return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](),
+      initializationResult: async () => ({ models: [{ value: 'sonnet', resolvedModel: 'claude-sonnet' },
+        { value: 'sonnet[1m]', resolvedModel: 'claude-sonnet' }] }),
+      getContextUsage: async () => ({ rawMaxTokens: input.options.model === 'sonnet[1m]' ? 1000000 : 200000,
+        maxTokens: 200000, totalTokens: 10, model: String(input.options.model),
+        isAutoCompactEnabled: (input.options.env as Record<string, string>)?.DISABLE_AUTO_COMPACT !== '1' }),
+      interrupt: f.interrupt, close: () => frames.close(), setPermissionMode: async () => {},
+    }
+  }
+  const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+    nativeSessionId: 'native-session' }, start)
+  const desired = SessionPreferencesSchema.parse({ autoCompact: 'off', autoCompactTokens: 150000 })
+  await f.manager.applySessionPreferences!(session, desired)
+  expect(f.manager.appliedSessionPreferences!(session)).toEqual(desired)
+  const resumed = f.queries.mock.calls.at(-1)![0]
+  expect(resumed.options).toMatchObject({ ...security, resume: 'native-session',
+    env: { DISABLE_AUTO_COMPACT: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '150000' } })
+  await f.manager.applySessionPreferences!(session, SessionPreferencesSchema.parse({
+    autoCompact: 'on', contextProfile: 'sonnet[1m]', autoCompactTokens: 500000,
+  }))
+  expect(f.manager.appliedSessionPreferences!(session)?.contextProfile).toBe('sonnet[1m]')
+  expect((await f.manager.sessionControlCapabilities!(session)).modelCapacity).toBe(1000000)
+  expect(f.queries.mock.calls.at(-1)![0].options).toMatchObject({ ...security, model: 'sonnet[1m]', resume: 'native-session' })
+  await f.manager.dispose!()
+})
+
+it('rejects an oversized fresh budget before the first model input', async () => {
+  const f = fixture(undefined, { sdkOptions: { model: 'sonnet' } })
+  const query = f.client.query
+  f.client.query = input => ({ ...query(input), getContextUsage: async () => ({ rawMaxTokens: 200000,
+    maxTokens: 200000, totalTokens: 0, model: 'sonnet', isAutoCompactEnabled: true }) })
+  await f.manager.configureSessionPreferences!(SessionPreferencesSchema.parse({ autoCompactTokens: 1000000 }))
+  const events = drain(f.manager.startInitialTurn(start, { prompt: 'task', clientCorrelationId: 'operator:one',
+    onSessionObserved: async () => {} }))
+  await expect(events).rejects.toThrow('context capacity')
+  expect(f.offers).not.toHaveBeenCalled()
+  await f.manager.dispose!()
+})
+
+for (const result of ['no-op', 'failed'] as const) it(`recovers a lost ${result} compaction result while resident and after restart`, async () => {
+  const profilePath = await mkdtemp(join(tmpdir(), 'claude-controls-'))
+  const localScope = { ...scope, profilePath }
+  const f = fixture(undefined, { scope: localScope })
+  const open = f.runner.open
+  f.runner.open = async input => {
+    const sdk = await open(input)
+    return { ...sdk, output: { async *[Symbol.asyncIterator]() {
+      for await (const output of sdk.output) {
+        if ((output.raw as { type?: string }).type !== 'result') yield output
+      }
+    } } }
+  }
+  f.runner.compactionHistory = async () => ({ cursor: { scope: 'scope', identity: 'identity', offset: 0 }, boundaries: [] })
+  const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
+  f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId,
+    cwd: '/work', claude_code_version: '2.1.284', slash_commands: ['compact'] })
+  await vi.waitFor(async () => expect((await f.manager.sessionControlCapabilities!(session)).compact.supported).toBe(true))
+  const abort = new AbortController()
+  let state: import('@graphql/contracts').CompactionState | undefined
+  const compact = f.manager.compactSession!(session, { requestId: 'compact-request', clientCorrelationId: 'compact-correlation',
+    onProgress: async value => { state = value } }, abort.signal)
+  const message = await f.nextMessage()
+  f.frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+    is_error: result === 'failed', subtype: result === 'failed' ? 'error_during_execution' : 'success', result: 'Nothing to compact' })
+  await vi.waitFor(async () => expect(await f.runner.compactionOutcome!({ ...localScope, nativeSessionId: session.nativeSessionId },
+    localScope, message.uuid)).toMatchObject({ status: result }))
+  abort.abort(new Error('Native notification was lost'))
+  await expect(compact).rejects.toThrow('lost')
+  const pending = { ...state!, status: 'uncertain' as const }
+  expect((await f.manager.reconcileCompaction!(session, pending)).status).toBe(result)
+  await f.manager.dispose!()
+  const restarted = fixture(undefined, { scope: localScope })
+  const rebound = await restarted.manager.attachSession(session, start)
+  expect((await restarted.manager.reconcileCompaction!(rebound, pending)).status).toBe(result)
+  await restarted.manager.dispose!()
+  await rm(profilePath, { recursive: true, force: true })
 })

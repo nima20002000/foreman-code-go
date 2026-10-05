@@ -10,6 +10,7 @@ export interface ClaudeSdkUserMessage {
 
 export interface ClaudeSdkQuery extends AsyncIterable<unknown> {
   setPermissionMode?(mode: 'default' | 'plan'): Promise<void>
+  getContextUsage?(options: { detail: 'summary' }): Promise<unknown>
   interrupt(): Promise<unknown>
   /** First-connect answer only; does not resend initialize or offer input. */
   initializationResult?(): Promise<unknown>
@@ -85,6 +86,7 @@ export interface ClaudeSdkSession {
   assertInputCapacity(): void
   offer(input: { promptUuid: string; content: string }, signal?: AbortSignal): Promise<{ state: 'queue-offered'; promptUuid: string }>
   setPermissionMode?(mode: 'default' | 'plan'): Promise<void>
+  getContextUsage?(options: { detail: 'summary' }): Promise<unknown>
   interrupt(): Promise<unknown>
   initializationResult?(): Promise<unknown>
   mcpServerStatus?(): Promise<readonly unknown[]>
@@ -101,6 +103,8 @@ export interface ClaudeSdkRunner {
   fork(source: ClaudePersistedSession, target: ClaudeSessionScope, signal?: AbortSignal): Promise<ClaudePersistedSession>
   history(session: ClaudePersistedSession, scope: ClaudeSessionScope, signal?: AbortSignal, page?: { offset: number; limit: number }): Promise<readonly unknown[]>
   subagentHistory?(session: ClaudePersistedSession, scope: ClaudeSessionScope, agentId?: string, offset?: number, signal?: AbortSignal): Promise<{ agentIds: string[]; agentId?: string; messages: readonly unknown[]; hasMore: boolean }>
+  compactionOutcome?(session: ClaudePersistedSession, scope: ClaudeSessionScope, promptUuid: string):
+    Promise<{ status: 'completed' | 'no-op' | 'failed'; observedAt: string } | null>
   compactionHistory?(session: ClaudePersistedSession, scope: ClaudeSessionScope,
     cursor?: import('./compactionHistory.js').ClaudeCompactionCursor, signal?: AbortSignal): Promise<{
       cursor: import('./compactionHistory.js').ClaudeCompactionCursor; boundaries: Record<string, unknown>[];

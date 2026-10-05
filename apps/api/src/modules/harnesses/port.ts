@@ -67,6 +67,8 @@ export interface NativeCompactInput {
   requestId: string
   clientCorrelationId: string
   onProgress(state: CompactionState): Promise<void>
+  /** Persist dispatch and recovery metadata before sending the native command. */
+  onDispatch?(): Promise<void>
 }
 
 export interface NativeTurnInput {

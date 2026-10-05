@@ -445,6 +445,7 @@ it('keeps the admitted mode in worker turn replay identity after journal restart
   await f.host.startTurn(f.intent.operationId, 'prompt', 'execution:execution', 'plan')
   await expect(f.host.startTurn(f.intent.operationId, 'prompt', 'execution:execution', 'regular'))
     .rejects.toThrow('Turn input binding conflict')
+  await f.host.drain()
   await f.journal.close()
   const reopened = await RemoteOperationJournal.open(join(roots.at(-1)!, 'journal'))
   journals.push(reopened)

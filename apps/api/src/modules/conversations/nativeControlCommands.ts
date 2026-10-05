@@ -44,6 +44,7 @@ export class NativeConversationControlCommands<State> {
 
   constructor(private readonly pool: Pick<pg.Pool, 'query'>, private readonly contract: {
     operation: 'agent_chat_control' | 'operator_chat_control'; parse(value: unknown): State; prefix: string; label: string;
+    recoverOutcome?(state: State, payload: unknown, requestId: string): boolean;
     auditOutcome?(state: State, payload: unknown): 'succeeded' | 'failed' | 'uncertain';
   }) {}
 
@@ -158,6 +159,20 @@ export class NativeConversationControlCommands<State> {
           select $1,$6,$2,target_key,'succeeded',jsonb_build_object('commandId',$3::text,'phase','reconciled') from recovered returning 1`,
         [...key, JSON.stringify(recovered), JSON.stringify(prior.result), source])
         if (saved.rowCount === 1) return state
+      }
+      if (readCurrent && this.contract.recoverOutcome) {
+        const state = this.contract.parse(await readCurrent())
+        if (this.contract.recoverOutcome(state, payload, requestId)) {
+          const result = { ...prior.result, status: 'completed', state }
+          await this.pool.query(`with recovered as (
+            update management_command_receipts set result=$5::jsonb
+            where principal_id=$1 and operation=$2 and command_id=$3 and result=$4::jsonb returning target_key
+          ) insert into management_audit(principal_id,source,action,target_key,outcome,details)
+            select $1,$6,$2,target_key,$7,jsonb_build_object('commandId',$3::text,'phase','reconciled') from recovered`,
+          [...key, JSON.stringify(prior.result), JSON.stringify(result), source,
+            this.contract.auditOutcome?.(state, payload) ?? 'succeeded'])
+          return state
+        }
       }
       throw unconfirmed(requestId, this.contract.prefix)
     }

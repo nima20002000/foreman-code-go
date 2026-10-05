@@ -1,3 +1,4 @@
+import { SessionPreferencesSchema, type CompactionState } from '@graphql/contracts'
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
@@ -193,6 +194,39 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await rm(f.directory, { recursive: true, force: true })
     const failure = results.find((value) => value.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
+  })
+
+  it('recovers a resident compaction from native history when completion notifications are lost', async () => {
+    const session = await manager.createSession(source)
+    await flag('drop-compact-events')
+    const abort = new AbortController()
+    let control: CompactionState | undefined
+    const operation = manager.compactSession(session, { requestId: 'compact-request', clientCorrelationId: 'control-request',
+      onProgress: async value => { control = value } }, abort.signal)
+    await until(async () => (await wire('thread/compact/start')).length === 1)
+    abort.abort(new Error('Completion notification lost'))
+    await assert.rejects(operation)
+    const recovered = await manager.reconcileCompaction(session, { ...control!, status: 'uncertain' })
+    assert.equal(recovered.status, 'completed')
+    assert.equal((await wire('thread/compact/start')).length, 1)
+    const turn = await start(session, 'follow-up', 'after-compaction')
+    await finish(f.directory, session.nativeSessionId)
+    await turn.result
+  })
+
+  it('discovers budget choices from model facts when a saved override starts or resumes the session', async () => {
+    await json('models.json', { models: [{ slug: 'test-model', context_window: 200000,
+      supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }], additional_speed_tiers: ['fast'] }] })
+    source = { ...source, sessionPreferences: SessionPreferencesSchema.parse({ contextBudget: 100000 }) }
+    const session = await manager.createSession(source)
+    assert.deepEqual((await manager.sessionControlCapabilities(session)).contextBudgets, [100000, 200000])
+    await manager.closeForRestart(session)
+    const resumed = makeManager()
+    await resumed.attachSession(session, source)
+    assert.deepEqual((await resumed.sessionControlCapabilities(session)).contextBudgets, [100000, 200000])
+    await resumed.applySessionPreferences(session, SessionPreferencesSchema.parse({}))
+    const last = (await wire('thread/resume')).at(-1)!
+    assert.equal((last.params as { config: Record<string, unknown> }).config.model_context_window, undefined)
   })
 
   it('reattaches an original resident without launching, resuming, replaying or reading turn history', async () => {

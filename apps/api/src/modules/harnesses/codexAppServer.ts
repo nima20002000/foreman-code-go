@@ -210,6 +210,7 @@ interface Runtime extends TurnSnapshot {
   disposed: boolean
 }
 interface Prepared {
+  contextBudgetLimit?: number | undefined
   input: NativeSessionStart
   harnessConfiguration: CodexHarnessConfiguration
   workingDirectory: string
@@ -869,7 +870,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     return { compact: { supported: compact, reason: compact ? null : 'Native compaction is unavailable in this schema.' },
       plan: { supported: plan, reason: plan ? null : 'Native Plan mode is unavailable in this schema.' },
       autoCompact: unsupported, autoCompactBudget: unsupported, contextBudgetReason, contextBudgets: budgets, contextProfiles: [],
-      modelCapacity: null, model: runtime.configuration.model, profileKey: createHash('sha256').update(runtime.configurationIdentity).digest('hex') }
+      modelCapacity: capacity, model: runtime.configuration.model, profileKey: createHash('sha256').update(runtime.configurationIdentity).digest('hex') }
   }
 
   contextSnapshot(session: NativeSessionReference): ContextSnapshot | null {
@@ -889,6 +890,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         beforeTokens: runtime.context?.usedTokens ?? null, observedAt: new Date().toISOString() }
       try {
         await input.onProgress(runtime.compaction)
+        await input.onDispatch?.()
         await runtime.transport.request('thread/compact/start', { threadId: session.nativeSessionId }, signal)
         await input.onProgress(runtime.compaction)
         const waitSignal = AbortSignal.any([this.shutdownController.signal, AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
@@ -910,18 +912,27 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   async reconcileCompaction(session: NativeSessionReference, state: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
     const runtime = this.requireRuntime(session)
-    if (runtime.compaction?.requestId === state.requestId) return runtime.compaction
+    if (runtime.compaction?.requestId === state.requestId) {
+      state = runtime.compaction
+      if (!['accepted', 'running', 'uncertain'].includes(state.status)) return state
+    }
     if (state.nativeSessionId !== session.nativeSessionId) return state
     const result = await codexRequest(runtime.transport, 'thread/read', { threadId: session.nativeSessionId, includeTurns: true }, signal)
     let turn = result.thread.turns.find(entry => entry.id === state.nativeOperationId)
-    if (!turn && state.baselineTurnId) {
-      const baseline = result.thread.turns.findIndex(entry => entry.id === state.baselineTurnId)
-      const matches = baseline < 0 ? [] : result.thread.turns.slice(baseline + 1)
+    if (!turn && state.baselineTurnId !== undefined) {
+      const baseline = state.baselineTurnId === null ? -1
+        : result.thread.turns.findIndex(entry => entry.id === state.baselineTurnId)
+      const matches = baseline < 0 && state.baselineTurnId !== null ? [] : result.thread.turns.slice(baseline + 1)
         .filter(entry => entry.items.some(item => item.type === 'contextCompaction'))
       if (matches.length === 1) turn = matches[0]
     }
     if (!turn) return state
-    return codexCompactionNotification({ ...state, nativeOperationId: turn.id }, 'turn/completed', { threadId: session.nativeSessionId, turn })
+    const recovered = codexCompactionNotification({ ...state, nativeOperationId: turn.id }, 'turn/completed', {
+      threadId: session.nativeSessionId, turn,
+    })
+    runtime.compaction = recovered
+    if (recovered.status === 'completed' && runtime.context) runtime.context = { ...runtime.context, stale: true }
+    return recovered
   }
 
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
@@ -1885,7 +1896,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     validateEnvironmentOwner(input, scopedCredentialVariable)
     const strippedCredentialVariable = this.appMcpAccess === 'none' ? excludedCredentialVariable : scopedCredentialVariable
     const scopedEnvironment = this.dependencies.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
-    await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
+    const modelFacts = await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
       io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal,
       undefined, { qualified, assertUnchanged: io.assertUnchanged,
         transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
@@ -1898,7 +1909,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       signal.throwIfAborted()
     }
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, strippedCredentialVariable, environment: scopedEnvironment, qualified,
-      disabledAppMcpServerNames,
+      disabledAppMcpServerNames, contextBudgetLimit: modelFacts?.contextWindow ?? undefined,
     }
   }
 
@@ -2025,6 +2036,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private runtime(prepared: Prepared, session: NativeSessionReference, transport: CodexTransport, attached = false): Runtime {
     return {
+      ...(prepared.contextBudgetLimit ? { contextBudgetLimit: prepared.contextBudgetLimit } : {}),
       connectionId: this.dependencies.id(), schemaIdentity: prepared.qualified.schemaManifestSha256, arrivalOrdinal: 0, attached,
       binding: binding(prepared.input), ownerId: ownerId(prepared.input), configurationIdentity: canonical(accepted(prepared.input)),
       input: prepared.input, workingDirectory: prepared.workingDirectory, configuration: prepared.harnessConfiguration,

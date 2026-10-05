@@ -112,7 +112,10 @@ export class RemoteExecutionHost {
       if (frame.method === 'session-compact-reconcile') {
         const saved = await this.ports.journal.sessionControl(frame.intent.operationId, frame.state.requestId)
         if (!saved || !isDeepStrictEqual(saved.native, frame.native)) throw new Error('The original compaction is not in this worker journal')
-        const state = resident.manager.reconcileCompaction
+        const undispatched = saved.state.dispatchPhase && saved.state.dispatchPhase !== 'dispatched'
+          && saved.state.reservationOwner !== this.ports.incarnationId
+        const state = undispatched ? { ...saved.state, status: 'failed' as const,
+          message: 'The worker stopped before native dispatch.' } : resident.manager.reconcileCompaction
           ? await resident.manager.reconcileCompaction(resident.session, saved.state) : saved.state
         return { compaction: await this.ports.journal.saveSessionControl(frame.intent.operationId, state), status }
       }
@@ -121,12 +124,20 @@ export class RemoteExecutionHost {
       const reserved = await this.ports.journal.reserveSessionControl(frame.intent.operationId, input, frame.native)
       if (!reserved.dispatch) return { compaction: reserved.state, status }
       let result = reserved.state
+      let dispatched = false
       try {
         await this.ports.authorize(resident.intent, resident.placement, 'control')
         result = await resident.manager.compactSession(resident.session, { ...input,
-          onProgress: async state => { result = state; await this.ports.journal.saveSessionControl(frame.intent.operationId, state) } }, resident.controller.signal)
+          onProgress: async state => {
+            result = { ...result, ...state }
+            await this.ports.journal.saveSessionControl(frame.intent.operationId, result)
+          }, onDispatch: async () => {
+            result = { ...result, dispatchPhase: 'dispatched' }
+            await this.ports.journal.saveSessionControl(frame.intent.operationId, result)
+            dispatched = true
+          } }, resident.controller.signal)
       } catch (error) {
-        const definite = error && typeof error === 'object' && 'certainty' in error && error.certainty === 'definite'
+        const definite = !dispatched || error && typeof error === 'object' && 'certainty' in error && error.certainty === 'definite'
         result = { ...result, status: definite ? 'failed' : 'uncertain', message: 'Read the original worker compaction to recover its outcome.' }
       }
       return { compaction: await this.ports.journal.saveSessionControl(frame.intent.operationId, result), status }

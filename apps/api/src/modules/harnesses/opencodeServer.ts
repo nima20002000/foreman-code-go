@@ -403,6 +403,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       const [providerID, ...model] = state.configuration.model.split('/')
       let accepted: unknown
       try {
+        await input.onDispatch?.()
         accepted = await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/summarize`, state.directory), {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ providerID, modelID: model.join('/'), auto: false }),
