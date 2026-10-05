@@ -40,7 +40,7 @@ import { createWorkflowJobComposition } from './workflowComposition.js'
 import { JobApplicationBridge } from '../runs/remote/jobApplicationBridge.js'
 import { dirname, join } from 'node:path'
 import { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
-import { BuildComputerSettings, buildComputerTarget } from '../settings/buildComputers.js'
+import { assertBuildComputerTarget, BuildComputerSettings, buildComputerTarget } from '../settings/buildComputers.js'
 import { buildComputerReadiness } from '../settings/buildComputerReadiness.js'
 import { JobComputerSelection, releaseClosedJobComputers } from './computerSelection.js'
 import { JobBuildQueueConfigurationSchema, type JobBuildQueueConfiguration } from '@graphql/contracts/job-admission'
@@ -195,13 +195,21 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     prepareWaiting: (): Promise<void> => jobs.wakeQueue(),
     capacityChanged: requestQueueWake,
     refreshRuntime: executionId => metadataRecovery.refreshExecution(executionId),
-    revalidate: (sql, execution, principal) => preparationPort.revalidateAccepted(sql, principal, execution),
+    revalidate: async (sql, execution, principal, options) => {
+      await assertBuildComputerTarget(sql, buildComputerTarget(execution.acceptedSpec.target))
+      await preparationPort.revalidateAccepted(sql, principal, execution, options)
+    },
     authorizeLaunch: async (sql, execution) => {
       await buildComputers.requireEnabled(sql, buildComputerTarget(execution.acceptedSpec.target))
     },
     authorizeControl: async (sql, execution) => {
       const target = execution.acceptedSpec.target
-      await assertDeviceHostInstallation(sql, target.hostRef, target.hostRef.kind === 'main' ? target.hostRef.mainId : target.registration!.workerInstallationId)
+      const registration = await assertDeviceHostInstallation(sql, target.hostRef,
+        target.hostRef.kind === 'main' ? target.hostRef.mainId : target.registration!.workerInstallationId)
+      if (registration && (registration.keyRevision !== target.registration?.keyRevision
+        || registration.authorizationRevision !== target.registration.authorizationRevision)) {
+        throw new DomainError('JOB_CONTROL_HOST_CONFLICT', 'Control requires the original accepted computer authority.', 403)
+      }
     },
     async settleSource(executionId) {
       const row = (await input.pool.query<{ record: unknown; state: string }>(

@@ -20,7 +20,8 @@ import type { JobWorkerFence } from './worker.js'
 
 export interface JobDispatchHost {
   /** Actual W07 registration/boot/current connection and W09 source/root qualification. */
-  revalidate(sql:JobSql,execution:JobExecution,principal:ManagementPrincipal):Promise<void>
+  revalidate(sql:JobSql,execution:JobExecution,principal:ManagementPrincipal,
+    options?: { requireQualification: boolean }):Promise<void>
   authorizeControl(sql:JobSql,execution:JobExecution,principal:ManagementPrincipal):Promise<void>
   authorizeLaunch?(sql:JobSql,execution:JobExecution):Promise<void>
   observe(sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt):Promise<void>
@@ -63,14 +64,15 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     if(!live)throw new DomainError('JOB_OWNERSHIP_LOST','The original main job owner session is no longer live.',409)
   }
   /** Launch/publication never borrow committed cleanup stop authority. */
-  async require(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {
+  async require(sql:JobSql,execution:JobExecution,fence:JobWorkerFence,
+    options?: { requireQualification: boolean }):Promise<void> {
     await this.requireOwner(sql,execution,fence)
     if(await readRunJobCleanup(sql,execution))throw new DomainError('JOB_CLEANUP_ONLY','The original Run owner admitted stop/closure only, not launch or publication.',409)
     const accepted=(await sql.query<{accepted_by:string;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>(`select e.accepted_by,d.cancel_principal_id,d.cancel_action from job_executions e join job_dispatch_intents d on d.execution_id=e.id where e.id=$1`,[execution.id])).rows[0]!
     const principal=await readLiveManagementPrincipal(sql,accepted.cancel_principal_id??accepted.accepted_by)
     requireAuthorization(principal,accepted.cancel_principal_id?accepted.cancel_action!:execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
     if(accepted.cancel_principal_id)await this.host.authorizeControl(sql,execution,principal)
-    else await this.host.revalidate(sql,execution,principal)
+    else await this.host.revalidate(sql,execution,principal,options)
   }
   async requireControl(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {
     await this.requireOwner(sql,execution,fence)
@@ -78,7 +80,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     await this.require(sql,execution,fence)
   }
   async requireLaunch(sql: JobSql, execution: JobExecution, fence: JobWorkerFence): Promise<void> {
-    await this.require(sql, execution, fence)
+    await this.require(sql, execution, fence, { requireQualification: true })
     await this.host.authorizeLaunch?.(sql, execution)
   }
   /** Only trusted carrier receipt ingress uses this. No file write/read capability. */
@@ -93,10 +95,6 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         return
       }
     }
-    const unfinished = (await this.pool.query(`select 1 from job_executions where id=$1
-      and (record #>> '{process,phase}'<>'terminal' or record->>'publication' in ('pending','collecting'))`,
-    [executionId])).rowCount
-    if (unfinished) await this.host.refreshRuntime?.(executionId)
     let active=this.owners.get(executionId)
     if(!active) {
       const abort=new AbortController(),owner=await JobOwnership.acquire(this.pool,executionId,()=>abort.abort())
@@ -106,6 +104,14 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     const {owner,abort}=active
     active.pendingRequests++
     try {
+      const closedBeforeDelivery = await this.closeUndelivered(owner, executionId)
+      if (closedBeforeDelivery) {
+        await this.settle(executionId)
+        return
+      }
+      const launchable = (await this.pool.query(`select 1 from job_dispatch_intents
+        where execution_id=$1 and not delivery_attempted and cancel_command_id is null`, [executionId])).rowCount
+      if (launchable) await this.host.refreshRuntime?.(executionId)
       const prepared=await owner.connection.transaction(async sql=>{
         const scope=(await sql.query<{workspace_id:string}>('select workspace_id from job_executions where id=$1',[executionId])).rows[0]
         if(!scope)throw new DomainError('JOB_NOT_FOUND','The accepted job is missing.',404)
@@ -127,11 +133,13 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
           const principal=await readLiveManagementPrincipal(sql,row.cancel_command_id?row.cancel_principal_id!:accepted.accepted_by)
           requireAuthorization(principal,row.cancel_command_id?row.cancel_action!:execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
           if(row.cancel_command_id)await this.host.authorizeControl(sql,execution,principal)
-          else await this.host.revalidate(sql,execution,principal)
+          else await this.host.revalidate(sql,execution,principal,
+            { requireQualification: !row.delivery_attempted })
         }
         const fence=await owner.readFence(sql)
         await sql.query('update job_dispatch_intents set owner_id=$2,owner_fence=$3 where execution_id=$1',[executionId,fence.ownerId,fence.fence])
-        beforeGraphCommit(sql,()=>cleanup?this.requireControl(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}):this.require(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}))
+        beforeGraphCommit(sql,()=>cleanup?this.requireControl(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}):this.require(sql,execution,{attemptId:execution.attemptId,owner:execution.owner},
+          { requireQualification: !row.delivery_attempted && !row.cancel_command_id && execution.process.phase !== 'terminal' }))
         if(row.cancel_command_id&&!row.delivery_attempted) {
           execution.process={phase:'terminal',outcome:'cancelled',exitCode:null,signal:null,processStopped:true};execution.finishedAt=new Date().toISOString();execution.publication='complete';execution.updatedAt=execution.finishedAt
           await this.repository.putExecution(sql,execution)
@@ -182,6 +190,47 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         await this.settle(executionId)
       }
     }
+  }
+  private async closeUndelivered(owner: JobOwnership, executionId: string): Promise<boolean> {
+    return owner.connection.transaction(async sql => {
+      const scope = (await sql.query<{ workspace_id: string }>(
+        'select workspace_id from job_executions where id=$1', [executionId])).rows[0]
+      if (!scope) throw new DomainError('JOB_NOT_FOUND', 'The accepted Job is missing.', 404)
+      const execution = await this.readExecutionLocked(sql, scope.workspace_id, executionId)
+      const row = (await sql.query<{ delivery_attempted: boolean; cancel_command_id: string | null }>(
+        'select delivery_attempted,cancel_command_id from job_dispatch_intents where execution_id=$1 for update',
+        [executionId])).rows[0]!
+      const fence = await owner.readFence(sql)
+      await sql.query('update job_dispatch_intents set owner_id=$2,owner_fence=$3 where execution_id=$1',
+        [executionId, fence.ownerId, fence.fence])
+      if (execution.process.phase === 'terminal') {
+        return execution.process.processStopped && !['pending', 'collecting'].includes(execution.publication)
+      }
+      if (row.delivery_attempted) return false
+      let outcome: 'cancelled' | 'preparation_failed' = 'cancelled'
+      if (!row.cancel_command_id) {
+        try {
+          await this.host.authorizeLaunch?.(sql, execution)
+          return false
+        } catch (error) {
+          if (!(error instanceof DomainError) || error.code !== 'BUILD_COMPUTER_DISABLED') throw error
+          outcome = 'preparation_failed'
+          execution.launchIssue = 'build_disabled'
+          await sql.query("update job_dispatch_intents set launch_blocked_reason='build_disabled' where execution_id=$1",
+            [executionId])
+        }
+      }
+      if (row.cancel_command_id) await this.requireControl(sql, execution,
+        { attemptId: execution.attemptId, owner: execution.owner })
+      beforeGraphCommit(sql, () => this.requireOwner(sql, execution,
+        { attemptId: execution.attemptId, owner: execution.owner }))
+      execution.process = { phase: 'terminal', outcome, exitCode: null, signal: null, processStopped: true }
+      execution.finishedAt = new Date().toISOString()
+      execution.updatedAt = execution.finishedAt
+      execution.publication = 'complete'
+      await this.repository.putExecution(sql, execution)
+      return true
+    })
   }
   /** W07/W08 validated receipt ingress. Retains the original main owner across asynchronous work. */
   async observeReceipt(workspaceId:string,executionId:string,receipt:RemoteJobOperationReceipt):Promise<void> {
@@ -244,6 +293,46 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     await sql.query('update job_dispatch_intents set receipt_sequence=$2,last_receipt=$3::jsonb where execution_id=$1',[execution.id,receipt.sequence,JSON.stringify(receipt)])
     return true
   }
+  /** SQL-only accepted closure evidence; never contacts a worker or acquires execution authority. */
+  async readAcceptedNonEntryClosure(sql: JobSql, input: {
+    workspaceId: string; executionId: string; attemptId: string; operationId: string;
+    bindingHash: string; owner: JobExecution['owner']
+  }): Promise<boolean> {
+    const row = (await sql.query<{
+      record: unknown; accepted_spec: unknown; intent: unknown; delivery_attempted: boolean;
+      last_receipt: unknown; cancel_command_id: string | null; launch_blocked_reason: string | null;
+    }>(`select e.record,e.accepted_spec,d.intent,d.delivery_attempted,d.last_receipt,
+        d.cancel_command_id,d.launch_blocked_reason
+      from job_executions e join job_dispatch_intents d
+        on d.execution_id=e.id and d.workspace_id=e.workspace_id
+      where e.workspace_id=$1 and e.id=$2 and e.attempt_id=$3 and e.operation_id=$4
+      for share of e,d`,
+    [input.workspaceId, input.executionId, input.attemptId, input.operationId])).rows[0]
+    if (!row || row.delivery_attempted || row.last_receipt) return false
+    const execution = JobExecutionSchema.parse(row.record)
+    const intent = RemoteJobDispatchIntentSchema.parse(row.intent)
+    const subject = execution.workflow
+      ? { kind: 'workflow-node', workspaceId: execution.workspaceId, ...execution.workflow }
+      : { kind: 'manual-job', workspaceId: execution.workspaceId, jobExecutionId: execution.id,
+        definitionId: execution.acceptedSpec.definitionId }
+    if (execution.id !== input.executionId || execution.workspaceId !== input.workspaceId
+      || execution.attemptId !== input.attemptId || execution.operationId !== input.operationId
+      || execution.acceptedSpec.bindingHash !== input.bindingHash || canonical(execution.owner) !== canonical(input.owner)
+      || canonical(execution.acceptedSpec) !== canonical(row.accepted_spec)
+      || intent.executionId !== execution.id || intent.attemptId !== execution.attemptId
+      || intent.operationId !== execution.operationId || intent.bindingHash !== input.bindingHash
+      || intent.inputDigest !== `sha256:${execution.acceptedSpec.specDigest}`
+      || intent.mainId !== execution.acceptedSpec.target.mainId
+      || canonical(intent.subject) !== canonical(subject) || canonical(intent.owner) !== canonical(execution.owner)) {
+      throw new DomainError('JOB_CLOSURE_PIN_CONFLICT', 'Non-entry closure differs from the accepted Job attempt.', 409)
+    }
+    if (execution.process.phase !== 'terminal' || !execution.process.processStopped
+      || execution.publication !== 'complete' || execution.startedAt !== null || !execution.finishedAt) return false
+    // The Job lock and live owner fence commit terminal state before any carrier call.
+    return (execution.process.outcome === 'cancelled' && row.cancel_command_id !== null)
+      || (execution.process.outcome === 'preparation_failed' && row.launch_blocked_reason === 'build_disabled')
+  }
+
   /** SQL-only accepted closure evidence; never contacts a worker or acquires execution authority. */
   async readAcceptedClosureReceipt(sql:JobSql,input:{workspaceId:string;executionId:string;attemptId:string;operationId:string;bindingHash:string;owner:JobExecution['owner']}):Promise<RemoteJobOperationReceipt|null> {
     const row=(await sql.query<{record:unknown;accepted_spec:unknown;intent:unknown;last_receipt:unknown;receipt_sequence:string}>(`select e.record,e.accepted_spec,d.intent,d.last_receipt,d.receipt_sequence::text

@@ -23,10 +23,21 @@ function fixture() {
 describe('original accepted source revalidation',()=>{
   it('uses the original root and immutable definition rather than a changed authoring catalog',async()=>{
     const f=fixture()
-    await f.service.revalidateAccepted({query:f.query as JobSql['query']},principal,f.execution)
+    await f.service.revalidateAccepted({query:f.query as JobSql['query']},principal,f.execution,
+      { requireQualification: true })
     expect(f.resolveRootBinding).toHaveBeenCalledWith(expect.anything(),principal,{workspaceId:f.execution.workspaceId,rootId:f.root.binding.rootId,bindingRevision:1,source:f.root.source})
     expect(f.runtime.revalidate).toHaveBeenCalledOnce();expect(f.runtime.choices).not.toHaveBeenCalled();expect(f.prepare).not.toHaveBeenCalled()
     expect(f.query.mock.calls.some(([sql])=>sql.includes('job_definitions '))).toBe(false)
+  })
+  it('keeps retained source authority independent of launch qualification', async () => {
+    const f = fixture()
+    f.runtime.revalidate.mockRejectedValue(new DomainError('JOB_RUNTIME_UNQUALIFIED', 'Qualification expired.', 409))
+    await expect(f.service.revalidateAccepted({ query: f.query as JobSql['query'] }, principal, f.execution))
+      .resolves.toBeUndefined()
+    expect(f.resolveRootBinding).toHaveBeenCalledOnce()
+    expect(f.runtime.revalidate).not.toHaveBeenCalled()
+    await expect(f.service.revalidateAccepted({ query: f.query as JobSql['query'] }, principal, f.execution,
+      { requireQualification: true })).rejects.toMatchObject({ code: 'JOB_RUNTIME_UNQUALIFIED' })
   })
   it('fails current root revocation before accepting publication',async()=>{
     const f=fixture();f.resolveRootBinding.mockRejectedValue(new DomainError('AUTH_REVOKED','Original root authority revoked.',403))

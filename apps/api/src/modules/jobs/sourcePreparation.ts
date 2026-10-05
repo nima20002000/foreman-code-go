@@ -175,7 +175,8 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
     return PreparedJobSpecSchema.parse({...spec,source:{...spec.source,materializationId:record.receipt.materializationId,materializationDigest:sourceMaterializationDigest(record)},
       target:{...spec.target,destination:{...spec.target.destination,canonicalProjectRoot:tree.canonicalProjectRoot,canonicalCwd:spec.relativeCwd?join(tree.canonicalProjectRoot,spec.relativeCwd):tree.canonicalCwd,directoryIdentityHash:tree.directoryIdentityHash}}})
   }
-  async revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution) {
+  async revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution,
+    options?: { requireQualification: boolean }) {
     const row=(await sql.query<{record:unknown;state:string}>('select record,state from source_execution_materializations where materialization_id=$1 and workspace_id=$2 and execution_id=$3 and attempt_id=$4 for share',[execution.acceptedSpec.source.materializationId,execution.workspaceId,execution.id,execution.attemptId])).rows[0]
     if(!row)throw new DomainError('SOURCE_ATTEMPT_CONFLICT','The original accepted source materialization is missing.',409)
     const record=SourceMaterializationRecordSchema.parse(row.record)
@@ -185,7 +186,7 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
     const root=await this.sources.resolveRootBinding(sql,principal,{workspaceId:execution.workspaceId,rootId:record.receipt.binding.rootId,bindingRevision:record.receipt.binding.bindingRevision,source})
     if(root.attestationId!==execution.acceptedSpec.target.destination.attestationId||root.attestationDigest!==execution.acceptedSpec.target.destination.attestationHash||canonical(root.registration)!==canonical(execution.acceptedSpec.target.registration))throw new DomainError('JOB_ROOT_PIN_CONFLICT','The original accepted root/registration differs from its stored materialization.',409)
     await new JobRepository().version(sql,execution.workspaceId,execution.acceptedSpec.definitionVersionId,execution.acceptedSpec.definitionId)
-    await this.runtime.revalidate(sql,principal,root,execution.acceptedSpec)
+    if (options?.requireQualification) await this.runtime.revalidate(sql,principal,root,execution.acceptedSpec)
   }
   async adoptFinalBinding(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution) {
     const row=(await sql.query<{record:unknown}>('select record from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 for update',[execution.acceptedSpec.source.materializationId,execution.id,execution.attemptId])).rows[0]

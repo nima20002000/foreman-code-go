@@ -165,9 +165,14 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
 
     const execution = await new JobRepository().execution(sql, record.receipt.binding.workspaceId, record.receipt.executionId)
     if (execution.attemptId !== record.receipt.attemptId || execution.operationId !== record.operationId
-      || execution.acceptedSpec.source.materializationId !== record.receipt.materializationId) return false
-    return Boolean(await input.dispatch().readAcceptedClosureReceipt(sql, { workspaceId: execution.workspaceId, executionId: execution.id,
-      attemptId: execution.attemptId, operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash, owner: execution.owner }))
+      || execution.acceptedSpec.source.materializationId !== record.receipt.materializationId
+      || execution.acceptedSpec.source.materializationDigest !== sourceMaterializationDigest(record)
+      || execution.acceptedSpec.bindingHash !== record.finalDispatchBindingHash) return false
+    const identity = { workspaceId: execution.workspaceId, executionId: execution.id,
+      attemptId: execution.attemptId, operationId: execution.operationId,
+      bindingHash: execution.acceptedSpec.bindingHash, owner: execution.owner }
+    if (await input.dispatch().readAcceptedNonEntryClosure(sql, identity)) return true
+    return Boolean(await input.dispatch().readAcceptedClosureReceipt(sql, identity))
   }
   const owners = new PostgresSourceOperationAuthority(input.pool, attempts, confirmedClosed, input.activeNativeSession)
   const transfers = new PostgresSourcePackageTransfers(input.pool, input.commands, owners, input.endpoint, input.transferSender)

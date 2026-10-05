@@ -19,7 +19,8 @@ import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 export interface JobPreparationSources {
-  revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution):Promise<void>
+  revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution,
+    options?: { requireQualification: boolean }):Promise<void>
   /** Actual W12 computer/root, W09 scoped snapshot and CI-A qualified profile readbacks. No probes/install side effects. */
   adoptFinalBinding(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution):Promise<void>
   choices(sql:JobSql,principal:ManagementPrincipal,workspaceId:string):Promise<JobAuthoringChoices>
@@ -298,7 +299,10 @@ export class JobQueuePreparation {
 /** Source/target/profile authority is drawn from current inventory, never trusted caller attestations. */
 export class JobPreparationService implements JobPreparationPort {
   constructor(private readonly sources:JobPreparationSources) {}
-  async revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution) {await this.sources.revalidateAccepted(sql,principal,execution)}
+  async revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution,
+    options?: { requireQualification: boolean }) {
+    await this.sources.revalidateAccepted(sql,principal,execution,options)
+  }
   async adoptFinalBinding(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution) {
     await this.sources.adoptFinalBinding(sql,principal,execution)
   }
