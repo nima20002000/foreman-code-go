@@ -21,7 +21,7 @@ import { clearQualificationGate, installQualificationGate } from '../../src/modu
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
 export async function qualifyEng03OpenCode() {
-  if (process.env.GRAPHQL_VERIFICATION_ROOT
+  if (process.env.FOREMAN_CODE_VERIFICATION_ROOT
     && (!process.env.ENG03_A_CODEX_BINARY || !process.env.ENG03_A_OPENCODE_BINARY)) {
     throw new Error('Acceptance Jobs require both explicitly qualified in-image native binaries.')
   }

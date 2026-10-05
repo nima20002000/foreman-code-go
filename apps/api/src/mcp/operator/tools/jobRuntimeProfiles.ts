@@ -1,6 +1,6 @@
 import { JobRuntimeApprovalRecordSchema, JobRuntimeProfileRecordSchema, JobRuntimeProfileListRecordSchema,
   JobRuntimeProfileSaveRecordSchema, JobRuntimeQualificationReadRecordSchema }
-  from '@graphql/contracts/job-verification-runtime'
+  from '@foreman-code/contracts/job-verification-runtime'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { JobRuntimeQualificationRequestSchema } from '@foreman-code/contracts/job-runtime'

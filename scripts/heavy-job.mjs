@@ -229,7 +229,7 @@ function outputHash(kind) {
 function freshBuild(kind) {
   // The API build also probes installed harness binaries and environment.
   // Those can change without any source or output change, so always run it.
-  if (kind === 'api' || process.env.GRAPHQL_VERIFICATION_ROOT === root) return { fresh: false, stamp: null }
+  if (kind === 'api' || process.env.FOREMAN_CODE_VERIFICATION_ROOT === root) return { fresh: false, stamp: null }
   if (!outputs[kind]) return { fresh: false, stamp: null }
   const signature = inputHash(kind)
   const stamp = join(root, '.logs', `heavy-build-${kind}.json`)
@@ -266,7 +266,7 @@ async function main() {
   const stopGraceMs = graceIndex >= 0 ? Number(options[graceIndex + 1]) : 30_000
   if (!Number.isSafeInteger(stopGraceMs) || stopGraceMs <= 0) throw new Error('Invalid stop grace')
   const command = process.argv.slice(divider + 1)
-  const reported = process.env.GRAPHQL_VERIFICATION_ROOT === root
+  const reported = process.env.FOREMAN_CODE_VERIFICATION_ROOT === root
     && (buildKind || command[0] === 'vitest' || command[0] === 'tsc' || command[0] === 'eslint'
       || (command[0].endsWith('/node') || command[0] === 'node') && command.includes('--test'))
   const inheritedToken = readProductEnvironment(process.env, 'HEAVY_JOB_TOKEN')

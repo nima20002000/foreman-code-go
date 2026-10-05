@@ -1,6 +1,6 @@
 import type { JobRuntimeMeasurementRecord, JobRuntimeProfileRecord, JobRuntimeApprovalRecord }
-  from '@graphql/contracts/job-verification-runtime'
-import { jobRuntimeProfileLimits } from '@graphql/contracts/job-verification-runtime'
+  from '@foreman-code/contracts/job-verification-runtime'
+import { jobRuntimeProfileLimits } from '@foreman-code/contracts/job-verification-runtime'
 import { DomainError } from '../errors.js'
 import { canonical } from './repository.js'
 import { jobDigest } from './service.js'

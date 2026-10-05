@@ -92,8 +92,8 @@ test('a native Node test process records each file and case, including skips', a
     writeFileSync(file, "import { test } from 'node:test'; test('passes', () => {}); test.skip('skips', () => {});\n")
     const code = await runVerificationCommand([process.execPath, '--test', file], {
       root: f.root, cwd: f.root, script: 'test', env: { ...process.env,
-        GRAPHQL_VERIFICATION_REPORT_DIR: f.directory, GRAPHQL_VERIFICATION_LOG_BYTES: '8192',
-        GRAPHQL_VERIFICATION_REPORT_BYTES: '65536' },
+        FOREMAN_CODE_VERIFICATION_REPORT_DIR: f.directory, FOREMAN_CODE_VERIFICATION_LOG_BYTES: '8192',
+        FOREMAN_CODE_VERIFICATION_REPORT_BYTES: '65536' },
     })
     assert.equal(code, 0)
     const report = readNodeReport(portionPath(f.directory, 'root:test', 'node.ndjson'),
@@ -141,7 +141,7 @@ test('finalization emits contract-valid summary, JUnit, Vitest JSON and a binary
       terminalOutcome: 'passed', processStopped: true })
     assert.equal(summary.outcome, 'passed')
     const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
-    const { JobVerificationReportSchema } = await import(pathToFileURL(require.resolve('@graphql/contracts/job-verification')).href)
+    const { JobVerificationReportSchema } = await import(pathToFileURL(require.resolve('@foreman-code/contracts/job-verification')).href)
     assert.equal(JobVerificationReportSchema.parse(summary).executionId, 'execution')
     for (const file of ['summary.json', 'junit.xml', 'vitest.json', 'logs.tar.gz']) assert.ok(existsSync(join(f.directory, file)))
     assert.equal(readFileSync(join(f.directory, 'logs.tar.gz'))[0], 0x1f)

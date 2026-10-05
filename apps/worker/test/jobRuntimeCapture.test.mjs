@@ -146,10 +146,10 @@ test('verification installer fixes offline frozen dev installs, isolates caches 
   }
   const environment = verificationEnvironment({ HOME: '/owner', npm_config_minimum_release_age: '0',
     NPM_CONFIG_USERCONFIG: '/owner/.npmrc', COREPACK_HOME: '/owner/cache', NODE_OPTIONS: '--import=/owner/hook',
-    GRAPHQL_CI_UNIT_WORKERS: '1' });
+    FOREMAN_CODE_VERIFICATION_UNIT_WORKERS: '1' });
   assert.equal(environment.HOME, '/job-scratch/home');
   assert.equal(environment.npm_config_offline, 'true');
-  assert.equal(environment.GRAPHQL_CI_UNIT_WORKERS, '1');
+  assert.equal(environment.FOREMAN_CODE_VERIFICATION_UNIT_WORKERS, '1');
   assert.equal(environment.npm_config_minimum_release_age, undefined);
   assert.equal(environment.NODE_OPTIONS, undefined);
   const policy = { minimumReleaseAge: 2880, minimumReleaseAgeStrict: true, minimumReleaseAgeIgnoreMissingTime: false };

@@ -77,9 +77,9 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
       if (!Number.isSafeInteger(maximum) || !maximum || maximum < parameters.integrationShards || maximum > 12) {
         throw new Error('Measured integration shard allowance required.')
       }
-      environment.GRAPHQL_VERIFICATION_UNIT_WORKERS = String(parameters.unitWorkers)
-      environment.GRAPHQL_VERIFICATION_INTEGRATION_SHARDS = String(parameters.integrationShards)
-      environment.GRAPHQL_VERIFICATION_MAX_INTEGRATION_SHARDS = String(maximum)
+      environment.FOREMAN_CODE_VERIFICATION_UNIT_WORKERS = String(parameters.unitWorkers)
+      environment.FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS = String(parameters.integrationShards)
+      environment.FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS = String(maximum)
     }
   }
   return ['--remote=false', `--hooks-dir=${join(input.runtimeRoot, 'ci-empty-oci-hooks')}`, 'create', '--name', input.identity, '--pull=never', '--restart=no', '--read-only', '--read-only-tmpfs=false',

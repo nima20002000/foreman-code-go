@@ -1,6 +1,6 @@
-import { AcceptedJobSpecSchema, ResolvedJobDefinitionSpecSchema } from '@graphql/contracts/jobs'
-import { ResolvedVerificationJobSpecSchema } from '@graphql/contracts/job-verification'
-import { JobVerificationProfileIdentitySchema } from '@graphql/contracts/job-verification-policy'
+import { AcceptedJobSpecSchema, ResolvedJobDefinitionSpecSchema } from '@foreman-code/contracts/jobs'
+import { ResolvedVerificationJobSpecSchema } from '@foreman-code/contracts/job-verification'
+import { JobVerificationProfileIdentitySchema } from '@foreman-code/contracts/job-verification-policy'
 
 /** Serialized runtime test facts; this fixture does not qualify an installed device. */
 export function verificationFixture() {

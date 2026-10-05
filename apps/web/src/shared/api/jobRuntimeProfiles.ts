@@ -1,5 +1,5 @@
 import { JobRuntimeApprovalRecordSchema, JobRuntimeProfileListRecordSchema,
-  type JobRuntimeApprovalRecord } from '@graphql/contracts/job-verification-runtime'
+  type JobRuntimeApprovalRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 import { JobRuntimeQualificationCommandSchema } from '@foreman-code/contracts/job-runtime'

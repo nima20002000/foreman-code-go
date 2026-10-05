@@ -1,4 +1,4 @@
-import { JobRuntimeProfileSaveRecordSchema } from '@graphql/contracts/job-verification-runtime'
+import { JobRuntimeProfileSaveRecordSchema } from '@foreman-code/contracts/job-verification-runtime'
 import type { FastifyInstance } from 'fastify'
 import { JobRuntimeQualificationCommandSchema } from '@foreman-code/contracts/job-runtime'
 import { z } from 'zod'

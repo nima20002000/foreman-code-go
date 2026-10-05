@@ -702,9 +702,9 @@ test('verification builds execute each time and return machine-readable command 
   try {
     copyFileSync(new URL('./verification-reports.mjs', import.meta.url), join(f.first, 'scripts/verification-reports.mjs'))
     const reports = join(f.first, '.logs', 'verification')
-    const environment = { ...jobEnv(f.first), GRAPHQL_VERIFICATION_ROOT: f.first,
-      GRAPHQL_VERIFICATION_REPORT_DIR: reports, GRAPHQL_VERIFICATION_LOG_BYTES: '8192',
-      GRAPHQL_VERIFICATION_REPORT_BYTES: '65536', npm_lifecycle_event: 'build' }
+    const environment = { ...jobEnv(f.first), FOREMAN_CODE_VERIFICATION_ROOT: f.first,
+      FOREMAN_CODE_VERIFICATION_REPORT_DIR: reports, FOREMAN_CODE_VERIFICATION_LOG_BYTES: '8192',
+      FOREMAN_CODE_VERIFICATION_REPORT_BYTES: '65536', npm_lifecycle_event: 'build' }
     const script = "const fs = require('fs'); const n = fs.existsSync('count') ? +fs.readFileSync('count') : 0; fs.writeFileSync('count', String(n+1)); fs.mkdirSync('packages/contracts/dist', {recursive:true}); fs.writeFileSync('packages/contracts/dist/index.js', 'export {}');"
     const argumentsList = ['--build', 'contracts', '--', process.execPath, '-e', script]
     assert.equal((await run(f.first, argumentsList)).code, 0)

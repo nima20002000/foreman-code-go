@@ -297,6 +297,7 @@ export async function executeVerificationJob(
       return { identity, execution, privateRepositoryRoot: source.privateRepositoryRoot, verifiedSource: source, inputs,
         cwd, argv: spec.argv, environment: { HOME: '/job-scratch/home', TMPDIR: '/job-scratch/tmp',
           PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1', ...JOB_GIT_ENVIRONMENT,
+          FOREMAN_CODE_JOB_INPUT_MANIFEST: JOB_INPUT_MANIFEST_CONTAINER_PATH,
           GRAPHQL_JOB_INPUT_MANIFEST: JOB_INPUT_MANIFEST_CONTAINER_PATH }, stdin: 'closed', pty: false, profile }
     })
   } catch (error) {

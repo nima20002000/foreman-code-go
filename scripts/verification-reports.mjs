@@ -279,9 +279,9 @@ export async function reportedCommand(command, { cwd, env, key, directory, logBy
 }
 
 export async function runVerificationCommand(command, { root, cwd, env, script }) {
-  const directory = privateDirectory(env.GRAPHQL_VERIFICATION_REPORT_DIR)
+  const directory = privateDirectory(env.FOREMAN_CODE_VERIFICATION_REPORT_DIR)
   const key = portionKey(relative(root, cwd).split(sep).join('/'), script)
-  const logBytes = positiveInteger(Number(env.GRAPHQL_VERIFICATION_LOG_BYTES), 'Log byte limit')
+  const logBytes = positiveInteger(Number(env.FOREMAN_CODE_VERIFICATION_LOG_BYTES), 'Log byte limit')
   const options = { cwd, env, key, directory, logBytes }
   const nodeTests = basename(command[0]) === 'node' && command.includes('--test')
   if (command[0] === 'vitest') {
@@ -290,9 +290,9 @@ export async function runVerificationCommand(command, { root, cwd, env, script }
     const listed = await reportedCommand([command[0], 'list', ...args, '--filesOnly', `--json=${inventory}`],
       { ...options, key: `${key}:inventory` })
     if (listed !== 0) return listed
-    const files = JSON.parse(readReport(inventory, Number(env.GRAPHQL_VERIFICATION_REPORT_BYTES)))
+    const files = JSON.parse(readReport(inventory, Number(env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES)))
       .map((entry) => repositoryFile(root, entry.file))
-    writeReport(inventory, files, Number(env.GRAPHQL_VERIFICATION_REPORT_BYTES))
+    writeReport(inventory, files, Number(env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES))
     command = [...command, '--reporter=default', '--reporter=json',
       `--outputFile.json=${portionPath(directory, key, 'vitest.json')}`]
   }
@@ -300,7 +300,7 @@ export async function runVerificationCommand(command, { root, cwd, env, script }
     const files = command.slice(command.indexOf('--test') + 1).filter((arg) => !arg.startsWith('-'))
       .map((file) => repositoryFile(root, resolve(cwd, file)))
     writeReport(portionPath(directory, key, 'inventory.json'), files, logBytes)
-    const workerLimit = env.GRAPHQL_VERIFICATION_UNIT_WORKERS
+    const workerLimit = env.FOREMAN_CODE_VERIFICATION_UNIT_WORKERS
     const concurrency = workerLimit === undefined ? []
       : [`--test-concurrency=${positiveInteger(Number(workerLimit), 'Node test workers', 256)}`]
     command = [command[0], ...concurrency, '--test-reporter=spec', `--test-reporter=${import.meta.filename}`,
@@ -312,7 +312,7 @@ export async function runVerificationCommand(command, { root, cwd, env, script }
 
 export default async function* nodeReporter(source) {
   let bytes = 0
-  const maximum = Number(process.env.GRAPHQL_VERIFICATION_REPORT_BYTES)
+  const maximum = Number(process.env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES)
   for await (const { type, data } of source) {
     if (!['test:start', 'test:pass', 'test:fail', 'test:summary'].includes(type)) continue
     const event = { type, timestamp: Date.now(), file: data.file, name: data.name, skip: data.skip, todo: data.todo,

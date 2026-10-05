@@ -12,7 +12,7 @@ import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { inspectInstalledJobRuntimeCandidate, type InstalledRuntimeHostDependencies, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 import type { OCIContainerOwnership, OCIHostCertificate } from './executorContainerOwner.js'
 import type { z } from 'zod'
-import { VerificationJobExecutionSchema } from '@graphql/contracts/job-verification'
+import { VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
 import { jobSupervisorIdentity } from './executor.js'
 import { JobQualificationCandidateSchema, jobQualificationFingerprint, createQualificationNativeOwner,
   qualifyJobRuntime, jobRuntimeMeasurement, type JobQualificationCandidate, type JobQualificationAuthority } from './qualification.js'

@@ -1,4 +1,4 @@
-import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord } from '@graphql/contracts/job-verification-runtime'
+import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord } from '@foreman-code/contracts/job-verification-runtime'
 import {
   isAutoJobSpec, AutoJobDefinitionSpecSchema, ResolvedJobDefinitionSpecSchema, JobComputerSelectionSchema,
   jobPolicyRequirements,

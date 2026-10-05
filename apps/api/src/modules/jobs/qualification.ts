@@ -13,7 +13,7 @@ import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
 import type { QualifiedJobProfile } from './executor.js'
-import { JobResourceRequestSchema, type JobResourceRequest } from '@graphql/contracts/job-verification-policy'
+import { JobResourceRequestSchema, type JobResourceRequest } from '@foreman-code/contracts/job-verification-policy'
 
 export const CI_QUALIFICATION_SUITE = 'rootless-podman-ext4-private-git-v2' as const
 export { JobQualificationCandidateSchema } from '@foreman-code/contracts/job-runtime'
