@@ -31,7 +31,8 @@ export const RemoteNativeLaunchObservationSchema = z.object({ owner: z.string().
   guardian: ProcessIdentitySchema, provider: ProcessIdentitySchema,
   boundary: z.object({ kind: z.literal('cgroup-v2'), path: z.string().startsWith('/'), device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/) }).strict(),
   lifecycle: z.enum(['active', 'ended', 'closure-unconfirmed', 'closed']),
-  closureEvidence: z.enum(['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty', 'native_exit_removed_cgroup']).optional(),
+  closureEvidence: z.enum(['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty',
+    'native_exit_removed_cgroup', 'cgroup_v2_removed']).optional(),
 }).strict()
 export const RemoteRuntimeLeafAttestationSchema = z.object({ executionId: z.string().min(1), attemptId: z.string().min(1),
   operationId: z.string().min(1), bindingHash: PlacementDigestSchema, canonicalRuntimeDirectory: z.string().startsWith('/'),

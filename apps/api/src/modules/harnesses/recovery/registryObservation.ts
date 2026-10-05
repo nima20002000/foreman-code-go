@@ -123,7 +123,8 @@ function retiredObservation(root: string, ownerKey: string): NativeLaunchObserva
     || typeof row.owner !== 'string' || createHash('sha256').update(row.owner).digest('hex') !== ownerKey
     || typeof row.launchId !== 'string' || !/^[0-9a-f-]{36}$/.test(row.launchId)
     || typeof row.bootId !== 'string' || row.lifecycle !== 'closed'
-    || !['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty', 'native_exit_removed_cgroup'].includes(String(row.closureEvidence))) {
+    || !['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty', 'native_exit_removed_cgroup',
+      'cgroup_v2_removed'].includes(String(row.closureEvidence))) {
     throw new Error('Invalid retired native observation.')
   }
   if (row.guardian !== undefined) identity(row.guardian)

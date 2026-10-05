@@ -14,7 +14,8 @@ export const NativeProcessObservationSchema = z.object({
   guardian: NativeProcessIdentitySchema.optional(), provider: NativeProcessIdentitySchema.optional(),
   boundary: NativeCgroupBoundarySchema.optional(),
   lifecycle: z.enum(['active', 'ended', 'closure-unconfirmed', 'closed']),
-  closureEvidence: z.enum(['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty', 'native_exit_removed_cgroup']).optional(),
+  closureEvidence: z.enum(['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty',
+    'native_exit_removed_cgroup', 'cgroup_v2_removed']).optional(),
 }).strict()
 
 /** Original entry ownership can close before a provider session is acknowledged. */
@@ -28,7 +29,7 @@ export const RemoteEntryClosureSchema = z.object({
     || new Set(value.launches.map(launch => launch.launchId)).size !== value.launches.length
     || value.launches.some(launch => launch.owner !== value.owner || launch.bootId !== value.connection.bootId
       || launch.lifecycle !== 'closed' || !launch.closureEvidence
-      || (launch.closureEvidence === 'cgroup_v2_empty' || launch.closureEvidence === 'native_exit_removed_cgroup')
+      || ['cgroup_v2_empty', 'native_exit_removed_cgroup', 'cgroup_v2_removed'].includes(launch.closureEvidence)
         && !launch.boundary)) {
     context.addIssue({ code: 'custom', message: 'Entry closure requires all original registered owners to be positively closed.' })
   }
