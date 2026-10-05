@@ -11,14 +11,13 @@ export class NativeRollout {
     const local = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(this.environment.HOST ?? '127.0.0.1')
     if (this.environment.NODE_ENV === 'production') {
       if (this.environment.GRAPHQL_LOCAL_PRODUCTION !== '1') return harness === 'opencode' && selected === '1'
-      let localDatabase = false
       try {
         const database = new URL(this.environment.DATABASE_URL ?? '')
-        localDatabase = ['127.0.0.1', 'localhost', '[::1]'].includes(database.hostname)
+        const localDatabase = ['127.0.0.1', 'localhost', '[::1]'].includes(database.hostname)
+        if (!local || !localDatabase) return false
       } catch {
         return false
       }
-      if (!local || !localDatabase) return false
     }
     // Supported local harnesses still pass native version, account, model,
     // approval and sandbox qualification at every execution admission.
