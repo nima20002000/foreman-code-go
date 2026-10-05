@@ -26,7 +26,8 @@ import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
 
 function waitForOwnerBeforeWork(release: string, work: string): string {
   return `Before the following work, use the native shell tool once to run exactly: while [ ! -f '${release}' ]; do sleep 0.1; done. `
-    + `This reads an owner-controlled fixture; do not create or modify it, and do not finish before the command returns. Then ${work}`
+    + `This reads an owner-controlled fixture; do not create or modify it, and do not finish before the command returns. `
+    + `If the tool returns a running command session, poll that same native session until it finishes; do not start another command. Then ${work}`
 }
 
 async function startedBranches({ pool, runId, nodeIds, runs, publicationChanged }: Eng03NativeControl) {
