@@ -40,9 +40,27 @@ describe.skipIf(!postgresEnabled)('Run ownership database fence', () => {
 
   it('refuses a lost advisory lock instead of reusing an earlier successful fence', async () => {
     const owner = await acquire()
-    await owner.oneShotConnection().transaction(sql => owner.readOneShotFence(sql))
+    for (let index = 0; index < 8; index++) {
+      await owner.oneShotConnection().transaction(sql => owner.readOneShotFence(sql))
+    }
     await owner.client.query('select pg_advisory_unlock($1,hashtext($2))', [810_002, owner.runId])
     await expect(owner.oneShotConnection().transaction(sql => owner.readOneShotFence(sql)))
       .rejects.toMatchObject({ code: 'RUN_OWNERSHIP_LOST' })
+  })
+
+  it('reuses read plans while returning newly committed values and new parameters', async () => {
+    const owner = await acquire()
+    const connection = owner.oneShotConnection()
+    await connection.transaction(sql => sql.query('create temporary table read_values(id integer primary key,value integer)'))
+    await connection.transaction(sql => sql.query('insert into read_values values(1,0),(2,100)'))
+    for (let value = 1; value <= 8; value++) {
+      await connection.transaction(sql => sql.query('update read_values set value=$1 where id=1', [value]))
+      const first = await connection.transaction(sql => sql.query<{ value: number }>('select value from read_values where id=$1', [1]))
+      const second = await connection.transaction(sql => sql.query<{ value: number }>('select value from read_values where id=$1', [2]))
+      expect(first.rows[0]?.value).toBe(value)
+      expect(second.rows[0]?.value).toBe(100)
+    }
+    const plans = await owner.client.query<{ count: string }>('select count(*)::text as count from pg_prepared_statements')
+    expect(Number(plans.rows[0]?.count)).toBeGreaterThan(0)
   })
 })

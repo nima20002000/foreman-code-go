@@ -54,3 +54,9 @@ its arrival time. `native.api_request`, `native.sse_event`,
 `native.websocket_request` and `native.websocket_event` distinguish request and
 stream waits inside a native turn from client startup, tool readiness and graph
 persistence. These diagnostics never authorize execution or schedule work.
+
+Run ownership uses its dedicated physical PostgreSQL session to prepare repeated
+parameterized reads. The bounded cache holds statement names, not results,
+permissions or ownership. Every call still executes on the same guarded
+transaction with its current parameters. Borrowed pool connections retain
+unnamed statements. Closing the owner releases its session and prepared plans.

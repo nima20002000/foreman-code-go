@@ -26,7 +26,7 @@ export class RunOwnership {
   oneShotConnection(): ExclusiveGraphConnection {
     this.assertOwned()
     if (!this.graphConnection) {
-      const connection = new ExclusiveGraphConnection(this.rawClient, () => this.assertOwned())
+      const connection = new ExclusiveGraphConnection(this.rawClient, () => this.assertOwned(), new Map())
       this.graphConnection = connection
       this.queryClient = new Proxy(this.rawClient, {
         get: (target, property) => {

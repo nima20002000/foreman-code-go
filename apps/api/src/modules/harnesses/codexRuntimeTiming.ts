@@ -4,6 +4,7 @@ import { runtimeTimingPoint, runtimeTimingPublisher, type RuntimeTimingRecord } 
 
 const transportEvents = new Set([
   'codex.api_request', 'codex.sse_event', 'codex.websocket_request', 'codex.websocket_event',
+  'codex.websocket.request', 'codex.websocket.event',
 ])
 const bodyLimit = 1024 * 1024
 
@@ -36,7 +37,7 @@ export function codexTransportTimings(payload: unknown): RuntimeTimingRecord[] {
         }))
         const event = attributes.get('event.name') ?? scalar(record.body)
         if (typeof event !== 'string' || !transportEvents.has(event)) continue
-        const durationMs = number(attributes.get('duration_ms'))
+        const durationMs = number(attributes.get('duration_ms') ?? attributes.get('event.duration_ms'))
         const time = record.timeUnixNano === '0' || record.timeUnixNano === undefined
           ? record.observedTimeUnixNano : record.timeUnixNano
         const timestamp = typeof time === 'string' ? time : ''
@@ -48,7 +49,7 @@ export function codexTransportTimings(payload: unknown): RuntimeTimingRecord[] {
         const statusCode = number(attributes.get('http.status_code') ?? attributes.get('status'))
         const attempt = number(attributes.get('attempt'))
         const success = attributes.get('success')
-        result.push({ component: 'harness', phase: `native.${event.slice('codex.'.length)}`,
+        result.push({ component: 'harness', phase: `native.${event.slice('codex.'.length).replaceAll('.', '_')}`,
           operation: event, startedAt: new Date(finished - durationMs).toISOString(),
           finishedAt: new Date(finished).toISOString(), durationMs,
           ...(typeof session === 'string' && /^[a-f0-9-]{36}$/i.test(session) ? { nativeSessionId: session } : {}),

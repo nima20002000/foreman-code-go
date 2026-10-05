@@ -73,11 +73,24 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
   #tail: Promise<void> = Promise.resolve()
   #unusable = false
   #closing = false
-  constructor(client: pg.ClientBase, assertOwner: () => void) {
+  constructor(client: pg.ClientBase, assertOwner: () => void,
+    private readonly readPlans?: Map<string, string>) {
     if (adoptedClients.has(client)) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
     adoptedClients.add(client)
     this.#client = client
     this.#assertOwner = assertOwner
+  }
+  private readQuery<R extends pg.QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<R>> {
+    // Only dedicated physical sessions opt in. Plans are reused; rows and authority are read on every call.
+    if (!this.readPlans || !values?.length || !/^\s*(select|with)\b/i.test(text)) {
+      return this.#client.query<R>(text, values)
+    }
+    let name = this.readPlans.get(text)
+    if (!name && this.readPlans.size < 128) {
+      name = `foreman-read-${createHash('sha256').update(text).digest('hex').slice(0, 24)}`
+      this.readPlans.set(text, name)
+    }
+    return name ? this.#client.query<R>({ name, text, values }) : this.#client.query<R>(text, values)
   }
   private enqueue<T>(work: () => Promise<T>, operation: string): Promise<T> {
     if (this.#closing) return Promise.reject(new RunGraphError('GRAPH_TRANSACTION_CLOSED'))
@@ -99,7 +112,7 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
   query<R extends pg.QueryResultRow = pg.QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<R>> {
     return this.enqueue(() => {
       assertStatement(text)
-      return timeRuntimeOperation('db', 'sql.query', () => this.#client.query<R>(text, values),
+      return timeRuntimeOperation('db', 'sql.query', () => this.readQuery<R>(text, values),
         queryTimingFields(text))
     }, 'query')
   }
@@ -116,7 +129,7 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
             assertStatement(text)
             if (pending) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
           } catch (error) { state.failed = true; return Promise.reject(error) }
-          const operation = timeRuntimeOperation('db', 'sql.query', () => this.#client.query<R>(text, values),
+          const operation = timeRuntimeOperation('db', 'sql.query', () => this.readQuery<R>(text, values),
             queryTimingFields(text))
           pending = operation
           // A caught SQL error must still prevent commit, including after SAVEPOINT misuse.
@@ -153,6 +166,7 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
   async close(): Promise<void> {
     this.#closing = true
     await this.#tail
+    this.readPlans?.clear()
     adoptedClients.delete(this.#client)
   }
   get unusable(): boolean { return this.#unusable }

@@ -45,3 +45,12 @@ it('accepts loopback metadata on its private endpoint and preserves the admissio
     expect(records).toHaveLength(1)
   } finally { await receiver.close() }
 })
+
+it('reads the bundled transport event duration field and dotted event name', () => {
+  const input = payload()
+  const record = input.resourceLogs[0]!.scopeLogs[0]!.logRecords[0]!
+  record.body.stringValue = 'codex.websocket.event'
+  record.attributes[0]!.key = 'event.duration_ms'
+  expect(codexTransportTimings(input)[0]).toMatchObject({ phase: 'native.websocket_event',
+    durationMs: 12_500, eventType: 'response.completed' })
+})
