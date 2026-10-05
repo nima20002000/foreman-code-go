@@ -272,6 +272,58 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     }
   }, 60_000)
 
+  it('binds an approval while its completed sibling still awaits native closure', async () => {
+    const source = makeCurrentWorkflowFixture('approval-sibling-close')
+    const approvalNodeId = source.version.definition.nodes[1]!.id
+    const f = await checkpointRuntimeFixture(2, 1, { fixture: source, approvalNodeIds: [approvalNodeId] })
+    closes.push(f.close)
+    const closing = deferred()
+    const release = deferred()
+    const originalClose = f.provider.close.bind(f.provider)
+    let siblingSessionId: string | undefined
+    vi.spyOn(f.provider, 'close').mockImplementation(async (session) => {
+      const execution = await f.runs.getExecution(session.nativeSessionId.slice('native-'.length))
+      if (execution?.workflowNodeId.endsWith('-parallel')) {
+        siblingSessionId = session.nativeSessionId
+        closing.resolve()
+        await release.promise
+      }
+      await originalClose(session)
+    })
+    let settled = false
+    let startError: unknown
+    const task = f.engine.start(f.f.run.id).catch((error: unknown) => { startError = error })
+      .finally(() => { settled = true })
+    try {
+      await closing.promise
+      await expect.poll(() => settled, { timeout: 10_000 }).toBe(true)
+      await task
+      expect(startError).toBeUndefined()
+      const [interaction] = await f.pending()
+      expect(interaction?.graphInterruptId).toBeTruthy()
+      expect((await f.runs.get(f.f.run.id))?.executionState).toBe('waiting')
+      const sibling = (await readCurrentExecutions(f.runs, f.f.run.id))
+        .find((execution) => execution.workflowNodeId.endsWith('-parallel'))!
+      expect(sibling.result?.outcome).toBe('succeeded')
+      expect(f.provider.closedSessions.has(siblingSessionId!)).toBe(false)
+      const native = await f.db.pool.query<{ finalized: boolean }>(
+        `select workflow_finalized_at is not null as finalized
+         from execution_native_sessions where execution_id=$1`, [sibling.id])
+      expect(native.rows[0]?.finalized).toBe(false)
+      expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 0 })
+      release.resolve()
+      await expect.poll(() => f.provider.closedSessions.has(siblingSessionId!), { timeout: 5_000 }).toBe(true)
+      await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(interaction!))
+      expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
+      expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 1, attaches: 0 })
+      expect(await f.receipts()).toHaveLength(1)
+      await (await graphParity(f.db.pool, f.f.scope)).compare()
+    } finally {
+      release.resolve()
+      await task
+    }
+  }, 60_000)
+
   it('binds the original approval checkpoint after draining its streaming sibling', async () => {
     const source = makeCurrentWorkflowFixture('streaming-approval')
     const approvalNodeId = source.version.definition.nodes[1]!.id
