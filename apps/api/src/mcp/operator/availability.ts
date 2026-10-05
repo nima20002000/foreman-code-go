@@ -166,7 +166,9 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['run_resume','run_retry'].includes(name)) result.push({action:'runs:read',scope:'run'})
   if (name.startsWith('run_subagent')) {
     result[0]!.scope = 'run'
-    if (name === 'run_subagent_input_v1' || name === 'run_subagent_interrupt_v1') result.push({ action: 'runs:read', scope: 'run' })
+    if (['run_subagent_input_v1', 'run_subagent_interrupt_v1', 'run_subagent_respond_v1'].includes(name)) {
+      result.push({ action: 'runs:read', scope: 'run' })
+    }
   }
   if (name === 'run_handoffs_get_v1') result.push({action:'workflows:read',scope:'workflow'})
   if (name === 'workflow_trigger_update') result.push({action:'workflows:read',scope:'workflow'})

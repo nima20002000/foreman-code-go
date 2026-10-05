@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ApprovalResponseOptionSchema, PendingNativeInteractionSchema } from './index.js'
 
 const id = z.string().min(1).max(512)
 const timestamp = z.iso.datetime()
@@ -41,9 +42,11 @@ export const RunSubagentSchema = z.object({
   }
 })
 export type RunSubagent = z.infer<typeof RunSubagentSchema>
-export const SubagentAvailableActionsSchema = z.object({ sendInput: z.boolean(), interrupt: z.boolean(), blockedReason: id.nullable() }).strict()
+export const SubagentAvailableActionsSchema = z.object({ sendInput: z.boolean(), interrupt: z.boolean(),
+  respond: z.boolean().optional(), blockedReason: id.nullable() }).strict()
 export type SubagentAvailableActions = z.infer<typeof SubagentAvailableActionsSchema>
-export const RunSubagentDetailSchema = z.object({ subagent: RunSubagentSchema, availableActions: SubagentAvailableActionsSchema }).strict()
+export const RunSubagentDetailSchema = z.object({ subagent: RunSubagentSchema, availableActions: SubagentAvailableActionsSchema,
+  pendingInteraction: z.lazy(() => PendingNativeInteractionSchema).optional() }).strict()
 export const SubagentSourceSchema = z.object({ executionId: id, sequence: z.number().int().nonnegative(), connectionId: id.optional(),
   nativeEventId: id.optional(), nativeTurnId: id.optional(), generation: z.string().max(512).optional() }).strict()
 export type SubagentSource = z.infer<typeof SubagentSourceSchema>
@@ -71,16 +74,20 @@ export const RunSubagentMessagesPageSchema = z.object({ items: z.array(RunSubage
 export const RunSubagentToolsPageSchema = z.object({ items: z.array(RunSubagentToolSchema).max(SUBAGENT_LIMITS.page), ...pageInfo }).strict()
 export const RunSubagentInputSchema = RunSubagentGetInputSchema.extend({ commandId: id, expectedRevision: revision, text: z.string().min(1).max(SUBAGENT_LIMITS.text) }).strict()
 export const RunSubagentInterruptSchema = RunSubagentGetInputSchema.extend({ commandId: id, expectedRevision: revision }).strict()
+export const RunSubagentRespondSchema = RunSubagentInterruptSchema.extend({ nativeRequestId: z.string().min(1),
+  optionId: id, response: z.json().optional() }).strict()
 export const RunSubagentCommandReceiptSchema = z.object({ schemaVersion: z.literal(1), id, principalId: id,
-  operation: z.enum(['run_subagent_input_v1', 'run_subagent_interrupt_v1']), commandId: id,
+  operation: z.enum(['run_subagent_input_v1', 'run_subagent_interrupt_v1', 'run_subagent_respond_v1']), commandId: id,
   workspaceId: id, runId: id, subagentId: id, expectedRevision: revision,
   nativeGeneration: id, nativeTurnId: id.nullable(), nativeCorrelationId: id,
   state: z.enum(['accepted', 'dispatching', 'acknowledged', 'rejected', 'uncertain']),
   acceptedAt: timestamp, updatedAt: timestamp, reasonCode: id.optional(),
+  response: z.object({ nativeRequestId: z.string().min(1), nativeRequestType: z.string().min(1),
+    option: z.lazy(() => ApprovalResponseOptionSchema) }).strict().optional(),
 }).strict()
 export type RunSubagentCommandReceipt = z.infer<typeof RunSubagentCommandReceiptSchema>
 export const SUBAGENT_MCP_TOOLS = ['run_subagents_list_v1', 'run_subagent_get_v1', 'run_subagent_messages_list_v1',
-  'run_subagent_tools_list_v1', 'run_subagent_input_v1', 'run_subagent_interrupt_v1'] as const
+  'run_subagent_tools_list_v1', 'run_subagent_input_v1', 'run_subagent_interrupt_v1', 'run_subagent_respond_v1'] as const
 
 /** OpenCode 1.18.31 idle input is covered by the native control qualification and authenticated MCP regression. */
 export function subagentCapabilities(mode: SubagentNativeMode, version: string): SubagentCapabilities {

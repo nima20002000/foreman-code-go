@@ -142,6 +142,7 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'run_subagent_tools_list_v1', action: 'runs:read' },
   { name: 'run_subagent_input_v1', action: 'runs:subagents:input' },
   { name: 'run_subagent_interrupt_v1', action: 'runs:stop' },
+  { name: 'run_subagent_respond_v1', action: 'interactions:respond' },
   { name: 'interaction_list', action: 'interactions:read' },
   { name: 'interaction_get', action: 'interactions:read' },
   { name: 'interaction_respond', action: 'interactions:respond' },

@@ -21,6 +21,12 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { DomainError } from '../src/modules/errors.js'
 import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlErrors.js'
 import { codexChildControlFixture } from './fixtures/codex-child-control-helpers.js'
+import { seedCodexChild } from './fixtures/codex-child-control-helpers.js'
+import { deliveryFixture } from './fixtures/codex-delivery.js'
+import { emit, input as codexInput, until, calls } from './fixtures/codex-test-helpers.js'
+import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
+import { productionSubagentControls } from '../src/modules/subagents/productionControls.js'
+import type { RunOwnership } from '../src/modules/runs/ownership.js'
 
 // Explicit loopback admin connection and a random OWNED schema. Never read TEST_DATABASE_URL or migrate public.
 describe('durable per-Run children over SQL and authenticated MCP', () => {
@@ -50,7 +56,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     await pool.query('insert into execution_native_sessions(execution_id,reference) values($1,$2::jsonb)', [executionId, JSON.stringify({ harness: provider, providerVersion: provider === 'codex' ? '0.154.0' : provider === 'opencode' ? '1.18.33' : '2.1.284', nativeSessionId: 'root' })])
     const access = new PostgresAccessService(pool)
     const issue = (actions: ManagementAction[]) => access.issue({ name: 'Child integration fixture', audience: 'operator', grants: [{ actions, scope: { workspaceIds: [workspaceId], runIds: [runId] } }], expiresAt: new Date(Date.now() + 600000) })
-    const writer = await issue(['runs:read', 'runs:subagents:input', 'runs:stop'])
+    const writer = await issue(['runs:read', 'runs:subagents:input', 'runs:stop', 'interactions:respond'])
     const reader = await issue(['runs:read'])
     const denied = await issue(['workspaces:read'])
     const service = new RunSubagentService(pool)
@@ -64,6 +70,110 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     const input = { workspaceId, runId }
     return { access, writer, reader, denied, service, input, event, discover, executionId, versionRecord, runRecord }
   }
+
+  it.each(['questions', 'form'] as const)('continues and answers the actual Codex child %s callback through MCP', async kind => {
+    const f = await fixture('codex')
+    const native = await deliveryFixture()
+    const manager = native.makeManager(undefined, {}, { appMcpAccess: 'scoped' })
+    const source = codexInput(native.directory, f.versionRecord.definition.nodes[0]!.agentId)
+    source.request.executionId = f.executionId
+    source.request.runId = f.input.runId
+    source.request.workspaceId = f.input.workspaceId
+    source.request.workflowNodeId = 'node'
+    source.request.configuration.workspaceId = f.input.workspaceId
+    source.request.configuration.id = Object.values(f.versionRecord.agentConfigurationVersionIds)[0]!
+    const root = await manager.createSession(source)
+    await pool.query('update execution_native_sessions set reference=$2::jsonb where execution_id=$1',
+      [f.executionId, JSON.stringify(root)])
+    await pool.query(`update harness_executions set record=jsonb_set(record,'{nativeSessionId}',to_jsonb($2::text))
+      where id=$1`, [f.executionId, root.nativeSessionId])
+    await f.discover('native-child', root.nativeSessionId)
+    await f.event('native.unlinked_notification', { method: 'turn/completed', params: {
+      threadId: 'native-child', turn: { id: 'child-turn', status: 'completed', items: [] },
+    } })
+    const saved = (await f.service.list(f.reader.principal, f.input)).items[0]!.subagent
+    await seedCodexChild(native.directory, root, source, { ...saved, status: 'completed' })
+    const managers = new ExecutionScopedNativeSessionManagerResolver(() => manager)
+    const resolved = managers.resolve({ executionId: f.executionId, runId: f.input.runId,
+      agentId: source.request.configuration.agentId, harness: 'codex', workingDirectory: native.directory,
+      configuration: source.request.configuration, attempt: 1 }, { runId: f.input.runId, assertOwned() {} } as RunOwnership)
+    resolved.beginStart!()
+    resolved.markResident!()
+    const controls = productionSubagentControls(managers)
+    const service = new RunSubagentService(pool, controls)
+    const services = { commands: new PostgresCommandCoordinator(pool), runs: { subagents: service },
+      workspaces: {}, workflows: {}, agents: {}, locations: {}, harnesses: {} } as unknown as OperatorServices
+    const app = Fastify()
+    registerOperatorHttpSecurity(app, f.access)
+    registerRunSubagentRoutes(app, services)
+    registerGraphqlMcp(app, { access: f.access, operator: services })
+    const clients: Client[] = []
+    try {
+      const origin = await app.listen({ host: '127.0.0.1', port: 0 })
+      const connect = async (token: string) => {
+        const client = new Client({ name: 'continued-child-input', version: '1' })
+        clients.push(client)
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), {
+          authProvider: { token: async () => token },
+        }))
+        return client
+      }
+      const writer = await connect(f.writer.token)
+      const reader = await connect(f.reader.token)
+      const childInput = { ...f.input, subagentId: saved.id }
+      const continued = await writer.callTool({ name: 'run_subagent_input_v1', arguments: {
+        ...childInput, expectedRevision: saved.revision, commandId: randomUUID(), text: 'wait',
+      } })
+      expect(continued.isError).not.toBe(true)
+      const turnId = 'turn-2'
+      const callback = kind === 'questions'
+        ? { method: 'item/tool/requestUserInput', params: { itemId: 'question', isBlocking: true,
+          questions: [{ id: 'answer', header: 'Answer', question: 'Enter details', isOther: true,
+            isSecret: false, options: null }] } }
+        : { method: 'mcpServer/elicitation/request', params: { mode: 'form', serverName: 'app', message: 'Enter details',
+          requestedSchema: { type: 'object', properties: { count: { type: 'integer', minimum: 1 } }, required: ['count'] } } }
+      const agentId = source.request.configuration.agentId
+      await emit(native.directory, { id: 6002, method: callback.method,
+        params: { threadId: 'native-child', turnId, ...callback.params } }, agentId)
+      const detail = await until(async () => {
+        const result = await writer.callTool({ name: 'run_subagent_get_v1', arguments: childInput })
+        const value = RunSubagentDetailSchema.parse(result.structuredContent)
+        return value.pendingInteraction ? value : undefined
+      })
+      expect(detail.pendingInteraction!.session.nativeSessionId).toBe('native-child')
+      expect(detail.availableActions.respond).toBe(true)
+      const command = { ...childInput, expectedRevision: detail.subagent.revision, commandId: randomUUID(),
+        nativeRequestId: detail.pendingInteraction!.turn.nativeRequestId!,
+        optionId: detail.pendingInteraction!.responseOptions[0]!.optionId,
+        response: kind === 'questions' ? { answer: { answers: ['Entered'] } } : { count: 2 } }
+      expect((await reader.callTool({ name: 'run_subagent_respond_v1', arguments: command })).isError).toBe(true)
+      const invalid = await writer.callTool({ name: 'run_subagent_respond_v1', arguments: { ...command, response: {} } })
+      expect(invalid.isError).toBe(true)
+      const result = await writer.callTool({ name: 'run_subagent_respond_v1', arguments: command })
+      expect(result.isError).not.toBe(true)
+      const receipt = RunSubagentCommandReceiptSchema.parse(result.structuredContent)
+      expect(receipt).toMatchObject({ state: 'acknowledged', nativeTurnId: turnId,
+        response: { option: { response: command.response } } })
+      services.runs = { subagents: new RunSubagentService(pool, controls) } as OperatorServices['runs']
+      const replay = await writer.callTool({ name: 'run_subagent_respond_v1', arguments: command })
+      expect(RunSubagentCommandReceiptSchema.parse(replay.structuredContent)).toEqual(receipt)
+      const url = `/api/management/workspaces/${f.input.workspaceId}/runs/${f.input.runId}/subagents/${saved.id}/responses`
+      const http = await app.inject({ method: 'POST', url, payload: command,
+        headers: { host: '127.0.0.1', authorization: `Bearer ${f.writer.token}` } })
+      expect(http.statusCode).toBe(200)
+      expect(http.json()).toEqual(receipt)
+      expect((await calls(native.directory)).filter(entry => {
+        const wire = entry.wire as { id?: number; result?: unknown } | undefined
+        return wire?.id === 6002 && wire.result
+      })).toHaveLength(1)
+      expect((await pool.query('select record from run_subagent_command_receipts where id=$1', [receipt.id]))
+        .rows[0].record).toEqual(receipt)
+    } finally {
+      await Promise.allSettled(clients.map(client => client.close()))
+      await app.close()
+      await native.close()
+    }
+  }, 60_000)
   it('joins late and nested children, paginates, and replays after a new service instance without duplication', async () => {
     const f = await fixture()
     await f.event('native.unlinked_notification', { threadId: 'child', method: 'item/completed', params: { threadId: 'child', turnId: 't', item: { type: 'agentMessage', id: 'm', text: 'CHILD ONLY' } } })

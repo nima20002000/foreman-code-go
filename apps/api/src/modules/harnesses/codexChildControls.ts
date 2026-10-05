@@ -15,6 +15,8 @@ export interface CodexChildControlHost {
   transport: Pick<CodexTransport, 'request'>
   assertCurrent(): void
   exclusive<T>(work: () => Promise<T>): Promise<T>
+  observeThread?(thread: Thread): void
+  beginTurn?(correlationId: string): { acknowledge(value: unknown): Promise<void>; reject(): void }
 }
 
 type CommandOutcome = 'acknowledged' | 'rejected' | 'uncertain'
@@ -64,6 +66,7 @@ export class CodexChildControls {
       const { thread } = await codexRequest(host.transport, 'thread/read', { threadId: target, includeTurns: false })
       current()
       await this.ancestry(child, thread, host, current)
+      host.observeThread?.(thread)
       return thread
     }
     const checkReceipt = (receipt: RunSubagentCommandReceipt) => {
@@ -98,11 +101,16 @@ export class CodexChildControls {
       }
       if (this.attempts.has(receipt.id)) throw new SubagentDispatchRejectedError()
       this.attempts.set(receipt.id, 'uncertain')
+      const starting = text !== undefined && idle ? host.beginTurn?.(receipt.nativeCorrelationId) : undefined
       const late = (value: unknown, error?: Error) => {
         if (error) {
-          if (error instanceof CodexRpcError && !error.uncertain) this.attempts.set(receipt.id, 'rejected')
+          if (error instanceof CodexRpcError && !error.uncertain) {
+            starting?.reject()
+            this.attempts.set(receipt.id, 'rejected')
+          }
           return
         }
+        if (starting) void starting.acknowledge(value).catch(() => { this.attempts.set(receipt.id, 'uncertain') })
         const valid = text === undefined || idle || isObject(value) && value.turnId === turnId
         if (valid) this.attempts.set(receipt.id, 'acknowledged')
       }
@@ -112,7 +120,10 @@ export class CodexChildControls {
         } else {
           const params = { threadId: target, clientUserMessageId: receipt.nativeCorrelationId,
             input: [{ type: 'text' as const, text, text_elements: [] }] }
-          if (idle) await codexRequest(host.transport, 'turn/start', params, undefined, late)
+          if (idle) {
+            const result = await codexRequest(host.transport, 'turn/start', params, undefined, late)
+            await starting?.acknowledge(result)
+          }
           else {
             const response = await codexRequest(host.transport, 'turn/steer', {
               ...params, expectedTurnId: turnId!,
@@ -124,6 +135,7 @@ export class CodexChildControls {
         this.attempts.set(receipt.id, 'acknowledged')
       } catch (error) {
         if (error instanceof CodexRpcError && !error.uncertain) {
+          starting?.reject()
           this.attempts.set(receipt.id, 'rejected')
           throw new SubagentDispatchRejectedError()
         }

@@ -1,3 +1,7 @@
+import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import type { NativeSessionReference } from '@graphql/contracts'
+import type { WorkflowNativeSessionStart } from '../../src/modules/harnesses/port.js'
 import { RunSubagentSchema, subagentCapabilities, type RunSubagent,
   type RunSubagentCommandReceipt } from '@graphql/contracts/subagents'
 import { CodexChildControls, type CodexChildControlHost } from '../../src/modules/harnesses/codexChildControls.js'
@@ -100,4 +104,31 @@ export function codexChildControlFixture(child = childControlRecord()) {
   const controller = new CodexChildControls()
   return { host, calls, threads, controller, lease: () => controller.lease(child, host, host.assertCurrent)!,
     loseOwner: () => { live = false }, failOnce: (method: string) => { fail = method } }
+}
+
+export async function seedCodexChild(directory: string, root: NativeSessionReference, source: WorkflowNativeSessionStart,
+  overrides: Partial<RunSubagent> = {}) {
+  const child = childControlRecord({ workspaceId: source.request.workspaceId,
+    runId: source.request.runId, parentExecutionId: source.request.executionId,
+    parentAttemptKey: `${source.request.executionId}:1`, parentNodeId: source.request.workflowNodeId,
+    parentAgentId: source.request.configuration.agentId,
+    native: { parentSessionId: root.nativeSessionId, childSessionId: 'native-child', currentTurnId: 'child-turn' },
+    profile: { deviceId: 'device', harnessInstanceId: source.request.configuration.id, providerVersion: root.providerVersion },
+    ...overrides,
+  })
+  const active = child.status === 'running'
+  const nativeChild = nativeThread({ id: 'native-child', sessionId: 'native-child',
+    parentThreadId: root.nativeSessionId, cwd: directory,
+    source: { subAgent: { thread_spawn: { parent_thread_id: root.nativeSessionId, depth: 1,
+      agent_path: null, agent_nickname: null, agent_role: null } } },
+    status: active ? { type: 'active', activeFlags: [] } : { type: 'notLoaded' },
+    turns: [{ id: 'child-turn', status: active ? 'inProgress' : 'completed',
+      items: [], itemsView: 'full', error: null, startedAt: 1, completedAt: active ? null : 2, durationMs: null }],
+  })
+  await writeFile(join(directory, 'state-native-child.json'), JSON.stringify({ ...nativeChild,
+    settings: { model: 'child-model', modelProvider: 'openai', serviceTier: null, cwd: directory,
+      reasoningEffort: 'medium', instructionSources: [], approvalPolicy: 'never', approvalsReviewer: 'user',
+      sandbox: { type: 'readOnly', networkAccess: false } },
+  }))
+  return child
 }

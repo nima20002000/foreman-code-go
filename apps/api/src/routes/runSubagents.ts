@@ -37,4 +37,6 @@ export function registerRunSubagentRoutes(app: FastifyInstance, services: Operat
   })
   app.post<Command>(`${base}/:subagentId/input`, async request => service().input(requirePrincipal(request), 'http', scopedInput(request.params, request.body)))
   app.post<Command>(`${base}/:subagentId/interrupt`, async request => service().interrupt(requirePrincipal(request), 'http', scopedInput(request.params, request.body)))
+  app.post<Command>(`${base}/:subagentId/responses`, async request =>
+    service().respond(requirePrincipal(request), 'http', scopedInput(request.params, request.body)))
 }

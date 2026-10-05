@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { subagentCapabilities } from '@foreman-code/contracts/subagents'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE } from '@foreman-code/contracts'
 import { server } from '../../mocks/server'
 import { SubagentPanel } from './SubagentPanel'
 import { base, child, detail, message, receipt, scope, tool } from './testFixtures'
@@ -31,6 +32,33 @@ function qualified() {
     availableActions: { sendInput: true, interrupt: true, blockedReason: null } }
 }
 describe('Subagent panel', () => {
+  it('validates and answers a child form through the shared response UI', async () => {
+    const record = { ...detail(), availableActions: { ...detail().availableActions, respond: true },
+      pendingInteraction: { session: { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'native-child' },
+        turn: { nativeTurnId: 'child-turn', nativeRequestId: 'child-request' },
+        nativeRequestType: 'mcpServer/elicitation/request', request: {},
+        responseOptions: [{ ...CODEX_APPROVAL_OPTIONS_FIXTURE[0]!, label: 'Submit details',
+          input: { kind: 'form', schema: { type: 'object', required: ['count'],
+            properties: { count: { title: 'Count', type: 'integer', minimum: 1 } } } } }] } }
+    const bodies: Record<string, unknown>[] = []
+    server.use(http.get(`${base}/:subagentId`, () => HttpResponse.json(record)),
+      http.post(`${base}/:subagentId/responses`, async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>
+        bodies.push(body)
+        return HttpResponse.json(receipt({ commandId: String(body.commandId),
+          operation: 'run_subagent_respond_v1', expectedRevision: String(body.expectedRevision) }))
+      }))
+    mount()
+    const submit = await screen.findByRole('button', { name: 'Submit details' })
+    fireEvent.click(submit)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Check your answers')
+    expect(bodies).toHaveLength(0)
+    fireEvent.change(screen.getByLabelText('Count (required)'), { target: { value: '2' } })
+    fireEvent.click(submit)
+    expect(await screen.findByText('Response delivered to the subagent.')).toBeVisible()
+    expect(bodies).toMatchObject([{ nativeRequestId: 'child-request', response: { count: 2 } }])
+  })
+
   it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('sends input and interruption for qualified %s children', async nativeMode => {
     const input = vi.fn(() => HttpResponse.json(receipt()))
     const interrupt = vi.fn(() => HttpResponse.json(receipt({ operation: 'run_subagent_interrupt_v1' })))

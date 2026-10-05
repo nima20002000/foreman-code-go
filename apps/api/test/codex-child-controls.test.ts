@@ -1,14 +1,12 @@
 import { rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { NativeSessionReference } from '@graphql/contracts'
-import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
-import type { RunSubagent } from '@graphql/contracts/subagents'
+import { withInteractionResponse } from '@graphql/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import { CodexChildControls } from '../src/modules/harnesses/codexChildControls.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlErrors.js'
-import { childControlRecord, childControlReceipt, codexChildControlFixture } from './fixtures/codex-child-control-helpers.js'
-import { calls, fixture, fixtureQualification, input, nativeThread, state, until } from './fixtures/codex-test-helpers.js'
+import { childControlRecord, childControlReceipt, codexChildControlFixture, seedCodexChild } from './fixtures/codex-child-control-helpers.js'
+import { calls, emit, fixture, fixtureQualification, input, state, until } from './fixtures/codex-test-helpers.js'
 
 vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   const actual = await vi.importActual<typeof import('../src/modules/harnesses/codexProtocol.js')>(
@@ -119,41 +117,64 @@ describe('Codex child controls through the pinned protocol', () => {
   })
 })
 
-async function seedChild(directory: string, root: NativeSessionReference, source: WorkflowNativeSessionStart,
-  overrides: Partial<RunSubagent> = {}) {
-  const child = childControlRecord({ workspaceId: source.request.workspaceId,
-    runId: source.request.runId, parentExecutionId: source.request.executionId,
-    parentAttemptKey: `${source.request.executionId}:1`, parentNodeId: source.request.workflowNodeId,
-    parentAgentId: source.request.configuration.agentId,
-    native: { parentSessionId: root.nativeSessionId, childSessionId: 'native-child', currentTurnId: 'child-turn' },
-    profile: { deviceId: 'device', harnessInstanceId: source.request.configuration.id, providerVersion: root.providerVersion },
-    ...overrides,
-  })
-  const active = child.status === 'running'
-  const nativeChild = nativeThread({ id: 'native-child', sessionId: 'native-child',
-    parentThreadId: root.nativeSessionId, cwd: directory,
-    source: { subAgent: { thread_spawn: { parent_thread_id: root.nativeSessionId, depth: 1,
-      agent_path: null, agent_nickname: null, agent_role: null } } },
-    status: active ? { type: 'active', activeFlags: [] } : { type: 'notLoaded' },
-    turns: [{ id: 'child-turn', status: active ? 'inProgress' : 'completed',
-      items: [], itemsView: 'full', error: null, startedAt: 1, completedAt: active ? null : 2, durationMs: null }],
-  })
-  await writeFile(join(directory, 'state-native-child.json'), JSON.stringify({ ...nativeChild,
-    settings: { model: 'child-model', modelProvider: 'openai', serviceTier: null, cwd: directory,
-      reasoningEffort: 'medium', instructionSources: [], approvalPolicy: 'never', approvalsReviewer: 'user',
-      sandbox: { type: 'readOnly', networkAccess: false } },
-  }))
-  return child
-}
-
 describe('Codex session manager child control wiring over stdio', () => {
+  it.each(['command', 'file', 'questions', 'form'] as const)('routes a continued child %s request through its own callback lifecycle', async kind => {
+    const f = await fixture()
+    const manager = new CodexAppServerSessionManager(f.binary)
+    try {
+      const source = input(f.directory)
+      const root = await manager.createSession(source)
+      const child = await seedCodexChild(f.directory, root, source, { status: 'completed' })
+      const lease = manager.subagentControl(child, () => {})!
+      await lease.sendInput!(childControlReceipt(child, { nativeTurnId: null, nativeGeneration: lease.generation }), 'wait')
+      const turnId = (await state(f.directory, 'native-child')).turns.at(-1)!.id
+      const callbacks = {
+        command: { method: 'item/commandExecution/requestApproval', params: {
+          itemId: 'command', command: 'printf harmless', cwd: f.directory, availableDecisions: ['accept', 'decline'] } },
+        file: { method: 'item/fileChange/requestApproval', params: { itemId: 'patch', reason: 'Edit the requested file' } },
+        questions: { method: 'item/tool/requestUserInput', params: { itemId: 'question', isBlocking: true,
+          questions: [{ id: 'answer', header: 'Answer', question: 'Enter details', isOther: true,
+            isSecret: false, options: null }] } },
+        form: { method: 'mcpServer/elicitation/request', params: { mode: 'form', serverName: 'app', message: 'Enter details',
+          requestedSchema: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] } } },
+      }
+      const callback = callbacks[kind]
+      await emit(f.directory, { id: 6001, method: callback.method,
+        params: { threadId: 'native-child', turnId, ...callback.params } })
+      const pending = await until(async () => lease.pendingInteraction?.())
+      expect(pending.session.nativeSessionId).toBe('native-child')
+      expect(pending.turn.nativeTurnId).toBe(turnId)
+      expect(await manager.pending(root)).toBeUndefined()
+      const offered = pending.responseOptions[0]!
+      const option = withInteractionResponse(offered, kind === 'questions' ? { answer: { answers: ['Entered'] } }
+        : kind === 'form' ? { count: 2 } : undefined)
+      const receipt = childControlReceipt(child, { operation: 'run_subagent_respond_v1', id: 'response',
+        nativeGeneration: lease.generation, nativeTurnId: turnId,
+        response: { nativeRequestId: pending.turn.nativeRequestId!, nativeRequestType: pending.nativeRequestType, option } })
+      await lease.respond!(receipt)
+      expect(lease.pendingInteraction!()).toBeUndefined()
+      const replies = (await calls(f.directory)).filter(entry => {
+        const wire = entry.wire as { id?: number; result?: unknown } | undefined
+        return wire?.id === 6001 && wire.result
+      })
+      expect(replies).toHaveLength(1)
+      expect((await state(f.directory, root.nativeSessionId)).turns).toHaveLength(0)
+      await expect(lease.respond!(receipt)).rejects.toThrow()
+      await manager.close(root)
+      expect(() => lease.pendingInteraction!()).toThrow()
+    } finally {
+      await manager.dispose()
+      await rm(f.directory, { recursive: true, force: true })
+    }
+  })
+
   it('queues a child command behind the actual parent lifecycle lock without marking it uncertain', async () => {
     const f = await fixture()
     const manager = new CodexAppServerSessionManager(f.binary)
     try {
       const source = input(f.directory)
       const root = await manager.createSession(source)
-      const child = await seedChild(f.directory, root, source)
+      const child = await seedCodexChild(f.directory, root, source)
       await writeFile(join(f.directory, 'read-delay'), '')
       const attaching = manager.attachSession(root, source)
       await until(async () => (await calls(f.directory)).some(entry => {
@@ -183,7 +204,7 @@ describe('Codex session manager child control wiring over stdio', () => {
     try {
       const source = input(f.directory)
       const root = await manager.createSession(source)
-      const child = await seedChild(f.directory, root, source, { nativeMode })
+      const child = await seedCodexChild(f.directory, root, source, { nativeMode })
       expect(manager.subagentControl({ ...child, parentExecutionId: 'foreign-execution' }, () => {})).toBeUndefined()
       const lease = manager.subagentControl(child, () => {})!
       const receipt = childControlReceipt(child, { nativeGeneration: lease.generation })
@@ -220,7 +241,7 @@ describe('Codex session manager child control wiring over stdio', () => {
     try {
       const source = input(f.directory)
       const root = await manager.createSession(source)
-      const child = await seedChild(f.directory, root, source, { status: 'completed' })
+      const child = await seedCodexChild(f.directory, root, source, { status: 'completed' })
       const lease = manager.subagentControl(child, () => {})!
       await lease.sendInput!(childControlReceipt(child, { nativeTurnId: null, nativeGeneration: lease.generation }), 'wait')
       expect((await state(f.directory, root.nativeSessionId)).turns).toHaveLength(0)

@@ -116,7 +116,11 @@ export class RunSubagentService {
     return this.scoped(principal, input, 'runs:read', async scope => {
       await reconcileRunSubagents(scope.sql, input.runId)
       const child = await this.child(scope, input)
-      return RunSubagentDetailSchema.parse({ subagent: child, availableActions: subagentAvailableActions(child, scope.principal, scope.stopped, this.controls(child)) })
+      const lease = this.controls(child)
+      const pendingInteraction = lease?.pendingInteraction?.()
+      return RunSubagentDetailSchema.parse({ subagent: child,
+        availableActions: subagentAvailableActions(child, scope.principal, scope.stopped, lease),
+        ...(pendingInteraction ? { pendingInteraction } : {}) })
     })
   }
   items(principal: ManagementPrincipal, raw: unknown, kind: 'message'): Promise<z.infer<typeof RunSubagentMessagesPageSchema>>
@@ -139,6 +143,9 @@ export class RunSubagentService {
   tools(principal: ManagementPrincipal, input: unknown) { return this.items(principal, input, 'tool') }
   input(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown) { return executeSubagentCommand(this, principal, source, 'run_subagent_input_v1', raw) }
   interrupt(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown) { return executeSubagentCommand(this, principal, source, 'run_subagent_interrupt_v1', raw) }
+  respond(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown) {
+    return executeSubagentCommand(this, principal, source, 'run_subagent_respond_v1', raw)
+  }
 }
 function encodeCursor(scope: string[], key: string) { return Buffer.from(JSON.stringify({ scope, key })).toString('base64url') }
 function decodeCursor(cursor: string | undefined, scope: string[]): string | null {

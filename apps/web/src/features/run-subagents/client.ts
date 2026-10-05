@@ -3,7 +3,7 @@ import {
   RunSubagentsListInputSchema, RunSubagentGetInputSchema, RunSubagentItemsInputSchema,
   RunSubagentsPageSchema, RunSubagentDetailSchema, RunSubagentMessagesPageSchema,
   RunSubagentToolsPageSchema, RunSubagentInputSchema, RunSubagentInterruptSchema,
-  RunSubagentCommandReceiptSchema,
+  RunSubagentCommandReceiptSchema, RunSubagentRespondSchema,
 } from '@foreman-code/contracts/subagents'
 import { ApiError, apiClient, type RequestOptions } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
@@ -62,6 +62,13 @@ export const subagentsApi = {
     const parsed = RunSubagentInterruptSchema.parse(input)
     const receipt = await read(`${childPath(parsed)}/interrupt`, RunSubagentCommandReceiptSchema, { ...options, method: 'POST', body: parsed })
     assertReceipt(parsed, receipt, 'run_subagent_interrupt_v1')
+    return receipt
+  },
+  async respond(input: z.input<typeof RunSubagentRespondSchema>, options?: RequestOptions) {
+    const parsed = RunSubagentRespondSchema.parse(input)
+    const receipt = await read(`${childPath(parsed)}/responses`, RunSubagentCommandReceiptSchema,
+      { ...options, method: 'POST', body: parsed })
+    assertReceipt(parsed, receipt, 'run_subagent_respond_v1')
     return receipt
   },
 }

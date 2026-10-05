@@ -37,7 +37,9 @@ export async function reconcileSubagentCommand(service: RunSubagentService, prin
     state = await lease.reconcile!(receipt)
     lease.assertCurrent()
   } catch { state = 'uncertain' }
-  const action = receipt.operation === 'run_subagent_input_v1' ? 'runs:subagents:input' : 'runs:stop'
+  let action: 'runs:subagents:input' | 'runs:stop' | 'interactions:respond' = 'runs:stop'
+  if (receipt.operation === 'run_subagent_input_v1') action = 'runs:subagents:input'
+  else if (receipt.operation === 'run_subagent_respond_v1') action = 'interactions:respond'
   return service.scoped(principal, input, action, async scope => {
     const child = await service.child(scope, input)
     const current = service.controls(child)
