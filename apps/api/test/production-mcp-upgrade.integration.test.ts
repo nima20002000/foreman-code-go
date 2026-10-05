@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Client } from '@modelcontextprotocol/client'
@@ -28,7 +28,7 @@ afterEach(async () => {
   }
 })
 
-const changes = ['older-writer', 'concurrent-writers', 'retained-recovery'] as const
+const changes = ['older-writer', 'concurrent-writers', 'retained-recovery', 'unused-directory'] as const
 const cases = (['codex', 'opencode'] as const).flatMap(harness => changes.map(change => ({ harness, change })))
 
 it.each(cases)(
@@ -43,13 +43,18 @@ it.each(cases)(
     await Promise.all([installedRuntime, developmentRuntime, concurrentRuntime]
       .map(runtime => copyFile(process.execPath, runtime, constants.COPYFILE_FICLONE)))
     vi.stubEnv('GRAPHQL_APP_MCP_DIRECTORY', undefined)
-    vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', dirname(previous))
+    const savedLauncher = change === 'unused-directory' ? shared : previous
+    vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', dirname(savedLauncher))
     await runLauncherProcess({ kind: 'older-install', launcher: shared }, developmentRuntime)
-    await installManagedLauncher(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), previous)
-    await runLauncherProcess({ kind: 'older-install', launcher: previous }, installedRuntime)
+    if (change === 'unused-directory') {
+      await mkdir(join(dirname(previous), 'routes'), { recursive: true })
+    } else {
+      await installManagedLauncher(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), previous)
+    }
+    await runLauncherProcess({ kind: 'older-install', launcher: savedLauncher }, installedRuntime)
     const tokenVariable = harness === 'codex' ? 'GRAPHQL_MCP_TOKEN' : 'FOREMAN_CODE_MCP_TOKEN'
     const connection = {
-      transport: 'stdio' as const, executable: installedRuntime, arguments: [previous],
+      transport: 'stdio' as const, executable: installedRuntime, arguments: [savedLauncher],
       environmentVariables: [tokenVariable],
     }
     const entry = nativeConnection(harness, connection)
@@ -132,7 +137,7 @@ it.each(cases)(
     const { localProductionEnvironment } = await import(runtimeModule)
     const environment = localProductionEnvironment(home, 'a'.repeat(64))
     vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', environment.FOREMAN_CODE_APP_MCP_DIRECTORY)
-    expect(isAppLauncher(harness, entry)).toBe(false)
+    expect(isAppLauncher(harness, entry)).toBe(change === 'unused-directory')
     await upgradeProductionMcpLauncher(home)
     expect(isAppLauncher(harness, entry)).toBe(true)
     const upgraded = await start()
@@ -152,7 +157,7 @@ it.each(cases)(
           version: 1, executables: [], launcherAliases: [previous],
         } }),
       ])
-    } else {
+    } else if (change === 'retained-recovery') {
       // Recreate a transition overwritten before its registration was preserved separately.
       await rm(`${shared}.registration.json`)
       await runLauncherProcess({ kind: 'older-install', launcher: shared, snapshot: {
@@ -184,7 +189,7 @@ it.each(cases)(
       commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value,
     } })).rejects.toThrow('not found')
     const digest = createHash('sha256').update(owner.token).digest('hex')
-    const route = await readFile(join(dirname(previous), 'routes', `${digest}.json`), 'utf8')
+    const route = await readFile(join(dirname(savedLauncher), 'routes', `${digest}.json`), 'utf8')
     expect(route).not.toContain(owner.token)
     expect(route).not.toContain(reader.token)
     await access.revoke(reader.principal.id)

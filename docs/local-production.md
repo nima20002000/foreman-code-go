@@ -80,6 +80,9 @@ their kernel lock is released when a writer exits. If an older update erased the
 round-one transition record, the installer restores it from the validated
 `mcp.previous` installation while requiring the saved directory link to still point
 to the shared launcher. Each API restart rebuilds credential routes from its database.
+An unused folder, including an empty `routes` subdirectory created by an older
+installer, needs no transition and stays untouched. Unmanaged launcher files still
+require native-source review.
 
 The Jobs view and Operator MCP use the same persistent build queue in this
 installation. Its reviewed Main configuration belongs at

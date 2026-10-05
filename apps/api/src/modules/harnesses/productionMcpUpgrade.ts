@@ -1,4 +1,4 @@
-import { lstat, realpath, rename, rm, symlink } from 'node:fs/promises'
+import { lstat, readdir, realpath, rename, rm, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
@@ -48,6 +48,13 @@ export async function upgradeProductionMcpLauncher(desktopHome: string): Promise
   const previousState = await existingPath(previous)
   const retainedState = await existingPath(retained)
   if (!previousState && !retainedState) return
+  if (previousState?.isDirectory() && !retainedState) {
+    const entries = await readdir(previous)
+    const routes = join(previous, 'routes')
+    // Older installers create this directory even when no native launcher is installed.
+    if (!entries.length || entries.length === 1 && entries[0] === 'routes'
+      && (await existingPath(routes))?.isDirectory() && !(await readdir(routes)).length) return
+  }
   if (previousState?.isSymbolicLink()) {
     const installation = readLauncherInstallation(launcher)
     if (await realpath(previous) !== await realpath(destination)) {

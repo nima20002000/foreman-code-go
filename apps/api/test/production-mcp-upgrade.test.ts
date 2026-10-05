@@ -32,6 +32,22 @@ async function fixture() {
   return { home, previous, shared }
 }
 
+it.each(['codex', 'opencode'] as const)(
+  '%s retains its reviewed shared connection when the old production folder is unused', async harness => {
+    const { home, previous, shared } = await fixture()
+    await rm(dirname(previous), { recursive: true })
+    await mkdir(join(dirname(previous), 'routes'), { recursive: true })
+    await installManagedLauncher(source, shared)
+    const entry = nativeConnection(harness, appLauncherConnection())
+    await upgradeProductionMcpLauncher(home)
+    expect(isAppLauncher(harness, entry)).toBe(true)
+    const uninstalled = nativeConnection(harness, { ...appLauncherConnection(), arguments: [previous] })
+    expect(isAppLauncher(harness, uninstalled)).toBe(false)
+    await upgradeProductionMcpLauncher(home)
+    expect(isAppLauncher(harness, entry)).toBe(true)
+  },
+)
+
 it.each([
   ['codex', 'graphql', 'GRAPHQL_MCP_TOKEN'],
   ['opencode', 'graphql', 'GRAPHQL_MCP_TOKEN'],
