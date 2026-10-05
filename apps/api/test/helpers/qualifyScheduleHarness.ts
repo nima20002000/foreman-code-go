@@ -5,7 +5,6 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { HostHarnessOverride } from '@graphql/contracts/harness-registry'
 import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
-import { identityAlive } from '../../src/modules/harnesses/recovery/linuxIdentity.js'
 import { ProductionHostHarnessProfileQualifier } from '../../src/modules/harnesses/productionProfileQualifier.js'
 import type { ProductionHarnessRegistry } from '../../src/modules/harnesses/productionRegistry.js'
 import { HarnessInstanceSettingsRepository } from '../../src/modules/harnesses/instanceSettings/repository.js'
@@ -47,14 +46,7 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
       if (!await processes.closeOwner(recovery.owner)) throw new Error('Native qualification process closure is unconfirmed.')
     },
   })
-  const installationChecks: { durationMs: number; aborted: boolean }[] = []
-  const assertInstallation = async (...args: Parameters<NativeHarnessFactories['assertInstallationUnchanged']>) => {
-    const started = performance.now()
-    try { await factories.assertInstallationUnchanged(...args) }
-    finally {
-      installationChecks.push({ durationMs: Math.round(performance.now() - started), aborted: args[1]?.aborted ?? false })
-    }
-  }
+  const assertInstallation = factories.assertInstallationUnchanged.bind(factories)
   const wrap = (suite: typeof codexQualificationSuite) => withQualificationIdentity(
     withNativeQualificationOwnership(suite, processes, () => {
       const binding = registry.pinDefault(suite.harness)
@@ -78,26 +70,6 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
       throw new Error('Main-local qualification does not request a worker.')
     }, f.runtimeRoot))
   const failures: unknown[] = []
-  const observationStarted = performance.now()
-  const observations = new Map<string, {
-    lifecycle: string; firstSeenMs: number; guardianAlive: boolean; providerAlive: boolean
-  }>()
-  const observer = setInterval(() => {
-    try {
-      for (const launch of processes.snapshot().launches) {
-        const key = `${launch.owner}:${launch.lifecycle}`
-        observations.set(key, {
-          lifecycle: launch.lifecycle,
-          firstSeenMs: observations.get(key)?.firstSeenMs ?? Math.round(performance.now() - observationStarted),
-          guardianAlive: !!launch.guardian && identityAlive(launch.guardian),
-          providerAlive: !!launch.provider && identityAlive(launch.provider),
-        })
-      }
-    } catch (error) {
-      failures.push(error)
-      clearInterval(observer)
-    }
-  }, 100)
   try {
     const submitted = (await service.run(principal, 'http', 'codex')).qualification
     await service.join()
@@ -119,11 +91,7 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     }
   } catch (error) {
     failures.push(error)
-    console.error('Native schedule qualification diagnostics', JSON.stringify({
-      installationChecks, observations: [...observations.values()],
-    }))
   } finally {
-    clearInterval(observer)
     factories.stopAuxiliaries()
     const closed = await Promise.allSettled([checks.close(), service.shutdown(), factories.disposeAuxiliaries()])
     for (const result of closed) {
