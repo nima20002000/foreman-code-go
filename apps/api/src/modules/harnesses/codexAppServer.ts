@@ -1259,8 +1259,13 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         current()
         const response = receipt.response
         const owned = this.childRuntimes.get(child.native.childSessionId!)
+        const pending = owned && [...owned.runtime.interactions.values()]
+          .find(entry => entry.pending.turn.nativeRequestId === response?.nativeRequestId)?.pending
         if (!response || !owned || owned.runtime.parent !== runtime
-          || receipt.subagentId !== child.id || receipt.runId !== child.runId) {
+          || receipt.operation !== 'run_subagent_respond_v1' || receipt.subagentId !== child.id
+          || receipt.runId !== child.runId || receipt.workspaceId !== child.workspaceId
+          || !pending || pending.nativeRequestType !== response.nativeRequestType
+          || (pending.turn.nativeTurnId ?? null) !== receipt.nativeTurnId) {
           throw new HarnessExecutionError('SUBAGENT_RESPONSE_STALE', 'The child request is no longer owned.')
         }
         await this.respond(owned.runtime.session, response.nativeRequestId, response.option)
@@ -1269,6 +1274,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       reconcile: async receipt => {
         if (!receipt.response) return lease.reconcile!(receipt)
         current()
+        // Native ancestry readback requalifies the child even when only its response journal survives.
+        await lease.reconcile!(receipt)
         const session = { ...runtime.session, nativeSessionId: child.native.childSessionId! }
         const history = await this.reconcileResponse(session, receipt.response)
         return history.responseDeliveries?.some(proof => proof.nativeRequestId === receipt.response!.nativeRequestId
@@ -1321,6 +1328,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   ): Promise<NativeHistory> {
     signal?.throwIfAborted()
     const durable = this.responseJournal?.read(session, response)
+    if (durable && !this.runtimes.has(session.nativeSessionId) && !this.childRuntimes.has(session.nativeSessionId)) {
+      return { events: [], pendingInteractions: [], responseDeliveries: [durable] }
+    }
     const history = await this.history(session)
     if (durable) return { ...history, responseDeliveries: [...(history.responseDeliveries ?? []), durable] }
     if (history.responseDeliveries?.some(proof => proof.nativeRequestId === response.nativeRequestId)) return history

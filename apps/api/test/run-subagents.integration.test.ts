@@ -23,10 +23,12 @@ import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlE
 import { codexChildControlFixture } from './fixtures/codex-child-control-helpers.js'
 import { seedCodexChild } from './fixtures/codex-child-control-helpers.js'
 import { deliveryFixture } from './fixtures/codex-delivery.js'
-import { emit, input as codexInput, until, calls } from './fixtures/codex-test-helpers.js'
+import { input as codexInput, until, calls } from './fixtures/codex-test-helpers.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import { productionSubagentControls } from '../src/modules/subagents/productionControls.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
+import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
+import { join } from 'node:path'
 
 // Explicit loopback admin connection and a random OWNED schema. Never read TEST_DATABASE_URL or migrate public.
 describe('durable per-Run children over SQL and authenticated MCP', () => {
@@ -74,7 +76,8 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
   it.each(['questions', 'form'] as const)('continues and answers the actual Codex child %s callback through MCP', async kind => {
     const f = await fixture('codex')
     const native = await deliveryFixture()
-    const manager = native.makeManager(undefined, {}, { appMcpAccess: 'scoped' })
+    const journal = new NativeResponseJournal(join(native.directory, 'response-journal'))
+    const manager = native.makeManager(undefined, {}, { appMcpAccess: 'scoped', responseJournal: journal })
     const source = codexInput(native.directory, f.versionRecord.definition.nodes[0]!.agentId)
     source.request.executionId = f.executionId
     source.request.runId = f.input.runId
@@ -94,9 +97,10 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     const saved = (await f.service.list(f.reader.principal, f.input)).items[0]!.subagent
     await seedCodexChild(native.directory, root, source, { ...saved, status: 'completed' })
     const managers = new ExecutionScopedNativeSessionManagerResolver(() => manager)
-    const resolved = managers.resolve({ executionId: f.executionId, runId: f.input.runId,
-      agentId: source.request.configuration.agentId, harness: 'codex', workingDirectory: native.directory,
-      configuration: source.request.configuration, attempt: 1 }, { runId: f.input.runId, assertOwned() {} } as RunOwnership)
+    const context = { executionId: f.executionId, runId: f.input.runId,
+      agentId: source.request.configuration.agentId, harness: 'codex' as const, workingDirectory: native.directory,
+      configuration: source.request.configuration, attempt: 1 }
+    const resolved = managers.resolve(context, { runId: f.input.runId, assertOwned() {} } as RunOwnership)
     resolved.beginStart!()
     resolved.markResident!()
     const controls = productionSubagentControls(managers)
@@ -121,10 +125,6 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       const writer = await connect(f.writer.token)
       const reader = await connect(f.reader.token)
       const childInput = { ...f.input, subagentId: saved.id }
-      const continued = await writer.callTool({ name: 'run_subagent_input_v1', arguments: {
-        ...childInput, expectedRevision: saved.revision, commandId: randomUUID(), text: 'wait',
-      } })
-      expect(continued.isError).not.toBe(true)
       const turnId = 'turn-2'
       const callback = kind === 'questions'
         ? { method: 'item/tool/requestUserInput', params: { itemId: 'question', isBlocking: true,
@@ -132,9 +132,11 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
             isSecret: false, options: null }] } }
         : { method: 'mcpServer/elicitation/request', params: { mode: 'form', serverName: 'app', message: 'Enter details',
           requestedSchema: { type: 'object', properties: { count: { type: 'integer', minimum: 1 } }, required: ['count'] } } }
-      const agentId = source.request.configuration.agentId
-      await emit(native.directory, { id: 6002, method: callback.method,
-        params: { threadId: 'native-child', turnId, ...callback.params } }, agentId)
+      await native.json('workflow-input.json', callback)
+      const continued = await writer.callTool({ name: 'run_subagent_input_v1', arguments: {
+        ...childInput, expectedRevision: saved.revision, commandId: randomUUID(), text: 'wait',
+      } })
+      expect(continued.isError).not.toBe(true)
       const detail = await until(async () => {
         const result = await writer.callTool({ name: 'run_subagent_get_v1', arguments: childInput })
         const value = RunSubagentDetailSchema.parse(result.structuredContent)
@@ -154,20 +156,33 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       const receipt = RunSubagentCommandReceiptSchema.parse(result.structuredContent)
       expect(receipt).toMatchObject({ state: 'acknowledged', nativeTurnId: turnId,
         response: { option: { response: command.response } } })
-      services.runs = { subagents: new RunSubagentService(pool, controls) } as OperatorServices['runs']
+      await until(async () => journal.read(detail.pendingInteraction!.session, receipt.response!))
+      await manager.shutdown()
+      const replacement = native.makeManager(undefined, {}, { appMcpAccess: 'scoped', responseJournal: journal })
+      await replacement.attachSession(root, source)
+      const replacementManagers = new ExecutionScopedNativeSessionManagerResolver(() => replacement)
+      const reattached = replacementManagers.resolve(context,
+        { runId: f.input.runId, assertOwned() {} } as RunOwnership)
+      reattached.beginStart!()
+      reattached.markResident!()
+      await pool.query(`update run_subagent_command_receipts set record=jsonb_set(record,'{state}','"uncertain"')
+        where id=$1`, [receipt.id])
+      services.runs = { subagents: new RunSubagentService(pool, productionSubagentControls(replacementManagers)) }
+        as OperatorServices['runs']
       const replay = await writer.callTool({ name: 'run_subagent_respond_v1', arguments: command })
-      expect(RunSubagentCommandReceiptSchema.parse(replay.structuredContent)).toEqual(receipt)
+      const recovered = RunSubagentCommandReceiptSchema.parse(replay.structuredContent)
+      expect(recovered).toMatchObject({ id: receipt.id, state: 'acknowledged', response: receipt.response })
       const url = `/api/management/workspaces/${f.input.workspaceId}/runs/${f.input.runId}/subagents/${saved.id}/responses`
       const http = await app.inject({ method: 'POST', url, payload: command,
         headers: { host: '127.0.0.1', authorization: `Bearer ${f.writer.token}` } })
       expect(http.statusCode).toBe(200)
-      expect(http.json()).toEqual(receipt)
+      expect(http.json()).toEqual(recovered)
       expect((await calls(native.directory)).filter(entry => {
         const wire = entry.wire as { id?: number; result?: unknown } | undefined
-        return wire?.id === 6002 && wire.result
+        return wire?.id === 902 && wire.result
       })).toHaveLength(1)
       expect((await pool.query('select record from run_subagent_command_receipts where id=$1', [receipt.id]))
-        .rows[0].record).toEqual(receipt)
+        .rows[0].record).toEqual(recovered)
     } finally {
       await Promise.allSettled(clients.map(client => client.close()))
       await app.close()

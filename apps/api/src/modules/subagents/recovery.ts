@@ -25,7 +25,8 @@ export async function reconcileSubagentCommand(service: RunSubagentService, prin
     if (!row) return undefined
     const receipt = RunSubagentCommandReceiptSchema.parse(row.record)
     const lease = receipt.state === 'uncertain' ? service.controls(child) : undefined
-    return { receipt, lease: lease?.matches(child) && lease.generation === receipt.nativeGeneration ? lease : undefined }
+    return { receipt, lease: lease?.matches(child)
+      && (lease.generation === receipt.nativeGeneration || receipt.response) ? lease : undefined }
   })
   if (!captured?.lease?.reconcile) return captured?.receipt
   const { receipt, lease } = captured
@@ -47,7 +48,7 @@ export async function reconcileSubagentCommand(service: RunSubagentService, prin
       [receipt.id, child.id, principal.id])).rows[0]
     if (!row) return undefined
     const latest = RunSubagentCommandReceiptSchema.parse(row.record)
-    if (latest.state !== 'uncertain' || !current?.matches(child) || current.generation !== receipt.nativeGeneration) return latest
+    if (latest.state !== 'uncertain' || !current?.matches(child) || current.generation !== lease.generation) return latest
     current.assertCurrent()
     if (state === 'uncertain') return latest
     const next = RunSubagentCommandReceiptSchema.parse({ ...latest, state,
