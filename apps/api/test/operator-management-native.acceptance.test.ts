@@ -250,7 +250,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
       } finally {
         try {
           await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 })
-          await writeFile(evidencePath, JSON.stringify({ harness, denied, inspections,
+          await writeFile(evidencePath, JSON.stringify({ harness, denied, binaries, inspections,
             configurationReadbacks, nativeEvents, state }, null, 2), { mode: 0o600 })
           process.stdout.write(`Operator native evidence ${evidencePath}\n`)
         } finally {
