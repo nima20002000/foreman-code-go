@@ -13,6 +13,10 @@ it('keeps provider credentials and native login paths while excluding production
     GRAPHQL_PRODUCTION_DB_PASSWORD: 'production-database-credential',
     DATABASE_URL: 'postgresql://owner:credential@localhost/graphql_production',
     TEST_DATABASE_URL: 'postgresql://test:credential@localhost/graphql_test',
+    NIM2691_ADMIN_DATABASE_URL: 'postgresql://admin:credential@localhost/postgres',
+    HRT_F14_ADMIN_DATABASE_URL: 'postgresql://admin:credential@localhost/postgres',
+    ENG03_A_TEST_DATABASE_URL: 'postgresql://test:credential@localhost/graphql_native_test',
+    JOB_DISPATCH_DATABASE_URL: 'postgresql://job:credential@localhost/graphql_job_test',
     PGPASSWORD: 'database-credential', GRAPHQL_MCP_TOKEN: 'unscoped-app-credential',
   }
   assert.deepEqual(inheritedAgentEnvironment(source), {
