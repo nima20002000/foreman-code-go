@@ -47,8 +47,10 @@ describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade',
       const input = WorkActivationInputSchema.parse({ executionSemanticsVersion: 3, runInput: t.run.input,
         occurrence: null, entry: null, predecessors: [],
         work: { kind: 'work_return', activation, returned, acceptedSourceResult: c.result } })
-      const execution = HarnessExecutionSchema.parse({ ...b, id: repeatId('fixture-execution', activationId),
-        input, state: 'queued', result: undefined, finishedAt: undefined })
+      const candidate = { ...b, id: repeatId('fixture-execution', activationId), input, state: 'queued' as const }
+      delete candidate.result
+      delete candidate.finishedAt
+      const execution = HarnessExecutionSchema.parse(candidate)
       const slotId = workActivationSlotId(t.run.id, activationId)
       const inputDigest = digest(input)
       // Write the historical input shape under the historical schema, with all
