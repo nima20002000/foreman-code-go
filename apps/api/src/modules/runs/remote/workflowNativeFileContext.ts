@@ -47,7 +47,10 @@ interface Admission {
   runtimeDirectory: string
   context: FileToolContext
 }
-const denied = (): never => { throw new DomainError('NATIVE_ARTIFACT_CONTEXT_DENIED', 'The original running workflow file context is not proven or authorized.', 403) }
+const denied = (reason: string): never => {
+  throw new DomainError('NATIVE_ARTIFACT_CONTEXT_DENIED',
+    'The original running workflow file context is not proven or authorized.', 403, { reason })
+}
 const conflict = (): never => { throw new DomainError('NATIVE_ARTIFACT_CONTEXT_CONFLICT', 'The original workflow file-context admission differs.', 409) }
 const digest = (key: string) => createHash('sha256').update(key).digest('hex')
 
@@ -68,17 +71,17 @@ export class WorkflowNativeFileContextAdmission {
         || capture.owner.runId !== proof.scope.runId || proof.scope.executionSemanticsVersion !== 3
         || proof.commandId !== `execution:${capture.execution.id}` || !same(proof.execution, repeatExecutionIdentity(capture.execution))
         || !same(proof.session, capture.session) || !same(proof.original, capture.source)
-        || proof.lane?.id !== capture.lane.id || proof.lane.providerId !== capture.lane.providerId) return denied()
+        || proof.lane?.id !== capture.lane.id || proof.lane.providerId !== capture.lane.providerId) return denied('captured_source_changed')
       const original = await readDispatchIntent(sql, capture.execution.id)
       const intent = original && await readReconciledDispatchIntent(sql, original.operationId, true)
       if (!intent || intent.mainId !== this.mainId || intent.runId !== proof.scope.runId || intent.nodeId !== proof.ref.nodeId
-        || intent.inputDigest !== proof.inputDigest || intent.technicalAttempt !== capture.execution.attempt) return denied()
+        || intent.inputDigest !== proof.inputDigest || intent.technicalAttempt !== capture.execution.attempt) return denied('dispatch_changed')
       const key = workflowNativeFileConversationKey(this.mainId, capture.execution.id, intent.attemptId)
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [key])
       const rows = (await sql.query<{ id: string; record: { workflowFileContext?: Admission } }>(
         "select id,record from operator_conversations where agent_key=$1 and kind='agent' and deleted_at is null for share", [key])).rows
       if (rows.length === 0) {
-        if (capture.source.type === 'event' && capture.source.event.type !== 'turn.started') return denied()
+        if (capture.source.type === 'event' && capture.source.event.type !== 'turn.started') return denied('initial_turn_missing')
         return await this.admitLocked(sql, evidence, proof, location)
       }
       if (rows.length !== 1) return conflict()
@@ -99,7 +102,7 @@ export class WorkflowNativeFileContextAdmission {
       const fence = await capture.owner.readOneShotFence(sql)
       const verify = async () => {
         capture.assertCurrent(); capture.owner.assertOwned()
-        if (!same(fence, await capture.owner.readOneShotFence(sql))) return denied()
+        if (!same(fence, await capture.owner.readOneShotFence(sql))) return denied('run_owner_changed')
         await this.ports.assertPhysical(sql, capture.owner, capture)
         const running = await sql.query(`select 1 from runs r join harness_executions e on e.run_id=r.id
           where r.id=$1 and e.id=$2 and r.stop_requested_at is null and r.execution_state in ('running','waiting')
@@ -107,7 +110,7 @@ export class WorkflowNativeFileContextAdmission {
           and e.record->>'nativeSessionId'=$4 and e.record->>'workingDirectory'=$5 and e.record->>'runtimeDirectory'=$6 for share of r,e`,
         [intent.runId, intent.executionId, admission.context.ownerPrincipalId, admission.context.nativeSessionId,
           admission.workingDirectory, admission.runtimeDirectory])
-        if (running.rowCount !== 1) return denied()
+        if (running.rowCount !== 1) return denied('execution_not_running')
         const closure = (await sql.query<{ generation: string; expected_reference: unknown; closed: boolean }>(
           `select generation::text,expected_reference,(closed_at is not null or detached_at is not null) as closed
             from execution_native_closures where execution_id=$1 order by generation desc limit 1 for update`, [intent.executionId])).rows[0]
@@ -121,7 +124,7 @@ export class WorkflowNativeFileContextAdmission {
           || !lane || !lane.held || lane.owner_agent_id !== capture.execution.agentId || lane.harness !== capture.session.harness
           || lane.native_session_id !== capture.session.nativeSessionId || lane.token !== capture.lane!.token
           || lane.generation !== String(capture.lane!.connectionGeneration) || lane.provider_id !== capture.lane!.providerId
-          || lane.correlation !== admission.commandId) return denied()
+          || lane.correlation !== admission.commandId) return denied('native_lease_changed')
         const stored = (await sql.query<{ record: WorkflowNativeProofRecord; source_digest: string }>(
           'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 and execution_id=$3 for share',
           [admission.proofId, intent.runId, intent.executionId])).rows[0]
@@ -139,7 +142,7 @@ export class WorkflowNativeFileContextAdmission {
           || receipts[0]!.command_id !== digest(target) || receipts[0]!.input_hash !== commandInputHash(admission)
           || !same(receipts[0]!.result, admission)) return conflict()
         const caller = await this.ports.authority.authorize(accepted, sql)
-        if (caller.principal.id !== admission.context.ownerPrincipalId || !same(caller.context, admission.context)) return denied()
+        if (caller.principal.id !== admission.context.ownerPrincipalId || !same(caller.context, admission.context)) return denied('file_caller_changed')
         capture.assertCurrent()
       }
       await verify()
@@ -163,15 +166,15 @@ export class WorkflowNativeFileContextAdmission {
           || capture.source.history.nativeTurnId !== undefined && capture.source.history.nativeTurnId !== capture.lane.providerId) || capture.owner.runId !== proof.scope.runId
         || proof.scope.executionSemanticsVersion !== 3 || proof.commandId !== `execution:${capture.execution.id}`
         || !same(proof.execution, repeatExecutionIdentity(capture.execution)) || !same(proof.session, capture.session)
-        || !same(proof.original, capture.source) || proof.lane?.providerId !== capture.lane.providerId) return denied()
+        || !same(proof.original, capture.source) || proof.lane?.providerId !== capture.lane.providerId) return denied('captured_source_changed')
       const owner = capture.owner, fence = await owner.readOneShotFence(sql)
       const verifyCapture = async () => {
         capture.assertCurrent(); owner.assertOwned()
-        if (!same(fence, await owner.readOneShotFence(sql))) return denied()
+        if (!same(fence, await owner.readOneShotFence(sql))) return denied('run_owner_changed')
         const row = (await sql.query<{ record: WorkflowNativeProofRecord; source_digest: string }>(
           'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 and execution_id=$3 for share',
           [proof.proofId, proof.scope.runId, capture.execution.id])).rows[0]
-        if (!row || !same(row.record, proof) || row.source_digest !== repeatDigest(proof, REMOTE_NATIVE_SOURCE_LIMIT)) return denied()
+        if (!row || !same(row.record, proof) || row.source_digest !== repeatDigest(proof, REMOTE_NATIVE_SOURCE_LIMIT)) return denied('stored_proof_changed')
         const closure = (await sql.query<{ generation: string; expected_reference: unknown; closed: boolean }>(
           `select generation::text,expected_reference,(closed_at is not null or detached_at is not null) as closed
             from execution_native_closures where execution_id=$1 order by generation desc limit 1 for update`, [capture.execution.id])).rows[0]
@@ -185,7 +188,7 @@ export class WorkflowNativeFileContextAdmission {
           || !lane || !lane.held || lane.owner_agent_id !== capture.execution.agentId || lane.harness !== capture.session.harness
           || lane.native_session_id !== capture.session.nativeSessionId || lane.token !== capture.lane!.token
           || lane.generation !== String(capture.lane!.connectionGeneration) || lane.provider_id !== capture.lane!.providerId
-          || lane.correlation !== proof.commandId) return denied()
+          || lane.correlation !== proof.commandId) return denied('native_lease_changed')
         await this.ports.assertPhysical(sql, owner, capture)
         capture.assertCurrent()
       }
@@ -193,7 +196,7 @@ export class WorkflowNativeFileContextAdmission {
       const original = await readDispatchIntent(sql, capture.execution.id)
       const intent = original && await readReconciledDispatchIntent(sql, original.operationId, true)
       if (!intent || intent.mainId !== this.mainId || intent.runId !== proof.scope.runId || intent.nodeId !== proof.ref.nodeId
-        || intent.technicalAttempt !== capture.execution.attempt || intent.inputDigest !== proof.inputDigest) return denied()
+        || intent.technicalAttempt !== capture.execution.attempt || intent.inputDigest !== proof.inputDigest) return denied('dispatch_changed')
       const row = (await sql.query<{ execution: unknown; configuration: unknown; workspace_id: string; workflow_id: string;
         workflow_version_id: string; authorization_principal_id: string; execution_state: string; stopped: boolean }>(
         `select e.record as execution,c.record as configuration,r.workspace_id,r.workflow_id,r.workflow_version_id,
@@ -202,14 +205,14 @@ export class WorkflowNativeFileContextAdmission {
           join agent_configuration_versions c on c.id=e.record->>'agentConfigurationVersionId' and c.agent_id=e.agent_id
           where e.id=$1 and r.id=$2 for share of e,r,c`, [capture.execution.id, proof.scope.runId])).rows[0]
       if (!row || row.stopped || !['running', 'waiting'].includes(row.execution_state) || row.workspace_id !== proof.scope.workspaceId
-        || row.workflow_id !== proof.scope.workflowId || row.workflow_version_id !== proof.scope.workflowVersionId) return denied()
+        || row.workflow_id !== proof.scope.workflowId || row.workflow_version_id !== proof.scope.workflowVersionId) return denied('run_not_running')
       const execution = HarnessExecutionSchema.parse(row.execution), configuration = AgentConfigurationVersionSchema.parse(row.configuration)
       if (!['running', 'waiting'].includes(execution.state) || !execution.workingDirectory || !execution.runtimeDirectory
         || !same(repeatExecutionIdentity(execution), proof.execution) || execution.runId !== proof.scope.runId
         || execution.nativeSessionId !== capture.session.nativeSessionId || configuration.harness.harness !== capture.session.harness
         || configuration.id !== execution.agentConfigurationVersionId || configuration.agentId !== execution.agentId
         || configuration.workspaceId !== row.workspace_id || execution.workingDirectory !== capture.execution.workingDirectory
-        || execution.runtimeDirectory !== capture.execution.runtimeDirectory || !same(execution.input, capture.execution.input)) return denied()
+        || execution.runtimeDirectory !== capture.execution.runtimeDirectory || !same(execution.input, capture.execution.input)) return denied('execution_changed')
       const principal = await readLiveManagementPrincipal(sql, row.authorization_principal_id)
       const resource = { workspaceId: row.workspace_id, workflowId: row.workflow_id, runId: execution.runId }
       requireAuthorization(principal, 'agent_chat:read', resource)
@@ -245,7 +248,7 @@ export class WorkflowNativeFileContextAdmission {
           and r.record->>'authorizationPrincipalId'=$3 and e.record->>'state' in ('running','waiting')
           and e.record->>'nativeSessionId'=$4 and e.record->>'workingDirectory'=$5 and e.record->>'runtimeDirectory'=$6 for share of r,e`,
         [execution.runId, execution.id, principal.id, capture.session.nativeSessionId, execution.workingDirectory, execution.runtimeDirectory])
-        if (running.rowCount !== 1) return denied()
+        if (running.rowCount !== 1) return denied('execution_not_running')
         const conversation = await sql.query(`select id from operator_conversations where id=$1 and kind='agent' and agent_key=$2 and deleted_at is null
           and workspace_id=$3 and workflow_id=$4 and workflow_node_id=$5 and agent_id=$6 and agent_configuration_version_id=$7
           and origin_run_id=$8 and origin_execution_id=$9 and harness=$10 and provider_version=$11 and native_session_id=$12
@@ -255,7 +258,7 @@ export class WorkflowNativeFileContextAdmission {
         if (conversation.rowCount !== 1) return conflict()
         const accepted = { context, attempt, ...('kind' in location ? { location } : { transferContext: location }) }
         const caller = await this.ports.authority.authorize(accepted, sql)
-        if (caller.principal.id !== principal.id || !same(caller.context, context)) return denied()
+        if (caller.principal.id !== principal.id || !same(caller.context, context)) return denied('file_caller_changed')
       }
       await verifyContext()
       const inserted = await sql.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)

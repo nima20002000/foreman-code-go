@@ -157,7 +157,8 @@ describe('genuine original workflow file-context admission', () => {
     proof.lane![field] = 'different-original'
     await expect(t.freshConnection().transaction(sql =>
       t.helper.resolveOrAdmitLocked(sql, t.evidence, proof, t.transfer)))
-      .rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_CONTEXT_DENIED' })
+      .rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_CONTEXT_DENIED',
+        details: { reason: 'captured_source_changed' } })
     expect(t.state.audits).toBe(1)
   })
   it('durably reads the first admission across two starts, later events, history and a reconstructed helper', async () => {

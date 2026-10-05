@@ -27,7 +27,7 @@ process.on('message', async message => {
   } catch (error) {
     reconciliationFailure = error
     process.send?.({ kind: 'reconcile-failed', requestId: message.requestId,
-      message: error.message, code: error.code, stack: error.stack })
+      message: error.message, code: error.code, stack: error.stack, details: error.details })
   }
 })
 async function close() {

@@ -425,8 +425,10 @@ export async function remoteReviewProduction() {
           const code = 'code' in message && typeof message.code === 'string'
             && /^[A-Z][A-Z0-9_]{1,127}$/.test(message.code) ? message.code : undefined
           const detail = 'message' in message ? String(message.message) : 'Main reconciliation failed.'
-          const error = new Error(code ? `${code}: ${detail}` : detail)
+          const reason = 'details' in message ? JSON.stringify(message.details) : ''
+          const error = new Error(`${code ? `${code}: ` : ''}${detail}${reason ? ` (${reason})` : ''}`)
           if ('stack' in message && typeof message.stack === 'string') error.stack = message.stack
+          if (reason) error.stack = `${error.stack}\nDetails: ${reason}`
           finish(error)
         }
       }
