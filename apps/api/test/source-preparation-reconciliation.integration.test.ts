@@ -1,3 +1,9 @@
+import type { SourceQuotaPool } from '../src/modules/sources/materialization.js'
+import { readdir, open } from 'node:fs/promises'
+import { verificationRuntimeFixture } from './helpers/verificationRuntimeFixture.js'
+import { JobVerificationProfileSchema, JobVerificationRuntimeMeasurementSchema, JobRuntimeApprovalRecordSchema }
+  from '@foreman-code/contracts/job-verification-runtime'
+import { jobDigest } from '../src/modules/jobs/service.js'
 import { JobVerificationPolicyRequirementsSchema } from '@foreman-code/contracts/job-verification-policy'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
@@ -30,7 +36,7 @@ import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJour
 import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { verificationFixture } from './helpers/jobVerificationFixture.js'
-import { jobPolicyRequirementsRecord, type ResolvedJobDefinitionSpecRecord } from '@foreman-code/contracts/job-verification'
+import { jobPolicyRequirementsRecord, ResolvedJobDefinitionSpecRecordSchema, type ResolvedJobDefinitionSpecRecord } from '@foreman-code/contracts/job-verification'
 import { createVerificationProfile } from '../src/modules/jobs/verificationProfiles.js'
 import { JOB_VERIFICATION_APPROVAL_LIFETIME_MS } from '@foreman-code/contracts/job-verification-policy'
 import { jobSpec } from './helpers/jobFixture.js'
@@ -50,6 +56,7 @@ import type { SourceMaterializationRecord } from '@foreman-code/contracts/source
  * The paired W07 carrier is an in-memory boundary; no laptop/container proof. */
 describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation', () => {
   let database: Awaited<ReturnType<typeof agent3Database>>, app: ReturnType<typeof buildApp>, address: string, directory: string
+  let verificationQuota: SourceQuotaPool | undefined
   let access: PostgresAccessService, sources: PostgresSourceService, journal: RemoteOperationJournal
   let jobs: JobService
   let writer: Awaited<ReturnType<PostgresAccessService['issue']>>, reader: Awaited<ReturnType<PostgresAccessService['issue']>>
@@ -117,16 +124,25 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       currentOwner:(operation,context)=>owners.resolve(operation,DeviceConnectionIdentitySchema.parse({mainId:context.binding.mainId,deviceId:context.binding.deviceId,
         workerInstallationId:context.binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:context.binding.bootId,connectionGeneration:1})),
       transfers:{resolveVerifiedReceipt:unused,openVerified:unused},transferContext:async()=>binding,
+      quotaPoolFor: async () => verificationQuota,
       preparationNativeClosed:async operationId=>allowPreparationClosure && (await journal.jobNativeOwner(operationId))===null})
     const remote = new CarrierRemoteSourceMaterializationHost({capture:()=>({identity:DeviceConnectionIdentitySchema.parse({mainId,deviceId:binding.deviceId,
       workerInstallationId:binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:binding.bootId,connectionGeneration:1}),
       request:async(_namespace,request)=>({payload:await worker.handle(SourceFilesystemOperationSchema.parse(request),{binding,signal:new AbortController().signal})})})},owners,{send:unused})
     const commands = new PostgresCommandCoordinator(database.pool)
-    const materializer = new PrivateSourceMaterializer({read:async()=>bytes},async()=>{})
     sources = new PostgresSourceService(database.pool,commands,{} as never,new PrivateSourceSnapshotStore(join(directory,'snapshots')),mainId,{} as never,
-      {authorize:async()=>{},authorizeFinal:async()=>{},prepare:(manifest,root,attempt)=>materializer.prepare({manifest,binding:root.binding,attempt}),verify:unused,verifyWorkingDirectory:unused,
+      {authorize:async()=>{},authorizeFinal:async()=>{},prepare: async (manifest, root, attempt) => {
+          const row = (await database.pool.query<{ spec: unknown }>(
+            'select spec from job_computer_selections where execution_id=$1', [attempt.executionId])).rows[0]
+          const quota = row && 'verification' in ResolvedJobDefinitionSpecRecordSchema.parse(row.spec)
+            ? verificationQuota : undefined
+          return new PrivateSourceMaterializer({ read: async () => bytes }, async () => {}, quota)
+            .prepare({ manifest, binding: root.binding, attempt })
+        },verify:unused,verifyWorkingDirectory:unused,
         releaseClaim: async record => {
-          await releaseMaterializationClaim(record.receipt, async () => 'released')
+          await releaseMaterializationClaim(record.receipt, async () => 'released',
+            record.receipt.quota ? verificationQuota : undefined)
+          if (record.receipt.quota) return 0
           return measureRetainedSourceDirectory(record.receipt.binding.canonicalPath,
             record.receipt.materializationId, record.receipt.binding.filesystem)
         }, reconcilePreparation:(id,owner)=>remote.reconcilePreparation(id,owner)}, {confirmedClosed}, {
@@ -249,10 +265,11 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     let spec: ResolvedJobDefinitionSpecRecord = { ...jobSpec(), ...saved.spec }
     if (kind === 'verification') {
       const verification = verificationFixture().spec
-      spec = { ...verification, source: spec.source, target: spec.target, argv: verification.argv }
+      spec = { ...verification, source: spec.source, target: spec.target, argv: verification.argv,
+        policy: { ...verification.policy, isolationPolicyId: randomUUID() } }
     }
     const computer = f.computers[0]!
-    const profile = 'verification' in spec ? createVerificationProfile({
+    let profile = 'verification' in spec ? createVerificationProfile({
       id: spec.policy.isolationPolicyId, revision: spec.policy.isolationPolicyRevision, workspaceId,
       name: 'Verification cleanup runtime', root, sourceCommit: spec.source.commit,
       spec: { rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
@@ -260,6 +277,65 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
         suites: ['unit'], approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS } },
       previous: null, now: new Date().toISOString(),
     }) : { ...computer.candidate.profile, root }
+    if (profile.schemaVersion === 2) {
+      // Runtime metadata is a serialized boundary fixture; the worker cleanup and storage path are real.
+      const facts = verificationRuntimeFixture().measurement
+      const requestedAt = new Date().toISOString()
+      const approvalId = randomUUID()
+      const qualificationId = randomUUID()
+      const fingerprint = { ...facts.fingerprint, profileId: profile.id, profileRevision: profile.revision,
+        specDigest: profile.specDigest, root, hostRef: root.selection.hostRef, registration: root.registration,
+        mainInstallationId: root.binding.mainId, sourceCommit: spec.source.commit, approvalConfig: profile.approvalConfig,
+        quotaPool: { ...facts.fingerprint.quotaPool!, slots: facts.fingerprint.quotaPool!.slots.map(slot => ({
+          ...slot, filesystem: { ...root.binding.filesystem, inode: slot.filesystem.inode },
+        })) } }
+      for (const slot of fingerprint.quotaPool.slots) {
+        const path = join(root.binding.canonicalPath, slot.namespace)
+        await mkdir(path, { mode: 0o700 })
+        const directory = await openPrivateRoot(path)
+        try { slot.filesystem = await identity(directory) } finally { await directory.close() }
+      }
+      verificationQuota = { pool: fingerprint.quotaPool, read: async (pool, path, signal) => {
+        signal.throwIfAborted()
+        const slot = pool.slots.find(value => path.startsWith(join(root.binding.canonicalPath, value.namespace)))!
+        const handle = await openPrivateRoot(path)
+        const filesystem = await identity(handle)
+        await handle.close()
+        const base = join(root.binding.canonicalPath, slot.namespace)
+        const directory = await open(base, 'r')
+        const allocated = (await directory.stat()).blocks * 512
+        await directory.close()
+        const occupied = (await readdir(base)).length > 0
+        return { volumeCapacityBytes: fingerprint.quota.volumeCapacityBytes,
+          volumeCapacityInodes: pool.volumeCapacityInodes, projectId: slot.projectId, inheritance: true,
+          hardLimitBytes: slot.hardLimitBytes, hardInodes: slot.hardInodes,
+          usedBytes: occupied ? allocated + 4096 : allocated, usedInodes: occupied ? 2 : 1,
+          accountingEnabled: true, filesystem }
+      } }
+      const approvalExpiresAt = new Date(Date.parse(requestedAt) + profile.approvalConfig.approvalLifetimeMs).toISOString()
+      const identity = { ...facts.identity, profileId: profile.id, profileRevision: profile.revision,
+        rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
+        qualificationId, approvalId, fingerprintDigest: jobDigest(fingerprint), approvalExpiresAt }
+      const measurement = JobVerificationRuntimeMeasurementSchema.parse({ ...facts, fingerprint, identity,
+        approvedAt: requestedAt, checkedAt: requestedAt,
+        suites: facts.suites.map(suite => ({ ...suite, maxConcurrentHeavyJobs: 2 })) })
+      const saved = profile
+      profile = JobVerificationProfileSchema.parse({ ...saved, status: 'qualified', measurement })
+      await database.pool.query(`insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record)
+        values($1,$2,$3,$4,$5,$6::jsonb)`, [profile.id, workspaceId, profile.revision,
+        root.binding.rootId, root.binding.bindingRevision, JSON.stringify(profile)])
+      await database.pool.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,$2,$3::jsonb)',
+        [saved.id, saved.revision, JSON.stringify(saved)])
+      const approval = JobRuntimeApprovalRecordSchema.parse({ schemaVersion: 2, id: approvalId, qualificationId,
+        workspaceId, profileId: profile.id, profileRevision: profile.revision, fingerprint,
+        fingerprintDigest: identity.fingerprintDigest, requestedByPrincipalId: authority.principal.id,
+        status: 'complete', approvedByPrincipalId: authority.principal.id, approvedAt: requestedAt,
+        requestedAt, expiresAt: approvalExpiresAt })
+      await database.pool.query(`insert into job_runtime_qualification_approvals
+        (id,qualification_id,profile_id,profile_revision,workspace_id,record,measurement,requested_by,approved_by)
+        values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$8)`, [approvalId, qualificationId, profile.id,
+        profile.revision, workspaceId, JSON.stringify(approval), JSON.stringify(measurement), authority.principal.id])
+    }
     const candidate = { ...computer.candidate, spec, ready: true, reasons: [],
       profile, sourceReservation: {
         scopeId: `${binding.mainId}:${binding.deviceId}:${binding.workerInstallationId}:${root.binding.filesystem.device}:${root.binding.filesystem.mountId}`,

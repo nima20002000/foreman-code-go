@@ -1,3 +1,4 @@
+import { verificationRuntimeFixture } from '../../../../test/helpers/verificationRuntimeFixture.js'
 import { JobVerificationPolicyRequirementsSchema } from '@foreman-code/contracts/job-verification-policy'
 import { verificationFixture } from '../../../../test/helpers/jobVerificationFixture.js'
 import { VerificationJobExecutionSchema, jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
@@ -43,7 +44,7 @@ function fixture() {
     originIdentityHash: `sha256:${'a'.repeat(64)}`, manifest, approvedAt: execution.createdAt, availability: 'retained' }
   const intent: RemoteJobDispatchIntent = { schemaVersion: 1, protocolVersion: 1, mainId: binding.mainId, subject: { kind: 'manual-job', workspaceId: execution.workspaceId, jobExecutionId: execution.id, definitionId: spec.definitionId },
     executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, bindingHash: spec.bindingHash, inputDigest: `sha256:${spec.specDigest}`, owner: execution.owner }
-  const state: { materializationState: string; missing: string; denied: boolean; profile: unknown | null }
+  const state: { materializationState: string; missing: string; denied: boolean; profile: unknown | null; measurement?: unknown }
     = { materializationState: 'running', missing: '', denied: false, profile: null }
   const query = vi.fn(async (text: string) => {
     if (text === 'begin' || text === 'commit' || text === 'rollback') return { rows: [] }
@@ -53,6 +54,7 @@ function fixture() {
     if (text.includes('source_execution_materializations')) return { rows: [{ record: materialization, state: state.materializationState }] }
     if (text.includes('source_root_bindings')) return { rows: [{ record: root }] }
     if (text.includes('source_snapshots')) return { rows: [{ record: approved }] }
+    if (text.includes('job_runtime_qualification_approvals')) return { rows: [{ measurement: state.measurement }] }
     if (text.includes('job_runtime_profile_versions')) return { rows: [{ record: state.profile ?? profile }] }
     throw new Error('Unexpected source read SQL')
   })
@@ -72,9 +74,25 @@ describe('authenticated original Job source producer with SQL doubles, no DB/phy
   it('reads verification profile policy and quota without weakening immutable source checks', async () => {
     const f = fixture()
     const facts = verificationFixture()
+    const measured = verificationRuntimeFixture().measurement
+    measured.identity = { ...facts.profile }
+    measured.fingerprint = { ...measured.fingerprint, profileId: facts.profile.profileId,
+      root: f.root, hostRef: f.root.selection.hostRef, registration: f.root.registration,
+      mainInstallationId: f.root.binding.mainId, sourceCommit: f.execution.acceptedSpec.source.commit }
+    measured.identity = { ...measured.identity, rootId: f.root.binding.rootId,
+      approvalExpiresAt: measured.expiresAt, qualificationExpiresAt: measured.expiresAt }
+    measured.fingerprint.quotaPool!.slots = measured.fingerprint.quotaPool!.slots.map(slot => ({ ...slot,
+      filesystem: { ...f.root.binding.filesystem, inode: slot.filesystem.inode } }))
+    const slot = measured.fingerprint.quotaPool!.slots[0]!
+    f.materialization.receipt.quota = slot
+    f.execution.acceptedSpec.source.materializationDigest = sourceMaterializationDigest(f.materialization)
+    const projectRoot = join(f.root.binding.canonicalPath, slot.namespace, f.execution.acceptedSpec.source.materializationId, 'tree')
+    f.execution.acceptedSpec.target.destination.canonicalProjectRoot = projectRoot
+    f.execution.acceptedSpec.target.destination.canonicalCwd = projectRoot
+    f.state.measurement = measured
     const execution = VerificationJobExecutionSchema.parse({ ...f.execution, schemaVersion: 2,
       acceptedSpec: { ...f.execution.acceptedSpec, schemaVersion: 2, policy: facts.spec.policy,
-        outputs: facts.spec.outputs, verification: facts.spec.verification, profile: facts.profile,
+        outputs: facts.spec.outputs, verification: facts.spec.verification, profile: measured.identity,
         reservationId: randomUUID(), lifecycle: facts.lifecycle } })
     const profile = createVerificationProfile({
       id: facts.profile.profileId, revision: facts.profile.profileRevision, workspaceId: execution.workspaceId,
@@ -84,6 +102,8 @@ describe('authenticated original Job source producer with SQL doubles, no DB/phy
         suites: ['unit'], approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS } },
       previous: null, now: execution.createdAt,
     })
+    measured.fingerprint.specDigest = profile.specDigest
+    measured.fingerprint.approvalConfig = profile.approvalConfig
     f.state.profile = profile
     expect(await readAcceptedJobSource(f.sql, execution)).toMatchObject({ execution, root: f.root,
       diskQuotaBytes: facts.resources.limits.diskBytes })

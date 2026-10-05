@@ -236,6 +236,7 @@ export class PostgresSourcePreparationReconciliation {
           const reconciliationId = randomUUID(), owner: SourceOperationOwner = { identity: { operationId: input.operationId,
             ownerPrincipalId: live.id, expiresAt: live.expiresAt }, root: state.root, attempt: state.attempt,
             source: state.root.source, record: state.record, physicalClosureConfirmed: false, preparationClosed: true,
+            ...(state.kind === 'job' && state.definition.schemaVersion === 2 ? { quotaRequired: true as const } : {}),
             ...(state.kind === 'workflow' ? { preparationKind: 'workflow' as const,
               preparationNativeSession: state.nativeSession } : {}) }
           await sql.query(`insert into source_preparation_reconciliations(operation_id,reconciliation_id,workspace_id,principal_id,command_id,status,owner)
