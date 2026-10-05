@@ -82,7 +82,9 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 describe('remote native history streaming', () => {
   it.each(['entry', 'non-entry'] as const)('retains a closed %s receipt when preparation has no session acknowledgment', async kind => {
     const f = setup(() => ({ events: [], pendingInteractions: [] }))
-    const { native: _native, turnInput: _input, ...original } = f.receipt
+    const original = { ...f.receipt }
+    delete original.native
+    delete original.turnInput
     const launchId = randomUUID()
     const entryClosure = { intent: original.intent, connection: original.connection, owner: 'execution:execution',
       initialLaunchId: launchId, launches: [{ owner: 'execution:execution', launchId,

@@ -28,7 +28,8 @@ export function pageNativeHistory(history: NativeHistory, afterSequence?: number
   const limit = DEVICE_HISTORY_PAGE_BYTES - 256
   let metadata: DeviceHistoryPage['metadata']
   if (bytes > limit || metadataRequest) {
-    const { events: _events, firstRetainedSequence: _first, nextSequence: _next, gap: _gap, ...fields } = history
+    const fields: Omit<NativeHistory, 'events' | 'firstRetainedSequence' | 'nextSequence' | 'gap'> = { ...history }
+    for (const key of ['events', 'firstRetainedSequence', 'nextSequence', 'gap']) Reflect.deleteProperty(fields, key)
     metadata = pageJsonContinuation(encodeResultCopies(fields, historyResultPaths()), metadataRequest)
     value = { events, pendingInteractions: [], firstRetainedSequence: firstSequence, nextSequence,
       ...(history.correlationId === undefined ? {} : { correlationId: history.correlationId }),

@@ -441,7 +441,7 @@ export async function remoteReviewProduction() {
     }
   } catch (error) {
     try { await close() } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], 'Remote review setup and cleanup failed.', { cause: error })
+      throw new AggregateError([error, cleanupError], 'Remote review setup and cleanup failed.', { cause: cleanupError })
     }
     throw error
   }

@@ -42,7 +42,9 @@ describe('authoritative remote result bridge', () => {
     const entryClosure = { intent: receipt.intent, connection, owner: 'execution:execution', initialLaunchId: launchId,
       launches: [{ owner: 'execution:execution', launchId, bootId: connection.bootId,
         lifecycle: 'closed' as const, closureEvidence: 'native_not_started' as const }] }
-    const { native: _native, terminal: _terminal, ...beforeEntry } = receipt
+    const beforeEntry = { ...receipt }
+    delete beforeEntry.native
+    delete beforeEntry.terminal
     const report: RemoteOperationReceipt = { ...beforeEntry, turnEntryAttempted: false, stopFence: true,
       terminal: { kind: 'cancelled', entryClosure, closureEvidenceDigest: remoteEntryClosureDigest(entryClosure) } }
     expect(await VerifiedRemoteEvidence.commit(report, { ...connection, connectionGeneration: 2 }, f.port)).toBe('accepted')
@@ -58,7 +60,9 @@ describe('authoritative remote result bridge', () => {
     const entryClosure = { intent: receipt.intent, connection, owner: 'execution:execution', initialLaunchId: launchId,
       launches: [{ owner: 'execution:execution', launchId, bootId: connection.bootId,
         lifecycle: 'closed' as const, closureEvidence: 'native_not_started' as const }] }
-    const { native: _native, terminal: _terminal, ...beforeEntry } = receipt
+    const beforeEntry = { ...receipt }
+    delete beforeEntry.native
+    delete beforeEntry.terminal
     const report: RemoteOperationReceipt = { ...beforeEntry, turnEntryAttempted: defect === 'turn-entered', stopFence: true,
       terminal: { kind: 'cancelled', entryClosure, closureEvidenceDigest: remoteEntryClosureDigest(entryClosure),
         ...(defect === 'result' ? { result: { outcome: 'succeeded' as const, output: { text: 'invented' } } } : {}) } }

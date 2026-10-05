@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { DEVICE_APPLICATION_JSON_BYTES, negotiateDeviceExtensions } from '@graphql/contracts/device-application'
 import { RemoteExecutionRpcRequestSchema, RemoteReceiptPageSchema } from '@graphql/contracts/remote-execution-rpc'
 import type { RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
+import { DeviceConnectionIdentitySchema } from '@graphql/contracts/device-identity'
 import { DeviceApplicationChannel, extensionDescriptors,
   type DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../../devices/deviceWire.js'
@@ -46,7 +47,7 @@ function fixture() {
   const digest = 'a'.repeat(64)
   const binding = { mainId, deviceId, workerInstallationId, keyRevision: 1, authorizationRevision: 1,
     bootId: randomUUID(), connectionGeneration: 1, connectionEpoch: randomUUID() }
-  const { connectionEpoch: _epoch, ...connection } = binding
+  const connection = DeviceConnectionIdentitySchema.strip().parse(binding)
   const placement = freezePlacement({ schemaVersion: 1, mainId, runId: start.request.runId,
     nodeId: start.request.workflowNodeId, hostRef: { kind: 'device', mainId, deviceId },
     registration: { workerInstallationId, keyRevision: 1, authorizationRevision: 1 },

@@ -218,7 +218,8 @@ export class RemoteOperationJournal {
     }
   }
   private selectArchivedReview(receipt: RemoteOperationReceipt, archived: z.infer<typeof RemoteReviewerTurnSchema>) {
-    const { result: _result, ...turn } = archived
+    const turn = { ...archived }
+    delete turn.result
     receipt.reviewTurns = [turn, ...(receipt.reviewTurns ?? []).slice(-(retainedReviewTurns - 1))]
     receipt.sequence++
     return turn
