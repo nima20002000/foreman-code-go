@@ -7,6 +7,8 @@ import type { CodexChatFiles } from '../src/modules/harnesses/codexFiles/runtime
 import { calls, collect, input, until } from './fixtures/codex-test-helpers.js'
 import { filePorts, fileScope, sourceRef } from './fixtures/codex-file-runtime-helpers.js'
 import { deliveryFixture } from './fixtures/codex-delivery.js'
+import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
+import { join } from 'node:path'
 
 function boundary(operation: NativeDeliveryError['operation'], delivery: NativeDeliveryError['delivery']) {
   return (error: unknown) => error instanceof NativeDeliveryError
@@ -124,8 +126,10 @@ describe('Codex creation and prompt write boundaries', () => {
   })
 
   it('retains a late prompt rejection only for its correlation without inventing a turn', async () => {
-    const manager = f.makeManager()
-    const session = await manager.createSession(chatInput(f.directory))
+    const journalPath = join(f.directory, 'native-journal')
+    const manager = f.makeManager(undefined, {}, { responseJournal: new NativeResponseJournal(journalPath) })
+    const source = chatInput(f.directory)
+    const session = await manager.createSession(source)
     await assert.rejects(collect(manager.startTurn(session, { prompt: 'late-reject', clientCorrelationId: 'rejected' })),
       boundary('turn_submission', 'unknown'))
     const result = await until(async () => {
@@ -137,7 +141,11 @@ describe('Codex creation and prompt write boundaries', () => {
     assert.deepEqual((await manager.reconcile(session, 'rejected')).nonSubmission, result)
     assert.equal((await manager.reconcile(session, 'another')).nonSubmission, undefined)
     assert.equal((await f.wire('turn/start')).length, 1)
-    await collect(manager.startTurn(session, { prompt: 'retry', clientCorrelationId: 'retry' }))
+    await manager.shutdown()
+    const replacement = f.makeManager(undefined, {}, { responseJournal: new NativeResponseJournal(journalPath) })
+    await replacement.attachSession(session, { ...source, correlationId: 'rejected' })
+    assert.deepEqual((await replacement.reconcile(session, 'rejected')).nonSubmission, result)
+    await collect(replacement.startTurn(session, { prompt: 'retry', clientCorrelationId: 'retry' }))
     assert.equal((await f.wire('turn/start')).length, 2)
   })
 

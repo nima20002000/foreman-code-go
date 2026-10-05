@@ -769,7 +769,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         }, signal), 'CODEX_THREAD_RESUME_INVALID')
         this.validateThreadResponse(prepared, response, session.nativeSessionId)
         const runtime = this.runtime(prepared, structuredClone(session), candidate.transport, true)
-        await this.synchronize(runtime, undefined, signal)
+        if (!this.responseJournal?.readTurnRejection(session, input.correlationId)) {
+          await this.synchronize(runtime, undefined, signal)
+        }
         await candidate.activate(runtime)
         this.runtimes.set(session.nativeSessionId, runtime)
         this.record(runtime, 'thread.attached', { threadId: session.nativeSessionId })
@@ -1348,6 +1350,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     return this.exclusive(session.nativeSessionId, async () => {
       const runtime = this.requireRuntime(session)
       const rejected = runtime.rejectedStarts.get(correlationId)
+        ?? this.responseJournal?.readTurnRejection(session, correlationId)
       if (rejected) return { ...await this.history(session), correlationId,
         nonSubmission: { nativeSessionId: session.nativeSessionId, clientCorrelationId: correlationId,
           result: structuredClone(rejected) } }
@@ -1975,9 +1978,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private rejectStartedTurn(runtime: Runtime, starting: StartingTurn): void {
     if (runtime.starting !== starting || starting.acknowledgedTurnId || runtime.activeTurnId) return
-    runtime.rejectedStarts.set(starting.correlationId, { outcome: 'failed', error: {
+    const result: ExecutionResult = { outcome: 'failed', error: {
       code: 'CODEX_TURN_START_REJECTED', message: 'Codex rejected this message before starting a turn.', retryable: true,
-    } })
+    } }
+    runtime.rejectedStarts.set(starting.correlationId, result)
+    this.responseJournal?.recordTurnRejection(runtime.session, starting.correlationId, result)
     this.restoreRejectedStart(runtime, starting)
   }
 
