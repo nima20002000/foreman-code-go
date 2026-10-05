@@ -1,7 +1,7 @@
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { RemoteOwnerControlSchema, type RemoteOwnerControl } from '@foreman-code/contracts/remote-execution'
 import type { InteractionDeliveryClaim } from '../../interactions/delivery.js'
-import { assertInteractionNativeDispatchLocked } from '../../interactions/wave25/delivery.js'
+import { assertInteractionNativeDispatchLocked, assertInteractionReservedRetryLocked } from '../../interactions/wave25/delivery.js'
 import type { AcceptedExecutionBinding } from '../../placement/nativeComposition.js'
 import { assertGraphTransaction, type GraphTransactionSql } from '../../run-graph/connection.js'
 import type { RunOwnership } from '../ownership.js'
@@ -58,4 +58,13 @@ export async function readAdmittedRemoteOwnerControl(sql: GraphTransactionSql, o
     throw new DomainError('REMOTE_CONTROL_ADMISSION_CONFLICT', 'The retained response admission identifies a different original operation.', 409)
   }
   return control
+}
+
+export async function authorizeReservedRemoteResponse(sql: GraphTransactionSql, owner: RunOwnership,
+  binding: AcceptedExecutionBinding, claim: InteractionDeliveryClaim, command: RemoteOwnerControl): Promise<void> {
+  const stored = await readAdmittedRemoteOwnerControl(sql, owner, binding, claim)
+  if (!stored || !sameWorkflowValue(stored, command)) {
+    throw new DomainError('REMOTE_CONTROL_ADMISSION_CONFLICT', 'The reserved response admission changed.', 409)
+  }
+  await assertInteractionReservedRetryLocked(sql, claim)
 }

@@ -1,4 +1,4 @@
-import { withOriginalInteractionDeliveryClaim } from '../originalDeliveryClaim.js'
+import { withInteractionDeliveryReconciliation, withOriginalInteractionDeliveryClaim } from '../originalDeliveryClaim.js'
 import { randomUUID } from 'node:crypto'
 import type { DurableInteraction } from '@foreman-code/contracts'
 import type { NativeResponseJournal } from '../../harnesses/recovery/responseJournal.js'
@@ -49,9 +49,9 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
         const attached = await deps.nativeRuntime.attachInteraction(current, signal)
         if (attached.manager.harness !== current.harness || attached.session.harness !== current.harness
           || attached.session.nativeSessionId !== current.nativeSessionId || attached.session.providerVersion !== current.providerVersion) return fail('APPROVAL_SESSION_MISMATCH')
-        const history = attached.manager.reconcileResponse
-          ? await attached.manager.reconcileResponse(attached.session, { nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType, option }, signal)
-          : await attached.manager.history(attached.session, signal)
+        const history = await withInteractionDeliveryReconciliation(claim, () => attached.manager.reconcileResponse
+          ? attached.manager.reconcileResponse(attached.session, { nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType, option }, signal)
+          : attached.manager.history(attached.session, signal))
         const proof = matchingDeliveryEvidence(current, attached.session, history)
         if (proof) result = { state: 'delivered', evidence: proof }
       }

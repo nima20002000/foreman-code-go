@@ -25,7 +25,8 @@ import { didGraphTransactionCommit, type GraphTransactionSql } from '../run-grap
 import type { WorkflowNativeProofRecord } from '../runs/workflowNativeProof.js'
 import type { WorkflowPhysicalArtifactsPort } from '../runs/remote/workflowPhysicalArtifacts.js'
 import { DomainError } from '../errors.js'
-import { admitRemoteOwnerControl } from '../runs/remote/ownerControlAdmission.js'
+import { admitRemoteOwnerControl, authorizeReservedRemoteResponse,
+  readAdmittedRemoteOwnerControl } from '../runs/remote/ownerControlAdmission.js'
 import { readOriginalInteractionDeliveryClaim } from '../interactions/originalDeliveryClaim.js'
 import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { transferContextForBinding } from '../byte-transfer/carrier.js'
@@ -159,6 +160,20 @@ export function createProductionRemoteWorkflow(input: {
           if (interactionConnection.getStore()) throw new DomainError('REMOTE_CONTROL_TRANSACTION_UNAVAILABLE', 'Remote native response delivery requires an admitted effect outside the Main delivery transaction.', 409)
           const owner = requireOwner()
           return owner.oneShotConnection().transaction(sql => admitRemoteOwnerControl(sql, owner, binding, command, readOriginalInteractionDeliveryClaim()))
+        },
+        readResponseControl: async () => {
+          const claim = readOriginalInteractionDeliveryClaim()
+          if (!claim) return undefined
+          const owner = requireOwner()
+          return owner.oneShotConnection().transaction(sql => readAdmittedRemoteOwnerControl(sql, owner, binding, claim))
+        },
+        authorizeResponseRetry: async command => {
+          const claim = readOriginalInteractionDeliveryClaim()
+          if (!claim || interactionConnection.getStore()) {
+            throw new DomainError('REMOTE_CONTROL_ORIGINAL_CLAIM_REQUIRED', 'Response recovery requires its active delivery claim.', 409)
+          }
+          const owner = requireOwner()
+          await owner.oneShotConnection().transaction(sql => authorizeReservedRemoteResponse(sql, owner, binding, claim, command))
         },
       })
     },

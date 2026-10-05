@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { DeviceHistoryPageSchema } from '@foreman-code/contracts/device-application'
 import { RemoteNativeHistorySchema } from '@foreman-code/contracts/remote-workflow-physical'
+import { RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { DEFAULT_HARNESS_DEFAULTS, CODEX_APPROVAL_OPTIONS_FIXTURE, type AgentConfigurationVersion } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
@@ -513,6 +514,63 @@ describe('actual worker native-port adapter', () => {
     expect(await f.journal.status(f.intent.operationId)).toMatchObject({
       status: 'known', receipt: { phase: 'uncertain', stopFence: true },
     })
+  })
+  it.each(['reserved', 'entered'] as const)('recovers a %s approval through the Main proxy without duplicate delivery', async phase => {
+    const f = await setup()
+    const option = CODEX_APPROVAL_OPTIONS_FIXTURE[0]!
+    const proxy = new RemoteNativeSessionManager({
+      intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: (_method, frame) => f.host.handle(frame) },
+      observeReceipt: async () => {},
+      controlFor: async () => command,
+      readResponseControl: async () => command,
+      authorizeResponseRetry: async () => {
+        if (!f.state.allowed) throw new Error('Retry authority revoked')
+      },
+    })
+    const session = await proxy.createSession({ request: f.request, correlationId: 'execution:execution' })
+    await f.host.startTurn(f.intent.operationId, 'prompt', 'execution:execution')
+    await f.host.drain()
+    await proxy.history(session)
+    const status = await f.journal.status(f.intent.operationId)
+    if (status.status !== 'known') throw new Error('Missing original receipt')
+    const command = RemoteOwnerControlSchema.parse({ schemaVersion: 1, protocolVersion: 1,
+      commandId: 'original-response', operationId: f.intent.operationId, attemptId: f.intent.attemptId,
+      executionId: f.intent.executionId, bindingHash: f.intent.bindingHash,
+      owner: f.intent.owner, native: status.receipt.native,
+      action: { kind: 'respond', interactionId: 'interaction', interactionRevision: '1',
+        nativeInteractionId: 'question', response: option } })
+    const pending = { session, turn: { nativeTurnId: 'native-turn', nativeRequestId: 'question' },
+      nativeRequestType: 'approval', request: {}, responseOptions: [option] }
+    f.manager.pending = async () => f.state.responds ? undefined : pending
+    f.manager.reconcileResponse = async () => ({ events: [], pendingInteractions: f.state.responds ? [] : [pending] })
+    if (phase === 'reserved') {
+      f.ports.authorize = async () => {
+        if (await f.journal.controlDelivery(command) === 'reserved') throw new Error('Temporary authorization failure')
+      }
+      await expect(proxy.respond(session, 'question', option)).rejects.toThrow('Temporary authorization failure')
+      expect(f.state.responds).toBe(0)
+      f.ports.authorize = async () => {}
+      f.state.allowed = false
+      await expect(proxy.reconcileResponse(session, { nativeRequestId: 'question', nativeRequestType: 'approval', option }))
+        .rejects.toThrow('Retry authority revoked')
+      expect(f.state.responds).toBe(0)
+      f.state.allowed = true
+    } else {
+      f.manager.respond = async () => { f.state.responds++; throw new Error('Native acknowledgment lost') }
+      await proxy.respond(session, 'question', option)
+      expect(f.state.responds).toBe(1)
+    }
+    await proxy.reconcileResponse(session, { nativeRequestId: 'question', nativeRequestType: 'approval', option })
+    await proxy.reconcileResponse(session, { nativeRequestId: 'question', nativeRequestType: 'approval', option })
+    expect(f.state.responds).toBe(1)
+    expect(f.state.starts).toBe(1)
+    expect(f.state.turns).toBe(1)
+    expect(await f.journal.controlDelivery(command)).toBe(phase === 'reserved' ? 'acknowledged' : 'entered')
+    const recovered = await f.journal.status(f.intent.operationId)
+    expect(recovered.status === 'known' && recovered.receipt.controls).toEqual([command])
+    await expect(f.host.handle({ method: 'control-delivery', intent: f.intent, placement: f.placement,
+      command: { ...command, executionId: 'foreign-execution' } })).rejects.toThrow('Control delivery ownership mismatch')
   })
   it('revocation fences and requests physical cancellation without inventing closure', async () => { const { host, journal, intent, placement, request, state } = await setup(); await host.prepare({ intent, placement, request }); state.allowed = false; await host.refreshAuthority(); expect(state.cancels).toBe(1); const status = await journal.status('operation'); expect(status.status === 'known' && status.receipt.stopFence).toBe(true); expect(status.status === 'known' && status.receipt.phase).toBe('stop_requested') })
   it.each(['permission revoked', 'source changed', 'root changed', 'harness changed'])('cancels the original turn after %s', async reason => {

@@ -51,6 +51,8 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
   carrier: MainWorkerCarrier; commit(receipt: RemoteOperationReceipt, authenticated: DeviceConnectionIdentity, response: unknown): RemoteResultCommitPort | Promise<RemoteResultCommitPort>;
   beforePrepare(intent: AcceptedExecutionBinding['intent'], placement: AcceptedExecutionBinding['placement'], authenticated: DeviceConnectionIdentity): Promise<void>;
   controlFor: RemoteNativeManagerOptions['controlFor']
+  readResponseControl?: NonNullable<RemoteNativeManagerOptions['readResponseControl']>
+  authorizeResponseRetry?: NonNullable<RemoteNativeManagerOptions['authorizeResponseRetry']>
   observeOriginalSource?: NonNullable<RemoteNativeManagerOptions['observeOriginalSource']>
   workerExecution?: WorkerExecutionPolicy
   preparationTimeoutMs?: number
@@ -64,6 +66,8 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
   const receiptKey = (receipt: RemoteOperationReceipt) => canonicalGraphJson(receipt)
   return new RemoteNativeSessionManager({ intent: binding.intent, placement: binding.placement, harness: context.harness,
     configuration: context.configuration, controlFor: options.controlFor,
+    ...(options.readResponseControl ? { readResponseControl: options.readResponseControl } : {}),
+    ...(options.authorizeResponseRetry ? { authorizeResponseRetry: options.authorizeResponseRetry } : {}),
     ...(options.observeOriginalSource ? { observeOriginalSource: options.observeOriginalSource } : {}),
     transport: { async request(method, raw, signal) {
       if (method === 'prepare' || method === 'start-turn') {

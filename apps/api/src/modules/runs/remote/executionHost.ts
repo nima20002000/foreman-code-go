@@ -98,6 +98,14 @@ export class RemoteExecutionHost {
     if (frame.method === 'control') action = frame.command.action.kind === 'stop' ? 'stop' : 'control'
     else if (frame.method === 'prepare' || frame.method === 'start-turn' && !frame.review) action = 'start'
     await this.ports.authorize(frame.intent, placement, action)
+    if (frame.method === 'control-delivery') {
+      const command = frame.command
+      if (command.operationId !== frame.intent.operationId || command.executionId !== frame.intent.executionId
+        || command.attemptId !== frame.intent.attemptId || command.bindingHash !== frame.intent.bindingHash
+        || !isDeepStrictEqual(command.owner, frame.intent.owner)) throw new Error('Control delivery ownership mismatch')
+      const phase = await this.ports.journal.controlDelivery(command)
+      return { phase: phase ?? 'unknown', status: await this.ports.journal.status(frame.intent.operationId) }
+    }
     if (frame.method === 'prepare') return this.prepare(frame)
     if (frame.method === 'reattach') return this.reattach(frame)
     if (frame.method === 'capabilities' || frame.method === 'inspect-mcp') return this.inspect(frame, frame.method === 'capabilities' ? 'capabilities' : 'inspectMcp')
@@ -123,7 +131,7 @@ export class RemoteExecutionHost {
       }
       const after = result.status.status === 'known' && frame.correlationId
         ? result.status.receipt.reviewTurns?.find(turn => turn.assignment.correlationId === frame.correlationId)?.afterSequence : undefined
-      return { ...pageNativeHistory(result.history, frame.afterSequence ?? after), status: result.status }
+      return { ...pageNativeHistory(result.history, frame.afterSequence ?? after, frame.metadata), status: result.status }
     }
     return this.read(frame.intent.operationId, frame.method)
   }
