@@ -310,10 +310,14 @@ export async function releaseMaterializationClaim(receipt: MaterializationReceip
 /** Only the separately signed original-Job cleanup grant can authorize a restored volume. */
 export async function releaseMaterializationClaimForCancellation(receipt: MaterializationReceipt,
   filesystem: RootBinding['filesystem'], reconcile: () => Promise<'released' | 'owned' | 'uncertain'>,
-  signal = AbortSignal.timeout(60_000)): Promise<void> {
+  signal = AbortSignal.timeout(60_000), quotaPool?: SourceQuotaPool): Promise<void> {
   RootBindingSchema.shape.filesystem.parse(filesystem)
   if (filesystem.inode !== receipt.binding.filesystem.inode) {
     throw new SourceError('SOURCE_ROOT_CHANGED', 'The original source root inode changed.')
+  }
+  if (receipt.quota) {
+    if (!quotaPool) throw new SourceError('SOURCE_QUOTA_MISSING', 'Original quota configuration is required for recovery.')
+    return reclaimMaterializationQuota(receipt, quotaPool, reconcile, signal, { filesystem, verifyOriginalSource: true })
   }
   return archiveMaterializationClaim(receipt, { filesystem, verifyOriginalSource: true, signal }, reconcile)
 }

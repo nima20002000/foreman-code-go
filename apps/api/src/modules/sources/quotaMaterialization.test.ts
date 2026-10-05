@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
 import { sourceMaterializationParent, type RootBinding } from '@foreman-code/contracts/source-materialization'
 import type { JobQuotaReader } from '../jobs/quotaOwnership.js'
-import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation, withClaimLock } from './materialization.js'
+import { PrivateSourceMaterializer, releaseMaterializationClaim, releaseMaterializationClaimForCancellation, reconcileSourcePreparation, withClaimLock } from './materialization.js'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 
@@ -193,6 +193,22 @@ describe('per-Job source quota ownership', () => {
     expect(successor.quota).toEqual(first.quota)
     await releaseMaterializationClaim(first, async () => 'released', f.quota)
     expect(await readFile(join(sourceMaterializationParent(successor), 'tree/src/index.ts'))).toEqual(f.bytes)
+  })
+
+  it('validates the original source before a signed filesystem-recovery quota reclaim', async () => {
+    const f = await fixture(1)
+    const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    const source = join(sourceMaterializationParent(receipt), 'tree/src/index.ts')
+    await writeFile(source, 'replaced original source')
+    await expect(releaseMaterializationClaimForCancellation(receipt, f.binding.filesystem,
+      async () => 'released', new AbortController().signal, f.quota)).rejects.toThrow()
+    await expect(f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() }))
+      .rejects.toMatchObject({ code: 'SOURCE_CAPACITY' })
+    await writeFile(source, f.bytes)
+    await releaseMaterializationClaimForCancellation(receipt, f.binding.filesystem,
+      async () => 'released', new AbortController().signal, f.quota)
+    const successor = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    expect(successor.quota).toEqual(receipt.quota)
   })
 
   it('cleans only the original namespace, including scratch symlinks, and finishes after a lost release acknowledgment', async () => {
