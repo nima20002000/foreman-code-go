@@ -7,11 +7,12 @@ import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, typ
 import { describe, it } from 'vitest'
 
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexRpcError, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 // Workflow and live acceptance share the native session manager.
 
 const enabled = process.env.RUN_CODEX_APP_SERVER_TESTS === '1'
-const binary = process.env.CODEX_BINARY ?? 'codex'
+const binary = process.env.CODEX_BINARY ?? harnessBinaries(process.env).codexBinary
 function outputText(output: unknown): string { return isObject(output) && typeof output.text === 'string' ? output.text : '' }
 function request(directory: string): HarnessExecutionRequest {
   return {

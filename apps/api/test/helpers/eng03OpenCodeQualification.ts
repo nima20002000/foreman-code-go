@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import pg from 'pg'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
+import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { PostgresSettingsRepository } from '../../src/modules/settings/postgres.js'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
@@ -69,7 +70,7 @@ export async function qualifyEng03OpenCode() {
     const repository = new HarnessQualificationRepository(pool)
     const registry = new HarnessQualificationRegistry(repository,
       { codex: codexQualificationSuite.revision, opencode: opencodeQualificationSuite.revision })
-    const binaries = { codex: process.env.ENG03_A_CODEX_BINARY ?? 'codex',
+    const binaries = { codex: process.env.ENG03_A_CODEX_BINARY ?? harnessBinaries(process.env).codexBinary,
       opencode: process.env.ENG03_A_OPENCODE_BINARY ?? process.env.OPENCODE_BINARY ?? 'opencode' }
     const metadata = new ManagedOpenCodeServer({ binary: binaries.opencode, workingDirectory: directory,
       ownerAgentId: 'qualification-metadata', appMcpAccess: 'none',
