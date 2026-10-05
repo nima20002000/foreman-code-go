@@ -26,7 +26,7 @@ Update: use the same install command with the new approved artifact and hash, ad
 Rollback: node /approved/artifact/src/install-cli.mjs rollback --root /private/app --state /private/state --approve-stopped-update yes
 Before update or rollback, complete the approved drain/stop policy and stop the worker service. An active worker blocks replacement.
 Initialize-native-runtime is an explicit new-installation action. A lost established journal requires original-owner recovery.
-Initialize-native-outputs adds the output store to a stopped installation that has never had one. It refuses an existing store; missing established output state requires recovery. Every launch still verifies Main grants and native sandbox protection.
+Initialize-native-outputs prepares or verifies the output store while the worker is stopped. It resumes interrupted initialization and retains existing reservations. Missing completed output state requires original-owner recovery. Every launch still verifies Main grants and native sandbox protection.
 Capture-job-runtime is a human-reviewed installer action while the worker is stopped. It refuses an existing job-runtime.json and never qualifies or launches a Job.
 Cleanup-job-before-entry requires a current Main-signed human-approved grant and a stopped worker. It preserves the original journal and source bytes; it cannot stop a Job that entered native execution.
 Operator MCP can manage CI policies and request/read/run human-approved qualification; it cannot self-select installer filesystem paths or approve itself.

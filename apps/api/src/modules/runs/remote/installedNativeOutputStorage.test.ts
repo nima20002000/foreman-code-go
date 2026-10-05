@@ -267,6 +267,31 @@ describe('durable native output installation budget, no qualification grants', (
     await recovered.reserve({ owner: f.input.owner, artifactId: randomUUID(), limits: f.limits, requested: f.limits })
   })
 
+  it('charges only the producer that fits when concurrent reservations compete for the final budget', async () => {
+    const f = await fixture()
+    const rootDirectory = join(f.root, 'budget')
+    await mkdir(rootDirectory, { mode: 0o700 })
+    const binding = f.input.owner.binding
+    const installation = { mainId: binding.mainId, deviceId: binding.deviceId,
+      workerInstallationId: binding.workerInstallationId }
+    const limits = { maxDiskBytes: 8, maxSnapshotBytes: 8, maxCommandRecords: 2 }
+    const first = await createNativeOutputBudgetLedger({ rootDirectory, installation, limits, initializeNewStore: true })
+    const second = await createNativeOutputBudgetLedger({ rootDirectory, installation, limits })
+    const requests = Array.from({ length: 2 }, (_, index) => ({ owner: { ...f.input.owner,
+      nativeTurnId: `producer-${index}` }, artifactId: randomUUID(), limits,
+      requested: { maxDiskBytes: 6, maxSnapshotBytes: 6, maxCommandRecords: 1 } }))
+    const results = await Promise.allSettled(requests.map((request, index) =>
+      (index ? first : second).reserve(request)))
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1)
+    const winner = results.findIndex(result => result.status === 'fulfilled')
+    const recovered = await createNativeOutputBudgetLedger({ rootDirectory, installation, limits })
+    const reservation = await recovered.reserve(requests[winner]!)
+    await reservation.assertCurrent()
+    await reservation.release()
+    await (await recovered.reserve(requests[1 - winner]!)).assertCurrent()
+  })
+
   it('cancels queued transactions before charging and permits subsequent producers', async () => {
     const f = await startupFixture()
     await ensureInstalledWorkflowOutputStore(f.root, f.pairing)
@@ -278,6 +303,7 @@ describe('durable native output installation budget, no qualification grants', (
     try {
       const blocked = ledger.reserve(original, abort.signal)
       const rejected = expect(blocked).rejects.toThrow()
+      await new Promise(resolve => setTimeout(resolve, 25))
       abort.abort(new Error('Producer cancelled'))
       await rejected
       const journal = JSON.parse(await readFile(join(f.root, 'workflow-native-outputs', 'budget',

@@ -3,6 +3,7 @@ import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInstalledWorkerDomains } from '../../../apps/api/src/modules/devices/installedWorkerDomains.ts';
 import { codexQualificationSuite } from '../../../apps/api/src/modules/harnesses/qualification/suites/codex.ts';
+import { opencodeQualificationSuite } from '../../../apps/api/src/modules/harnesses/qualification/suites/opencode.ts';
 import { qualificationRevisionWithIdentity } from '../../../apps/api/src/modules/harnesses/qualification/identity.ts';
 import { loadApprovedRoots } from './approvedRoots.mjs';
 import { createWorkerExecutionDomains } from '../../../apps/api/src/modules/runs/remote/workerComposition.ts';
@@ -15,7 +16,7 @@ import { startWorker, acquireWorkerLock } from './runtime.mjs';
 import { approvedRootExtensions } from './rootExtension.mjs';
 import { fileURLToPath } from 'node:url';
 import { loadWorkerRsyncEntrypoint } from '../../../apps/api/src/modules/byte-transfer/installedEntrypoints.ts';
-import { createInstalledWorkflowNativeOutputFactory, initializeInstalledWorkflowOutputStore } from '../../../apps/api/src/modules/runs/remote/installedWorkflowNativeOutputs.ts';
+import { createInstalledWorkflowNativeOutputFactory, ensureInstalledWorkflowOutputStore } from '../../../apps/api/src/modules/runs/remote/installedWorkflowNativeOutputs.ts';
 
 export { createWorkerConnection };
 export { approvedRootExtensions, createWorkerExecutionDomains };
@@ -39,7 +40,6 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
   await prepareWorkerState(stateDirectory);
   const unlock = await acquireWorkerLock(stateDirectory);
   try {
-    const pairing = await loadWorkerPairing(stateDirectory);
     const journals = ['workflow-operations.json', 'job-runtime-operations.json'];
     for (const name of journals) {
       const existing = await lstat(join(stateDirectory, name)).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
@@ -53,15 +53,18 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
       const journal = await RemoteOperationJournal.open(join(stateDirectory, name), { initializeNewInstallation: true });
       await journal.close();
     }
-    await initializeInstalledWorkflowOutputStore(stateDirectory, pairing);
   } finally { await unlock(); }
 }
 
 export async function initializeInstalledNativeOutputs(stateDirectory) {
   await prepareWorkerState(stateDirectory);
   const unlock = await acquireWorkerLock(stateDirectory);
-  try { await initializeInstalledWorkflowOutputStore(stateDirectory, await loadWorkerPairing(stateDirectory)); }
-  finally { await unlock(); }
+  try {
+    const pairing = await loadWorkerPairing(stateDirectory);
+    await ensureInstalledWorkflowOutputStore(stateDirectory, pairing);
+  } finally {
+    await unlock();
+  }
 }
 
 // Only supplied, actual domain registrations enter the authenticated transport.
@@ -90,6 +93,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     if (rsyncEntrypoint?.kind === 'configured') await rsyncEntrypoint.close();
   }, createConnection: async ({ bootId }) => {
     const pairing = await loadWorkerPairing(stateDirectory);
+    await ensureInstalledWorkflowOutputStore(stateDirectory, pairing);
     const rootExtensions = await approvedRootExtensions(stateDirectory, pairing, bootId);
     if (!executionDomains) {
       if (!rsync) {
@@ -116,7 +120,8 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
         nativeOutputs: createInstalledWorkflowNativeOutputFactory({ stateDirectory, pairing, connection: () => connection }),
         ...(rsync ? { rsync } : rsyncEntrypoint?.kind === 'configured' ? { rsync: rsyncEntrypoint.providers } : {}),
-        codexSuiteRevision: qualificationRevisionWithIdentity(codexQualificationSuite.revision) });
+        codexSuiteRevision: qualificationRevisionWithIdentity(codexQualificationSuite.revision),
+        openCodeSuiteRevision: qualificationRevisionWithIdentity(opencodeQualificationSuite.revision) });
       if (installed.rsync) {
         for (const intent of installed.rsyncOwnership.inventory()) {
           if (Date.parse(intent.expiresAt) <= Date.now()) await installed.rsync.retireExpired(intent);
