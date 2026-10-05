@@ -73,14 +73,14 @@ it('requires normal ingestion for a different current native session', async () 
 it('rejects a changed canonical source digest before commit', async () => {
   const f = fixture()
   try {
-    await expect(f.read(async () => { f.state.wrongDigest = true })).rejects.toThrow('canonical repeat publication receipt')
+    await expect(f.read(async () => { f.state.wrongDigest = true })).rejects.toMatchObject({ code: 'REPEAT_PUBLICATION_RECEIPT_CONFLICT' })
   } finally { await f.close() }
 })
 
 it('rejects a native binding change before commit', async () => {
   const f = fixture()
   try {
-    await expect(f.read(async () => { f.state.sessionId = 'replacement' })).rejects.toThrow('correlation changed')
+    await expect(f.read(async () => { f.state.sessionId = 'replacement' })).rejects.toMatchObject({ code: 'NATIVE_SOURCE_IDENTITY_CONFLICT' })
   } finally { await f.close() }
 })
 
