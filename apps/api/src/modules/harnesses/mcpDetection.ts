@@ -187,8 +187,9 @@ export class McpDetectionService {
       })
     } catch (error) {
       if (error instanceof DomainError && error.code === 'MCP_INSPECTION_CONTEXT_MISMATCH') throw error
-      const reportedCode = error instanceof DomainError ? error.code
-        : error instanceof HarnessExecutionError ? error.result.error?.code : undefined
+      let reportedCode: string | undefined
+      if (error instanceof DomainError) reportedCode = error.code
+      else if (error instanceof HarnessExecutionError) reportedCode = error.result.error?.code
       const failureCode = reportedCode && /^[A-Z][A-Z0-9_]{0,95}$/u.test(reportedCode)
         ? reportedCode : 'NATIVE_MCP_INSPECTION_FAILED'
       return ScopedMcpDetectionSchema.parse({
