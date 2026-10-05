@@ -1171,7 +1171,7 @@ export function createClaudeNativeSessionManager(options: {
         const notOffered = !offerStarted || error instanceof ClaudeInputNotDeliveredError || error && typeof error === 'object'
           && 'deliveryState' in error && error.deliveryState === 'not-delivered'
         if (notOffered) {
-          if (runtime.active === turn) runtime.active = undefined
+          if (runtime.active === turn) delete runtime.active
           runtime.turns.delete(turn.correlationId)
           const rejection = Object.assign(new Error(error instanceof Error ? error.message : 'Claude input was not offered.',
             { cause: error }), { certainty: 'definite' as const, deliveryState: 'not-delivered' as const })

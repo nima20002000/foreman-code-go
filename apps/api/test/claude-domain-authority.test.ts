@@ -217,3 +217,17 @@ it.each(['operator', 'agent'] as const)('authorizes idle %s profile controls wit
   f.principals.get('sender')!.grants[0]!.actions = [kind === 'operator' ? 'operator_chat:read' : 'agent_chat:read']
   await expect(authority.profileAdmission()).rejects.toMatchObject({ status: 403 })
 })
+
+for (const kind of ['operator', 'agent'] as const) it(`admits ${kind} profile observation with current read grants`, async () => {
+  const f = fixture(kind)
+  f.row.active_request_id = null
+  f.principals.get('sender')!.grants[0]!.actions = [kind === 'operator' ? 'operator_chat:read' : 'agent_chat:read']
+  const binding = kind === 'operator'
+    ? { kind, conversationId: 'chat', observationPrincipalId: 'sender', repository: new PostgresOperatorConversationRepository({ query: f.query } as unknown as pg.Pool) }
+    : { kind, conversationId: 'chat', workspaceId: 'workspace', observationPrincipalId: 'sender', repository: new PostgresAgentChatRepository({ query: f.query } as unknown as pg.Pool) }
+  const authority = new PostgresClaudeInteractionAuthority({ query: f.query } as unknown as pg.Pool, binding, f.manager)
+  await expect(authority.profileAdmission()).resolves.toBeUndefined()
+  await expect(authority.callbackAdmission()).rejects.toMatchObject({ code: 'CLAUDE_CALLBACK_SCOPE_DENIED' })
+  f.principals.get('sender')!.grants[0]!.actions = []
+  await expect(authority.profileAdmission()).rejects.toMatchObject({ status: 403 })
+})
