@@ -1,12 +1,50 @@
+import assert from 'node:assert/strict'
 import { join } from 'node:path'
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import { checkCodexSchema, checkOpenCodeSchema, parseExport } from '../src/modules/harnesses/compatibility/schema.js'
-import { diagnosticEnvironment, parseInstalledVersion, schemaExportArguments } from '../src/modules/harnesses/compatibility/probe.js'
+import { diagnosticEnvironment, nativeCompatibilityProbe, parseInstalledVersion, schemaExportArguments } from '../src/modules/harnesses/compatibility/probe.js'
+import { CompatibilityCheckError } from '../src/modules/harnesses/compatibility/errors.js'
 
 import { protocolFromBundle } from '../src/modules/harnesses/codexProtocol.js'
 import { codexSchema, openCodeSchema } from './fixtures/harness-schemas.js'
 
 describe('model-free command and schema diagnostics', () => {
+  it.skipIf(process.platform === 'win32').each(['codex', 'opencode'] as const)(
+    'names the harness, observed version and export command when %s refuses its contract', async harness => {
+      const directory = await mkdtemp(join(tmpdir(), 'harness-export-contract-'))
+      const binary = join(directory, 'harness.mjs')
+      const version = harness === 'codex' ? 'codex-cli 0.158.0' : '2.0.0'
+      await writeFile(binary, `#!${process.execPath}
+if (process.argv.includes('--version')) {
+  console.log(${JSON.stringify(version)})
+} else {
+  console.error('private-credential')
+  process.exitCode = 1
+}
+`)
+      await chmod(binary, 0o700)
+      const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, directory)
+      const signal = AbortSignal.timeout(15_000)
+      try {
+        const installation = await probe.inspect(harness, signal)
+        await assert.rejects(probe.probe(harness, installation, signal), (error: unknown) => {
+          assert(error instanceof CompatibilityCheckError)
+          expect(error.code).toBe('CLI_CHECK_REJECTED')
+          expect(error.message).toContain(`${harness} ${installation.version}`)
+          expect(error.message).toContain(harness === 'codex' ? 'app-server generate-json-schema --experimental' : '--pure generate')
+          expect(error.message).not.toContain('private-credential')
+          return true
+        })
+      } finally {
+        try {
+          assert(probe.close)
+          await probe.close()
+        }
+        finally { await rm(directory, { recursive: true, force: true }) }
+      }
+    }, 20_000)
   it('only constructs export commands, never run, exec, serve, sessions or prompts', () => {
     expect(schemaExportArguments('codex', '/isolated')).toEqual(['app-server', 'generate-json-schema', '--experimental', '--out', join('/isolated', 'schemas')])
     expect(schemaExportArguments('opencode', '/isolated')).toEqual(['--pure', 'generate'])

@@ -194,7 +194,17 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
     },
     async probe(harness, installation, signal) {
       return isolated(source, directories, async (directory, environment) => {
-        const output = await command(installation.executable, schemaExportArguments(harness, directory), directory, environment, signal, EXPORT_LIMIT, processes, ownership)
+        let output: Awaited<ReturnType<typeof command>>
+        try {
+          output = await command(installation.executable, schemaExportArguments(harness, directory), directory, environment, signal, EXPORT_LIMIT, processes, ownership)
+        } catch (error) {
+          if (error instanceof CompatibilityCheckError && error.code === 'CLI_CHECK_REJECTED') {
+            const contract = harness === 'codex' ? 'app-server generate-json-schema --experimental' : '--pure generate'
+            throw new CompatibilityCheckError(error.code,
+              `${harness} ${installation.version} could not complete the required ${contract} schema export contract.`)
+          }
+          throw error
+        }
         const text = harness === 'codex' ? await readExport(join(directory, 'schemas', 'codex_app_server_protocol.schemas.json')) : output.stdout
         signal.throwIfAborted()
         const input = join(directory, 'diagnostic-schema.json')
