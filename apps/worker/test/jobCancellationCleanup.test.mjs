@@ -13,13 +13,17 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const bundleDirectory = await mkdtemp(join(persistentFixtureRoot, 'job-cleanup-test-bundle-'));
 after(() => rm(bundleDirectory, { recursive: true, force: true }));
 const exports = [
-  ['apps/worker/src/jobCancellationCleanup.mjs', ['cleanupJobBeforeEntry', 'validateRestoredJobFilesystem']],
+  ['apps/worker/src/jobCancellationCleanup.mjs', ['cleanupJobBeforeEntry', 'validateRestoredJobFilesystem', 'validateRestoredQuotaFilesystem']],
   ['apps/api/src/modules/runs/remote/operationJournal.ts', ['RemoteOperationJournal']],
   ['apps/api/src/modules/sources/materialization.ts', ['PrivateSourceMaterializer', 'releaseMaterializationClaimForCancellation']],
   ['apps/api/src/modules/sources/manifest.ts', ['createSourceManifest']],
   ['apps/api/src/modules/sources/bindingHash.ts', ['sourceBindingHash', 'sourceMaterializationDigest']],
   ['apps/api/src/modules/sources/privateFilesystem.ts', ['openPrivateRoot', 'identity']],
   ['apps/api/src/modules/sources/rootAttestation.ts', ['qualifyApprovedRootAllowlist']],
+  ['apps/api/src/modules/jobs/executor.ts', ['jobSupervisorIdentity']],
+  ['apps/api/test/helpers/verificationRuntimeFixture.ts', ['verificationRuntimeFixture']],
+  ['packages/contracts/src/jobVerificationRuntime.ts', ['JobVerificationRepositoryContextSchema']],
+  ['packages/contracts/src/jobVerification.ts', ['JobExecutionRecordSchema']],
   ['packages/contracts/src/jobCancellationRecovery.ts', ['jobCancellationGrantMessage', 'jobCancellationClosureMessage']],
 ];
 const contractPackage = JSON.parse(await readFile(join(repository, 'packages/contracts/package.json')));
@@ -37,7 +41,7 @@ await build({ entryPoints: [join(repository, 'apps/worker/src/cli.mjs')], outfil
 const worker = await import(pathToFileURL(join(bundleDirectory, 'cleanup.mjs')).href);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
-async function fixture(t) {
+async function fixture(t, { verification = false, preparatory = false } = {}) {
   const directory = await mkdtemp(join(persistentFixtureRoot, 'job-cleanup-state-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const state = join(directory, 'state');
@@ -109,6 +113,16 @@ async function fixture(t) {
     process: { phase: 'queued', outcome: null, exitCode: null, signal: null, processStopped: false },
     transport: 'offline', publication: 'pending', startedAt: null, finishedAt: null, lastSeenAt: null,
     resultIssue: null, cancelRequestedAt: now, createdAt: now, updatedAt: now };
+  if (verification) {
+    const metadata = worker.verificationRuntimeFixture();
+    const original = execution.acceptedSpec;
+    execution.schemaVersion = 2;
+    execution.acceptedSpec = { ...metadata.spec, target: original.target, source: original.source,
+      definitionId: original.definitionId, definitionVersionId: original.definitionVersionId,
+      definitionRevision: original.definitionRevision, specDigest: original.specDigest, bindingHash: original.bindingHash,
+      profile: { ...metadata.spec.profile, rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision } };
+    worker.JobExecutionRecordSchema.parse(execution);
+  }
   const intent = { schemaVersion: 1, protocolVersion: 1, mainId: pairing.mainId,
     subject: { kind: 'manual-job', workspaceId: 'workspace', jobExecutionId: execution.id,
       definitionId: execution.acceptedSpec.definitionId }, executionId: execution.id, attemptId: execution.attemptId,
@@ -119,6 +133,28 @@ async function fixture(t) {
   await journal.jobAccept(intent, execution, { mainId: pairing.mainId, deviceId: pairing.deviceId,
     workerInstallationId: identity.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
     bootId: randomUUID(), connectionGeneration: 1 }, randomUUID());
+  if (preparatory) {
+    const spec = execution.acceptedSpec;
+    const digest = 'a'.repeat(64);
+    const context = worker.JobVerificationRepositoryContextSchema.parse({
+      identity: { commit: spec.source.commit, manifestDigest: spec.source.manifestDigest,
+        definitionVersionId: spec.definitionVersionId, suite: spec.verification.suite,
+        executionId: execution.id, attemptId: execution.attemptId, target: spec.target, profile: spec.profile,
+        resources: spec.verification.resources, parameters: spec.verification.parameters },
+      privateGit: { sourceCommit: spec.source.commit, generatedCommit: '1'.repeat(40), repositoryReceiptDigest: digest,
+        configDigest: digest, indexDigest: digest }, executionTimeoutMs: spec.policy.executionTimeoutMs,
+      cancellationTimeoutMs: spec.policy.cancellationGraceMs, qualifiedUnitWorkers: 1,
+      limits: { summaryBytes: 4096, junitBytes: 4096, vitestBytes: 4096, logsArchiveBytes: 4096, logBytes: 4096 },
+      mutableDirectory: '/job-scratch', storeDirectory: '/job-scratch/pnpm-store',
+      preseedReceipt: { lockfileSha256: digest, pnpmVersion: '11.27.0', platform: 'linux', architecture: 'x64',
+        provenanceDigest: digest, minimumReleaseAgeMinutes: 2880, releaseAgeVerified: true },
+    });
+    await journal.jobPrepareVerification(operationId, { context,
+      contextPin: { relativePath: 'verification.json', sha256: digest, byteSize: 1 },
+      reserve: { parent: dirname(join(namespace, receipt.materializationId, 'tree')), name: 'report-reserve',
+        device: Number(filesystem.device), inode: Number(filesystem.inode), bytes: spec.verification.resources.reportBytes },
+      finalizedAt: null });
+  }
   await journal.close();
   for (const [name, value] of [['identity.json', identity], ['pairing.json', pairing], ['approved-roots.json', approved]])
     await writeFile(join(state, name), JSON.stringify(value), { mode: 0o600 });
@@ -345,4 +381,59 @@ test('the cancellation-specific archive rejects a replaced original namespace in
   await assert.rejects(worker.releaseMaterializationClaimForCancellation(f.grant.materialization.receipt,
     f.grant.root.binding.filesystem, async () => 'released'));
   assert.deepEqual(await readFile(join(retained, `binding-${f.grant.root.binding.rootId}.lock`)), f.claim);
+});
+
+
+test('verification before-entry cleanup retires preparatory metadata and preserves its original closed facts on restart', async t => {
+  const f = await fixture(t, { verification: true, preparatory: true });
+  const result = await worker.cleanupJobBeforeEntry(f.state, f.grantPath);
+  assert.equal(result.closure.receipt.execution.schemaVersion, 2);
+  assert.equal(result.closure.receipt.entryAttempted, false);
+  assert.equal(result.closure.receipt.publication, 'complete');
+  const journal = await worker.RemoteOperationJournal.open(f.journalPath);
+  try { assert.equal(await journal.jobNativeOwner(f.grant.execution.operationId), null); }
+  finally { await journal.close(); }
+  const originalNow = Date.now;
+  Date.now = () => Date.parse(f.grant.expiresAt) + 1;
+  try { assert.deepEqual(await worker.cleanupJobBeforeEntry(f.state, f.grantPath), result); }
+  finally { Date.now = originalNow; }
+});
+
+for (const native of ['launch', 'container', 'entry']) {
+  test(`verification preparatory metadata cannot authorize cleanup after ${native}`, async t => {
+    const f = await fixture(t, { verification: true, preparatory: true });
+    await f.journalChange(async journal => {
+      if (native === 'entry') await journal.jobReserveEntry(f.grant.execution.operationId);
+      else if (native === 'container') await journal.jobContainerIntent(f.grant.execution.operationId,
+        worker.jobSupervisorIdentity(f.grant.execution), f.grant.execution.acceptedSpec.specDigest);
+      else await journal.jobReserveProcess(f.grant.execution.operationId,
+        { launchId: randomUUID(), binary: '/usr/bin/true', argv: [] });
+    });
+    await assert.rejects(worker.cleanupJobBeforeEntry(f.state, f.grantPath));
+    assert.deepEqual(await readFile(f.claimPath), f.claim);
+  });
+}
+
+test('restored project quota validation binds the original filesystem UUID and every independently enforced slot', () => {
+  const uuid = randomUUID(), volumeId = randomUUID(), bootId = randomUUID();
+  const filesystem = { device: '2050', inode: '300', mountId: '40' };
+  const slot = { namespace: randomUUID(), projectId: 2, hardLimitBytes: 8 * 2 ** 30, hardInodes: 500_000,
+    filesystem: { ...filesystem, inode: '301' } };
+  const context = { kind: 'restored-original-project-quota', bootId, filesystemUuid: uuid, volumeId,
+    blockDevice: '/dev/mapper/job-volume', filesystem };
+  const configuration = { root: { binding: { filesystem } }, machine: { quota: { volumeId } },
+    descriptor: { quotaPool: { filesystemUuid: uuid, slots: [slot] } } };
+  const observed = { bootId, filesystem,
+    mountinfo: '40 1 253:0 / /job rw - ext4 /dev/mapper/job-volume rw,prjquota\n',
+    quotas: [{ filesystemUuid: uuid, projectId: 2, hardLimitBytes: slot.hardLimitBytes,
+      hardInodes: slot.hardInodes, inheritance: true, accountingEnabled: true, filesystem: slot.filesystem }] };
+  worker.validateRestoredQuotaFilesystem(context, configuration, observed);
+  for (const changed of [
+    { ...observed, bootId: randomUUID() },
+    { ...observed, filesystem: { ...filesystem, inode: '999' } },
+    { ...observed, quotas: [{ ...observed.quotas[0], filesystemUuid: randomUUID() }] },
+    { ...observed, quotas: [{ ...observed.quotas[0], projectId: 3 }] },
+    { ...observed, quotas: [{ ...observed.quotas[0], hardInodes: 1 }] },
+    { ...observed, quotas: [{ ...observed.quotas[0], inheritance: false }] },
+  ]) assert.throws(() => worker.validateRestoredQuotaFilesystem(context, configuration, changed));
 });
