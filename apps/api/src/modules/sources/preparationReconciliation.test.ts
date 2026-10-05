@@ -81,7 +81,10 @@ it('does not accept an empty task set while an original namespace child is still
     await expect(reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)).rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
     expect(await readdir(f.directory)).toContain(`binding-${f.owner.root.binding.rootId}.lock`)
   } finally { child.kill('SIGKILL'); await closed }
-  expect((await reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)).childrenClosed).toBe(true)
+  await vi.waitFor(async () => {
+    const closure = await reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)
+    expect(closure.childrenClosed).toBe(true)
+  })
 })
 it('preserves uncertain native ownership and rejects missing admission closure, changed roots and caller closure flags', async () => {
   const f = await fixture(); f.nativeClosed.mockResolvedValue(false)

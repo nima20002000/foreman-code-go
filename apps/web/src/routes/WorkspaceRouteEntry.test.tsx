@@ -144,8 +144,9 @@ describe('WorkspaceRouteEntry integration', () => {
     const title = node.getAttribute('aria-label')!.split(',')[0]
     const open = screen.getByRole('button', { name: `Open ${title} settings` })
     await user.click(open)
-    expect(await screen.findByRole('dialog', { name: `${title} settings` })).toBeVisible()
-    await user.click(screen.getByRole('button', { name: `Close ${title}` }))
+    const dialog = await screen.findByRole('dialog', { name: `${title} settings` })
+    expect(dialog).toBeVisible()
+    await user.click(within(dialog).getByRole('button', { name: `Close ${title}` }))
     expect(screen.queryByRole('dialog', { name: `${title} settings` })).not.toBeInTheDocument()
     expect(router.state.location.search.agentId).toBe('agent-researcher')
     await user.click(open)
@@ -162,7 +163,8 @@ describe('WorkspaceRouteEntry integration', () => {
     server.use(http.get('/api/workspaces/workspace-1', () => HttpResponse.json(oldDetails)))
 
     await user.click(within(screen.getByRole('region', { name: 'Workspace workflows' })).getByRole('button', { name: 'New workflow' }))
-    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Draft workflow')
+    await user.click(screen.getByRole('textbox', { name: 'Name' }))
+    await user.paste('Draft workflow')
     await user.click(screen.getByRole('button', { name: 'Create workflow' }))
 
     // The sidebar marks a never-published workflow with a "Draft" badge inside its link.
