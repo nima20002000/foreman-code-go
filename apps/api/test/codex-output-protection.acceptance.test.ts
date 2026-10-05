@@ -6,6 +6,7 @@ import { qualifyCodex } from '../src/modules/harnesses/codexProtocol.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
 import { inheritedAgentEnvironment } from '../src/modules/harnesses/secrets.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { DomainError } from '../src/modules/errors.js'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1'
 
@@ -44,6 +45,9 @@ describe.skipIf(!enabled)('original native output store protection', () => {
       expect(await readdir(workspace)).toEqual([])
       expect(registry.snapshot().launches.every((launch) => launch.lifecycle === 'closed')).toBe(true)
     } catch (error) {
+      if (error instanceof DomainError && error.code === 'WORKER_NATIVE_OUTPUT_PROTECTION_FAILED' && error.details) {
+        console.error('Native sandbox probe diagnostics:', JSON.stringify(error.details))
+      }
       failure = { error }
       throw error
     } finally {
