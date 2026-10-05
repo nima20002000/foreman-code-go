@@ -49,7 +49,7 @@ describe('production exact-host profile failure evidence', () => {
     expect(f.native).toHaveBeenCalledTimes(1); expect(f.model).toHaveBeenCalledTimes(1)
     expect(proof).toMatchObject({ authenticated: null, compatible: null, qualified: false,
       failure: { code, message: code === 'CODEX_MODEL_UNAVAILABLE'
-        ? 'This model is not available to the signed-in native harness.'
+        ? 'The selected model is absent from the native Codex catalog. Refresh the catalog and review this selection.'
         : 'The native harness does not support this model, effort, or setting combination.' }, target: f.value.target,
       configurationFingerprint: f.value.configurationFingerprint })
     expect(JSON.stringify(proof)).not.toContain('credential=secret')
@@ -85,7 +85,7 @@ describe('production exact-host profile failure evidence', () => {
       expectedRevision: f.value.revision, target: f.value.target })
     expect(result.value.qualification).toBe('unqualified')
     expect(result.proof).toMatchObject({ authenticated: null, compatible: null, qualified: false,
-      failure: { code: 'CODEX_MODEL_UNAVAILABLE', message: 'This model is not available to the signed-in native harness.' } })
+      failure: { code: 'CODEX_MODEL_UNAVAILABLE', message: 'The selected model is absent from the native Codex catalog. Refresh the catalog and review this selection.' } })
     expect(proofs.append).toHaveBeenCalledTimes(1)
     expect((await service.list(principal, scope, 'mcp')).overrides[0]?.qualification).toBe('unqualified')
     await expect(service.check({ ...principal, grants: [{ actions: ['harnesses:read'], scope: {} }] }, 'mcp',
