@@ -1,15 +1,165 @@
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile, stat, readdir, rm, chmod, symlink, link, realpath } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, stat, readdir, rm, chmod, symlink, link, realpath, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { buildCiRuntimeContext } from '../../../scripts/build-ci-runtime-context.mjs';
 import { acquireWorkerLock } from '../src/runtime.mjs';
+import { validateSeedReceipt, verifySeedFiles } from '../artifacts/ci-runtime/seed-policy.mjs';
+import { assertEffectivePackagePolicy, assertEffectiveVerificationStore, verificationEnvironment, verificationInstallArguments }
+  from '../artifacts/ci-runtime/verification-policy.mjs';
 
 const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+
+async function offlineSeedFixture(t) {
+  const directory = await mkdtemp('/var/tmp/verification-seed-');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const metadata = { name: 'fixture', time: { '1.0.0': '2026-09-30T00:00:00Z' },
+    versions: { '1.0.0': { dist: { integrity: 'sha512-fixture' } } } };
+  const contents = new Map([
+    ['corepack-cache/pnpm/version.json', Buffer.from('{}')], ['pnpm-store/index.db', Buffer.from('closed store')],
+    ['registry-cache/fixture.json', Buffer.from(JSON.stringify(metadata))],
+    ['metadata/fixture.json', Buffer.from(JSON.stringify(metadata))],
+  ]);
+  for (const [path, bytes] of contents) {
+    await mkdir(join(directory, path, '..'), { recursive: true });
+    await writeFile(join(directory, path), bytes);
+  }
+  const packageEvidence = { name: 'fixture', version: '1.0.0', integrity: 'sha512-fixture',
+    publishedAt: metadata.time['1.0.0'], metadataPath: 'metadata/fixture.json' };
+  const receipt = {
+    schemaVersion: 1, packageManager: 'pnpm@11.27.0', platform: { os: 'linux', arch: 'x64', libc: 'glibc' },
+    minimumReleaseAge: 2880, minimumReleaseAgeStrict: true, minimumReleaseAgeIgnoreMissingTime: false,
+    capturedAt: '2026-10-02T00:00:00Z', provenanceDigest: 'a'.repeat(64),
+    review: { reviewedByPrincipalId: 'owner', reviewedAt: '2026-10-02T01:00:00Z', decisionDigest: 'b'.repeat(64) },
+    maxBytes: 4096, maxInodes: 32, dependencyInputs: [{ path: 'pnpm-lock.yaml', sha256: 'c'.repeat(64) }],
+    files: [...contents].map(([path, bytes]) => ({ path, bytes: bytes.length, sha256: hash(bytes) })),
+    packages: [packageEvidence],
+  };
+  const options = { dependencyInputs: receipt.dependencyInputs, packages: [packageEvidence], platform: receipt.platform,
+    now: Date.parse('2026-10-03T00:00:00Z') };
+  return { directory, receipt, options };
+}
+
+test('offline seed validates every locked release at the strict 48-hour boundary and verifies captured bytes', async t => {
+  const f = await offlineSeedFixture(t);
+  assert.equal(validateSeedReceipt(f.receipt, f.options), f.receipt);
+  const measured = await verifySeedFiles(f.directory, f.receipt);
+  assert.equal(measured.bytes, f.receipt.files.reduce((sum, file) => sum + file.bytes, 0));
+  assert.ok(measured.inodes > f.receipt.files.length);
+  for (const change of [
+    receipt => { receipt.packages[0].publishedAt = '2026-09-30T00:00:01Z'; },
+    receipt => { receipt.packages[0].publishedAt = null; },
+    receipt => { receipt.review = null; },
+    receipt => { receipt.minimumReleaseAgeIgnoreMissingTime = true; },
+    receipt => { receipt.packages = []; },
+    receipt => { receipt.dependencyInputs[0].sha256 = 'd'.repeat(64); },
+  ]) {
+    const receipt = structuredClone(f.receipt);
+    change(receipt);
+    assert.throws(() => validateSeedReceipt(receipt, f.options));
+  }
+  await writeFile(join(f.directory, 'pnpm-store/index.db'), 'changed');
+  await assert.rejects(verifySeedFiles(f.directory, f.receipt), /integrity/);
+});
+
+test('offline seed rejects links, undeclared files, missing registry times and quota pressure', async t => {
+  for (const kind of ['symlink', 'hardlink', 'extra', 'missing-time', 'bytes', 'inodes']) await t.test(kind, async child => {
+    const f = await offlineSeedFixture(child);
+    if (kind === 'symlink') {
+      await rm(join(f.directory, 'pnpm-store/index.db'));
+      await symlink('/etc/passwd', join(f.directory, 'pnpm-store/index.db'));
+    }
+    if (kind === 'hardlink') await link(join(f.directory, 'pnpm-store/index.db'), join(f.directory, 'alias'));
+    if (kind === 'extra') await writeFile(join(f.directory, 'registry-cache/unknown'), 'extra');
+    if (kind === 'missing-time') {
+      const path = 'metadata/fixture.json';
+      const metadata = JSON.parse(await readFile(join(f.directory, path), 'utf8'));
+      delete metadata.time;
+      const bytes = Buffer.from(JSON.stringify(metadata));
+      await writeFile(join(f.directory, path), bytes);
+      Object.assign(f.receipt.files.find(file => file.path === path), { bytes: bytes.length, sha256: hash(bytes) });
+    }
+    if (kind === 'bytes') f.receipt.maxBytes = 1;
+    if (kind === 'inodes') f.receipt.maxInodes = f.receipt.files.length;
+    await assert.rejects(async () => {
+      validateSeedReceipt(f.receipt, f.options);
+      await verifySeedFiles(f.directory, f.receipt);
+    });
+  });
+});
+
+test('verification context binds reviewed seed provenance to committed dependency inputs and rejects a changed lock', async t => {
+  const f = await offlineSeedFixture(t);
+  const repository = join(f.directory, 'repository');
+  await mkdir(repository);
+  const git = (...args) => execFileSync('git', args, { cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git('init', '-q');
+  const manifests = new Map([
+    ['package.json', '{"packageManager":"pnpm@11.27.0"}'],
+    ['pnpm-lock.yaml', 'lockfileVersion: 9\npackages:\n  fixture@1.0.0:\n    resolution:\n      integrity: sha512-fixture\n'],
+    ['pnpm-workspace.yaml', 'minimumReleaseAge: 2880\nminimumReleaseAgeStrict: true\nminimumReleaseAgeIgnoreMissingTime: false\n'],
+  ]);
+  for (const [path, bytes] of manifests) await writeFile(join(repository, path), bytes);
+  const controls = join(repository, 'apps/worker/artifacts/ci-runtime');
+  await mkdir(controls, { recursive: true });
+  for (const name of ['Containerfile', 'corepack', 'seed-policy.mjs', 'verification-policy.mjs', 'verification-observation.mjs']) {
+    await writeFile(join(controls, name), await readFile(new URL(`../artifacts/ci-runtime/${name}`, import.meta.url)));
+  }
+  git('add', '.');
+  git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture');
+  f.receipt.dependencyInputs = [...manifests].map(([path, bytes]) => ({ path, sha256: hash(bytes) }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  const receiptPath = join(f.directory, 'reviewed.json');
+  const seedRoot = join(f.directory, 'seed');
+  await mkdir(seedRoot);
+  for (const root of ['corepack-cache', 'pnpm-store', 'registry-cache', 'metadata']) {
+    await rename(join(f.directory, root), join(seedRoot, root));
+  }
+  await writeFile(receiptPath, JSON.stringify(f.receipt), { mode: 0o600 });
+  const output = join(f.directory, 'context');
+  const receipt = await buildCiRuntimeContext({ repository, output, offlineSeed: { directory: seedRoot, receiptPath } });
+  assert.equal(receipt.sourceCommit, git('rev-parse', 'HEAD'));
+  assert.deepEqual(receipt.offlineSeed.releaseAge, { minimumMinutes: 2880, strict: true, rejectMissingTime: true, packages: 1 });
+  assert.equal(receipt.offlineSeed.provenanceDigest, f.receipt.provenanceDigest);
+  assert.equal(await readFile(join(output, 'seed/pnpm-store/index.db'), 'utf8'), 'closed store');
+  await writeFile(join(repository, 'pnpm-lock.yaml'), 'lockfileVersion: 9\npackages: {}\n');
+  git('add', 'pnpm-lock.yaml');
+  git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'changed dependencies');
+  await assert.rejects(buildCiRuntimeContext({ repository, output: join(f.directory, 'changed-context'),
+    offlineSeed: { directory: seedRoot, receiptPath } }), /another committed/);
+});
+
+test('verification installer fixes offline frozen dev installs, isolates caches and denies policy relaxation', () => {
+  assert.deepEqual(verificationInstallArguments(['install', '--frozen-lockfile']),
+    ['install', '--frozen-lockfile', '--offline', '--prod=false']);
+  for (const argument of ['--no-frozen-lockfile', '--offline=false', '--prod', '--minimum-release-age=0']) {
+    assert.throws(() => verificationInstallArguments(['install', argument]));
+  }
+  const environment = verificationEnvironment({ HOME: '/owner', npm_config_minimum_release_age: '0',
+    NPM_CONFIG_USERCONFIG: '/owner/.npmrc', COREPACK_HOME: '/owner/cache', NODE_OPTIONS: '--import=/owner/hook',
+    GRAPHQL_CI_UNIT_WORKERS: '1' });
+  assert.equal(environment.HOME, '/job-scratch/home');
+  assert.equal(environment.npm_config_offline, 'true');
+  assert.equal(environment.GRAPHQL_CI_UNIT_WORKERS, '1');
+  assert.equal(environment.npm_config_minimum_release_age, undefined);
+  assert.equal(environment.NODE_OPTIONS, undefined);
+  const policy = { minimumReleaseAge: 2880, minimumReleaseAgeStrict: true, minimumReleaseAgeIgnoreMissingTime: false };
+  assert.doesNotThrow(() => assertEffectivePackagePolicy(policy));
+  for (const change of [{ minimumReleaseAge: 0 }, { minimumReleaseAgeStrict: false },
+    { minimumReleaseAgeIgnoreMissingTime: true }, { minimumReleaseAgeExclude: ['*'] }]) {
+    assert.throws(() => assertEffectivePackagePolicy({ ...policy, ...change }));
+  }
+  const store = { offline: true, verifyStoreIntegrity: true,
+    storeDir: '/job-scratch/pnpm-store', cacheDir: '/job-scratch/cache/pnpm' };
+  assert.doesNotThrow(() => assertEffectiveVerificationStore(store));
+  assert.throws(() => assertEffectiveVerificationStore({ ...store, offline: false }));
+  assert.throws(() => assertEffectiveVerificationStore({ ...store, storeDir: '/owner/.pnpm-store' }));
+});
 
 async function fixture(t) {
   // Capture requires persistent storage with private ancestors, including HOME.

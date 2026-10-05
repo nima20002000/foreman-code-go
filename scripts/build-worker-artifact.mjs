@@ -84,6 +84,12 @@ await writeFile(join(output, 'artifacts/graphql.svg'), snapshotSource('apps/web/
 await writeFile(join(output, 'artifacts/graphql-mcp.mjs'), snapshotSource('scripts/graphql-mcp.mjs'), { mode: 0o600 });
 await writeFile(join(output, 'artifacts/graphql-worker.service.in'), snapshotSource('apps/worker/artifacts/graphql-worker.service.in'), { mode: 0o600 });
 await writeFile(join(output, 'artifacts/companion.html'), snapshotSource('apps/worker/artifacts/companion.html'), { mode: 0o600 });
+const ciRuntimeControls = ['Containerfile', 'corepack', 'seed-policy.mjs', 'verification-policy.mjs', 'verification-observation.mjs'];
+await mkdir(join(output, 'artifacts/ci-runtime'));
+for (const name of ciRuntimeControls) {
+  await writeFile(join(output, 'artifacts/ci-runtime', name), snapshotSource(`apps/worker/artifacts/ci-runtime/${name}`),
+    { mode: name === 'corepack' ? 0o700 : 0o600 });
+}
 await writeFile(join(output, 'install'), snapshotSource('apps/worker/artifacts/install.sh.in').toString('utf8').replaceAll('@NODE_VERSION@', target.node), { mode: 0o700 });
 if (runtime) await writeFile(join(output, 'artifacts/node-runtime.json'), snapshotSource(relative(root, resolve(runtimeFile))), { mode: 0o600 });
 const store = execFileSync('corepack', ['pnpm', 'store', 'path'], { cwd: root, encoding: 'utf8' }).trim();
