@@ -37,7 +37,7 @@ async function responses(report: unknown = verificationReport, execution: JobExe
   )
 }
 function mount() {
-  return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+  return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })}>
     <JobResult workspaceId={verificationExecution.workspaceId} executionId={verificationExecution.id} />
   </QueryClientProvider>)
 }

@@ -3,6 +3,7 @@ import type { JobArtifact } from '@foreman-code/contracts/jobs'
 import { JobVerificationPassSchema, JobVerificationReportReadSchema,
   type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { Alert, Badge } from '../../shared/ui/nocturne'
+import { ApiError } from '../../shared/api/client'
 import { downloadJobArtifact } from './client'
 import { jobError, jobReadRetry } from './model'
 
@@ -23,11 +24,13 @@ export function JobVerificationResult({ execution, artifacts, artifactsUnavailab
     enabled: Boolean(expected && summary?.state === 'available' && !artifactsUnavailable),
     queryFn: async ({ signal }) => {
       if (!summary || !declaration || summary.byteSize > declaration.maxBytes) {
-        throw new Error('The verification summary exceeds its saved report limit.')
+        throw new ApiError({ code: 'JOB_SELECTION_MISMATCH',
+          message: 'The verification summary exceeds its saved report limit.' }, 409)
       }
       const bytes = await downloadJobArtifact(execution.workspaceId, summary, signal)
       const report = JobVerificationReportReadSchema.safeParse({ report: JSON.parse(await bytes.text()), expected })
-      if (!report.success) throw new Error('The verification summary does not match this accepted source and attempt.')
+      if (!report.success) throw new ApiError({ code: 'JOB_SELECTION_MISMATCH',
+        message: 'The verification summary does not match this accepted source and attempt.' }, 409)
       return report.data.report
     },
     retry: jobReadRetry, gcTime: 0, placeholderData: () => undefined,
