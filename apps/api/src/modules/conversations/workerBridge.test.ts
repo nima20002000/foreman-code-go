@@ -8,7 +8,7 @@ function setup() {
   const f = workerConversationFixture()
   const bridge = new MainWorkerConversationBridge()
   const current = vi.fn(async () => {})
-  const send = vi.fn(async (_payload: unknown) => ({ payload: { receipt: undefined } }))
+  const send = vi.fn(async (payload: unknown) => ({ payload: { received: payload } }))
   const request: WorkerConversationRpcRequest = { method: 'conversation.start-turn', binding: f.binding,
     session: f.session, prompt: 'Admitted task', correlationId: 'original-correlation', sessionMode: 'plan' }
   const submitted = vi.fn(async () => {})

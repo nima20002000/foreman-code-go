@@ -219,7 +219,6 @@ export function buildProductionApp(
   qualificationSuites?: Record<CompatibilityHarness, QualificationSuite>,
   infrastructure?: ProductionHarnessInfrastructure,
 ) {
-  let workerChats: ReturnType<typeof createProductionWorkerConversations> | undefined
   const workerExecution = new WorkerExecutionPolicy(config.workerExecution)
   if (infrastructure?.mode === 'replay' && (!infrastructure.auxiliary
     || !infrastructure.auxiliary.compatibility || !infrastructure.auxiliary.plugins
@@ -832,7 +831,7 @@ export function buildProductionApp(
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const operatorConversations = new PostgresOperatorConversationRepository(database.pool)
   const agentConversations = new PostgresAgentChatRepository(database.pool)
-  workerChats = createProductionWorkerConversations({ pool: database.pool,
+  const workerChats = createProductionWorkerConversations({ pool: database.pool,
     endpoint: () => deviceRuntime.endpointForDomains(), profiles: selectedProfiles, claudeProfiles,
     operators: operatorConversations, agents: agentConversations })
   const recoverChatCompaction = async (

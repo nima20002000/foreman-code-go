@@ -233,7 +233,7 @@ export class WorkerConversationHost {
     const key = `${resident.binding.owner.conversationId}:${request.correlationId}`
     this.running.set(key, task)
     void task.then(() => this.running.delete(key), () => this.running.delete(key))
-    this.track(task)
+    void this.track(task)
   }
 
   private finish(binding: WorkerConversationBinding, correlationId: string, history: NativeHistory) {
@@ -273,7 +273,7 @@ export class WorkerConversationHost {
         this.log.error({ err: error, conversationId: request.binding.owner.conversationId }, 'Worker compaction needs recovery')
       }
     })()
-    this.track(task)
+    void this.track(task)
     return { compaction: reserved.state }
   }
 
