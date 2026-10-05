@@ -64,7 +64,9 @@ export async function allocateInstalledWorkerClaude(input: {
     signal?.throwIfAborted()
     await directory.assertCurrent(signal)
     const current = await profiles.capture()
-    if (!isDeepStrictEqual(current.accepted, original.accepted)) throw new DomainError(
+    const policy = compileClaudeConfiguration(configuration.harness, binding.workingDirectory, current.accepted)
+    if (!isDeepStrictEqual(policy, compiled)
+      || !isDeepStrictEqual(current.accepted.currentBinding.pin, original.accepted.currentBinding.pin)) throw new DomainError(
       'HARNESS_PROFILE_UNAVAILABLE', 'The accepted Claude native policy changed.', 409)
   }
   const reserve = () => {

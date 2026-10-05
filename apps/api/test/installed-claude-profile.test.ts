@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -9,9 +9,16 @@ import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@foreman-c
 import { installedClaudeSdkEntrypoint } from '../src/modules/harnesses/claudeSdk/currentPin.js'
 import { installedClaudeProfilePin } from '../src/modules/harnesses/claudeSdk/installedProfilePin.js'
 import { createInstalledClaudeConversationProfile } from '../src/modules/conversations/installedClaudeConversationProfile.js'
-import { OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
+import { CLAUDE_QUALIFICATION_CHECKS } from '@foreman-code/contracts/claude-qualification'
+import { ApprovedRootAllowlistSchema } from '@foreman-code/contracts/workspace-root-policies'
+import { WorkerConversationBindingSchema, type WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import { inspectInstalledClaude } from '../src/modules/harnesses/installedClaudeInspection.js'
 import type { RegistryHarnessSelection } from '../src/modules/harnesses/installationRegistry.js'
+import { allocateInstalledWorkerClaude } from '../src/modules/conversations/installedWorkerClaude.js'
+import { workerConversationCallbacks } from '../src/modules/conversations/workerCallbacks.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { identity, openPrivateRoot } from '../src/modules/sources/privateFilesystem.js'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -39,6 +46,75 @@ async function fixture() {
 }
 
 describe('installed worker Claude metadata and saved profile admission', () => {
+  it('keeps an unchanged admitted policy after a current proof is refreshed, and refuses changed native pins or policy', async () => {
+    const f = await fixture()
+    const root = await mkdtemp('/var/tmp/worker-claude-policy-')
+    directories.push(root)
+    const project = join(root, 'project')
+    const runtime = join(root, 'runtime')
+    await mkdir(project, { mode: 0o700 })
+    await mkdir(runtime, { mode: 0o700 })
+    const target = (await inspectInstalledClaude({ ...f.input, environment: process.env })).currentTarget!
+    const harness = ClaudeHarnessConfigurationSchema.parse({ harness: 'claude', model: 'recorded-model',
+      authMode: 'subscription', configDirectory: join(f.root, 'profile'), permissionMode: 'default',
+      sandbox: 'read-only', tools: [], permissionRules: [], instructions: '', mcpServers: {} })
+    const override: HostHarnessOverride = { instanceId: randomUUID(), revision: 1, instanceRevision: 'profile-1',
+      target: target.target, presetId: 'claude', enabled: true, driverId: 'claude', configuration: harness,
+      configurationFingerprint: commandInputHash(harness), qualification: 'qualified' }
+    const selector = { instanceId: override.instanceId, instanceRevision: override.instanceRevision, target: override.target }
+    const configuration = AgentConfigurationVersionSchema.parse({ id: randomUUID(), agentId: 'agent',
+      workspaceId: 'workspace', version: 1, harness, harnessProfileSelection: selector, prompt: {}, assignedSkills: [],
+      contentHash: `sha256:${'a'.repeat(64)}`, createdAt: new Date().toISOString() })
+    const binding = WorkerConversationBindingSchema.parse({ harness: 'claude', profile: selector,
+      appMcpAccess: 'none', workingDirectory: project, owner: { kind: 'agent', agentId: configuration.agentId,
+        workspaceId: configuration.workspaceId, workflowId: 'workflow', workflowNodeId: 'node',
+        conversationId: randomUUID(), configurationVersionId: configuration.id,
+        configurationHash: commandInputHash(configuration) } })
+    // Recorded Main proof only. This tests pre-input admission; no SDK query or CLI is run.
+    const proof: HostHarnessProfileEvidence = { target: override.target, instanceRevision: override.instanceRevision,
+      configurationFingerprint: override.configurationFingerprint, driverId: 'claude', driverRevision: '1',
+      protocolRevision: target.installation.protocolRevision, suiteRevision: 'claude-profile-check-v1',
+      environmentGeneration: target.installation.environmentGeneration,
+      connectionGeneration: target.installation.connectionGeneration, authenticated: true, compatible: true,
+      qualified: true, checkedAt: '2026-10-05T00:00:00.000Z', claudeProof: { pin: {
+        sdkVersion: target.installation.claudeSdk!.version, sdkIntegrity: target.installation.claudeSdk!.integrity,
+        cliVersion: '2.1.284', configRevision: override.instanceRevision, profilePath: harness.configDirectory,
+        executableSha256: target.installation.launcher.payloadFingerprints!
+          .find(value => value.path === target.installation.launcher.resolvedLauncher)!.fingerprint,
+      }, checks: Object.fromEntries(CLAUDE_QUALIFICATION_CHECKS.map(name => [name, {
+        state: 'passed', source: 'native_scenario', evidenceId: 'recorded-admission', evidenceSha256: 'a'.repeat(64),
+      }])) } }
+    const baseHandle = await openPrivateRoot(project)
+    const runtimeHandle = await openPrivateRoot(runtime)
+    let roots
+    try {
+      roots = ApprovedRootAllowlistSchema.parse({ schemaVersion: 1, hostRef: target.target.hostRef,
+        applicationInstallationId: target.target.applicationInstallationId, configurationRevision: '1',
+        bases: [{ baseId: randomUUID(), canonicalPath: project, filesystem: await identity(baseHandle), accessModes: ['read-only'] }],
+        managedRuntimeRoot: runtime, runtimeFilesystem: await identity(runtimeHandle) })
+    } finally { await baseHandle.close(); await runtimeHandle.close() }
+    const source: WorkerConversationRpcRequest = { method: 'conversation.initial-turn', binding, configuration,
+      operationId: 'initial', correlationId: 'initial', prompt: 'Recorded admission only', admissionId: randomUUID() }
+    const callbacks = workerConversationCallbacks({ currentBinding: () => f.input.binding, capture: () => undefined })
+    const registry = new NativeProcessRegistry(join(root, 'processes'))
+    const allocation = await allocateInstalledWorkerClaude({ binding, configuration, connection: f.input.binding,
+      purpose: 'chat', stateDirectory: f.root, selection: f.input.configuration, launcher: f.selected.appMcpLauncher,
+      current: () => f.input.binding, source: () => source, callbacks: { ...callbacks,
+        profile: async () => ({ installation: target.installation, override, profile: proof, qualification: null }) },
+      approvedRoots: async () => roots, registry,
+      request: async () => { throw new Error('No native application request is expected') }, signal: f.input.signal })
+    try {
+      const start = { correlationId: 'initial', instructionsDelivered: true }
+      const before = await allocation.start(start)
+      proof.checkedAt = '2026-10-05T01:00:00.000Z'
+      expect(await allocation.start(start)).toEqual(before)
+      proof.claudeProof!.pin.cliVersion = '2.1.286'
+      await expect(allocation.start(start)).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+      proof.claudeProof!.pin.cliVersion = '2.1.284'
+      proof.claudeProof!.checks.readOnlySandbox!.state = 'failed'
+      await expect(allocation.start(start)).rejects.toMatchObject({ result: { error: { code: 'CLAUDE_POLICY_UNQUALIFIED' } } })
+    } finally { await allocation.close() }
+  })
   it('publishes SDK metadata without inventing CLI version, authentication or qualification', async () => {
     const f = await fixture()
     const result = await inspectInstalledClaude(f.input)
