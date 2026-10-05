@@ -35,7 +35,12 @@ export const RemoteTerminalEvidenceSchema = z.object({
   resultDigest: PlacementDigestSchema.optional(),
   result: z.lazy(() => ExecutionResultSchema).optional(), artifactDigests: z.array(PlacementDigestSchema).max(128).optional(),
   artifactValidationError: WorkflowArtifactValidationFailureSchema.optional(),
-}).strict()
+}).strict().superRefine((value, context) => {
+  if (value.artifactValidationError && (value.kind !== 'completed' || value.result?.outcome !== 'succeeded'
+    || (value.artifactDigests?.length ?? 0) !== 0)) {
+    context.addIssue({ code: 'custom', message: 'Artifact validation retains the original successful terminal without adopted digests.' })
+  }
+})
 export type RemoteTerminalEvidence = z.infer<typeof RemoteTerminalEvidenceSchema>
 export const RemoteInteractionTargetSchema = z.object({ interactionId: z.string().min(1), interactionRevision: z.string().regex(/^[1-9][0-9]*$/), nativeInteractionId: z.string().min(1), native: RemoteNativeIdentitySchema }).strict()
 export type RemoteInteractionTarget = z.infer<typeof RemoteInteractionTargetSchema>

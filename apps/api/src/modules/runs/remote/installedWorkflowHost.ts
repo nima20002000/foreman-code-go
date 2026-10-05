@@ -104,7 +104,8 @@ export async function settleInstalledWorkflowNativeOwner(input:{journal:RemoteOp
 }
 
 function installedWorkflowArtifactSettlement(result: NonNullable<RemoteTerminalEvidence['result']>,
-  declaration?: WorkflowArtifactOutputsV1, publications?: ReadonlyMap<string, AgentFilePublishResult['value']>) {
+  declaration?: WorkflowArtifactOutputsV1, publications?: ReadonlyMap<string, AgentFilePublishResult['value']>
+): Pick<RemoteTerminalEvidence, 'artifactDigests' | 'artifactValidationError'> {
   const output = remoteWorkflowPhysicalOutput(result, declaration)
   if (output.kind === 'invalid-artifacts') return { artifactValidationError: output.failure, artifactDigests: [] }
   if (output.kind !== 'published-artifacts') return { artifactDigests: [] }

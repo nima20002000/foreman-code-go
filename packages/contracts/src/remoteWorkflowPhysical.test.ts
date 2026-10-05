@@ -1,12 +1,23 @@
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { RemoteWorkflowPhysicalOutputSchema, remoteWorkflowPhysicalOutput } from './remoteWorkflowPhysical.js'
+import { RemoteTerminalEvidenceSchema } from './remoteExecution.js'
 
 const artifactOutputs = { version: 1, outputs: [{ outputKey: 'report', commandId: 'publish-original-report' }] }
 const native = (envelope: unknown) => ({ outcome: 'succeeded', output: { text: JSON.stringify(envelope) } })
 const published = () => ({ kind: 'published-artifacts', artifactOutputs, result: native({ data: null, artifactOutputs }) })
 
 describe('original remote physical artifact association', () => {
+  it('keeps artifact validation separate from original success and refuses mixed terminal facts', () => {
+    const terminal = { kind: 'completed', closureEvidenceDigest: 'a'.repeat(64),
+      result: native({ data: null }), artifactDigests: [],
+      artifactValidationError: { code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT', reason: 'invalid_result' } }
+    expect(RemoteTerminalEvidenceSchema.parse(terminal)).toEqual(terminal)
+    for (const changed of [{ ...terminal, kind: 'failed' }, { ...terminal, result: { outcome: 'canceled' } },
+      { ...terminal, artifactDigests: ['b'.repeat(64)] }]) {
+      expect(RemoteTerminalEvidenceSchema.safeParse(changed).success).toBe(false)
+    }
+  })
   it('preserves existing text-only results and rejects nontext output', () => {
     for (const result of [{ outcome: 'succeeded' }, native('plain'), { outcome: 'canceled' },
       { outcome: 'failed', error: { code: 'FAILED', message: 'failed', retryable: false } }]) {
