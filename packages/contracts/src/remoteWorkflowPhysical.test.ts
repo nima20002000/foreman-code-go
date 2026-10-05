@@ -2,9 +2,10 @@ import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { RemoteWorkflowPhysicalOutputSchema, remoteWorkflowPhysicalOutput } from './remoteWorkflowPhysical.js'
 import { RemoteTerminalEvidenceSchema } from './remoteExecution.js'
+import type { ExecutionResult } from './index.js'
 
 const artifactOutputs = { version: 1, outputs: [{ outputKey: 'report', commandId: 'publish-original-report' }] }
-const native = (envelope: unknown) => ({ outcome: 'succeeded', output: { text: JSON.stringify(envelope) } })
+const native = (envelope: unknown): ExecutionResult => ({ outcome: 'succeeded', output: { text: JSON.stringify(envelope) } })
 const published = () => ({ kind: 'published-artifacts', artifactOutputs, result: native({ data: null, artifactOutputs }) })
 
 describe('original remote physical artifact association', () => {
