@@ -102,13 +102,13 @@ test('reconciliation defers a Run held by its reviewer and starts it after the o
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(acquire.mock.calls.length, 1)
   assert.equal(calls.entries.length, 0)
-  assert.deepEqual(errors, [])
+  assert.equal(errors.length, 0)
 
   await h.engine.reconcile(error => errors.push(error))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(calls.entries.length, 1)
   assert.equal(h.state.released, 1)
-  assert.deepEqual(errors, [])
+  assert.equal(errors.length, 0)
 })
 
 test('reconciliation still reports ownership query failures', async () => {
