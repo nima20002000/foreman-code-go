@@ -8,7 +8,8 @@ import { HarnessInstallationRegistry } from '../src/modules/harnesses/installati
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
 import { readPlacementHarnessFacts } from '../src/modules/placement/harnessFacts.js'
 import type { HarnessQualification } from '@foreman-code/contracts/harness-qualification'
-import { HarnessQualificationRepository } from '../src/modules/harnesses/qualification/repository.js'
+import { HarnessQualificationRepository, readHostHarnessMeasurements } from '../src/modules/harnesses/qualification/repository.js'
+import { hostHarnessMeasurementsMigration } from '../src/infrastructure/hostHarnessMeasurementsMigration.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { agent3Database } from './helpers/wave25Agent3.js'
 
@@ -73,5 +74,23 @@ it('keeps a Main measurement when a Worker qualifies the same native binary', as
     await repository.save(replacement, { qualificationIdentity: identity })
     await expect(read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
       details: { reason: 'main_qualification_identity_missing' } })
+  } finally { await db.close() }
+})
+
+it('reads an existing measured qualification after the host measurement migration', async () => {
+  const db = await agent3Database()
+  try {
+    const repository = new HarnessQualificationRepository(db.pool)
+    const qualification: HarnessQualification = { harness: 'codex', version: '0.154.0', binarySha256: 'b'.repeat(64),
+      suiteRevision: 'codex-live-fixture', profile: 'codex-0.156', status: 'qualified',
+      checks: [{ id: 'native-turn', passed: true, detail: null }], failureReason: null,
+      startedAt: '2026-10-05T00:00:00.123Z', checkedAt: '2026-10-05T00:00:01.456Z' }
+    const evidence = { qualificationIdentity: { originalHost: 'main' } }
+    await repository.save(qualification, evidence)
+    // Emulate the pre-migration storage while keeping the original persisted measurement.
+    await db.pool.query('drop table host_harness_measurements')
+    await db.pool.query(hostHarnessMeasurementsMigration.sql)
+    expect(await readHostHarnessMeasurements(db.pool, 'codex', qualification.binarySha256!, qualification.suiteRevision))
+      .toEqual([{ qualification, evidence }])
   } finally { await db.close() }
 })

@@ -14,6 +14,8 @@ export const hostHarnessMeasurementsMigration = { version: 285209, sql: `
       harness,binary_sha256,suite_revision,
       jsonb_build_object('harness',harness,'version',version,'binarySha256',binary_sha256,
         'suiteRevision',suite_revision,'profile',profile,'status',case when status='passed' then 'qualified' else status end,
-        'checks',checks,'failureReason',failure_reason,'startedAt',started_at,'checkedAt',checked_at),evidence
+        'checks',checks,'failureReason',failure_reason,
+        'startedAt',to_char(started_at at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
+        'checkedAt',to_char(checked_at at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')),evidence
     from harness_qualifications where jsonb_typeof(evidence->'qualificationIdentity')='object';
 ` } as const
