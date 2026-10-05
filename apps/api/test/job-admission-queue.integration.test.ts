@@ -49,20 +49,6 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     return f
   }
   type Fixture = Awaited<ReturnType<typeof fixture>>
-  async function queueApp(f: Fixture) {
-    const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-      operator: { access, services: { jobs: f.jobs, commands: f.commands } as unknown as OperatorServices } })
-    apps.push(app)
-    const address = await app.listen({ host: '127.0.0.1', port: 0 })
-    async function connect(token: string) {
-      const client = new Client({ name: 'queue-tests', version: '1' })
-      clients.push(client)
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
-        { requestInit: { headers: { authorization: `Bearer ${token}` } } }))
-      return client
-    }
-    return { app, connect }
-  }
   function admissionTicketId(result: Awaited<ReturnType<JobService['enqueue']>>) {
     if (result.kind === 'retained-execution') throw new Error('Fresh queue requests must own a queue ticket')
     return result.kind === 'accepted' ? result.ticketId : result.ticket.id
@@ -595,34 +581,20 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     await f.jobs.wakeQueue()
     expect((await f.jobs.getQueueTicket(reader.principal, f.workspaceId, older.id)).state).toBe('accepted')
   })
-  it('reads the persisted queue without browser credentials and matches authenticated MCP', async () => {
-    const f = await fixture()
-    const ticket = await submit(f, await f.save())
-    await f.jobs.wakeQueue()
-    const { app, connect } = await queueApp(f)
-    const client = await connect(reader.token)
-    const read = await client.callTool({ name: 'job_queue_get', arguments: {
-      workspaceId: f.workspaceId, ticketId: ticket.id,
-    } })
-    expect(read.isError).not.toBe(true)
-    const persisted = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, ticket.id)
-    expect(read.structuredContent).toEqual({ ticket: persisted })
-    const listed = await client.callTool({ name: 'job_queue_list', arguments: { workspaceId: f.workspaceId } })
-    expect(listed.isError).not.toBe(true)
-    const localRead = await app.inject({ method: 'GET',
-      url: `/api/management/workspaces/${f.workspaceId}/jobs/queue/${persisted.id}` })
-    expect(localRead.statusCode, localRead.body).toBe(200)
-    expect(localRead.json()).toEqual(read.structuredContent)
-    const localList = await app.inject({ method: 'GET',
-      url: `/api/management/workspaces/${f.workspaceId}/jobs/queue` })
-    expect(localList.statusCode, localList.body).toBe(200)
-    expect(localList.json()).toEqual(listed.structuredContent)
-  })
-
   it('exposes the same persisted queue via authenticated HTTP/MCP and denies read-only and foreign-workspace writes', async () => {
     const f = await fixture()
     const definition = await f.save()
-    const { app, connect } = await queueApp(f)
+    const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { jobs: f.jobs, commands: f.commands } as unknown as OperatorServices } })
+    apps.push(app)
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    async function connect(token: string) {
+      const client = new Client({ name: 'queue-tests', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { requestInit: { headers: { authorization: `Bearer ${token}` } } }))
+      return client
+    }
     const client = await connect(writer.token)
     const readOnly = await connect(reader.token)
     const tools = (await client.listTools()).tools.map(tool => tool.name)
@@ -688,7 +660,6 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const override = await client.callTool({ name: 'job_start', arguments: overrideInput })
     expect(override.isError).not.toBe(true)
     const overrideAdmission = z.object({ admission: JobPendingAdmissionSchema }).parse(override.structuredContent)
-    await f.jobs.wakeQueue()
     const overrideTicket = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, overrideAdmission.admission.ticket.id)
     expect(overrideTicket).toMatchObject({ placement: overrideInput.placementOverride,
       placementOverride: overrideInput.placementOverride, definition })

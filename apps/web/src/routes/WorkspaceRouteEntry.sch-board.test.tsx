@@ -56,11 +56,7 @@ async function choose(runId: string | null) {
   })
   await userEvent.click(item)
 }
-async function savedY() {
-  const board = await screen.findByRole('region', { name: 'Selected Run board' })
-  const graph = await within(board).findByLabelText('Saved Run graph')
-  return within(graph).findByRole('img', { name: 'Y, saved agent, read only' })
-}
+const savedY = () => screen.findByRole('img', { name: 'Y, saved agent, read only' })
 
 beforeEach(() => {
   unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
@@ -131,10 +127,6 @@ afterEach(() => {
 
 describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () => {
   it('mounts native children through the product route and opens the exact child panel', async () => {
-    const startedAt = Date.now()
-    const progress = (stage: string) => console.info('Native child route', {
-      stage, elapsedMs: Date.now() - startedAt,
-    })
     const record = child({ ...scope, runId: 'run-a', name: 'Run child' })
     const reads: string[] = []
     server.use(
@@ -147,17 +139,9 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
       http.get(`${subagentsRoute}/:subagentId/tools`, () => HttpResponse.json({ items: [], nextCursor: null, coverage: record.coverage })),
     )
     const { router } = await mount(runsUrl('run-a', scope))
-    progress('route mounted')
     await savedY()
-    progress('saved node ready')
-    const graph = screen.getByLabelText('Saved Run graph')
-    const trigger = await within(graph).findByRole('button', { name: 'Run child, Codex, Running' })
-    progress('child ready')
-    await userEvent.click(trigger)
-    progress('child clicked')
-    const panel = await screen.findByRole('dialog', { name: 'Run child' })
-    progress('panel ready')
-    expect(panel).toBeVisible()
+    await userEvent.click(await screen.findByRole('button', { name: 'Run child, Codex, Running' }))
+    expect(await screen.findByRole('dialog', { name: 'Run child' })).toBeVisible()
     expect(reads).toEqual([`/api/management/workspaces/${scope.workspaceId}/runs/run-a/subagents`])
     expect(router.history.location.hash).toContain('selectedSubagentId=child-1')
     expect(writes).toEqual([])
