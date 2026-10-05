@@ -2,7 +2,6 @@ import { createFixtureSchema, dropFixtureSchema, ownedTestDatabaseUrl, removeFix
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -175,14 +174,20 @@ export async function qualifyEng03OpenCode() {
       qualification = await repository.find('opencode', submitted.version, submitted.binarySha256,
         submitted.suiteRevision) ?? submitted
     }
-    const evidenceDirectory = process.env.ENG03_A_EVIDENCE_DIR
-      ?? fileURLToPath(new URL('../../../../.logs/eng03-a-evidence/', import.meta.url))
-    const records = (await pool.query(`select harness,version,binary_sha256,suite_revision,status,checks,evidence,
-      failure_reason,started_at,checked_at from harness_qualifications order by started_at`)).rows
-    await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 })
-    const artifact = join(evidenceDirectory, `opencode-qualification-${randomUUID()}.json`)
-    await writeFile(artifact, JSON.stringify(records, null, 2), { flag: 'wx', mode: 0o600 })
-    console.info(`OpenCode qualification evidence ${artifact}`)
+    const result = await pool.query<{ evidence: Record<string, unknown> }>(
+      `select evidence from harness_qualifications
+        where harness=$1 and version=$2 and binary_sha256=$3 and suite_revision=$4`,
+      ['opencode', submitted.version, submitted.binarySha256, submitted.suiteRevision],
+    )
+    const report = JSON.stringify({ qualification, evidence: result.rows[0]?.evidence ?? null }, null, 2)
+    const filename = `opencode-qualification-${randomUUID()}.json`
+    await writeFile(join(process.env.ENG03_A_EVIDENCE_DIR!, filename), report, { mode: 0o600, flag: 'wx' })
+    // Only the controller receives this explicit archive path; native launch filters GRAPHQL_TEST_*.
+    const archive = process.env.GRAPHQL_TEST_EVIDENCE_ARCHIVE
+    if (archive) {
+      await mkdir(archive, { recursive: true, mode: 0o700 })
+      await writeFile(join(archive, filename), report, { mode: 0o600, flag: 'wx' })
+    }
     assert.equal(qualification.status, 'qualified', JSON.stringify(qualification))
     assert.ok(qualification.binarySha256)
     assert.equal(await registry.trustedExact('opencode', qualification.version, qualification.binarySha256), true)

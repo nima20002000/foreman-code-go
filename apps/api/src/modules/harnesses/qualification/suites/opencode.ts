@@ -159,6 +159,21 @@ export const opencodeQualificationSuite: QualificationSuite = {
           && (message.info.error || (typeof message.info.time?.completed === 'number'
             && message.info.finish !== undefined && message.info.finish !== 'tool-calls')))
         if (terminal) {
+          if (terminal.info?.error) {
+            const error = object(terminal.info.error)
+            const data = object(error.data)
+            const names = ['ProviderAuthError', 'UnknownError', 'MessageOutputLengthError', 'MessageAbortedError',
+              'StructuredOutputError', 'ContextOverflowError', 'ContentFilterError', 'APIError']
+            const name = typeof error.name === 'string' && names.includes(error.name) ? error.name : 'UnknownError'
+            // Provider responses can contain credentials and model content; retain only diagnostic metadata.
+            const failure = { name, statusCode: typeof data.statusCode === 'number' ? data.statusCode : null,
+              isRetryable: typeof data.isRetryable === 'boolean' ? data.isRetryable : null,
+              providerID: terminal.info.providerID ?? model?.[0] ?? null,
+              modelID: terminal.info.modelID ?? model?.slice(1).join('/') ?? null }
+            const failures = (evidence.nativeTurnErrors ??= []) as unknown[]
+            failures.push(failure)
+            throw new Error(`Native turn failed: ${name}${failure.statusCode === null ? '' : ` (HTTP ${failure.statusCode})`}.`)
+          }
           requireCondition(!terminal.info?.error && typeof terminal.info?.time?.completed === 'number', 'Native turn failed.')
           if (terminal.info.providerID && terminal.info.modelID) evidence.modelUsed = `${terminal.info.providerID}/${terminal.info.modelID}`
           return
