@@ -55,7 +55,6 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
       : allocation?.manager.subagentControl?.(child, () => { lifetime.signal.throwIfAborted(); assertOwner() }),
     history: async (session, signal) => (await actual(signal)).history(session, signal),
     reconcile: async (session, correlationId, signal) => (await actual(signal)).reconcile(session, correlationId, signal),
-    retireTurn: async (session, correlationId) => (await actual()).retireTurn?.(session, correlationId),
     reconcileResponse: async (session, response, signal) => {
       const current = await actual(signal)
       return current.reconcileResponse ? current.reconcileResponse(session, response, signal) : current.history(session, signal)
