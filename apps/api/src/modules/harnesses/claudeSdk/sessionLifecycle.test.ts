@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { getSessionMessages, type SessionStore } from '@anthropic-ai/claude-agent-sdk'
 import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
 import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
 import type { NativeSessionStart } from '../port.js'
@@ -36,7 +37,7 @@ async function drain(events: AsyncIterable<NativeHarnessEvent>) {
   return result
 }
 
-function fixture(sdkOptions: Record<string, unknown> = {}) {
+function fixture(sdkOptions: Record<string, unknown> = {}, nativeSession = saved) {
   let frames = new ClaudeBoundedQueue<unknown>(32)
   let queryCount = 0
   const receipts = new Map<string, string>()
@@ -44,7 +45,7 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
     expect(identity.ownerPrincipalId).toBe('sender')
     expect(identity.attemptId).toBe(identity.clientCorrelationId)
     expect(identity.nativeMessageId).toBe(receipts.get(identity.clientCorrelationId!))
-    expect(identity.nativeSessionId).toBe(saved.nativeSessionId)
+    expect(identity.nativeSessionId).toBe(nativeSession.nativeSessionId)
   })
   const bridge = new ClaudeInteractionBridge(configuration, {
     callbackJournal: memoryClaudeCallbackJournal(),
@@ -62,7 +63,7 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
     const output = frames
     messages = input.prompt[Symbol.asyncIterator]()
     ready()
-    void frames.offer({ type: 'system', subtype: 'init', session_id: saved.nativeSessionId,
+    void frames.offer({ type: 'system', subtype: 'init', session_id: nativeSession.nativeSessionId,
       claude_code_version: qualification.cliVersion, cwd: scope.cwd })
     return {
       [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
@@ -106,19 +107,19 @@ function fixture(sdkOptions: Record<string, unknown> = {}) {
   const nextMessage = async () => {
     await opened
     const message = (await messages.next()).value!
-    transcript.push({ ...message, session_id: saved.nativeSessionId })
+    transcript.push({ ...message, session_id: nativeSession.nativeSessionId })
     return message
   }
   const assistant = (id: string, content: unknown[], promptUuid?: string) => {
     const frame = {
-    type: 'assistant', session_id: saved.nativeSessionId, uuid: `frame-${id}`, parent_tool_use_id: null,
+    type: 'assistant', session_id: nativeSession.nativeSessionId, uuid: `frame-${id}`, parent_tool_use_id: null,
     message: { id, content }, ...(promptUuid ? { user_message_uuid: promptUuid } : {}),
     }
     if (!promptUuid || promptUuid === (transcript.findLast(entry => (entry as { type: string }).type === 'user') as { uuid: string })?.uuid) transcript.push(frame)
     return frames.offer(frame)
   }
   const result = (promptUuid: string, extra: Record<string, unknown> = {}) => frames.offer({
-    type: 'result', session_id: saved.nativeSessionId, uuid: `result-${promptUuid}`,
+    type: 'result', session_id: nativeSession.nativeSessionId, uuid: `result-${promptUuid}`,
     user_message_uuid: promptUuid, subtype: 'success', is_error: false, result: 'done', ...extra,
   })
   return { get frames() { return frames }, client, manager, callbacks, bridge, validate, close, query, offers, input,
@@ -154,9 +155,19 @@ describe('Claude response ownership through SDK callbacks', () => {
   }, 30_000)
 
   it('keeps tool callbacks and replies owned through a parent-linked compaction summary', async () => {
-    const f = fixture()
+    const nativeSession = { ...saved, nativeSessionId: '0d60d9a0-e091-4bdb-b63f-8ed8f761720c' }
+    const f = fixture({}, nativeSession)
+    const sessionStore: SessionStore = {
+      append: async () => {},
+      load: async () => f.transcript.map((raw, index) => {
+        const row = raw as Record<string, unknown>
+        return { ...row, sessionId: row.session_id,
+          parentUuid: row.parentUuid ?? (index ? (f.transcript[index - 1] as { uuid: string }).uuid : null) }
+      }),
+    }
+    f.client.getSessionMessages = (id, page) => getSessionMessages(id, { ...page, sessionStore })
     try {
-      const session = await f.manager.attachSession(saved, start)
+      const session = await f.manager.attachSession(nativeSession, start)
       const output = drain(f.manager.startTurn(session, f.input('compacted')))
       const message = await f.nextMessage()
       await f.assistant('before-compaction', [{ type: 'text', text: 'Before compaction' }], message.uuid)

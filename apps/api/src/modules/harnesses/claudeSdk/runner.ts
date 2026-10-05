@@ -210,7 +210,8 @@ export function createClaudeSdkRunner(input: {
             const toolResult = Array.isArray(content) && content.some(block => block && typeof block === 'object'
               && (block as { type?: unknown }).type === 'tool_result')
             if (entry.isCompactSummary === true) {
-              owner = typeof entry.parentUuid === 'string' ? parentOwner : undefined
+              // The SDK omits parentUuid after selecting its native ancestry chain.
+              owner = parentOwner
             } else if (!toolResult) {
               owner = typeof entry.uuid === 'string' ? entry.uuid : undefined
             } else {
