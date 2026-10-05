@@ -13,14 +13,18 @@ import { registerUserInteractions } from '../../src/routes/userInteractions.js'
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
-export async function nativeHttpIsolation(launch: (input: { script: string; directory: string;
-  recovery: NativeProcessRecovery; owner: string; token: string }) => Promise<{
+export interface NativeHttpIsolationInput {
+  script: string; directory: string; recovery: NativeProcessRecovery; owner: string; token: string
+}
+
+export async function nativeHttpIsolation(launch: (input: NativeHttpIsolationInput) => Promise<{
     exitCode: number | null; stdout: string; stderr: string
   }>, databaseUrl?: string) {
   const fixture = await currentOperatorIntegration(databaseUrl ? { databaseUrl } : {})
   const directory = await privateFixtureDirectory('native-http-client-')
   const registry = new NativeProcessRegistry(join(directory, 'processes'))
   const owner = `http-client:${randomUUID()}`
+  const recovery = registry.reserveLaunch(owner)
   const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access: fixture.access, services: fixture.services },
     localHuman: new PostgresLocalHumanAccess(fixture.db.pool, fixture.access) })
@@ -75,20 +79,28 @@ export async function nativeHttpIsolation(launch: (input: { script: string; dire
         const client = new Client({name:'native-isolation-client',version:'1'});
         await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', ${JSON.stringify(origin)}),
           {authProvider:{token:async()=>process.env.GRAPHQL_MCP_TOKEN}}));
+        const tools = await client.listTools();
         const read = await client.callTool({name:'workflow_defaults_get',arguments:{}});
-        const denied = await client.callTool({name:'workflow_defaults_update',arguments:${JSON.stringify(update)}});
+        let denied;
+        try { denied = await client.callTool({name:'workflow_defaults_update',arguments:${JSON.stringify(update)}}); }
+        catch(error) { denied = {rpcErrorCode:error.code}; }
         await client.close();
-        console.log(JSON.stringify({statuses,read,denied}));
+        console.log(JSON.stringify({statuses,read,denied,mutationListed:tools.tools.some(tool=>tool.name==='workflow_defaults_update')}));
       })().catch(error => { console.error(error.message); process.exitCode=1; });
     `
     const result = await launch({ script, directory, owner, token: reader.token,
-      recovery: registry.reserveLaunch(owner) })
+      recovery })
     expect(result.exitCode, result.stderr).toBe(0)
     const observed = JSON.parse(result.stdout)
     expect(observed.statuses).toEqual(Array(8).fill(403))
     expect(observed.read.isError).not.toBe(true)
     expect(observed.read.structuredContent).toEqual(before)
-    expect(observed.denied.isError).toBe(true)
+    expect(observed.mutationListed).toBe(false)
+    if (observed.denied.rpcErrorCode !== undefined) {
+      expect([-32601, -32602]).toContain(observed.denied.rpcErrorCode)
+    } else {
+      expect(observed.denied.isError).toBe(true)
+    }
     expect(await fixture.services.settings.getWorkflowDefaults(fixture.writer.principal)).toEqual(before)
     expect(await fixture.service.get(interaction.id)).toEqual(interaction)
     expect(fixture.provider.counts.responses).toBe(0)
@@ -107,6 +119,7 @@ export async function nativeHttpIsolation(launch: (input: { script: string; dire
     expect(humanApproval.status).toBe(200)
     expect((await fixture.service.get(interaction.id)).selectedOptionId).toBe(approval.optionId)
   } finally {
+    if (recovery.launchId) await registry.abandonReservedLaunch(recovery)
     await registry.closeOwner(owner)
     await new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve()))
     await app.close()

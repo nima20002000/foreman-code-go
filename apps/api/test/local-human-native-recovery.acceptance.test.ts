@@ -1,6 +1,6 @@
 import { fork } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { rm } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -103,13 +103,16 @@ describe.skipIf(!enabled)('local human production native recovery', { timeout: 2
         expect(readable.statusCode, readable.body).toBe(200)
         expect(readable.json().responseAvailability).toMatchObject({ available: true, path: 'live_callback' })
         const option = pending.responseOptions.find(value => value.semantic === 'reject')
-        expect(option).toBeDefined()
+          ?? pending.responseOptions.find(value => value.semantic === 'cancel')
+        expect(option, JSON.stringify({ method: pending.nativeRequestType,
+          options: pending.responseOptions.map(value => value.semantic) })).toBeDefined()
         const response = await app.inject({ method: 'POST', url: `${url}/responses`, payload: {
           requestId, nativeRequestId: pending.turn.nativeRequestId, optionId: option!.optionId, commandId: randomUUID(),
         } })
         expect(response.statusCode, response.body).toBe(200)
         expect((await manager.inspectResponseAvailability(session, pendingResponseQuery(pending)!, signal)).state)
           .not.toBe('available')
+        await expect(readFile(join(directory, 'approval-marker'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
         expect(await access.authenticate(owner.token)).toEqual(owner.principal)
         return
       }
