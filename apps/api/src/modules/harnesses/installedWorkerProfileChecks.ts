@@ -50,16 +50,17 @@ export async function createInstalledWorkerProfileChecks(input: {
             await assertInstallation(effectSignal)
             return result
           }
-          if (profile.configuration.harness === 'opencode') {
+          const settings = profile.configuration
+          if (settings.harness === 'opencode') {
             const selected = configuration.opencode
             if (!selected) throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'The installed OpenCode selection is missing.', 409)
             const server = new ManagedOpenCodeServer({ binary: selected.binary, workingDirectory: directory,
               ownerAgentId: `profile-check:${request.checkId}`, appMcpAccess: 'none', processRecovery: recovery,
-              ...(profile.configuration.advanced ? { advancedConfiguration: profile.configuration.advanced } : {}),
+              ...(settings.advanced ? { advancedConfiguration: settings.advanced } : {}),
               assertInstallation: effectSignal => assertInstallation(effectSignal) })
             const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: `profile-check:${request.checkId}`,
               appMcpAccess: 'none' })
-            try { return await guarded(() => manager.qualifyConfiguration(profile.configuration, directory, signal)) }
+            try { return await guarded(() => manager.qualifyConfiguration(settings, directory, signal)) }
             finally { await manager.dispose() }
           }
           if (profile.configuration.harness !== 'codex') throw new DomainError('HARNESS_DRIVER_UNAVAILABLE',

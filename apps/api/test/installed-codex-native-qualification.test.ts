@@ -155,10 +155,10 @@ describe('explicit actual-suite worker qualification adapter', () => {
       let arrivals = 0, releaseBoth!: () => void
       const both = new Promise<void>(resolve => { releaseBoth = resolve })
       f.run.mockImplementation(async input => {
-        await requireHarnessQualification(harness, input.version, input.binary)
+        await requireHarnessQualification('codex', input.version, input.binary)
         if (++arrivals === 2) releaseBoth()
         await both
-        return { checks: completedNativeQualificationChecks(harness).filter(id => !['static-compatibility', 'selected-profile', 'owned-resource-closure'].includes(id))
+        return { checks: CODEX_COMPLETED_QUALIFICATION_CHECKS.filter(id => !['static-compatibility', 'selected-profile', 'owned-resource-closure'].includes(id))
           .map(id => ({ id, passed: true, detail: null })), evidence: {} }
       })
       const results = await Promise.all([f.qualifier.qualify(f.value, { checkId: f.checkId, signal: new AbortController().signal }),

@@ -7,6 +7,7 @@ import type { HarnessQualificationRepository } from './qualification/repository.
 import { completedNativeQualificationChecks } from './installedNativeQualification.js'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
 import { DomainError } from '../errors.js'
+import { CompatibilityHarnessSchema } from '@foreman-code/contracts'
 
 export interface NativeQualificationRetention {
   /** Returns the final live-channel fence to run after the profile insert and before commit. */
@@ -28,8 +29,9 @@ export function createInstalledNativeQualificationRetention(input: {
   refreshInstallation(value: HostHarnessOverride, signal: AbortSignal): Promise<void>
 }): NativeQualificationRetention {
   return { refresh: input.refreshInstallation, async retain(client, value, proof, checkId, signal) {
-    const harness = value.driverId
-    if (harness !== 'codex' && harness !== 'opencode') denied()
+    const parsedDriver = CompatibilityHarnessSchema.safeParse(value.driverId)
+    if (!parsedDriver.success) denied()
+    const harness = parsedDriver.data
     const suiteRevision = harness === 'codex' ? input.suiteRevision : input.opencodeSuiteRevision
     if (!suiteRevision) denied()
     const receipt = CompletedNativeQualificationSchema.parse(proof.completedNativeQualification)
