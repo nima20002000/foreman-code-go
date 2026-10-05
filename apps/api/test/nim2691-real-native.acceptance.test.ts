@@ -555,7 +555,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             await writeFile(path, JSON.stringify(evidence, null, 2), { flag: 'wx', mode: 0o600 })
             console.info('Private native workflow failure evidence:', path)
           } catch (evidenceError) {
-            throw new AggregateError([error, evidenceError], 'Native failure evidence could not be retained.', { cause: error })
+            throw new AggregateError([error, evidenceError], 'Native failure evidence could not be retained.', {
+              cause: evidenceError,
+            })
           }
         }
         throw error

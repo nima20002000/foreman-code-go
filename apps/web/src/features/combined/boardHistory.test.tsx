@@ -11,7 +11,6 @@ import { AgentChatStateSchema, type AgentChatState } from '@foreman-code/contrac
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
 import { RunActivitiesPageSchema, type RunGraphScope } from '@foreman-code/contracts/wave25'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
-import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
 import { bindMockInstallation } from '../../shared/mocks/handlers'
