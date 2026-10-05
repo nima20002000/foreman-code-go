@@ -9,6 +9,7 @@ import type { WorkerConversationAllocation } from './workerHost.js'
 import type { WorkerConversationJournal } from './workerJournal.js'
 import { workerConversationProcessDigest } from './workerNativeOwner.js'
 import { DomainError } from '../errors.js'
+import { sameConversationForAppAccess } from './conversationAppAccess.js'
 
 function unavailable(message: string): never {
   throw new DomainError('WORKER_CONVERSATION_RECOVERY_REQUIRED', message, 409)
@@ -30,12 +31,20 @@ export async function recoverWorkerConversation(input: {
   signal.throwIfAborted()
   const session = record.session
   const owner = record.nativeOwner
+  const request = input.request
+  const changingAccess = request.method === 'conversation.open' && request.previousBinding
+    && isDeepStrictEqual(request.previousBinding, record.binding)
+    && sameConversationForAppAccess(record.binding, request.binding)
+    && record.applicationAccessChange?.state === 'reserved'
+    && record.applicationAccessChange.operationId === request.operationId
+    && record.applicationAccessChange.next === request.binding.appMcpAccess
+  const targetBinding = changingAccess ? request.binding : record.binding
   if (!session || !owner || !record.creation || record.closing || record.closed) {
     unavailable('The persisted chat has no recoverable native session.')
   }
   if (commandInputHash(input.configuration) !== record.binding.owner.configurationHash
     || input.configuration.harness.harness !== session.harness || owner.sessionId !== session.nativeSessionId
-    || !isDeepStrictEqual(input.request.binding, record.binding)) {
+    || !isDeepStrictEqual(request.binding, record.binding) && !changingAccess) {
     unavailable('The saved conversation configuration or native session changed.')
   }
   for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) {
@@ -65,9 +74,6 @@ export async function recoverWorkerConversation(input: {
     const preferences = requestedPreferences ?? record.desiredPreferences
     if (preferences) await allocation.manager.configureSessionPreferences?.(preferences)
     const access = 'applicationAccess' in input.request ? input.request.applicationAccess : undefined
-    if (access && allocation.deliverClaudeCredential) {
-      await allocation.deliverClaudeCredential(access.token, signal)
-    }
     const start = await allocation.start({ correlationId: record.creation.operationId, instructionsDelivered: true,
       ...(access ? { applicationAccess: access } : {}) })
     const attached = await allocation.manager.attachSession(session, start, signal)
@@ -104,8 +110,9 @@ export async function recoverWorkerConversation(input: {
     await input.assertCurrent()
     for (const turn of recoveredTurns) await input.journal.finishTurn(record.binding, turn.correlationId, turn.result)
     for (const state of recoveredCompactions) await input.journal.compactProgress(record.binding, state)
-    await input.journal.recoveredOwner(record.binding, input.connection, owner, await allocation.nativeOwner(session))
-    if (preferences) await input.journal.preferences(record.binding, preferences,
+    await input.journal.recoveredOwner(record.binding, input.connection, owner, await allocation.nativeOwner(session),
+      changingAccess ? targetBinding : undefined)
+    if (preferences) await input.journal.preferences(targetBinding, preferences,
       allocation.manager.appliedSessionPreferences?.(session) ?? null)
     return allocation
   } catch (error) {

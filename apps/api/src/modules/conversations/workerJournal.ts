@@ -5,6 +5,8 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
 import type { WorkerConversationBinding, WorkerConversationReceipt } from '@foreman-code/contracts/remote-execution-rpc'
 import { DomainError } from '../errors.js'
+import { sameConversationForAppAccess } from './conversationAppAccess.js'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 
 interface ConversationStore {
   read(): Promise<WorkerConversationReceipt[]>
@@ -20,6 +22,7 @@ function addressed(records: WorkerConversationReceipt[], binding: WorkerConversa
 }
 function writable(record: WorkerConversationReceipt) {
   if (record.closed || record.closing) conflict('The native conversation is closing or closed.')
+  if (record.applicationAccessChange?.state === 'reserved') conflict('The native App MCP access change needs recovery.')
 }
 function unsettled(record: WorkerConversationReceipt) {
   return record.turns.some(turn => turn.status !== 'completed')
@@ -35,6 +38,39 @@ export class WorkerConversationJournal {
       value.binding.owner.conversationId === binding.owner.conversationId)
     if (record && !isDeepStrictEqual(record.binding, binding)) conflict('The original conversation binding changed.')
     return record
+  }
+
+  async inspectBinding(binding: WorkerConversationBinding) {
+    const record = (await this.store.read()).find(value => value.binding.owner.conversationId === binding.owner.conversationId)
+    if (record && !isDeepStrictEqual(record.binding, binding)
+      && !sameConversationForAppAccess(record.binding, binding)) conflict('The original conversation binding changed.')
+    return record
+  }
+
+  reserveApplicationAccess(previous: WorkerConversationBinding, next: WorkerConversationBinding, operationId: string,
+    session: NativeSessionReference) {
+    const inputHash = commandInputHash({ previous, next })
+    return this.store.change(records => {
+      const record = records.find(value => value.binding.owner.conversationId === previous.owner.conversationId)
+      if (!record || !sameConversationForAppAccess(previous, next) || previous.appMcpAccess === next.appMcpAccess
+        || record.closed || record.closing || !isDeepStrictEqual(record.session, session) || !record.nativeOwner || unsettled(record)) {
+        conflict('Only a settled Operator session can change its App MCP access.')
+      }
+      const change = record.applicationAccessChange
+      if (change?.operationId === operationId) {
+        if (change.inputHash !== inputHash || !isDeepStrictEqual(record.binding, change.state === 'applied' ? next : previous)) {
+          conflict('The original App MCP access change has different input.')
+        }
+        return { applied: change.state === 'applied', reserved: false, record }
+      }
+      if (change?.state === 'reserved' || !isDeepStrictEqual(record.binding, previous)) {
+        conflict('The original App MCP access change needs recovery.')
+      }
+      record.applicationAccessChange = { operationId, inputHash, previous: previous.appMcpAccess,
+        next: next.appMcpAccess, state: 'reserved' }
+      record.revision++
+      return { applied: false, reserved: true, record }
+    })
   }
 
   receive(binding: WorkerConversationBinding, connection: DeviceSessionBinding) {
@@ -100,9 +136,16 @@ export class WorkerConversationJournal {
   }
 
   recoveredOwner(binding: WorkerConversationBinding, connection: DeviceSessionBinding,
-    previous: RemoteNativeIdentity, next: RemoteNativeIdentity) {
+    previous: RemoteNativeIdentity, next: RemoteNativeIdentity, targetBinding?: WorkerConversationBinding) {
     return this.change(binding, record => {
-      writable(record)
+      if (record.closed || record.closing) conflict('The native conversation is closing or closed.')
+      const change = record.applicationAccessChange
+      if (targetBinding) {
+        if (!change || change.state !== 'reserved' || change.previous !== binding.appMcpAccess
+          || change.next !== targetBinding.appMcpAccess || !sameConversationForAppAccess(binding, targetBinding)) {
+          conflict('The original App MCP access change was not reserved.')
+        }
+      } else if (change?.state === 'reserved') conflict('The native App MCP access change needs recovery.')
       if (unsettled(record) || !record.session || !isDeepStrictEqual(record.nativeOwner, previous)
         || previous.sessionId !== record.session.nativeSessionId || next.sessionId !== previous.sessionId) {
         conflict('The recovered process does not own the settled conversation session.')
@@ -112,6 +155,10 @@ export class WorkerConversationJournal {
       }
       record.nativeOwner = next
       record.connection = connection
+      if (targetBinding) {
+        record.binding = structuredClone(targetBinding)
+        change!.state = 'applied'
+      }
       return record
     })
   }

@@ -204,7 +204,8 @@ export async function createInstalledWorkerConversations(input: {
     prepare: (binding, configuration, connection) => allocate(binding, configuration, connection, 'preparation'),
     recover: (record, configuration, connection, signal, request) => recoverWorkerConversation({
       record, configuration, connection, signal, request, registry: input.registry, journal: conversationJournal,
-      allocate: () => allocate(record.binding, configuration, connection, 'chat'),
+      allocate: () => allocate(request.method === 'conversation.open' && request.previousBinding
+        ? request.binding : record.binding, configuration, connection, 'chat'),
       assertCurrent: () => callbacks.authorize(request, connection, signal),
     }),
     readCompaction: async (request, _record, connection, signal) => {

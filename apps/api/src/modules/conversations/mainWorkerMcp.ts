@@ -13,6 +13,7 @@ import type { SelectedMainMcpForward } from '../placement/workerMcpRelay.js'
 import type { MainWorkerConversationBridge } from './workerBridge.js'
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
 import { DomainError } from '../errors.js'
+import { sameConversationForAppAccess } from './conversationAppAccess.js'
 
 function denied(): never {
   throw new DomainError('WORKER_CONVERSATION_MCP_DENIED', 'The scoped Operator credential does not belong to this worker chat.', 403)
@@ -54,7 +55,11 @@ export class MainWorkerConversationMcp {
       || configuration.harness.harness !== binding.harness || commandInputHash(configuration) !== owner.configurationHash
       || !isDeepStrictEqual(configuration.harnessProfileSelection, binding.profile)) denied()
     if (stored.worker_conversation_binding) {
-      if (!isDeepStrictEqual(WorkerConversationBindingSchema.parse(stored.worker_conversation_binding), binding)) denied()
+      const previous = WorkerConversationBindingSchema.parse(stored.worker_conversation_binding)
+      if (!isDeepStrictEqual(previous, binding)) {
+        if (!request.admissionId || !sameConversationForAppAccess(previous, binding)) denied()
+        await this.input.bridge.authorizeAppAccessChange(request.admissionId, previous, binding, connection, signal)
+      }
     } else {
       if (!request.admissionId) denied()
       await this.input.bridge.handle({ method: 'conversation.profile', admissionId: request.admissionId, binding }, connection, signal)

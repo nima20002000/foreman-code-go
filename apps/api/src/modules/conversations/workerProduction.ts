@@ -34,6 +34,7 @@ import { revalidateAgentChatDirectory } from './agentChatDirectory.js'
 import type { PrepareWorkerFiles } from './mainWorkerFiles.js'
 import { createMainWorkerClaudeFiles } from './mainWorkerClaudeFiles.js'
 import type { AgentFileToolService } from '../files/tools/service.js'
+import { sameConversationForAppAccess } from './conversationAppAccess.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -138,12 +139,16 @@ export function createProductionWorkerConversations(input: {
         requestedBinding.workingDirectory = workerOperatorDirectory(roots.managedRuntimeRoot, requestedBinding.owner)
         await profiles.revalidate(profileOwner, accepted)
       }
-      const binding = original.worker_conversation_binding
+      const originalBinding = original.worker_conversation_binding
         ? WorkerConversationBindingSchema.parse(original.worker_conversation_binding) : requestedBinding
-      const observationBinding = { ...binding, appMcpAccess: requestedBinding.appMcpAccess }
-      if (!isDeepStrictEqual(options.observationPrincipalId ? observationBinding : binding, requestedBinding)) {
+      const observationBinding = { ...originalBinding, appMcpAccess: requestedBinding.appMcpAccess }
+      const changingAccess = !options.observationPrincipalId && original.native_session_id
+        && originalBinding.appMcpAccess !== requestedBinding.appMcpAccess
+        && sameConversationForAppAccess(originalBinding, requestedBinding)
+      if (!changingAccess && !isDeepStrictEqual(options.observationPrincipalId ? observationBinding : originalBinding, requestedBinding)) {
         unavailable('The original worker conversation binding changed.')
       }
+      const binding = changingAccess ? requestedBinding : originalBinding
       const requestCallers = new WeakMap<WorkerConversationRpcRequest, string>()
       const current = async (request: WorkerConversationRpcRequest, effectSignal?: AbortSignal) => {
         const live = await row(options.conversationId)
@@ -166,6 +171,15 @@ export function createProductionWorkerConversations(input: {
         }
         if (!currentCaller || live.kind === 'operator' && live.owner_principal_id !== currentCaller) {
           unavailable('The original conversation caller changed.')
+        }
+        if (changingAccess && request.method === 'conversation.open'
+          && (!live.active_request_id || request.mode !== 'attach'
+            || request.operationId !== nativeCorrelation(live.id, live.active_request_id)
+            || !isDeepStrictEqual(request.previousBinding, originalBinding))) {
+          unavailable('The native access change differs from the admitted Operator message.')
+        }
+        if (changingAccess && request.method === 'conversation.refresh-mcp' && !live.active_request_id) {
+          unavailable('A scoped native access change requires its admitted Operator message.')
         }
         const principal = (await currentOperatorAuthority(input.pool, currentCaller)).principal
         const scope = live.kind === 'agent' ? { workspaceId: live.workspace_id!, workflowId: live.workflow_id!,
@@ -209,6 +223,7 @@ export function createProductionWorkerConversations(input: {
         ? createMainWorkerClaudeFiles({ pool: input.pool, binding: owner, service: input.fileService,
           allowMutation: configuration.harness.sandbox !== 'read-only' }) : undefined
       const manager = new WorkerConversationManager({ binding, configuration, channel, bridge, current,
+        ...(changingAccess ? { previousBinding: originalBinding } : {}),
         sourceWorkingDirectory: options.workingDirectory,
         ...(configuration.harness.harness === 'codex' && binding.appMcpAccess === 'none' && input.files
           ? { files: input.files(options.conversationId, configuration, binding.workingDirectory) } : {}),
@@ -260,8 +275,10 @@ export function createProductionWorkerConversations(input: {
               and record->>'status' is distinct from 'archived'
               and coalesce(operator_configuration_version_id,agent_configuration_version_id)=$4
               and (native_session_id is null or native_session_id=$3)
-              and (worker_conversation_binding is null or worker_conversation_binding=$2::jsonb)`,
-          [options.conversationId, JSON.stringify(binding), session.nativeSessionId, configuration.id])
+              and (worker_conversation_binding is null or worker_conversation_binding=$2::jsonb
+                or worker_conversation_binding=$5::jsonb)`,
+          [options.conversationId, JSON.stringify(binding), session.nativeSessionId, configuration.id,
+            changingAccess ? JSON.stringify(originalBinding) : JSON.stringify(binding)])
           if (saved.rowCount !== 1) unavailable('The native worker owner could not be retained.')
         } })
       if (claudeFiles) {

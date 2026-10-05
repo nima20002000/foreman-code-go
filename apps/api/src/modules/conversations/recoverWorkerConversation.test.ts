@@ -12,11 +12,13 @@ import { workerConversationFixture } from './workerFixtures.test-support.js'
 import { workerConversationProcessDigest } from './workerNativeOwner.js'
 import { recoverWorkerConversation } from './recoverWorkerConversation.js'
 import type { WorkerConversationAllocation } from './workerHost.js'
+import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 
 /** Recorded native/process ports verify recovery behavior, not installed harness qualification. */
 async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agent' = 'agent',
-  options: { journalStatus?: 'completed' | 'uncertain' } = {}) {
+  options: { journalStatus?: 'completed' | 'uncertain'; appMcpAccess?: 'none' | 'scoped' } = {}) {
   const f = workerConversationFixture(kind, harness)
+  if (options.appMcpAccess) f.binding.appMcpAccess = options.appMcpAccess
   const directory = await privateFixtureDirectory('worker-recovery-')
   const journal = await RemoteOperationJournal.open(join(directory, 'operations.json'), { initializeNewInstallation: true })
   const launch: NativeLaunchObservation = { owner: `conversation:${f.binding.owner.conversationId}`,
@@ -61,9 +63,9 @@ async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agen
   const allocate = vi.fn(async () => allocation)
   const closeOwner = vi.fn(async () => true)
   const assertCurrent = vi.fn(async () => {})
-  const recover = () => recoverWorkerConversation({ record, configuration: f.configuration, connection,
-    request: { method: 'conversation.open', binding: f.binding, configuration: f.configuration,
-      operationId: 'original-create', mode: 'attach', source: f.session },
+  const recover = (request: WorkerConversationRpcRequest = { method: 'conversation.open', binding: f.binding,
+    configuration: f.configuration, operationId: 'original-create', mode: 'attach', source: f.session }) =>
+    recoverWorkerConversation({ record, configuration: f.configuration, connection, request,
     registry: { snapshot: () => ({ revision: 'recorded-registry', launches: [launch] }), closeOwner },
     journal: journal.conversations, allocate, assertCurrent, signal: AbortSignal.timeout(1000) })
   return { ...f, record, connection, launch, owner, nextOwner, observed, result,
@@ -72,6 +74,28 @@ async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agen
 }
 
 for (const harness of ['codex', 'opencode', 'claude'] as const) {
+  it.each(['none', 'scoped'] as const)(`${harness}: changes Operator App MCP access from %s on the same native session`, async previous => {
+    const f = await fixture(harness, 'operator', { appMcpAccess: previous })
+    const next = { ...f.binding, appMcpAccess: previous === 'none' ? 'scoped' as const : 'none' as const }
+    try {
+      const reserved = await f.journal.conversations.reserveApplicationAccess(f.binding, next, 'access-message', f.session)
+      Object.assign(f.record, reserved.record)
+      const access = next.appMcpAccess === 'scoped'
+        ? { kind: 'operator-chat-mcp' as const, token: 'normally-issued-credential' } : undefined
+      expect(await f.recover({ method: 'conversation.open', binding: next, previousBinding: f.binding,
+        mode: 'attach', source: f.session, configuration: f.configuration, operationId: 'access-message',
+        ...(access ? { applicationAccess: access } : {}) })).toBe(f.allocation)
+      expect(f.start).toHaveBeenCalledWith({ correlationId: 'original-create', instructionsDelivered: true,
+        ...(access ? { applicationAccess: access } : {}) })
+      const saved = await f.journal.conversations.read(next)
+      expect(saved?.session).toEqual(f.session)
+      expect(saved?.turns).toEqual(f.record.turns)
+      expect(saved?.nativeOwner).toEqual(f.nextOwner)
+      expect(saved?.applicationAccessChange?.state).toBe('applied')
+      expect(f.attach).toHaveBeenCalledOnce()
+      expect(f.reconcile).toHaveBeenCalledOnce()
+    } finally { await f.cleanup() }
+  })
   it.each(['operator', 'agent'] as const)(`${harness}: reattaches the same settled %s chat after verified process closure`, async kind => {
     const f = await fixture(harness, kind)
     try {

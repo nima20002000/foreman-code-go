@@ -15,6 +15,7 @@ import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import type { CompactionState } from '@foreman-code/contracts'
 import { recoverPersistedClaudeCompaction } from '../harnesses/claudeSdk/recoverCompaction.js'
 import { unavailableNativeResponse } from '../harnesses/responseAvailability.js'
+import { sameConversationForAppAccess } from './conversationAppAccess.js'
 
 export interface WorkerConversationAllocation {
   manager: NativeHarnessSessionManager
@@ -124,6 +125,7 @@ export class WorkerConversationHost {
     const task = (async () => {
       const record = await this.ports.journal.read(request.binding)
       if (record?.closed || record?.closing) unavailable('The native chat is closing or closed.')
+      if (record?.applicationAccessChange?.state === 'reserved') unavailable('The native App MCP access change needs recovery.')
       const allocation = record?.session
         ? await this.recover(record, request.configuration, connection, signal, request)
         : await this.ports.allocate(request.binding, request.configuration, connection, signal)
@@ -148,15 +150,25 @@ export class WorkerConversationHost {
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<Resident> {
     validateConfiguration(request.binding, request.configuration)
     const id = request.binding.owner.conversationId
-    const resident = this.residents.get(id) ?? this.preparations.get(id)
+    const live = this.residents.get(id)
+    const previousPreparation = this.preparations.get(id)
+    if (previousPreparation && !isDeepStrictEqual(previousPreparation.binding, request.binding)
+      && sameConversationForAppAccess(previousPreparation.binding, request.binding)) {
+      await previousPreparation.allocation.close()
+      this.preparations.delete(id)
+    }
+    const resident = live && isDeepStrictEqual(live.binding, request.binding) ? live : this.preparations.get(id)
     if (resident) {
       if (!isDeepStrictEqual(resident.binding, request.binding)
         || !isDeepStrictEqual(resident.configuration, request.configuration)) unavailable('The native chat owner changed.')
       return resident
     }
-    const record = await this.ports.journal.read(request.binding)
-    if (!record?.session) return this.allocate(request, connection, signal)
-    if (!this.ports.prepare || record.closing || record.closed) unavailable('The original chat is not available for inspection.')
+    const record = await this.ports.journal.inspectBinding(request.binding)
+    if (!this.ports.prepare) {
+      if (!record?.session) return this.allocate(request, connection, signal)
+      unavailable('The original chat is not available for inspection.')
+    }
+    if (record?.closing || record?.closed) unavailable('The original chat is not available for inspection.')
     const opening = this.allocating.get(id)
     if (opening) {
       await opening
@@ -185,6 +197,7 @@ export class WorkerConversationHost {
     const record = await this.ports.journal.read(request.binding)
     const resident = this.residents.get(request.binding.owner.conversationId)
     if (!record || !isDeepStrictEqual(record.session, request.session) || !resident
+      || record.applicationAccessChange?.state === 'reserved'
       || !isDeepStrictEqual(resident.binding, request.binding)) unavailable('The original chat session is not resident.')
     if (!isDeepStrictEqual(record.nativeOwner, sessionOwner(await resident.allocation.nativeOwner(request.session)))) {
       unavailable('The original native chat process changed.')
@@ -208,6 +221,7 @@ export class WorkerConversationHost {
   private async open(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.open' }>,
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
     if (request.mode !== 'create' && !request.source) unavailable('Native attachment or fork requires its source session.')
+    if (request.previousBinding) return this.changeApplicationAccess(request, connection, signal)
     const resident = await this.allocate(request, connection, signal)
     if (request.mode === 'fork' && !resident.allocation.manager.forkSession) {
       unavailable('The selected native driver cannot fork a chat session.')
@@ -239,6 +253,52 @@ export class WorkerConversationHost {
     } else session = await manager.createSession(start, signal)
     await this.bind(resident, session, request, signal)
     return { receipt: await this.ports.journal.read(request.binding) }
+  }
+
+  private async changeApplicationAccess(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.open' }>,
+    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
+    const previous = request.previousBinding!
+    validateConfiguration(request.binding, request.configuration)
+    if (request.mode !== 'attach' || !request.source || !sameConversationForAppAccess(previous, request.binding)) {
+      unavailable('App MCP access changes keep the original Operator owner, profile and session.')
+    }
+    const id = request.binding.owner.conversationId
+    if (this.allocating.has(id) || this.running.has(id)) unavailable('The native conversation is busy.')
+    const task = (async (): Promise<Resident> => {
+      const reserved = await this.ports.journal.reserveApplicationAccess(previous, request.binding, request.operationId, request.source!)
+      if (reserved.applied) {
+        const resident = this.residents.get(id)
+        if (resident && isDeepStrictEqual(resident.binding, request.binding)) return resident
+        const allocation = await this.recover(reserved.record, request.configuration, connection, signal, request)
+        const recovered = { binding: structuredClone(request.binding), configuration: structuredClone(request.configuration), allocation }
+        this.residents.set(id, recovered)
+        return recovered
+      }
+      const old = this.residents.get(id)
+      if (old) {
+        if (!isDeepStrictEqual(old.binding, previous)
+          || reserved.reserved && !isDeepStrictEqual(reserved.record.nativeOwner,
+            sessionOwner(await old.allocation.nativeOwner(request.source!)))) unavailable('The original native process changed.')
+        await old.allocation.close()
+        this.residents.delete(id)
+      }
+      const preparation = this.preparations.get(id)
+      if (preparation) {
+        await preparation.allocation.close()
+        this.preparations.delete(id)
+      }
+      await this.authorize(request, connection, signal)
+      const allocation = await this.recover(reserved.record, request.configuration, connection, signal, request)
+      const resident = { binding: structuredClone(request.binding), configuration: structuredClone(request.configuration), allocation }
+      this.residents.set(id, resident)
+      return resident
+    })()
+    this.allocating.set(id, task)
+    try {
+      await task
+      await this.authorize(request, connection, signal)
+      return { receipt: await this.ports.journal.read(request.binding) }
+    } finally { if (this.allocating.get(id) === task) this.allocating.delete(id) }
   }
 
   private callbacks(resident: Resident, request: Extract<WorkerConversationRpcRequest,

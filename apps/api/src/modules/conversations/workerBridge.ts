@@ -13,6 +13,7 @@ import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
 import type { NativeHistory } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 import { MainWorkerFiles, type PrepareWorkerFiles } from './mainWorkerFiles.js'
+import { sameConversationForAppAccess } from './conversationAppAccess.js'
 
 export interface WorkerConversationCallbacks {
   profile?(): Promise<WorkerConversationProfileFacts>
@@ -105,6 +106,16 @@ export class MainWorkerConversationBridge {
     await admission.current(signal)
     signal.throwIfAborted()
     if (admission.closed) denied()
+  }
+
+  async authorizeAppAccessChange(admissionId: string, previous: WorkerConversationBinding,
+    next: WorkerConversationBinding, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
+    const admission = this.admissions.get(admissionId)
+    if (!admission || next.appMcpAccess !== 'scoped' || !sameConversationForAppAccess(previous, next)) denied()
+    const request = admission.request
+    if (!(request.method === 'conversation.open' && request.mode === 'attach'
+      && isDeepStrictEqual(request.previousBinding, previous)) && request.method !== 'conversation.refresh-mcp') denied()
+    await this.current(admission, next, connection, signal)
   }
 
   async handle(raw: unknown, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<unknown> {

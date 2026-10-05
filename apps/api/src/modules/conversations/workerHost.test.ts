@@ -130,6 +130,78 @@ function receipt(value: unknown) {
   return WorkerConversationReceiptSchema.parse((value as { receipt: unknown }).receipt)
 }
 
+it('closes only the idle old owner and attaches the same session under the requested App MCP access', async () => {
+  const f = await setup()
+  const allocation = await f.ports.allocate(f.binding, f.configuration, f.connection, AbortSignal.timeout(1000))
+  const closeOld = vi.fn(async () => {})
+  f.ports.allocate = async () => ({ ...allocation, close: closeOld })
+  await f.request(f.open)
+  const next = { ...f.binding, appMcpAccess: 'scoped' as const }
+  const owner = { ...f.nativeOwner, processIdentityDigest: 'c'.repeat(64) }
+  const recover = vi.fn(async (...args: Parameters<NonNullable<WorkerConversationHostPorts['recover']>>) => {
+    const [record, configuration, connection, signal, request] = args
+    expect(configuration).toEqual(f.configuration)
+    expect(signal.aborted).toBe(false)
+    expect(closeOld).toHaveBeenCalledOnce()
+    expect(record.applicationAccessChange?.state).toBe('reserved')
+    expect('applicationAccess' in request && request.applicationAccess)
+      .toEqual({ kind: 'operator-chat-mcp', token: 'normally-issued-credential' })
+    await f.journal.conversations.recoveredOwner(f.binding, connection, f.nativeOwner, owner, next)
+    return { ...allocation, nativeOwner: async () => owner }
+  }) satisfies WorkerConversationHostPorts['recover']
+  f.ports.recover = recover
+  const request = { method: 'conversation.open', binding: next, previousBinding: f.binding,
+    mode: 'attach', source: f.session, operationId: 'access-message', configuration: f.configuration,
+    applicationAccess: { kind: 'operator-chat-mcp', token: 'normally-issued-credential' } }
+  const changed = receipt(await f.host.handle(request, f.connection))
+  expect(changed.binding).toEqual(next)
+  expect(changed.session).toEqual(f.session)
+  expect(changed.nativeOwner).toEqual(owner)
+  expect(f.manager.creates).toBe(1)
+  expect(f.manager.prompts).toEqual([])
+  expect(receipt(await f.host.handle(request, f.connection)).nativeOwner).toEqual(owner)
+  expect(closeOld).toHaveBeenCalledOnce()
+  expect(recover).toHaveBeenCalledOnce()
+})
+
+it('keeps the old owner alive when an access handoff addresses another native session', async () => {
+  const f = await setup()
+  const allocation = await f.ports.allocate(f.binding, f.configuration, f.connection, AbortSignal.timeout(1000))
+  const closeOld = vi.fn(async () => {})
+  f.ports.allocate = async () => ({ ...allocation, close: closeOld })
+  await f.request(f.open)
+  await expect(f.host.handle({ method: 'conversation.open', binding: { ...f.binding, appMcpAccess: 'scoped' },
+    previousBinding: f.binding, mode: 'attach', source: { ...f.session, nativeSessionId: 'foreign-session' },
+    operationId: 'foreign-access', configuration: f.configuration }, f.connection)).rejects.toThrow('settled Operator')
+  expect(closeOld).not.toHaveBeenCalled()
+  expect((await f.journal.conversations.read(f.binding))?.applicationAccessChange).toBeUndefined()
+})
+
+it('keeps fresh inspection separate from the first admitted Claude message owner', async () => {
+  const f = await setup('claude')
+  const base = await f.ports.allocate(f.binding, f.configuration, f.connection, AbortSignal.timeout(1000))
+  const inspected = new ProviderFixture('claude', f.session)
+  const closeInspection = vi.fn(async () => {})
+  f.ports.prepare = vi.fn(async () => ({ ...base, manager: inspected, close: closeInspection }))
+  const nativeStart = vi.fn(async (input: Parameters<typeof base.start>[0]) => {
+    expect(closeInspection).toHaveBeenCalledOnce()
+    return base.start(input)
+  })
+  const allocate = vi.fn(async () => ({ ...base, start: nativeStart }))
+  f.ports.allocate = allocate
+  await f.request({ method: 'conversation.capabilities', configuration: f.configuration })
+  expect(allocate).not.toHaveBeenCalled()
+  expect(f.manager.creates).toBe(0)
+  const value = await f.request({ method: 'conversation.initial-turn', operationId: 'message-creation',
+    correlationId: 'actual-native-message', configuration: f.configuration, prompt: 'One admitted task' })
+  expect(receipt(value).creation?.operationId).toBe('message-creation')
+  await vi.waitFor(() => expect(f.manager.prompts).toEqual(['One admitted task']))
+  expect(nativeStart).toHaveBeenCalledWith({ correlationId: 'actual-native-message', instructionsDelivered: false })
+  expect(allocate).toHaveBeenCalledOnce()
+  expect(closeInspection).toHaveBeenCalledOnce()
+  expect(f.manager.creates).toBe(1)
+})
+
 it('inspects a cold saved chat on a separate preparation and rechecks its scoped credential before attachment', async () => {
   const f = await setup('claude')
   f.binding.appMcpAccess = 'scoped'

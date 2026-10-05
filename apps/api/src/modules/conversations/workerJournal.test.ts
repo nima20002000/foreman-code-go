@@ -59,6 +59,48 @@ it('keeps successive turns on one chat session and fences an unresolved turn', a
     .rejects.toThrow('input changed')
 })
 
+it('retains one access handoff across reopen and changes only the native process and App MCP access', async () => {
+  const f = await opened()
+  const next = { ...f.binding, appMcpAccess: 'scoped' as const }
+  const reserved = await f.chats.reserveApplicationAccess(f.binding, next, 'access-change', f.session)
+  expect(reserved).toMatchObject({ applied: false, reserved: true })
+  await expect(f.chats.reserveTurn(f.binding, 'new-message', commandInputHash('new-message')))
+    .rejects.toThrow('access change needs recovery')
+  await f.store.close()
+  const reopened = await RemoteOperationJournal.open(f.path)
+  closing.push(() => reopened.close())
+  expect(await reopened.conversations.reserveApplicationAccess(f.binding, next, 'access-change', f.session))
+    .toMatchObject({ applied: false, reserved: false })
+  await expect(reopened.conversations.reserveApplicationAccess(f.binding, next, 'different-change', f.session))
+    .rejects.toThrow('needs recovery')
+  const newOwner = { ...f.nativeOwner, processIdentityDigest: 'c'.repeat(64) }
+  await reopened.conversations.recoveredOwner(f.binding, f.connection, f.nativeOwner, newOwner, next)
+  const saved = await reopened.conversations.read(next)
+  expect(saved?.session).toEqual(f.session)
+  expect(saved?.binding).toEqual(next)
+  expect(saved?.nativeOwner).toEqual(newOwner)
+  expect(saved?.creation).toEqual(reserved.record.creation)
+  expect(saved?.applicationAccessChange?.state).toBe('applied')
+  expect(await reopened.conversations.reserveApplicationAccess(f.binding, next, 'access-change', f.session))
+    .toMatchObject({ applied: true, reserved: false })
+})
+
+it('rejects pending work, foreign sessions and changed saved owners before reserving an access handoff', async () => {
+  const f = await opened()
+  const next = { ...f.binding, appMcpAccess: 'scoped' as const }
+  const before = await f.chats.read(f.binding)
+  await expect(f.chats.reserveApplicationAccess(f.binding, next, 'foreign-session', {
+    ...f.session, nativeSessionId: 'another-session',
+  })).rejects.toThrow('settled Operator')
+  await expect(f.chats.reserveApplicationAccess(f.binding, { ...next, workingDirectory: '/other-project' },
+    'changed-directory', f.session)).rejects.toThrow('settled Operator')
+  expect(await f.chats.read(f.binding)).toEqual(before)
+  await f.chats.reserveTurn(f.binding, 'active-message', commandInputHash('active-message'))
+  await expect(f.chats.reserveApplicationAccess(f.binding, next, 'active-change', f.session))
+    .rejects.toThrow('settled Operator')
+  expect((await f.chats.read(f.binding))?.applicationAccessChange).toBeUndefined()
+})
+
 it('does not reoffer uncertain input or lose a completed result on an empty history read', async () => {
   const f = await opened()
   await f.chats.reserveTurn(f.binding, 'uncertain', commandInputHash({ prompt: 'task' }))

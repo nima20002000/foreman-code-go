@@ -62,6 +62,9 @@ export const WorkerConversationReceiptSchema = z.object({
   creation: z.object({ operationId: id, inputHash: digest }).strict().optional(),
   session: z.lazy(() => NativeSessionReferenceSchema).optional(),
   nativeOwner: RemoteNativeIdentitySchema.optional(),
+  applicationAccessChange: z.object({ operationId: id, inputHash: digest,
+    previous: z.enum(['scoped', 'none']), next: z.enum(['scoped', 'none']),
+    state: z.enum(['reserved', 'applied']) }).strict().optional(),
   turns: z.array(WorkerConversationTurnSchema).max(1000),
   compactions: z.array(z.object({ inputHash: digest, state: CompactionStateSchema }).strict()).max(1000),
   desiredPreferences: SessionPreferencesSchema.nullable(),
@@ -151,6 +154,7 @@ export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method',
   z.object({ method: z.literal('conversation.status'), ...binding }).strict(),
   z.object({ method: z.literal('conversation.open'), ...binding, operationId: id,
     configuration: WorkerConversationConfigurationSchema, mode: z.enum(['create', 'attach', 'fork']),
+    previousBinding: WorkerConversationBindingSchema.optional(),
     source: z.lazy(() => NativeSessionReferenceSchema).optional(), preferences: SessionPreferencesSchema.optional(),
     applicationAccess: applicationAccess.optional(),
   }).strict(),
@@ -189,6 +193,12 @@ export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method',
   z.object({ method: z.literal('conversation.reconcile-steers'), ...native,
     inputs: z.array(z.object({ clientCorrelationId: id, expectedTurnId: id }).strict()).max(1000) }).strict(),
 ]).superRefine((request, context) => {
+  if (request.method === 'conversation.open' && request.previousBinding
+    && (request.mode !== 'attach' || request.binding.owner.kind !== 'operator'
+      || request.previousBinding.owner.kind !== 'operator'
+      || request.previousBinding.appMcpAccess === request.binding.appMcpAccess)) {
+    context.addIssue({ code: 'custom', message: 'App MCP access changes attach an existing Operator session.' })
+  }
   if ('applicationAccess' in request && request.applicationAccess
     && (request.binding.owner.kind !== 'operator' || request.binding.appMcpAccess !== 'scoped')) {
     context.addIssue({ code: 'custom', message: 'Management MCP credentials require a scoped Operator conversation.' })

@@ -37,6 +37,7 @@ interface ManagerOptions {
   claudeAuthority?(request: WorkerClaudeAuthorityRequest, signal: AbortSignal): Promise<unknown>
   sourceWorkingDirectory?: string
   files?: PrepareWorkerFiles
+  previousBinding?: WorkerConversationBinding
 }
 
 /** Main's existing native port targets one conversation on its selected paired worker. */
@@ -136,6 +137,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   private async open(start: NativeSessionStart, mode: 'create' | 'attach' | 'fork',
     source: NativeSessionReference | undefined, signal?: AbortSignal) {
     const frame = this.frame({ method: 'conversation.open', ...this.startFields(start), mode,
+      ...(mode === 'attach' && this.options.previousBinding ? { previousBinding: this.options.previousBinding } : {}),
       ...(source ? { source } : {}) })
     const lease = this.capture(frame, { callbacks: { sessionObserved: async session => {
       if (session.harness !== this.harness || mode === 'fork' && session.nativeSessionId === source?.nativeSessionId) {
@@ -149,6 +151,10 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
       const receipt = this.adopt(await lease.request(signal))
       if (!receipt?.session) conflict('Native creation is unresolved; a replacement session will not be created.')
       if (mode === 'attach' && !isDeepStrictEqual(receipt.session, source)) conflict('The worker attached a different session.')
+      if (this.options.previousBinding) {
+        await this.options.observeSession?.(receipt.session)
+        delete this.options.previousBinding
+      }
       return receipt.session
     } finally { this.release(lease) }
   }

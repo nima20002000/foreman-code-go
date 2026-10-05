@@ -33,6 +33,30 @@ it('authorizes only the Main-issued request and rechecks its live grants', async
   f.lease.close()
 })
 
+it('allows a scoped access change only through its issued attachment or credential-delivery admission', async () => {
+  const f = workerConversationFixture()
+  const next = { ...f.binding, appMcpAccess: 'scoped' as const }
+  const current = vi.fn(async () => {})
+  const bridge = new MainWorkerConversationBridge()
+  const channel = { binding: f.connection, request: async () => ({ payload: {} }) }
+  const open: WorkerConversationRpcRequest = { method: 'conversation.open', binding: next,
+    previousBinding: f.binding, mode: 'attach', source: f.session,
+    operationId: 'admitted-message', configuration: f.configuration }
+  const lease = bridge.capture({ request: open, current, channel })
+  const authorize = () => bridge.authorizeAppAccessChange(lease.admissionId, f.binding, next,
+    f.connection, AbortSignal.timeout(1000))
+  await expect(authorize()).resolves.toBeUndefined()
+  current.mockRejectedValueOnce(new Error('Sender revoked'))
+  await expect(authorize()).rejects.toThrow('Sender revoked')
+  lease.close()
+  await expect(authorize()).rejects.toMatchObject({ status: 403 })
+  const inspection = bridge.capture({ request: { method: 'conversation.capabilities', binding: next,
+    configuration: f.configuration }, current, channel })
+  await expect(bridge.authorizeAppAccessChange(inspection.admissionId, f.binding, next,
+    f.connection, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 403 })
+  inspection.close()
+})
+
 it('uses the current callback signal after an earlier request signal has ended', async () => {
   const f = workerConversationFixture()
   const bridge = new MainWorkerConversationBridge()

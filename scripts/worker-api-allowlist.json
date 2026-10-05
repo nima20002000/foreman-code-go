@@ -17,6 +17,7 @@
   "apps/api/src/modules/byte-transfer/sender.ts",
   "apps/api/src/modules/byte-transfer/service.ts",
   "apps/api/src/modules/conversations/installedClaudeConversationProfile.ts",
+  "apps/api/src/modules/conversations/conversationAppAccess.ts",
   "apps/api/src/modules/conversations/installedConversationDirectory.ts",
   "apps/api/src/modules/conversations/installedNativeProfile.ts",
   "apps/api/src/modules/conversations/installedWorkerClaude.ts",
