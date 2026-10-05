@@ -8,6 +8,29 @@ import { NativeInteractionResponse } from './NativeInteractionResponse'
 const base = CODEX_APPROVAL_OPTIONS_FIXTURE[0]!
 const decline = CODEX_APPROVAL_OPTIONS_FIXTURE.find((option) => option.semantic === 'reject')!
 
+it('edits the complete response for composed forms and still validates every required field', async () => {
+  const user = userEvent.setup()
+  const onSelect = vi.fn()
+  const option: ApprovalResponseOption = { ...base, label: 'Accept', input: { kind: 'form', schema: {
+    type: 'object', required: ['name'], properties: { name: { type: 'string' } },
+    allOf: [{ required: ['code'], properties: { code: { type: 'string', minLength: 2 } } }],
+  } } }
+  const { rerender } = render(<NativeInteractionResponse options={[option]} disabled={false} onSelect={onSelect} />)
+  const editor = screen.getByRole('textbox', { name: /Form response/ })
+  await user.clear(editor)
+  await user.click(editor)
+  await user.paste('{"name":"Entered"}')
+  await user.click(screen.getByRole('button', { name: 'Accept' }))
+  expect(screen.getByRole('alert')).toBeVisible()
+  expect(onSelect).not.toHaveBeenCalled()
+  await user.clear(editor)
+  await user.paste('{"name":"Entered","code":"AB"}')
+  await user.click(screen.getByRole('button', { name: 'Accept' }))
+  expect(onSelect).toHaveBeenCalledWith(option.optionId, { name: 'Entered', code: 'AB' })
+  rerender(<NativeInteractionResponse options={[option]} disabled onSelect={onSelect} />)
+  expect(editor).toBeDisabled()
+})
+
 it('collects every native question, keeps secrets masked, and waits for an explicit submit', async () => {
   const user = userEvent.setup()
   const onSelect = vi.fn()

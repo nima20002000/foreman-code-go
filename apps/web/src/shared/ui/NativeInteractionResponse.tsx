@@ -9,14 +9,28 @@ function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
+function editableFormProperties(input: Extract<NativeInteractionInput, { kind: 'form' }>) {
+  const schema = object(input.schema)
+  const properties = object(schema.properties)
+  const fieldKeywords = ['type', 'properties', 'required', 'additionalProperties', 'title', 'description', '$schema']
+  const required = Array.isArray(schema.required) ? schema.required : []
+  const canRender = Object.keys(properties).length > 0
+    && (schema.type === undefined || schema.type === 'object')
+    && Object.keys(schema).every((keyword) => fieldKeywords.includes(keyword))
+    && required.every((name) => typeof name === 'string' && Object.hasOwn(properties, name))
+    && typeof schema.additionalProperties !== 'object'
+  return canRender ? properties : undefined
+}
+
 function FormFields({ input, disabled, values, update }: {
   input: Extract<NativeInteractionInput, { kind: 'form' }>; disabled: boolean
   values: Record<string, unknown>; update(name: string, value: unknown): void
 }) {
   const schema = object(input.schema)
-  const properties = object(schema.properties)
-  if (!Object.keys(properties).length) return <label>Form response
+  const properties = editableFormProperties(input)
+  if (!properties) return <label>Form response (JSON)
     <textarea disabled={disabled} value={String(values.json ?? '{}')} onChange={(event) => update('json', event.target.value)} />
+    <small>Enter the complete response as JSON.</small>
   </label>
   return <>{Object.entries(properties).map(([name, property]) => {
     const field = object(property)
@@ -93,8 +107,8 @@ function responseValue(input: NativeInteractionInput, values: Record<string, unk
       return [question.id, { answers: typeof answer.other === 'string' ? [...selected, other] : selected }]
     }))
   }
-  const properties = object(object(input.schema).properties)
-  if (!Object.keys(properties).length) return JSON.parse(String(values.json ?? '{}')) as InteractionResponseValue
+  const properties = editableFormProperties(input)
+  if (!properties) return JSON.parse(String(values.json ?? '{}')) as InteractionResponseValue
   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined).map(([name, value]) => {
     const field = object(properties[name])
     const structured = !Array.isArray(field.enum) && !['string', 'number', 'integer', 'boolean'].includes(String(field.type))
