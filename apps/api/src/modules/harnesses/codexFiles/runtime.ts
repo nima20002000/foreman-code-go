@@ -4,6 +4,9 @@ import { componentLogger } from '../../../infrastructure/logger.js'
 import type { CodexFileCall, CodexFileCallResult } from './port.js'
 import type { CodexFileTurn } from './turn.js'
 
+export type PreparedCodexFileTurn = Pick<CodexFileTurn,
+  'allowedTools' | 'nativeInput' | 'activate' | 'call' | 'publications' | 'close'>
+
 /** Installed only on a chat-owned manager. Resolve a persisted admission by this
  * exact conversation's native session + correlation; never by the open Board.
  * undefined means a positively identified text-only admission, not a lookup error.
@@ -13,7 +16,7 @@ export interface CodexChatFiles {
     session: NativeSessionReference
     clientCorrelationId: string
     signal: AbortSignal
-  }): Promise<CodexFileTurn | undefined>
+  }): Promise<PreparedCodexFileTurn | undefined>
 }
 
 const MAX_CALLS = 128
@@ -49,7 +52,7 @@ export class CodexRuntimeFileTurn {
   private readonly calls = new Map<string, { signature: string; result: Promise<CodexFileCallResult> }>()
   private retainedBytes = 0
 
-  constructor(readonly bridge: CodexFileTurn, private readonly threadId: string) {}
+  constructor(readonly bridge: PreparedCodexFileTurn, private readonly threadId: string) {}
 
   get closed(): boolean { return this.closing }
 
