@@ -24,6 +24,11 @@ import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppS
 import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
 
+function waitForOwnerBeforeWork(release: string, work: string): string {
+  return `Before the following work, use the native shell tool once to run exactly: while [ ! -f '${release}' ]; do sleep 0.1; done. `
+    + `This reads an owner-controlled fixture; do not create or modify it, and do not finish before the command returns. Then ${work}`
+}
+
 async function startedBranches({ pool, runId, nodeIds, runs, publicationChanged }: Eng03NativeControl) {
   const deadline = Date.now() + 120_000
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -106,16 +111,22 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     let interruptedExecutionId = ''
     let originalBranches: Array<{ execution_id: string; native_session_id: string }> = []
     const result = await runEng03NativeScenario('E03-L02', 'codex', 'codex', {
+      prompts: {
+        A: waitForOwnerBeforeWork('release-native-fault', 'read the accepted Entry result. Without more tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. Finish with A-FAULT. Keep the response under 3000 characters.'),
+        B: waitForOwnerBeforeWork('release-native-fault', 'read the accepted Entry result. Without more tools or files, list n and n cubed modulo 101 for n=1 through 120, one row per n. Finish with B-FAULT. Keep the response under 3000 characters.'),
+      },
       control: async (context) => {
-        const { pool, runId, nodeIds, registry, runs, startTask } = context
+        const { pool, runId, nodeIds, projectDirectory, registry, runs, startTask } = context
         const started = await startedBranches(context)
         originalBranches = started
         interruptedExecutionId = started[0]!.execution_id
-        await registry.closeOwner(`execution:${interruptedExecutionId}`)
-        await startTask.catch(() => undefined)
-        expect((await runs.get(runId))?.outcome).toBe('failed')
-        expect((await pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2',
-          [runId, nodeIds[3]])).rowCount).toBe(0)
+        try {
+          await registry.closeOwner(`execution:${interruptedExecutionId}`)
+          await startTask.catch(() => undefined)
+          expect((await runs.get(runId))?.outcome).toBe('failed')
+          expect((await pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2',
+            [runId, nodeIds[3]])).rowCount).toBe(0)
+        } finally { await writeFile(join(projectDirectory, 'release-native-fault'), 'release') }
       },
     })
     const artifact = JSON.parse(await readFile(result.artifactPath, 'utf8')) as {
@@ -296,8 +307,8 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             'This is a task-owned output path outside your project.',
             'Wait for the User approval, finish the command, and end with A-APPROVED.',
           ].join(' '),
-            B: 'Read the accepted Entry result. Without tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. End with B-PROGRESSED.' },
-          control: async ({ pool, runId, nodeIds, runs, approvals, interactions, budgets, engine, startTask }) => {
+            B: waitForOwnerBeforeWork('release-approval-sibling', 'read the accepted Entry result. Without more tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. End with B-PROGRESSED.') },
+          control: async ({ pool, runId, nodeIds, projectDirectory, runs, approvals, interactions, budgets, engine, startTask }) => {
             const controlStarted = Date.now()
             const progress = (stage: string) => process.stdout.write(`ENG03 A01 progress ${JSON.stringify({
               runId, stage, elapsedMs: Date.now() - controlStarted,
@@ -320,7 +331,10 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
                 const sibling = (await readCurrentExecutions(runs, runId)).find((item) => item.workflowNodeId === nodeIds[2])
                 const nativeStarted = (await pool.query(`select 1 from harness_native_events where execution_id=$1
                   and record->>'type'='turn.started' limit 1`, [sibling?.id ?? ''])).rowCount === 1
-                if (nativeStarted && sibling?.state !== 'completed') siblingActiveAtWait = true
+                if (pending.graphInterruptId && nativeStarted && sibling?.state !== 'completed' && !siblingActiveAtWait) {
+                  siblingActiveAtWait = true
+                  await writeFile(join(projectDirectory, 'release-approval-sibling'), 'release')
+                }
                 if (pending.graphInterruptId && (await runs.get(runId))?.executionState === 'waiting'
                   && sibling?.result?.outcome === 'succeeded') break
               }
