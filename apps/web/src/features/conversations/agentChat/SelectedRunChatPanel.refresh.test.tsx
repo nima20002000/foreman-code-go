@@ -30,7 +30,13 @@ describe('Selected Run execution discovery refresh', () => {
   it('continues missing-execution discovery after a transient service failure', async () => {
     const source = installSelectedHandlers()
     let reads = 0
-    server.use(http.get(selectedRoute, () => {
+    const executionReads: string[] = []
+    server.use(http.get(selectedRoute, ({ request }) => {
+      const executionId = new URL(request.url).searchParams.get('executionId')
+      if (executionId) {
+        executionReads.push(executionId)
+        return HttpResponse.json(envelope(source.states.get('run-a')!))
+      }
       reads++
       if (reads === 1) return missing('run-a')
       if (reads === 2) return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Try again' } }, { status: 503 })
@@ -43,6 +49,9 @@ describe('Selected Run execution discovery refresh', () => {
     await screen.findByText('Load failed')
     await tick()
     await screen.findByText('Reply execution-run-a')
+    expect(reads).toBe(3)
+    expect(executionReads).toEqual(['execution-run-a'])
+    await tick()
     expect(reads).toBe(3)
     expect(mounted.router.history.location.href).toBe(href)
     expect(source.current.calls).toHaveLength(0)

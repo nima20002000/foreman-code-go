@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { CURRENT_WORKFLOW_ROUTES, CurrentManagedWorkflowSchema, CurrentWorkflowReadResultSchema } from '@graphql/contracts/wave25'
 import { ApiClient, ApiError } from '../../../shared/api/client'
 import { fixture } from './core.cases'
 import { discardMeaningfulChanges } from './model'
@@ -12,13 +13,22 @@ async function rejectedSave() {
   const initial = fixture()
   const client = new ApiClient()
   const request = vi.spyOn(client, 'request')
-  // Derive the real saved route instead of relying on a legacy draft endpoint.
-  const { CURRENT_WORKFLOW_ROUTES } = await import('@graphql/contracts/wave25')
+  const graph = initial.draft.graph
+  const saved = CurrentWorkflowReadResultSchema.parse({ workspaceId: graph.workspaceId, workflowId: graph.id,
+    revision: 7, currentVersionId: 'workflow-version-1', version: {
+      id: 'workflow-version-1', workspaceId: graph.workspaceId, workflowId: graph.id, version: graph.version,
+      definition: graph, entryNodeId: graph.entryNodeId, approval: graph.approval, executionSemanticsVersion: 3,
+      agentConfigurationVersionIds: Object.fromEntries(initial.agents.map(({ agent }) =>
+        [agent.id, agent.configurationVersionId])),
+      contentHash: `sha256:${'b'.repeat(64)}`, createdAt: initial.draft.updatedAt,
+    } })
+  const managed = CurrentManagedWorkflowSchema.parse({ revision: saved.revision,
+    currentVersionId: saved.currentVersionId, workflow: graph, archivedAt: null })
   const savedPath = CURRENT_WORKFLOW_ROUTES.saved.replace(':workspaceId', 'workspace').replace(':workflowId', 'workflow')
   request.mockImplementation(async (path, _schema, options) => {
     if (options?.method === 'PUT') throw new ApiError({ code: 'LOCATION_REVISION_CONFLICT', message: 'Location changed.' }, 409)
-    if (path === savedPath) return { revision: 7, currentVersionId: 'workflow-version-1', version: { definition: initial.draft.graph } } as never
-    if (path.endsWith('/workflows/workflow')) return { revision: 7, currentVersionId: 'workflow-version-1', workflow: initial.draft.graph } as never
+    if (path === savedPath) return saved as never
+    if (path.endsWith('/workflows/workflow')) return managed as never
     return { locationRevision: 1 } as never
   })
   vi.spyOn(client, 'listManagedAgents').mockResolvedValue({ items: initial.agents, pageInfo: { nextCursor: null } })

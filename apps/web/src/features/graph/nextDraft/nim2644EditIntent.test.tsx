@@ -404,6 +404,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
   })
   it.each([[true, false], [true, true], [false, false], [false, true]])('FE-003 topology Discard: dropped reply=%s, newer edits=%s', async (dropped, newer) => {
     const context = repairFixture()
+    vi.mocked(nextDraftApi.context).mockResolvedValue(context)
     useGraphDraftStore.getState().installNextDraft(key, context, true)
     let persisted = empty, visible = empty
     vi.mocked(nextDraftApi.editRead).mockImplementation(async () => visible)
