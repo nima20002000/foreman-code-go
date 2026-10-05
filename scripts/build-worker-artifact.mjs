@@ -22,7 +22,7 @@ const commit = execFileSync('git', ['rev-parse', requestedCommit ? `${requestedC
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const allowedApiModules = new Set(JSON.parse(execFileSync('git', ['show', `${commit}:scripts/worker-api-allowlist.json`], { cwd: root, encoding: 'utf8' })));
 const snapshot = new Map();
-const verificationScripts = ['scripts/verify-repository.mjs', 'scripts/verification-reports.mjs', 'scripts/integration-process.mjs'];
+const verificationScripts = ['scripts/verification-runner.mjs', 'scripts/verify-repository.mjs', 'scripts/verification-reports.mjs', 'scripts/integration-process.mjs'];
 const forbiddenApiModule = path => /^apps\/api\/src\/(?:server|app|production)\.ts$/.test(path) || /^apps\/api\/src\/(?:infrastructure\/(?:db|database)|(?:db|migrations|bootstrap)\/)/.test(path);
 if ([...allowedApiModules].some(path => !path.startsWith('apps/api/src/') || forbiddenApiModule(path))) throw new Error('Invalid worker API allowlist');
 function snapshotSource(path) {

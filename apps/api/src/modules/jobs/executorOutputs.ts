@@ -84,6 +84,7 @@ export function verificationRepositoryContext(input: {
   measurement: JobVerificationRuntimeMeasurement
   preseedFacts: unknown
   gitMounts: VerifiedJobGitMounts
+  requiredPortions: z.infer<typeof import('@foreman-code/contracts/job-verification-runtime').JobVerificationRepositoryContextSchema>['requiredPortions']
 }) {
   const execution = VerificationJobExecutionSchema.parse(input.execution)
   const measured = JobVerificationRuntimeMeasurementSchema.parse(input.measurement)
@@ -117,7 +118,7 @@ export function verificationRepositoryContext(input: {
   if (spec.verification.suite === 'unit' && (!codex || codex.executable !== '/opt/graphql-ci/tools/codex')) {
     throw new Error('Unit verification requires its qualified image Codex schema binary.')
   }
-  return { identity, privateGit,
+  return { identity, privateGit, requiredPortions: input.requiredPortions,
     ...(codex ? { unitCodex: { executable: codex.executable, version: codex.version,
       binarySha256: codex.binarySha256 } } : {}), executionTimeoutMs: spec.policy.executionTimeoutMs,
     cancellationTimeoutMs: spec.policy.cancellationGraceMs, qualifiedUnitWorkers: Math.min(suite.maxUnitWorkers, JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers),

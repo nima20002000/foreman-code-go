@@ -12,7 +12,7 @@ export async function observeVerificationRuntime({ ownerSentinelPaths, tools = [
   }
   await mkdir('/job-scratch/tmp', { recursive: true, mode: 0o700 });
   const execution = async directory => {
-    const path = `${directory}/qualification-${randomUUID, createHash()}`;
+    const path = `${directory}/qualification-${randomUUID()}`;
     await writeFile(path, '#!/bin/sh\nexit 0\n', { mode: 0o700, flag: 'wx' });
     try {
       const result = spawnSync(path, [], { stdio: 'ignore', timeout: 5000 });

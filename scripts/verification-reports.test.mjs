@@ -29,6 +29,7 @@ function context(suite = 'unit') {
       approvalExpiresAt: '2026-10-05T13:00:00.000Z', qualificationExpiresAt: '2026-10-05T13:00:00.000Z' },
   }, privateGit: { sourceCommit: 'b'.repeat(40), generatedCommit: 'c'.repeat(40),
     repositoryReceiptDigest: digest, configDigest: digest, indexDigest: digest },
+  requiredPortions: [{ key: 'root:install', kind: 'command' }],
   mutableDirectory: '/mutable', storeDirectory: '/mutable/store', preseedReceipt: {}, qualifiedUnitWorkers: 1, executionTimeoutMs: 2000, cancellationTimeoutMs: 200,
   limits: { summaryBytes: 16384, junitBytes: 1024 * 1024, vitestBytes: 1024 * 1024,
     logsArchiveBytes: 65536, logBytes: 8192 } }
@@ -50,7 +51,8 @@ test('ordinary suites run their full root commands', () => {
   for (const [suite, script] of [['typecheck', 'typecheck'], ['lint', 'lint'], ['unit', 'test'], ['build', 'build']]) {
     assert.deepEqual(verificationCommand(context(suite)), ['corepack', 'pnpm', script])
   }
-  const install = { ...context('install'), storeDirectory: '/mutable/store', mutableDirectory: '/mutable',
+  const install = { ...context('install'), storeDirectory: '/mutable/store', requiredPortions: [{ key: 'root:install', kind: 'command' }],
+  mutableDirectory: '/mutable',
     preseedReceipt: {} }
   assert.deepEqual(verificationCommand(install), ['corepack', 'pnpm', 'install', '--frozen-lockfile',
     '--offline', '--prod=false', '--store-dir', '/mutable/store'])
@@ -66,7 +68,8 @@ test('missing policy inputs, excessive workers and report reservations fail clos
   tooLarge.identity.resources.reportBytes = 1024
   assert.throws(() => validateVerificationContext(tooLarge), /reservation/)
   assert.throws(() => verificationCommand({ ...context('install'), storeDirectory: undefined }), /private store/)
-  assert.throws(() => verificationCommand({ ...context('install'), mutableDirectory: '/mutable',
+  assert.throws(() => verificationCommand({ ...context('install'), requiredPortions: [{ key: 'root:install', kind: 'command' }],
+  mutableDirectory: '/mutable',
     storeDirectory: '/owner/store', preseedReceipt: {} }), /inside the Job/)
 })
 
@@ -136,7 +139,7 @@ test('finalization emits contract-valid summary, JUnit, Vitest JSON and a binary
   const f = fixture()
   try {
     receipt(f.directory, 'apps/api:build')
-    const configuration = context('build')
+    const configuration = { ...context('build'), requiredPortions: [{ key: 'apps/api:build', kind: 'command' }] }
     const summary = finalizeVerification(configuration, { root: f.root, directory: f.directory,
       state: { startedAt: new Date(Date.now() - 1000).toISOString(), expected: [{ key: 'apps/api:build', kind: 'command' }] },
       terminalOutcome: 'passed', processStopped: true })
@@ -225,7 +228,7 @@ test('an already cancelled request never starts its command', async () => {
 
 test('unit inventory includes all package runners and both web/root smoke commands', () => {
   const portions = expectedPortions('/unused', 'unit')
-  assert.deepEqual(portions.map(({ key }) => key), ['root:install', 'packages/contracts:test', 'apps/api:test',
+  assert.deepEqual(portions.map(({ key }) => key), ['root:install', 'root:worker-artifact', 'packages/contracts:test', 'apps/api:test',
     'apps/web:test:unit', 'apps/web:test:run-graph-smoke', 'apps/worker:test', 'root:test:scripts'])
 })
 

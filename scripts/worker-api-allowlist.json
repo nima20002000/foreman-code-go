@@ -82,6 +82,7 @@
   "apps/api/src/modules/harnesses/responseAvailability.ts",
   "apps/api/src/modules/harnesses/secrets.ts",
   "apps/api/src/modules/interactions/runtimePorts.ts",
+  "apps/api/src/modules/jobs/digest.ts",
   "apps/api/src/modules/jobs/executor.ts",
   "apps/api/src/modules/jobs/executorContainerOwner.ts",
   "apps/api/src/modules/jobs/executorHandler.ts",

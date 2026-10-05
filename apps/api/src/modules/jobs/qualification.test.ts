@@ -80,7 +80,7 @@ describe('offline verification launch validation with structured physical observ
         indexDigest: digest, mountpoint: filesystem },
       scheduler: { directory: join(parent, 'job-heavy-jobs'), filesystem }, receiptDigest: digest,
     }
-    const context = verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts, gitMounts })
+    const context = verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts, gitMounts, requiredPortions: [{ key: 'root:install', kind: 'command' }] })
     expect(context.identity).toMatchObject({ executionId: execution.id, attemptId: execution.attemptId,
       commit: f.spec.source.commit, profile: f.spec.profile, resources: f.spec.verification.resources })
     expect(context.qualifiedUnitWorkers).toBe(1)
@@ -88,12 +88,12 @@ describe('offline verification launch validation with structured physical observ
     expect(context.privateGit).toMatchObject({ generatedCommit: '4'.repeat(40), sourceCommit: spec.source.commit })
     expect(context.limits).toEqual({ summaryBytes: 1024, junitBytes: 1024, vitestBytes: 1024,
       logsArchiveBytes: 1024, logBytes: 1024 })
-    expect(() => verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts: null, gitMounts })).toThrow()
+    expect(() => verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts: null, gitMounts, requiredPortions: [{ key: 'root:install', kind: 'command' }] })).toThrow()
     expect(() => verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts,
-      gitMounts: { ...gitMounts, git: { ...gitMounts.git, sourceCommit: '0'.repeat(40) } } })).toThrow('Git/scheduler')
+      requiredPortions: [{ key: 'root:install', kind: 'command' }], gitMounts: { ...gitMounts, git: { ...gitMounts.git, sourceCommit: '0'.repeat(40) } } })).toThrow('Git/scheduler')
     expect(() => verificationRepositoryContext({ execution: { ...execution,
       acceptedSpec: { ...execution.acceptedSpec, outputs: execution.acceptedSpec.outputs.slice(0, 1) } },
-      measurement: f.measurement, preseedFacts, gitMounts })).toThrow('every fixed')
+      measurement: f.measurement, preseedFacts, gitMounts, requiredPortions: [{ key: 'root:install', kind: 'command' }] })).toThrow('every fixed')
   })
   it('denies host namespace, executable control temp, shared memory overflow and owner-home visibility', () => {
     const { resources } = verificationFixture()
