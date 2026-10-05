@@ -80,8 +80,8 @@ export function ownedEvents(events: AsyncIterable<NativeHarnessEvent>, guard: Le
   return observeEvents(events, ownedSignal, guard)
 }
 
-function observeEvents(events: AsyncIterable<NativeHarnessEvent>, signal: AbortSignal,
-  guard?: LeaseGuard): AsyncIterable<NativeHarnessEvent> {
+function observeEvents<T>(events: AsyncIterable<T>, signal: AbortSignal,
+  guard?: LeaseGuard): AsyncIterable<T> {
   const observer = new AbortController()
   const observedSignal = AbortSignal.any([signal, observer.signal])
   const reader = read()
@@ -96,7 +96,7 @@ function observeEvents(events: AsyncIterable<NativeHarnessEvent>, signal: AbortS
     }),
   }
 
-  async function* read(): AsyncGenerator<NativeHarnessEvent, void> {
+  async function* read(): AsyncGenerator<T, void> {
     const iterator = events[Symbol.asyncIterator]()
     let count = 0
     try {
@@ -434,7 +434,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       this.active.set(session.nativeSessionId, lease)
       await lease.guard.check()
       submitted = true
-      for await (const batch of batches(ownedEvents(this.manager.startTurn(session, {
+      const events = this.manager.startTurn(session, {
         ...input,
         onMessageSubmitted: async (receipt) => {
           await lease.guard.check()
@@ -459,7 +459,10 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
           await input.onSubmitted?.(providerId)
           await lease.guard.check()
         },
-      }, lease.guard.signal), lease.guard))) {
+      }, lease.guard.signal)
+      const observed = observeEvents(events, lease.guard.signal)
+      // Database lease checks fence batches without consuming their provider flush interval.
+      for await (const batch of observeEvents(batches(observed), lease.guard.signal, lease.guard)) {
         await lease.guard.check()
         for (const event of batch) evidence.observeEvent(event)
         this.observeEvidence(evidence.snapshot(), lease)
