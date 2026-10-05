@@ -71,6 +71,16 @@ describe('separate Codex native output group alongside scoped App MCP', () => {
     } finally { await f.manager.dispose() }
   })
 
+  it('detects the recorded legacy MCP entry through named configuration reads', async () => {
+    const f = await fixture()
+    try {
+      const detection = await f.manager.inspectMcp()
+      assert.equal(detection.serverName, 'graphql')
+      assert.equal(detection.state, 'status_unavailable')
+      assert.equal(detection.endpointMatches, true)
+    } finally { await f.manager.dispose() }
+  })
+
   it('reconciles an observed terminal after output cleanup closes its provider without starting a replacement', async () => {
     const f = await fixture()
     try {

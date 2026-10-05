@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { HarnessExecutionSchema, DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type HarnessExecution } from '@foreman-code/contracts'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
@@ -11,6 +11,12 @@ import { bindRepeatNodeInput, repeatDigest, repeatExecutionIdentity, repeatSlotI
 import { workflowNativeReservation, type WorkflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
 import { currentUnitSnapshot, currentUnitRunRow, currentUnitVersionRow, currentUnitConfigurationRows,
   type CurrentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
+
+// These local-owner cases use the real closure reader; remote retention is a separate domain boundary.
+vi.mock('../src/modules/interactions/retainedRemoteReviewer.js', () => ({
+  readRetainedRemoteReviewer: async () => undefined,
+  retainRemoteReviewerCredential: async () => { throw new Error('Local settlement cannot retain a remote credential') },
+}))
 
 /** A scripted pg-shaped transaction, NOT a PostgreSQL/native integration test.
  * It executes the real settlement and readWorkflowClosure functions. Unknown
