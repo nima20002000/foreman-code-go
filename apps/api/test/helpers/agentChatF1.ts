@@ -3,6 +3,7 @@ import type pg from 'pg'
 import type { AgentConfigurationVersion, AgentHarness, ExecutionResult, Message, NativeSessionReference } from '@foreman-code/contracts'
 import type { AgentChatContext, AgentChatTurn, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { AgentConfigurationVersion, ExecutionResult, Message, NativeSessionReference, SessionControlState } from '@foreman-code/contracts'
 import { AgentChatService } from '../../src/modules/conversations/agentChat.js'
 import { agentChatKey, type AgentConversationRow, PostgresAgentChatRepository } from '../../src/modules/conversations/agentChatRepository.js'
 import type { OperatorActivityChange } from '../../src/modules/conversations/operatorActivity.js'
@@ -58,6 +59,7 @@ export class F1Store {
   }
   readonly turns = new Map<string, Receipt>()
   readonly messages = new Map<string, Message>()
+  readonly sessionControls = new Map<string, SessionControlState>()
   readonly publications: Array<{ binding: string; owner_principal_id: string; request_id: string; file_id: string; revision_id: string }> = []
   readonly allocations: Array<{ owner_principal_id: string; request_id: string; file_id: string; revision_id: string; state: string }> = []
   readonly files = new Map<string, { owner_principal_id: string; activity_record_revision: string; state: string }>()
@@ -93,6 +95,17 @@ export class F1Store {
         grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [])
     }
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    if (sql === 'select record from conversation_session_controls where conversation_id=$1'
+      || sql === 'select record from conversation_session_controls where conversation_id=$1 for update') {
+      const record = this.sessionControls.get(String(values[0]))
+      return result(record ? [{ record }] : [])
+    }
+    if (sql === 'update conversation_session_controls set record=$2::jsonb where conversation_id=$1') {
+      const conversationId = String(values[0])
+      if (!this.sessionControls.has(conversationId)) return result()
+      this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
+      return result([], 1)
+    }
     if (sql.startsWith('with candidates as materialized ( select r.principal_id,r.operation,r.command_id')) return result() // No accepted controls in this fixture.
     if (sql.startsWith('select a.conversation_id,a.request_id,a.activity_id,a.source_provenance')) {
       assert.equal(values[0], 'agent')
