@@ -9,12 +9,12 @@ import { readInstalledWorkflowConfiguration,
   type InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { discoverInstalledClaudeSdk, installedClaudeSdkEntrypoint } from './claudeSdk/currentPin.js'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
-import type { TargetEnvironment } from './hostDiscovery.js'
+import type { TargetEnvironment, LauncherEvidence } from './hostDiscovery.js'
 
 export interface InstalledClaudeTarget {
   binding: DeviceSessionBinding
   target: HostHarnessOverride['target']
-  installation: HostHarnessInstallationDto
+  installation: HostHarnessInstallationDto & { launcher: LauncherEvidence }
   sdk: ReturnType<typeof installedClaudeSdkEntrypoint>
 }
 
@@ -52,7 +52,7 @@ export async function inspectInstalledClaude(input: {
     || !isDeepStrictEqual(binding, input.binding) || environment.generation !== generation()) {
     throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed Claude SDK changed during inspection.', 409)
   }
-  const installation: HostHarnessInstallationDto = {
+  const installation: InstalledClaudeTarget['installation'] = {
     hostRef, harnessInstallationId, installationFingerprint: after.launcher.fingerprint,
     driverId: 'claude', driverRevision: '1', protocolRevision: after.declaration.protocolRevision,
     environmentGeneration: environment.generation, connectionGeneration: harnessConnectionGeneration(binding),

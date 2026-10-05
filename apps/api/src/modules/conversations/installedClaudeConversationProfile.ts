@@ -46,7 +46,7 @@ export function createInstalledClaudeConversationProfile(input: {
       || !isDeepStrictEqual(facts.override.target, binding.profile.target)
       || facts.override.instanceId !== binding.profile.instanceId
       || facts.override.instanceRevision !== binding.profile.instanceRevision
-      || !isDeepStrictEqual(withAdvancedDefaults(facts.override.configuration), withAdvancedDefaults(configuration.harness))) unavailable()
+      || !isDeepStrictEqual(withAdvancedDefaults(facts.override.configuration), withAdvancedDefaults(configuration.harness))) return unavailable()
     for (const field of ['driverId', 'driverRevision', 'protocolRevision', 'environmentGeneration', 'connectionGeneration'] as const) {
       if (facts.installation[field] !== after.installation[field]) unavailable()
     }

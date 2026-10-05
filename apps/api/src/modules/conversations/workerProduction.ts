@@ -16,6 +16,7 @@ import type { HarnessQualificationRepository } from '../harnesses/qualification/
 import type { AcceptedHarnessProfileAdmission } from '../harnesses/instanceSettings/acceptedProfile.js'
 import type { ClaudeProfileOwner } from '../harnesses/claudeSdk/production.js'
 import { PostgresClaudeInteractionAuthority } from '../harnesses/claudeSdk/domainAuthority.js'
+import type { ClaudeCallbackIdentity } from '../harnesses/claudeSdk/interactions.js'
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
 import type { PostgresAgentChatRepository } from './agentChatRepository.js'
 import { nativeCorrelation } from './operatorChatRepository.js'
@@ -211,12 +212,18 @@ export function createProductionWorkerConversations(input: {
               && context.nativeSessionId === sessionId && context.toolUseId === toolUseId ? context : undefined,
           })
           if (request.phase === 'admission') return authority.callbackAdmission()
-          if (request.phase === 'pending') await authority.publishPending(request.identity, request.pending)
-          else if (request.phase === 'response') await authority.validateResponse(request.identity, {
+          const { nativeTurnId, nativeRequestId, nativeRequestType, ...required } = request.identity
+          const identity: ClaudeCallbackIdentity = { ...required,
+            ...(nativeTurnId !== undefined ? { nativeTurnId } : {}),
+            ...(nativeRequestId !== undefined ? { nativeRequestId } : {}),
+            ...(nativeRequestType !== undefined ? { nativeRequestType } : {}),
+          }
+          if (request.phase === 'pending') await authority.publishPending(identity, request.pending)
+          else if (request.phase === 'response') await authority.validateResponse(identity, {
             outcome: request.answer.outcome,
             ...(request.answer.reason !== undefined ? { reason: request.answer.reason } : {}),
           })
-          else await authority.validate(request.identity)
+          else await authority.validate(identity)
           effectSignal.throwIfAborted()
           return { authorized: true }
         } } : {}),

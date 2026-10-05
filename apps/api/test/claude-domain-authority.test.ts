@@ -62,11 +62,12 @@ async function offered(f: ReturnType<typeof fixture>) {
 
 it.each(['operator', 'agent'] as const)('publishes an owned worker %s callback through the existing pending record', async kind => {
   const f = fixture(kind)
+  const request = { toolName: 'Read', input: { path: 'selected-file' }, nativeMessageId: identity.nativeMessageId,
+    toolUseId: identity.toolUseId, generation: identity.generation, attemptId: identity.attemptId }
   const pending = PendingNativeInteractionSchema.parse({ session,
     turn: { nativeMessageId: identity.nativeMessageId, nativeRequestId: identity.nativeRequestId },
     nativeRequestType: identity.nativeRequestType,
-    request: { toolName: 'Read', input: { path: 'selected-file' }, nativeMessageId: identity.nativeMessageId,
-      toolUseId: identity.toolUseId, generation: identity.generation, attemptId: identity.attemptId },
+    request,
     responseOptions: [{ optionId: 'allow_once', semantic: 'approve_once', label: 'Allow once', persistence: 'request',
       affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }] })
   expect(f.bridge.pendingInteractions(session)).toHaveLength(0)
@@ -74,7 +75,7 @@ it.each(['operator', 'agent'] as const)('publishes an owned worker %s callback t
   expect(f.row.pending_interaction).toEqual(pending)
   expect(f.bridge.pendingInteractions(session)).toHaveLength(0)
   await expect(f.authority.publishPending(identity, { ...pending,
-    request: { ...pending.request, generation: 'another-query' } })).rejects.toMatchObject({ code: 'CLAUDE_CALLBACK_SCOPE_DENIED' })
+    request: { ...request, generation: 'another-query' } })).rejects.toMatchObject({ code: 'CLAUDE_CALLBACK_SCOPE_DENIED' })
   expect(f.row.pending_interaction).toEqual(pending)
   f.principals.get('sender')!.grants[0]!.actions = [kind === 'operator' ? 'operator_chat:read' : 'agent_chat:read']
   await expect(f.authority.publishPending(identity, pending)).rejects.toMatchObject({ status: 403 })
