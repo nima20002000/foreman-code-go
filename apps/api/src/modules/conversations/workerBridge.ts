@@ -112,8 +112,12 @@ export class MainWorkerConversationBridge {
           && previous.nativeTurnId !== callback.identity.nativeTurnId
           || previous?.nativeSubmission && callback.identity.nativeSubmission
             && !isDeepStrictEqual(previous.nativeSubmission, callback.identity.nativeSubmission)) denied()
-        await admission.callbacks.submitted(callback.correlationId, callback.identity)
-        admission.identities.set(callback.correlationId, { ...previous, ...callback.identity })
+        const identity: Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'> = {
+          ...(callback.identity.nativeTurnId !== undefined ? { nativeTurnId: callback.identity.nativeTurnId } : {}),
+          ...(callback.identity.nativeSubmission !== undefined ? { nativeSubmission: callback.identity.nativeSubmission } : {}),
+        }
+        await admission.callbacks.submitted(callback.correlationId, identity)
+        admission.identities.set(callback.correlationId, { ...previous, ...identity })
       }
       await this.current(admission, callback.binding, connection, signal)
       return { acknowledged: true }

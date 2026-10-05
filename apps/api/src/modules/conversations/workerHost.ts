@@ -287,7 +287,10 @@ export class WorkerConversationHost {
         || request.inspection.workingDirectory !== request.binding.workingDirectory || !resident.allocation.inspector) {
         unavailable('The native MCP inspector does not address this selected worker profile.')
       }
-      return resident.allocation.inspector.inspect({ ...request.inspection, signal })
+      return resident.allocation.inspector.inspect({ harness: request.inspection.harness,
+        runnerId: request.inspection.runnerId, workingDirectory: request.inspection.workingDirectory,
+        serverName: request.inspection.serverName,
+        ...(request.inspection.phase ? { phase: request.inspection.phase } : {}), signal })
     }
     if (request.method === 'conversation.open') return this.open(request, connection, signal)
     if (request.method === 'conversation.capabilities' || request.method === 'conversation.inspect-mcp') {

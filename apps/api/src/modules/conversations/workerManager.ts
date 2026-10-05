@@ -134,11 +134,31 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   async inspectMcp(signal?: AbortSignal) {
     return McpDetectionSchema.parse(await this.request({ method: 'conversation.inspect-mcp', configuration: this.options.configuration }, signal))
   }
-  readonly inspector: NativeMcpInspector = { inspect: async input => WorkerMcpInspectionSchema.parse(await this.request({
+  readonly inspector: NativeMcpInspector = { inspect: async input => {
+    const value = WorkerMcpInspectionSchema.parse(await this.request({
     method: 'conversation.inspect-entry', configuration: this.options.configuration,
     inspection: { harness: input.harness, runnerId: input.runnerId, workingDirectory: input.workingDirectory,
       serverName: input.serverName, ...(input.phase ? { phase: input.phase } : {}) },
-  }, input.signal)) }
+    }, input.signal))
+    const entry = value.entry
+    return { harness: value.harness, providerVersion: value.providerVersion, runnerId: value.runnerId,
+      workingDirectory: value.workingDirectory, inspectedAt: value.inspectedAt,
+      ...(value.generation !== undefined ? { generation: value.generation } : {}),
+      ...(value.authorizationScope !== undefined ? { authorizationScope: value.authorizationScope } : {}),
+      ...(entry ? { entry: { name: entry.name, transport: entry.transport,
+        ...(entry.automaticEndpoint !== undefined ? { automaticEndpoint: entry.automaticEndpoint } : {}),
+        ...(entry.endpoint !== undefined ? { endpoint: entry.endpoint } : {}),
+        ...(entry.enabled !== undefined ? { enabled: entry.enabled } : {}),
+        ...(entry.credentialEnvironmentVariable !== undefined ? { credentialEnvironmentVariable: entry.credentialEnvironmentVariable } : {}),
+        ...(entry.credentialArrangement ? { credentialArrangement: entry.credentialArrangement } : {}),
+        ...(entry.status !== undefined ? { status: entry.status } : {}),
+        ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
+        ...(entry.enabledTools ? { enabledTools: entry.enabledTools } : {}),
+        ...(entry.disabledTools ? { disabledTools: entry.disabledTools } : {}),
+        ...(entry.nativeFilterDiagnostics ? { nativeFilterDiagnostics: entry.nativeFilterDiagnostics } : {}),
+      } } : {}),
+    }
+  } }
 
   private async *stream(frame: WorkerConversationRpcRequest, input: NativeTurnInput,
     initial: NativeInitialTurnInput | undefined, signal?: AbortSignal) {
@@ -208,7 +228,25 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
       receipt: WorkerConversationReceiptSchema }).parse(await this.request({ method: 'conversation.history', session, ...fields }, signal))
     this.adopt(value)
     this.context = value.context
-    return value.history
+    const history = value.history
+    return { events: history.events, pendingInteractions: history.pendingInteractions,
+      ...(history.correlationId !== undefined ? { correlationId: history.correlationId } : {}),
+      ...(history.nativeTurnId !== undefined ? { nativeTurnId: history.nativeTurnId } : {}),
+      ...(history.nativeMessageId !== undefined ? { nativeMessageId: history.nativeMessageId } : {}),
+      ...(history.nativeSubmission !== undefined ? { nativeSubmission: history.nativeSubmission } : {}),
+      ...(history.nextCursor !== undefined ? { nextCursor: history.nextCursor } : {}),
+      ...(history.firstRetainedSequence !== undefined ? { firstRetainedSequence: history.firstRetainedSequence } : {}),
+      ...(history.nextSequence !== undefined ? { nextSequence: history.nextSequence } : {}),
+      ...(history.pendingInteraction !== undefined ? { pendingInteraction: history.pendingInteraction } : {}),
+      ...(history.terminalResult !== undefined ? { terminalResult: history.terminalResult } : {}),
+      ...(history.terminalTurn !== undefined ? { terminalTurn: history.terminalTurn } : {}),
+      ...(history.interactionDeliveries ? { interactionDeliveries: history.interactionDeliveries.map(delivery => ({
+        nativeRequestId: delivery.nativeRequestId, state: delivery.state,
+        ...(delivery.selectedOptionId !== undefined ? { selectedOptionId: delivery.selectedOptionId } : {}),
+      })) } : {}),
+      ...(history.responseDeliveries ? { responseDeliveries: history.responseDeliveries } : {}),
+      ...(history.canceledRequestIds ? { canceledRequestIds: history.canceledRequestIds } : {}),
+    }
   }
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal) {
     return this.readHistory(session, { correlationId }, signal)

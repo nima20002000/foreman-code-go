@@ -5,7 +5,7 @@ import { NativeMessageSubmissionSchema } from './claude.js'
 import {
   AgentConfigurationVersionSchema, OperatorConfigurationVersionSchema, AgentHarnessSchema,
   NativeSessionReferenceSchema, NativeHarnessEventSchema, PendingNativeInteractionSchema,
-  ExecutionResultSchema, ApprovalResponseOptionSchema,
+  ExecutionResultSchema, ApprovalResponseOptionSchema, ApprovalResponseSemanticSchema,
 } from './index.js'
 import { RemoteNativeIdentitySchema } from './remoteExecution.js'
 import { CompactionStateSchema, SessionModeSchema, SessionPreferencesSchema } from './sessionControls.js'
@@ -70,6 +70,13 @@ export const WorkerConversationHistorySchema = z.object({
   pendingInteraction: z.lazy(() => PendingNativeInteractionSchema).optional(),
   terminalResult: z.lazy(() => ExecutionResultSchema).optional(),
   terminalTurn: z.object({ correlationId: id, providerId: id, result: z.lazy(() => ExecutionResultSchema) }).optional(),
+  interactionDeliveries: z.array(z.object({ nativeRequestId: id,
+    state: z.enum(['pending', 'submitting', 'submitted', 'uncertain']), selectedOptionId: id.optional() }).strict()).optional(),
+  responseDeliveries: z.array(z.object({ source: z.enum(['provider_acknowledgement', 'provider_history']),
+    harness: z.lazy(() => AgentHarnessSchema), providerVersion: id, nativeSessionId: id,
+    nativeRequestId: id, nativeRequestType: id, optionId: id,
+    semantic: z.lazy(() => ApprovalResponseSemanticSchema) }).strict()).optional(),
+  canceledRequestIds: z.array(id).optional(),
 }).passthrough()
 
 const binding = { binding: WorkerConversationBindingSchema, admissionId: z.uuid().optional() }
