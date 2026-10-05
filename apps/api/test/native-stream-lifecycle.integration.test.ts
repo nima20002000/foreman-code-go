@@ -59,6 +59,14 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
         if (expiredExecutionId || record.original.type !== 'event'
           || record.original.event.type !== 'native.notification') return
         expiredExecutionId = record.execution.executionId
+        const published = await sql.query<{ count: number }>(
+          `select count(*)::int as count from harness_native_events
+           where execution_id=$1 and record->>'type'='native.notification'`, [expiredExecutionId])
+        const retained = await sql.query<{ count: number }>(
+          `select count(*)::int as count from workflow_native_proofs
+           where execution_id=$1 and record#>>'{original,event,type}'='native.notification'`, [expiredExecutionId])
+        expect(published.rows[0]?.count).toBe(16)
+        expect(retained.rows[0]?.count).toBe(16)
         await sql.query(`update native_session_lanes set record=jsonb_set(record,'{leaseExpiresAt}',
           to_jsonb((clock_timestamp()-interval '1 second')::text)) where id=$1`, [record.lane!.id])
       },
