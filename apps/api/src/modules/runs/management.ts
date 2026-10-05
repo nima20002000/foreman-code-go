@@ -15,7 +15,8 @@ import { RunHandoffReadService } from './handoffRead.js'
 import { readCurrentRunDetails, withCurrentRunRead } from './currentRead.js'
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 import { admitRepeatRun } from './repeatStartAdmission.js'
-import { isAuthorized, requireAuthorization } from '../access/policy.js'
+import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
+import { intersectGrants } from '../access/operatorDelegation.js'
 import { authorizedPage } from '../access/authorizedPage.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
@@ -26,6 +27,20 @@ import type { CurrentRunProductionBinding, CurrentRuntimeAvailability } from './
 
 import { createScheduleDispatcher } from '../schedules/runtime.js'
 import type { WorkflowScheduleDispatcher } from '../schedules/dispatcher.js'
+
+type RunListScope = { workspaceId: string; workflowId?: string | undefined }
+type RunListInput = RunListScope & { cursor?: string | undefined; limit: number }
+
+function requireRunListScope(principal: ManagementPrincipal, scope: RunListScope): void {
+  const allowed = hasAction(principal, 'runs:read') && principal.grants.some((grant) => {
+    if (!grant.actions.includes('runs:read')) return false
+    if (grant.scope.workspaceIds && !grant.scope.workspaceIds.includes(scope.workspaceId)) return false
+    if (grant.scope.workflowIds && (scope.workflowId === undefined
+      ? grant.scope.workflowIds.length === 0 : !grant.scope.workflowIds.includes(scope.workflowId))) return false
+    return !grant.scope.runIds || grant.scope.runIds.length > 0
+  })
+  if (!allowed) throw new DomainError('ACCESS_DENIED', 'Run listing is not authorized for this scope.', 403)
+}
 
 export class RunManagementService {
   readonly subagents: RunSubagentService
@@ -79,13 +94,44 @@ export class RunManagementService {
     return visible
   }
 
-  async list(principal: ManagementPrincipal, input: { workspaceId: string; workflowId?: string | undefined; cursor?: string | undefined; limit: number }) {
+  async list(principal: ManagementPrincipal, input: RunListInput) {
+    const page = await this.listPage(principal, input)
+    const items = await Promise.all(page.items.map(({ run }) => withCurrentRunRead(this.pool, principal,
+      run.workspaceId, run.id, 'runs:read', async (_sql, snapshot, live) => this.visibleRun(live, snapshot.run))))
+    requireRunListScope(principal, input)
+    return { ...page, items }
+  }
+
+  private async listPage(principal: ManagementPrincipal, input: RunListInput) {
+    requireRunListScope(principal, input)
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const live = await readLiveManagementPrincipal(client, principal.id)
+      requireRunListScope(live, input)
+      const effective = { ...live, grants: intersectGrants(principal.grants, live.grants),
+        expiresAt: new Date(Math.min(Date.parse(principal.expiresAt), Date.parse(live.expiresAt))).toISOString() }
+      requireRunListScope(effective, input)
+      const page = await this.readListRows(client, effective, input)
+      requireRunListScope(principal, input)
+      requireRunListScope(live, input)
+      await client.query('commit')
+      return page
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  private async readListRows(client: pg.PoolClient, principal: ManagementPrincipal, input: RunListInput) {
     const scope = { workspaceId: input.workspaceId, workflowId: input.workflowId }
     const page = await authorizedPage({
       principal, action: 'runs:read', cursor: input.cursor, limit: input.limit,
       read: async (value, limit) => {
         const cursor = decodeRunHistoryCursor(scope, value)
-        const rows = (await this.pool.query<{
+        const rows = (await client.query<{
           id: string; workspace_id: string; workflow_id: string; record: unknown; admitted_at: string
         }>(`select id,workspace_id,workflow_id,record,
             to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as admitted_at
@@ -106,9 +152,7 @@ export class RunManagementService {
       id: (item) => encodeRunHistoryCursor(scope, { admittedAt: item.admittedAt, runId: item.run.id }),
       resource: ({ run }) => ({ workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id }),
     })
-    const items = await Promise.all(page.items.map(({ run }) => withCurrentRunRead(this.pool, principal,
-      run.workspaceId, run.id, 'runs:read', async (_sql, snapshot, live) => this.visibleRun(live, snapshot.run))))
-    return { ...page, items }
+    return page
   }
 
   get(principal: ManagementPrincipal, workspaceId: string, runId: string) {

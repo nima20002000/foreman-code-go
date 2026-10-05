@@ -48,12 +48,26 @@ describe('workspace Run summaries', () => {
       const remoteList = await f.client.callTool({ name: 'run_list', arguments: listInput })
       expect(remoteList.isError).not.toBe(true)
       expect(remoteList.structuredContent).toEqual(currentPage)
-      const denied = await f.access.issue({ name: 'Denied Run reader', audience: 'operator',
-        expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['runs:read'],
-          scope: { workspaceIds: ['another-workspace'] } }] })
-      expect((await f.app.inject({ method: 'GET', url: listUrl,
-        headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
-      expect((await (await f.connect(denied.token)).callTool({ name: 'run_list', arguments: listInput })).isError).toBe(true)
+      for (const scope of [{ workflowIds: [listInput.workflowId] }, { runIds: [f.f.run.id] }]) {
+        const reader = await f.access.issue({ name: 'Scoped Run reader', audience: 'operator',
+          expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['runs:read'], scope }] })
+        const http = await f.app.inject({ method: 'GET', url: listUrl,
+          headers: { authorization: `Bearer ${reader.token}` } })
+        expect(http.statusCode, http.body).toBe(200)
+        const page = SavedRunPageSchema.parse(http.json())
+        expect(page.items.map((run) => run.id)).toEqual([f.f.run.id])
+        expect(page.items[0]).not.toHaveProperty('executionLocation')
+        const remote = await (await f.connect(reader.token)).callTool({ name: 'run_list', arguments: listInput })
+        expect(remote.isError).not.toBe(true)
+        expect(remote.structuredContent).toEqual(page)
+      }
+      for (const scope of [{ workspaceIds: ['another-workspace'] }, { workflowIds: ['another-workflow'] }]) {
+        const denied = await f.access.issue({ name: 'Denied Run reader', audience: 'operator',
+          expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['runs:read'], scope }] })
+        expect((await f.app.inject({ method: 'GET', url: listUrl,
+          headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
+        expect((await (await f.connect(denied.token)).callTool({ name: 'run_list', arguments: listInput })).isError).toBe(true)
+      }
       for (const runId of historicalIds) {
         const scope = {
           workspaceId: f.f.run.workspaceId, workflowId: f.f.run.workflowId, runId,
@@ -98,6 +112,24 @@ describe('workspace Run summaries', () => {
       else expect(denial.result.isError).toBe(true)
       expect((await f.db.pool.query('select id,record from runs where id=any($1::text[]) order by id',
         [historicalIds])).rows).toEqual(records)
+    } finally {
+      await f.close()
+    }
+  }, 60000)
+
+  it('revalidates live scope grants even when the requested Run list is empty', async () => {
+    const f = await currentOperatorIntegration({ approvalNodeIds: [] })
+    try {
+      const input = { workspaceId: f.f.run.workspaceId, workflowId: 'empty-workflow', limit: 1 }
+      const reader = await f.access.issue({ name: 'Empty Run list reader', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['runs:read'],
+          scope: { workspaceIds: [input.workspaceId] } }] })
+      expect((await f.services.runs.list(reader.principal, input)).items).toEqual([])
+      await f.db.pool.query('update management_principals set grants=$2::jsonb where id=$1',
+        [reader.principal.id, JSON.stringify([{ actions: ['runs:read'], scope: { workspaceIds: ['another-workspace'] } }])])
+      await expect(f.services.runs.list(reader.principal, input)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+      await f.db.pool.query('update management_principals set revoked_at=now() where id=$1', [reader.principal.id])
+      await expect(f.services.runs.list(reader.principal, input)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
     } finally {
       await f.close()
     }
