@@ -5,7 +5,8 @@ import { ManagementActionSchema, type ManagementGrant } from '@graphql/contracts
 import {
   CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
   CurrentWorkflowReadResultSchema, SavedManagedWorkflowCommandResultSchema, makeCurrentWorkflowFixture,
-  CANONICAL_RUN_GRAPH_MCP_TOOLS, RepeatGraphSnapshotV3Schema, CurrentEditReadResultSchema, type CurrentFixtureForm,
+  CANONICAL_RUN_GRAPH_MCP_TOOLS, RepeatGraphSnapshotV3Schema, CurrentEditReadResultSchema, workflowNodeNames,
+  type CurrentFixtureForm,
 } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -332,8 +333,9 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     const t = await fixture(form), first = await save(t)
     const stage = { ...t.input, action: 'stage_edits' as const, draftId: `editor-${randomUUID()}`, commandId: randomUUID(),
       expectedRevision: first.value.revision, expectedWorkflowVersionId: first.value.currentVersionId,
+      expectedNodePresentation: workflowNodeNames(first.value.version.definition),
       graph: { ...first.value.version.definition, nodes: first.value.version.definition.nodes.map((node, index) =>
-        index === 0 ? { ...node, name: 'Staged node label' } : node) } }
+        index === 0 ? { ...node, name: 'Staged node label', initialPrompt: 'Staged execution instruction' } : node) } }
     const http = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: stage })
     expect(http.statusCode, http.body).toBe(200)
     const staged = CurrentEditReadResultSchema.parse(http.json()), intent = staged.intent!
@@ -347,6 +349,7 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     const direct = await httpSave(t, intent.saveInput)
     expect(direct.statusCode).toBe(409); expect(direct.json()).toMatchObject({ error: { code: 'GRAPH_EDIT_USE_INTENT' } })
     const layout = { ...t.input, commandId: randomUUID(), expectedRevision: first.value.revision,
+      expectedNodePresentation: workflowNodeNames(first.value.version.definition),
       expectedWorkflowVersionId: first.value.currentVersionId, graph: { ...first.value.version.definition,
         nodes: first.value.version.definition.nodes.map((node) => ({ ...node, position: { x: 103, y: 207 } })) } }
     const moved = CurrentWorkflowSaveResultSchema.parse((await httpSave(t, layout)).json())
@@ -356,7 +359,8 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     expect(remote.result?.isError).not.toBe(true)
     const finished = CurrentEditReadResultSchema.parse(graphRpcValue(remote.result))
     expect(finished.intent?.state, JSON.stringify(finished.intent?.error)).toBe('saved')
-    expect(finished.intent?.result?.version.definition.nodes[0]).toMatchObject({ name: 'Staged node label', position: { x: 103, y: 207 } })
+    expect(finished.intent?.result?.version.definition.nodes[0]).toMatchObject({ name: 'Staged node label',
+      initialPrompt: 'Staged execution instruction', position: { x: 103, y: 207 } })
     const retried = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: advance })
     expect(retried.statusCode, retried.body).toBe(200); expect(retried.json()).toEqual(finished)
     expect(await count(t, 'workflow_versions')).toBe(2)

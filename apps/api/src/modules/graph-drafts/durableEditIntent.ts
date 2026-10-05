@@ -321,8 +321,10 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
   async advance(principal: ManagementPrincipal, source: Source, raw: GraphEditAdvanceInput,
     stop: RunManagementService['stop']): Promise<EditIntentReadResult<I>> {
     const input = GraphEditAdvanceInputSchema.parse(raw)
+    this.authorize(principal, input, true)
     return this.withLease(principal.id, input.intentId, async () => {
       let intent = await this.transaction(principal, async (client, live) => {
+        this.authorize(live, input, true)
         const value = await this.load(client, live.id, input)
         this.authorizeContent(live, value, true); this.assertCommand(value, input)
         return value

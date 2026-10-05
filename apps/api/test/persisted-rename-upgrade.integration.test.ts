@@ -121,7 +121,11 @@ describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () =>
         scope: { workspaceIds: [stage.workspaceId] } }])
       expect((await restarted.inject({ method: 'POST', url: `${t.url}/edits`,
         headers: graphHeaders(denied.token), payload: advance })).statusCode).toBe(403)
-      expect((await call(CURRENT_WORKFLOW_TOOLS.edits, advance, denied.token)).result?.isError).toBe(true)
+      const deniedAdvance = await call(CURRENT_WORKFLOW_TOOLS.edits, advance, denied.token)
+      expect(deniedAdvance.result?.isError).toBe(true)
+      expect(graphRpcValue(deniedAdvance.result)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+      expect((await db.pool.query('select record from graph_edit_intents where id=$1', [intent.id])).rows[0]!.record)
+        .toEqual(JSON.parse(JSON.stringify(intent)))
       const response = await restarted.inject({ method: 'POST', url: `${t.url}/edits`,
         headers: graphHeaders(renamer.token), payload: advance })
       expect(response.statusCode, response.body).toBe(200)
