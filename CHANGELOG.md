@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.20] - 2026-10-05
+
+### Fixed
+
+- Reduce live workflow Start and reconciliation overhead by observing committed native progress, reusing validated unchanged history and projections, and reusing prepared reads on each dedicated PostgreSQL owner session.
+- Inspect named Codex MCP configuration without waiting on unrelated server status checks, while retaining configuration, credential, alias and ownership validation.
+- Retain content-free workflow, database and native timing diagnostics for investigating execution delays.
+
 ## [0.0.19] - 2026-10-05
 
 ### Fixed
