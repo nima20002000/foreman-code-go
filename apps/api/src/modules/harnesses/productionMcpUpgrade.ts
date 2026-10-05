@@ -18,6 +18,26 @@ async function existingPath(path: string) {
   }
 }
 
+async function previousInstallation(directory: string) {
+  const launcher = join(directory, 'launcher.mjs')
+  const installation = readLauncherInstallation(launcher)
+  if (!(await existingPath(directory))?.isDirectory() || !installation?.executables.length
+    || !(await existingPath(launcher))?.isFile()) {
+    throw new Error('The previous production MCP launcher has no valid managed installation record.')
+  }
+  return installation
+}
+
+async function registerPreviousLauncher(launcher: string, directory: string, alias: string): Promise<void> {
+  const installation = await previousInstallation(directory)
+  await installManagedLauncher(launcherSource, launcher)
+  await writeLauncherInstallation(launcher, {
+    version: 1,
+    executables: installation.executables,
+    launcherAliases: [alias],
+  })
+}
+
 /** Called under the production installation lock while the old API is stopped. */
 export async function upgradeProductionMcpLauncher(desktopHome: string): Promise<void> {
   const previous = join(desktopHome, '.local/state/graphql-production/mcp')
@@ -30,37 +50,23 @@ export async function upgradeProductionMcpLauncher(desktopHome: string): Promise
   if (!previousState && !retainedState) return
   if (previousState?.isSymbolicLink()) {
     const installation = readLauncherInstallation(launcher)
-    if (await realpath(previous) !== await realpath(destination)
-      || !installation?.launcherAliases?.includes(alias)) {
+    if (await realpath(previous) !== await realpath(destination)) {
       throw new Error('The previous production MCP directory is linked to an unmanaged installation.')
     }
-    await installManagedLauncher(launcherSource, launcher)
+    if (installation?.launcherAliases?.includes(alias)) {
+      await installManagedLauncher(launcherSource, launcher)
+    } else if (retainedState?.isDirectory()) {
+      await registerPreviousLauncher(launcher, retained, alias)
+    } else {
+      throw new Error('The previous production MCP directory is linked to an unmanaged installation.')
+    }
     return
   }
   if (previousState && retainedState) {
     throw new Error('Both the previous production MCP directory and its upgrade backup exist.')
   }
   const sourceDirectory = previousState ? previous : retained
-  const state = previousState ?? retainedState
-  const oldLauncher = join(sourceDirectory, 'launcher.mjs')
-  const installation = readLauncherInstallation(oldLauncher)
-  if (!state?.isDirectory() || !installation?.executables.length
-    || !(await existingPath(oldLauncher))?.isFile()) {
-    throw new Error('The previous production MCP launcher has no valid managed installation record.')
-  }
-  await installManagedLauncher(launcherSource, launcher)
-  const current = readLauncherInstallation(launcher)!
-  const executables = [...current.executables]
-  for (const executable of installation.executables) {
-    if (!executables.some((entry) => entry.path === executable.path && entry.realpath === executable.realpath)) {
-      executables.push(executable)
-    }
-  }
-  await writeLauncherInstallation(launcher, {
-    version: 1,
-    executables,
-    launcherAliases: [...new Set([...(current.launcherAliases ?? []), alias])],
-  })
+  await registerPreviousLauncher(launcher, sourceDirectory, alias)
   const pending = `${previous}.${randomUUID()}.tmp`
   try {
     await symlink(destination, pending)

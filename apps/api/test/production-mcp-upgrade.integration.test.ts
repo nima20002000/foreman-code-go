@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Client } from '@modelcontextprotocol/client'
@@ -16,6 +17,7 @@ import { installManagedLauncher, isAppLauncher } from '../src/modules/harnesses/
 import { upgradeProductionMcpLauncher } from '../src/modules/harnesses/productionMcpUpgrade.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { runLauncherProcess } from './helpers/launcherInstallationProcess.js'
 
 const cleanup: Array<() => Promise<unknown>> = []
 afterEach(async () => {
@@ -26,18 +28,28 @@ afterEach(async () => {
   }
 })
 
-it.each(['codex', 'opencode'] as const)(
-  'upgrades the saved %s launcher through authenticated MCP and two API restarts', async harness => {
+const changes = ['older-writer', 'concurrent-writers', 'retained-recovery'] as const
+const cases = (['codex', 'opencode'] as const).flatMap(harness => changes.map(change => ({ harness, change })))
+
+it.each(cases)(
+  '$harness launcher survives $change through authenticated MCP and two API restarts', async ({ harness, change }) => {
     const home = await mkdtemp(join(tmpdir(), 'production-mcp-restart-'))
     cleanup.push(() => rm(home, { recursive: true, force: true }))
     const previous = join(home, '.local/state/graphql-production/mcp/launcher.mjs')
     const shared = join(home, '.local/share/graphql/mcp/launcher.mjs')
+    const installedRuntime = join(home, 'production-node')
+    const developmentRuntime = join(home, 'development-node')
+    const concurrentRuntime = join(home, 'concurrent-node')
+    await Promise.all([installedRuntime, developmentRuntime, concurrentRuntime]
+      .map(runtime => copyFile(process.execPath, runtime, constants.COPYFILE_FICLONE)))
     vi.stubEnv('GRAPHQL_APP_MCP_DIRECTORY', undefined)
     vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', dirname(previous))
+    await runLauncherProcess({ kind: 'older-install', launcher: shared }, developmentRuntime)
     await installManagedLauncher(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), previous)
+    await runLauncherProcess({ kind: 'older-install', launcher: previous }, installedRuntime)
     const tokenVariable = harness === 'codex' ? 'GRAPHQL_MCP_TOKEN' : 'FOREMAN_CODE_MCP_TOKEN'
     const connection = {
-      transport: 'stdio' as const, executable: process.execPath, arguments: [previous],
+      transport: 'stdio' as const, executable: installedRuntime, arguments: [previous],
       environmentVariables: [tokenVariable],
     }
     const entry = nativeConnection(harness, connection)
@@ -129,13 +141,48 @@ it.each(['codex', 'opencode'] as const)(
     const renewedOwnerClient = await connect(owner.token)
     expect((await renewedOwnerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent)
       .toMatchObject({ value })
+    if (change === 'older-writer') {
+      await runLauncherProcess({ kind: 'older-install', launcher: shared }, developmentRuntime)
+    } else if (change === 'concurrent-writers') {
+      await Promise.all([
+        runLauncherProcess({ kind: 'older-install', launcher: shared }, developmentRuntime),
+        runLauncherProcess({ kind: 'install', launcher: shared }),
+        runLauncherProcess({ kind: 'install', launcher: previous }, concurrentRuntime),
+        runLauncherProcess({ kind: 'register', launcher: shared, installation: {
+          version: 1, executables: [], launcherAliases: [previous],
+        } }),
+      ])
+    } else {
+      // Recreate a transition overwritten before its registration was preserved separately.
+      await rm(`${shared}.registration.json`)
+      await runLauncherProcess({ kind: 'older-install', launcher: shared, snapshot: {
+        version: 1, executables: [{ path: developmentRuntime, realpath: developmentRuntime }],
+      } }, developmentRuntime)
+    }
+    expect(isAppLauncher(harness, entry)).toBe(change !== 'retained-recovery')
+    await assertReadback(upgraded.settings)
     await upgraded.close()
-    await upgradeProductionMcpLauncher(home)
+    await runLauncherProcess({ kind: 'upgrade', home })
+    expect(isAppLauncher(harness, entry)).toBe(true)
     await installManagedLauncher(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), shared)
     const restarted = await start()
     await assertReadback(restarted.settings)
     expect(restarted.requests()).toBeGreaterThan(0)
     expect(isAppLauncher(harness, entry)).toBe(true)
+    if (change === 'concurrent-writers') {
+      for (const executable of [developmentRuntime, concurrentRuntime]) {
+        const installedEntry = nativeConnection(harness, { ...connection, executable })
+        expect(await runLauncherProcess({ kind: 'recognize', launcher: shared, harness, entry: installedEntry }))
+          .toBe('true')
+      }
+    }
+    const restartedOwnerClient = await connect(owner.token)
+    const restartedReaderClient = await connect(reader.token)
+    expect((await restartedOwnerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent)
+      .toMatchObject({ value })
+    await expect(restartedReaderClient.callTool({ name: 'workspace_defaults_update', arguments: {
+      commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value,
+    } })).rejects.toThrow('not found')
     const digest = createHash('sha256').update(owner.token).digest('hex')
     const route = await readFile(join(dirname(previous), 'routes', `${digest}.json`), 'utf8')
     expect(route).not.toContain(owner.token)

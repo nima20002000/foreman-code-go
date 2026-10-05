@@ -73,7 +73,13 @@ commands, credential references, tool policies, approval rules and disabled flag
 stay intact. Recognition requires the registered alias to resolve to the shared
 launcher and the executable to pass the same managed-command checks. The original
 directory is retained as `mcp.previous`; an interrupted transition resumes from it
-on the next install. Each API restart rebuilds credential routes from its database.
+on the next install. Transition aliases and runtime registrations are also retained
+in `launcher.mjs.registration.json`, which older development APIs do not rewrite.
+Current launcher writers serialize updates across processes and directory aliases;
+their kernel lock is released when a writer exits. If an older update erased the
+round-one transition record, the installer restores it from the validated
+`mcp.previous` installation while requiring the saved directory link to still point
+to the shared launcher. Each API restart rebuilds credential routes from its database.
 
 The Jobs view and Operator MCP use the same persistent build queue in this
 installation. Its reviewed Main configuration belongs at

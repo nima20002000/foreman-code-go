@@ -6,6 +6,7 @@ import {
   APP_MCP_TOKEN, appLauncherConnection, installManagedLauncher, isAppLauncher,
 } from '../src/modules/harnesses/appMcpLauncher.js'
 import { upgradeProductionMcpLauncher } from '../src/modules/harnesses/productionMcpUpgrade.js'
+import { runLauncherProcess } from './helpers/launcherInstallationProcess.js'
 import {
   applyMcpEdits, managedChange, managedEnableChange, managedStatus, mcpEdits, nativeConnection,
   type NativeMcpSnapshot,
@@ -100,6 +101,52 @@ it('resumes an upgrade interrupted after moving the original directory', async (
   await upgradeProductionMcpLauncher(home)
   expect(isAppLauncher('codex', { command: runtime, args: [previous], env_vars: [APP_MCP_TOKEN] })).toBe(true)
 })
+
+it.each(['codex', 'opencode'] as const)(
+  '%s native management recovers a lost transition registration from the retained installation', async harness => {
+    const { home, previous, shared } = await fixture()
+    await upgradeProductionMcpLauncher(home)
+    // Recreate a completed transition without the separate registration record.
+    await rm(`${shared}.registration.json`)
+    await runLauncherProcess({ kind: 'older-install', launcher: shared })
+    const entry = {
+      ...nativeConnection(harness, {
+        transport: 'stdio', executable: runtime, arguments: [previous], environmentVariables: [APP_MCP_TOKEN],
+      }),
+      enabled: false,
+      enabled_tools: ['context_get'],
+      disabled_tools: ['interaction_respond'],
+    }
+    const snapshot: NativeMcpSnapshot = {
+      harness, revision: 'revision', file: join(home, 'native-config'), version: '1',
+      user: { 'foreman-code': entry }, effective: { 'foreman-code': entry }, userConfig: {},
+      credentialReferences: { 'foreman-code': APP_MCP_TOKEN },
+    }
+    expect(isAppLauncher(harness, entry)).toBe(false)
+    await runLauncherProcess({ kind: 'upgrade', home })
+    expect(managedStatus(snapshot, 'graphql')).toBe('disabled')
+    const managed = { preset: 'graphql' as const, endpoint: 'http://127.0.0.1:3041/mcp' }
+    const edits = mcpEdits(snapshot, managedEnableChange('graphql', true), managed)
+    expect(applyMcpEdits(snapshot.user, edits)).toEqual({ 'foreman-code': { ...entry, enabled: true } })
+    expect(await runLauncherProcess({ kind: 'recognize', launcher: shared, harness, entry })).toBe('true')
+    await runLauncherProcess({ kind: 'older-install', launcher: shared })
+    await runLauncherProcess({ kind: 'upgrade', home })
+    expect(managedStatus(snapshot, 'graphql')).toBe('disabled')
+  }, 30_000,
+)
+
+it('requires a managed retained installation before restoring an alias', async () => {
+  const { home, previous, shared } = await fixture()
+  await upgradeProductionMcpLauncher(home)
+  await rm(`${shared}.registration.json`)
+  await runLauncherProcess({ kind: 'older-install', launcher: shared })
+  const retained = join(`${dirname(previous)}.previous`, 'launcher.mjs')
+  await rm(`${retained}.installation.json`)
+  await rm(`${retained}.registration.json`)
+  const entry = { command: runtime, args: [previous], env_vars: [APP_MCP_TOKEN] }
+  await expect(upgradeProductionMcpLauncher(home)).rejects.toThrow('valid managed installation record')
+  expect(isAppLauncher('codex', entry)).toBe(false)
+}, 30_000)
 
 it('requires a registered directory alias and retains command and authentication validation', async () => {
   const { home, previous, shared } = await fixture()
