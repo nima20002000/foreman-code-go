@@ -38,7 +38,7 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
     let transport: ReturnType<typeof claudeSdkToolTransport> | undefined
     chat = new AgentChatService(db.pool, repository, messages, new PostgresWorkflowRepository(db.pool), {
       getForWorkspace: async () => { throw new Error('Agent rollover must not read or create a Run.') },
-      async *executionPages() { throw new Error('Agent rollover must not select a Run execution.') },
+      executionPages() { throw new Error('Agent rollover must not select a Run execution.') },
     }, (id, configuration, cwd) => {
       transport = claudeSdkToolTransport(cwd, () => [])
       const start = { kind: 'workflow' as const, correlationId: `agent:${id}:first`, request: {

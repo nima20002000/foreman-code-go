@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { NativeSessionStart, NativeTerminalObservation } from '../port.js'
+import type { NativeSessionStart } from '../port.js'
 import { ClaudeBoundedQueue } from './queue.js'
 import { createClaudeSdkRunner } from './runner.js'
 import { claudePromptUuid, createClaudeNativeSessionManager, type ClaudeMessageTurnInput } from './sessionManager.js'
@@ -56,7 +56,9 @@ describe('Claude native session manager admission', () => {
     try {
       const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
         nativeSessionId: 'native-session' }, start)
-      const saved = vi.fn(async (_observation: NativeTerminalObservation) => { throw new Error('Terminal save interrupted') })
+      const saved = vi.fn<NonNullable<ClaudeMessageTurnInput['onTerminal']>>(async () => {
+        throw new Error('Terminal save interrupted')
+      })
       const output = drain(f.manager.startTurn(session, { prompt: 'first', clientCorrelationId: 'frozen-result',
         onTerminal: saved }))
       const failure = expect(output).rejects.toThrow('Terminal save interrupted')

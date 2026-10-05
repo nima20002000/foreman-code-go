@@ -35,7 +35,6 @@ it.each(['management', 'denied-management', 'files'] as const)(
       const commands = new PostgresCommandCoordinator(pool)
       const locations = new WorkspaceLocationService(pool, commands)
       const workspaces = new WorkspaceManagementService(pool, commands, locations)
-      let chat!: OperatorChatService
       const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
         operator: { access, services: { commands, locations, workspaces,
           operatorChat: { get: (...args: Parameters<OperatorChatService['get']>) => chat.get(...args),
@@ -76,7 +75,7 @@ it.each(['management', 'denied-management', 'files'] as const)(
         workingDirectory: directory, environment: { agentId: configuration.operatorId, variables: {} } }
       const f = productionClaudeFixture('operator', undefined, endpoint, scenario === 'files' ? productionFileTools(app) : undefined,
         { database: pool, binding: { kind: 'operator', conversationId: conversation.id, repository }, start, sdk: transport.sdk })
-      chat = new OperatorChatService(repository, operators, () => f.manager, directory, {
+      const chat: OperatorChatService = new OperatorChatService(repository, operators, () => f.manager, directory, {
         current: id => access.currentOperator(id), assertConfiguration() {},
         setup: async () => ({ harness: 'claude', status: 'configured', endpoint, checkedAt: new Date().toISOString() }),
         prepare: async () => {
