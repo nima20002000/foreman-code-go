@@ -1,3 +1,4 @@
+import { componentLogger } from '../../../infrastructure/logger.js'
 import { withInteractionDeliveryReconciliation, withOriginalInteractionDeliveryClaim } from '../originalDeliveryClaim.js'
 import { randomUUID } from 'node:crypto'
 import type { DurableInteraction } from '@foreman-code/contracts'
@@ -97,7 +98,13 @@ async function deliverClaim(deps: ApprovalRuntimeDependencies, current: DurableI
         : await attached.manager.history(attached.session, writeSignal)
       const proof = matchingDeliveryEvidence(interaction, attached.session, history)
       return proof ? { state: 'delivered', evidence: proof } : { state: 'uncertain', error: 'APPROVAL_DELIVERY_RECEIPT_MISSING' }
-    } catch { return { state: 'uncertain', error: 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN' } }
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+      componentLogger('engine').warn({ runId: interaction.runId,
+        code: typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,100}$/.test(code) ? code : 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN',
+        errorType: error instanceof Error ? error.name : 'UnknownError' }, 'Native approval delivery is uncertain.')
+      return { state: 'uncertain', error: 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN' }
+    }
   }), dispatchSignal)
 }
 
