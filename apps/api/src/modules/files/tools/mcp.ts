@@ -71,9 +71,19 @@ export async function createFileMcpServer(service: FileMcpService, token: string
     inputSchema: AgentFileListInputSchema, outputSchema: AgentFileListResultSchema, annotations: annotations(false),
   }, async (input) => invoke(() => service.list(token, input)))
   if (allowed('files.read')) server.registerTool('files.read', {
-    description: 'Read at most 64 KiB using exact fileId and revisionId pins. Expired or removed files return unavailable; never substitute a newer revision.',
+    description: 'Read at most 64 KiB using exact fileId and revisionId pins. Markdown includes UTF-8 text alongside the base64 bytes. Expired or removed files return unavailable; never substitute a newer revision.',
     inputSchema: AgentFileReadInputSchema, outputSchema: AgentFileReadResultSchema, annotations: annotations(false),
-  }, async (input) => invoke(() => service.read(token, input)))
+  }, async (input) => invoke(() => service.read(token, input), async (result) => {
+    if (result.status !== 'ready' || result.revision.mediaType !== 'text/markdown') return undefined
+    try {
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+        .decode(Buffer.from(result.contentBase64, 'base64'))
+    } catch (error) {
+      // A byte range can split a UTF-8 character; its base64 bytes remain available.
+      if (error instanceof TypeError) return undefined
+      throw error
+    }
+  }))
   if (allowed('files.create_working_copy')) server.registerTool('files.create_working_copy', {
     description: 'Copy authorized pinned bytes to an isolated runner artifact handle in this authenticated turn. No host path or permanent write target is accepted.',
     inputSchema: AgentFileCreateWorkingCopyInputSchema, outputSchema: AgentFileCreateWorkingCopyResultSchema, annotations: annotations(true),

@@ -7,7 +7,7 @@ import type { File, FileRevision } from '@foreman-code/contracts/files'
 import { registerFileToolsMcp, type FileMcpService } from '../../../files/tools/mcp.js'
 import type { FileToolContext } from '../../../files/tools/types.js'
 import { ManagedOpenCodeServer } from '../../opencodeTransport.js'
-import { collectChecks, modelCheck, nonempty, object, requireCondition, type Check } from './checks.js'
+import { collectChecks, nonempty, object, requireCondition, type Check } from './checks.js'
 import type { QualificationSuite } from '../types.js'
 import type { NativeQualificationSuiteInput } from '../nativeOwnership.js'
 
@@ -28,7 +28,7 @@ const requiredPaths = ['/session', '/session/status', '/session/{sessionID}', '/
   '/permission', '/permission/{requestID}/reply', '/question', '/question/{requestID}/reject', '/event', '/config', '/mcp']
 
 export const opencodeQualificationSuite: QualificationSuite = {
-  harness: 'opencode', revision: 'opencode-live-4',
+  harness: 'opencode', revision: 'opencode-live-5',
   async run(input: NativeQualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const server = new CandidateOpenCodeServer(input)
@@ -190,11 +190,11 @@ export const opencodeQualificationSuite: QualificationSuite = {
         await createSession()
         return 'Native session created.'
       }],
-      ['text-turn', () => modelCheck('text-turn', signal, evidence, async (attempt) => {
-        if (attempt === 2) await createSession()
+      ['text-turn', async () => {
+        evidence['text-turnAttempts'] = 1
         await turn('Reply with a short sentence confirming this qualification text turn. Do not call tools.')
         return 'Asynchronous text turn completed.'
-      })],
+      }],
       ['mcp-file-tools', async () => {
         await writeFile(sourcePath, sourceBytes, { flag: 'wx', mode: 0o400 })
         const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -203,13 +203,10 @@ export const opencodeQualificationSuite: QualificationSuite = {
           oauth: false, headers: { Authorization: `Bearer ${token}` } } })
         mcpReady = true
         requireCondition(object(object(await request('/mcp'))[mcpName]).status === 'connected', 'File MCP did not connect.')
-        return modelCheck('mcp-file-tools', signal, evidence, async (attempt) => {
-          read = false; published = false
-          if (attempt === 2) await createSession()
-          await turn(`Use files.read with fileId ${sourceId} and revisionId ${sourceRevisionId} to read the Markdown marker. Write ${JSON.stringify(outputPath)} with that marker and the word QUALIFIED. Then call files.publish_result with artifactId qualification-result, commandId ${randomUUID()}, filename qualification-result.md, mediaType text/markdown, and scope ${JSON.stringify(scope)}. Do not use shell commands or other paths.`)
-          requireCondition(read && published, 'Native turn did not complete MCP read and publication.')
-          return 'MCP read and publication completed.'
-        })
+        evidence['mcp-file-toolsAttempts'] = 1
+        await turn(`Use files.read with fileId ${sourceId} and revisionId ${sourceRevisionId} to read the Markdown marker. Write ${JSON.stringify(outputPath)} with that marker and the word QUALIFIED. Then call files.publish_result with artifactId qualification-result, commandId ${randomUUID()}, filename qualification-result.md, mediaType text/markdown, and scope ${JSON.stringify(scope)}. Do not use shell commands or other paths.`)
+        requireCondition(read && published, 'Native turn did not complete MCP read and publication.')
+        return 'MCP read and publication completed.'
       }],
     ]
     try { return await collectChecks({ ...input, signal }, checks, evidence) }
