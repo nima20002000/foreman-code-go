@@ -10,11 +10,19 @@ const root = fileURLToPath(new URL('..', import.meta.url))
 const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
 const { Pool } = require('pg')
 
+export function nativeAcceptanceConfiguration(environment) {
+  return {
+    databaseUrl: environment.ENG03_A_TEST_DATABASE_URL ?? environment.TEST_DATABASE_URL,
+    evidenceRoot: environment.ENG03_A_EVIDENCE_DIR ?? join(root, '.logs', 'native-acceptance'),
+    opencodeBinary: environment.ENG03_A_OPENCODE_BINARY,
+  }
+}
+
 export async function withNativeAcceptanceDatabase(configured, evidenceRoot, execute) {
   if (configured) requireLoopbackTestDatabase(configured)
   const server = adminDatabaseUrl(configured)
   const admin = new Pool({ connectionString: server, max: 1 })
-  const name = `graphql_native_test_${randomUUID().replaceAll('-', '')}`
+  const name = `graphql_native_${randomUUID().replaceAll('-', '')}_test`
   const evidence = join(evidenceRoot, name)
   const record = { name, created: false, exitCode: null, removed: false }
   await mkdir(evidence, { recursive: true, mode: 0o700 })
@@ -45,9 +53,10 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
 }
 
 async function main() {
-  const opencode = execFileSync('which', ['opencode'], { encoding: 'utf8' }).trim()
-  const record = await withNativeAcceptanceDatabase(process.env.TEST_DATABASE_URL,
-    join(root, '.logs', 'native-acceptance'), async ({ databaseUrl, evidence }) => {
+  const configuration = nativeAcceptanceConfiguration(process.env)
+  const opencode = configuration.opencodeBinary ?? execFileSync('which', ['opencode'], { encoding: 'utf8' }).trim()
+  const record = await withNativeAcceptanceDatabase(configuration.databaseUrl,
+    configuration.evidenceRoot, async ({ databaseUrl, evidence }) => {
       const environment = { ...process.env,
         RUN_ENG03_C_NATIVE_TESTS: '1',
         ENG03_A_TEST_DATABASE_URL: databaseUrl,

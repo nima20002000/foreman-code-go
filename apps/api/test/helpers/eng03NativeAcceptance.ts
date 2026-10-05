@@ -291,8 +291,17 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       const appendNativeEvents = runs.appendNativeEvents.bind(runs)
       runs.appendNativeEvents = async (...args) => {
         const began = performance.now()
+        const pendingKeys = args[0].map(({ event }) => {
+          const key = `${event.executionId}:${event.connectionId ?? ''}:${event.sequence}`
+          pendingNativeEvents.set(key, { executionId: event.executionId, type: event.type,
+            sequence: event.sequence, startedAt: new Date().toISOString() })
+          return key
+        })
+        evidence.pendingNativeEvents = [...pendingNativeEvents.values()]
         try { return await appendNativeEvents(...args) }
         finally {
+          for (const key of pendingKeys) pendingNativeEvents.delete(key)
+          evidence.pendingNativeEvents = [...pendingNativeEvents.values()]
           const stats = (evidence.nativeEventBatches ??= { count: 0, frames: 0, totalMs: 0, maxMs: 0 }) as {
             count: number; frames: number; totalMs: number; maxMs: number
           }

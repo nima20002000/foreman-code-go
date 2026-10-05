@@ -18,6 +18,8 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
       const record = await withNativeAcceptanceDatabase(configured, directory,
         async ({ databaseUrl }: { databaseUrl: string }) => {
           expect(databaseUrl).not.toBe(configured)
+          expect(new URL(databaseUrl).hostname).toBe(new URL(configured).hostname)
+          expect(new URL(databaseUrl).pathname.endsWith('_test')).toBe(true)
           const pool = new pg.Pool({ connectionString: databaseUrl, max: 1 })
           try {
             await pool.query('create table retained_result (value text)')
