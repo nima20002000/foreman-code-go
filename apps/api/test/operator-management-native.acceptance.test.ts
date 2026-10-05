@@ -176,7 +176,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           state = await callWorkspaceTool(caller.client, 'operator_chat_get', GetOperatorConversationResponseSchema,
             { conversationId: conversation.id })
         } while (state.activeRequestId)
-        expect(state.lastResult).toMatchObject({ outcome: 'succeeded' })
+        expect(state.lastResult, JSON.stringify(state.lastResult)).toMatchObject({ outcome: 'succeeded' })
         expect(nativeEvents.some(event => nativeCallCompleted(event, harness, 'files_read'))).toBe(true)
         expect(nativeEvents.some(event => nativeCallCompleted(event, harness, 'workflow_create'))).toBe(true)
         if (!denied) expect(nativeEvents.some(event => nativeCallCompleted(event, harness, 'workflow_get'))).toBe(true)
@@ -209,8 +209,9 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           expect(readback.workflow.name).toBe(command.name)
           const fresh = new WorkflowManagementService(f.pool, f.commands)
           expect(await fresh.get(caller.principal, workspace.value.workspace.id, workflows.rows[0]!.id)).toEqual(readback)
-          expect((await f.pool.query('select result from management_command_receipts where command_id=$1',
-            [command.commandId])).rows).toEqual([{ result: readback }])
+          expect((await f.pool.query(`select command_id,result from management_command_receipts
+            where principal_id=$1 and operation='workflow.create'`, [delegated[0]!.principal_id])).rows)
+            .toEqual([{ command_id: command.commandId, result: readback }])
         }
       } finally {
         try { await f?.close() }

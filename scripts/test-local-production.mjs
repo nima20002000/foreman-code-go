@@ -184,7 +184,9 @@ async function main() {
       name: `Production regression ${randomUUID()}`, parentPath: environment.WORKSPACE_STORAGE_ROOT })
     workspaceId = created.value.workspace.id
     const workspace = await call(writer, 'workspace_get', { workspaceId })
-    const conversation = await call(writer, 'operator_chat_create', { title: 'Production regression' })
+    const conversation = await call(writer, 'operator_chat_create', {
+      commandId: randomUUID(), title: 'Production regression',
+    })
     conversationId = conversation.conversation.id
     const beforeChat = await call(writer, 'operator_chat_get', { conversationId: conversation.conversation.id })
     assert.ok(beforeChat.settings, 'Read the accepted Operator settings before native verification')
