@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { JobRuntimeFingerprintSchema, JobRuntimeProfileListSchema, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
-import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
+import { JobRuntimeFingerprintSchema, JobRuntimeProfileListSchema } from '@foreman-code/contracts/job-runtime'
+import { ApprovedSourceSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
+import { JOB_VERIFICATION_APPROVAL_LIFETIME_MS } from '@foreman-code/contracts/job-verification-policy'
+import type { JobRuntimeProfileRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { JobPolicySchema } from '@foreman-code/contracts/jobs'
 import { JobRuntimeProfileListRecordSchema, JobVerificationProfileSchema } from '@foreman-code/contracts/job-verification-runtime'
 import { jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
@@ -13,7 +15,10 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { BrowserAuthentication } from '../src/modules/browser-auth/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { JobRuntimeProfiles } from '../src/modules/jobs/runtimeProfiles.js'
-import type { PostgresSourceService } from '../src/modules/sources/service.js'
+import { createProductionSources } from '../src/modules/sources/production.js'
+import { createSourceManifest, sourceSha256 } from '../src/modules/sources/manifest.js'
+import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { DomainError } from '../src/modules/errors.js'
 import { registerJobRuntimeProfileRoutes } from '../src/routes/jobRuntimeProfiles.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { jobSpec } from './helpers/jobFixture.js'
@@ -26,9 +31,16 @@ const verificationSaveResult = z.object({ profile: JobVerificationProfileSchema 
 async function fixture() {
   const db = await currentDatabase(), access = new PostgresAccessService(db.pool), workspaceId = randomUUID()
   const owner = await access.issue({ name: 'Runtime fixture owner', audience: 'operator',
-    grants: [{ actions: ['job_definitions:read', 'job_definitions:write'], scope: { workspaceIds: [workspaceId] } }], expiresAt: new Date(Date.now() + 3_600_000) })
+    grants: [{ actions: ['job_definitions:read', 'job_definitions:write', 'sources:read', 'source_roots:read'], scope: { workspaceIds: [workspaceId] } }], expiresAt: new Date(Date.now() + 3_600_000) })
   const mainId = (await db.pool.query('select id from application_installation')).rows[0].id
-  const sourceId = randomUUID(), snapshotId = randomUUID(), rootId = randomUUID(), digest = 'a'.repeat(64)
+  const sourceId = randomUUID(), snapshotId = randomUUID(), rootId = randomUUID()
+  const sourceBytes = Buffer.from('{}')
+  const manifest = createSourceManifest({ version: 1, approvedSourceId: sourceId, snapshotId,
+    capturePolicy: 'git-tree-v1', executablePolicy: 'strip',
+    git: { commit: '2'.repeat(40), tree: '3'.repeat(40), objectFormat: 'sha1' },
+    entries: [{ path: 'package.json', kind: 'file', executable: false,
+      byteSize: sourceBytes.length, sha256: sourceSha256(sourceBytes) }], deletions: [] })
+  const digest = manifest.manifestDigest
   const root = SourceRootRecordSchema.parse({ version: 1, source: { approvedSourceId: sourceId, snapshotId, manifestDigest: digest },
     selection: { hostRef: { kind: 'main', mainId }, rootPolicyId: rootId, rootPolicyRevision: '1', locationRevision: '1' },
     binding: { version: 1, mainId, deviceId: null, workerInstallationId: null, workspaceId, rootId, bindingRevision: 1,
@@ -37,18 +49,30 @@ async function fixture() {
     authorizedByPrincipalId: owner.principal.id, registration: null, attestationId: randomUUID(), attestationDigest: digest, boundAt: new Date().toISOString() })
   await db.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId, JSON.stringify({ id: workspaceId, name: 'Runtime metadata fixture' })])
   await db.pool.query("insert into source_approvals(approved_source_id,snapshot_id,workspace_id,owner_principal_id,requested_by,command_id,input_hash,state,origin,request) values($1,$2,$3,$4,$4,$5,$6,'approved','{}','{}')", [sourceId, snapshotId, workspaceId, owner.principal.id, randomUUID(), digest])
-  await db.pool.query("insert into source_snapshots(snapshot_id,approved_source_id,workspace_id,manifest_digest,record) values($1,$2,$3,$4,'{}')", [snapshotId, sourceId, workspaceId, digest])
+  const approvedSource = ApprovedSourceSchema.parse({ version: 1, workspaceId, ownerPrincipalId: owner.principal.id,
+    approvedByPrincipalId: owner.principal.id, mainId, locationRevision: 1,
+    originIdentityHash: `sha256:${digest}`, manifest, approvedAt: root.boundAt, availability: 'retained' })
+  await db.pool.query('insert into source_snapshots(snapshot_id,approved_source_id,workspace_id,manifest_digest,record) values($1,$2,$3,$4,$5::jsonb)',
+    [snapshotId, sourceId, workspaceId, digest, JSON.stringify(approvedSource)])
   await db.pool.query('insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision) values($1,$2,$3,1)', [rootId, workspaceId, digest])
   await db.pool.query('insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record) values($1,1,$2,$3,$4::jsonb)', [rootId, workspaceId, snapshotId, JSON.stringify(root)])
-  const producer = { capture: vi.fn(async (profile: JobRuntimeProfile) => JobRuntimeFingerprintSchema.parse({ schemaVersion: 1,
+  const producer = { capture: vi.fn(async (profile: JobRuntimeProfileRecord) => {
+    if (profile.schemaVersion === 2) throw new DomainError('JOB_RUNTIME_UNAVAILABLE',
+      'The metadata fixture does not supply a physical verification installation.', 503)
+    return JobRuntimeFingerprintSchema.parse({ schemaVersion: 1,
     profileId: profile.id, profileRevision: profile.revision, specDigest: profile.specDigest, hostRef: root.selection.hostRef,
     registration: null, mainInstallationId: mainId, bootId: randomUUID(), root, runtimeExecutable: '/usr/bin/podman', runtimeBinarySha256: digest,
     ociExecutable: '/usr/bin/crun', ociBinarySha256: digest, configurationDigest: digest, imageDigest: profile.policy.imageDigest,
-    toolchainDigest: profile.policy.toolchainDigest, limits: profile.limits })),
+    toolchainDigest: profile.policy.toolchainDigest, limits: profile.limits }) }),
     run: vi.fn(async () => { throw new Error('private producer failure /secret/path token=do-not-expose') }),
     revalidate: vi.fn(async () => ({ ready: false, reasons: ['UNQUALIFIED'] })) }
   const commands = new PostgresCommandCoordinator(db.pool)
-  const service = new JobRuntimeProfiles(db.pool, commands, { resolveRootBinding: async () => root } as unknown as PostgresSourceService, producer)
+  const noCarrier = (): never => { throw new Error('Source snapshot readback cannot contact a worker') }
+  const sourceRuntime = await createProductionSources({ pool: db.pool, commands,
+    locations: new WorkspaceLocationService(db.pool, commands), mainId, runtimeRoot: db.directory,
+    endpoint: noCarrier, dispatch: noCarrier })
+  vi.spyOn(sourceRuntime.sources, 'resolveRootBinding').mockResolvedValue(root)
+  const service = new JobRuntimeProfiles(db.pool, commands, sourceRuntime.sources, producer)
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     browserAuth: new BrowserAuthentication(db.pool, access, { origin, secret: 'runtime-test-browser-secret-'.repeat(3), ownerPrincipalId: owner.principal.id }),
     operator: { access, services: { commands, jobRuntimeProfiles: service } as OperatorServices } })
@@ -85,14 +109,14 @@ async function fixture() {
 }
 
 describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity', () => {
-  it.each(['http', 'mcp'] as const)('persists verification profile settings on %s and reads the same pending owner decisions through MCP', async transport => {
+  it.each(['http', 'mcp'] as const)('persists reviewed offline verification settings on %s and reads the same commit through MCP', async transport => {
     const f = await fixture()
     try {
       const v = verificationFixture()
       const input = { commandId: randomUUID(), expectedRevision: null, name: 'Ordinary verification',
         spec: { rootId: f.input.spec.rootId, bindingRevision: f.input.spec.bindingRevision,
           resources: v.resources, policy: jobPolicyRequirementsRecord(v.spec.policy),
-          suites: ['install', 'typecheck', 'lint', 'unit', 'build'], approvalConfig: { approvalLifetimeMs: 3_600_000 } } }
+          suites: ['install', 'typecheck', 'lint', 'unit', 'build'], approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS } } }
       const client = await f.connect()
       let saved
       if (transport === 'http') {
@@ -107,7 +131,8 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       }
       expect(saved.spec).toEqual(input.spec)
       expect(saved).toMatchObject({ schemaVersion: 2, revision: 1, status: 'unqualified', measurement: null,
-        approvalConfig: { review: null, approvalLifetimeMs: 3_600_000 } })
+        sourceCommit: '2'.repeat(40), approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS,
+          review: { authority: 'repository-owner', decisionId: 'offline-verification', reviewedOn: '2026-10-05' } } })
       const retry = await client.callTool({ name: 'job_runtime_profile_save', arguments: { workspaceId: f.workspaceId, ...input } })
       expect(retry.isError, JSON.stringify(retry.content)).not.toBe(true)
       expect(verificationSaveResult.parse(retry.structuredContent).profile).toEqual(saved)
@@ -118,7 +143,7 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       const read = await client.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId: f.workspaceId } })
       const result = JobRuntimeProfileListRecordSchema.parse(read.structuredContent)
       expect(result.profiles.find(item => item.profile.id === saved.id)).toEqual({ profile: saved, ready: false,
-        reasons: ['approval_review_required'], sideEffects: false })
+        reasons: ['runtime_setup_required'], sideEffects: false })
       const http = await f.app.inject({ method: 'GET', url: `${f.base}/runtime-profiles`, headers: f.auth })
       expect(http.statusCode, http.body).toBe(200)
       expect(http.json()).toEqual(result)
@@ -129,9 +154,8 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       expect(pending.isError).toBe(true)
       const error = pending.content.find(item => item.type === 'text')
       if (!error || error.type !== 'text') throw new Error('Expected a public qualification error.')
-      expect(JSON.parse(error.text)).toMatchObject({ error: { code: 'JOB_VERIFICATION_OWNER_REVIEW_REQUIRED',
-        details: { decisions: ['approval-lifetime', 'resource-envelopes'], activation: 'disabled-pending-owner-decision' } } })
-      expect(f.producer.capture).not.toHaveBeenCalled()
+      expect(JSON.parse(error.text)).toMatchObject({ error: { code: 'JOB_RUNTIME_UNAVAILABLE' } })
+      expect(f.producer.capture).toHaveBeenCalledWith(saved)
       expect(f.producer.run).not.toHaveBeenCalled()
 
       const reader = await f.access.issue({ name: 'Verification reader', audience: 'operator',
@@ -156,7 +180,7 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       const input = { commandId: randomUUID(), expectedRevision: null, name: 'Unit verification',
         spec: { rootId: f.input.spec.rootId, bindingRevision: 1, resources: v.resources,
           policy: jobPolicyRequirementsRecord(v.spec.policy), suites: ['unit'],
-          approvalConfig: { approvalLifetimeMs: 3_600_000 } } }
+          approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS } } }
       const client = await f.connect()
       const created = await client.callTool({ name: 'job_runtime_profile_save', arguments: { workspaceId: f.workspaceId, ...input } })
       expect(created.isError, JSON.stringify(created.content)).not.toBe(true)
@@ -175,7 +199,7 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       expect(conflict.json().error.code).toBe('REVISION_CONFLICT')
       const invalid = await client.callTool({ name: 'job_runtime_profile_save', arguments: {
         workspaceId: f.workspaceId, ...edit, commandId: randomUUID(), expectedRevision: 2,
-        spec: { ...edit.spec, approvalConfig: { approvalLifetimeMs: 3_600_000,
+        spec: { ...edit.spec, approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS,
           review: { reviewedByPrincipalId: f.owner.principal.id, reviewedAt: new Date().toISOString(), decisionDigest: 'a'.repeat(64) } } },
       } })
       expect(invalid.isError).toBe(true)

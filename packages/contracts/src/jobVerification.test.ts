@@ -65,7 +65,8 @@ describe('verification placement and policy', () => {
 })
 
 describe('reviewed bounded approval lifetime', () => {
-  it('defaults conservatively, admits no caller review, and blocks dispatch until owner review', () => {
+  it('defaults to 24 hours, rejects caller review and preserves unreviewed historical configuration', () => {
+    expect(JOB_VERIFICATION_APPROVAL_LIFETIME_MS).toBe(86_400_000)
     expect(JobVerificationApprovalConfigInputSchema.parse({})).toEqual({
       approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS,
     })
@@ -73,6 +74,8 @@ describe('reviewed bounded approval lifetime', () => {
     expect(JobVerificationApprovalConfigInputSchema.safeParse({ review }).success).toBe(false)
     const config = { schemaVersion: 1, revision: 1, approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS, review: null }
     expect(JobVerificationApprovalConfigSchema.parse(config)).toEqual(config)
+    expect(JobVerificationApprovalConfigSchema.parse({ ...config, approvalLifetimeMs: 3_600_000 }))
+      .toEqual({ ...config, approvalLifetimeMs: 3_600_000 })
     expect(JobVerificationApprovalConfigSchema.safeParse({ ...config, approvalLifetimeMs: 9_000_000 }).success).toBe(false)
     expect(JobVerificationApprovalConfigSchema.parse({ ...config, approvalLifetimeMs: 9_000_000, review }).review).toEqual(review)
     const { profile, spec } = verificationFixture()

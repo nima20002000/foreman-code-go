@@ -128,7 +128,7 @@ export function verificationMeasurementFixture() {
     network: profile.network, resources,
     approvalConfig: { schemaVersion: 1, revision: 1, approvalLifetimeMs: 3_600_000,
       review: { reviewedByPrincipalId: 'owner', reviewedAt: verificationTime, decisionDigest: digest } },
-    tools: [], seedReceiptSha256: digest,
+    tools: [], seedReceiptSha256: digest, sourceCommit: build.source.commit,
   }
   const checkIds = [...JOB_VERIFICATION_BASE_CHECKS, 'network-none']
   return {

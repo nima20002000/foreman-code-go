@@ -34,6 +34,10 @@ export async function acceptVerificationSpec(sql: JobSql, input: {
     throw new DomainError('JOB_COMPUTER_SELECTION_CONFLICT', 'The original verification capacity claim is missing or changed.', 409)
   }
   const measurement = profile.measurement
+  if (profile.sourceCommit !== spec.source.commit || measurement.fingerprint.sourceCommit !== spec.source.commit) {
+    throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED',
+      'A different source commit requires a new verification approval and qualification.', 409)
+  }
   const dispatchAt = selection.claimed_at.toISOString()
   JobVerificationDispatchValiditySchema.parse({ identity: measurement.identity, approvedAt: measurement.approvedAt,
     approvalConfig: profile.approvalConfig, dispatchAt, policy: spec.policy })

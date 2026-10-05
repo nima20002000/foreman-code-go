@@ -93,6 +93,7 @@ export const JobVerificationRuntimeFingerprintSchema = z.object({
   approvalConfig: JobVerificationApprovalConfigSchema,
   tools: z.array(ToolIdentity).max(16),
   seedReceiptSha256: DeviceDigestSchema,
+  sourceCommit: JobVerificationPrivateGitSchema.shape.sourceCommit.optional(),
 }).strict().superRefine((value, context) => {
   const buildFingerprint = Object.fromEntries(Object.keys(ProvisionedJobRuntimeFingerprintSchema.shape)
     .map(key => [key, value[key as keyof typeof value]]))
@@ -210,6 +211,7 @@ export const JobVerificationProfileSchema = z.object({
   id: IdSchema, workspaceId: IdSchema, revision: DeviceSafeIntegerSchema.positive(),
   name: JobRuntimeProfileSchema.shape.name,
   root: JobRuntimeProfileSchema.shape.root,
+  sourceCommit: JobVerificationPrivateGitSchema.shape.sourceCommit.optional(),
   spec: JobVerificationProfileInputSchema,
   specDigest: DeviceDigestSchema,
   approvalConfig: JobVerificationApprovalConfigSchema,
@@ -231,6 +233,7 @@ export const JobVerificationProfileSchema = z.object({
     const fingerprint = value.measurement.fingerprint
     const measuredSuites = new Set(value.measurement.suites.map(suite => suite.suite))
     if (fingerprint.specDigest !== value.specDigest || fingerprint.imageDigest !== value.spec.policy.imageDigest
+      || fingerprint.sourceCommit !== value.sourceCommit
       || fingerprint.toolchainDigest !== value.spec.policy.toolchainDigest
       || JSON.stringify(fingerprint.root) !== JSON.stringify(value.root)
       || JSON.stringify(fingerprint.network) !== JSON.stringify(value.spec.policy.network)
