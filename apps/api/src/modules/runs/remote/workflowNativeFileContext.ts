@@ -120,7 +120,8 @@ export class WorkflowNativeFileContextAdmission {
             record->>'leaseToken' as token,record->>'correlationId' as correlation,record->>'currentTurnOrMessageId' as provider_id,
             coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as held
             from native_session_lanes where id=$1 for update`, [capture.lane!.id])).rows[0]
-        if (!closure || closure.generation !== capture.closureGeneration || closure.closed || !same(closure.expected_reference, capture.session)
+        if (!closure || closure.generation !== capture.closureGeneration || closure.closed
+          || closure.expected_reference !== null && !same(closure.expected_reference, capture.session)
           || !lane || !lane.held || lane.owner_agent_id !== capture.execution.agentId || lane.harness !== capture.session.harness
           || lane.native_session_id !== capture.session.nativeSessionId || lane.token !== capture.lane!.token
           || lane.generation !== String(capture.lane!.connectionGeneration) || lane.provider_id !== capture.lane!.providerId
@@ -184,7 +185,8 @@ export class WorkflowNativeFileContextAdmission {
             record->>'leaseToken' as token,record->>'correlationId' as correlation,record->>'currentTurnOrMessageId' as provider_id,
             coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as held
             from native_session_lanes where id=$1 for update`, [capture.lane!.id])).rows[0]
-        if (!closure || closure.generation !== capture.closureGeneration || closure.closed || !same(closure.expected_reference, capture.session)
+        if (!closure || closure.generation !== capture.closureGeneration || closure.closed
+          || closure.expected_reference !== null && !same(closure.expected_reference, capture.session)
           || !lane || !lane.held || lane.owner_agent_id !== capture.execution.agentId || lane.harness !== capture.session.harness
           || lane.native_session_id !== capture.session.nativeSessionId || lane.token !== capture.lane!.token
           || lane.generation !== String(capture.lane!.connectionGeneration) || lane.provider_id !== capture.lane!.providerId

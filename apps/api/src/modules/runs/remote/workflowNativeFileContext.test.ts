@@ -54,6 +54,8 @@ function fixture() {
     entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [] }
   const state = { owned: true, resident: true, leaseHeld: true, ownerFence: '1', stopped: false, runState: 'running', revoked: false,
     grantLive: true, proofAvailable: true, closureLive: true, laneLive: true, canonical: true, loseAck: false,
+    expectedReference: session as typeof session | null,
+    boundSession: session as typeof session | null,
     conversation: undefined as { id: string; key: string; record: unknown } | undefined,
     receipt: undefined as { principal_id: string; command_id: string; input_hash: string; result: unknown } | undefined,
     audits: 0, commits: 0, queries: [] as string[] }
@@ -79,7 +81,8 @@ function fixture() {
     else if (text === 'rollback') { if (!committed && backup) Object.assign(state, backup) }
     else if (text === 'commit') { state.commits++; committed = true; if (state.loseAck) { state.loseAck = false; throw new Error('commit ACK lost') } }
     else if (text.includes('from workflow_native_proofs')) rows = state.proofAvailable ? [{ record: persistedProof, source_digest: repeatDigest(persistedProof) }] : []
-    else if (text.includes('from execution_native_closures')) rows = [{ generation: '1', expected_reference: session, closed: !state.closureLive }]
+    else if (text.includes('from execution_native_closures')) rows = [{ generation: '1',
+      expected_reference: state.expectedReference, closed: !state.closureLive }]
     else if (text.includes('from native_session_lanes')) rows = [{ owner_agent_id: execution.agentId, harness: session.harness, native_session_id: session.nativeSessionId,
       token: state.laneLive ? lease.fence.token : 'replacement', generation: String(lease.previous.connectionGeneration),
       correlation: proof.commandId, provider_id: lease.providerId, held: true }]
@@ -97,7 +100,7 @@ function fixture() {
       const c = state.conversation
       if (c && (!text.includes('and record=$13::jsonb') || c.id === args[0] && c.key === args[1] && JSON.stringify(c.record) === args[12])) rows = [{ id: c.id, record: c.record }]
     } else if (text.includes('from remote_dispatch_origins')) rows = [{ connection: remote.connection }]
-    else if (text.includes('from execution_native_sessions')) rows = [{ reference: session }]
+    else if (text.includes('from execution_native_sessions')) rows = state.boundSession ? [{ reference: state.boundSession }] : []
     else if (text.includes('from remote_execution_receipts')) rows = [{ receipt: remote }]
     else if (text.startsWith('insert into management_command_receipts')) {
       if (!state.receipt) { state.receipt = { principal_id: args[0] as string, command_id: args[2] as string,
@@ -132,6 +135,32 @@ function fixture() {
     freshConnection: () => new ExclusiveGraphConnection({ query } as unknown as pg.ClientBase, owner.assertOwned) }
 }
 describe('genuine original workflow file-context admission', () => {
+  it('admits and reads context when the lifetime was registered before the provider assigned its session', async () => {
+    const t = fixture()
+    t.state.expectedReference = null
+    const original = await t.admit()
+    expect(original.context.nativeSessionId).toBe(t.proof.session.nativeSessionId)
+    expect(await t.freshConnection().transaction(sql =>
+      t.helper.resolveOrAdmitLocked(sql, t.evidence, t.proof, t.transfer))).toEqual(original)
+    expect(t.state.expectedReference).toBeNull()
+    expect(t.state.audits).toBe(1)
+  })
+  it('rejects a lifetime registered for a different native session', async () => {
+    const t = fixture()
+    t.state.expectedReference = { ...t.proof.session, harness: 'codex', nativeSessionId: 'different-session' }
+    await expect(t.admit()).rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_CONTEXT_DENIED',
+      details: { reason: 'native_lease_changed' } })
+    expect(t.state.conversation).toBeUndefined()
+  })
+  it.each(['missing', 'different'])('rejects an initially unbound lifetime with a %s persisted session', async kind => {
+    const t = fixture()
+    t.state.expectedReference = null
+    t.state.boundSession = kind === 'missing' ? null : { ...t.proof.session,
+      harness: 'codex', nativeSessionId: 'different-session' }
+    await expect(t.admit()).rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_AUTHORITY_DENIED' })
+    expect(t.state.conversation).toBeUndefined()
+    expect(t.state.audits).toBe(0)
+  })
   it.each(['reacquired', 'reconnected'])('reads an admitted context with a %s writer lease for the same turn', async kind => {
     const t = fixture()
     const original = await t.connection.transaction(sql =>
