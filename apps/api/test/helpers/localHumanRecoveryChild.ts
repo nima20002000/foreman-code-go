@@ -20,7 +20,7 @@ process.once('message', (input: LocalHumanRecoveryInput) => {
   void start(input).catch(error => {
     process.send?.({ error: error instanceof Error ? error.message : 'Recovery child failed.' })
     process.exitCode = 1
-    process.disconnect()
+    if (process.connected) process.disconnect?.()
   })
 })
 
@@ -77,6 +77,6 @@ async function start(input: LocalHumanRecoveryInput): Promise<void> {
     await app.close()
     await chat.shutdown()
     await pool.end()
-    process.disconnect()
+    if (process.connected) process.disconnect?.()
   }
 }
