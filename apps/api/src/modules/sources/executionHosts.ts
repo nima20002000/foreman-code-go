@@ -59,7 +59,7 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
     private readonly localPreparation?: {
       authorize(reconciliationId: string, owner: SourceOperationOwner): Promise<void>
       closed(owner: SourceOperationOwner): Promise<boolean>
-    }, private readonly quotaPoolFor?: (binding: RootBinding) => Promise<SourceQuotaPool | undefined>) {}
+    }, private readonly quotaPoolFor?: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<SourceQuotaPool | undefined>) {}
   async reconcilePreparation(reconciliationId: string, owner: SourceOperationOwner) {
     if (owner.root.binding.mainId !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source cleanup belongs to another Main.', 403)
     if (owner.root.binding.deviceId !== null) {
@@ -72,7 +72,7 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
     return reconcileSourcePreparation(reconciliationId, owner,
       () => this.localPreparation!.closed(owner),
       () => this.localPreparation!.authorize(reconciliationId, owner),
-      await this.quotaPoolFor?.(owner.root.binding))
+      await this.quotaPoolFor?.(owner.root.binding, owner.attempt))
   }
   authorize(sql: GraphSqlClient, principal: ManagementPrincipal, input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }) {
     return this.authority.authorize(sql, principal, input)
@@ -84,7 +84,7 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
     if (root.binding.mainId !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source copy belongs to another main.', 403)
     if (root.binding.deviceId !== null) return this.remote.prepare(manifest, root, attempt)
     const materializer = new PrivateSourceMaterializer(this.bytes, async () => this.authority.revalidate(root, attempt),
-      await this.quotaPoolFor?.(root.binding))
+      await this.quotaPoolFor?.(root.binding, attempt))
     return materializer.prepare({ manifest, binding: root.binding, attempt })
   }
   async verify(record: SourceMaterializationRecord): Promise<string> {
@@ -93,7 +93,7 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
     const expected = { binding: record.receipt.binding, attempt: { placementHash: record.receipt.placementHash, executionId: record.receipt.executionId,
       attemptId: record.receipt.attemptId, keyRevision: record.receipt.keyRevision, authorizationRevision: record.receipt.authorizationRevision } }
     return new PrivateSourceMaterializer(this.bytes, async () => this.authority.revalidateMaterialization(record),
-      await this.quotaPoolFor?.(record.receipt.binding)).resolve(record.receipt, expected)
+      await this.quotaPoolFor?.(record.receipt.binding, expected.attempt)).resolve(record.receipt, expected)
   }
   async verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree> {
     if (record.receipt.binding.mainId !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source copy belongs to another main.', 403)
@@ -104,8 +104,11 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
   /** Main service calls only after exact original physical closure proof. */
   async releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<number> {
     if (record.receipt.binding.deviceId !== null) return this.remote.releaseClaim(record, options)
-    await releaseMaterializationClaim(record.receipt, async () => 'released',
-      await this.quotaPoolFor?.(record.receipt.binding), options?.signal)
+    const receipt = record.receipt
+    const attempt = { placementHash: receipt.placementHash, executionId: receipt.executionId, attemptId: receipt.attemptId,
+      keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }
+    await releaseMaterializationClaim(receipt, async () => 'released',
+      await this.quotaPoolFor?.(receipt.binding, attempt), options?.signal)
     if (record.receipt.quota) return 0
     const binding = record.receipt.binding
     return measureRetainedSourceDirectory(dirname(sourceMaterializationParent(record.receipt)), record.receipt.materializationId,
@@ -116,10 +119,11 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
   async privateRepository(record: SourceMaterializationRecord, manifest: SourceManifest) {
     if (record.receipt.binding.deviceId !== null) return this.remote.privateRepository(record, manifest)
     if (record.receipt.binding.accessMode !== 'exclusive-write') throw new DomainError('SOURCE_READ_ONLY', 'Read-only source references cannot become writable execution copies.', 403)
+    const receipt = record.receipt
+    const attempt = { placementHash: receipt.placementHash, executionId: receipt.executionId, attemptId: receipt.attemptId,
+      keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }
     const materializer = new PrivateSourceMaterializer(this.bytes, async () => this.authority.revalidateMaterialization(record),
-      await this.quotaPoolFor?.(record.receipt.binding))
-    return createPrivateSourceRepository({ receipt: record.receipt, manifest, materializer, attempt: { placementHash: record.receipt.placementHash,
-      executionId: record.receipt.executionId, attemptId: record.receipt.attemptId,
-      keyRevision: record.receipt.keyRevision, authorizationRevision: record.receipt.authorizationRevision } })
+      await this.quotaPoolFor?.(receipt.binding, attempt))
+    return createPrivateSourceRepository({ receipt, manifest, materializer, attempt })
   }
 }

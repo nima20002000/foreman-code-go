@@ -1,3 +1,5 @@
+import { ResolvedJobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
+import type { MaterializationAttempt } from './ports.js'
 import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
 import type { InstalledRuntimeConfigurationLocation } from '../jobs/installedRuntimeHost.js'
 import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
@@ -191,12 +193,17 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
       } }
   } }
   const remote = input.remote ?? new CarrierRemoteSourceMaterializationHost(carrier, owners, new ExistingByteTransferSourcePackageSender(snapshots, transfers))
-  const quotaPoolFor = async (binding: SourceRootRecord['binding']) => {
+  const quotaPoolFor = async (binding: SourceRootRecord['binding'], attempt: MaterializationAttempt) => {
+    const row = (await input.pool.query<{ spec: unknown }>(
+      'select spec from job_computer_selections where execution_id=$1 and attempt_id=$2 and workspace_id=$3',
+      [attempt.executionId, attempt.attemptId, binding.workspaceId])).rows[0]
+    if (!row || !('verification' in ResolvedJobDefinitionSpecRecordSchema.parse(row.spec))) return undefined
     const path = join(input.runtimeRoot, 'job-runtime.json')
     const exists = input.installedJobConfiguration ?? await lstat(path).then(() => ({ path, ownerUid: process.getuid!() }),
       error => { if (error.code === 'ENOENT') return null; throw error })
     const pool = await installedSourceQuotaPool(exists, binding)
-    return pool ? { pool } : undefined
+    if (!pool) throw new DomainError('SOURCE_QUOTA_MISSING', 'The verification Job requires its original installed quota pool.', 409)
+    return { pool }
   }
   const executions = new InstalledSourceExecutionHosts(input.mainId, snapshots, attempts, remote, input.captureNativeSession, {
     async closed(owner) {
