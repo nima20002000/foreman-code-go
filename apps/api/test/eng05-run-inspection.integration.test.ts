@@ -156,8 +156,8 @@ describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspectio
         tools: string[]; requirements: Array<{ name: string; actions: string[] }> }
       expect(capabilities.tools).toEqual(expect.arrayContaining(Object.values(RUN_INSPECTION_TOOLS)))
       expect(capabilities.requirements.find((item) => item.name === RUN_INSPECTION_TOOLS.version)?.actions).toEqual(['runs:read', 'workflows:read'])
-      const unauthenticated = await f.app.inject({ method: 'GET', url: path(args, RUN_INSPECTION_TOOLS.executions) })
-      expect(unauthenticated.statusCode).toBe(401)
+      const invalid = await f.app.inject({ method: 'GET', url: path(args, RUN_INSPECTION_TOOLS.executions), headers: { authorization: 'Bearer invalid' } })
+      expect(invalid.statusCode).toBe(401)
 
       const counts = { ...f.provider.counts }
       const items = await allExecutions(f, r)
@@ -375,7 +375,7 @@ describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspectio
       const wrongScope = await reader(f, [{ actions: ['runs:read'], scope: { workspaceIds: ['other-workspace'] } }])
       await denied(f, wrongScope.client, wrongScope.token, name, args, 403, 'ACCESS_DENIED')
       await denied(f, f.client, f.writer.token, name, { ...args, workspaceId: 'missing-workspace' }, 404, 'RUN_NOT_FOUND')
-      expect((await f.app.inject({ method: 'GET', url: path(args, name) })).statusCode).toBe(401)
+      expect((await f.app.inject({ method: 'GET', url: path(args, name), headers: { authorization: 'Bearer invalid' } })).statusCode).toBe(401)
 
       // The database itself refuses to rewrite an admitted Run's version pin.
       await expect(f.db.pool.query("update runs set record=jsonb_set(record,'{workflowVersionId}',to_jsonb($2::text)) where id=$1",

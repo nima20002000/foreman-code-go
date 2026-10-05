@@ -106,7 +106,7 @@ describe.skipIf(!postgresEnabled)('FIL-14 storage, isolation and restart verific
       }
     }
     assert.equal((await runtime.app.inject({ method: 'GET', url: base(who), headers: headers(foreign) })).statusCode, 404)
-    assert.equal((await runtime.app.inject({ method: 'GET', url: base(who), headers: { host: 'localhost' } })).statusCode, 401)
+    assert.equal((await runtime.app.inject({ method: 'GET', url: base(who), headers: { host: 'localhost', authorization: 'Bearer invalid' } })).statusCode, 401)
     for (const [destination, metadata] of [[chat, fileMetadata(markdown)],
       [who, { ...fileMetadata(markdown), filename: 'changed.md' }],
       [who, fileMetadata({ ...markdown, bytes: Buffer.from('different bytes\n') })]] as const) {

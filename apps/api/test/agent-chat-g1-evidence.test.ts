@@ -8,7 +8,7 @@ import { PostgresAgentChatRepository } from '../src/modules/conversations/agentC
 const session: NativeSessionReference = { harness: 'codex', providerVersion: QUALIFIED_CODEX_VERSION, nativeSessionId: 'thread' }
 const identity = { expectedTurnId: 'target', clientCorrelationId: 'steer-correlation' }
 function turn(items: unknown[], id = 'target', itemsView = 'full') { return { id, itemsView, status: 'completed', items } }
-function user(id: string) { return { type: 'userMessage', id, content: [] } }
+function user(clientId: string) { return { type: 'userMessage', id: `native-item-${clientId}`, clientId, content: [] } }
 
 /** Executes the REAL adapter's evidence reader against a scripted RPC transport, never a binary/provider. */
 function codex(pages: unknown[], threadId = session.nativeSessionId) {

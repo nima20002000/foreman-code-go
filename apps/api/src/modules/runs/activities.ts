@@ -75,6 +75,8 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
     'used',a.payload->'used','maximum',a.payload->'maximum')) as safe_payload,
   case when n.execution_id is null then null else jsonb_strip_nulls(jsonb_build_object(
     'type',left(n.record->>'type',48),
+    'unsupportedInteractionCode',case when n.record->>'type'='interaction.unsupported'
+      then left(n.record#>>'{payload,code}',100) end,
     'itemType',left(n.record#>>'{payload,item,type}',48),
     'itemStatus',left(n.record#>>'{payload,item,status}',48),
     'itemError',coalesce(n.record#>'{payload,item,error}' <> 'null'::jsonb,false),

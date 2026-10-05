@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -64,11 +65,11 @@ describe.skipIf(!postgresEnabled)('AF-01 OpenCode file authority follows the acc
     tools = new AgentFileToolService(files, sessions, new FileToolArtifacts(repository, files.bytes, sessions), repository)
   })
   afterAll(async () => {
-    try { if (root) await rm(root, { recursive: true, force: true }) }
+    try { if (root) await removeFixtureDirectory(root) }
     finally { await database?.close() }
   })
 
-  async function fixture(mixedUploaders: boolean, persistSender = true) {
+  async function fixture(mixedUploaders: boolean, options: { persistSender?: boolean; acknowledge?: boolean } = {}) {
     const directory = await mkdtemp(join(root, 'workspace-'))
     const source = makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential')
     const seeded = await seedAgent3(database.pool, directory, { ...source,
@@ -109,11 +110,13 @@ describe.skipIf(!postgresEnabled)('AF-01 OpenCode file authority follows the acc
     await authorization.resolve(liveSender, target, 'write')
     const input = request(conversationId, attachments)
     const accepted = await conversations.admit({ key, context, request: input, delivery: 'queued',
-      ...(persistSender ? { ownerPrincipalId: liveSender.id } : {}) })
+      ...(options.persistSender !== false ? { ownerPrincipalId: liveSender.id } : {}) })
     expect(await conversations.claim(conversationId, input.requestId)).toBe(true)
     const clientCorrelationId = agentChatCorrelation(conversationId, input.requestId)
     const nativeTurnId = nativeMessageId(clientCorrelationId)
-    expect(await conversations.accepted(conversationId, input.requestId, nativeTurnId)).toBe(true)
+    if (options.acknowledge !== false) {
+      expect(await conversations.accepted(conversationId, input.requestId, nativeTurnId)).toBe(true)
+    }
     const identity = { ownerAgentId: context.agentId, nativeSessionId, nativeTurnId,
       clientCorrelationId, directory, configuration: openCodeConfiguration() }
     return { conversationId, accepted, attachments, identity, uploader, sender, target,
@@ -177,7 +180,21 @@ describe.skipIf(!postgresEnabled)('AF-01 OpenCode file authority follows the acc
   })
 
   it('fails closed for an older attachment receipt without a persisted sender instead of inferring its uploader', async () => {
-    const f = await fixture(false, false)
+    const f = await fixture(false, { persistSender: false })
     await expect(f.resolve()).rejects.toMatchObject({ code: 'FILE_ADMISSION_OWNER_MISSING' })
+  })
+
+  it('validates preparation ownership before cleanup when no native acknowledgement or publication exists', async () => {
+    const f = await fixture(false, { acknowledge: false })
+    const admission = await f.resolve()
+    expect(admission).toBeDefined()
+    const context = admission!.context
+    expect((await conversations.turn(f.conversationId, f.accepted.turn.requestId))?.nativeTurnId).toBeUndefined()
+    await expect(adoptOpenCodePublications(database.pool, context)).resolves.toBeUndefined()
+    await expect(adoptOpenCodePublications(database.pool, { ...context, ownerPrincipalId: f.uploader.principal.id }))
+      .rejects.toMatchObject({ code: 'FILE_ADOPTION_MISMATCH' })
+    await expect(adoptOpenCodePublications(database.pool, { ...context, turnId: nativeMessageId('foreign-turn') }))
+      .rejects.toMatchObject({ code: 'FILE_ADOPTION_MISMATCH' })
+    expect(await messageRefs(f.accepted.turn.messageId)).toEqual({ attachments: f.attachments, publications: null })
   })
 })

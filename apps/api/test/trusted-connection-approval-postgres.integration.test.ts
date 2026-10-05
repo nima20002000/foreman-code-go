@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -5,7 +6,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { LocalDevBrowserAccess } from '../src/modules/access/localDevBrowser.js'
 import { requirePrincipal } from '../src/modules/access/http.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresTrustedConnectionHumanAuthority, registerTrustedConnectionApprovalRoutes } from '../src/modules/devices/trustedConnectionHumanAuthority.js'
@@ -29,17 +29,16 @@ describe.skipIf(!url)('trusted connection action approval and delegated MCP appl
     const parsed = new URL(url!)
     if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
       || !parsed.pathname.includes('test')) throw new Error('Explicit owned loopback test database required.')
-    admin = new pg.Pool({ connectionString: url }); await admin.query(`create schema ${schema}`)
+    admin = new pg.Pool({ connectionString: url }); await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString: url, options: `-c search_path=${schema}` })
     await applyApplicationMigrations(pool)
     access = new PostgresAccessService(pool)
     owner = await access.issue({ name: 'Owned test human', audience: 'operator', grants, expiresAt: new Date(Date.now() + 3_600_000) })
-    await pool.query("insert into browser_auth_user(id,name,email) values('owned-test-user','Owned test human','owned@example.test')")
-    await pool.query("insert into browser_auth_owner(singleton,user_id,principal_id) values(true,'owned-test-user',$1)", [owner.principal.id])
+    await pool.query('update local_human_principal set principal_id=$1', [owner.principal.id])
     const authority = new PostgresTrustedConnectionHumanAuthority(pool, mainId)
     const setup = new PostgresTrustedConnectionSetup(pool, mainId, { verifyOwnerApproval: authority.verifyOwnerApproval })
     app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-      localDevBrowserAccess: new LocalDevBrowserAccess(pool, access, origin, owner.principal.id),
+      localHuman: { current: () => access.currentOperator(owner.principal.id) }, browserOrigin: origin,
       operator: { access, services: { commands: new PostgresCommandCoordinator(pool), trustedConnections: setup } as unknown as OperatorServices } })
     registerTrustedConnectionApprovalRoutes(app, authority)
     registerTrustedConnectionRoutes(app, setup, async request => request.reauthorizeOperator ? request.reauthorizeOperator() : requirePrincipal(request))
@@ -47,7 +46,7 @@ describe.skipIf(!url)('trusted connection action approval and delegated MCP appl
   }, 60_000)
   afterAll(async () => {
     await Promise.allSettled(clients.map(client => client.close())); await app?.close(); await pool?.end()
-    if (admin) { await admin.query(`drop schema ${schema} cascade`); await admin.end() }
+    if (admin) { await dropFixtureSchema(admin, schema); await admin.end() }
   })
   async function delegate(actions = grants) {
     const issued = await access.issue({ name: 'Owned test Operator', audience: 'operator', grants: actions, expiresAt: new Date(Date.now() + 3_600_000) })

@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
 import {
-  ApprovalResponseOptionSchema, CodexSessionCompatibilitySchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+  ApprovalResponseOptionSchema,
+  CodexSessionCompatibilitySchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
   PendingNativeInteractionSchema, type ApprovalResponseOption, type CodexHarnessConfiguration,
   type NativeSessionReference,
+  NativeQuestionSchema, NativeInteractionInputSchema, withInteractionResponse,
 } from '@foreman-code/contracts'
 import { canonical } from './codexProtocol.js'
 import { isObject, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
@@ -19,7 +21,8 @@ export function translateCodexInteraction(context: {
 }, request: RpcRequest) {
   const params = request.params ?? {}
   const turnId = text(params.turnId)
-  if (!turnId || params.threadId !== context.session.nativeSessionId) return undefined
+  const standalone = request.method === 'mcpServer/elicitation/request' && params.turnId == null
+  if ((!turnId && !standalone) || params.threadId !== context.session.nativeSessionId) return undefined
   // Native RPC IDs may repeat after cold attach; connection identity fences new opaque IDs.
   const nativeRequestId = `${context.session.nativeSessionId}:${turnId}:${request.method}:${context.connectionId}:${codexRequestKey(context.generation, request.id)}`
   const responses: Map<string, { option: ApprovalResponseOption; nativeResponse: JsonObject }> = new Map()
@@ -45,13 +48,8 @@ export function translateCodexInteraction(context: {
     add(simpleOption('allow_session', 'Allow for this session', 'session'), { permissions: params.permissions, scope: 'session' })
     add(simpleOption('reject', 'Reject', 'request'), { permissions: {}, scope: 'turn' })
   } else if (request.method === 'item/tool/requestUserInput') {
-    // Exact 0.154.0 MCP approval question, not arbitrary user-input prose.
     const questions = Array.isArray(params.questions) ? params.questions : []
     const question = questions.length === 1 && isObject(questions[0]) ? questions[0] : undefined
-    if (!question || !text(question.id)?.startsWith('mcp_tool_call_approval_')
-      || question.header !== 'Approve app tool call?' || question.isOther !== false || question.isSecret !== false
-      || params.isBlocking !== true || !Array.isArray(question.options)) return undefined
-    const choices = question.options.filter(isObject)
     const qualifiedChoices: Record<string, Omit<ApprovalResponseOption, 'optionId'>> = {
       Allow: simpleOption('approve_once', 'Allow', 'request'),
       'Allow for this session': simpleOption('allow_session', 'Allow for this session', 'session'),
@@ -61,36 +59,43 @@ export function translateCodexInteraction(context: {
       },
       Cancel: simpleOption('cancel', 'Cancel this tool call', 'request'),
     }
-    if (choices.length !== question.options.length || !choices.some((choice) => choice.label === 'Allow')
-      || !choices.some((choice) => choice.label === 'Cancel')
-      || choices.some((choice) => typeof choice.label !== 'string' || !Object.hasOwn(qualifiedChoices, choice.label))) return undefined
-    for (const choice of choices) {
-      const label = String(choice.label)
-      add({ ...qualifiedChoices[label]!, ...(typeof choice.description === 'string' ? { scopeSummary: choice.description } : {}) },
-        { answers: { [String(question.id)]: { answers: [label] } } })
+    const choices = Array.isArray(question?.options) ? question.options.filter(isObject) : []
+    const approvalQuestion = question && text(question.id)?.startsWith('mcp_tool_call_approval_')
+      && question.header === 'Approve app tool call?' && question.isOther === false && question.isSecret === false
+      && params.isBlocking === true && Array.isArray(question.options) && choices.length === question.options.length
+      && choices.some((choice) => choice.label === 'Allow') && choices.some((choice) => choice.label === 'Cancel')
+      && choices.every((choice) => typeof choice.label === 'string' && Object.hasOwn(qualifiedChoices, choice.label))
+    if (approvalQuestion) {
+      for (const choice of choices) {
+        const label = String(choice.label)
+        add({ ...qualifiedChoices[label]!, ...(typeof choice.description === 'string' ? { scopeSummary: choice.description } : {}) },
+          { answers: { [String(question.id)]: { answers: [label] } } })
+      }
+    } else {
+      add({ ...simpleOption('approve_once', 'Submit answers', 'request'),
+        input: { kind: 'questions', questions: NativeQuestionSchema.array().parse(questions) } }, {})
     }
   } else if (request.method === 'mcpServer/elicitation/request') {
     let content: JsonObject | null
     if (params.mode === 'url' && text(params.url) && text(params.elicitationId)) content = null
-    else if (['form', 'openai/form', 'openaiForm'].includes(String(params.mode)) && isObject(params.requestedSchema)) {
-      const schema = params.requestedSchema
-      // Only a no-data confirmation is representable by the current choice UI.
-      if (schema.type !== 'object'
-        || (schema.properties !== undefined && (!isObject(schema.properties) || Object.keys(schema.properties).length > 0))
-        || (schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.length > 0))
-        || Object.keys(schema).some((field) => !['type', 'properties', 'required', 'additionalProperties', 'title', 'description', '$schema'].includes(field))
-        || (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== 'boolean')) return undefined
+    else if (['form', 'openai/form', 'openaiForm'].includes(String(params.mode))
+      && (isObject(params.requestedSchema) || typeof params.requestedSchema === 'boolean')) {
       content = {}
     } else return undefined
+    const formInput = content !== null
+      ? NativeInteractionInputSchema.parse({ kind: 'form', schema: params.requestedSchema }) : undefined
     add({ ...simpleOption('approve_once', params.mode === 'url' ? 'Confirm authorization completed' : 'Accept', 'request'),
+      ...(formInput ? { input: formInput } : {}),
       ...(typeof params.url === 'string' && params.url.trim() ? { scopeSummary: params.url } : {}) }, { action: 'accept', content, _meta: null })
     // Pinned native MCP approval metadata explicitly advertises persistence.
     if (content !== null && isObject(params._meta) && params._meta.codex_approval_kind === 'mcp_tool_call') {
       const offered = Array.isArray(params._meta.persist) ? params._meta.persist : [params._meta.persist]
-      if (offered.includes('session')) add(simpleOption('allow_session', 'Allow for this session', 'session'),
+      if (offered.includes('session')) add({ ...simpleOption('allow_session', 'Allow for this session', 'session'),
+        ...(formInput ? { input: formInput } : {}) },
         { action: 'accept', content: {}, _meta: { persist: 'session' } })
       if (offered.includes('always')) add({
         ...simpleOption('persistent_policy_change', "Allow and don't ask me again", 'persistent_config'),
+        ...(formInput ? { input: formInput } : {}),
         mutatesPersistentPolicy: true,
       }, { action: 'accept', content: {}, _meta: { persist: 'always' } })
     }
@@ -101,10 +106,20 @@ export function translateCodexInteraction(context: {
   const options = [...responses.values()].map((value) => value.option)
   CodexSessionCompatibilitySchema.parse({ configuration: context.configuration, responseOptions: options })
   const pending = PendingNativeInteractionSchema.parse({
-    session: context.session, turn: { nativeTurnId: turnId, nativeRequestId },
+    session: context.session, turn: { ...(turnId ? { nativeTurnId: turnId } : {}), nativeRequestId },
     nativeRequestType: request.method, request: params, responseOptions: options,
   })
   return { pending, responses }
+}
+
+/** The offered input schema remains owned by the pending native callback. */
+export function resolveCodexInteractionResponse(
+  stored: { option: ApprovalResponseOption; nativeResponse: JsonObject }, selected: ApprovalResponseOption,
+): JsonObject {
+  const option = withInteractionResponse(stored.option, selected.response)
+  if (option.input?.kind === 'questions') return { answers: option.response }
+  if (option.input?.kind === 'form') return { ...stored.nativeResponse, content: option.response }
+  return stored.nativeResponse
 }
 
 function addCommandDecision(

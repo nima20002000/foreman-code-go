@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationReport, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, reservedIntegrationShards, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
+import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationReport, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, options, parseVitestCases, reservedIntegrationShards, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -40,10 +40,10 @@ test('discovery rejects symlinked test files and parent directories', () => {
 
 test('stale or forged heavy-job tokens do not count as queue admission', () => {
   const start = readFileSync(`/proc/${process.pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]
-  const environment = { GRAPHQL_HEAVY_JOB_COMMON: '/git/common', GRAPHQL_HEAVY_JOB_TOKEN: 'owned-token' }
+  const environment = { FOREMAN_CODE_HEAVY_JOB_COMMON: '/git/common', FOREMAN_CODE_HEAVY_JOB_TOKEN: 'owned-token' }
   const owner = { token: 'owned-token', pid: process.pid, start }
   assert.equal(hasActiveHeavyJobToken(environment, '/git/common', owner), true)
-  assert.equal(hasActiveHeavyJobToken({ ...environment, GRAPHQL_HEAVY_JOB_TOKEN: 'stale' }, '/git/common', owner), false)
+  assert.equal(hasActiveHeavyJobToken({ ...environment, FOREMAN_CODE_HEAVY_JOB_TOKEN: 'stale' }, '/git/common', owner), false)
   assert.equal(hasActiveHeavyJobToken(environment, '/other/common', owner), false)
   assert.equal(hasActiveHeavyJobToken(environment, '/git/common', { ...owner, start: 'stale' }), false)
   assert.equal(hasActiveHeavyJobToken(environment, '/git/common', null), false)
@@ -56,12 +56,21 @@ test('resume includes the selected file so a repaired failure is rerun', () => {
   assert.throws(() => selectFiles(files, 'missing'), /Unknown --start-at/)
 })
 
-test('explicit selection runs only known requested files and rejects an empty list', () => {
+test('requested integration files select only discovered files once in discovery order', () => {
   const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts',
     'apps/api/test/c.integration.test.ts']
   assert.deepEqual(selectExactFiles(files, [files[2], files[0], files[2]]), [files[0], files[2]])
-  assert.throws(() => selectExactFiles(files, []))
-  assert.throws(() => selectExactFiles(files, ['apps/api/test/missing.integration.test.ts']), /Unknown/)
+  assert.throws(() => selectExactFiles(files, []), /at least one integration file/)
+  assert.throws(() => selectExactFiles(files, ['apps/api/test/missing.integration.test.ts']), /Unknown --files/)
+  assert.throws(() => selectExactFiles(files, ['apps/api/test/../a.integration.test.ts']), /Unknown --files/)
+  assert.throws(() => selectExactFiles(files, ['apps/api/test/a.test.ts']), /Unknown --files/)
+})
+
+test('the runner accepts an explicit file list and rejects an empty list', () => {
+  const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts']
+  assert.deepEqual(options(['--files', ...files]), { startAt: null, failedFrom: null, files })
+  assert.throws(() => options(['--files']), /Usage/)
+  assert.deepEqual(options([]), { startAt: null, failedFrom: null, files: null })
 })
 
 test('failed-log selection includes only discovered failures once', () => {
@@ -73,6 +82,19 @@ test('failed-log selection includes only discovered failures once', () => {
   assert.deepEqual(failedFilesFromLog(log, files), ['apps/api/test/b.integration.test.ts'])
   assert.throws(() => failedFilesFromLog('[integration] FAIL apps/api/test/unknown.integration.test.ts (slot 1, exit 1)\n', files), /Unknown failed/)
   assert.throws(() => failedFilesFromLog('no failures', files), /no failed files/)
+})
+
+test('isolates bounded resource checks and retains every requested file exactly once', () => {
+  const files = ['apps/api/test/ordinary.integration.test.ts',
+    'apps/api/test/operator-chat.integration.test.ts',
+    'apps/api/test/entrypoints-source-approval-profile.integration.test.ts',
+    'apps/api/test/production-lifecycle.integration.test.ts',
+    'apps/api/test/dev-startup.integration.test.ts']
+  const partition = partitionIntegrationFiles(files)
+  assert.deepEqual(partition.parallel, [files[0]])
+  assert.deepEqual(partition.exclusive, [files[4], files[2], files[1], files[3]])
+  assert.deepEqual([...partition.exclusive, ...partition.parallel].sort(), [...files].sort())
+  assert.deepEqual(partitionIntegrationFiles([files[0]]), { exclusive: [], parallel: [files[0]] })
 })
 
 test('exact-file selection runs only requested discovered files once', () => {
@@ -129,9 +151,9 @@ test('process deadlines allow long progressing files and cannot be disabled by o
   const limits = integrationTimeouts({})
   assert.equal(limits.idleTimeoutMs, 600_000)
   assert.equal(limits.fileTimeoutMs, 3_600_000)
-  assert.equal(integrationTimeouts({ GRAPHQL_INTEGRATION_IDLE_TIMEOUT_MS: '5000' }).idleTimeoutMs, 5000)
+  assert.equal(integrationTimeouts({ FOREMAN_CODE_INTEGRATION_IDLE_TIMEOUT_MS: '5000' }).idleTimeoutMs, 5000)
   for (const value of ['0', '-1', 'Infinity', 'NaN', '3600001', '1.5']) {
-    assert.throws(() => integrationTimeouts({ GRAPHQL_INTEGRATION_FILE_TIMEOUT_MS: value }), /integer/)
+    assert.throws(() => integrationTimeouts({ FOREMAN_CODE_INTEGRATION_FILE_TIMEOUT_MS: value }), /integer/)
   }
 })
 
@@ -243,32 +265,34 @@ test('lists failing case names from a Vitest log', () => {
   assert.deepEqual(failedCasesFromLog(log), ['suite > breaks'])
 })
 
-test('TEST_DATABASE_URL selects the server; slots get their own databases there', () => {
-  assert.equal(adminDatabaseUrl(undefined), 'postgresql://graphql:graphql@127.0.0.1:5432/postgres')
-  assert.equal(adminDatabaseUrl('postgresql://u:p@127.0.0.1:5433/my_test'), 'postgresql://u:p@127.0.0.1:5433/postgres')
+test('database gates and storage paths use the current owned slot, overriding inherited destinations', () => {
+  const resource = createTestRoot()
+  const databaseUrl = new URL('/graphql_test_owned', testAdminUrl).toString()
+  const slot = { ...resource, databaseUrl }
+  const inherited = { TEST_DATABASE_URL: 'postgresql://remote/live', DATABASE_URL: 'postgresql://remote/live',
+    JOB_DISPATCH_DATABASE_URL: 'postgresql://remote/live', SUBAGENT_CORE_ADMIN_DATABASE_URL: 'postgresql://remote/live',
+    HRT_F03_DATABASE_URL: 'postgresql://remote/live', ENG03_A_TEST_DATABASE_URL: 'postgresql://remote/live',
+    NIM2691_ADMIN_DATABASE_URL: 'postgresql://remote/live', HRT_F14_ADMIN_DATABASE_URL: 'postgresql://remote/live',
+    HOME: '/real/home', CODEX_HOME: '/real/codex', TMPDIR: '/inherited' }
+  try {
+    const environment = integrationEnvironment(inherited, slot)
+    for (const name of Object.keys(inherited).filter(key => key.endsWith('DATABASE_URL'))) {
+      assert.equal(environment[name], slot.databaseUrl)
+    }
+    assert.equal(environment.NIM2691_POSTGRES, '1')
+    assert.equal(environment.TMPDIR, join(slot.directory, 'tmp'))
+    assert.ok(environment.HOME.startsWith(slot.directory + '/'))
+    assert.ok(environment.CODEX_HOME.startsWith(slot.directory + '/'))
+    assert.equal(inherited.HRT_F14_ADMIN_DATABASE_URL, 'postgresql://remote/live')
+    const retest = integrationEnvironment(environment, { ...slot, databaseUrl: databaseUrl + '_retest' })
+    assert.equal(retest.HRT_F14_ADMIN_DATABASE_URL, databaseUrl + '_retest')
+    for (const url of ['postgresql://graphql:graphql@127.0.0.1:5432/graphql',
+      'postgresql://graphql_test_admin:graphql_test_disposable_only@remote:55439/test', databaseUrl + '?options=unsafe']) {
+      assert.throws(() => integrationEnvironment(inherited, { ...slot, databaseUrl: url }), /dedicated disposable/)
+    }
+    assert.throws(() => integrationEnvironment(inherited, { ...slot, token: 'another-owner' }), /ownership/)
+  } finally { removeTestRoot(resource) }
 })
-
-test('dedicated database gates use the current owned slot, overriding inherited destinations', () => {
-  const slot = { databaseUrl: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_test_owned', directory: '/tmp/slot-1' }
-  const inherited = { TEST_DATABASE_URL: 'postgresql://remote/live',
-    JOB_DISPATCH_DATABASE_URL: 'postgresql://remote/live',
-    NIM2691_ADMIN_DATABASE_URL: 'postgresql://remote/live', HRT_F14_ADMIN_DATABASE_URL: 'postgresql://remote/live', TMPDIR: '/inherited' }
-  const environment = integrationEnvironment(inherited, slot)
-  for (const name of ['TEST_DATABASE_URL', 'JOB_DISPATCH_DATABASE_URL', 'NIM2691_ADMIN_DATABASE_URL', 'HRT_F14_ADMIN_DATABASE_URL']) {
-    assert.equal(environment[name], slot.databaseUrl)
-  }
-  assert.equal(environment.NIM2691_POSTGRES, '1')
-  assert.equal(environment.TMPDIR, slot.directory)
-  assert.equal(inherited.HRT_F14_ADMIN_DATABASE_URL, 'postgresql://remote/live')
-  const retest = integrationEnvironment(environment, { ...slot, databaseUrl: slot.databaseUrl + '_retest' })
-  assert.equal(retest.HRT_F14_ADMIN_DATABASE_URL, slot.databaseUrl + '_retest')
-  assert.equal(retest.JOB_DISPATCH_DATABASE_URL, slot.databaseUrl + '_retest')
-  for (const databaseUrl of ['postgresql://graphql:graphql@remote/graphql_test_owned',
-    'postgresql://graphql:graphql@127.0.0.1/live', slot.databaseUrl + '?options=unsafe']) {
-    assert.throws(() => integrationEnvironment(inherited, { ...slot, databaseUrl }), /loopback PostgreSQL database explicitly named for tests/)
-  }
-})
-
 
 test('admission recognizes legacy and secondary slots and rejects forged, stale and foreign records', () => {
   const common = mkdtempSync(join(tmpdir(), 'integration-admission-'))
@@ -280,7 +304,7 @@ test('admission recognizes legacy and secondary slots and rejects forged, stale 
     mkdirSync(running)
     const start = readFileSync(`/proc/${process.pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]
     const owner = { common, token: 'owned-token', pid: process.pid, start }
-    const environment = { GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: owner.token }
+    const environment = { FOREMAN_CODE_HEAVY_JOB_COMMON: common, FOREMAN_CODE_HEAVY_JOB_TOKEN: owner.token }
     writeFileSync(legacy, JSON.stringify(owner))
     assert.equal(hasHeavyJobAdmission(environment, common), true)
     writeFileSync(legacy, JSON.stringify({ ...owner, token: 'another-slot' }))
@@ -288,8 +312,8 @@ test('admission recognizes legacy and secondary slots and rejects forged, stale 
     writeFileSync(secondary, JSON.stringify(owner))
     writeFileSync(join(running, '000000000001-malformed'), '{')
     assert.equal(hasHeavyJobAdmission(environment, common), true)
-    assert.equal(hasHeavyJobAdmission({ ...environment, GRAPHQL_HEAVY_JOB_TOKEN: 'forged' }, common), false)
-    assert.equal(hasHeavyJobAdmission({ ...environment, GRAPHQL_HEAVY_JOB_COMMON: '/other/common' }, common), false)
+    assert.equal(hasHeavyJobAdmission({ ...environment, FOREMAN_CODE_HEAVY_JOB_TOKEN: 'forged' }, common), false)
+    assert.equal(hasHeavyJobAdmission({ ...environment, FOREMAN_CODE_HEAVY_JOB_COMMON: '/other/common' }, common), false)
     for (const invalid of [{ ...owner, start: 'stale' }, { ...owner, common: '/other/common' }, { ...owner, pid: 0 }]) {
       writeFileSync(secondary, JSON.stringify(invalid))
       assert.equal(hasHeavyJobAdmission(environment, common), false)

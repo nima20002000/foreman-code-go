@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, PendingNativeInteractionSchema, type ApprovalResponseOption } from '@foreman-code/contracts'
 import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import { nativeCorrelation } from '../src/modules/conversations/operatorChatRepository.js'
 import { OperatorConversationStateSchema } from '@foreman-code/contracts'
@@ -12,11 +12,17 @@ function fixture() {
     grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:respond'], scope: {} }] }
   const configuration = { id: 'configuration', operatorId: 'application-operator', version: 1, harness: DEFAULT_HARNESS_DEFAULTS.codex,
     contentHash: `sha256:${'a'.repeat(64)}`, createdAt: new Date().toISOString() }
-  const option = { optionId: 'reject', label: 'Reject', semantic: 'reject', scope: 'once' }
+  const option: ApprovalResponseOption = { optionId: 'reject', label: 'Reject', semantic: 'reject',
+    persistence: 'request', affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }
+  const pending = PendingNativeInteractionSchema.parse({
+    session: { harness: 'codex', providerVersion: 'test', nativeSessionId: 'session' },
+    turn: { nativeTurnId: 'turn', nativeRequestId: 'approval' }, nativeRequestType: 'item/commandExecution/requestApproval',
+    request: { command: 'printf requested' }, responseOptions: [option],
+  })
   const row = { id: 'chat', owner_principal_id: principal.id, operator_configuration_version_id: configuration.id,
     harness: 'codex', provider_version: 'test', native_session_id: 'session', active_request_id: 'request',
     active_native_turn_id: 'turn', active_phase: 'submitted', cancel_requested: false, revision: 1,
-    pending_interaction: { turn: { nativeRequestId: 'approval' }, responseOptions: [option] } }
+    pending_interaction: pending }
   const records = new Map<string, { target_key: unknown; input_hash: unknown; result: unknown }>()
   const commands = new OperatorChatCommands({ query: async (sql: string, values: unknown[]) => {
     const key = JSON.stringify(values.slice(0, 3))

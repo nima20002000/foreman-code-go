@@ -25,10 +25,12 @@ export async function reconcileSubagentCommand(service: RunSubagentService, prin
     if (!row) return undefined
     const receipt = RunSubagentCommandReceiptSchema.parse(row.record)
     const lease = receipt.state === 'uncertain' ? service.controls(child) : undefined
-    return { receipt, lease: lease?.matches(child) && lease.generation === receipt.nativeGeneration ? lease : undefined }
+    const matched = lease?.matches(child)
+      && (lease.generation === receipt.nativeGeneration || receipt.response) ? lease : undefined
+    return { receipt, lease: matched, generation: matched?.generation }
   })
   if (!captured?.lease?.reconcile) return captured?.receipt
-  const { receipt, lease } = captured
+  const { receipt, lease, generation } = captured
   // Native readback may publish evidence through another SQL connection. Never
   // hold the Run/child transaction while waiting for the native transport.
   let state: 'acknowledged' | 'rejected' | 'uncertain' = 'uncertain'
@@ -36,8 +38,11 @@ export async function reconcileSubagentCommand(service: RunSubagentService, prin
     lease.assertCurrent()
     state = await lease.reconcile!(receipt)
     lease.assertCurrent()
+    if (lease.generation !== generation) state = 'uncertain'
   } catch { state = 'uncertain' }
-  const action = receipt.operation === 'run_subagent_input_v1' ? 'runs:subagents:input' : 'runs:stop'
+  let action: 'runs:subagents:input' | 'runs:stop' | 'interactions:respond' = 'runs:stop'
+  if (receipt.operation === 'run_subagent_input_v1') action = 'runs:subagents:input'
+  else if (receipt.operation === 'run_subagent_respond_v1') action = 'interactions:respond'
   return service.scoped(principal, input, action, async scope => {
     const child = await service.child(scope, input)
     const current = service.controls(child)
@@ -45,7 +50,7 @@ export async function reconcileSubagentCommand(service: RunSubagentService, prin
       [receipt.id, child.id, principal.id])).rows[0]
     if (!row) return undefined
     const latest = RunSubagentCommandReceiptSchema.parse(row.record)
-    if (latest.state !== 'uncertain' || !current?.matches(child) || current.generation !== receipt.nativeGeneration) return latest
+    if (latest.state !== 'uncertain' || !current?.matches(child) || current.generation !== generation) return latest
     current.assertCurrent()
     if (state === 'uncertain') return latest
     const next = RunSubagentCommandReceiptSchema.parse({ ...latest, state,

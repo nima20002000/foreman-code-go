@@ -4,12 +4,12 @@ import { access, chmod, copyFile, cp, mkdir, mkdtemp, readFile, realpath, rename
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
-import { copyVerificationRuntime, deployProductionApi, preserveOperatorConfiguration, publish, readEnvironment,
+import { copyVerificationRuntime, deployProductionApi, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   readProductionIdentity, renderEnvironment,
   waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 
@@ -41,7 +41,7 @@ function run(command, args, options = {}) {
 
 async function configureEnvironment() {
   for (const directory of [config, state, data, app, join(data, 'files'), join(data, 'workspaces'),
-    join(state, 'runs'), join(state, 'mcp'), join(state, 'logs'), join(state, 'cache')]) {
+    join(state, 'runs'), join(state, 'logs'), join(state, 'cache')]) {
     await mkdir(directory, { recursive: true, mode: 0o700 })
     await chmod(directory, 0o700)
   }
@@ -59,27 +59,7 @@ async function configureEnvironment() {
     }
     password = randomBytes(32).toString('hex')
   }
-  const owned = {
-    NODE_ENV: 'production',
-    FOREMAN_CODE_LOCAL_PRODUCTION: '1',
-    HOST: '127.0.0.1',
-    PORT: '3041',
-    DATABASE_URL: `postgresql://graphql_production:${password}@127.0.0.1:55440/graphql_production`,
-    // Existing database units invoke Compose directly with this spelling.
-    GRAPHQL_PRODUCTION_DB_PASSWORD: password,
-    FOREMAN_CODE_BROWSER_ORIGIN: origin,
-    FOREMAN_CODE_WEB_DIST: join(current, 'apps/web/dist'),
-    WORKSPACE_STORAGE_ROOT: join(data, 'workspaces'),
-    FILE_STORAGE_ROOT: join(data, 'files'),
-    HARNESS_WORKSPACE_ROOT: join(state, 'runs'),
-    FOREMAN_CODE_APP_MCP_DIRECTORY: join(state, 'mcp'),
-    LOG_DIR: join(state, 'logs'),
-    XDG_CACHE_HOME: join(state, 'cache'),
-    LANGGRAPH_CHECKPOINT_SCHEMA: 'langgraph',
-    FOREMAN_CODE_DEV_BROWSER_ACCESS: '0',
-    NODE_OPTIONS: '',
-    NODE_PATH: '',
-  }
+  const owned = localProductionEnvironment(home, password)
   const { loadConfig } = await import('../apps/api/dist/config.js')
   const environment = await preserveOperatorConfiguration(join(config, 'operator.json'), previous, owned, loadConfig)
   await publish(envFile, renderEnvironment(environment))
@@ -223,6 +203,9 @@ async function install() {
   await run(join(release, 'node'), ['dist/cli/migrate.js'], {
     cwd: join(release, 'apps/api'), env: { ...process.env, ...environment },
   })
+  const upgradeModule = join(release, 'apps/api/dist/modules/harnesses/productionMcpUpgrade.js')
+  const { upgradeProductionMcpLauncher } = await import(pathToFileURL(upgradeModule))
+  await upgradeProductionMcpLauncher(home)
   const pending = join(app, `current.${randomBytes(8).toString('hex')}`)
   try {
     await symlink(release, pending)

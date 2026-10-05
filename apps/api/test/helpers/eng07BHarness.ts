@@ -106,7 +106,7 @@ export async function scenarioHarness(scenario: Scenario) {
     interactions: new OperatorInteractionService(base.service),
   } } })
   // Use the SAME human route/authentication/service as buildApp's product binding.
-  registerUserInteractions(app, base.access, base.service)
+  registerUserInteractions(app, base.service)
   const clients: Client[] = []
   try {
     // A public location_set must preserve the runner accepted by the synthetic
@@ -126,7 +126,7 @@ export async function scenarioHarness(scenario: Scenario) {
     const client = await connect(base.writer.token)
     async function rawHttp(method: string, path: string, body?: unknown, token = base.writer.token) {
       const response = await fetch(new URL(path, address), { method, signal: AbortSignal.timeout(30000),
-        headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+        headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
       const text = await response.text()
       let value: unknown

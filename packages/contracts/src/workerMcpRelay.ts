@@ -12,6 +12,9 @@ export const WorkerMcpRelayRequestSchema = z.discriminatedUnion('operation', [
     turnId: z.string().min(1).max(500) }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('worker-mcp.authorize-native-output-declarations'),
     intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, applicationAccess: RemoteApplicationAccessSchema }).strict(),
+  z.object({ version: z.literal(1), operation: z.literal('worker-mcp.native-output-readiness'),
+    intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, applicationAccess: RemoteApplicationAccessSchema,
+    nativeSessionId: z.string().min(1).max(500), turnId: z.string().min(1).max(500) }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('worker-mcp.request'), intent: DispatchIntentSchema,
     placement: AcceptedNodePlacementSchema, applicationAccess: RemoteApplicationAccessSchema,
     body: z.json(), protocolVersion: z.string().max(64).optional() }).strict(),
@@ -38,3 +41,7 @@ export const WorkerNativeOutputDeclarationsAuthorizationSchema = WorkerMcpRelayA
   .extend(WorkerNativeOutputDeclarationsPolicySchema.shape).strict()
 export type WorkerNativeOutputDeclarationsPolicy = z.infer<typeof WorkerNativeOutputDeclarationsPolicySchema>
 export type WorkerNativeOutputDeclarationsAuthorization = z.infer<typeof WorkerNativeOutputDeclarationsAuthorizationSchema>
+/** Readiness never grants a mutation or substitutes for operation authorization. */
+export const WorkerNativeOutputReadinessSchema = WorkerMcpRelayAuthorizationSchema.extend({
+  nativeSessionId: z.string().min(1).max(500), turnId: z.string().min(1).max(500), ready: z.boolean(),
+}).strict()

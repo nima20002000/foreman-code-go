@@ -1,12 +1,16 @@
+import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { z } from 'zod'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
+  type HarnessExecution, type HarnessExecutionContext } from '@foreman-code/contracts'
 import {
   AcceptedCurrentNodeResultSchema, GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema, NodeResolutionSchema,
   RepeatDecisionMetadataV1Schema, RepeatDecisionV1Schema, RepeatExecutionIdentityV1Schema,
   RepeatOccurrenceIdentityV1Schema, RepeatOccurrenceV1Schema, WorkflowVersionV3Schema,
   canonicalGraphJson, parseRepeatExitResultV1, parseWorkHandoffResult,
+  WorkActivationInputSchema, WorkReturnSchema,
   validateRepeatDecisionV1, validateRepeatSuccessorV1,
-  type WorkflowRunV3, type RepeatDecisionMetadataV1, type RepeatDecisionV1, type RepeatOccurrenceV1, type WorkflowVersionV3,
+  type WorkflowRunV3, type WorkActivationInput, type RepeatDecisionMetadataV1,
+  type RepeatDecisionV1, type RepeatOccurrenceV1, type WorkflowVersionV3,
 } from '@foreman-code/contracts/wave25'
 
 import { enterWorkflowNativeLocked, releaseWorkflowNativeEntryPermit, reserveWorkflowNativeEntryLocked, readWorkflowNativeEntryLocked,
@@ -21,15 +25,17 @@ import { assertApprovalTerminalSettlement } from '../interactions/wave25/resume.
 import { settleRepeatNativeExecutionLocked } from '../interactions/repeatNativeSettlement.js'
 import { visitRepeatNativeAttemptsLocked, type RepeatNativeAttemptSelection } from './repeatNativeAttempts.js'
 import { compileExecutionTopology } from './topology.js'
+import { assertWorkflowExecutionCapacityLocked } from './workflowExecutionBudget.js'
 import { captureRepeatNativeEvidence, repeatLaunchClaim, repeatPossibleSubmissionLocked, requireRepeatNativeHooks,
   type RepeatLaunchPaths, type RepeatNativeBoundaryEvidence, type RepeatNativeChange,
   type RepeatNativeEvidence, type RepeatNativeLockedHooks } from './repeatNativeRepository.js'
 import { inactiveRepeatResolution, prepareRepeatNativeUpdate, repeatTerminalResolution, type RepeatAcceptance, type RepeatAdmission } from './repeatNode.js'
 import { admitWorkHandoffLocked, ensureWorkEntryLocked, readWorkActivationInputLocked,
-  recordUnresolvedWorkLocked, returnWorkHandoffLocked,
+  recordUnresolvedWorkLocked, returnWorkHandoffLocked, resolveWaitingWorkJoinsLocked,
   type WorkRequestAdmission, type WorkReturnReceipt } from './workHandoffAdmission.js'
 import { markWorkNoticeDeliveredLocked, markWorkNoticePendingLocked,
   markWorkNoticeUnknownLocked } from './workHandoffNotice.js'
+import { assertWorkHandoffDeliveryLocked } from './workHandoffDelivery.js'
 import {
   assertRepeatBodyComplete, assertRepeatExecution, assertRepeatRef, assertRepeatSource,
   bindRepeatNodeInput, blockForNode, decideRepeatAdmission, decideRepeatBlockEntry, decideRepeatExit, finalRepeatExport,
@@ -209,10 +215,32 @@ export class RepeatRunRepository {
       assertActive: () => this.active(context),
     }, sourceExecutionId, 'finish_with_findings'))
   }
+  resolveWaitingWorkJoins(sourceActivationId: string): Promise<string[]> {
+    return this.transaction((context) => resolveWaitingWorkJoinsLocked({ ...context,
+      assertActive: () => this.active(context),
+    }, sourceActivationId))
+  }
   ensureWorkEntry(): Promise<string> {
     return this.transaction((context) => ensureWorkEntryLocked({ ...context,
       assertActive: () => this.active(context),
     }))
+  }
+  readWorkExecutionContext(executionId: string): Promise<HarnessExecutionContext> {
+    return this.transaction(async (context) => {
+      this.active(context)
+      await context.hooks.assertAuthorityLocked(context.sql)
+      const stored = await this.execution(context, executionId)
+      await this.recordedEffect(context, 'input.bind', executionId)
+      if (!stored.workActivationId) return repeatConflict('WORK_ACTIVATION_MISSING')
+      const input = await readWorkActivationInputLocked({ ...context,
+        assertActive: () => this.active(context),
+      }, stored.workActivationId)
+      assertWorkActivationReplay(stored, input)
+      return { parentRequest: input.parentRequest ? {
+        requestId: input.parentRequest.requestId,
+        requesterNodeId: input.parentRequest.requesterNodeId,
+      } : null }
+    })
   }
   /** Queue one exact activation through the existing native receipt and launch path. */
   admitWorkActivation(activationId: string, candidate: (nodeId: string) => HarnessExecution): Promise<{ execution: HarnessExecution; reused: boolean }> {
@@ -230,9 +258,7 @@ export class RepeatRunRepository {
       if (previous) {
         await this.recordedEffect(context, 'input.bind', previous.execution_id)
         const stored = await this.execution(context, previous.execution_id)
-        if (stored.workActivationId !== activationId || !sameRepeatValue(stored.input, input)) {
-          return repeatConflict('WORK_ACTIVATION_REPLAY_CONFLICT')
-        }
+        assertWorkActivationReplay(stored, input)
         return { execution: stored.execution, reused: true }
       }
       const state = (await context.sql.query<{ state: string }>(
@@ -307,7 +333,8 @@ export class RepeatRunRepository {
       if (stored.execution.result.outcome !== 'succeeded') return repeatConflict('WORK_SELECTED_EXECUTION_FAILED')
       await this.assertArtifactOutputs(context, stored.execution)
       const result = AcceptedCurrentNodeResultSchema.parse(stored.execution.result)
-      parseWorkHandoffResult(result)
+      const workResult = parseWorkHandoffResult(result)
+      await assertWorkHandoffDeliveryLocked(context, stored.execution, stored.workActivationId, workResult)
       const resultJson = canonicalGraphJson(result, 64 * 1024), resultDigest = repeatDigest(result, 64 * 1024)
       await this.effect(context, 'terminal.accept', executionId,
         { execution: stored.execution, resultDigest, workActivationId: stored.workActivationId },
@@ -832,6 +859,7 @@ export class RepeatRunRepository {
         recipient: execution, ref, occurrence: occurrence?.occurrence ?? null, entry: occurrence?.input ?? null, predecessors: sources })
       const queued = HarnessExecutionSchema.parse({ ...execution, input: bound.input })
       await context.hooks.assertAdmissionLocked(context.sql, queued, ref)
+      await assertWorkflowExecutionCapacityLocked(context.sql, context.scope.runId, context.version)
       await this.effect(context, 'input.bind', queued.id, { ref, queued, inputDigest: bound.digest, bindings: bound.bindings },
         [{ type: 'repeat.execution.queued', ref, execution: repeatExecutionIdentity(queued), inputDigest: bound.digest }], async () => {
           await context.sql.query(`insert into run_repeat_slots(slot_id,run_id,occurrence_id,workflow_node_id,input_json,input_digest)
@@ -850,6 +878,7 @@ export class RepeatRunRepository {
   private async insertExecution(context: Context, ref: RepeatNodeRef, execution: HarnessExecution, slotId: string,
     inputDigest: string, bindings: RepeatInputBinding[], previousExecutionId: string | null,
     workActivationId: string | null = null): Promise<void> {
+    await assertWorkflowExecutionCapacityLocked(context.sql, context.scope.runId, context.version, workActivationId)
     const occurrenceId = ref.occurrence?.occurrenceId ?? null
     const identity = ref.occurrence ? { ...repeatExecutionIdentity(execution), occurrence: ref.occurrence } : repeatExecutionIdentity(execution)
     if (workActivationId) {
@@ -1048,11 +1077,12 @@ export class RepeatRunRepository {
   async completeWorkRun(): Promise<'completed' | 'needs_direction'> {
     return this.transaction(async (context) => {
       if (!context.version.definition.handoffs || context.version.definition.repeat) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
-      const activations = await context.sql.query<{ state: string }>(
-        'select state from run_work_activations where run_id=$1 order by activation_id', [context.scope.runId])
+      const activations = await context.sql.query<{ activation_id: string; state: string }>(
+        'select activation_id,state from run_work_activations where run_id=$1 order by activation_id', [context.scope.runId])
       if (!activations.rows.length || activations.rows.some((row) => row.state !== 'completed')) {
         return repeatConflict('WORK_ACTIVATIONS_UNRESOLVED')
       }
+      const activationIds = new Set(activations.rows.map((row) => row.activation_id))
       const denied = await context.sql.query<{ denial_id: string; notice_id: string | null;
         delivery_state: string | null; continuation_activation_id: string | null;
         activation_state: string | null; accepted: boolean }>(`
@@ -1069,46 +1099,73 @@ export class RepeatRunRepository {
         return repeatConflict('WORK_DENIAL_CONTINUATION_UNRESOLVED')
       }
       const unresolved = (await context.sql.query<{ unresolved_id: string; execution_id: string;
-        result_digest: string }>(`select unresolved_id,execution_id,result_digest
+        result_digest: string; reason: 'finish_with_findings' | 'repeated_exhausted_route'
+      }>(`select unresolved_id,execution_id,result_digest,reason
           from run_work_unresolved where run_id=$1 order by unresolved_id`,
       [context.scope.runId])).rows
-      const unresolvedByExecution = new Map(unresolved.map((item) => [item.execution_id, item]))
-      if (unresolvedByExecution.size !== unresolved.length) return repeatConflict('WORK_UNRESOLVED_RECEIPT_CONFLICT')
+      const unresolvedByExecution = new Map<string, typeof unresolved>()
+      for (const item of unresolved) {
+        const causes = unresolvedByExecution.get(item.execution_id) ?? []
+        causes.push(item)
+        unresolvedByExecution.set(item.execution_id, causes)
+      }
       const accepted = await context.sql.query<{ record: unknown; result_json: string; result_digest: string;
-        execution_id: string; source_requests: string; source_denials: string;
-        needs_changes_return: string }>(`select e.record,x.result_json,x.result_digest,x.execution_id,
+        execution_id: string; activation_id: string; stored_activation_id: string; accepted: boolean;
+        source_requests: string; source_denials: string; returned: unknown | null }>(`
+          select e.record,e.accepted,e.work_activation_id as stored_activation_id,
+          x.result_json,x.result_digest,x.execution_id,x.activation_id,
           (select count(*)::text from run_work_requests q where q.run_id=x.run_id and q.requester_execution_id=x.execution_id) as source_requests,
           (select count(*)::text from run_work_denials d where d.run_id=x.run_id and d.requester_execution_id=x.execution_id) as source_denials,
-          (select count(*)::text from run_work_returns t where t.run_id=x.run_id and t.source_execution_id=x.execution_id
-            and t.outcome='needs_changes') as needs_changes_return
+          (select t.record from run_work_returns t where t.run_id=x.run_id and t.source_execution_id=x.execution_id) as returned
         from run_work_results x join harness_executions e on e.id=x.execution_id
         where x.run_id=$1 order by x.execution_id`, [context.scope.runId])
       const terminals: RepeatSource[] = []
+      const acceptedActivations = new Set<string>()
       for (const row of accepted.rows) {
         const execution = HarnessExecutionSchema.parse(row.record)
         const result = AcceptedCurrentNodeResultSchema.parse(JSON.parse(row.result_json))
-        if (execution.state !== 'completed' || !sameRepeatValue(execution.result, result)
+        if (execution.id !== row.execution_id || execution.runId !== context.scope.runId
+          || execution.state !== 'completed' || !sameRepeatValue(execution.result, result)
+          || !row.accepted || row.stored_activation_id !== row.activation_id || !activationIds.has(row.activation_id)
+          || acceptedActivations.has(row.activation_id)
           || row.result_digest !== repeatDigest(result, 64 * 1024)) return repeatConflict('WORK_RESULT_RECEIPT_MISSING')
+        acceptedActivations.add(row.activation_id)
         const workResult = parseWorkHandoffResult(result), routing = workResult.routing
-        const unresolvedItem = unresolvedByExecution.get(row.execution_id)
-        if (unresolvedItem) {
-          if (unresolvedItem.result_digest !== row.result_digest
-            || routing.kind !== 'request' && (routing.kind !== 'finish' || !workResult.data.remainingFindings.length)) {
+        if (routing.kind === 'return') {
+          const returned = WorkReturnSchema.parse(row.returned)
+          if (!sameRepeatValue(returned.scope, context.scope) || returned.sourceExecutionId !== row.execution_id
+            || returned.sourceActivationId !== row.activation_id || returned.requestId !== routing.requestId
+            || returned.outcome !== routing.outcome || returned.acceptedResultDigest !== row.result_digest
+            || !sameRepeatValue(returned.latestDeliverable, workResult.data.latestDeliverable)
+            || !sameRepeatValue(returned.remainingFindings, workResult.data.remainingFindings)) {
+            return repeatConflict('WORK_RETURN_RESULT_CONFLICT')
+          }
+        }
+        const unresolvedItems = unresolvedByExecution.get(row.execution_id)
+        if (unresolvedItems) {
+          const terminalWithFindings = workResult.data.remainingFindings.length > 0
+            && (routing.kind === 'finish' || routing.kind === 'return' && routing.outcome === 'accepted')
+          if (unresolvedItems.some((unresolvedItem) => unresolvedItem.result_digest !== row.result_digest
+            || unresolvedItem.reason === 'finish_with_findings' && !terminalWithFindings
+            || unresolvedItem.reason === 'repeated_exhausted_route'
+              && routing.kind !== 'request' && routing.kind !== 'finish')) {
             return repeatConflict('WORK_UNRESOLVED_RECEIPT_CONFLICT')
           }
           unresolvedByExecution.delete(row.execution_id)
           continue
         }
         if (routing.kind === 'return' && routing.outcome === 'needs_changes') continue
-        if (Number(row.source_requests)>0 || Number(row.source_denials)>0
-          || Number(row.needs_changes_return)>0) continue
+        if (Number(row.source_requests)>0 || Number(row.source_denials)>0) continue
         if (routing.kind === 'request') return repeatConflict('WORK_REQUEST_UNRESOLVED')
-        if (workResult.data.remainingFindings.length) return repeatConflict('WORK_NEEDS_DIRECTION')
+        if (workResult.data.remainingFindings.length) return repeatConflict('WORK_UNRESOLVED_RECEIPT_MISSING')
         terminals.push({ relationshipId: 'terminal', execution: repeatExecutionIdentity(execution),
           occurrence: null, acceptedResultDigest: row.result_digest, acceptedResult: result })
       }
-      if (unresolvedByExecution.size || !terminals.length && !unresolved.length
-        || terminals.length>context.version.definition.nodes.length) return repeatConflict('WORKFLOW_UNRESOLVED')
+      if (unresolvedByExecution.size || acceptedActivations.size !== activations.rows.length
+        || !terminals.length && !unresolved.length
+        || terminals.length > context.version.definition.executionPolicy!.maxNodeExecutions) {
+        return repeatConflict('WORKFLOW_UNRESOLVED')
+      }
       if (unresolved.length) {
         this.active(context)
         await this.settleAttempts(context, { kind: 'run' })
@@ -1125,6 +1182,16 @@ export class RepeatRunRepository {
         () => context.hooks.completeRunLocked(context.sql, terminals))
       return 'completed'
     })
+  }
+}
+
+function assertWorkActivationReplay(stored: StoredRepeatExecution, input: WorkActivationInput): void {
+  const frozen = WorkActivationInputSchema.parse(stored.input)
+  const expected = { ...input }
+  // Historical inputs keep their original shape; ancestry is validated separately.
+  if (!('parentRequest' in frozen)) delete expected.parentRequest
+  if (stored.workActivationId !== input.work.activation.activationId || !sameRepeatValue(frozen, expected)) {
+    return repeatConflict('WORK_ACTIVATION_REPLAY_CONFLICT')
   }
 }
 
@@ -1192,18 +1259,20 @@ async function readRepeatEffectReceipt(sql: GraphTransactionSql, scope: RepeatSc
 
 /** The caller must have read the exact accepted Run/version on THIS transaction
  * and authorized the requested detail. Never opens a native host or progresses. */
-export async function readRepeatExecutionLocked(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot,
+export function readRepeatExecutionLocked(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot,
   executionId: string): Promise<StoredRepeatExecution> {
-  assertGraphTransaction(sql)
-  const { run, version } = snapshot
-  const scope: RepeatScope = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
-    workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 }
-  const head = await sql.query<{ protocol_version: number }>(
-    'select protocol_version from run_graph_heads where run_id=$1 for share', [run.id])
-  if (head.rows.length !== 1 || head.rows[0]?.protocol_version !== 1) return repeatConflict('GRAPH_NOT_INITIALIZED')
-  const stored = await readStoredRepeatExecution(sql, scope, version, executionId, 'share')
-  await readRepeatEffectReceipt(sql, scope, 'input.bind', executionId)
-  return stored
+  return timeRuntimeOperation('db', 'snapshot.read_execution', async () => {
+    assertGraphTransaction(sql)
+    const { run, version } = snapshot
+    const scope: RepeatScope = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
+      workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 }
+    const head = await sql.query<{ protocol_version: number }>(
+      'select protocol_version from run_graph_heads where run_id=$1 for share', [run.id])
+    if (head.rows.length !== 1 || head.rows[0]?.protocol_version !== 1) return repeatConflict('GRAPH_NOT_INITIALIZED')
+    const stored = await readStoredRepeatExecution(sql, scope, version, executionId, 'share')
+    await readRepeatEffectReceipt(sql, scope, 'input.bind', executionId)
+    return stored
+  }, { runId: snapshot.run.id, executionId })
 }
 
 /** An accepted flag alone is not an accepted v3 result. The immutable terminal,

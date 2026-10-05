@@ -1,11 +1,11 @@
 import { PinnedNodePlacement } from '../node-placement/PinnedNodePlacement'
-import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { Alert, Badge, Button } from '../../shared/ui/nocturne'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
-import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'
+import { useLocalHumanAccessQuery } from '../../shared/api/settingsExperience'
 import { useCurrentRunQuery, currentRunKey } from './currentRunQuery'
 import { readPinnedRun } from './runDetailsClient'
 import { useRunVersionQuery } from './inspect/queries'
@@ -23,7 +23,7 @@ import { Activities } from './Activities'
 export type RunDetailsProps = { scope: RepeatGraphScopeV3; runActions?: ReactNode }
 export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
   const canonical = useCurrentRunQuery(scope, false), cache = useQueryClient(), generation = sessionGeneration()
-  const access = useBrowserAccessQuery(), outbox = useBoardStopOutbox(scope)
+  const access = useLocalHumanAccessQuery(), outbox = useBoardStopOutbox(scope)
   const identity = JSON.stringify([generation, scope]), detailsKey = ['workbench', 'pinned-v3-run-details', generation, scope.workspaceId, scope.workflowId, scope.runId, scope.workflowVersionId]
   const run = useQuery({ queryKey: detailsKey, queryFn: ({ signal }) => readPinnedRun(scope, { signal }), retry: false,
     staleTime: Infinity, refetchOnMount: 'always', refetchOnReconnect: false, refetchOnWindowFocus: false })
@@ -100,7 +100,7 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
       Recorded {snapshot.state.run.executionState} · {snapshot.state.run.outcome} · complete cut {snapshot.asOfSequence}.
       {snapshot.state.run.stopRequested ? ' Stop requested; cleanup is not implied.' : ''}</p>}
     {run.isPending ? <p role="status">Reading accepted Run facts…</p> : null}
-    {detail ? <p>Accepted Run facts below are from an explicit authenticated read.
+    {detail ? <p>Saved Run details below were read from the server.
       <Button size="sm" variant="ghost" disabled={run.isFetching} onClick={() => void refetchRun()}>Refresh accepted Run facts</Button></p> : null}
     {run.isError ? <Alert tone="warning" title="Private Run details are unavailable."><Button size="sm" onClick={() => void refetchRun()}>Retry pinned details</Button></Alert> : null}
     <div data-testid="run-details-actions-slot">{denied ? null : runActions !== undefined ? runActions : <>
@@ -118,7 +118,7 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
     {detail ? <dl><dt>Saved configuration pins</dt><dd><JsonValue label="Run configuration pins" value={detail.run.agentConfigurationVersionIds} /></dd>
       <dt>Accepted execution folder</dt><dd>{detail.run.executionLocation ? <JsonValue label="Run execution folder" value={detail.run.executionLocation} /> : 'Restricted or unavailable; the current workspace folder is not substituted.'}</dd>
       <dt>Accepted Run input</dt><dd><JsonValue label="Accepted Run input" value={detail.run.input} /></dd>
-      <dt>Cleanup</dt><dd>{detail.cleanupPending === true ? 'Pending' : detail.cleanupPending === false ? (detail.run.executionState === 'completed' ? 'Settled according to authenticated Run readback' : 'None pending; the Run is still active') : 'Unknown'}</dd>
+      <dt>Cleanup</dt><dd>{detail.cleanupPending === true ? 'Pending' : detail.cleanupPending === false ? (detail.run.executionState === 'completed' ? 'Cleanup confirmed by the server' : 'None pending; the Run is still active') : 'Unknown'}</dd>
       {detail.run.result ? <><dt>Recorded Run result</dt><dd><JsonValue label="Recorded Run result" value={detail.run.result} /></dd></> : null}</dl> : null}
     <details open={configurationOpen} onToggle={(event) => useInspectionPresentation.getState().setOpen(configurationKey, event.currentTarget.open)}>
       <summary>Exact saved definition and Agent configuration pins</summary>

@@ -6,7 +6,7 @@ export function needsRunRefresh(run: ActionRun): boolean {
 }
 export function newFullRunReason(run: ActionRun): string | undefined {
   if (run.executionState !== 'completed') return 'This Run is still active. A full retry is available only after failure or cancellation and cleanup.'
-  if (run.cleanupPending) return 'Cleanup is pending. A new full Run is unavailable until authenticated readback confirms settlement.'
+  if (run.cleanupPending) return 'Cleanup is pending. A new full Run is unavailable until the server confirms cleanup has finished.'
   if (run.outcome !== 'failed' && run.outcome !== 'canceled') return 'A full retry is offered only for failed or canceled Runs.'
   return undefined
 }

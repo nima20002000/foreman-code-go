@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -16,19 +17,19 @@ import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase
 
 const origin = 'http://127.0.0.1:5173'
 const browserHeaders = { host: '127.0.0.1:3000', origin }
-const account = { email: 'entrypoints-owner@example.test', password: 'entrypoints-owned-test-password' }
 
-async function fixture(pinOwner = true) {
+async function fixture() {
   const db = await currentDatabase(), access = new PostgresAccessService(db.pool)
   const owner = await access.issue({ name: 'Existing installation owner', audience: 'operator',
     grants: [{ actions: ManagementActionSchema.options, scope: {} }], expiresAt: new Date(Date.now() + 3_600_000) })
   const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, HARNESS_WORKSPACE_ROOT: join(db.directory, 'runtime'),
     CODEX_BINARY: '/unprovisioned-test-codex', OPENCODE_BINARY: '/unprovisioned-test-opencode',
-    BETTER_AUTH_SECRET: 'entrypoints-test-browser-secret-'.repeat(3), BETTER_AUTH_URL: origin,
-    ...(pinOwner ? { OWNER_OPERATOR_PRINCIPAL_ID: owner.principal.id } : {}) })
+    FOREMAN_CODE_BROWSER_ORIGIN: origin })
+  await db.pool.query('update local_human_principal set principal_id=$1', [owner.principal.id])
   config.workspaceStorageRoot = join(db.directory, 'workspaces')
   await mkdir(config.harnesses.workspaceRoot, { mode: 0o700 })
   const cpSchema = `${db.schema}_cp`
+  await createFixtureSchema(db.pool, cpSchema)
   const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, cpSchema, config.database)
   const clients: Client[] = []
   let production: ReturnType<typeof buildProductionApp> | undefined
@@ -36,7 +37,7 @@ async function fixture(pinOwner = true) {
     try { await Promise.allSettled(clients.map(client => client.close())); await production?.shutdown() }
     finally {
       await checkpoints.close()
-      await db.pool.query(`drop schema if exists "${cpSchema}" cascade`)
+      await dropFixtureSchema(db.pool, cpSchema)
       await db.close()
     }
   }
@@ -46,7 +47,8 @@ async function fixture(pinOwner = true) {
       migrate: () => applyApplicationMigrations(db.pool), close: async () => {} }, checkpoints, false)
     production = build()
     await production.initialize()
-    let app = production.app, address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const app = production.app
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const auth = { authorization: `Bearer ${owner.token}` }
     // Pair through the original grant service and signed worker proof. Never insert an owner or consent record.
     const keys = generateKeyPairSync('ed25519'), publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString()
@@ -64,63 +66,23 @@ async function fixture(pinOwner = true) {
       await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
       return client
     }
-    const setup = async () => {
-      const created = await app.inject({ method: 'POST', url: '/api/auth/setup', headers: browserHeaders, payload: account })
-      expect(created.statusCode, created.body).toBe(201)
-      const signedIn = await app.inject({ method: 'POST', url: '/api/auth/sign-in/email', headers: browserHeaders, payload: account })
-      expect(signedIn.statusCode, signedIn.body).toBe(200)
-      const values = signedIn.headers['set-cookie'], cookie = (Array.isArray(values) ? values : [values!]).map(value => value.split(';')[0]).join('; ')
-      return { ...browserHeaders, cookie }
-    }
-    const restartWithOwnerPin = async () => {
-      await production!.shutdown()
-      config.browserAuth!.ownerPrincipalId = owner.principal.id
-      production = build()
-      await production.initialize()
-      app = production.app
-      address = await app.listen({ host: '127.0.0.1', port: 0 })
-    }
-    return { db, access, owner, get app() { return app }, auth, paired, setup, call, close, restartWithOwnerPin }
+    const setup = async () => browserHeaders
+    return { db, access, owner, get app() { return app }, auth, paired, setup, call, close }
   } catch (error) { await close(); throw error }
 }
 
-describe.skipIf(!postgresEnabled)('trusted connections through the production Main entrypoint', () => {
-  it('establishes the pinned browser owner on an existing installation without changing its paired identity or authority', async () => {
-    const f = await fixture(false)
+describe.skipIf(!postgresEnabled)('trusted connections through the production Main entrypoint', { timeout: 60_000 }, () => {
+  it('opens an existing installation without login and preserves machine identities', async () => {
+    const f = await fixture()
     try {
-      const before = {
-        principal: (await f.db.pool.query('select * from management_principals where id=$1', [f.owner.principal.id])).rows,
-        installation: (await f.db.pool.query('select * from application_installation')).rows,
-        main: (await f.db.pool.query('select * from device_main_identity')).rows,
-        device: (await f.db.pool.query('select * from device_registrations')).rows,
-      }
-      const status = () => f.app.inject({ method: 'GET', url: '/api/auth/setup', headers: browserHeaders })
-      expect((await status()).json()).toEqual({ state: 'locked', reason: 'existing-installation' })
-      const locked = await f.app.inject({ method: 'POST', url: '/api/auth/setup', headers: browserHeaders, payload: account })
-      expect(locked.statusCode).toBe(409)
-      expect((await f.db.pool.query('select * from browser_auth_owner')).rows).toEqual([])
-      // Same original database, Main identity, runtime and worker registration; only the supported server pin changes.
-      await f.restartWithOwnerPin()
-      expect((await status()).json()).toEqual({ state: 'ready' })
-      const browser = await f.setup()
-      expect((await status()).json()).toEqual({ state: 'complete' })
-      const session = await f.app.inject({ method: 'GET', url: '/api/auth/session', headers: browser })
-      expect(session.statusCode, session.body).toBe(200)
-      expect(session.json().principal.id).toBe(f.owner.principal.id)
-      expect(session.json().principal.grants).toEqual(f.owner.principal.grants)
-      expect((await f.db.pool.query('select principal_id from browser_auth_owner where singleton=true')).rows).toEqual([{ principal_id: f.owner.principal.id }])
-      expect({
-        principal: (await f.db.pool.query('select * from management_principals where id=$1', [f.owner.principal.id])).rows,
-        installation: (await f.db.pool.query('select * from application_installation')).rows,
-        main: (await f.db.pool.query('select * from device_main_identity')).rows,
-        device: (await f.db.pool.query('select * from device_registrations')).rows,
-      }).toEqual(before)
-      expect((await f.access.authenticate(f.owner.token)).id).toBe(f.owner.principal.id)
-      const worker = await new PostgresDeviceAccessService(f.db.pool, f.paired.registration.mainId).authenticateDevice(f.paired.credential, 'connect')
-      expect(worker).toMatchObject({ mainId: f.paired.registration.mainId, deviceId: f.paired.registration.deviceId,
-        workerInstallationId: f.paired.registration.workerInstallationId, keyRevision: 1, authorizationRevision: 1 })
+      const before = (await f.db.pool.query('select * from device_registrations')).rows
+      const human = await f.app.inject({ url: '/api/local-human', headers: browserHeaders })
+      expect(human.statusCode, human.body).toBe(200)
+      expect(human.json().principal.id).toBe(f.owner.principal.id)
+      expect(human.headers['set-cookie']).toBeUndefined()
+      expect((await f.db.pool.query('select * from device_registrations')).rows).toEqual(before)
     } finally { await f.close() }
-  }, 120_000)
+  })
 
   it('mounts HTTP/browser approval and MCP with denial, atomic consent and persisted readback', async () => {
     const f = await fixture()

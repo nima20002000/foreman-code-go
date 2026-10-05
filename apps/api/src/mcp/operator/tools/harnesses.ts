@@ -34,12 +34,17 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'execution_readiness_get', () => context.services.executionReadiness!.get(context.principal, input.harness, input.scope, input.configurationVersionId)))
   if (operatorToolAvailable(context, 'harness_list')) server.registerTool('harness_list', {
-    description: 'List qualified local harness capabilities and saved defaults.', inputSchema: z.object({}).strict(),
+    description: 'List qualified local harness capabilities, saved defaults, and application interactionSupport limits. '
+      + 'Codex supports generic questions, MCP approvals, and schema-validated data-entry forms.',
+    inputSchema: z.object({}).strict(),
     outputSchema: HarnessCatalogResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'harness_list', async () => ({ items: await context.services.harnesses.list(context.principal) })))
   if (operatorToolAvailable(context, 'harness_get')) server.registerTool('harness_get', {
-    description: 'Read one qualified harness capability and its saved defaults.', inputSchema: HarnessGetInputSchema,
+    description: 'Read one qualified harness capability, its saved defaults, and application interactionSupport limits. '
+      + 'Read supported and unsupported descriptions before requesting native input; '
+      + 'Codex supports generic questions and schema-validated data-entry forms.',
+    inputSchema: HarnessGetInputSchema,
     outputSchema: HarnessCatalogEntrySchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_get', () => context.services.harnesses.get(context.principal, input.harness)))

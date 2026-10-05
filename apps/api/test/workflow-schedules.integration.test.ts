@@ -409,8 +409,11 @@ describe.skipIf(!postgresEnabled)('SCH-03 PostgreSQL persistence and authenticat
       expect(JSON.stringify(wrongScope.content)).toContain('ACCESS_DENIED')
       const deniedHttp = await app.inject({ method: 'PUT', url: root, payload: body, headers: { authorization: `Bearer ${reader.token}` } })
       expect(deniedHttp.statusCode).toBe(403)
-      const anonymous = await app.inject({ method: 'GET', url: root })
-      expect(anonymous.statusCode).toBe(401)
+      const local = await app.inject({ method: 'GET', url: root })
+      expect(local.statusCode).toBe(200)
+      expect(local.json()).toEqual({ schedule: saved.value })
+      const invalid = await app.inject({ method: 'GET', url: root, headers: { authorization: 'Bearer invalid' } })
+      expect(invalid.statusCode).toBe(401)
       const missingHierarchy = await app.inject({ method: 'GET',
         url: `/api/management/workspaces/${scope.workspaceId}/workflows/${foreignScope.workflowId}/schedule`,
         headers: { authorization: `Bearer ${writer.token}` } })

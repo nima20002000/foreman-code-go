@@ -1,4 +1,9 @@
+import { TextTruncationSchema } from './activityText.js';
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
+import { NativeInteractionSupportSchema } from './nativeInteractionSupport.js';
+import { NativeInteractionInputSchema } from './interactionInput.js';
+export * from './interactionInput.js';
+export * from './nativeInteractionSupport.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
 import { ClaudeEffortSchema, ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
 import { changeCodexSandbox } from './harnessEditing.js';
@@ -282,6 +287,16 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   designatedOrchestrator: z.boolean().default(false),
 }).strict().superRefine((value, context) => {
   if (!value.workflowApprovalHandler) return;
+  if (value.workflowApprovalHandler === "native") {
+    const configuration = value.configuration;
+    const native = configuration.harness === "opencode"
+      ? configuration.autoApprove || configuration.advanced?.permissionHandling === "native_auto"
+      : configuration.harness === "codex" && (configuration.advanced?.approvalPolicy === "never"
+        || configuration.advanced?.approvalsReviewer === "auto_review");
+    if (!native) context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration"],
+      message: "native workflow handling requires explicit native approval settings on each Agent" });
+    return;
+  }
   if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review"
     && value.workflowApprovalHandler !== "orchestrator") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with this workflow approval handler" });
@@ -470,6 +485,7 @@ export const NativeHarnessCapabilitiesSchema = z.object({
   configurationInspection: z.boolean(),
   mcpDetection: z.boolean(),
   supportedInteractionKinds: z.array(z.string().trim().min(1)),
+  interactionSupport: z.array(NativeInteractionSupportSchema).optional(),
 }).strict();
 export type NativeHarnessCapabilities = z.infer<typeof NativeHarnessCapabilitiesSchema>;
 
@@ -489,6 +505,8 @@ export const ApprovalResponseOptionSchema = z.object({
   affectsOtherPendingRequests: z.boolean(),
   interruptsCurrentTurn: z.boolean(),
   mutatesPersistentPolicy: z.boolean(),
+  input: NativeInteractionInputSchema.optional(),
+  response: z.json().optional(),
 }).strict();
 export type ApprovalResponseOption = z.infer<typeof ApprovalResponseOptionSchema>;
 
@@ -587,11 +605,14 @@ export const NativeSessionReferenceSchema = z.object({
   nativeSessionId: IdSchema,
 }).strict();
 export type NativeSessionReference = z.infer<typeof NativeSessionReferenceSchema>;
-export const NativeTurnReferenceSchema = z.object({
+const NativeInteractionIdentitySchema = z.object({
   nativeTurnId: IdSchema.optional(),
   nativeMessageId: IdSchema.optional(),
   nativeRequestId: IdSchema.optional(),
-}).strict().refine((value) => (value.nativeTurnId !== undefined) !== (value.nativeMessageId !== undefined), { message: "Exactly one observed native turn or message identity is required." });
+}).strict();
+export const NativeTurnReferenceSchema = NativeInteractionIdentitySchema.refine(
+  (value) => (value.nativeTurnId !== undefined) !== (value.nativeMessageId !== undefined),
+  { message: "Exactly one observed native turn or message identity is required." });
 export type NativeTurnReference = z.infer<typeof NativeTurnReferenceSchema>;
 export const NativeHarnessEventSchema = z.object({
   connectionId: IdSchema.optional(),
@@ -603,14 +624,23 @@ export const NativeHarnessEventSchema = z.object({
 export type NativeHarnessEvent = z.infer<typeof NativeHarnessEventSchema>;
 export const PendingNativeInteractionSchema = z.object({
   session: NativeSessionReferenceSchema,
-  turn: NativeTurnReferenceSchema,
+  turn: NativeInteractionIdentitySchema,
   nativeRequestType: z.string().trim().min(1),
   request: z.json(),
   responseOptions: z.array(ApprovalResponseOptionSchema).min(1),
 }).strict().superRefine((value, context) => {
+  if (value.session.harness === 'codex' && value.nativeRequestType === 'mcpServer/elicitation/request'
+    && value.turn.nativeRequestId && !value.turn.nativeTurnId && !value.turn.nativeMessageId) return;
+  if ((value.turn.nativeTurnId !== undefined) === (value.turn.nativeMessageId !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['turn'], message: 'An observed turn or message identity is required.' });
+  }
   if (value.session.harness !== "claude" && !value.turn.nativeTurnId) context.addIssue({ code: "custom", path: ["turn", "nativeTurnId"], message: "This native provider requires its observed turn identity." });
 });
 export type PendingNativeInteraction = z.infer<typeof PendingNativeInteractionSchema>;
+export function isSessionNativeInteraction(value: PendingNativeInteraction): boolean {
+  return value.session.harness === 'codex' && value.nativeRequestType === 'mcpServer/elicitation/request'
+    && !value.turn.nativeTurnId && !value.turn.nativeMessageId && Boolean(value.turn.nativeRequestId);
+}
 
 export const ActiveTimeBudgetSchema = z.object({
   activeTimeoutMs: z.number().int().positive(),
@@ -823,6 +853,7 @@ export const MessageSchema = z
     /** OpenCode text-part identity is nativeMessageId; this is its assistant message. */
     nativeParentMessageId: IdSchema.optional(),
     nativeMessageComplete: z.boolean().optional(),
+    truncation: TextTruncationSchema.optional(),
     afterActivitySequence: z.string().regex(/^[0-9]+$/).optional(),
     role: MessageRoleSchema,
     content: z.string(),
@@ -1054,6 +1085,15 @@ export const HarnessNativeEventSchema = z
   .strict();
 export type HarnessNativeEvent = z.infer<typeof HarnessNativeEventSchema>;
 
+/** Caller references reconstructed from saved ancestry, separate from frozen task input. */
+export const HarnessExecutionContextSchema = z.object({
+  parentRequest: z.object({
+    requestId: GraphIdSchema,
+    requesterNodeId: GraphIdSchema,
+  }).strict().nullable(),
+}).strict();
+export type HarnessExecutionContext = z.infer<typeof HarnessExecutionContextSchema>;
+
 /** Command handed to a harness adapter when initializing a new native session. */
 export const HarnessExecutionRequestSchema = z
   .object({
@@ -1067,6 +1107,7 @@ export const HarnessExecutionRequestSchema = z
     initialPrompt: z.string().trim().min(1).optional(),
     configuration: AgentConfigurationVersionSchema,
     input: z.json(),
+    executionContext: HarnessExecutionContextSchema.optional(),
   })
   .strict();
 export type HarnessExecutionRequest = z.infer<typeof HarnessExecutionRequestSchema>;
@@ -1556,6 +1597,7 @@ export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema, c
 export const RespondOperatorInteractionRequestSchema = z.object({
   commandId: z.string().min(8).max(200).optional(),
   requestId: IdSchema, nativeRequestId: IdSchema, optionId: IdSchema,
+  response: z.json().optional(),
 }).strict();
 export type SendOperatorMessageRequest = Omit<z.infer<typeof SendOperatorMessageRequestSchema>, "attachments">
   & { attachments?: z.input<typeof MessageAttachmentFields.attachments> };
@@ -1588,6 +1630,7 @@ export const ListInteractionsResponseSchema = z.object({
 }).strict();
 export const RespondToInteractionRequestSchema = z.object({
   interactionId: IdSchema, optionId: IdSchema, expectedRevision: z.number().int().nonnegative(),
+  response: z.json().optional(),
 }).strict();
 export const RespondToInteractionResponseSchema = z.object({ interaction: DurableInteractionSchema, replayed: z.boolean() }).strict();
 

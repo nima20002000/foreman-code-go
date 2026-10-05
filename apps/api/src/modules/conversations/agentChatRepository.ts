@@ -1,11 +1,12 @@
 import type { NativeMessageSubmission } from '../harnesses/port.js'
+import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { messageAttachmentIdentity } from '@foreman-code/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
-import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type Message, type PendingNativeInteraction } from '@foreman-code/contracts'
+import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type Message, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
   type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
@@ -48,6 +49,7 @@ export interface AgentConversationRow {
     sessionUnavailableReason?: 'native_session_missing' | 'harness_unavailable'
     /** Durable fence: an unbound native creation is never permission to create a replacement. */
     sessionCreation?: { requestId: string }
+    nativeNonSubmission?: NativeNonSubmission
     startupReceipt?: { requestId: string; nativeSessionId: string }
   }
   created_at: Date
@@ -384,10 +386,31 @@ export class PostgresAgentChatRepository {
         and not (record ? 'sessionCreation')`, [id, requestId])).rowCount === 1
   }
 
+  recordNonSubmission(id: string, requestId: string, operation: NativeNonSubmission['operation'],
+    result: ExecutionResult): Promise<boolean> {
+    return recordNativeNonSubmission(this.pool, id, requestId, operation, result)
+  }
+
   async bindSession(id: string, providerVersion: string, nativeSessionId: string): Promise<void> {
     const bound = await this.pool.query(`update operator_conversations set provider_version=$2,native_session_id=$3,revision=revision+1,updated_at=now()
       where id=$1 and kind='agent' and (native_session_id is null or native_session_id=$3)`, [id, providerVersion, nativeSessionId])
     if (bound.rowCount !== 1) throw new DomainError('AGENT_CHAT_SESSION_CONFLICT', 'The native session binding changed.', 409)
+  }
+  async bindCreatedSession(id: string, requestId: string, configurationId: string, session: NativeSessionReference,
+    unsentResult: ExecutionResult): Promise<void> {
+    const nonSubmission: NativeNonSubmission = { requestId, operation: 'turn_submission',
+      result: ExecutionResultSchema.parse(unsentResult) }
+    if (unsentResult.outcome === 'succeeded') throw new Error('The recovered creation has no submitted prompt.')
+    const bound = await this.pool.query(`update operator_conversations
+      set provider_version=$4,native_session_id=$5,record=record || jsonb_build_object('nativeNonSubmission',$7::jsonb)
+        || case when record->'origin'->>'kind'='run_execution' then '{"startupDelivered":true}'::jsonb else '{}'::jsonb end,
+        revision=revision+1,updated_at=now()
+      where id=$1 and kind='agent' and active_request_id=$2 and agent_configuration_version_id=$3
+        and record->'sessionCreation'->>'requestId'=$2 and native_session_id is null and harness=$6
+        and active_native_turn_id is null and (provider_version is null or provider_version=$4)`,
+    [id, requestId, configurationId, session.providerVersion, session.nativeSessionId, session.harness,
+      JSON.stringify(nonSubmission)])
+    if (bound.rowCount !== 1) throw new DomainError('AGENT_CHAT_SESSION_CONFLICT', 'The native session creation owner changed.', 409)
   }
   async markStartupDelivered(id: string): Promise<void> {
     await this.pool.query(`update operator_conversations set record=record || '{"startupDelivered":true}'::jsonb where id=$1 and kind='agent'`, [id])
@@ -438,7 +461,7 @@ export class PostgresAgentChatRepository {
       const updated = await client.query(`update operator_conversation_turns set delivery='accepted',native_turn_id=$3,delivery_error=null,updated_at=now()
         where conversation_id=$1 and request_id=$2 and delivery in ('submitting','unknown')`, [id, requestId, nativeTurnId])
       if (!updated.rowCount && row.active_native_turn_id === nativeTurnId && row.record.startupDelivered
-        && row.record.startupReceipt?.requestId === requestId) {
+        && row.record.startupReceipt?.nativeSessionId === row.native_session_id) {
         await client.query('commit')
         return false
       }
@@ -482,9 +505,10 @@ export class PostgresAgentChatRepository {
       where conversation_id=$1 and intent='steer' and native_turn_id=$2 and delivery='accepted'`, [id, nativeTurnId, delivery])
   }
 
-  async pending(id: string, requestId: string, pending: PendingNativeInteraction | undefined): Promise<void> {
+  async pending(id: string, requestId: string | null, pending: PendingNativeInteraction | undefined): Promise<void> {
     await this.pool.query(`update operator_conversations set pending_interaction=$3::jsonb,revision=revision+1,updated_at=now()
-      where id=$1 and active_request_id=$2 and pending_interaction is distinct from $3::jsonb`, [id, requestId, pending ? JSON.stringify(PendingNativeInteractionSchema.parse(pending)) : null])
+      where id=$1 and active_request_id is not distinct from $2 and pending_interaction is distinct from $3::jsonb`,
+    [id, requestId, pending ? JSON.stringify(PendingNativeInteractionSchema.parse(pending)) : null])
   }
   async requestCancel(id: string, requestId: string, query: Queryable = this.pool): Promise<boolean> {
     return (await query.query(`update operator_conversations set cancel_requested=true,turn_state='canceling',revision=revision+1,updated_at=now()
@@ -560,7 +584,8 @@ export class PostgresAgentChatRepository {
         record=jsonb_set(record,'{status}',to_jsonb(case when record->>'kind'='thinking' then case when $3 then 'canceled' else 'completed' end else 'unknown' end::text))
         where conversation_id=$1 and request_id=$2 and record->>'status' in ('pending','running')`, [id, requestId, result.outcome === 'canceled'])
       await client.query(`update operator_conversations set active_request_id=null,active_native_turn_id=null,active_phase=null,
-        cancel_requested=false,pending_interaction=null,turn_state=$2,last_error=$3,last_result=$4::jsonb,revision=revision+1,updated_at=now()
+        record=record - 'nativeNonSubmission',cancel_requested=false,pending_interaction=null,
+        turn_state=$2,last_error=$3,last_result=$4::jsonb,revision=revision+1,updated_at=now()
         where id=$1`, [id, result.outcome === 'failed' ? 'error' : 'idle', result.error?.message ?? null, JSON.stringify(result)])
       await client.query('commit')
       return true

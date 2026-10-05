@@ -117,7 +117,7 @@ export async function downloadJobArtifact(workspaceId: string, artifact: import(
   const generation = sessionGeneration()
   const requestSignal = AbortSignal.any([sessionSignal(), AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
   const path = `${executionPath(workspaceId, pin.executionId)}/artifacts/${encodeURIComponent(pin.fileId)}/revisions/${encodeURIComponent(pin.revisionId)}/content`
-  const response = await fetch(new URL(path, location.origin), { credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: requestSignal })
+  const response = await fetch(new URL(path, location.origin), { credentials: 'omit', cache: 'no-store', redirect: 'error', signal: requestSignal })
   assertSession(generation)
   requestSignal.throwIfAborted()
   if (!response.ok) throw new ApiError({ code: 'ARTIFACT_UNAVAILABLE', message: 'Artifact bytes unavailable or permission lost.' }, response.status)

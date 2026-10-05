@@ -1,4 +1,6 @@
+import { beginRuntimeTiming, runtimeTimingChannel, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { createHash } from 'node:crypto'
 import type pg from 'pg'
 import { RunGraphError } from './errors.js'
 
@@ -42,6 +44,15 @@ export function beforeGraphCommitChecks<T>(sql: GraphTransactionSql, key: object
 
 const context = new AsyncLocalStorage<ExclusiveGraphConnection>()
 
+function queryTimingFields(text: string) {
+  return {
+    operation: text.trimStart().match(/^(select|insert|update|delete|with)\b/i)?.[1]?.toLowerCase() ?? 'other',
+    ...(runtimeTimingChannel.hasSubscribers ? {
+      statementId: createHash('sha256').update(text).digest('hex').slice(0, 16),
+    } : {}),
+  }
+}
+
 /** Runtime check as well as a TypeScript port: a plain Pool/Client cannot impersonate a transaction. */
 export function assertGraphTransaction(sql: GraphSqlClient): asserts sql is GraphTransactionSql {
   const state = leases.get(sql)
@@ -62,19 +73,37 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
   #tail: Promise<void> = Promise.resolve()
   #unusable = false
   #closing = false
-  constructor(client: pg.ClientBase, assertOwner: () => void) {
+  constructor(client: pg.ClientBase, assertOwner: () => void,
+    private readonly readPlans?: Map<string, string>) {
     if (adoptedClients.has(client)) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
     adoptedClients.add(client)
     this.#client = client
     this.#assertOwner = assertOwner
   }
-  private enqueue<T>(work: () => Promise<T>): Promise<T> {
+  private readQuery<R extends pg.QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<R>> {
+    // Only dedicated physical sessions opt in. Plans are reused; rows and authority are read on every call.
+    if (!this.readPlans || !values?.length || !/^\s*(select|with)\b/i.test(text)) {
+      return this.#client.query<R>(text, values)
+    }
+    let name = this.readPlans.get(text)
+    if (!name && this.readPlans.size < 128) {
+      name = `foreman-read-${createHash('sha256').update(text).digest('hex').slice(0, 24)}`
+      this.readPlans.set(text, name)
+    }
+    return name ? this.#client.query<R>({ name, text, values }) : this.#client.query<R>(text, values)
+  }
+  private enqueue<T>(work: () => Promise<T>, operation: string): Promise<T> {
     if (this.#closing) return Promise.reject(new RunGraphError('GRAPH_TRANSACTION_CLOSED'))
     if (context.getStore() === this) return Promise.reject(new RunGraphError('GRAPH_TRANSACTION_NESTED'))
+    const queued = beginRuntimeTiming('db', 'connection.queue', { operation })
     const perform = async () => {
-      if (this.#unusable) throw new RunGraphError('GRAPH_TRANSACTION_FAILED')
-      this.#assertOwner()
-      return context.run(this, work)
+      queued()
+      const finished = beginRuntimeTiming('db', `connection.${operation}`)
+      try {
+        if (this.#unusable) throw new RunGraphError('GRAPH_TRANSACTION_FAILED')
+        this.#assertOwner()
+        return await context.run(this, work)
+      } finally { finished() }
     }
     const result = this.#tail.then(perform, perform)
     this.#tail = result.then(() => undefined, () => undefined)
@@ -83,8 +112,9 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
   query<R extends pg.QueryResultRow = pg.QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<R>> {
     return this.enqueue(() => {
       assertStatement(text)
-      return this.#client.query<R>(text, values)
-    })
+      return timeRuntimeOperation('db', 'sql.query', () => this.readQuery<R>(text, values),
+        queryTimingFields(text))
+    }, 'query')
   }
   transaction<T>(work: (sql: GraphTransactionSql) => Promise<T>, readOnly = false): Promise<T> {
     return this.enqueue(async () => {
@@ -99,7 +129,8 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
             assertStatement(text)
             if (pending) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
           } catch (error) { state.failed = true; return Promise.reject(error) }
-          const operation = this.#client.query<R>(text, values)
+          const operation = timeRuntimeOperation('db', 'sql.query', () => this.readQuery<R>(text, values),
+            queryTimingFields(text))
           pending = operation
           // A caught SQL error must still prevent commit, including after SAVEPOINT misuse.
           return operation.then((result) => { pending = undefined; return result }, (error: unknown) => {
@@ -112,27 +143,30 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
       if (status && status !== 'I') { state.live = false; throw new RunGraphError('GRAPH_TRANSACTION_NESTED') }
       let committing = false
       try {
-        await this.#client.query(readOnly ? 'begin isolation level repeatable read read only' : 'begin isolation level read committed')
+        await timeRuntimeOperation('db', 'sql.begin', () => this.#client.query(
+          readOnly ? 'begin isolation level repeatable read read only' : 'begin isolation level read committed'))
         const result = await work(sql)
         for (const finalize of state.finalizers) { assertGraphTransaction(sql); await finalize() }
         if (pending) { state.failed = true; await pending.catch(() => undefined) }
         assertGraphTransaction(sql)
         this.#assertOwner()
         committing = true
-        await this.#client.query('commit')
+        await timeRuntimeOperation('db', 'sql.commit', () => this.#client.query('commit'))
         state.committed = true
         return result
       } catch (error) {
         if (pending) await pending.catch(() => undefined)
         if (committing) this.#unusable = true // COMMIT outcome can be unknown: do not retry the callback.
-        try { await this.#client.query('rollback') } catch { this.#unusable = true }
+        try { await timeRuntimeOperation('db', 'sql.rollback', () => this.#client.query('rollback')) }
+        catch { this.#unusable = true }
         throw error
       } finally { state.live = false }
-    })
+    }, 'transaction')
   }
   async close(): Promise<void> {
     this.#closing = true
     await this.#tail
+    this.readPlans?.clear()
     adoptedClients.delete(this.#client)
   }
   get unusable(): boolean { return this.#unusable }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, rmdir } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import type pg from 'pg'
@@ -10,9 +10,13 @@ import { mountOpenCodeFileMcp, FILE_TOOLS_MCP_PATH } from '../../files/tools/mcp
 import { productionFileTools } from '../../files/tools/production.js'
 import type { OpenCodeServerController } from '../opencodeTransport.js'
 import type { OpenCodeChatFiles } from './chat.js'
-import { LocalOpenCodeExecutionFiles, assertProtectedSourcePaths } from './host.js'
+import { LocalOpenCodeExecutionFiles } from './host.js'
+import { bindingIdentity } from '../../files/tools/context.js'
+import { OpenCodeFileCleanupJournal } from './cleanupJournal.js'
+import { cleanupOpenCodeDirectory, ownOpenCodeDirectory } from './cleanup.js'
 import { adoptOpenCodePublications, resolveOpenCodeFileAdmission } from './postgres.js'
 import { OpenCodeFileError } from './types.js'
+import { recoverOpenCodeVersions } from './recoverVersions.js'
 
 export interface OpenCodeFileAdmissions {
   resolve: typeof resolveOpenCodeFileAdmission
@@ -23,7 +27,19 @@ export interface OpenCodeFileAdmissions {
 export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg.Pool, config: ApiConfig,
   conversationId: string, server: OpenCodeServerController, endpointHost: string,
   admissions: OpenCodeFileAdmissions = { resolve: resolveOpenCodeFileAdmission, adoptPublished: adoptOpenCodePublications }): OpenCodeChatFiles {
-  return { async resolve(identity, signal) {
+  if (!server.bindFileConversation) {
+    throw new OpenCodeFileError('FILE_SOURCE_ISOLATION_REQUIRED', 'The native server needs conversation-owned storage.')
+  }
+  server.bindFileConversation(conversationId)
+  const journal = new OpenCodeFileCleanupJournal(config.fileStorageRoot ?? defaultFileStorageRoot(), conversationId)
+  return {
+    recover: (signal, retainedTurnIds) => journal.recover(async (context, directory) => {
+      await pool.query(`update file_tool_sessions set revoked_at=coalesce(revoked_at,now())
+        where record->>'binding'=$1`, [bindingIdentity(context)])
+      await recoverOpenCodeVersions(productionFileTools(app()), context, directory, MAX_FILE_BYTES, signal)
+      await admissions.adoptPublished(pool, context)
+    }, signal, retainedTurnIds),
+    async resolve(identity, signal) {
     signal.throwIfAborted()
     const admission = await admissions.resolve(pool, conversationId, identity)
     signal.throwIfAborted()
@@ -33,6 +49,7 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
       issueForAcceptedSession: (context: typeof admission.context, expiresAt: Date) =>
         service.sessions.issueForAcceptedSession(context, expiresAt, 'opencode'),
       authenticate: service.sessions.authenticate.bind(service.sessions),
+      authorizeAccepted: service.sessions.authorizeAccepted.bind(service.sessions),
       revoke: service.sessions.revoke.bind(service.sessions),
     },
     artifacts: service.artifacts,
@@ -41,13 +58,18 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
     publishedForTurn: service.publishedForTurn.bind(service),
     writeWorkingCopy: service.writeWorkingCopy.bind(service), applyFormatEdit: service.applyFormatEdit.bind(service) }
     const mountId = randomUUID()
-    const root = join(config.harnesses.workspaceRoot, 'chat-files', mountId)
+    if (!server.ownedFileRoot) {
+      throw new OpenCodeFileError('FILE_SOURCE_ISOLATION_REQUIRED', 'The native server has no owned materialization directory.')
+    }
+    const root = join(server.ownedFileRoot, mountId)
     const host = new LocalOpenCodeExecutionFiles({
       executionHostId: 'runner-local', root, maxFileBytes: MAX_FILE_BYTES,
+      preserveVersion: (input, signal) => service.preserveAccepted(admission.context, input, signal),
       assertSourceIsolation: async (checkSignal) => {
-        const pid = server.nativePid
-        await assertProtectedSourcePaths(pid ?? 0,
-          [config.fileStorageRoot ?? defaultFileStorageRoot()], checkSignal)
+        if (!server.assertFileSourceIsolation) {
+          throw new OpenCodeFileError('FILE_SOURCE_ISOLATION_REQUIRED', 'The native server has no isolated file host.')
+        }
+        await server.assertFileSourceIsolation(config.fileStorageRoot ?? defaultFileStorageRoot(), checkSignal)
       },
     })
     const pinned = new Set(admission.attachments.map((ref) => `${ref.fileId}/${ref.revisionId}`))
@@ -69,11 +91,20 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
       adoptPublished: (context) => admissions.adoptPublished(pool, context),
       mount: async (facade) => {
         await mkdir(root, { recursive: true, mode: 0o700 })
+        const owned = await ownOpenCodeDirectory(root)
+        if (!server.nativePid) throw new OpenCodeFileError('FILE_CLEANUP_REQUIRED', 'The native file owner is unavailable.')
+        const registration = journal.register(owned, server.nativePid, admission.context, server.processRecovery)
         try {
           const unmount = mountOpenCodeFileMcp(app(), mountId, facade)
-          return async () => { unmount(); await rmdir(root) }
+          return async () => {
+            unmount()
+            host.assertReleased()
+            await cleanupOpenCodeDirectory(owned)
+            await journal.forget(registration)
+          }
         } catch (error) {
-          await rmdir(root)
+          await cleanupOpenCodeDirectory(owned)
+          await journal.forget(registration)
           throw error
         }
       },

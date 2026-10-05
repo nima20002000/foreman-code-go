@@ -9,6 +9,7 @@ import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
+import { readTestResourcesIdentity } from './infrastructure/testRuntimeResources.js'
 import { buildProductionApp } from './production.js'
 import { registerBuiltWeb } from './builtWeb.js'
 import { readDeviceListenerConfig } from './modules/devices/productionConfig.js'
@@ -30,6 +31,9 @@ async function main() {
     if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) {
       throw error
     }
+  }
+  if (readProductEnvironment(process.env, 'TEST_ROOT') || readProductEnvironment(process.env, 'TEST_OWNER')) {
+    readTestResourcesIdentity(loadConfig(process.env))
   }
   await enableFileLogging(process.env)
   lifecycle.info({ node: process.version }, 'api starting')
@@ -92,9 +96,9 @@ async function main() {
     stopIfClosing()
     await checkpoints.ping()
     stopIfClosing()
-    await mkdir(config.harnesses.workspaceRoot, { recursive: true })
+    await mkdir(config.harnesses.workspaceRoot, { recursive: true, mode: 0o700 })
     const projectRoot = config.workspaceStorageRoot ?? workspaceStorageRoot()
-    await mkdir(projectRoot, { recursive: true })
+    await mkdir(projectRoot, { recursive: true, mode: 0o700 })
     if (pathsOverlap(await realpath(projectRoot), await realpath(config.harnesses.workspaceRoot))) {
       throw new Error('Workspace storage and harness runtime storage must be separate directories.')
     }

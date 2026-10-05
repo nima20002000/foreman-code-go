@@ -18,8 +18,8 @@ it('replays native creation through production construction and the real manager
   const advanced = draft.advanced!
   const replay = new StrictProtocolReplay({ schemaVersion: 1, provider: 'codex',
     protocolRevision: 'codex-0.154.0-synthetic', redacted: true, steps: [
-      { operation: 'command', input: ['mcp', 'list', '--json'],
-        result: { exitCode: 0, stdout: '[]', stderr: '', exitSignal: null } },
+      ...['foreman-code', 'graphql'].map((name) => ({ operation: 'command', input: ['mcp', 'get', name, '--json'],
+        result: { exitCode: 1, stdout: '', stderr: `Error: No MCP server named '${name}' found.`, exitSignal: null } })),
       { operation: 'thread/start', input: {
         model: 'test-model', serviceTier: 'default', cwd: source.request.workingDirectory,
         runtimeWorkspaceRoots: [source.request.workingDirectory], sandbox: 'read-only',

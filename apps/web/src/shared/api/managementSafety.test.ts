@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from 'vitest'
 import { CommandAttempt } from './commandAttempt'
 import { collectManagementPages } from './managementPaging'
-import { assertSession, beginSessionChange, clearProtectedStorage, finishSessionChange, sessionGeneration, sessionSignal } from './sessionBoundary'
+import { assertSession, beginSessionChange, finishSessionChange, sessionGeneration, sessionSignal } from './sessionBoundary'
 
 afterEach(() => finishSessionChange())
 it('F22 follows all pages and reports a complete catalog', async () => {
@@ -27,14 +27,4 @@ it('F27 switching aborts old requests and rejects late responses', () => {
   beginSessionChange()
   expect(signal.aborted).toBe(true)
   expect(() => assertSession(generation)).toThrow('Operator access changed')
-})
-it('F27 removes protected snapshots without clearing unrelated settings', () => {
-  sessionStorage.setItem('graphql-local-agents:workspace-a', 'private')
-  sessionStorage.setItem('graphql-deleted-agents:workspace-a', 'private')
-  sessionStorage.setItem('test-unrelated-preference', 'keep')
-  clearProtectedStorage(sessionStorage)
-  expect(sessionStorage.getItem('graphql-local-agents:workspace-a')).toBeNull()
-  expect(sessionStorage.getItem('graphql-deleted-agents:workspace-a')).toBeNull()
-  expect(sessionStorage.getItem('test-unrelated-preference')).toBe('keep')
-  sessionStorage.removeItem('test-unrelated-preference')
 })

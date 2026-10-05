@@ -1,8 +1,12 @@
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import { spawnNativeProcess, type NativeProcessRecovery } from './recovery/processRegistry.js'
-import { randomBytes } from 'node:crypto'
+import { registeredNativeProcess, detachRecoveredChild, readDetachedNativeProcess, NativeProcessRegistry,
+  spawnNativeProcess, type NativeLaunchObservation, type NativeProcessRecovery } from './recovery/processRegistry.js'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { mkdir } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 
 import type { OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
 
@@ -15,6 +19,9 @@ import { PROCESS_SHUTDOWN_GRACE_MS, runCommand, signalTree } from './process.js'
 import { appMcpTokenEnvironment, inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
 import { credentialReferences, digest, object, parseConfigObject } from './opencodeProtocol.js'
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
+import { OpenCodeVaultIsolation } from './opencodeFiles/isolation.js'
+import { OpenCodeConversationStorage } from './opencodeFiles/conversationStorage.js'
+import { readOpenCodeRestart, writeOpenCodeRestart } from './opencodeRestart.js'
 
 const STARTUP_TIMEOUT_MS = 30_000
 const REQUEST_TIMEOUT_MS = 30_000
@@ -36,6 +43,12 @@ export interface OpenCodeServerController {
   /** Changes when the resident process is replaced, including automatic recovery. */
   readonly generation?: number
   readonly nativePid?: number | undefined
+  readonly ownedFileRoot?: string | undefined
+  readonly ownedSessionRoot?: string | undefined
+  bindFileConversation?(conversationId: string): void
+  importFileSession?(sessionId: string, directory: string, signal: AbortSignal): Promise<void>
+  readonly processRecovery?: NativeProcessRecovery | undefined
+  assertFileSourceIsolation?(root: string, signal: AbortSignal): Promise<void>
   /** Pure current-resident proof; absent after exit, disposal or unconfirmed cleanup. */
   readonly residentGeneration?: number | undefined
   /** Provenance from unexpanded configuration, never from resolved secret values. */
@@ -46,12 +59,16 @@ export interface OpenCodeServerController {
   request(path: string, init?: RequestInit, signal?: AbortSignal, expectedGeneration?: number): Promise<Response>
   /** Authenticated bounded GET only; never starts, recovers or attaches a process. */
   requestResident?(path: string, signal: AbortSignal, expectedGeneration: number): Promise<Response | undefined>
+  recoverEnvironment?(): ChildProcessEnvironment | undefined
+  detachForRestart?(): Promise<boolean>
   dispose(): Promise<void>
   restart?(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void>
 }
 
 export interface ManagedOpenCodeServerOptions {
   processRecovery?: NativeProcessRecovery
+  /** Preserve an original workflow server and its pending callbacks across application restart. */
+  restartDetachable?: true
   /** Validate the pinned host/launcher/payload selection around native startup/diagnostics. */
   assertInstallation?: (signal?: AbortSignal) => Promise<void>
   binary: string
@@ -64,6 +81,9 @@ export interface ManagedOpenCodeServerOptions {
   environment?: ChildProcessEnvironment
   pure?: boolean
   advancedConfiguration?: OpenCodeAdvancedConfiguration
+  protectedFileStorageRoot?: string
+  managedFileRoot?: string
+  nativeStorage?: { root: string; owner: string }
   /** One budget for version probing, spawning, readiness and health, not per stage. */
   startupTimeoutMs?: number
 }
@@ -87,6 +107,10 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 /** One process and one serialized lifecycle for one logical Agent credential owner. */
 export class ManagedOpenCodeServer implements OpenCodeServerController {
   expectedVersion = ''
+  readonly ownedFileRoot: string | undefined
+  get processRecovery(): NativeProcessRecovery | undefined {
+    return this.child ? registeredNativeProcess(this.child) : undefined
+  }
   readonly advancedConfiguration: OpenCodeAdvancedConfiguration | undefined
   generation = 0
   private desiredEnvironment: ChildProcessEnvironment | undefined
@@ -101,8 +125,17 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private stderr = ''
   private readonly stops = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>()
   private references: Readonly<Record<string, string>> = {}
+  private fileIsolation: OpenCodeVaultIsolation | undefined
+  private conversationId: string | undefined
+  private conversationStorage: OpenCodeConversationStorage | undefined
+  private adopted: NativeLaunchObservation | undefined
+  private restartDetached = false
 
   constructor(private readonly options: ManagedOpenCodeServerOptions) {
+    this.ownedFileRoot = options.managedFileRoot ? join(options.managedFileRoot, randomUUID()) : undefined
+    if (options.nativeStorage) {
+      this.conversationStorage = new OpenCodeConversationStorage(options.nativeStorage.root, options.nativeStorage.owner)
+    }
     this.advancedConfiguration = options.advancedConfiguration
     this.desiredEnvironment = this.validateEnvironment(options.environment)
     if (options.pure !== undefined && options.advancedConfiguration
@@ -115,8 +148,30 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   get ownerAgentId(): string { return this.options.ownerAgentId }
-  get nativePid(): number | undefined { return this.child?.pid }
+  get ownedSessionRoot(): string | undefined { return this.conversationStorage?.owned }
+  bindFileConversation(conversationId: string): void {
+    if (this.conversationId === conversationId) return
+    if (this.conversationId || this.child || !this.options.managedFileRoot) {
+      throw new HarnessExecutionError('FILE_SOURCE_ISOLATION_REQUIRED',
+        'Bind native storage to its conversation before launching the file host.')
+    }
+    this.conversationId = conversationId
+    this.conversationStorage = new OpenCodeConversationStorage(
+      this.options.nativeStorage?.root ?? join(dirname(this.options.managedFileRoot), 'opencode-sessions'), conversationId)
+  }
+  async importFileSession(sessionId: string, directory: string, signal: AbortSignal): Promise<void> {
+    await this.conversationStorage?.importSession(sessionId, directory, signal)
+  }
+  async assertFileSourceIsolation(root: string, signal: AbortSignal): Promise<void> {
+    if (!this.fileIsolation || this.fileIsolation.root !== root || this.residentGeneration === undefined) {
+      throw new HarnessExecutionError('FILE_SOURCE_ISOLATION_REQUIRED', 'The resident OpenCode process has no isolated file host.')
+    }
+    await this.fileIsolation.assert(signal)
+  }
+  get nativePid(): number | undefined { return this.child?.pid ?? this.adopted?.guardian?.pid }
   get residentGeneration(): number | undefined {
+    if (this.adopted) return !this.cleanupRequired && !this.disposal && !this.restartDetached
+      && this.sameAdoptedProcess() && this.baseUrl && this.password ? this.generation : undefined
     return !this.cleanupRequired && !this.disposal && this.child?.exitCode === null && this.child.signalCode === null
       && this.baseUrl && this.password ? this.generation : undefined
   }
@@ -130,6 +185,45 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     return environment ? childEnvironmentFingerprint(environment) : undefined
   }
   get mcpCredentialReferences(): Readonly<Record<string, string>> { return this.references }
+
+  recoverEnvironment(): ChildProcessEnvironment | undefined {
+    const saved = readOpenCodeRestart(this.options)
+    if (!saved) return undefined
+    const environment = this.validateEnvironment(saved.environment)
+    this.adopted = saved.launch
+    this.baseUrl = saved.baseUrl
+    this.password = saved.password
+    this.desiredEnvironment = environment
+    this.expectedVersion = saved.version
+    this.generation = saved.generation
+    this.references = saved.references
+    return environment && structuredClone(environment)
+  }
+
+  private sameAdoptedProcess(): boolean {
+    return Boolean(this.adopted && this.options.processRecovery
+      && isDeepStrictEqual(this.adopted, readDetachedNativeProcess(this.options.processRecovery)))
+  }
+
+  detachForRestart(): Promise<boolean> {
+    return this.exclusive(async () => {
+      if (!this.options.restartDetachable || !this.options.processRecovery) return false
+      if (this.restartDetached) return true
+      if (!this.baseUrl || !this.password || !this.desiredEnvironment || this.residentGeneration === undefined) {
+        throw new HarnessExecutionError('OPENCODE_RESTART_UNCONFIRMED', 'The original OpenCode server is not resident.')
+      }
+      const launch = this.adopted ?? await detachRecoveredChild(this.child!)
+      if (this.adopted && !this.sameAdoptedProcess()) throw new HarnessExecutionError(
+        'OPENCODE_RESTART_IDENTITY_CONFLICT', 'The retained OpenCode process changed before detachment.')
+      writeOpenCodeRestart(this.options, { launch, baseUrl: this.baseUrl, password: this.password,
+        environment: this.desiredEnvironment, version: this.expectedVersion, generation: this.generation,
+        references: this.references })
+      this.restartDetached = true
+      this.child = undefined
+      this.adopted = undefined
+      return true
+    })
+  }
 
   private exclusive<T>(work: () => Promise<T>): Promise<T> {
     const task = this.lifecycle.then(work)
@@ -189,6 +283,16 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   private async ensureProcess(signal?: AbortSignal): Promise<void> {
+    if (this.restartDetached) throw new HarnessExecutionError('OPENCODE_SERVER_DETACHED', 'The OpenCode server belongs to restart recovery.')
+    if (this.adopted) {
+      if (!this.sameAdoptedProcess()) throw new HarnessExecutionError(
+        'OPENCODE_RESTART_IDENTITY_CONFLICT', 'The retained OpenCode process is no longer current.')
+      const response = await this.rawRequest('/global/health', { method: 'GET' }, signal)
+      const health = object(await response.json())
+      if (!response.ok || health.healthy !== true || health.version !== this.expectedVersion) throw new HarnessExecutionError(
+        'OPENCODE_SERVER_UNHEALTHY', 'The retained OpenCode server failed its authenticated health check.')
+      return
+    }
     if (this.cleanupRequired) throw new HarnessExecutionError('OPENCODE_SERVER_CLEANUP_REQUIRED', 'Native shutdown is unconfirmed; explicitly retry disposal or restart before requesting work.')
     if (this.child && this.baseUrl && this.child.exitCode === null && this.child.signalCode === null) {
       try {
@@ -219,13 +323,19 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   async requestResident(path: string, signal: AbortSignal, expectedGeneration: number): Promise<Response | undefined> {
     signal.throwIfAborted()
     const url = new URL(path, 'http://opencode.invalid')
+    const messagePage = /^\/session\/[^/]+\/message$/.test(url.pathname)
+    const allowedKeys = messagePage ? ['directory', 'limit', 'before'] : ['directory']
     if (url.origin !== 'http://opencode.invalid'
-      || !/^\/(?:permission|session\/[^/]+(?:\/message\/[^/]+)?)$/.test(url.pathname)
-      || [...url.searchParams.keys()].some(key => key !== 'directory')) return undefined
+      || !/^\/(?:permission|agent|session\/[^/]+(?:\/message(?:\/[^/]+)?)?)$/.test(url.pathname)
+      || [...url.searchParams.keys()].some(key => !allowedKeys.includes(key))
+      || messagePage && (!/^[1-9][0-9]?$/.test(url.searchParams.get('limit') ?? '')
+        || Number(url.searchParams.get('limit')) > 64 || (url.searchParams.get('before')?.length ?? 0) > 1024)) return undefined
     const child = this.child
+    const adopted = this.adopted
     const epoch = this.epoch
-    const current = () => !this.cleanupRequired && !this.disposal && this.child === child
-      && child !== undefined && child.exitCode === null && child.signalCode === null
+    const current = () => !this.cleanupRequired && !this.disposal && !this.restartDetached
+      && (adopted ? this.adopted === adopted && this.sameAdoptedProcess()
+        : this.child === child && child !== undefined && child.exitCode === null && child.signalCode === null)
       && !!this.baseUrl && !!this.password && this.generation === expectedGeneration && this.epoch === epoch
     if (!current()) return undefined
     const response = await this.rawRequest(path, { method: 'GET' }, signal)
@@ -305,6 +415,19 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   private async stopLiveProcess(): Promise<void> {
+    if (this.restartDetached) {
+      this.baseUrl = undefined
+      this.password = undefined
+      return
+    }
+    if (this.adopted && this.options.processRecovery) {
+      const closed = await new NativeProcessRegistry(this.options.processRecovery.root).closeOwner(this.options.processRecovery.owner)
+      if (!closed) throw new HarnessExecutionError('OPENCODE_SERVER_CLEANUP_REQUIRED', 'The retained native server closure is unconfirmed.')
+      this.adopted = undefined
+      this.baseUrl = undefined
+      this.password = undefined
+      return
+    }
     const child = this.child
     this.baseUrl = undefined
     if (child) await this.stopChild(child)
@@ -352,12 +475,29 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         environment.OPENCODE_CONFIG_CONTENT = buildOpenCodeChatConfigContent(environment.OPENCODE_CONFIG_CONTENT, this.disabledAppMcpServerName)
       }
       const pure = this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
+      const args = ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])]
+      if (this.ownedFileRoot) await mkdir(this.ownedFileRoot, { recursive: true, mode: 0o700 })
+      const hiddenStorage = await this.conversationStorage?.prepare(environment)
+      this.fileIsolation = this.options.protectedFileStorageRoot
+        ? new OpenCodeVaultIsolation(this.options.protectedFileStorageRoot,
+          this.options.managedFileRoot && this.ownedFileRoot
+            ? { root: this.options.managedFileRoot, owned: this.ownedFileRoot } : undefined,
+          this.conversationStorage && hiddenStorage
+            ? { root: this.conversationStorage.root, owned: this.conversationStorage.owned,
+              database: this.conversationStorage.database, hidden: hiddenStorage }
+            : undefined)
+        : undefined
+      const launch = this.fileIsolation
+        ? await this.fileIsolation.launch({ binary: this.options.binary, args,
+          workingDirectory: this.options.workingDirectory, environment }, abort.signal)
+        : { binary: this.options.binary, args }
       this.stderr = ''
       await this.options.assertInstallation?.(abort.signal)
       abort.signal.throwIfAborted()
-      const child = spawnNativeProcess(this.options.binary, ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])], {
+      const child = spawnNativeProcess(launch.binary, launch.args, {
         cwd: this.options.workingDirectory, env: appMcpTokenEnvironment(environment),
         ...(this.options.processRecovery ? { recovery: this.options.processRecovery } : {}),
+        ...(this.options.restartDetachable ? { restartDetachable: true } : {}),
       })
       this.child = child
       child.stdin.on('error', () => undefined)
@@ -368,10 +508,11 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       child.stderr.on('data', (chunk) => {
         this.stderr = redactSecretText(this.stderr + String(chunk), processSecrets).slice(-64_000)
       })
-      child.on('error', () => { void this.stopChild(child).catch(() => undefined) })
-      child.once('exit', () => { void this.stopChild(child).catch(() => undefined) })
+      child.on('error', () => { if (!this.restartDetached) void this.stopChild(child).catch(() => undefined) })
+      child.once('exit', () => { if (!this.restartDetached) void this.stopChild(child).catch(() => undefined) })
       this.baseUrl = await this.waitForUrl(child, abort.signal)
       child.stdout.resume()
+      await this.fileIsolation?.assert(abort.signal)
       const response = await this.rawRequest('/global/health', { method: 'GET' }, abort.signal)
       try {
         const health = object(await response.json())
@@ -413,8 +554,10 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         else resolve(url!)
       }
       const data = (chunk: Buffer | string) => {
-        text = (text + String(chunk)).slice(-64_000)
-        const match = text.match(/opencode server listening on (http:\/\/127\.0\.0\.1:\d+)/)
+        const received = text + String(chunk)
+        this.fileIsolation?.observe(received)
+        text = received.slice(-64_000)
+        const match = received.match(/opencode server listening on (http:\/\/127\.0\.0\.1:\d+)/)
         if (match?.[1]) finish(undefined, match[1])
       }
       const failed = (error: Error) => finish(error)

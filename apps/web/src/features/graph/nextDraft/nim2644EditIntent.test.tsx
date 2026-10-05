@@ -35,7 +35,7 @@ async function reloadSavedDraft(user: ReturnType<typeof userEvent.setup>) {
 // Mounted Query/Zustand/form regressions with the existing transport boundary
 // mocked. Not authenticated HTTP/MCP, a real browser/canvas, or native Stop evidence.
 vi.mock('../../workflow-board/context', () => ({ useWorkflowBoard: () => ({ activeRuns: 1 }) }))
-vi.mock('../../../shared/api/settingsExperience', () => ({ useBrowserAccessQuery: () => ({ data: {
+vi.mock('../../../shared/api/settingsExperience', () => ({ useLocalHumanAccessQuery: () => ({ data: {
   principal: { expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['runs:start'], scope: {} }] },
 } }) }))
 vi.mock('../../workflow-board/startPreflight', async (original) => ({

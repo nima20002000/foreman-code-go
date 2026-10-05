@@ -17,7 +17,10 @@ const HistorySchema = z.object({ correlationId: z.string().optional(), nativeTur
   events: z.array(NativeHarnessEventSchema), pendingInteractions: z.array(PendingNativeInteractionSchema), pendingInteraction: PendingNativeInteractionSchema.optional(),
   terminalResult: ExecutionResultSchema.optional(), terminalTurn: z.object({ correlationId: z.string(), providerId: z.string(), result: ExecutionResultSchema }).optional(),
   interactionDeliveries: z.array(z.object({ nativeRequestId: z.string(), state: z.enum(['pending','submitting','submitted','uncertain']), selectedOptionId: z.string().optional() })).optional(),
-  responseDeliveries: z.array(z.object({ source: z.enum(['provider_acknowledgement','provider_history']), harness: AgentHarnessSchema, providerVersion: z.string(), nativeSessionId: z.string(), nativeRequestId: z.string(), nativeRequestType: z.string(), optionId: z.string(), semantic: ApprovalResponseSemanticSchema })).optional(),
+  responseDeliveries: z.array(z.object({ source: z.enum(['provider_acknowledgement','provider_history']),
+    harness: AgentHarnessSchema, providerVersion: z.string(), nativeSessionId: z.string(), nativeRequestId: z.string(),
+    nativeRequestType: z.string(), optionId: z.string(), semantic: ApprovalResponseSemanticSchema,
+    responseDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() })).optional(),
   canceledRequestIds: z.array(z.string()).optional() }).passthrough()
 export interface RemoteNativeManagerOptions {
   intent: DispatchIntent

@@ -1,4 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
+import type { InteractionResponseValue } from '@foreman-code/contracts'
 import type { AgentChatState, AgentChatTurn, SendAgentChatMessageRequest, SendAgentChatMessageResponse } from '@foreman-code/contracts/agent-chat'
 import type { ChatAttachmentAttempt } from '../chatAttachmentAttempt'
 import { receiptForCommand } from './receiptReadback'
@@ -7,7 +8,8 @@ export type AgentChatCommand =
   | { kind: 'send'; input: SendAgentChatMessageRequest; clearDraft: boolean; attachmentAttempt?: ChatAttachmentAttempt }
   | { kind: 'stop'; conversationId: string; requestId: string; expectedNativeTurnId?: string }
   | { kind: 'cancel'; conversationId: string; requestId: string; turnRequestId: string }
-  | { kind: 'respond'; conversationId: string; requestId: string; nativeRequestId: string; optionId: string }
+  | { kind: 'respond'; conversationId: string; requestId: string; nativeRequestId: string;
+    optionId: string; response?: InteractionResponseValue }
 
 /** The query owns the full projection. Mutations keep only command/readback identity, not snapshots. */
 export type AgentChatCommandResult = { conversationId?: string; turn?: AgentChatTurn; replayed?: boolean }

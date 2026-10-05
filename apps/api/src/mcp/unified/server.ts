@@ -2,12 +2,14 @@ import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import { McpServer } from '@modelcontextprotocol/server'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
+import { GRAPHQL_AGENT_TOOLS } from '@foreman-code/contracts'
 
 import { DomainError } from '../../modules/errors.js'
 import type { AppInteractionService } from '../../modules/interactions/app.js'
 import { registerAppTools } from '../app/server.js'
 import { registerOperatorTools } from '../operator/server.js'
 import type { OperatorServices } from '../operator/types.js'
+import { operatorToolAvailable } from '../operator/availability.js'
 import { toolFailure } from '../shared/results.js'
 import { MCP_ROLE_LABELS, roleInstructions, roleList, toolRoles, type McpRole } from './roles.js'
 
@@ -48,11 +50,8 @@ function operatorCatalog(services: OperatorServices): Promise<ToolDefinition[]> 
   }
   return catalog
 }
-let appCatalog: Promise<ToolDefinition[]> | undefined
-function agentCatalog(): Promise<ToolDefinition[]> {
-  const everything = { canRead: async () => true, canRespond: async () => true } as unknown as AppInteractionService
-  appCatalog ??= collectTools((server) => registerAppTools(server, { principal: CATALOG_PRINCIPAL, interactions: everything }))
-  return appCatalog
+function agentCatalog(): ToolDefinition[] {
+  return Object.entries(GRAPHQL_AGENT_TOOLS).map(([name, definition]) => ({ name, description: definition.description }))
 }
 
 const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
@@ -66,7 +65,15 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
   const name = call.data.params.name
   const allowed = toolRoles(name)
   const enabled = !context.tools || context.tools.includes(name)
-  if (allowed.includes(context.role) && enabled) return undefined
+  if (allowed.includes(context.role) && enabled) {
+    if (context.role === 'operator' && name === 'interaction_respond' && context.operator?.interactions
+      && !operatorToolAvailable({ principal: context.principal, services: context.operator }, name)) {
+      await context.operator.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
+      return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(new DomainError('ACCESS_DENIED',
+        'Responding to interactions requires read and respond grants.', 403)) }
+    }
+    return undefined
+  }
   const catalog = [...(context.operator ? await operatorCatalog(context.operator) : []), ...(context.interactions ? await agentCatalog() : [])]
   if (!catalog.some((tool) => tool.name === name)) return undefined
   await context.operator?.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`).catch(() => undefined)

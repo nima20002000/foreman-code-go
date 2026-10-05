@@ -62,7 +62,6 @@ import {
   type WorkspaceDetailsRequest,
 } from '@foreman-code/contracts'
 import { z } from 'zod'
-import { notifyAuthenticationRequired } from './authEvents'
 import { collectManagementPages, managementPageUrl } from './managementPaging'
 import {
   assertSession, sessionGeneration, sessionSignal, sessionIsSwitching, SessionChangedError,
@@ -87,8 +86,6 @@ import {
   AgentDefaultsUpdateResultSchema,
   WorkflowDefaultsUpdateInputSchema,
   WorkflowDefaultsUpdateResultSchema,
-  OperatorEnrollmentRequestSchema,
-  OperatorEnrollmentResponseSchema,
   WorkspaceArchiveInputSchema,
   WorkspaceCreateInputSchema,
   WorkspaceUpdateInputSchema,
@@ -203,8 +200,7 @@ export class ApiClient {
   ): Promise<T> {
     const { body, method = 'GET', headers, signal, ...init } = options
     const generation = sessionGeneration()
-    const authRequest = ['/api/auth/enroll', '/api/auth/logout', '/api/auth/setup', '/api/auth/sign-in/email'].includes(path)
-    if (sessionIsSwitching() && !authRequest) throw new SessionChangedError()
+    if (sessionIsSwitching()) throw new SessionChangedError()
     const requestSignal = signal ? AbortSignal.any([signal, sessionSignal()]) : sessionSignal()
     const requestHeaders = new Headers(headers)
     requestHeaders.set('Accept', 'application/json')
@@ -213,8 +209,8 @@ export class ApiClient {
     let response: Response
     try {
       response = await (this.fetchImpl ?? globalThis.fetch)(resolveRequestUrl(this.baseUrl, path), {
-        credentials: 'same-origin',
         ...init,
+        credentials: 'omit',
         method,
         headers: requestHeaders,
         signal: requestSignal,
@@ -244,8 +240,6 @@ export class ApiClient {
     assertSession(generation)
     requestSignal.throwIfAborted()
     if (!response.ok) {
-      if (response.status === 401 && !path.startsWith('/api/auth/') && !path.startsWith('/api/user/')
-        && !requestHeaders.has('Authorization')) notifyAuthenticationRequired()
       const parsedError = ApiErrorResponseSchema.safeParse(payload)
       if (parsedError.success) throw new ApiError(parsedError.data.error, response.status)
       throw new ApiError(
@@ -271,30 +265,14 @@ export class ApiClient {
     return parsed.data
   }
 
-  private userApprovalOptions(token: string | undefined, options: RequestOptions = {}): RequestOptions {
-    if (token === undefined) return { ...options, credentials: 'same-origin' }
-    const accepted = token.trim()
-    if (!accepted || /\s/.test(accepted)) throw new ApiError({ code: 'USER_CREDENTIAL_REQUIRED', message: 'Enter a valid User bearer credential, not an Operator session.' }, 401)
-    const headers = new Headers(options.headers)
-    headers.set('Authorization', `Bearer ${accepted}`)
-    // A User request must never fall back to the Operator browser cookie.
-    return { ...options, headers, credentials: 'omit' }
+  getUserInteraction(interactionId: string, options?: RequestOptions) {
+    return this.request(`/api/user/interactions/${toPath(interactionId)}`, GetInteractionResponseSchema, options)
   }
 
-  getUserInteraction(interactionId: string, token?: string, options?: RequestOptions) {
-    return this.request(`/api/user/interactions/${toPath(interactionId)}`, GetInteractionResponseSchema,
-      this.userApprovalOptions(token, options))
-  }
-
-  respondToUserInteraction(token: string | undefined, input: z.infer<typeof RespondToInteractionRequestSchema>, options?: RequestOptions) {
+  respondToUserInteraction(input: z.infer<typeof RespondToInteractionRequestSchema>, options?: RequestOptions) {
     const request = parseRequest(RespondToInteractionRequestSchema, input)
     return this.request(`/api/user/interactions/${toPath(request.interactionId)}/respond`, RespondToInteractionResponseSchema,
-      { ...this.userApprovalOptions(token, options), method: 'POST', body: request })
-  }
-
-  enrollOperator(token: string, options?: RequestOptions) {
-    const input = parseRequest(OperatorEnrollmentRequestSchema, { token })
-    return this.request('/api/auth/enroll', OperatorEnrollmentResponseSchema, { ...options, method: 'POST', body: input })
+      { ...options, method: 'POST', body: request })
   }
 
   archiveManagedWorkspaceBatch(input: WorkspaceBatchArchiveInput, options?: RequestOptions) {
@@ -655,7 +633,6 @@ export const createMessage = apiClient.createMessage.bind(apiClient)
 export const sendUserMessage = apiClient.sendUserMessage.bind(apiClient)
 export const createUserMessage = apiClient.createUserMessage.bind(apiClient)
 export const listVisibleResources = apiClient.listVisibleResources.bind(apiClient)
-export const enrollOperator = apiClient.enrollOperator.bind(apiClient)
 export const listManagedWorkspaces = apiClient.listManagedWorkspaces.bind(apiClient)
 export const getManagedWorkspace = apiClient.getManagedWorkspace.bind(apiClient)
 export const validateWorkspaceLocation = apiClient.validateWorkspaceLocation.bind(apiClient)

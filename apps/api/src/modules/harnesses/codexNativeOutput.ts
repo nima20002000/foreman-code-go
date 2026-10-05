@@ -17,6 +17,13 @@ export interface CodexNativeOutputSandbox {
   /** Environment actually passed to this app-server, not a native argument. */
   tmpdir: string | undefined
 }
+/** Codex may report cwd as an explicit writable root or as the implicit workspace. */
+export function sameCodexNativeOutputSandbox(actual: CodexNativeOutputSandbox, expected: CodexNativeOutputSandbox): boolean {
+  const roots = (policy: CodexNativeOutputSandbox) => [...new Set([policy.cwd, ...policy.writableRoots])].sort()
+  return actual.cwd === expected.cwd && actual.networkAccess === expected.networkAccess
+    && actual.excludeTmpdirEnvVar === expected.excludeTmpdirEnvVar && actual.excludeSlashTmp === expected.excludeSlashTmp
+    && actual.tmpdir === expected.tmpdir && JSON.stringify(roots(actual)) === JSON.stringify(roots(expected))
+}
 export interface CodexNativeOutputQualificationInput {
   configuration: CodexHarnessConfiguration
   binary: string

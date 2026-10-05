@@ -18,9 +18,9 @@ export async function fileRuntimeFixture() {
   }
   replace("const started = () => {", `const beforeAck = read('file-before-ack.json', null)
     if (beforeAck) {
-      outstanding.set(beforeAck.id, nativeTurn)
+      outstanding.set(beforeAck.id, { threadId: owner.id, turnId: nativeTurn.id, remaining: 0 })
       send({ ...beforeAck, method: 'item/tool/call', params: {
-        ...beforeAck.params, threadId: current.id, turnId: nativeTurn.id,
+        ...beforeAck.params, threadId: owner.id, turnId: nativeTurn.id,
       } })
     }
     const started = () => {`)

@@ -7,7 +7,7 @@ fingerprint without launching a probe. GET and MCP readback use persisted record
 and current HRT metadata and never install, probe or change filesystem settings.
 
 Physical qualification approval is intentionally human-only. The approval route
-uses the existing verified browser authentication and mutation-origin boundary;
+uses the existing implicit local human boundary and mutation-origin boundary;
 HTTP bearer authentication and MCP cannot approve themselves. The immutable
 command receipt binds the actual human principal to the exact installed
 fingerprint. Operator MCP can save policies, request qualification, run an already

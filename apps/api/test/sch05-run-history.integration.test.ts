@@ -211,7 +211,7 @@ describe.skipIf(!postgresEnabled)('SCH-05 immutable Board/history authenticated 
       const caps = value(await r.client.callTool({ name: 'operator_get_capabilities', arguments: {} })) as {
         runtimeLimits: Array<{ feature: string; detail: string }> }
       expect(caps.runtimeLimits.find((item) => item.feature === 'run_board_history')?.detail).toContain('tools/list')
-      expect((await f.app.inject({ method: 'GET', url: url(RUN_HISTORY_TOOLS.snapshot, args) })).statusCode).toBe(401)
+      expect((await f.app.inject({ method: 'GET', url: url(RUN_HISTORY_TOOLS.snapshot, args), headers: { authorization: 'Bearer invalid' } })).statusCode).toBe(401)
       await parity(f, r.client, r.token, RUN_HISTORY_TOOLS.snapshot, args)
       const noRead = await reader(f, [{ actions: ['capabilities:read'], scope: {} }])
       expect((await noRead.client.listTools()).tools.map((tool) => tool.name)).not.toContain(RUN_HISTORY_TOOLS.snapshot)

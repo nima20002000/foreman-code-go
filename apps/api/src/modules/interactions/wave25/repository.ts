@@ -37,6 +37,7 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
       'The V3 repository records its audit on the G1 transaction; a raw-client callback cannot join that transaction.')
     return decide(this.approvalPool, mode.runId, { id: input.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
       nativeResponse: input.nativeResponse, principal: input.principal,
+      ...(input.source ? { source: input.source } : {}),
       ...(input.signal ? { signal: input.signal } : {}) })
   }
   override async bindGraphInterrupt(id: string, graphInterruptId: string): Promise<DurableInteraction> {

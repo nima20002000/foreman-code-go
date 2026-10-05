@@ -45,11 +45,3 @@ export type WorkspaceDefaultsUpdateInput = z.infer<typeof WorkspaceDefaultsUpdat
 export const WorkspaceDefaultsUpdateResultSchema = z.object({
   value: ManagedWorkspaceDefaultsSchema, replayed: z.boolean(),
 }).strict();
-
-export const BrowserCredentialSetupSchema = z.object({
-  name: z.string().trim().min(1).max(80).refine((value) => !value.startsWith("-") && !Array.from(value).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127), "Use a name without control characters or a leading dash"),
-  days: z.number().int().min(1).max(365),
-  access: z.enum(["manage", "read-only"]),
-  workspaceId: z.string().trim().min(1).max(200).refine((value) => !value.startsWith("-") && !Array.from(value).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127), "Use a workspace ID without control characters or a leading dash").optional(),
-}).strict();
-export type BrowserCredentialSetup = z.infer<typeof BrowserCredentialSetupSchema>;

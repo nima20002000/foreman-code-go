@@ -67,13 +67,13 @@ describe('Run subagent overlays', () => {
     expect(completed).toHaveAttribute('data-inactive', 'true')
     expect(completed).toHaveAttribute('data-parent-id', 'node-x')
   })
-  it('opens messages, tools, clipping and lifecycle with unsupported steering hidden', async () => {
+  it('opens messages, tools, clipping and lifecycle while controls are unavailable', async () => {
     await mount()
     fireEvent.click(screen.getByRole('button', { name: 'Research, Codex, Running' }))
     await screen.findByText('Child answer')
     expect(screen.getByText('Shortened — the full message was 24 KB.')).toBeVisible()
     expect(screen.getByText("Only part of this subagent's conversation was captured.")).toBeVisible()
-    expect(screen.getByText("View only — Codex subagents can't be messaged or interrupted from here.")).toBeVisible()
+    expect(screen.getByText('Controls are unavailable for this subagent right now.')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Interrupt' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Status' })).toHaveTextContent('Running')
@@ -172,8 +172,7 @@ describe('Run subagent overlays', () => {
     expect(layoutSubagents(runA.nodes, [child({ parentSubagentId: 'missing' }), child({ id: 'cycle', parentSubagentId: 'cycle' })])).toEqual([])
   })
   it('allows text editing in the child panel without triggering saved-graph keyboard guards', async () => {
-    const capabilities = subagentCapabilities('opencode-task', '1.18.33')
-    capabilities.sendInput = { support: 'supported', qualification: 'passed' }
+    const capabilities = subagentCapabilities('opencode-task', '1.18.31')
     server.use(http.get(`${base}/:subagentId`, () => HttpResponse.json({
       subagent: child({ provider: 'opencode', nativeMode: 'opencode-task', status: 'waiting', capabilities }),
       availableActions: { sendInput: true, interrupt: false, blockedReason: null },

@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 
 import { DEFAULT_AGENT_DEFAULTS } from '@foreman-code/contracts'
@@ -24,7 +25,7 @@ describe.skipIf(!connectionString)('HAP-01 durable foundation', () => {
       || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
     const schema = `hap01_${randomUUID().replaceAll('-', '')}`
     const admin = new pg.Pool({ connectionString })
-    await admin.query(`create schema "${schema}"`)
+    await createFixtureSchema(admin, schema)
     const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
     try {
       await applyApplicationMigrations(pool)
@@ -76,7 +77,7 @@ describe.skipIf(!connectionString)('HAP-01 durable foundation', () => {
 
     } finally {
       await pool.end()
-      await admin.query(`drop schema if exists "${schema}" cascade`)
+      await dropFixtureSchema(admin, schema)
       await admin.end()
     }
   }, 30_000)

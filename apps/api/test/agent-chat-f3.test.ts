@@ -15,7 +15,7 @@ import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { AgentChatService, type AgentChatManagerFactory } from '../src/modules/conversations/agentChat.js'
 import { agentChatKey, type AgentConversationRow, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import type { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
-import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
+import { HarnessExecutionError, NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { OpenCodeNativeDeliveryError } from '../src/modules/harnesses/opencodeServer.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
 
@@ -59,6 +59,14 @@ class MemoryConversations {
     return true
   }
   async bindSession(_id: string, version: string, nativeId: string) { this.row!.provider_version = version; this.row!.native_session_id = nativeId }
+  async recordNonSubmission(_id: string, requestId: string,
+    operation: 'session_creation' | 'turn_submission', result: ExecutionResult) {
+    if (!this.row || this.row.active_request_id !== requestId || this.row.active_native_turn_id
+      || operation === 'session_creation' && this.row.native_session_id) return false
+    this.row.record.nativeNonSubmission = { requestId, operation, result }
+    this.row.turn_state = 'uncertain'
+    return true
+  }
   async markStartupDelivered() { this.row!.record.startupDelivered = true }
   async markSessionUnavailable(_id: string, message: string, reason: 'native_session_missing' | 'harness_unavailable' = 'native_session_missing') {
     this.unavailable.push({ message, reason }); this.row!.record.sessionUnavailable = message; this.row!.record.sessionUnavailableReason = reason
@@ -70,7 +78,14 @@ class MemoryConversations {
     this.row!.record.startupReceipt ??= { requestId, nativeSessionId: this.row!.native_session_id! }
     return true
   }
-  async finish(_id: string, requestId: string, result: ExecutionResult) {
+  async finish(_id: string, requestId: string, result: ExecutionResult, _nativeMessageId?: string, rejectedCreation = false) {
+    if (rejectedCreation) {
+      if (this.row?.active_request_id !== requestId || this.row.record.sessionCreation?.requestId !== requestId
+        || this.row.native_session_id || this.row.active_native_turn_id || this.row.record.sessionUnavailable
+        || result.outcome === 'succeeded') return false
+      delete this.row.record.sessionCreation
+    }
+    delete this.row!.record.nativeNonSubmission
     this.turns.find((value) => value.requestId === requestId)!.delivery = result.outcome === 'succeeded' ? 'completed' : result.outcome
     this.row!.last_result = result; this.row!.active_request_id = null; this.row!.active_native_turn_id = null; this.row!.turn_state = 'idle'
     return true
@@ -210,11 +225,16 @@ describe('F3 native availability and ownership', () => {
     it(`A-R01: ${mode} refuses scoped App MCP before prompt delivery and keeps read-only configuration`, async () => {
       const f = await setup({ stored: mode === 'attach', ...(mode === 'fork' ? { origin } : {}) })
       const before = structuredClone(f.configuration)
-      f.native.failure = new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'App MCP is enabled')
+      const rejection = new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'App MCP is enabled')
+      f.native.failure = mode === 'attach' ? rejection : new NativeDeliveryError('session_creation', 'not_sent', rejection)
       const turn = f.repository.begin()
       await f.chat['runTurn'](f.repository.row!.id, turn)
       assert.equal(turn.delivery, 'failed'); assert.equal(f.repository.abandonments, 0)
-      assert.equal(f.repository.unavailable[0]!.reason, 'harness_unavailable')
+      if (mode === 'attach') assert.equal(f.repository.unavailable[0]!.reason, 'harness_unavailable')
+      else {
+        assert.equal(f.repository.unavailable.length, 0)
+        assert.equal(f.repository.row!.record.sessionCreation, undefined)
+      }
       assert.deepEqual(f.native.calls.map((call) => call.kind), [mode]); assert.equal(f.native.prompts.length, 0)
       const input = f.native.calls[0]!.input
       assert.equal(input.environment, undefined); assert.notEqual(input.kind, 'operator')
@@ -225,13 +245,26 @@ describe('F3 native availability and ownership', () => {
       }
       assert.deepEqual(f.configuration, before)
       const state = await f.chat.readConversation(principal, f.context.workspaceId, f.repository.row!.id)
-      assert.equal(state.availability.canSend, false); assert.equal(state.availability.reason, 'harness_unavailable')
-      assert.equal(state.capabilities.resume, false)
-      await assert.rejects(f.chat.send(principal, f.context.workspaceId, { requestId: 'retry', context: {
-        workflowId: f.context.workflowId, workflowNodeId: f.context.workflowNodeId, agentId: f.context.agentId,
-        ...(mode === 'fork' ? { runId: origin.runId } : {}) }, expectedConversationId: f.repository.row!.id, intent: 'next_turn', content: 'retry' }),
-      { code: 'AGENT_CHAT_UNAVAILABLE' })
-      assert.equal(f.native.calls.length, 1)
+      if (mode === 'attach') {
+        assert.equal(state.availability.canSend, false)
+        assert.equal(state.availability.reason, 'harness_unavailable')
+        assert.equal(state.capabilities.resume, false)
+        await assert.rejects(f.chat.send(principal, f.context.workspaceId, { requestId: 'retry', context: {
+          workflowId: f.context.workflowId, workflowNodeId: f.context.workflowNodeId, agentId: f.context.agentId,
+        }, expectedConversationId: f.repository.row!.id, intent: 'next_turn', content: 'retry' }),
+        { code: 'AGENT_CHAT_UNAVAILABLE' })
+        assert.equal(f.native.calls.length, 1)
+      } else {
+        assert.equal(state.availability.canSend, true)
+        f.native.failure = undefined
+        const retry = f.repository.begin('retry')
+        await f.chat['runTurn'](f.repository.row!.id, retry)
+        assert.equal(retry.delivery, 'completed')
+        assert.deepEqual(f.native.calls.map((call) => call.kind), [mode, mode])
+        assert.equal(f.native.prompts.length, 1)
+        assert.deepEqual(f.configuration, before)
+        assert(f.native.calls.every((call) => call.input.environment === undefined))
+      }
     })
   }
 

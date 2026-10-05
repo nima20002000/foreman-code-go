@@ -7,7 +7,6 @@ import {
   type PermanentFileScope, type WorkflowReferenceFileScope,
 } from '@foreman-code/contracts/files'
 import { apiClient, ApiError } from '../../shared/api/client'
-import { notifyAuthenticationRequired } from '../../shared/api/authEvents'
 import {
   assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError,
 } from '../../shared/api/sessionBoundary'
@@ -97,7 +96,7 @@ async function rawRequest(path: string, context: ReturnType<typeof requestContex
   let response: Response
   try {
     response = await fetch(new URL(path, globalThis.location?.origin ?? 'http://localhost'), {
-      ...init, credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: context.signal,
+      ...init, credentials: 'omit', cache: 'no-store', redirect: 'error', signal: context.signal,
     })
   } catch (error) {
     context.check()
@@ -106,7 +105,6 @@ async function rawRequest(path: string, context: ReturnType<typeof requestContex
   }
   context.check()
   if (!response.ok) {
-    if (response.status === 401) notifyAuthenticationRequired()
     const parsed = ApiErrorResponseSchema.safeParse(await response.json().catch(() => undefined))
     context.check()
     throw new ApiError(parsed.success ? parsed.data.error

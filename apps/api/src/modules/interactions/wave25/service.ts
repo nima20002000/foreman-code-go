@@ -1,11 +1,13 @@
 import { withOriginalInteractionDeliveryClaim } from '../originalDeliveryClaim.js'
 import { randomUUID } from 'node:crypto'
-import type { DurableInteraction } from '@foreman-code/contracts'
+import { withInteractionResponse, type DurableInteraction, type InteractionResponseValue } from '@foreman-code/contracts'
+import { requireAuthorization } from '../../access/policy.js'
 import type { NativeResponseJournal } from '../../harnesses/recovery/responseJournal.js'
 import type { InteractionNativeRuntime } from '../runtimePorts.js'
 import type { InteractionResponder } from '../service.js'
 import type { GraphResumeClaim } from '../deliveryPostgres.js'
-import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, type NativeDeliveryOutcome } from '../delivery.js'
+import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, selectedInteractionResponse,
+  type NativeDeliveryOutcome } from '../delivery.js'
 import type { Wave25InteractionRepository } from './repository.js'
 import { fail } from './context.js'
 import { SingleWriterSessionManager } from '../sessionWriter.js'
@@ -22,6 +24,7 @@ export interface ApprovalRuntimeDependencies {
   nativeRuntime: InteractionNativeRuntime
   journal?: NativeResponseJournal
   atomicResume?: AtomicApprovalResumeConsumer
+  prepareRequester?: (interaction: DurableInteraction) => Promise<void>
 }
 
 async function read(deps: ApprovalRuntimeDependencies, id: string): Promise<DurableInteraction> {
@@ -34,7 +37,7 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
   const claim = await deps.repository.delivery.claim(id, randomUUID(), reconcileOnly)
   if (!claim) return read(deps, id)
   const signal = AbortSignal.timeout(INTERACTION_DELIVERY_LEASE_MS)
-  const option = current.responseOptions.find((item) => item.optionId === current.selectedOptionId)
+  const option = selectedInteractionResponse(current)
   if (!option) return fail('INTERACTION_OPTION_INVALID')
   const expectedSession = { harness: current.harness, providerVersion: current.providerVersion, nativeSessionId: current.nativeSessionId }
   if (claim.mode === 'reconcile') {
@@ -106,9 +109,12 @@ export async function resumeApproval(deps: ApprovalRuntimeDependencies, interact
   await deps.repository.delivery.finishGraphResume(claim, error)
 }
 export async function respondToApproval(deps: ApprovalRuntimeDependencies, responder: InteractionResponder,
-  input: { interactionId: string; optionId: string; expectedRevision: number }, options: InteractionResponseOptions = {}) {
+  input: { interactionId: string; optionId: string; expectedRevision: number; response?: InteractionResponseValue | undefined },
+  options: InteractionResponseOptions = {}) {
   const current = await read(deps, input.interactionId)
-  if (!responder.principal || (current.approval.handler === 'user') !== (responder.kind === 'user')) return fail('INTERACTION_ACCESS_DENIED')
+  if (!responder.principal || (current.approval.handler === 'user') !== (responder.kind !== 'orchestrator')) {
+    return fail('INTERACTION_ACCESS_DENIED')
+  }
   if (responder.kind === 'orchestrator') {
     if (responder.beforeCommit) return fail('APPROVAL_RAW_AUDIT_CALLBACK_REJECTED')
     if (responder.authority.agentId !== responder.principal.agentId || responder.authority.workspaceId !== current.workspaceId
@@ -119,10 +125,15 @@ export async function respondToApproval(deps: ApprovalRuntimeDependencies, respo
   if (current.status === 'pending') {
     if (responder.kind === 'user') {
       if (!canUserInteract(responder.principal, 'interactions:respond', current)) return fail('INTERACTION_ACCESS_DENIED')
+    } else if (responder.kind === 'operator') {
+      if (responder.principal.audience !== 'operator') return fail('INTERACTION_ACCESS_DENIED')
+      requireAuthorization(responder.principal, 'interactions:read', current)
+      requireAuthorization(responder.principal, 'interactions:respond', current)
     } else requireRespondableInteraction(responder.principal, current)
     if (!deps.nativeRuntime.validateInteraction) return fail('APPROVAL_NATIVE_QUALIFICATION_REQUIRED')
     assertInteractionResponseActive(options.signal)
     try {
+      await deps.prepareRequester?.(current)
       await deps.nativeRuntime.validateInteraction(current, options.signal)
     } catch (error) {
       assertInteractionResponseActive(options.signal)
@@ -130,8 +141,11 @@ export async function respondToApproval(deps: ApprovalRuntimeDependencies, respo
     }
     assertInteractionResponseActive(options.signal)
   }
+  const selected = withInteractionResponse(option, input.response)
   const decided = await deps.repository.decide({ id: current.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
-    principal: responder.principal, nativeResponse: { optionId: option.optionId, semantic: option.semantic },
+    principal: responder.principal, nativeResponse: { optionId: option.optionId, semantic: option.semantic,
+      ...(selected.response !== undefined ? { response: selected.response } : {}) },
+    ...(responder.kind === 'operator' && responder.source ? { source: responder.source } : {}),
     ...(options.signal ? { signal: options.signal } : {}) })
   const delivered = await deliverApproval(deps, current.id)
   await resumeApproval(deps, delivered)

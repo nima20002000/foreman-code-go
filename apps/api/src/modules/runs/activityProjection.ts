@@ -4,6 +4,7 @@ import { repeatId } from './repeatResolution.js'
 import { safeNodeName } from './nativeAction.js'
 import { nativeActivityStatus } from './nativeActivityStatus.js'
 import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
+import { codexUnsupportedInteractionMessage } from '@foreman-code/contracts'
 
 export interface ActivityReadRow {
   sequence: string; source: string; kind: string; occurred_at: Date;
@@ -152,6 +153,14 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
     case 'harness_session_started': status = 'running'; summary = 'Native session started'; break
     case 'harness_session_finished': status = 'completed'; summary = 'Native session finished'; break
     case 'harness_output': {
+      const unsupported = string(native.type) === 'interaction.unsupported'
+        ? codexUnsupportedInteractionMessage(native.unsupportedInteractionCode) : undefined
+      if (unsupported) {
+        kind = 'error'
+        status = 'failed'
+        summary = unsupported
+        break
+      }
       const claude = claudeConversationActivity({ type: string(native.type) ?? '', payload: {
         itemId: native.claudeItemId, taskId: native.claudeTaskId, name: native.claudeName, status: native.claudeStatus,
       } }, runId)

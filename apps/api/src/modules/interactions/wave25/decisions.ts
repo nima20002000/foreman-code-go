@@ -1,5 +1,5 @@
 import { approvalAttentionFacts } from './attention.js'
-import { DurableInteractionSchema, type DurableInteraction } from '@foreman-code/contracts'
+import { DurableInteractionSchema, withInteractionResponse, type DurableInteraction } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { canonicalGraphJson, type GraphEffect } from '@foreman-code/contracts/wave25'
 import type { GraphSqlClient } from '../../run-graph/connection.js'
@@ -63,13 +63,16 @@ export async function createRequestLocked(publication: RunGraphPublication, inpu
   }
 }
 
-async function audit(sql: GraphSqlClient, principal: ManagementPrincipal, interaction: DurableInteraction, replayed: boolean): Promise<void> {
+async function audit(sql: GraphSqlClient, principal: ManagementPrincipal, interaction: DurableInteraction,
+  replayed: boolean, source?: 'http' | 'mcp'): Promise<void> {
   await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-    values($1,$2,'interaction_respond',$3,'succeeded',$4::jsonb)`, [principal.id, principal.audience === 'worker' ? 'mcp' : 'http',
+    values($1,$2,'interaction_respond',$3,'succeeded',$4::jsonb)`, [principal.id,
+    source ?? (principal.audience === 'worker' ? 'mcp' : 'http'),
     `interaction:${interaction.id}`, JSON.stringify({ replayed, optionId: interaction.selectedOptionId })])
 }
 export async function decide(pool: pg.Pool, runId: string, input: {
   id: string; optionId: string; expectedRevision: number; principal: ManagementPrincipal; nativeResponse: unknown;
+  source?: 'http' | 'mcp';
   signal?: AbortSignal
 }) {
   return transact(pool, runId, async (publication) => {
@@ -85,7 +88,11 @@ export async function decide(pool: pg.Pool, runId: string, input: {
     if (current.status === 'canceled') return fail('INTERACTION_CANCELED')
     const option = current.responseOptions.find((item) => item.optionId === input.optionId)
     if (!option) return fail('INTERACTION_OPTION_INVALID')
-    const response = { optionId: option.optionId, semantic: option.semantic }
+    const data = input.nativeResponse && typeof input.nativeResponse === 'object' && 'response' in input.nativeResponse
+      ? input.nativeResponse.response : undefined
+    const selected = withInteractionResponse(option, data)
+    const response = { optionId: option.optionId, semantic: option.semantic,
+      ...(selected.response !== undefined ? { response: selected.response } : {}) }
     if (canonicalGraphJson(input.nativeResponse) !== canonicalGraphJson(response)) return fail('INTERACTION_RESPONSE_CONFLICT')
     beforeGraphCommit(sql, async () => {
       const alive = await sql.query('select 1 from management_principals where id=$1 and revoked_at is null and expires_at>clock_timestamp()', [principal.id])
@@ -94,7 +101,7 @@ export async function decide(pool: pg.Pool, runId: string, input: {
     if (current.status !== 'pending') {
       if (current.selectedOptionId !== option.optionId || current.selectedSemantic !== option.semantic
         || canonicalGraphJson(current.nativeResponse) !== canonicalGraphJson(response)) return fail('INTERACTION_ALREADY_DECIDED')
-      await audit(sql, principal, current, true)
+      await audit(sql, principal, current, true, input.source)
       return { interaction: current, replayed: true }
     }
     if (current.revision !== input.expectedRevision) return fail('REVISION_CONFLICT')
@@ -102,7 +109,8 @@ export async function decide(pool: pg.Pool, runId: string, input: {
     await assertBudget(sql, current)
     const next = nextInteraction(current, { status: 'delivery_pending', deliveryState: 'pending', selectedOptionId: option.optionId,
       selectedSemantic: option.semantic, nativeResponse: response, auditReference: principal.id, decidedAt: new Date().toISOString() })
-    const effect: GraphEffect = { identity: { kind: 'approval.decide', entityId: current.id }, digest: decisionDigest(current, option.optionId) }
+    const effect: GraphEffect = { identity: { kind: 'approval.decide', entityId: current.id },
+      digest: decisionDigest(current, option.optionId, selected.response) }
     const expected = { scope: context.scope, effect: effect.identity, effectDigest: effect.digest,
       ownerId: principal.id, fence: String(current.revision), connectionGeneration: null }
     await publishInteraction(publication, context, current, next, { effect, guard: { expected,
@@ -111,10 +119,10 @@ export async function decide(pool: pg.Pool, runId: string, input: {
         const actualContext = await readContext(transaction, actual, true)
         const live = await lockPrincipal(transaction, principal, actual, actualContext)
         return { scope: actualContext.scope, effect: { kind: 'approval.decide', entityId: actual.id },
-          effectDigest: decisionDigest(actual, option.optionId), ownerId: live.id, fence: String(actual.revision),
+          effectDigest: decisionDigest(actual, option.optionId, selected.response), ownerId: live.id, fence: String(actual.revision),
           connectionGeneration: null, ownership: 'held', access: 'effect', security: 'valid',
           effectClosed: actual.status !== 'pending', submission: 'not_submitted' }
-      } }, mutate: async (transaction) => audit(transaction, principal, next, false) })
+      } }, mutate: async (transaction) => audit(transaction, principal, next, false, input.source) })
     beforeGraphCommit(sql, async () => assertInteractionResponseActive(input.signal))
     return { interaction: next, replayed: false }
   })

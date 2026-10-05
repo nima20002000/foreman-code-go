@@ -9,13 +9,13 @@ describe('development launcher API reuse', () => {
       const matches = options.headers.origin === configuredOrigin
       return {
         ok: matches,
-        text: async () => matches ? '{"localDev":true}' : '{"error":{"code":"CSRF_ORIGIN_NOT_ALLOWED"}}',
+        text: async () => matches ? '{"principal":{"id":"local-human"}}' : '{"error":{"code":"CSRF_ORIGIN_NOT_ALLOWED"}}',
       }
     })
 
     await expect(runningApiAcceptsBrowserOrigin('http://127.0.0.1:3000',
       'http://127.0.0.1:5173', request)).resolves.toBe(false)
-    expect(request).toHaveBeenLastCalledWith('http://127.0.0.1:3000/api/auth/session', expect.objectContaining({
+    expect(request).toHaveBeenLastCalledWith('http://127.0.0.1:3000/api/local-human', expect.objectContaining({
       headers: { origin: 'http://127.0.0.1:5173' },
     }))
     await expect(runningApiAcceptsBrowserOrigin('http://127.0.0.1:3000',

@@ -1,8 +1,10 @@
+import { beginRuntimeTiming, runtimeTimingPoint, withRuntimeTimingContext } from '../../infrastructure/runtimeTiming.js'
 import { resolve } from 'node:path'
 import type pg from 'pg'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import type { DurableInteraction } from '@foreman-code/contracts'
-import { ExecutableWorkflowV3Schema, type WorkflowRunV3 } from '@foreman-code/contracts/wave25'
+import { CurrentRunVersionSnapshotSchema, ExecutableWorkflowV3Schema,
+  type WorkflowRunV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
@@ -17,7 +19,7 @@ import { executeRepeatEngineStart } from './repeatStartComposition.js'
 import { repeatSettlementPending } from './repeatRuntime.js'
 import { readWorkflowCheckpoint } from './repeatGraph.js'
 import { hasWorkDirectionWait, persistWorkDirectionWait,
-  persistWorkflowApprovalWait, settleWorkflowRun } from './workflowLifecycle.js'
+  persistWorkflowApprovalWait, settleWorkForRestart, settleWorkflowRun } from './workflowLifecycle.js'
 import { consumeDeliveredApprovals, type WorkflowResumePermit } from './approvalCheckpointResume.js'
 import type { AuthorizeWorkflowStop } from './repeatLifecycle.js'
 import type { PostgresRunRepository } from './postgres.js'
@@ -26,6 +28,7 @@ import type { WorkflowOrchestrator } from './port.js'
 import { RunnerAdmission } from './runnerAdmission.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
+import type { WorkflowRestartApprovals } from './workflowRepositoryServices.js'
 
 /** One engine, Run owner, checkpoint thread and repository for all current V3
  * graphs. Optional bounded blocks are compiled into this same LangGraph; an
@@ -80,6 +83,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   start(runId: string): Promise<void> {
     const existing = this.resumeTasks.get(runId) ?? this.activeTasks.get(runId)
+    runtimeTimingPoint('engine', 'run.start', { runId, reused: existing !== undefined })
     if (existing) return existing
     return this.trackRun(runId, (controller) => this.drive(runId, controller))
   }
@@ -92,7 +96,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const controller = new AbortController()
     this.activeRuns.set(runId, controller)
     // Publish before dispatch, so Stop can abort even owner acquisition/preflight.
-    const task = Promise.resolve().then(() => work(controller)).finally(() => {
+    const finished = beginRuntimeTiming('engine', 'run.drive', { runId })
+    const task = Promise.resolve().then(() => withRuntimeTimingContext({ runId }, () => work(controller))).finally(() => {
+      finished()
       if (this.activeRuns.get(runId) === controller) this.activeRuns.delete(runId)
       if (this.activeTasks.get(runId) === task) this.activeTasks.delete(runId)
     })
@@ -101,6 +107,17 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   resume(runId: string): Promise<void> { return this.queueResume(runId) }
+
+  async prepareInteraction(interaction: DurableInteraction): Promise<void> {
+    if (this.closing) throw new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503)
+    if (interaction.runId !== interaction.graphThreadId) throw new DomainError(
+      'INTERACTION_RUN_MISMATCH', 'Approval preparation must name its original Run checkpoint.', 409)
+    if (this.nativeExecutions.hasOriginalRequester(interaction)) return
+    // Join the existing recovery task before recording a decision that changes its pending-source classification.
+    await this.start(interaction.runId)
+    if (!this.nativeExecutions.hasOriginalRequester(interaction)) throw new DomainError(
+      'NATIVE_SESSION_RECOVERY_REQUIRED', 'The original requester has not recovered from its saved checkpoint.', 409)
+  }
 
   resumeInteraction(interaction: DurableInteraction, claim?: GraphResumeClaim): Promise<void> {
     // Notifications select only; the real current checkpoint is re-read below.
@@ -145,8 +162,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   private async drive(runId: string, controller: AbortController, requestedIds?: readonly string[],
     claim?: GraphResumeClaim): Promise<void> {
+    const acquired = beginRuntimeTiming('engine', 'run.acquire_owner', { runId })
     const owner = await this.runs.acquireOwnership(runId, () => controller.abort(new DomainError(
-      'RUN_OWNERSHIP_LOST', 'The database execution owner disconnected.', 409)))
+      'RUN_OWNERSHIP_LOST', 'The database execution owner disconnected.', 409))).finally(acquired)
     if (!owner) throw new DomainError('RUN_ALREADY_OWNED', 'This Run is owned by another engine.', 409)
     this.activeOwners.set(runId, owner)
     let runtimeEntered = false
@@ -162,18 +180,16 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         'RUN_NOT_RESUMABLE', 'This Run requires Stop settlement or a separately authorized new Run.', 409)
       if (snapshot.run.executionState === 'waiting' && snapshot.version.definition.handoffs
         && await hasWorkDirectionWait(owner)) return
-      // Classify cold native lifetimes before binding/consuming an interrupt.
-      // A dead requester may leave a valid approval alongside a task error. Do
-      // not weaken checkpoint validation or replay delivery to escape that wait.
-      if (await this.nativeExecutions.requestColdRunCleanup(owner)) {
+      const checkpoint = await readWorkflowCheckpoint(runId, snapshot.version, this.checkpointer)
+      if (checkpoint.values.runId && checkpoint.values.runId !== runId) throw new DomainError('RUN_PIN_CONFLICT', 'The checkpoint belongs to another Run.', 409)
+      const current = checkpoint.tasks.some((task) => task.interrupts?.length)
+        ? await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint) : []
+      if (await this.nativeExecutions.requestColdRunCleanup(owner, current, controller.signal)) {
         await this.cleanupOwned(owner)
         return
       }
-      const checkpoint = await readWorkflowCheckpoint(runId, snapshot.version, this.checkpointer)
-      if (checkpoint.values.runId && checkpoint.values.runId !== runId) throw new DomainError('RUN_PIN_CONFLICT', 'The checkpoint belongs to another Run.', 409)
       let permit: WorkflowResumePermit | undefined
       if (checkpoint.tasks.some((task) => task.interrupts?.length)) {
-        const current = await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint)
         owner.assertOwned(); controller.signal.throwIfAborted()
         if (requestedIds && !current.some((item) => requestedIds.includes(item.id))) return
         const delivered = current.filter((item) => item.status === 'delivered' && item.deliveryState === 'delivered')
@@ -271,29 +287,35 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   }
 
   private async cleanupOwned(owner: RunOwnership): Promise<void> {
-    owner.assertOwned()
-    const snapshot = await this.runs.getRepeatSnapshot(owner.runId, owner)
-    if (!snapshot.stopRequested && !snapshot.cleanupPending && snapshot.run.executionState !== 'completed') throw new DomainError(
-      'GRAPH_STOP_CONFLICT', 'Cleanup requires the committed negative or terminal fence.', 409)
-    await this.runs.requestCleanup(owner.runId, owner)
+    const finished = beginRuntimeTiming('engine', 'run.cleanup', { runId: owner.runId })
     try {
-      if (snapshot.run.executionState !== 'completed' || snapshot.stopRequested || snapshot.run.outcome !== 'succeeded') {
-        await this.nativeExecutions.cancelRun(owner.runId, owner)
-        await settleWorkflowRun(owner, await hasRecoveredWorkflowNativeLifetime(owner))
-      } else await this.nativeExecutions.finishRun(owner.runId)
-      await this.finishOwned(owner)
-    } catch (error) {
-      await this.runs.finishCleanup(owner.runId, true, owner).catch(() => undefined)
-      throw error
-    }
+      owner.assertOwned()
+      const snapshot = await this.runs.getRepeatSnapshot(owner.runId, owner)
+      if (!snapshot.stopRequested && !snapshot.cleanupPending && snapshot.run.executionState !== 'completed') throw new DomainError(
+        'GRAPH_STOP_CONFLICT', 'Cleanup requires the committed negative or terminal fence.', 409)
+      await this.runs.requestCleanup(owner.runId, owner)
+      try {
+        if (snapshot.run.executionState !== 'completed' || snapshot.stopRequested || snapshot.run.outcome !== 'succeeded') {
+          await this.nativeExecutions.cancelRun(owner.runId, owner)
+          await settleWorkflowRun(owner, await hasRecoveredWorkflowNativeLifetime(owner))
+        } else await this.nativeExecutions.finishRun(owner.runId)
+        await this.finishOwned(owner)
+      } catch (error) {
+        await this.runs.finishCleanup(owner.runId, true, owner).catch(() => undefined)
+        throw error
+      }
+    } finally { finished() }
   }
 
   private async finishOwned(owner: RunOwnership, reason = 'The Run stopped or completed.'): Promise<void> {
-    const current = await this.runs.getRepeatSnapshot(owner.runId, owner)
-    if (current.run.executionState !== 'completed') throw new DomainError('GRAPH_TERMINAL_CONFLICT', 'The Run has not settled.', 409)
-    await this.nativeExecutions.finishRun(owner.runId)
-    await this.onRunTerminal?.(owner.runId, reason)
-    await this.runs.finishCleanup(owner.runId, false, owner)
+    const finished = beginRuntimeTiming('engine', 'run.finish', { runId: owner.runId })
+    try {
+      const current = await this.runs.getRepeatSnapshot(owner.runId, owner)
+      if (current.run.executionState !== 'completed') throw new DomainError('GRAPH_TERMINAL_CONFLICT', 'The Run has not settled.', 409)
+      await this.nativeExecutions.finishRun(owner.runId)
+      await this.onRunTerminal?.(owner.runId, reason)
+      await this.runs.finishCleanup(owner.runId, false, owner)
+    } finally { finished() }
   }
 
   async finishRunLifecycle(runId: string, reason = 'The Run stopped or completed.'): Promise<void> {
@@ -333,8 +355,10 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   /** Bounded current recovery. Never reset an existing checkpoint to initial state. */
   private reconcileCursor = ''
   reconcile(onError: (error: unknown) => void = (error) => componentLogger('engine').error({ err: error }, 'run reconciliation failed')): Promise<void> {
+    runtimeTimingPoint('engine', 'reconcile.request', { reused: this.reconciliation !== undefined })
     if (this.reconciliation) return this.reconciliation
     if (this.closing) return Promise.resolve()
+    const finished = beginRuntimeTiming('engine', 'reconcile.pass')
     const task = (async () => {
       await this.workerCredentials.reconcileTerminalCredentials?.().catch(onError)
       await this.nativeExecutions.reconcileReviews(onError)
@@ -359,7 +383,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         }
       }
       this.reconcileCursor = ''
-    })().finally(() => { if (this.reconciliation === task) this.reconciliation = undefined })
+    })().finally(() => { finished(); if (this.reconciliation === task) this.reconciliation = undefined })
     this.reconciliation = task
     return task
   }
@@ -375,7 +399,24 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // commits. Failed persistence must not authorize a Job abort or close.
       this.restartIntent = Promise.resolve().then(async () => {
         const intents = await withCleanupDeadline(async () => Promise.allSettled([...this.activeOwners.entries()].map(async ([runId, owner]) => {
-          if (this.activeOwners.get(runId) === owner) await this.runs.requestCleanup(runId, owner)
+          if (this.activeOwners.get(runId) === owner) {
+            const run = await this.runs.get(runId)
+            const version = run && await this.workflows.getVersion(run.workflowVersionId)
+            const accepted = CurrentRunVersionSnapshotSchema.parse({ run, version })
+            let approvals: WorkflowRestartApprovals | undefined
+            if (accepted.version.definition.handoffs) {
+              const checkpoint = await readWorkflowCheckpoint(runId, accepted.version, this.checkpointer)
+              const interactions = checkpoint.tasks.some(task => task.interrupts?.length)
+                ? await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint) : []
+              if (interactions.length && isAtomicApprovalCheckpointSaver(this.checkpointer)) {
+                approvals = { saver: this.checkpointer, interactions }
+              }
+            }
+            // Freeze handoff tasks before classifying their queued reservations.
+            // These tasks do not abort Jobs, which require the cleanup fence first.
+            if (accepted.version.definition.handoffs) this.activeRuns.get(runId)?.abort(reason)
+            await this.requestRestartCleanup(owner, approvals)
+          }
         })))
         const intentErrors = intents.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
         if (intentErrors.length) throw new AggregateError(intentErrors, 'Workflow restart cleanup intent remains unconfirmed.')
@@ -405,5 +446,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     // when its close receipt or draining was unconfirmed on the previous attempt.
     void attempt.catch(() => { if (this.shutdownTask === attempt) this.shutdownTask = undefined })
     return attempt
+  }
+
+  private async requestRestartCleanup(owner: RunOwnership, approvals?: WorkflowRestartApprovals): Promise<void> {
+    const { version } = await this.runs.getRepeatSnapshot(owner.runId, owner)
+    if (version.definition.handoffs && await settleWorkForRestart(owner, approvals)) return
+    await this.runs.requestCleanup(owner.runId, owner)
   }
 }

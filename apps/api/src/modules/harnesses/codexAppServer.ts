@@ -1,38 +1,48 @@
+import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
+import { beginRuntimeTiming, runtimeTimingPoint, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
-import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames, appMcpServerName, appLauncherTokenName, isAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { normalize } from 'node:path'
 
 import {
-  CodexHarnessConfigurationSchema,
+  CODEX_INTERACTION_SUPPORT, CodexHarnessConfigurationSchema,
   DEFAULT_CODEX_ADVANCED_CONFIGURATION, McpDetectionSchema, NativeHarnessCapabilitiesSchema,
   NativeHarnessEventSchema, NativeSessionReferenceSchema,
   type ApprovalResponseOption, type CodexAdvancedConfiguration, type CodexHarnessConfiguration,
   type ExecutionResult, type McpDetection, type NativeHarnessCapabilities, type NativeHarnessEvent,
   type NativeSessionReference, type PendingNativeInteraction,
+  isSessionNativeInteraction,
 } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
-import { HarnessExecutionError, NativeTurnNotActiveError } from './errors.js'
+import { HarnessExecutionError, NativeDeliveryError, NativeTurnNotActiveError } from './errors.js'
 import { CodexRuntimeFileTurn, type CodexChatFiles } from './codexFiles/runtime.js'
+import { CodexFilePreparationCleanupError } from './codexFiles/turn.js'
 import { codexChatFileDeclarations, codexChatFileTools } from './codexFiles/declarations.js'
 import { CodexRuntimeNativeOutputTurn, codexNativeOutputDeclarations, CODEX_NATIVE_OUTPUT_TOOL_ALIASES,
   type CodexNativeOutputs, type CodexNativeOutputQualificationInput, type CodexNativeOutputSandbox } from './codexNativeOutput.js'
 import { qualifyNativeCodexModel } from './codexQualification.js'
+import { readNativeCodexModelCatalog } from './codexModelCatalog.js'
 import { nativeQualification } from './nativeQualification.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { codexModelOptions } from './operatorOptions.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeSteerReceipt, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
-import { appMcpTokenEnvironment, inheritedAgentEnvironment, isDatabaseCredentialVariable } from './secrets.js'
+import { appMcpTokenEnvironment, inheritedAgentEnvironment, isControllerEnvironmentVariable } from './secrets.js'
 import { agentInstructionBundle } from '../skills/instructions.js'
 import {
   assertCodexUnchanged, canonical, codexRequest, qualifyCodex, QUALIFIED_CODEX_VERSION,
   QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
 } from './codexProtocol.js'
-import { translateCodexInteraction } from './codexInteractions.js'
+import { resolveCodexInteractionResponse, translateCodexInteraction } from './codexInteractions.js'
+import { CodexChildControls } from './codexChildControls.js'
+import { codexInputDeliveryEvidence } from './codexResponseDelivery.js'
+import { responseValueDigest, type NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
+import type { NativeResponseJournal } from './recovery/responseJournal.js'
+import type { RunSubagent } from '@foreman-code/contracts/subagents'
+import type { SubagentControlLease } from '../subagents/types.js'
 import { normalizeCodexNotification } from './codexNormalization.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { harnessProfile } from './qualification/profiles.js'
@@ -132,6 +142,7 @@ interface TurnSnapshot {
 }
 interface StartingTurn {
   correlationId: string
+  nativeAttemptId?: string
   previous: TurnSnapshot
   cancelRequested: boolean
   preparationController: AbortController
@@ -146,6 +157,7 @@ interface StartingTurn {
   stagedBytes: number
 }
 interface Runtime extends TurnSnapshot {
+  parent?: Runtime
   readonly connectionId: string
   readonly schemaIdentity: string
   arrivalOrdinal: number
@@ -174,6 +186,11 @@ interface Runtime extends TurnSnapshot {
   cancellation: { turnId: string; promise: Promise<boolean> } | undefined
   interactions: Map<string, WaitingRequest>
   resolvedRequests: Map<string, ResolvedRequest>
+  callbackOwners: Map<string, string>
+  rejectedStarts: Map<string, ExecutionResult>
+  responseDecisions: Map<string, { pending: PendingNativeInteraction; option: ApprovalResponseOption;
+    nativeResponse: JsonObject; sequence: number }>
+  responseDeliveries: Map<string, NativeResponseDeliveryEvidence>
   events: NativeHarnessEvent[]
   eventSizes: number[]
   eventBytes: number
@@ -196,7 +213,9 @@ interface Prepared {
 }
 interface Creation {
   identity: string
-  status: 'creating' | 'uncertain' | 'ready'
+  status: 'creating' | 'uncertain' | 'ready' | 'rejected'
+  source?: NativeSessionReference
+  rejection?: unknown
   promise?: Promise<NativeSessionReference>
   session?: NativeSessionReference
   transport?: CodexTransport
@@ -254,15 +273,20 @@ function instructions(input: NativeSessionStart): string | null {
 function credentialIdentity(input: NativeSessionStart): string {
   return canonical(input.environment ?? null)
 }
+function validateEnvironmentVariables(input?: NativeSessionStart['environment']): void {
+  for (const key of Object.keys(input?.variables ?? {})) {
+    // Operator and Worker credentials use the admitted App token; the server resolves its role.
+    if (!isSupportedAppMcpTokenName(key) && isControllerEnvironmentVariable(key)) {
+      throw new HarnessExecutionError('CODEX_ENVIRONMENT_INVALID', 'An Agent environment cannot contain application-global secrets.')
+    }
+  }
+}
 function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = []): NodeJS.ProcessEnv {
+  validateEnvironmentVariables(input)
   const environment = inheritedAgentEnvironment()
   for (const key of scopedNames) delete environment[key]
   if (input) {
     for (const [key, value] of Object.entries(input.variables)) {
-      // Operator and Worker credentials share GRAPHQL_MCP_TOKEN; the server resolves the role from the token.
-      if (key.startsWith('OPERATOR_') || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP)_/.test(key) || isDatabaseCredentialVariable(key)) {
-        throw new HarnessExecutionError('CODEX_ENVIRONMENT_INVALID', 'An Agent environment cannot contain application-global secrets.')
-      }
       environment[key] = value
     }
   }
@@ -376,6 +400,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private readonly runtimes = new Map<string, Runtime>()
   private readonly locks = new Set<string>()
   private readonly creations = new Map<string, Creation>()
+  private readonly childControls = new CodexChildControls()
+  private readonly childRuntimes = new Map<string, { runtime: Runtime; child: RunSubagent; assertCurrent(): void }>()
+  private readonly lifecycleTails = new Map<string, Promise<void>>()
   private loginControl: { transport: CodexTransport; loginId?: string; timer?: NodeJS.Timeout } | undefined
   private loginStarting = false
   private disposal: Promise<void> | undefined
@@ -395,6 +422,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     dependencies: CodexSessionDependencies = { mode: 'native' },
     private readonly inspection: CodexInspectionOptions = {},
     private readonly nativeOutputs?: CodexNativeOutputs,
+    private readonly responseJournal?: NativeResponseJournal,
   ) {
     const defaults: CodexSessionOperations = {
       transport: (...args) => new CodexStdioTransport(...args),
@@ -403,8 +431,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       assertUnchanged: assertCodexUnchanged, environment: safeEnvironment,
       runCommand: (binary, args, cwd, signal, environment, options) => runCommand(binary, args, cwd, signal, environment,
         { ...options, ...(this.processRecovery ? { recovery: this.processRecovery } : {}) }),
-      qualifyModel: (configuration, binary, cwd, environment, signal) =>
-        qualifyNativeCodexModel(configuration, binary, cwd, environment, signal, this.processRecovery),
+      qualifyModel: (configuration, binary, cwd, environment, signal, _recovery, inspection) =>
+        qualifyNativeCodexModel(configuration, binary, cwd, environment, signal, this.processRecovery, inspection),
       id: randomUUID, now: () => new Date(), schedule: setTimeout, cancelTimer: clearTimeout,
       withDiagnostics: async (pin, run) => {
         if (this.processRecovery) throw new HarnessExecutionError('CODEX_DIAGNOSTIC_OWNER_REQUIRED',
@@ -433,8 +461,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       provider: 'codex', providerVersion: result.providerVersion, persistentSessions: true, reconnect: true,
       sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true,
       mcpDetection: true,
-      // Generic question choices have no approval semantics in the shared contract.
-      supportedInteractionKinds: ['command_approval', 'file_approval', 'permission_profile', 'tool_user_input', 'mcp_elicitation'],
+      supportedInteractionKinds: ['command_approval', 'file_approval', 'permission_profile',
+        'mcp_tool_call_approval_question', 'mcp_confirmation', 'tool_user_input', 'mcp_elicitation'],
+      interactionSupport: CODEX_INTERACTION_SUPPORT,
     })
   }
 
@@ -447,7 +476,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const environment = this.dependencies.environment()
     const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, workingDirectory, environment, true, signal)
     await this.validateMcpPolicies(parsed.data, qualified.binary, workingDirectory, environment, signal)
-    await this.dependencies.qualifyModel(parsed.data, qualified.binary, workingDirectory, environment, signal)
+    await this.dependencies.qualifyModel(parsed.data, qualified.binary, workingDirectory, environment, signal,
+      undefined, { qualified, assertUnchanged: this.dependencies.assertUnchanged,
+        runCommand: this.dependencies.runCommand,
+        transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
     return nativeQualification(parsed.data, qualified.providerVersion)
   }
 
@@ -456,9 +488,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal.throwIfAborted()
     const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, workingDirectory, this.dependencies.environment(), true, signal)
     await this.dependencies.assertUnchanged(qualified)
-    const result = await this.dependencies.runCommand(qualified.binary, ['debug', 'models'], workingDirectory, signal, this.dependencies.environment())
-    if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE', 'Native model discovery failed.')
-    return { providerVersion: qualified.providerVersion, models: codexModelOptions(JSON.parse(result.stdout)) }
+    const catalog = await readNativeCodexModelCatalog({ qualified, assertUnchanged: this.dependencies.assertUnchanged,
+      runCommand: this.dependencies.runCommand,
+      transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) },
+      workingDirectory, this.dependencies.environment(), signal, this.processRecovery)
+    return { providerVersion: qualified.providerVersion, models: codexModelOptions(catalog) }
   }
 
   async qualificationEvidence(signal?: AbortSignal): Promise<CodexQualificationEvidence> {
@@ -475,32 +509,59 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   async createSession(source: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    return this.beginCreation(source, { signal })
+  }
+
+  private async beginCreation(source: NativeSessionStart,
+    options: { forkSource?: NativeSessionReference; signal?: AbortSignal | undefined }): Promise<NativeSessionReference> {
+    const { forkSource, signal } = options
     this.shutdownController.signal.throwIfAborted()
     const input = structuredClone(source)
+    if (forkSource && input.kind !== 'operator') input.instructionsDelivered = true
     const key = this.creationKey(input)
-    const identity = canonical({ binding: binding(input), configuration: accepted(input), environment: input.environment ?? null })
+    const identity = this.creationIdentity(input, forkSource)
     const existing = this.creations.get(key)
     if (existing) {
       if (existing.identity !== identity) throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH', 'The creation correlation belongs to a different accepted session.')
       if (existing.session) return structuredClone(existing.session)
+      if (existing.status === 'rejected') return this.rejectCreation(existing)
       if (existing.status === 'uncertain') throw new HarnessExecutionError('CODEX_SESSION_CREATION_UNCERTAIN', 'A native thread may already exist for this creation correlation; do not create another one.')
       return structuredClone(await existing.promise!)
     }
     if (this.creations.size >= 128) throw new HarnessExecutionError('CODEX_CREATION_LIMIT', 'Resolve or close existing sessions before creating more.')
-    const creation: Creation = { identity, status: 'creating' }
+    const creation: Creation = { identity, status: 'creating', ...(forkSource ? { source: structuredClone(forkSource) } : {}) }
     this.creations.set(key, creation)
     creation.promise = this.create(input, creation, key, signal)
     return structuredClone(await creation.promise)
   }
 
   /** Retrieve an identity learned from a late thread/start response without replaying it. */
-  async reconcileSessionCreation(input: NativeSessionStart): Promise<NativeSessionReference> {
+  async reconcileSessionCreation(input: NativeSessionStart, signal?: AbortSignal,
+    forkSource?: NativeSessionReference): Promise<NativeSessionReference> {
+    signal?.throwIfAborted()
+    this.shutdownController.signal.throwIfAborted()
     const creation = this.creations.get(this.creationKey(input))
-    const identity = canonical({ binding: binding(input), configuration: accepted(input), environment: input.environment ?? null })
-    if (!creation || creation.identity !== identity || !creation.session) {
+    const identity = this.creationIdentity(input, forkSource)
+    if (!creation || creation.identity !== identity) {
+      throw new HarnessExecutionError('CODEX_SESSION_CREATION_UNCERTAIN', 'Native creation identity is not established; no replacement thread was created.')
+    }
+    if (creation.status === 'rejected') return this.rejectCreation(creation)
+    if (!creation.session) {
       throw new HarnessExecutionError('CODEX_SESSION_CREATION_UNCERTAIN', 'Native creation identity is not established; no replacement thread was created.')
     }
     return structuredClone(creation.session)
+  }
+
+  private creationIdentity(input: NativeSessionStart, source?: NativeSessionReference): string {
+    return canonical({ binding: binding(input), configuration: accepted(input),
+      environment: input.environment ?? null, source: source ?? null })
+  }
+
+  private async rejectCreation(creation: Creation): Promise<never> {
+    try { await creation.transport?.close() } catch (error) {
+      throw new NativeDeliveryError('session_creation', 'not_sent', error, 'pending')
+    }
+    throw new NativeDeliveryError('session_creation', 'not_sent', creation.rejection)
   }
 
   private creationKey(input: NativeSessionStart): string {
@@ -513,14 +574,27 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     let candidate: Awaited<ReturnType<CodexAppServerSessionManager['transport']>> | undefined
     let expiration: NodeJS.Timeout | undefined
+    let creationAttempted = false
+    let creationAccepted = false
+    const method = creation.source ? 'thread/fork' : 'thread/start'
     try {
       const prepared = await this.prepareInput(input, signal)
+      if (creation.source) {
+        this.assertSessionVersion(creation.source)
+        if (prepared.qualified.providerVersion !== creation.source.providerVersion) {
+          throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The source session belongs to another Codex release.')
+        }
+      }
       candidate = await this.transport(prepared, 0, signal)
       creation.transport = candidate.transport
       const publish = async (value: unknown): Promise<NativeSessionReference> => {
+        creationAccepted = true
         this.shutdownController.signal.throwIfAborted()
         const response = object(value, 'CODEX_THREAD_START_INVALID')
         const thread = this.validateThreadResponse(prepared, response)
+        if (thread.id === creation.source?.nativeSessionId) {
+          throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex returned the source thread instead of a fork.')
+        }
         const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: prepared.qualified.providerVersion, nativeSessionId: thread.id })
         if (this.runtimes.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_COLLISION', 'Codex returned an already-owned native session identity.')
         const runtime = this.runtime(prepared, session, candidate!.transport)
@@ -532,30 +606,40 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         creation.status = 'ready'
         creation.session = session
         this.dependencies.cancelTimer(expiration)
-        this.record(runtime, 'thread.started', { threadId: session.nativeSessionId })
+        this.record(runtime, creation.source ? 'thread.forked' : 'thread.started', {
+          threadId: session.nativeSessionId,
+          ...(creation.source ? { sourceThreadId: creation.source.nativeSessionId } : {}),
+        })
         return session
       }
-      const result = await candidate.transport.request('thread/start', {
-        ...threadParameters(prepared), ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
+      const params = {
+        ...threadParameters(prepared, Boolean(creation.source && this.chatFiles)),
+        ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
+        ...(creation.source ? { threadId: creation.source.nativeSessionId, excludeTurns: true } : {}),
         // Codex persists declarations at thread/start; thread/resume cannot add
         // them when a text-first Operator later switches to a file-only manager.
         // Declarations grant no access: handlers still require an admitted file
         // turn and its durable ACK, never the credentialed text-mode process.
-        ...(this.chatFiles || prepared.input.kind === 'operator'
+        ...(!creation.source && (this.chatFiles || prepared.input.kind === 'operator')
           ? { dynamicTools: codexChatFileDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) }
-          : this.nativeOutputs ? { dynamicTools: codexNativeOutputDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
-      }, signal, (value, error) => {
+          : !creation.source && this.nativeOutputs ? { dynamicTools: codexNativeOutputDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
+      }
+      creationAttempted = true
+      const result = await candidate.transport.request(method, params, signal, (value, error) => {
         void (async () => {
           if (error) {
             this.dependencies.cancelTimer(expiration)
-            this.creations.delete(key)
+            creation.status = 'rejected'
+            creation.rejection = error
             await candidate!.transport.close()
           } else await publish(value)
         })().catch(() => { void candidate!.transport.close().catch(() => undefined) })
       })
       return await publish(result)
     } catch (error) {
-      if (isUncertain(error) && candidate && !this.shutdownController.signal.aborted) {
+      const notCreated = !creationAttempted || !creationAccepted && error instanceof CodexRpcError
+        && error.method === method && !error.uncertain
+      if (!notCreated && isUncertain(error) && candidate && !this.shutdownController.signal.aborted) {
         creation.status = 'uncertain'
         // Keep a bounded late-response window. Expiry never authorizes a retry.
         expiration = this.dependencies.schedule(() => { void candidate!.transport.close().catch(() => undefined) }, 300_000)
@@ -564,12 +648,15 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       } else {
         try { await candidate?.transport.close() }
         catch (cleanupError) {
-          creation.status = 'uncertain'
-          throw new AggregateError([error, cleanupError], 'Native setup failed and transport closure is unconfirmed.', { cause: cleanupError })
+          creation.status = notCreated ? 'rejected' : 'uncertain'
+          if (notCreated) creation.rejection = error
+          throw new NativeDeliveryError('session_creation', notCreated ? 'not_sent' : 'unknown',
+            new AggregateError([error, cleanupError], 'Native setup failed and transport closure is unconfirmed.', { cause: cleanupError }), 'pending')
         }
-        this.creations.delete(key)
+        if (notCreated) this.creations.delete(key)
+        else creation.status = 'uncertain'
       }
-      throw error
+      throw new NativeDeliveryError('session_creation', notCreated ? 'not_sent' : 'unknown', error)
     }
   }
 
@@ -665,6 +752,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   async attachSession(session: NativeSessionReference, source: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     this.assertSessionVersion(session)
+    if (this.locks.has(session.nativeSessionId)) {
+      throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
+    }
     return this.exclusive(session.nativeSessionId, async () => {
       const input = structuredClone(source)
       const loaded = this.runtimes.get(session.nativeSessionId)
@@ -694,7 +784,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         }, signal), 'CODEX_THREAD_RESUME_INVALID')
         this.validateThreadResponse(prepared, response, session.nativeSessionId)
         const runtime = this.runtime(prepared, structuredClone(session), candidate.transport, true)
-        await this.synchronize(runtime, undefined, signal)
+        const rejected = input.correlationId && this.responseJournal?.readTurnRejection(session, input.correlationId)
+        if (!rejected) {
+          await this.synchronize(runtime, undefined, signal)
+        }
         await candidate.activate(runtime)
         this.runtimes.set(session.nativeSessionId, runtime)
         this.record(runtime, 'thread.attached', { threadId: session.nativeSessionId })
@@ -722,14 +815,19 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private async *streamTurn(session: NativeSessionReference, input: NativeTurnInput, signal: AbortSignal | undefined,
     subscriberSignal: AbortSignal): AsyncGenerator<NativeHarnessEvent, void> {
-    const runtime = this.requireRuntime(session)
-    signal?.throwIfAborted()
-    if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
-    if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before starting another turn.')
-    if (runtime.phase !== 'idle' || runtime.streamActive || runtime.interactions.size > 0) {
-      throw new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This session has an active or uncertain turn or interaction.')
+    let runtime: Runtime
+    try {
+      runtime = this.requireRuntime(session)
+      signal?.throwIfAborted()
+      if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
+      if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before starting another turn.')
+      if (runtime.phase !== 'idle' || runtime.streamActive || runtime.interactions.size > 0) {
+        throw new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This session has an active or uncertain turn or interaction.')
+      }
+      if (!input.clientCorrelationId.trim()) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Turn startup requires a stable correlation ID.')
+    } catch (error) {
+      throw new NativeDeliveryError('turn_submission', 'not_sent', error)
     }
-    if (!input.clientCorrelationId.trim()) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Turn startup requires a stable correlation ID.')
     let resolveIdentity!: StartingTurn['resolveIdentity']
     const nativeIdentity = new Promise<string | undefined>((resolve) => { resolveIdentity = resolve })
     const starting: StartingTurn = {
@@ -760,101 +858,132 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal?.addEventListener('abort', abort, { once: true })
     let cursor = runtime.sequence
     let nativeSubmissionAttempted = false
+    let operationFailure: Error | undefined
+    let cleaningUp = false
     try {
-      await this.finishTurnResources(runtime)
-      runtime.files = undefined
-      runtime.fileCleanup = undefined
-      runtime.nativeOutput = undefined
-      runtime.nativeOutputCleanup = undefined
-      runtime.fileRequests.clear()
-      const preparationSignal = AbortSignal.any([starting.preparationController.signal, this.shutdownController.signal, subscriberSignal, ...(signal ? [signal] : [])])
-      preparationSignal.throwIfAborted()
-      if (this.chatFiles) {
-        starting.filePreparation = this.chatFiles.prepare({ session: structuredClone(session),
-          clientCorrelationId: input.clientCorrelationId, signal: preparationSignal }).then(async (bridge) => {
-          if (!bridge) return undefined
-          const files = new CodexRuntimeFileTurn(bridge, session.nativeSessionId)
-          runtime.files = files
-          if (runtime.disposed || runtime.closed || starting.cancelRequested || preparationSignal.aborted) {
-            await files.close()
-            throw new HarnessExecutionError('CODEX_FILE_TURN_CLOSED', 'File preparation was canceled before native submission.')
-          }
-          if (!starting.onSubmitted) {
-            await files.close()
-            throw new HarnessExecutionError('CODEX_FILE_RECEIPT_REQUIRED', 'File turns require durable native identity persistence.')
-          }
-          if (bridge.allowedTools().some((tool) => !codexChatFileTools(runtime.configuration).includes(tool))) {
-            await files.close()
-            throw new HarnessExecutionError('CODEX_FILE_POLICY_MISMATCH', 'File admission exceeds this chat harness policy.')
-          }
-          return files
-        })
-      }
-      preparationSignal.throwIfAborted()
-      if (this.nativeOutputs) {
-        if (!starting.onSubmitted || !runtime.effectiveSandbox) throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_ADMISSION_REQUIRED', 'Native outputs require measured policy and durable turn admission.')
-        starting.nativeOutputPreparation = this.nativeOutputs.prepare({
-          ...this.nativeOutputQualification(runtime.configuration, runtime.qualified, runtime.workingDirectory, runtime.effectiveSandbox.tmpdir),
-          effectiveSandbox: structuredClone(runtime.effectiveSandbox), session: structuredClone(session),
-          clientCorrelationId: input.clientCorrelationId, connectionId: runtime.connectionId, runtimeGeneration: runtime.generation,
-        }, preparationSignal).then(async (bridge) => {
-          const output = new CodexRuntimeNativeOutputTurn(bridge)
-          runtime.nativeOutput = output
-          if (runtime.closed || runtime.disposed || starting.cancelRequested || preparationSignal.aborted) {
-            await output.close(); throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_CLOSED', 'Native output preparation was withdrawn.')
-          }
-          return output
-        })
-        await starting.nativeOutputPreparation
-      }
-      const preparedFiles = await starting.filePreparation
-      const nativeInput = preparedFiles ? await preparedFiles.bridge.nativeInput(input.prompt)
-        : [{ type: 'text' as const, text: input.prompt, text_elements: [] }]
-      preparationSignal.throwIfAborted()
-      if (runtime.disposed || runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'The session closed during file preparation.')
-      nativeSubmissionAttempted = true
-      const result = await codexRequest(runtime.transport, 'turn/start', {
-        threadId: session.nativeSessionId, clientUserMessageId: input.clientCorrelationId,
-        input: nativeInput,
-        serviceTierForTurn: runtime.configuration.serviceTier === 'priority' ? 'fast' : 'default',
-      }, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]), (value, error) => {
-        if (runtime.starting !== starting || runtime.disposed) return
-        if (error) this.restoreRejectedStart(runtime, starting)
-        else void this.acceptStartedTurn(runtime, starting, value).catch(() => {
-          runtime.phase = 'uncertain'
-          this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
-        })
-      }).catch((error: unknown) => {
-        if (runtime.starting === starting) {
-          if (isUncertain(error)) {
+      try {
+        await this.finishTurnResources(runtime)
+        runtime.files = undefined
+        runtime.fileCleanup = undefined
+        runtime.nativeOutput = undefined
+        runtime.nativeOutputCleanup = undefined
+        runtime.fileRequests.clear()
+        const preparationSignal = AbortSignal.any([starting.preparationController.signal, this.shutdownController.signal, subscriberSignal, ...(signal ? [signal] : [])])
+        preparationSignal.throwIfAborted()
+        if (this.chatFiles) {
+          starting.filePreparation = this.chatFiles.prepare({ session: structuredClone(session),
+            clientCorrelationId: input.clientCorrelationId, signal: preparationSignal }).then(async (bridge) => {
+            if (!bridge) return undefined
+            const files = new CodexRuntimeFileTurn(bridge, session.nativeSessionId)
+            runtime.files = files
+            if (runtime.disposed || runtime.closed || starting.cancelRequested || preparationSignal.aborted) {
+              await files.close()
+              throw new HarnessExecutionError('CODEX_FILE_TURN_CLOSED', 'File preparation was canceled before native submission.')
+            }
+            if (!starting.onSubmitted) {
+              await files.close()
+              throw new HarnessExecutionError('CODEX_FILE_RECEIPT_REQUIRED', 'File turns require durable native identity persistence.')
+            }
+            if (bridge.allowedTools().some((tool) => !codexChatFileTools(runtime.configuration).includes(tool))) {
+              await files.close()
+              throw new HarnessExecutionError('CODEX_FILE_POLICY_MISMATCH', 'File admission exceeds this chat harness policy.')
+            }
+            return files
+          }, (error: unknown) => {
+            if (error instanceof CodexFilePreparationCleanupError) {
+              runtime.files = new CodexRuntimeFileTurn(error.turn, session.nativeSessionId)
+            }
+            throw error
+          })
+        }
+        preparationSignal.throwIfAborted()
+        if (this.nativeOutputs) {
+          if (!starting.onSubmitted || !runtime.effectiveSandbox) throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_ADMISSION_REQUIRED', 'Native outputs require measured policy and durable turn admission.')
+          starting.nativeOutputPreparation = this.nativeOutputs.prepare({
+            ...this.nativeOutputQualification(runtime.configuration, runtime.qualified, runtime.workingDirectory, runtime.effectiveSandbox.tmpdir),
+            effectiveSandbox: structuredClone(runtime.effectiveSandbox), session: structuredClone(session),
+            clientCorrelationId: input.clientCorrelationId, connectionId: runtime.connectionId, runtimeGeneration: runtime.generation,
+          }, preparationSignal).then(async (bridge) => {
+            const output = new CodexRuntimeNativeOutputTurn(bridge)
+            runtime.nativeOutput = output
+            if (runtime.closed || runtime.disposed || starting.cancelRequested || preparationSignal.aborted) {
+              await output.close(); throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_CLOSED', 'Native output preparation was withdrawn.')
+            }
+            return output
+          })
+          await starting.nativeOutputPreparation
+        }
+        const preparedFiles = await starting.filePreparation
+        const nativeInput = preparedFiles ? await preparedFiles.bridge.nativeInput(input.prompt)
+          : [{ type: 'text' as const, text: input.prompt, text_elements: [] }]
+        preparationSignal.throwIfAborted()
+        if (runtime.disposed || runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'The session closed during file preparation.')
+        runtime.rejectedStarts.delete(starting.correlationId)
+        if (this.responseJournal) {
+          starting.nativeAttemptId = this.responseJournal.beginTurnAttempt(session, starting.correlationId)
+        }
+        nativeSubmissionAttempted = true
+        runtimeTimingPoint('harness', 'native.submit', { nativeSessionId: session.nativeSessionId })
+        const result = await codexRequest(runtime.transport, 'turn/start', {
+          threadId: session.nativeSessionId, clientUserMessageId: input.clientCorrelationId,
+          input: nativeInput,
+          serviceTierForTurn: runtime.configuration.serviceTier === 'priority' ? 'fast' : 'default',
+        }, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]), (value, error) => {
+          if (runtime.starting !== starting || runtime.disposed) return
+          if (error instanceof CodexRpcError && !error.uncertain) this.rejectStartedTurn(runtime, starting)
+          else if (error) runtime.phase = 'uncertain'
+          else void this.acceptStartedTurn(runtime, starting, value).catch(() => {
             runtime.phase = 'uncertain'
             this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
-          } else this.restoreRejectedStart(runtime, starting)
+          })
+        }).catch((error: unknown) => {
+          const rejected = !starting.acknowledgedTurnId && !runtime.activeTurnId
+            && error instanceof CodexRpcError && error.method === 'turn/start' && !error.uncertain
+          if (rejected) nativeSubmissionAttempted = false
+          if (runtime.starting === starting) {
+            if (!rejected) {
+              runtime.phase = 'uncertain'
+              this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
+            } else this.rejectStartedTurn(runtime, starting)
+          }
+          throw error
+        })
+        await this.acceptStartedTurn(runtime, starting, result)
+        while (!signal?.aborted && !subscriberSignal.aborted) {
+          const firstSequence = runtime.events[0]?.sequence ?? runtime.sequence
+          if (cursor < firstSequence) throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'The in-memory event window was exceeded; reload durable history.')
+          const available = runtime.events.filter((event) => event.sequence >= cursor)
+          for (const event of available) { cursor = event.sequence + 1; yield structuredClone(event) }
+          // The consumer can suspend at yield while more events (including terminal
+          // events) arrive. Drain them before returning or registering a waiter.
+          if (runtime.events.some((event) => event.sequence >= cursor)) continue
+          if (runtime.terminalResult || runtime.closed) { await this.finishTurnResources(runtime); return }
+          await this.wait(runtime, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]))
         }
-        throw error
-      })
-      await this.acceptStartedTurn(runtime, starting, result)
-      while (!signal?.aborted && !subscriberSignal.aborted) {
-        const firstSequence = runtime.events[0]?.sequence ?? runtime.sequence
-        if (cursor < firstSequence) throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'The in-memory event window was exceeded; reload durable history.')
-        const available = runtime.events.filter((event) => event.sequence >= cursor)
-        for (const event of available) { cursor = event.sequence + 1; yield structuredClone(event) }
-        // The consumer can suspend at yield while more events (including terminal
-        // events) arrive. Drain them before returning or registering a waiter.
-        if (runtime.events.some((event) => event.sequence >= cursor)) continue
-        if (runtime.terminalResult || runtime.closed) { await this.finishTurnResources(runtime); return }
-        await this.wait(runtime, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]))
+      } catch (error) {
+        if (!nativeSubmissionAttempted) this.restoreRejectedStart(runtime, starting)
+        if (!subscriberSignal.aborted) {
+          const restart = signal?.reason instanceof DomainError && signal.reason.code === 'ENGINE_RESTART'
+          operationFailure = restart ? signal.reason
+            : new NativeDeliveryError('turn_submission', nativeSubmissionAttempted ? 'unknown' : 'not_sent', error)
+          throw operationFailure
+        }
+      } finally {
+        if (!nativeSubmissionAttempted || signal?.aborted || subscriberSignal.aborted || runtime.closed || runtime.terminalResult) {
+          cleaningUp = true
+          await this.finishTurnResources(runtime)
+          cleaningUp = false
+        }
       }
     } catch (error) {
-      if (!nativeSubmissionAttempted) this.restoreRejectedStart(runtime, starting)
-      if (!subscriberSignal.aborted) throw error
+      if (!cleaningUp) throw error
+      const cause = operationFailure
+        ? new AggregateError([operationFailure, error], 'Native turn failed and resource cleanup is unconfirmed.', { cause: error })
+        : error
+      throw new NativeDeliveryError('turn_submission', nativeSubmissionAttempted ? 'unknown' : 'not_sent', cause, 'pending')
     } finally {
       signal?.removeEventListener('abort', abort)
-      try {
-        if (!nativeSubmissionAttempted || signal?.aborted || subscriberSignal.aborted || runtime.closed || runtime.terminalResult) {
-          await this.finishTurnResources(runtime)
-        }
-      } finally { runtime.streamActive = false }
+      runtime.streamActive = false
     }
   }
 
@@ -913,7 +1042,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           const nativeTurnId = text(turn.id)
           if (!nativeTurnId || turn.itemsView !== 'full' || !Array.isArray(turn.items)) continue
           for (const item of turn.items.filter(isObject)) {
-            const correlationId = text(item.id)
+            const correlationId = text(item.clientId)
             if (item.type !== 'userMessage' || !correlationId || !wanted.has(correlationId)) continue
             if (seen.has(correlationId) && seen.get(correlationId) !== nativeTurnId) {
               throw new HarnessExecutionError('CODEX_CORRELATION_AMBIGUOUS', 'More than one native turn has this steering correlation.')
@@ -934,33 +1063,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   /** `thread/fork` copies the source history into a new thread; the source thread is never written. */
   async forkSession(source: NativeSessionReference, value: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
-    this.assertSessionVersion(source)
-    signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
-    const input = structuredClone(value)
-    if (input.kind !== 'operator') input.instructionsDelivered = true
-    const prepared = await this.prepareInput(input, signal)
-    if (prepared.qualified.providerVersion !== source.providerVersion) {
-      throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The source session belongs to another Codex release.')
-    }
-    const candidate = await this.transport(prepared, 0, signal)
-    try {
-      const response = object(await candidate.transport.request('thread/fork', {
-        ...threadParameters(prepared, Boolean(this.chatFiles)), threadId: source.nativeSessionId, excludeTurns: true,
-        ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
-      }, signal), 'CODEX_THREAD_FORK_INVALID')
-      const thread = this.validateThreadResponse(prepared, response)
-      if (thread.id === source.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex returned the source thread instead of a fork.')
-      const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: prepared.qualified.providerVersion, nativeSessionId: thread.id })
-      if (this.runtimes.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_COLLISION', 'Codex returned an already-owned native session identity.')
-      const runtime = this.runtime(prepared, session, candidate.transport)
-      await candidate.activate(runtime)
-      this.runtimes.set(session.nativeSessionId, runtime)
-      this.record(runtime, 'thread.forked', { threadId: session.nativeSessionId, sourceThreadId: source.nativeSessionId })
-      return session
-    } catch (error) {
-      await candidate.transport.close().catch(() => undefined)
-      throw error
-    }
+    return this.beginCreation(value, { forkSource: source, signal })
   }
 
   async pending(session: NativeSessionReference): Promise<PendingNativeInteraction | undefined> {
@@ -976,7 +1079,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (this.shutdownController.signal.aborted) return unavailable('session_closed')
     if (session.harness !== 'codex' || harnessProfile('codex', session.providerVersion) === null
       || this.expectedVersion !== undefined && session.providerVersion !== this.expectedVersion) return unavailable('unqualified')
-    const runtime = this.runtimes.get(session.nativeSessionId)
+    const child = this.childRuntimes.get(session.nativeSessionId)
+    try { child?.assertCurrent() } catch { return unavailable('session_closed') }
+    const runtime = this.runtimes.get(session.nativeSessionId) ?? child?.runtime
     if (!runtime) return unavailable('callback_lost')
     if (runtime.session.providerVersion !== session.providerVersion) return unavailable('identity_mismatch')
     if (runtime.closed || runtime.disposed) return unavailable('session_closed')
@@ -996,11 +1101,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return { ...unavailable('callback_lost'), state: 'recovery_required' }
     }
     if (waiting.conflictingIdentity) return { ...unavailable('identity_mismatch'), state: 'recovery_required' }
-    if (!turnId || turnId !== runtime.activeTurnId || runtime.terminalResult) return unavailable('identity_mismatch')
-    if (runtime.phase !== 'active' || runtime.starting || !runtime.qualified.schemaManifestSha256
+    const standalone = isSessionNativeInteraction(waiting.pending)
+    if (!standalone && (!turnId || turnId !== runtime.activeTurnId || runtime.terminalResult)) return unavailable('identity_mismatch')
+    if ((!standalone && runtime.phase !== 'active') || runtime.starting || !runtime.qualified.schemaManifestSha256
       || runtime.qualified.providerVersion !== session.providerVersion) return unavailable('unqualified')
     if (!this.transports.has(runtime.transport) || runtime.transport.isConnected?.() !== true) return unavailable('callback_lost')
-    const current = { ...unavailable('callback_lost'), nativeTurnId: turnId,
+    const current = { ...unavailable('callback_lost'), ...(turnId ? { nativeTurnId: turnId } : {}),
       generation: `${runtime.connectionId}:${runtime.generation}`, qualified: true }
     if (waiting.delivery !== 'pending') return { ...current, state: 'recovery_required', reason: 'response_in_flight' }
     return { ...current, state: 'available', path: 'live_callback', reason: 'live_callback' }
@@ -1017,14 +1123,19 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       throw new HarnessExecutionError('NATIVE_RESPONSE_RECONCILIATION_REQUIRED', 'A submitted, disconnected, or uncertain native response cannot be retransmitted.')
     }
     signal?.throwIfAborted()
+    const nativeResponse = resolveCodexInteractionResponse(stored, option)
     // Synchronous reservation prevents two competing responses from both writing.
     waiting.delivery = 'submitting'
     waiting.selectedOptionId = stored.option.optionId
+    runtime.responseDecisions.set(nativeRequestId, { pending: waiting.pending, option, nativeResponse,
+      sequence: runtime.sequence })
+    this.record(runtime, 'interaction.submitting', { nativeRequestId, optionId: option.optionId })
     try {
-      await runtime.transport.respond(waiting.requestId, waiting.method, stored.nativeResponse)
+      await runtime.transport.respond(waiting.requestId, waiting.method, nativeResponse)
+      this.record(runtime, 'interaction.submitted', { nativeRequestId, optionId: stored.option.optionId,
+        semantic: stored.option.semantic, responseDigest: responseValueDigest(option.response) })
       if (runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) === waiting) {
         waiting.delivery = 'submitted'
-        this.record(runtime, 'interaction.submitted', { nativeRequestId, optionId: stored.option.optionId, semantic: stored.option.semantic })
       }
       const resolved = await deadline(waiting.resolution, signal, undefined, this.dependencies)
       if (resolved === 'cleared') throw new HarnessExecutionError('NATIVE_RESPONSE_CLEARED', 'The native request was cleared; acceptance of the selected response was not confirmed.')
@@ -1055,6 +1166,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   async history(session: NativeSessionReference): Promise<NativeHistory> {
     const runtime = this.requireRuntime(session)
+    this.captureResponseDeliveries(runtime)
     const all = [...runtime.interactions.values()]
     const first = all.find((entry) => entry.delivery === 'pending')
     return structuredClone({
@@ -1070,6 +1182,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         nativeRequestId: entry.pending.turn.nativeRequestId!, state: entry.delivery,
         ...(entry.selectedOptionId ? { selectedOptionId: entry.selectedOptionId } : {}),
       })),
+      responseDeliveries: [...runtime.responseDeliveries.values()],
     })
   }
 
@@ -1129,13 +1242,139 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  subagentControl(child: RunSubagent, assertOwner: () => void): SubagentControlLease | undefined {
+    const runtime = [...this.runtimes.values()].find((candidate) => {
+      const input = candidate.input
+      return input.kind !== 'operator' && input.request.executionId === child.parentExecutionId
+        && input.request.runId === child.runId && input.request.workspaceId === child.workspaceId
+        && input.request.configuration.agentId === child.parentAgentId
+    })
+    if (!runtime || runtime.closed || runtime.disposed || runtime.transport.isConnected?.() !== true) return undefined
+    const transport = runtime.transport
+    const generation = runtime.generation
+    const current = () => {
+      assertOwner()
+      this.shutdownController.signal.throwIfAborted()
+      if (this.runtimes.get(runtime.session.nativeSessionId) !== runtime || runtime.closed || runtime.disposed
+        || runtime.transport !== transport || runtime.generation !== generation || transport.isConnected?.() !== true) {
+        throw new HarnessExecutionError('SUBAGENT_OWNER_STALE', 'The admitted child control owner changed.')
+      }
+    }
+    const lease = this.childControls.lease(child, {
+      rootThreadId: runtime.session.nativeSessionId,
+      generation: `${runtime.connectionId}:${generation}`,
+      qualified: runtime.qualified,
+      transport,
+      assertCurrent: current,
+      exclusive: (work) => this.exclusive(runtime.session.nativeSessionId, work),
+      observeThread: thread => this.observeChildThread(runtime, child, thread, current),
+      beginTurn: correlationId => this.beginChildTurn(child, correlationId, current),
+    }, assertOwner)
+    if (!lease) return undefined
+    return { ...lease,
+      pendingInteraction: () => {
+        current()
+        const owned = this.childRuntimes.get(child.native.childSessionId!)
+        if (!owned || owned.runtime.parent !== runtime) return undefined
+        return structuredClone([...owned.runtime.interactions.values()].find(entry => entry.delivery === 'pending')?.pending)
+      },
+      respond: receipt => this.exclusive(runtime.session.nativeSessionId, async () => {
+        current()
+        const response = receipt.response
+        const owned = this.childRuntimes.get(child.native.childSessionId!)
+        const pending = owned && [...owned.runtime.interactions.values()]
+          .find(entry => entry.pending.turn.nativeRequestId === response?.nativeRequestId)?.pending
+        if (!response || !owned || owned.runtime.parent !== runtime
+          || receipt.operation !== 'run_subagent_respond_v1' || receipt.subagentId !== child.id
+          || receipt.runId !== child.runId || receipt.workspaceId !== child.workspaceId
+          || !pending || pending.nativeRequestType !== response.nativeRequestType
+          || (pending.turn.nativeTurnId ?? null) !== receipt.nativeTurnId) {
+          throw new HarnessExecutionError('SUBAGENT_RESPONSE_STALE', 'The child request is no longer owned.')
+        }
+        await this.respond(owned.runtime.session, response.nativeRequestId, response.option)
+        current()
+      }),
+      reconcile: async receipt => {
+        if (!receipt.response) return lease.reconcile!(receipt)
+        current()
+        // Native ancestry readback requalifies the child even when only its response journal survives.
+        await lease.reconcile!(receipt)
+        const session = { ...runtime.session, nativeSessionId: child.native.childSessionId! }
+        const history = await this.reconcileResponse(session, receipt.response)
+        return history.responseDeliveries?.some(proof => proof.nativeRequestId === receipt.response!.nativeRequestId
+          && proof.optionId === receipt.response!.option.optionId) ? 'acknowledged' : 'uncertain'
+      },
+    }
+  }
+
+  private observeChildThread(parent: Runtime, child: RunSubagent, thread: import('./codexMethodTypes.js').Thread,
+    assertCurrent: () => void): void {
+    assertCurrent()
+    const previous = this.childRuntimes.get(thread.id)
+    if (previous && previous.runtime.parent === parent && previous.runtime.generation === parent.generation) {
+      previous.assertCurrent = assertCurrent
+      return
+    }
+    const runtime: Runtime = { ...parent, parent, session: { ...parent.session, nativeSessionId: thread.id },
+      starting: undefined, streamActive: false, activeTurnId: thread.turns.at(-1)?.id ?? child.native.currentTurnId,
+      activeCorrelationId: undefined, terminalResult: undefined, phase: thread.status.type === 'active' ? 'active' : 'idle',
+      finalAnswer: undefined, finalAnswerId: undefined, lastAgentMessage: undefined, lastAgentMessageId: undefined,
+      files: undefined, fileCleanup: undefined, nativeOutput: undefined, nativeOutputCleanup: undefined,
+      fileRequests: new Map(), interactions: new Map(), resolvedRequests: new Map(), callbackOwners: parent.callbackOwners,
+      responseDecisions: new Map(), responseDeliveries: new Map(), rejectedStarts: new Map(), seenNotifications: new Set(),
+      events: [], eventSizes: [], eventBytes: 0, sequence: 0, wake: new Set(), cancellation: undefined }
+    this.childRuntimes.set(thread.id, { runtime, child, assertCurrent })
+  }
+
+  private beginChildTurn(child: RunSubagent, correlationId: string, assertCurrent: () => void) {
+    assertCurrent()
+    const runtime = this.childRuntimes.get(child.native.childSessionId!)!.runtime
+    let resolveIdentity!: StartingTurn['resolveIdentity']
+    const nativeIdentity = new Promise<string | undefined>(resolve => { resolveIdentity = resolve })
+    const starting: StartingTurn = { correlationId, previous: snapshot(runtime), cancelRequested: false,
+      preparationController: new AbortController(), nativeIdentity, resolveIdentity, staged: [], stagedBytes: 0 }
+    runtime.starting = starting
+    runtime.phase = 'starting'
+    runtime.activeTurnId = undefined
+    runtime.activeCorrelationId = correlationId
+    runtime.terminalResult = undefined
+    return { acknowledge: async (value: unknown) => {
+      assertCurrent()
+      await this.acceptStartedTurn(runtime, starting, value)
+    }, reject: () => this.restoreRejectedStart(runtime, starting) }
+  }
+
   async reconcileResponse(
     session: NativeSessionReference,
     response: import('./port.js').NativeResponseIdentity,
     signal?: AbortSignal,
   ): Promise<NativeHistory> {
     signal?.throwIfAborted()
+    const durable = this.responseJournal?.read(session, response)
+    if (durable && !this.runtimes.has(session.nativeSessionId) && !this.childRuntimes.has(session.nativeSessionId)) {
+      return { events: [], pendingInteractions: [], responseDeliveries: [durable] }
+    }
     const history = await this.history(session)
+    if (durable) return { ...history, responseDeliveries: [...(history.responseDeliveries ?? []), durable] }
+    if (history.responseDeliveries?.some(proof => proof.nativeRequestId === response.nativeRequestId)) return history
+    const runtime = this.requireRuntime(session)
+    const decision = runtime.responseDecisions.get(response.nativeRequestId)
+    if (decision?.pending.nativeRequestType === 'mcpServer/elicitation/request' && !runtime.closed) {
+      const transport = runtime.transport
+      const generation = runtime.generation
+      const { thread } = await codexRequest(transport, 'thread/read', {
+        threadId: session.nativeSessionId, includeTurns: true,
+      }, signal)
+      if (this.requireRuntime(session) !== runtime || runtime.transport !== transport || runtime.generation !== generation
+        || runtime.closed || thread.id !== session.nativeSessionId) {
+        throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'The response readback owner changed.')
+      }
+      const latest = thread.turns.at(-1)
+      this.record(runtime, 'interaction.readback', { nativeRequestId: response.nativeRequestId,
+        threadId: thread.id, observedTurnId: latest?.id ?? null, observedTurnStatus: latest?.status ?? null })
+      const observed = await this.history(session)
+      if (observed.responseDeliveries?.some(proof => proof.nativeRequestId === response.nativeRequestId)) return observed
+    }
     // The pinned Codex protocol's serverRequest/resolved also covers cleared
     // requests. It is NOT an acknowledgement of an exact permission choice.
     // Keep that uncertainty visible; do not synthesize a receipt or replay.
@@ -1149,6 +1388,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory> {
     return this.exclusive(session.nativeSessionId, async () => {
       const runtime = this.requireRuntime(session)
+      const rejected = runtime.rejectedStarts.get(correlationId)
+        ?? this.responseJournal?.readTurnRejection(session, correlationId)
+      if (rejected) return { ...await this.history(session), correlationId,
+        nonSubmission: { nativeSessionId: session.nativeSessionId, clientCorrelationId: correlationId,
+          result: structuredClone(rejected) } }
       const restarted = runtime.closed
       if (runtime.closed) await this.restart(runtime, signal)
       const locallyIdle = !runtime.attached && runtime.phase === 'idle' && runtime.activeCorrelationId === undefined
@@ -1156,6 +1400,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const observedTerminal = runtime.activeCorrelationId === correlationId
         && runtime.activeTurnId !== undefined && runtime.terminalResult !== undefined
       if (!locallyIdle && !observedTerminal) await this.synchronize(runtime, correlationId, signal)
+      const lateRejection = runtime.rejectedStarts.get(correlationId)
+        ?? this.responseJournal?.readTurnRejection(session, correlationId)
+      if (lateRejection) return { ...await this.history(session), correlationId,
+        nonSubmission: { nativeSessionId: session.nativeSessionId, clientCorrelationId: correlationId,
+          result: structuredClone(lateRejection) } }
       this.record(runtime, 'thread.reconciled', {
         correlationId, restarted, threadId: session.nativeSessionId,
         ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
@@ -1187,6 +1436,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (runtime.session.providerVersion !== session.providerVersion) throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The loaded session belongs to another Codex release.')
       runtime.closed = true
       runtime.disposed = true
+      for (const [id, child] of this.childRuntimes) {
+        if (child.runtime.parent !== runtime) continue
+        child.runtime.closed = true
+        child.runtime.disposed = true
+        for (const waiting of child.runtime.interactions.values()) waiting.resolve('cleared')
+        this.wake(child.runtime)
+        this.childRuntimes.delete(id)
+      }
       runtime.starting?.preparationController.abort()
       runtime.starting?.resolveIdentity(undefined)
       // Stop the process even when host cleanup or token revocation fails. Keep
@@ -1234,8 +1491,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
     const environment = this.dependencies.environment()
-    const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, cwd, environment, true, signal)
-    return this.mcpConfiguration(qualified.binary, cwd, environment, qualified.providerVersion, signal)
+    return timeRuntimeOperation('harness', 'native.inspect_mcp', async () => {
+      const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, cwd, environment, true, signal)
+      return this.mcpConfiguration(qualified.binary, cwd, environment, qualified.providerVersion, signal)
+    })
   }
 
   async inspectConfiguration(session: NativeSessionReference, includeLayers = true, signal?: AbortSignal): Promise<JsonObject> {
@@ -1381,7 +1640,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
   private requireRuntime(session: NativeSessionReference): Runtime {
     this.assertSessionVersion(session)
-    const runtime = this.runtimes.get(session.nativeSessionId)
+    const child = this.childRuntimes.get(session.nativeSessionId)
+    child?.assertCurrent()
+    const runtime = this.runtimes.get(session.nativeSessionId) ?? child?.runtime
     if (!runtime || runtime.disposed) throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'The Codex native session is not loaded.')
     if (runtime.session.providerVersion !== session.providerVersion) throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The loaded session belongs to another Codex release.')
     return runtime
@@ -1401,9 +1662,21 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
   }
   private async exclusive<T>(key: string, operation: () => Promise<T>): Promise<T> {
-    if (this.locks.has(key)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'Another session lifecycle operation is in progress.')
+    const previous = this.lifecycleTails.get(key)
+    let release!: () => void
+    const tail = new Promise<void>((resolve) => { release = resolve })
+    this.lifecycleTails.set(key, tail)
     this.locks.add(key)
-    try { return await operation() } finally { this.locks.delete(key) }
+    try {
+      await previous
+      return await operation()
+    } finally {
+      if (this.lifecycleTails.get(key) === tail) {
+        this.lifecycleTails.delete(key)
+        this.locks.delete(key)
+      }
+      release()
+    }
   }
 
   private async prepareIdleInput(runtime: Runtime, source: NativeSessionStart, signal?: AbortSignal): Promise<Prepared> {
@@ -1445,6 +1718,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal.throwIfAborted()
     const input = structuredClone(source)
     validateEnvironmentOwner(input)
+    validateEnvironmentVariables(input.environment)
     if (this.appMcpAccess === 'none' && Object.keys(input.environment?.variables ?? {}).length) {
       throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
     }
@@ -1478,7 +1752,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const strippedCredentialVariable = this.appMcpAccess === 'none' ? excludedCredentialVariable : scopedCredentialVariable
     const scopedEnvironment = this.dependencies.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
     await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
-      io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal)
+      io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal,
+      undefined, { qualified, assertUnchanged: io.assertUnchanged,
+        runCommand: io.runCommand,
+        transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
     if (this.nativeOutputs) {
       if (input.kind === 'operator' || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox !== 'workspace-write') {
         throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native outputs require original workflow workspace-write and scoped App MCP; no promotion is permitted.')
@@ -1494,23 +1771,25 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private async mcpConfiguration(binary: string, cwd: string, environment: NodeJS.ProcessEnv,
     providerVersion: string, signal?: AbortSignal, io: CodexDiagnosticOperations = this.dependencies): Promise<CodexMcpConfigurationInspection> {
-    const listed = await io.runCommand(binary, ['mcp', 'list', '--json'], cwd, signal, environment)
-    let entries: unknown
-    try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
-    const validList = listed.exitCode === 0 && Array.isArray(entries) && entries.length <= 500
-      && entries.every((entry: unknown) => isObject(entry) && typeof entry.name === 'string')
-    if (!validList) throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED',
-      'Codex could not establish the configured MCP names.')
-    let serverName = this.appMcpServerName
-    if (validList) {
-      const names = Object.fromEntries((entries as { name: string }[]).map((entry) => [entry.name, entry]))
-      serverName = appMcpServerName(names, this.appMcpServerName)
-      if (!Object.hasOwn(names, serverName)) throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED',
-        'The named native MCP entry is absent.')
+    const candidates = isSupportedAppMcpServerName(this.appMcpServerName)
+      ? APP_MCP_SERVER_NAMES : [this.appMcpServerName]
+    const entries: Record<string, Awaited<ReturnType<typeof runCommand>>> = Object.create(null)
+    for (const name of candidates) {
+      const result = await io.runCommand(binary, ['mcp', 'get', name, '--json'], cwd, signal, environment)
+      if (result.exitCode === 0) {
+        entries[name] = result
+        continue
+      }
+      // A failed command alone cannot prove absence: retain only the CLI's definite missing-entry reply.
+      if (result.exitCode !== 1 || result.stdout.trim() !== ''
+        || result.stderr.trim() !== `Error: No MCP server named '${name}' found.`) {
+        throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED',
+          'Codex could not establish the named MCP configuration.')
+      }
     }
-    const result = await io.runCommand(binary, ['mcp', 'get', serverName, '--json'], cwd, signal, environment)
-    if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED',
-      'Codex MCP configuration inspection failed; absence was not established.')
+    const serverName = appMcpServerName(entries, this.appMcpServerName)
+    const result = entries[serverName]
+    if (!result) throw new HarnessExecutionError('CODEX_MCP_NOT_CONFIGURED', 'The named native MCP entry is absent.')
     try {
       const parsed = object(JSON.parse(result.stdout))
       const transport = isObject(parsed.transport) ? parsed.transport : {}
@@ -1624,7 +1903,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       effectiveSandbox: prepared.effectiveSandbox ? structuredClone(prepared.effectiveSandbox) : undefined, fileRequests: new Map(),
       activeTurnId: undefined, activeCorrelationId: undefined, terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
       finalAnswerId: undefined, lastAgentMessageId: undefined,
-      interactions: new Map(), resolvedRequests: new Map(), events: [], eventSizes: [], eventBytes: 0, sequence: 0,
+      interactions: new Map(), resolvedRequests: new Map(), callbackOwners: new Map(), rejectedStarts: new Map(),
+      responseDecisions: new Map(), responseDeliveries: new Map(),
+      events: [], eventSizes: [], eventBytes: 0, sequence: 0,
       seenNotifications: new Set(), wake: new Set(), closed: false, disposed: false,
     }
   }
@@ -1664,9 +1945,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       undefined, this.processRecovery, prepared.disabledAppMcpServerNames,
     )
     // Also own cold-attachment candidates before a Runtime has been published.
-    this.transports.add(transport)
-    const close = transport.close.bind(transport)
-    transport.close = async () => { await close(); this.transports.delete(transport) }
+    this.ownTransport(transport)
     try {
       await transport.start(signal)
       if (this.appMcpAccess === 'none') {
@@ -1702,6 +1981,16 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         } finally { activating = false; bufferedBytes = 0 }
       },
     }
+  }
+
+  private ownTransport(transport: CodexTransport): CodexTransport {
+    this.transports.add(transport)
+    const close = transport.close.bind(transport)
+    transport.close = async () => {
+      await close()
+      this.transports.delete(transport)
+    }
+    return transport
   }
 
   private async restart(runtime: Runtime, signal?: AbortSignal, supplied?: Prepared): Promise<void> {
@@ -1743,8 +2032,21 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
   }
 
+  private rejectStartedTurn(runtime: Runtime, starting: StartingTurn): void {
+    if (runtime.starting !== starting || starting.acknowledgedTurnId || runtime.activeTurnId) return
+    const result: ExecutionResult = { outcome: 'failed', error: {
+      code: 'CODEX_TURN_START_REJECTED', message: 'Codex rejected this message before starting a turn.', retryable: true,
+    } }
+    runtime.rejectedStarts.set(starting.correlationId, result)
+    if (starting.nativeAttemptId) {
+      this.responseJournal?.recordTurnRejection(runtime.session, starting.correlationId, starting.nativeAttemptId, result)
+    }
+    this.restoreRejectedStart(runtime, starting)
+  }
+
   private restoreRejectedStart(runtime: Runtime, starting: StartingTurn): void {
     if (runtime.starting !== starting) return
+    if (starting.acknowledgedTurnId || runtime.activeTurnId) return
     Object.assign(runtime, starting.previous)
     runtime.phase = 'idle'
     runtime.starting = undefined
@@ -1766,6 +2068,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (starting.acknowledgement) return starting.acknowledgement
     starting.acknowledgedTurnId = turnId
     const acknowledgement = (async () => {
+      let admitted = false
       runtime.activeTurnId = turnId
       runtime.activeCorrelationId = starting.correlationId
       starting.resolveIdentity(turnId)
@@ -1788,25 +2091,30 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         } else if (runtime.nativeOutput) await this.finishTurnResources(runtime)
         runtime.phase = 'active'
         this.record(runtime, 'turn.started', { threadId: runtime.session.nativeSessionId, turnId, clientCorrelationId: starting.correlationId })
-        this.applyTurn(runtime, turn)
+        this.applyTurn(runtime, { ...turn, status: 'inProgress' })
+        admitted = true
       } catch (error) {
         runtime.phase = 'uncertain'
+        delete starting.acknowledgement
         await this.finishTurnResources(runtime)
         throw error
       } finally {
         // Keep the gate closed while draining: callbacks arriving during an
         // awaited file operation must not overtake earlier staged callbacks.
         try {
-          while (!runtime.disposed && starting.staged.length > 0) {
+          while (admitted && !runtime.disposed && starting.staged.length > 0) {
             const event = starting.staged.shift()!
             if ('request' in event) await this.handleRequest(runtime, event.request, true)
             else this.handleNotification(runtime, event.method, event.params, true, event.arrivalOrdinal)
           }
         } finally {
-          starting.staged.length = 0
-          if (runtime.starting === starting) runtime.starting = undefined
+          if (admitted) {
+            starting.staged.length = 0
+            if (runtime.starting === starting) runtime.starting = undefined
+          }
         }
       }
+      if (admitted && !runtime.disposed && turn.status !== 'inProgress') this.applyTurn(runtime, turn)
       if (starting.cancelRequested && !runtime.terminalResult) await this.interrupt(runtime)
     })()
     starting.acknowledgement = acknowledgement
@@ -1879,20 +2187,37 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private async synchronize(runtime: Runtime, correlationId?: string, signal?: AbortSignal): Promise<void> {
-    const response = object(await runtime.transport.request('thread/read', { threadId: runtime.session.nativeSessionId, includeTurns: false }, signal), 'CODEX_THREAD_READ_INVALID')
-    const thread = object(response.thread, 'CODEX_THREAD_READ_INVALID')
-    if (thread.id !== runtime.session.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Reconciliation returned another thread.')
+    const transport = runtime.transport
+    const generation = runtime.generation
+    const registered = this.runtimes.get(runtime.session.nativeSessionId)
     const starting = runtime.starting
     if (starting && correlationId !== starting.correlationId) {
       throw new HarnessExecutionError('CODEX_CORRELATION_MISMATCH', 'Reconcile the correlation of the uncertain turn/start operation.')
+    }
+    const rejectedDuringRead = () => {
+      if (this.runtimes.get(runtime.session.nativeSessionId) !== registered || runtime.transport !== transport
+        || runtime.generation !== generation || runtime.closed || runtime.disposed) {
+        throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'The native history owner changed during reconciliation.')
+      }
+      // A definite rejection can restore idle while an older native read is in flight.
+      return starting !== undefined && !starting.acknowledgedTurnId && runtime.starting === undefined
+        && runtime.phase === 'idle' && runtime.activeTurnId === starting.previous.activeTurnId
+        && runtime.activeCorrelationId === starting.previous.activeCorrelationId
+        && runtime.rejectedStarts.has(starting.correlationId)
     }
     const wantedCorrelation = starting?.correlationId ?? correlationId
     const wantedId = starting ? undefined : wantedCorrelation
       ? runtime.activeCorrelationId === wantedCorrelation ? runtime.activeTurnId
         : runtime.input.correlationId === wantedCorrelation ? runtime.input.nativeTurnId : undefined
       : runtime.input.nativeTurnId ?? runtime.activeTurnId
+    const response = object(await transport.request('thread/read', {
+      threadId: runtime.session.nativeSessionId, includeTurns: false,
+    }, signal), 'CODEX_THREAD_READ_INVALID')
+    if (rejectedDuringRead()) return
+    const thread = object(response.thread, 'CODEX_THREAD_READ_INVALID')
+    if (thread.id !== runtime.session.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Reconciliation returned another thread.')
     const matches = (turn: JsonObject) => wantedId ? turn.id === wantedId
-      : wantedCorrelation ? Array.isArray(turn.items) && turn.items.some((item) => isObject(item) && item.type === 'userMessage' && item.id === wantedCorrelation)
+      : wantedCorrelation ? Array.isArray(turn.items) && turn.items.some((item) => isObject(item) && item.type === 'userMessage' && item.clientId === wantedCorrelation)
         : true
     const turns = Array.isArray(thread.turns) ? thread.turns.filter(isObject) : []
     let selected = [...turns].reverse().find(matches)
@@ -1901,10 +2226,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const seenCursors = new Set<string>()
       selected = undefined
       for (let page = 0; page < 20; page += 1) {
-        const result = object(await runtime.transport.request('thread/turns/list', {
+        const result = object(await transport.request('thread/turns/list', {
           threadId: runtime.session.nativeSessionId, limit: 50, sortDirection: 'desc', itemsView: 'full',
           ...(cursor ? { cursor } : {}),
         }, signal), 'CODEX_THREAD_READ_INVALID')
+        if (rejectedDuringRead()) return
         const candidates = Array.isArray(result.data) ? result.data.filter(isObject).filter(matches) : []
         if (wantedCorrelation && candidates.length > 1) throw new HarnessExecutionError('CODEX_CORRELATION_AMBIGUOUS', 'More than one native turn has this correlation.')
         if (candidates[0]) { selected = candidates[0]; break }
@@ -1963,6 +2289,15 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         }
       }
       if (!isObject(value) || value.type !== 'agentMessage' || typeof value.text !== 'string') continue
+      if (turn.status !== 'inProgress' && text(value.id)) {
+        const fingerprint = itemNotificationKey(runtime.generation, 'item/completed', turn.id, value.id, value.type)
+        if (!runtime.seenNotifications.has(fingerprint)) {
+          runtime.seenNotifications.add(fingerprint)
+          this.record(runtime, 'item.completed', {
+            threadId: runtime.session.nativeSessionId, turnId: turn.id, item: value,
+          })
+        }
+      }
       runtime.lastAgentMessage = value.text
       runtime.lastAgentMessageId = text(value.id)
       if (value.phase === 'final_answer') {
@@ -1990,6 +2325,26 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (runtime.closed || runtime.disposed) return
     const params = request.params ?? {}
     const key = requestKey(runtime.generation, request.id)
+    const root = runtime.parent ?? runtime
+    const callbackOwner = root.callbackOwners.get(key)
+    if (callbackOwner && callbackOwner !== params.threadId) {
+      const owner = callbackOwner === root.session.nativeSessionId
+        ? root : this.childRuntimes.get(callbackOwner)?.runtime
+      const interaction = owner?.interactions.get(key)
+      const file = owner?.fileRequests.get(key)
+      if (interaction) interaction.conflictingIdentity = true
+      if (file) file.conflictingIdentity = true
+      this.record(root, 'protocol.conflicting_request_identity', { nativeRequestKey: key })
+      return
+    }
+    if (!runtime.parent && params.threadId !== runtime.session.nativeSessionId) {
+      const child = this.childRuntimes.get(String(params.threadId))
+      if (child?.runtime.parent === runtime) {
+        child.assertCurrent()
+        await this.handleRequest(child.runtime, request, staged)
+        return
+      }
+    }
     const signature = createHash('sha256').update(canonical([request.method, params])).digest('hex')
     const existing = runtime.interactions.get(key)
     const resolved = runtime.resolvedRequests.get(key)
@@ -2010,6 +2365,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (params.threadId !== runtime.session.nativeSessionId) {
       await runtime.transport.reject(request.id, -32602, 'This request belongs to another thread.'); return
     }
+    root.callbackOwners.set(key, runtime.session.nativeSessionId)
     if (!staged && this.stage(runtime, { request })) return
     if (request.method === 'item/tool/call') {
       // Do not block the stdio frame reader on file I/O: turn/completed and
@@ -2023,18 +2379,13 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (runtime.interactions.size >= MAX_INTERACTIONS) {
       await runtime.transport.reject(request.id, -32000, 'Native pending-interaction limit exceeded.'); return
     }
-    if (request.method === 'mcpServer/elicitation/request' && params.turnId === null) {
-      await runtime.transport.reject(request.id, -32601, 'CODEX_STANDALONE_ELICITATION_UNSUPPORTED: the shared approval boundary requires a real native turn.');
-      this.record(runtime, 'interaction.unsupported', { nativeMethod: request.method, reason: 'standalone_elicitation' })
-      return
-    }
-    if (!text(params.turnId) || params.turnId !== runtime.activeTurnId || runtime.terminalResult) {
+    const standalone = request.method === 'mcpServer/elicitation/request' && params.turnId == null
+    if (!standalone && (!text(params.turnId) || params.turnId !== runtime.activeTurnId || runtime.terminalResult)) {
       await runtime.transport.reject(request.id, -32602, 'The request does not belong to the active turn.'); return
     }
     const translated = this.translateRequest(runtime, request, signature)
     if (!translated) {
-      await runtime.transport.reject(request.id, -32601, 'The request has no qualified approval mapping; generic questions and nonempty elicitation forms are not approval grants.')
-      this.record(runtime, 'interaction.unsupported', { nativeMethod: request.method, reason: 'unqualified_approval_shape' })
+      await runtime.transport.reject(request.id, -32601, 'This native approval request has no supported response mapping.')
       return
     }
     const retainedBytes = [...runtime.interactions.values()].reduce((total, entry) => total + Buffer.byteLength(JSON.stringify(entry.pending)), 0)
@@ -2044,9 +2395,15 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return
     }
     runtime.interactions.set(key, translated)
+    let observedTurnStatus: string | null = runtime.activeTurnId ? 'inProgress' : null
+    if (runtime.terminalResult?.outcome === 'succeeded') observedTurnStatus = 'completed'
+    else if (runtime.terminalResult?.outcome === 'canceled') observedTurnStatus = 'interrupted'
+    else if (runtime.terminalResult?.outcome === 'failed') observedTurnStatus = 'failed'
     this.record(runtime, 'interaction.pending', {
       nativeRequestId: translated.pending.turn.nativeRequestId, nativeRequestType: request.method,
       turnId: translated.pending.turn.nativeTurnId,
+      observedTurnId: runtime.activeTurnId ?? null,
+      observedTurnStatus,
     })
   }
 
@@ -2121,8 +2478,16 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private handleNotification(runtime: Runtime, method: string, params: JsonObject, staged = false, arrivalOrdinal = ++runtime.arrivalOrdinal): void {
+    if (!runtime.parent && params.threadId !== runtime.session.nativeSessionId) {
+      const child = this.childRuntimes.get(String(params.threadId))
+      if (child?.runtime.parent === runtime) {
+        try { child.assertCurrent() } catch { return }
+        this.handleNotification(child.runtime, method, params, staged)
+      }
+    }
     if (method === 'protocol/malformed') { this.record(runtime, 'native.malformed', params); return }
-    if (['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)) {
+    if (['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed',
+      'item/agentMessage/delta'].includes(method)) {
       if (params.threadId === runtime.session.nativeSessionId && !staged && this.stage(runtime, { method, params, arrivalOrdinal })) return
     }
     const normalized = normalizeCodexNotification({ threadId: runtime.session.nativeSessionId, ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
@@ -2221,13 +2586,38 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (size > MAX_EVENT_BYTES) throw new HarnessExecutionError('NATIVE_EVENT_TOO_LARGE', 'A native event exceeded the bounded delivery window.')
     runtime.sequence += 1
     runtime.events.push(event)
+    const item = isObject(payload.item) ? payload.item : undefined
+    runtimeTimingPoint('harness', 'native.event', { nativeSessionId: runtime.session.nativeSessionId,
+      ...(runtime.input.kind !== 'operator'
+        ? { runId: runtime.input.request.runId, executionId: runtime.input.request.executionId } : {}),
+      eventType: type, sequence: event.sequence,
+      ...(typeof payload.nativeMethod === 'string' ? { nativeMethod: payload.nativeMethod } : {}),
+      ...(typeof payload.turnId === 'string' ? { nativeTurnId: payload.turnId } : {}),
+      ...(typeof item?.type === 'string' ? { itemType: item.type } : {}) })
     runtime.eventSizes.push(size)
     runtime.eventBytes += size
     while (runtime.events.length > MAX_EVENTS || runtime.eventBytes > MAX_EVENT_BYTES) {
       runtime.events.shift()
       runtime.eventBytes -= runtime.eventSizes.shift()!
     }
+    this.captureResponseDeliveries(runtime)
     this.wake(runtime)
+  }
+  private captureResponseDeliveries(runtime: Runtime): void {
+    for (const [id, decision] of runtime.responseDecisions) {
+      const proof = codexInputDeliveryEvidence(decision.pending, decision.option, decision.nativeResponse,
+        { events: runtime.events, pendingInteractions: [] })
+      if (!proof) {
+        if (decision.sequence < (runtime.events[0]?.sequence ?? runtime.sequence)) runtime.responseDecisions.delete(id)
+        continue
+      }
+      this.responseJournal?.record(proof)
+      runtime.responseDeliveries.set(id, proof)
+      runtime.responseDecisions.delete(id)
+      if (runtime.responseDeliveries.size > MAX_INTERACTIONS) {
+        runtime.responseDeliveries.delete(runtime.responseDeliveries.keys().next().value!)
+      }
+    }
   }
   private wake(runtime: Runtime): void {
     for (const resolve of runtime.wake) resolve()
@@ -2236,9 +2626,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private wait(runtime: Runtime, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted()
     return new Promise<void>((resolve, reject) => {
+      const finished = beginRuntimeTiming('harness', 'native.notification_wait',
+        { nativeSessionId: runtime.session.nativeSessionId })
       const done = () => { cleanup(); resolve() }
       const abort = () => { cleanup(); reject(signal?.reason ?? new Error('Aborted')) }
-      const cleanup = () => { runtime.wake.delete(done); signal?.removeEventListener('abort', abort) }
+      const cleanup = () => { finished(); runtime.wake.delete(done); signal?.removeEventListener('abort', abort) }
       runtime.wake.add(done)
       signal?.addEventListener('abort', abort, { once: true })
     })

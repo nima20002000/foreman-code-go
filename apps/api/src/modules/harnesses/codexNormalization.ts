@@ -36,7 +36,8 @@ export function normalizeCodexNotification(owner: CodexNotificationOwner, envelo
   const evidence = { ...envelope, ...(threadId ? { threadId } : {}), ...(turnId ? { turnId } : {}), ...(itemId ? { itemId } : {}),
     ...(typeof requestId === 'string' || typeof requestId === 'number' ? { requestId } : {}) }
   if (threadId && threadId !== owner.threadId) return { kind: 'unlinked' as const, evidence }
-  const exactThread = ['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)
+  const exactThread = ['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed',
+    'item/agentMessage/delta'].includes(method)
   if (exactThread && threadId !== owner.threadId) return { kind: 'ignored' as const, reason: 'missing_thread' }
   // Only a previously observed command may settle after its parent. Late text,
   // new items and root terminal evidence retain the original terminal fence.

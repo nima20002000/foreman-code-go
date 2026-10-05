@@ -42,10 +42,10 @@ export class CodexPluginSettingsService {
     return AbortSignal.any([this.stopping.signal, AbortSignal.timeout(60_000), ...(request ? [request] : [])])
   }
   private async liveOwner(principal: ManagementPrincipal, client: pg.Pool | pg.PoolClient = this.pool): Promise<void> {
-    if (principal.audience !== 'operator') throw new DomainError('CODEX_PLUGIN_BROWSER_REQUIRED', 'A signed-in owner must change Codex plugins.', 403)
+    if (principal.audience !== 'operator') throw new DomainError('CODEX_PLUGIN_BROWSER_REQUIRED', 'A local human must change Codex plugins.', 403)
     const result = await client.query<{ grants: ManagementPrincipal['grants']; expires_at: Date }>(
       "select grants,expires_at from management_principals where id=$1 and audience='operator' and delegated_from is null and revoked_at is null and expires_at>now()", [principal.id])
-    if (!result.rows[0]) throw new DomainError('CODEX_PLUGIN_BROWSER_REQUIRED', 'A signed-in owner must change Codex plugins.', 403)
+    if (!result.rows[0]) throw new DomainError('CODEX_PLUGIN_BROWSER_REQUIRED', 'A local human must change Codex plugins.', 403)
     const current = { ...principal, grants: result.rows[0].grants, expiresAt: result.rows[0].expires_at.toISOString() }
     requireAuthorization(current, 'harnesses:update')
     requireAuthorization(current, 'harnesses:read')

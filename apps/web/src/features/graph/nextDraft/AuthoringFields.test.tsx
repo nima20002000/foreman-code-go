@@ -83,4 +83,23 @@ describe('Agent 6 accessible authoring forms (not browser performance evidence)'
     expect(graph.edges.map((edge) => edge.id)).toEqual(['execution-1', 'approval'])
     expect(graph.approval!.handler).toBe('orchestrator')
   })
+  it('selects explicit native handling without changing Agent settings or execution routes', async () => {
+    const user = userEvent.setup()
+    const context = fixture()
+    const before = structuredClone(context)
+    const report = vi.fn()
+    function NativeApprovalForm() {
+      const [graph, setGraph] = useState(context.draft.graph)
+      return <><ApprovalFields graph={graph} context={context} change={setGraph} report={report} />
+        <output data-testid="approval-mode">{graph.approval?.handler}</output>
+        <output data-testid="routes">{JSON.stringify(graph.edges)}</output></>
+    }
+    render(<NativeApprovalForm />)
+    await user.selectOptions(screen.getByLabelText('Approval handler'), 'native')
+    expect(screen.getByTestId('approval-mode')).toHaveTextContent('native')
+    expect(screen.getByTestId('routes')).toHaveTextContent(JSON.stringify(before.draft.graph.edges))
+    expect(screen.getByText(/Each Agent must explicitly use native approval handling/)).toBeInTheDocument()
+    expect(context).toEqual(before)
+    expect(report).not.toHaveBeenCalled()
+  })
 })

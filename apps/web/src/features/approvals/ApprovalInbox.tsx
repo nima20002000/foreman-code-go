@@ -1,8 +1,7 @@
-import { useId, useMemo, useState } from 'react'
+import { useId, useMemo } from 'react'
 import type { Agent, DurableInteraction } from '@foreman-code/contracts'
 import { useInfiniteInteractionsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
-import { sessionSignal } from '../../shared/api/sessionBoundary'
-import { useUserInteractionResponse, type UserApprovalCredential } from '../../shared/api/userApprovals'
+import { useUserInteractionResponse } from '../../shared/api/userApprovals'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
 import { Alert, Avatar, Button, ErrorState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
 import { usePresence } from '../../shared/ui/usePresence'
@@ -12,11 +11,9 @@ import { approvalResizeEdges, useApprovalInboxResize } from './useApprovalInboxR
 import { useApprovalInboxStore } from './approvalInboxStore'
 import './approvals.css'
 
-const credential = (): UserApprovalCredential => ({ id: 'browser-user', signal: sessionSignal() })
 
 function QuickApprovalActions({ interaction, onChanged }: { interaction: DurableInteraction; onChanged(): void }) {
-  const [userCredential] = useState(credential)
-  const response = useUserInteractionResponse(userCredential)
+  const response = useUserInteractionResponse()
   const approve = interaction.responseOptions.find((option) => option.semantic === 'approve_once')
     ?? interaction.responseOptions.find((option) => option.semantic === 'allow_turn')
   const reject = interaction.responseOptions.find((option) => option.semantic === 'reject')

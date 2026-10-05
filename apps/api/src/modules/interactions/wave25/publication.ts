@@ -2,7 +2,8 @@ import { readWorkflowClosure } from '../workflowClosure.js'
 import { assertReviewJobTerminalProofLocked } from '../reviewNativeProof.js'
 import { createHash } from 'node:crypto'
 import { approvalAttentionFacts } from './attention.js'
-import { DurableInteractionSchema, ReviewJobSchema, type DurableInteraction, type ReviewJob } from '@foreman-code/contracts'
+import { DurableInteractionSchema, ReviewJobSchema, type DurableInteraction, type ReviewJob,
+  type InteractionResponseValue } from '@foreman-code/contracts'
 import {
   GraphInteractionSchema, GraphReviewSchema, type GraphEffect, type GraphEvidence, type GraphFact,
 } from '@foreman-code/contracts/wave25'
@@ -36,13 +37,18 @@ export function nextInteraction(previous: DurableInteraction, fields: Partial<Du
   if (!Number.isSafeInteger(previous.revision + 1)) return fail('APPROVAL_REVISION_EXHAUSTED')
   return DurableInteractionSchema.parse(JSON.parse(JSON.stringify({ ...previous, ...fields, revision: previous.revision + 1, updatedAt: new Date().toISOString() })))
 }
-export function decisionDigest(interaction: DurableInteraction, optionId = interaction.selectedOptionId): string {
+export function decisionDigest(interaction: DurableInteraction, optionId = interaction.selectedOptionId,
+  response?: InteractionResponseValue): string {
   const option = interaction.responseOptions.find((item) => item.optionId === optionId)
   if (!option) return fail('INTERACTION_OPTION_INVALID')
+  const saved = interaction.nativeResponse
+  let values = response
+  if (values === undefined && saved && typeof saved === 'object' && !Array.isArray(saved)) values = saved.response
   return graphSourceDigest({ interactionId: interaction.id, executionId: interaction.executionId,
     harness: interaction.harness, providerVersion: interaction.providerVersion, nativeSessionId: interaction.nativeSessionId,
     nativeRequestId: interaction.nativeRequestId, nativeRequestType: interaction.nativeRequestType,
-    optionId: option.optionId, semantic: option.semantic })
+    optionId: option.optionId, semantic: option.semantic,
+    ...(values !== undefined ? { response: values } : {}) })
 }
 export async function writeInteraction(sql: GraphTransactionSql, previous: DurableInteraction, next: DurableInteraction): Promise<void> {
   const result = await sql.query(`update durable_interactions set status=$2,revision=$3,record=$4::jsonb,updated_at=clock_timestamp()

@@ -47,7 +47,7 @@ describe('one Foreman Code MCP server scoped by role', () => {
     expect(operatorNames).toContain('workflow_create')
     expect(operatorNames).toContain('interaction_get')
     expect(operatorNames).not.toContain('context_get')
-    expect(operatorNames).not.toContain('interaction_respond')
+    expect(operatorNames).toContain('interaction_respond')
     expect(await names(orchestrator)).toEqual(['context_get', 'interaction_get', 'interaction_list', 'interaction_respond'])
     expect(await names(coder)).toEqual(['context_get', 'interaction_get', 'interaction_list'])
     expect(coder.getServerVersion()).toMatchObject({ name: 'foreman-code', title: 'Foreman Code MCP' })
@@ -58,7 +58,7 @@ describe('one Foreman Code MCP server scoped by role', () => {
 
   it('refuses a direct call to a tool outside the caller role with an audited ROLE_NOT_ALLOWED', async () => {
     expect(await deniedText('coder', 'workflow_create')).toContain('ROLE_NOT_ALLOWED')
-    expect(await deniedText('coder', 'interaction_respond')).toContain('Your Coder role cannot use interaction_respond. Allowed roles: Orchestrator.')
+    expect(await deniedText('coder', 'interaction_respond')).toContain('Your Coder role cannot use interaction_respond. Allowed roles: Operator, Orchestrator.')
     expect(recordDenied).toHaveBeenCalledWith('worker-1', 'mcp', 'workflow_create', 'mcp:workflow_create')
     expect(await deniedText('operator', 'context_get')).toContain('Your Operator role cannot use context_get. Allowed roles: Orchestrator, Coder.')
     expect(await deniedText('orchestrator', 'workspace_list')).toContain('Your Orchestrator role cannot use workspace_list. Allowed roles: Operator.')
@@ -78,5 +78,23 @@ describe('one Foreman Code MCP server scoped by role', () => {
     // The role ceiling still wins over an Agent's tool list.
     expect(await deniedText('coder', 'workflow_create', ['context_get'])).toContain('ROLE_NOT_ALLOWED')
     expect(await roleDeniedToolCall(context('coder', ['context_get']), call('context_get'))).toBeUndefined()
+  })
+
+  it('audits a read-only Operator response denial before reaching an interaction handler', async () => {
+    const readonly = { ...operator, grants: [{ actions: ['interactions:read' as const], scope: {} }] }
+    const response = await roleDeniedToolCall({ ...context('operator'), principal: readonly }, call('interaction_respond'))
+    expect(response?.result.isError).toBe(true)
+    expect(response?.result.content).toEqual([expect.objectContaining({
+      type: 'text', text: expect.stringContaining('ACCESS_DENIED'),
+    })])
+    expect(recordDenied).toHaveBeenCalledWith(readonly.id, 'mcp', 'interaction_respond', 'mcp:interaction_respond')
+  })
+  it('audits direct output calls outside the role or saved Agent tool set', async () => {
+    const name = 'files.native_output_publish'
+    expect(await deniedText('operator', name)).toContain('ROLE_NOT_ALLOWED')
+    expect(recordDenied).toHaveBeenCalledWith('operator-1', 'mcp', name, `mcp:${name}`)
+    expect(await deniedText('coder', name, ['context_get'])).toContain('TOOL_NOT_ENABLED')
+    expect(recordDenied).toHaveBeenCalledWith('worker-1', 'mcp', name, `mcp:${name}`)
+    expect(await roleDeniedToolCall(context('coder', [name]), call(name))).toBeUndefined()
   })
 })

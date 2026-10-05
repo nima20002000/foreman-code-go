@@ -71,12 +71,12 @@ async function openCode(f: Awaited<ReturnType<typeof afPublicationFixture>>, att
   expect(admission?.attachments).toEqual(attachments)
   // Reuse ONLY the fake execution host. All service methods/receipts below are real.
   const host = createChatFileBackend()
-  const statuses: Record<string, unknown> = { graphql: { status: 'disabled' } }
+  const statuses: Record<string, unknown> = { 'foreman-code': { status: 'disabled' } }
   const server = { expectedVersion: '1.18.31', generation: 1, async ensure() {}, async dispose() {},
     async request(path: string, init?: RequestInit) {
       const route = new URL(path, 'http://native.invalid').pathname
       let response: unknown = statuses
-      if (route === '/config') response = { mcp: { graphql: { enabled: false } } }
+      if (route === '/config') response = { mcp: { 'foreman-code': { enabled: false } } }
       else if (route === '/mcp' && init?.method === 'POST') {
         const body = JSON.parse(String(init.body)) as { name: string }; statuses[body.name] = { status: 'connected' }
       } else if (route.endsWith('/disconnect')) response = true
@@ -86,11 +86,13 @@ async function openCode(f: Awaited<ReturnType<typeof afPublicationFixture>>, att
   const service = f.service
   let token = ''
   const turn = new OpenCodeFileTurn({ host: host.host, server, endpoint: 'http://127.0.0.1:9876/mcp/files',
-    appMcpServerName: 'graphql', maxFileBytes: MAX_FILE_BYTES, maxAttachments: 10,
+    appMcpServerName: 'foreman-code', maxFileBytes: MAX_FILE_BYTES, maxAttachments: 10,
     rememberCredential: (value) => { token = value },
     service: { sessions: {
       issueForAcceptedSession: (context, expiry) => service.sessions.issueForAcceptedSession(context, expiry, 'opencode'),
-      authenticate: service.sessions.authenticate.bind(service.sessions), revoke: service.sessions.revoke.bind(service.sessions),
+      authenticate: service.sessions.authenticate.bind(service.sessions),
+      authorizeAccepted: service.sessions.authorizeAccepted.bind(service.sessions),
+      revoke: service.sessions.revoke.bind(service.sessions),
     }, artifacts: service.artifacts, list: service.list.bind(service), read: service.read.bind(service),
     createWorkingCopy: service.createWorkingCopy.bind(service),
     publish: async (...args: Parameters<typeof service.publish>) => {
@@ -108,7 +110,9 @@ async function openCode(f: Awaited<ReturnType<typeof afPublicationFixture>>, att
   await turn.prepareInputs({ ...admission!, mode: 'write', executionHostId: host.host.executionHostId,
     directory: f.project, expiresAt: new Date(Date.now() + 60_000) },
   (input) => service.readAccepted(admission!.context, input), signal())
-  turn.submissionAttempted(); await turn.acknowledge(signal())
+  await turn.connectTools(signal())
+  turn.submissionAttempted()
+  await turn.acknowledge(signal())
   expect(token).toMatch(/^gql_file_/)
   f.native.onFinish = () => turn.finish('terminal', signal())
   const copy = await turn.createWorkingCopy(token, { commandId: randomUUID(), source: attachments[0]!,

@@ -1,7 +1,7 @@
 # Local production on Linux
 
 From a desktop session, with Node 22+, the pinned Corepack/pnpm runtime, Docker
-Compose, user systemd, and `/usr/bin/google-chrome` installed:
+Compose, user systemd, `/usr/bin/ss`, and `/usr/bin/google-chrome` installed:
 
 ```sh
 corepack pnpm production:install
@@ -34,9 +34,10 @@ application menu has a **Foreman Code** launcher, with the same SVG used for its
 icon, browser favicon, web manifest, and the Companion launcher. Chrome remains
 owned by the user; closing its window does not stop the API.
 
-This installer creates no browser account or login secret. Integrate the implicit
-local-user change before verifying ready-to-work startup. MCP still requires its
-existing bearer credentials, roles, grants, and harness security. Host installation
+The dashboard opens with implicit local human access, without a browser account
+or login secret. The API attributes credential-free requests to their local
+socket and process owners; agent clients still need their MCP credentials.
+MCP retains its bearer credentials, roles, grants, and harness security. Host installation
 is an OS-user operation, outside Operator MCP. The installer selects
 `FOREMAN_CODE_LOCAL_PRODUCTION=1` (legacy `GRAPHQL_LOCAL_PRODUCTION=1` remains supported): loopback production enables local harnesses through
 the same provider, account, model, approval and sandbox qualification used at
@@ -53,9 +54,36 @@ Production storage is independent of development and tests:
 | Credentials | `~/.config/graphql-production/production.env` (0600) |
 | Operator settings | `~/.config/graphql-production/operator.json` (0600) |
 | Workspaces/uploads | `~/.local/share/graphql-production/{workspaces,files}` |
-| Runs/MCP routes/cache | `~/.local/state/graphql-production/{runs,mcp,cache}` |
+| Runs/cache | `~/.local/state/graphql-production/{runs,cache}` |
+| Managed MCP launcher/routes | `~/.local/share/graphql/mcp/` (shared launcher; credential-scoped routes) |
 | Releases | `~/.local/lib/graphql-production/releases/`, selected by `current` |
 | API logs | `~/.local/state/graphql-production/logs/` (rotating, bounded) |
+
+The service uses the existing reviewed native MCP launcher so upgrading does not
+rewrite native connections or their tool, approval and disabled policies. Its
+shared routing index contains only credential digests, loopback endpoints,
+expiry times and app process IDs. Each credential routes to its issuing app;
+the endpoint still validates its grants and scope. Production database, files,
+workspaces and execution state remain separate from development and tests.
+
+Updates also transition managed launchers installed under
+`~/.local/state/graphql-production/mcp/`. With the API stopped, the installer
+validates their installation record, retains installed executable identities,
+and links that directory to the shared launcher and routing index. Saved native
+commands, credential references, tool policies, approval rules and disabled flags
+stay intact. Recognition requires the registered alias to resolve to the shared
+launcher and the executable to pass the same managed-command checks. The original
+directory is retained as `mcp.previous`; an interrupted transition resumes from it
+on the next install. Transition aliases and runtime registrations are also retained
+in `launcher.mjs.registration.json`, which older development APIs do not rewrite.
+Current launcher writers serialize updates across processes and directory aliases;
+their kernel lock is released when a writer exits. If an older update erased the
+round-one transition record, the installer restores it from the validated
+`mcp.previous` installation while requiring the saved directory link to still point
+to the shared launcher. Each API restart rebuilds credential routes from its database.
+An unused folder, including an empty `routes` subdirectory created by an older
+installer, needs no transition and stays untouched. Unmanaged launcher files still
+require native-source review.
 
 The Jobs view and Operator MCP use the same persistent build queue in this
 installation. Its reviewed Main configuration belongs at
@@ -139,7 +167,7 @@ After installing and configuring qualified native profiles, run the installed
 service regression through the heavy-job queue:
 
 ```sh
-corepack pnpm test:production:installed
+corepack pnpm production:verify
 ```
 
 This uses the installed compiled release and authenticated Operator MCP. It also
@@ -168,3 +196,5 @@ systemctl --user disable --now graphql-operator-api.service graphql-production-d
 ```
 
 These actions retain production data.
+
+Installed production verification is an administrative operation. `production:verify` writes temporary workflow/chat records to the installed production database and restarts its live services. Run it deliberately in a quiet maintenance window. It replaces `test:production:installed`; ordinary `test:*` commands use disposable resources and do not invoke this operation.

@@ -22,12 +22,12 @@ export function registerRunHistoryRoutes(app: FastifyInstance, services: Operato
   }
   const base = '/api/management/workspaces/:workspaceId/workflows/:workflowId/runs'
   app.get<Request>(`${base}/summaries`, async (request, reply) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     const principal = requirePrincipal(request)
     return reads().list(principal, input(request.params, request.query))
   })
   app.get<Request>(`${base}/:runId/snapshot`, async (request, reply) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     const principal = requirePrincipal(request)
     return reads().snapshot(principal, input(request.params, request.query))
   })

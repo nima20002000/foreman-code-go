@@ -3,11 +3,13 @@ import { NativeSessionReferenceSchema, NativeHarnessEventSchema, PendingNativeIn
   ExecutionResultSchema, AgentHarnessSchema, ApprovalResponseSemanticSchema } from './index.js'
 import { NativeMessageSubmissionSchema } from './claude.js'
 import { PlacementDigestSchema } from './nodePlacement.js'
-import { RemoteOperationReceiptSchema } from './remoteExecution.js'
+import { RemoteOperationReceiptSchema, WorkflowArtifactValidationFailureSchema,
+  type WorkflowArtifactValidationFailure } from './remoteExecution.js'
 import { SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema, SourceCwdAttestationSchema } from './sourceAdmission.js'
-import { WorkflowArtifactResultV1Schema } from './workflowArtifactDeclarations.js'
+import { WorkflowArtifactResultV1Schema, type WorkflowArtifactOutputsV1 } from './workflowArtifactDeclarations.js'
 import { WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema } from './workflowArtifactResult.js'
 import { canonicalGraphJson } from './wave25/json.js'
+import { WorkHandoffResultSchema } from './wave25/handoffs.js'
 
 const ProcessIdentitySchema = z.object({ pid: z.number().int().safe().gt(1), startTicks: z.string().regex(/^\d+$/) }).strict()
 /** Internal original registry identities only; never a public process DTO. */
@@ -30,12 +32,19 @@ export const RemoteNativeHistorySchema = z.object({ nativeSubmission: z.lazy(() 
   interactionDeliveries: z.array(z.object({ nativeRequestId: z.string(), state: z.enum(['pending','submitting','submitted','uncertain']), selectedOptionId: z.string().optional() }).strict()).max(128).optional(),
   responseDeliveries: z.array(z.object({ source: z.enum(['provider_acknowledgement','provider_history']), harness: z.lazy(() => AgentHarnessSchema),
     providerVersion: z.string(), nativeSessionId: z.string(), nativeRequestId: z.string(), nativeRequestType: z.string(), optionId: z.string(),
-    semantic: z.lazy(() => ApprovalResponseSemanticSchema) }).strict()).max(128).optional(), canceledRequestIds: z.array(z.string()).max(128).optional(),
+    semantic: z.lazy(() => ApprovalResponseSemanticSchema), responseDigest: z.string().regex(/^[a-f0-9]{64}$/).optional()
+  }).strict()).max(128).optional(), canceledRequestIds: z.array(z.string()).max(128).optional(),
 }).strict()
 /** Original terminal result and its declared command association only. Canonical
  * publication receipts, saved declarations and original lifetime ownership must
  * still be verified by the receiver before accepting any artifact digest. */
 export const RemoteWorkflowPhysicalOutputSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('invalid-artifacts'), result: z.lazy(() => ExecutionResultSchema),
+    failure: WorkflowArtifactValidationFailureSchema }).strict().superRefine((value, context) => {
+    if (value.result.outcome !== 'succeeded') {
+      context.addIssue({ code: 'custom', message: 'Artifact validation failure requires the original successful provider result.' })
+    }
+  }),
   z.object({ kind: z.literal('text-only'), result: z.lazy(() => ExecutionResultSchema).superRefine((value,context) => {
     if (value.output !== undefined && !z.object({ text: z.string() }).strict().safeParse(value.output).success)
       context.addIssue({ code: 'custom', message: 'Only the actual provider text-only result can attest zero result artifacts.' })
@@ -46,7 +55,8 @@ export const RemoteWorkflowPhysicalOutputSchema = z.discriminatedUnion('kind', [
       canonicalGraphJson(value.result, 64 * 1024)
       if (value.result.outcome !== 'succeeded') throw new Error('successful original terminal result required')
       const output = z.object({ text: z.string() }).strict().parse(value.result.output)
-      const envelope = z.union([WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema]).parse(JSON.parse(output.text))
+      const envelope = z.union([WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema,
+        WorkHandoffResultSchema]).parse(JSON.parse(output.text))
       if (canonicalGraphJson(envelope.artifactOutputs) !== canonicalGraphJson(value.artifactOutputs))
         throw new Error('artifact association differs from original terminal text')
     } catch {
@@ -55,6 +65,28 @@ export const RemoteWorkflowPhysicalOutputSchema = z.discriminatedUnion('kind', [
   }),
 ])
 export type RemoteWorkflowPhysicalOutput = z.infer<typeof RemoteWorkflowPhysicalOutputSchema>
+
+/** Association metadata from original text; Main still verifies publication and bytes. */
+export function remoteWorkflowPhysicalOutput(result: z.infer<typeof ExecutionResultSchema>,
+  declaration?: WorkflowArtifactOutputsV1, failure?: WorkflowArtifactValidationFailure): RemoteWorkflowPhysicalOutput {
+  if (!declaration || result.outcome !== 'succeeded') {
+    return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'text-only', result })
+  }
+  if (failure) return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'invalid-artifacts', result, failure })
+  try {
+    const native = z.object({ text: z.string() }).strict().parse(result.output)
+    const envelope = z.object({ artifactOutputs: WorkflowArtifactResultV1Schema }).passthrough().parse(JSON.parse(native.text))
+    const keys = new Set(envelope.artifactOutputs.outputs.map((output) => output.outputKey))
+    if (keys.size !== declaration.outputKeys.length || declaration.outputKeys.some((key) => !keys.has(key))) {
+      throw new Error('WORKFLOW_ARTIFACT_OUTPUT_KEYS_MISMATCH')
+    }
+    return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'published-artifacts', result,
+      artifactOutputs: envelope.artifactOutputs })
+  } catch {
+    return RemoteWorkflowPhysicalOutputSchema.parse({ kind: 'invalid-artifacts', result,
+      failure: { code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT', reason: 'invalid_result' } })
+  }
+}
 
 export const RemoteWorkflowPhysicalReadoutSchema = z.object({ version: z.literal(1), expiresAt: z.string().datetime(), receipt: RemoteOperationReceiptSchema,
   session: z.lazy(() => NativeSessionReferenceSchema), launch: RemoteNativeLaunchObservationSchema,

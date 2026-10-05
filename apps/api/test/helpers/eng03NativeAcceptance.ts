@@ -1,16 +1,20 @@
+import { publicationSignal } from './publicationSignal.js'
+import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
+import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
+import { runtimeTimingChannel, type RuntimeTimingRecord } from '../../src/infrastructure/runtimeTiming.js'
+import { createFixtureSchema, dropFixtureSchema, ownedTestDatabaseUrl, ownedTestPath, removeFixtureDirectory } from './testResources.js'
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { fileURLToPath } from 'node:url'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import pg from 'pg'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
   AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessConfigurationSchema, HarnessExecutionSchema,
-  type AgentConfigurationVersion, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent, type NativeSessionReference,
+  type AgentConfigurationVersion, type ExecutionResult, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent, type NativeSessionReference,
 } from '@foreman-code/contracts'
 import {
   ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture,
@@ -21,7 +25,8 @@ import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService as WorkerCredentialService } from '../../src/modules/interactions/wave25/credentials.js'
 import { CodexAppServerSessionManager } from '../../src/modules/harnesses/codexAppServer.js'
-import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from '../../src/modules/harnesses/opencodeServer.js'
+import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
+import { OpenCodeNativeSessionManager } from '../../src/modules/harnesses/opencodeServer.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from '../../src/modules/harnesses/mcpDetection.js'
 import { codexMcpInspectorAdapter } from '../../src/modules/harnesses/codexMcpInspectorAdapter.js'
@@ -50,10 +55,18 @@ import { continuationValidator } from '../../src/modules/runs/continuation.js'
 import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { nativePersistenceRedactor } from '../../src/modules/interactions/nativePersistence.js'
 import type { NativeHarnessSessionManager } from '../../src/modules/harnesses/port.js'
+
 import type { AuthorizeWorkflowStop } from '../../src/modules/runs/repeatLifecycle.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
 import { seedAgent3 } from './wave25Agent3.js'
+import { configureNativeWorkflowMcp } from './nativeWorkflowMcp.js'
+import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
+import { configureNativeAcceptanceMcp } from './nativeAcceptanceMcp.js'
+import { archiveNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
+import { inheritedAgentEnvironment } from '../../src/modules/harnesses/secrets.js'
+import { runCommand as runNativeCommand } from '../../src/modules/harnesses/process.js'
+import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
 
 const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
@@ -63,11 +76,8 @@ export function nativeAcceptanceBinaries(environment: NodeJS.ProcessEnv = proces
     && (!environment.ENG03_A_CODEX_BINARY || !environment.ENG03_A_OPENCODE_BINARY)) {
     throw new Error('Acceptance Jobs require both explicitly qualified in-image native binaries.')
   }
-  return {
-    codexBinary: environment.ENG03_A_CODEX_BINARY
-      ?? fileURLToPath(new URL('../../node_modules/.bin/codex', import.meta.url)),
-    openCodeBinary: environment.ENG03_A_OPENCODE_BINARY ?? '/home/nima/.local/bin/opencode',
-  }
+  return harnessBinaries({ CODEX_BINARY: environment.ENG03_A_CODEX_BINARY ?? environment.CODEX_BINARY,
+    OPENCODE_BINARY: environment.ENG03_A_OPENCODE_BINARY ?? environment.OPENCODE_BINARY })
 }
 
 export interface Eng03NativeRuntime {
@@ -85,7 +95,9 @@ export interface Eng03NativeControl extends Eng03NativeRuntime {
   nodeIds: readonly string[]
   projectDirectory: string
   runtimeDirectory: string
+  artifactPath: string
   startTask: Promise<void>
+  publicationChanged(): Promise<void>
   stop(): Promise<boolean>
   restartWaitingRuntime(): Promise<Eng03NativeRuntime>
   restartRecoverableRuntime(): Promise<Eng03NativeRuntime>
@@ -100,6 +112,16 @@ export interface Eng03NativeOptions {
 
 interface RuntimeInstance extends Eng03NativeRuntime {
   managers: ExecutionScopedNativeSessionManagerResolver
+  factories: NativeHarnessFactories
+}
+
+interface NativeScenarioResult {
+  artifactPath: string
+  outcome: 'succeeded' | 'failed'
+  overlap: boolean
+  identitiesDistinct: boolean
+  joinExact: boolean
+  cleanup: boolean
 }
 
 interface NativeInterval {
@@ -134,9 +156,23 @@ function resultText(execution: HarnessExecution | undefined): string {
     && typeof output.text === 'string' ? output.text : ''
 }
 
-async function version(binary: string): Promise<string> {
-  const { stdout } = await runCommand(binary, ['--version'], { timeout: 10_000 })
-  return stdout.trim()
+async function version(binary: string, directory: string, registry: NativeProcessRegistry): Promise<string> {
+  const scope = registry.reserveLaunch(`acceptance-version:${randomUUID()}`)
+  const errors: unknown[] = []
+  let observed = ''
+  try {
+    const result = await runNativeCommand(binary, ['--version'], directory, AbortSignal.timeout(10_000),
+      inheritedAgentEnvironment(), { recovery: scope })
+    if (result.exitCode !== 0) throw new Error('Native acceptance version probe failed')
+    observed = result.stdout.trim()
+  } catch (error) { errors.push(error) }
+  try {
+    await registry.abandonReservedLaunch(scope)
+    if (!await registry.closeOwner(scope.owner)) throw new Error('Native version probe closure remains unconfirmed')
+  } catch (error) { errors.push(error) }
+  if (errors.length === 1) throw errors[0]
+  if (errors.length) throw new AggregateError(errors, 'Native version probe and closure failed.')
+  return observed
 }
 
 /** Opt-in live-provider qualification through current V3 admission and native proof composition. */
@@ -146,9 +182,11 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     && (!Number.isSafeInteger(options.queryTimeoutMs) || options.queryTimeoutMs < 1 || options.queryTimeoutMs > 60_000)) {
     throw new Error('queryTimeoutMs must be a positive integer at most 60000.')
   }
+  const publicationChanges = publicationSignal()
+  const scenarioBegan = performance.now()
+  const timing = { startedAt: new Date().toISOString(), setupMs: 0, engineMs: 0, totalMs: 0 }
   const { codexBinary, openCodeBinary } = nativeAcceptanceBinaries()
-  const baseUrl = process.env.ENG03_A_TEST_DATABASE_URL
-    ?? (process.env.FOREMAN_CODE_VERIFICATION_ROOT ? undefined : process.env.WAVE25_TEST_DATABASE_URL)
+  const baseUrl = ownedTestDatabaseUrl('ENG03_A_TEST_DATABASE_URL')
   if (!baseUrl) throw new Error('ENG03_A_TEST_DATABASE_URL must name a task-owned loopback test database.')
   const parsed = new URL(baseUrl)
   if (!['postgres:', 'postgresql:'].includes(parsed.protocol)
@@ -162,10 +200,17 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   const root = await mkdtemp(join(tmpdir(), `eng03-a-${scenario.toLowerCase()}-`))
   const projectDirectory = join(root, 'project')
   const runtimeDirectory = join(root, 'runtime')
-  const artifactDirectory = process.env.ENG03_A_EVIDENCE_DIR
-    ?? fileURLToPath(new URL('../../../../.logs/eng03-a-evidence/', import.meta.url))
-  const artifactPath = join(artifactDirectory, `${scenario}-${suffix}.json`)
-  await Promise.all([mkdir(projectDirectory), mkdir(runtimeDirectory), mkdir(join(artifactPath, '..'), { recursive: true })])
+  const registryDirectory = join(runtimeDirectory, 'native-process-registry')
+  const artifactPath = join(process.env.ENG03_A_EVIDENCE_DIR!, `${scenario}-${suffix}.json`)
+  await Promise.all([mkdir(projectDirectory), mkdir(registryDirectory, { recursive: true, mode: 0o700 }),
+    mkdir(join(artifactPath, '..'), { recursive: true })])
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
+  const cleanupId = registerTestResourceCleanup(invocation,
+    { kind: 'native-acceptance', root, schema, databaseUrl: baseUrl, registryDirectory, artifactPath })
+  const registry = new NativeProcessRegistry(registryDirectory)
+  const cleanupErrors: unknown[] = []
+  let failure: { error: unknown } | undefined
+  let result: NativeScenarioResult | undefined
   const admin = new pg.Pool({ connectionString: baseUrl, max: 1 })
   let pool: pg.Pool | undefined
   let checkpoints: ReturnType<typeof createCheckpointStore> | undefined
@@ -173,19 +218,31 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let activeRuntime: RuntimeInstance | undefined
   let mcpApp: ReturnType<typeof buildApp> | undefined
   let mcpRoutes: AppMcpRoutes | undefined
+  let restoreNativeMcp: (() => Promise<void>) | undefined
   let runId: string | undefined
   let stopRun: (() => Promise<boolean>) | undefined
-  const evidence: Record<string, unknown> = { scenario, mode: 'current V3 native internal acceptance', artifactPath,
-    sourceSha: (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim(),
-    binaries: { codex: { path: codexBinary, version: await version(codexBinary) },
-      opencode: { path: openCodeBinary, version: await version(openCodeBinary) } },
+  const runtimeTimeline: RuntimeTimingRecord[] = []
+  const nativeSecrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
+    .map(([, value]) => value).filter((value): value is string => Boolean(value))
+  let droppedTimingRecords = 0
+  const captureTiming = (message: unknown) => {
+    if (runtimeTimeline.length < 100_000) runtimeTimeline.push(message as RuntimeTimingRecord)
+    else droppedTimingRecords++
+  }
+  const evidence: Record<string, unknown> = { scenario, timing, runtimeTimeline, mode: 'current V3 native internal acceptance', artifactPath,
+    resources: { invocation, cleanupId, root, schema, registryDirectory },
     models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-5.6-luna',
       opencode: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna' },
     expected: { overlap: true, joinedInputs: 2, outcome: 'succeeded' } }
+  runtimeTimingChannel.subscribe(captureTiming)
   try {
-    await admin.query(`create schema ${schema}`)
+    evidence.sourceSha = (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim()
+    evidence.binaries = { codex: { path: codexBinary, version: await version(codexBinary, projectDirectory, registry) },
+      ...(first === 'opencode' || second === 'opencode'
+        ? { opencode: { path: openCodeBinary, version: await version(openCodeBinary, projectDirectory, registry) } } : {}) }
+    await createFixtureSchema(admin, schema)
     const url = new URL(baseUrl)
-    url.searchParams.set('options', `-c search_path=${schema},public`)
+    url.searchParams.set('options', `-c search_path=${schema}`)
     const migrationPool = new pg.Pool({ connectionString: url.toString(), max: 12, connectionTimeoutMillis: 5000 })
     try { await applyApplicationMigrations(migrationPool) } finally { await migrationPool.end() }
     pool = new pg.Pool({ connectionString: url.toString(), max: 12, connectionTimeoutMillis: 5000,
@@ -207,7 +264,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const configurations: AgentConfigurationVersion[] = nodeNames.map((name, index) => {
       const fallback = harnesses[index] === 'codex'
         ? { harness: 'codex', model: evidence.models && (evidence.models as { codex: string }).codex,
-          reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' }
+          reasoningEffort: process.env.ENG03_CODEX_REASONING_EFFORT ?? 'medium', sandbox: 'read-only', serviceTier: 'standard' }
         : { harness: 'opencode', model: (evidence.models as { opencode: string }).opencode,
           variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false }
       const override = name === 'A' || name === 'B' ? options.harnessOverrides?.[name] : undefined
@@ -222,7 +279,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     evidence.effectiveHarnesses = configurations.map((item) => {
       if (item.harness.harness === 'claude') throw new Error('ENG-03 native acceptance only qualifies Codex and OpenCode')
       return { agentId: item.agentId, harness: item.harness.harness,
-      model: item.harness.model, ...(item.harness.harness === 'codex' ? { sandbox: item.harness.sandbox,
+      model: item.harness.model, ...(item.harness.harness === 'codex' ? { reasoningEffort: item.harness.reasoningEffort,
+        sandbox: item.harness.sandbox,
         approvalPolicy: item.harness.advanced?.approvalPolicy,
         approvalsReviewer: item.harness.advanced?.approvalsReviewer } : { autoApprove: item.harness.autoApprove }) }
     })
@@ -247,6 +305,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         { actions: ['runs:start', 'runs:stop', 'runs:read'], scope: { workspaceIds: [fixture.scope.workspaceId], workflowIds: [fixture.scope.workflowId] } },
         { actions: ['workspace_locations:read', 'workspace_locations:update'], scope: { workspaceIds: [fixture.scope.workspaceId] } },
       ] })
+    nativeSecrets.push(authority.token)
     const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), runtimeDirectory)
     const location = await locations.set(authority.principal, 'http', { workspaceId: fixture.scope.workspaceId,
       commandId: randomUUID(), expectedLocationRevision: 1, runnerId: locations.runnerId, rootPath: projectDirectory })
@@ -273,15 +332,22 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       interactions: new PostgresAppInteractionService(livePool, new PostgresInteractionRepository(livePool),
         new PostgresCommandCoordinator(livePool)) } })
     const endpoint = `${await mcpApp.listen({ host: '127.0.0.1', port: 0 })}/mcp`
+    restoreNativeMcp = await configureNativeWorkflowMcp({
+      projectDirectory, runtimeDirectory, codexBinary,
+      ...(first === 'opencode' || second === 'opencode' ? { openCodeBinary } : {}),
+    })
     mcpRoutes = new AppMcpRoutes(livePool, endpoint)
     evidence.mcpEndpoint = endpoint
+    await configureNativeAcceptanceMcp(livePool, runtimeDirectory,
+      { codex: codexBinary, opencode: openCodeBinary }, endpoint, harnesses)
     const makeRuntime = (saver: BaseCheckpointSaver): RuntimeInstance => {
       const commands = new PostgresCommandCoordinator(livePool)
       const locations = new WorkspaceLocationService(livePool, commands, runtimeDirectory)
       const workflows = new PostgresWorkflowRepository(livePool)
       const workflowCapture = createWorkflowNativeCaptureChannel(), reviewCapture = createReviewNativeCaptureChannel()
       const runs = new PostgresRunRepository(livePool, workflows, locations,
-        { runtimeRoot: runtimeDirectory, ...createWorkflowRepositoryServices(workflowCapture.verify) })
+        { runtimeRoot: runtimeDirectory, ...createWorkflowRepositoryServices(workflowCapture.verify) },
+        async () => { publicationChanges.notify() })
       const appendNativeEvent = runs.appendNativeEvent.bind(runs)
       const pendingNativeEvents = new Map<string, { executionId: string; type: string; sequence: number; startedAt: string }>()
       runs.appendNativeEvent = async (...args) => {
@@ -340,17 +406,27 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         }
       }
       const interactions = new Wave25InteractionRepository(livePool, new ReviewNativeProofServices(reviewCapture.verify))
-      const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
-      const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
+      const factories = new NativeHarnessFactories({
+        codexBinary, openCodeBinary, appMcpEndpoint: endpoint,
+        auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
+        admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
+        abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
+        closeRecovery: async recovery => {
+          if (!await registry.closeOwner(recovery.owner)) throw new Error('Native diagnostic closure is unconfirmed.')
+        },
+      })
+      const managers = new ExecutionScopedNativeSessionManagerResolver(context => {
         const config = context.configuration.harness
         if (config.harness !== context.harness) throw new Error('Pinned harness mismatch')
         if (config.harness === 'claude') throw new Error('ENG-03 native acceptance only qualifies Codex and OpenCode')
-        return config.harness === 'codex'
-          ? new CodexAppServerSessionManager(codexBinary, undefined, undefined, registry.scope(`execution:${context.executionId}`))
-          : new OpenCodeNativeSessionManager({ server: new ManagedOpenCodeServer({ binary: openCodeBinary,
-            processRecovery: registry.scope(`execution:${context.executionId}`), workingDirectory: context.workingDirectory,
-            ownerAgentId: context.agentId, ...(config.advanced ? { advancedConfiguration: config.advanced } : {}) }),
-            ownerAgentId: context.agentId, expectedAppMcpEndpoint: endpoint })
+        return factories.allocate({
+          harness: config.harness, role: 'workflow', appMcpAccess: 'scoped',
+          ownerAgentId: context.agentId, workingDirectory: context.workingDirectory,
+          processRecovery: registry.scope(`execution:${context.executionId}`),
+          configured: { instanceId: context.configuration.id, instanceRevision: context.configuration.contentHash,
+            driverId: config.harness, enabled: true, configuration: config },
+          ...(config.harness === 'opencode' && config.advanced ? { advancedConfiguration: config.advanced } : {}),
+        }).manager
       })
       const validateContinuation = continuationValidator(livePool, locations)
       const workerCredentials = new WorkerCredentialService(livePool, new PostgresAccessService(livePool))
@@ -386,6 +462,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           } }
           const prepared = await new WorkerLaunchCredentialService(new McpDetectionService(diagnosticInspector, endpoint), workerCredentials, 'runner-local').prepare(input)
           await mcpRoutes!.refresh()
+          nativeSecrets.push(...Object.values(prepared.credential.environment.variables))
           return prepared
         },
         revoke: (credential) => workerCredentials.revoke(credential),
@@ -400,6 +477,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         new PostgresRepeatReviewerBindings(livePool), workflowCapture.capture, reviewCapture.capture)
       const observeExact = approvals.observeExact.bind(approvals)
       approvals.observeExact = async (input) => {
+        const began = performance.now()
         try { return await observeExact(input) }
         catch (error) {
           const errors = (evidence.nativeObservationErrors ??= []) as unknown[]
@@ -407,33 +485,40 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
             if (!(failure instanceof Error)) return { name: typeof failure }
             return {
               name: failure.name,
+              code: failure instanceof HarnessExecutionError ? failure.result.error?.code ?? null : null,
               message: nativePersistenceRedactor([]).text(failure.message).slice(0, 512),
               cause: failure.cause instanceof Error
                 ? nativePersistenceRedactor([]).text(failure.cause.message).slice(0, 512) : undefined,
             }
           }) : []
           if (errors.length < 16) errors.push({ executionId: input.execution.id,
-            occurredAt: new Date().toISOString(),
+            occurredAt: new Date().toISOString(), elapsedMs: Math.round(performance.now() - began),
             failures,
-            ...(error instanceof Error ? { name: error.name, code: 'code' in error ? String(error.code) : null,
-              message: nativePersistenceRedactor([]).text(error.message) } : { name: typeof error }) })
+            ...describeNativeFailure(error, nativeSecrets) })
           throw error
         }
       }
       const engine = new LangGraphWorkflowEngine(runs, workflows, approvals, saver, runtimeDirectory, locations,
         credentials, interactions, undefined, { workerParallelism: 2 })
-      return { engine, runs, approvals, interactions, budgets, registry, managers }
+      return { engine, runs, approvals, interactions, budgets, registry, managers, factories }
     }
     activeRuntime = makeRuntime(checkpoints.saver)
     engine = activeRuntime.engine
     stopRun = () => engine!.cancel(run.id, authorizeStop)
+    timing.setupMs = Math.round(performance.now() - scenarioBegan)
+    const engineBegan = performance.now()
+    evidence.engineStartedAt = new Date().toISOString()
     const startTask = engine.start(run.id)
+    const recordEngineFinish = () => {
+      timing.engineMs = Math.round(performance.now() - engineBegan)
+      evidence.engineFinishedAt = new Date().toISOString()
+      publicationChanges.notify()
+    }
+    void startTask.then(recordEngineFinish, recordEngineFinish)
     evidence.startTaskState = 'pending'
     if (options.control) void startTask.then(() => { evidence.startTaskState = 'fulfilled' }, (error: unknown) => {
       evidence.startTaskState = 'rejected'
-      evidence.startError = error instanceof Error ? { name: error.name, code: 'code' in error ? String(error.code) : null,
-        message: nativePersistenceRedactor([]).text(error.message) }
-        : { name: typeof error }
+      evidence.startError = describeNativeFailure(error, nativeSecrets)
     })
     const restartRuntime = async (kind: 'waiting' | 'terminal_unaccepted'): Promise<Eng03NativeRuntime> => {
       if (kind === 'waiting') await startTask
@@ -468,6 +553,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       if (stopBefore.rows[0]?.stop_requested_at) throw new Error('A stopped Run cannot exercise waiting restart.')
       await activeRuntime.engine.shutdown()
       await activeRuntime.managers.dispose()
+      activeRuntime.factories.stopAuxiliaries()
+      await activeRuntime.factories.disposeAuxiliaries()
       await checkpoints.close()
       checkpoints = createCheckpointStore(url.toString(), schema)
       await checkpoints.setup()
@@ -498,7 +585,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     try {
       const work = options.control
         ? options.control({ pool, runId: run.id, nodeIds: nodes.map((node) => node.id), projectDirectory,
-          runtimeDirectory, ...activeRuntime, startTask, stop: () => engine!.cancel(run.id, authorizeStop), restartWaitingRuntime, restartRecoverableRuntime })
+          runtimeDirectory, artifactPath, ...activeRuntime, startTask, publicationChanged: publicationChanges.next, stop: () => engine!.cancel(run.id, authorizeStop),
+          restartWaitingRuntime, restartRecoverableRuntime })
           .then(() => startTask.catch(() => undefined))
         : startTask
       await Promise.race([work, new Promise<never>((_resolve, reject) => {
@@ -574,75 +662,133 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       nativeEventSummary: executions.map((execution) => ({ id: execution.id,
         events: nativeEvents.filter((event) => event.executionId === execution.id)
           .map(({ type, occurredAt, sequence }) => ({ type, occurredAt, sequence })) })) })
-    return { artifactPath, outcome, overlap, identitiesDistinct, joinExact: joined, cleanup }
+    result = { artifactPath, outcome, overlap, identitiesDistinct, joinExact: joined, cleanup }
   } catch (error) {
-    evidence.error = error instanceof Error ? { name: error.name, message: error.message } : String(error)
+    failure = { error }
+    evidence.error = describeNativeFailure(error, nativeSecrets)
     evidence.failureAt = new Date().toISOString()
     evidence.failureStartTaskState = evidence.startTaskState
-    if (runId && pool) {
-      evidence.failureRun = await activeRuntime?.runs.get(runId).catch(() => undefined)
-      try {
-        const checkpoint = await checkpoints?.saver.getTuple({ configurable: { thread_id: runId } })
-        evidence.failureCheckpoint = nativePersistenceRedactor([]).value({
-          checkpointId: checkpoint?.checkpoint.id,
-          pendingWrites: checkpoint?.pendingWrites?.filter(([, channel]) =>
-            channel === '__interrupt__' || channel === '__error__'),
+    try {
+      if (runId && pool) {
+        evidence.failureRun = await activeRuntime?.runs.get(runId).catch(() => undefined)
+        try {
+          const checkpoint = await checkpoints?.saver.getTuple({ configurable: { thread_id: runId } })
+          evidence.failureCheckpoint = nativePersistenceRedactor([]).value({
+            checkpointId: checkpoint?.checkpoint.id,
+            pendingWrites: checkpoint?.pendingWrites?.filter(([, channel]) =>
+              channel === '__interrupt__' || channel === '__error__'),
+          })
+        } catch (checkpointError) {
+          evidence.failureCheckpoint = { readError: checkpointError instanceof Error
+            ? nativePersistenceRedactor([]).text(checkpointError.message) : typeof checkpointError }
+        }
+        if (activeRuntime) {
+          const owned = Reflect.get(activeRuntime.approvals, 'ownedSessions') as Map<string, {
+            session?: NativeSessionReference; manager: NativeHarnessSessionManager
+          }>
+          evidence.failureNativeHistories = await Promise.all([...owned].map(async ([executionId, value]) => {
+            if (!value.session) return { executionId }
+            const history = await value.manager.history(value.session, AbortSignal.timeout(5_000)).catch(() => undefined)
+            const lane = await activeRuntime!.interactions.coordination.getLane(value.session.harness,
+              value.session.nativeSessionId).catch(() => undefined)
+            return { executionId, nativeTurnId: history?.nativeTurnId, terminalOutcome: history?.terminalResult?.outcome,
+              pending: history?.pendingInteractions.map(item => ({ nativeRequestId: item.turn.nativeRequestId,
+                nativeTurnId: item.turn.nativeTurnId, nativeRequestType: item.nativeRequestType })),
+              lane: lane && { observedStatus: lane.observedStatus, hasWriterLease: Boolean(lane.leaseToken),
+                currentTurnOrMessageId: lane.currentTurnOrMessageId },
+              lastEvents: history?.events.slice(-5).map(({ type, sequence }) => ({ type, sequence })) }
+          }))
+        }
+        const requests = await pool.query<{ record: unknown }>(
+          'select record from durable_interactions where run_id=$1 order by created_at', [runId]).catch(() => undefined)
+        evidence.failureInteractions = requests?.rows.map(({ record }) => {
+          const interaction = DurableInteractionSchema.parse(record)
+          return { id: interaction.id, executionId: interaction.executionId, nativeRequestId: interaction.nativeRequestId,
+            nativeRequestType: interaction.nativeRequestType, graphInterruptId: interaction.graphInterruptId,
+            status: interaction.status, deliveryState: interaction.deliveryState }
         })
-      } catch (checkpointError) {
-        evidence.failureCheckpoint = { readError: checkpointError instanceof Error
-          ? nativePersistenceRedactor([]).text(checkpointError.message) : typeof checkpointError }
+        const rows = await pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [runId]).catch(() => undefined)
+        evidence.failureExecutions = rows?.rows.map((row) => {
+          const execution = HarnessExecutionSchema.parse(row.record)
+          return { id: execution.id, nodeId: execution.workflowNodeId, state: execution.state,
+            result: execution.result, nativeSessionId: execution.nativeSessionId }
+        })
+        const events = await pool.query<{ execution_id: string; type: string; occurred_at: string; item_type: string | null }>(
+          `select execution_id, record->>'type' as type, record->>'occurredAt' as occurred_at,
+             record#>>'{payload,item,type}' as item_type
+           from harness_native_events where execution_id in (select id from harness_executions where run_id=$1)
+           order by execution_id,sequence`, [runId]).catch(() => undefined)
+        evidence.failureNativeEvents = events?.rows
       }
-      if (activeRuntime) {
-        const owned = Reflect.get(activeRuntime.approvals, 'ownedSessions') as Map<string, {
-          session?: NativeSessionReference; manager: NativeHarnessSessionManager
-        }>
-        evidence.failureNativeHistories = await Promise.all([...owned].map(async ([executionId, value]) => {
-          if (!value.session) return { executionId }
-          const history = await value.manager.history(value.session, AbortSignal.timeout(5_000)).catch(() => undefined)
-          const lane = await activeRuntime!.interactions.coordination.getLane(value.session.harness,
-            value.session.nativeSessionId).catch(() => undefined)
-          return { executionId, nativeTurnId: history?.nativeTurnId, terminalOutcome: history?.terminalResult?.outcome,
-            pending: history?.pendingInteractions.map(item => ({ nativeRequestId: item.turn.nativeRequestId,
-              nativeTurnId: item.turn.nativeTurnId, nativeRequestType: item.nativeRequestType })),
-            lane: lane && { observedStatus: lane.observedStatus, hasWriterLease: Boolean(lane.leaseToken),
-              currentTurnOrMessageId: lane.currentTurnOrMessageId },
-            lastEvents: history?.events.slice(-5).map(({ type, sequence }) => ({ type, sequence })) }
-        }))
-      }
-      const requests = await pool.query<{ record: unknown }>(
-        'select record from durable_interactions where run_id=$1 order by created_at', [runId]).catch(() => undefined)
-      evidence.failureInteractions = requests?.rows.map(({ record }) => {
-        const interaction = DurableInteractionSchema.parse(record)
-        return { id: interaction.id, executionId: interaction.executionId, nativeRequestId: interaction.nativeRequestId,
-          nativeRequestType: interaction.nativeRequestType, graphInterruptId: interaction.graphInterruptId,
-          status: interaction.status, deliveryState: interaction.deliveryState }
-      })
-      const rows = await pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [runId]).catch(() => undefined)
-      evidence.failureExecutions = rows?.rows.map((row) => {
-        const execution = HarnessExecutionSchema.parse(row.record)
-        return { id: execution.id, nodeId: execution.workflowNodeId, state: execution.state,
-          result: execution.result, nativeSessionId: execution.nativeSessionId }
-      })
-      const events = await pool.query<{ execution_id: string; type: string; occurred_at: string }>(
-        `select execution_id, record->>'type' as type, record->>'occurredAt' as occurred_at
-         from harness_native_events where execution_id in (select id from harness_executions where run_id=$1)
-         order by execution_id,sequence`, [runId]).catch(() => undefined)
-      evidence.failureNativeEvents = events?.rows
+    } catch (diagnosticError) {
+      failure.error = new AggregateError([error, diagnosticError], 'Native scenario and diagnostic collection failed.')
     }
-    await stopRun?.().catch(() => undefined)
-    throw error
+    process.stdout.write(`ENG03 failure ${JSON.stringify({ scenario,
+      startTaskState: evidence.failureStartTaskState, startError: evidence.startError,
+      error: describeNativeFailure(error, nativeSecrets),
+      observations: evidence.nativeObservationErrors,
+      executions: Array.isArray(evidence.failureExecutions) ? evidence.failureExecutions.map(value => {
+        const execution = value as { id: string; state: string; result?: ExecutionResult }
+        return { id: execution.id, state: execution.state, outcome: execution.result?.outcome,
+          ...(execution.result?.error ? { error: nativePersistenceRedactor(nativeSecrets).value(execution.result.error) } : {}) }
+      }) : [],
+    })}\n`)
+    try { await stopRun?.() }
+    catch (cleanupError) { cleanupErrors.push(cleanupError) }
   } finally {
-    await engine?.shutdown().catch(() => undefined)
-    await activeRuntime?.managers.dispose().catch(() => undefined)
-    await mcpRoutes?.close().catch(() => undefined)
-    await mcpApp?.close().catch(() => undefined)
-    if (runId) await checkpoints?.saver.deleteThread(runId).catch(() => undefined)
-    await checkpoints?.close().catch(() => undefined)
-    await pool?.end().catch(() => undefined)
-    await admin.query(`drop schema if exists ${schema} cascade`).catch(() => undefined)
-    await admin.end()
-    await writeFile(artifactPath, JSON.stringify(evidence, null, 2))
-    if (!process.env.ENG03_A_KEEP_RUNTIME) await rm(root, { recursive: true, force: true })
+    activeRuntime?.factories.stopAuxiliaries()
+    const close = async (action: () => Promise<unknown>) => {
+      try { await action() }
+      catch (error) { cleanupErrors.push(error) }
+    }
+    await close(async () => engine?.shutdown())
+    await close(async () => activeRuntime?.managers.dispose())
+    await close(async () => activeRuntime?.factories.disposeAuxiliaries())
+    await close(async () => {
+      const owners = new Set(registry.snapshot().launches.map(launch => launch.owner))
+      for (const owner of owners) {
+        await close(async () => {
+          if (!await registry.closeOwner(owner)) throw new Error(`Native acceptance closure is unconfirmed for ${owner}`)
+        })
+      }
+    })
+    await close(async () => mcpRoutes?.close())
+    await close(async () => mcpApp?.close())
+    if (!cleanupErrors.length) await close(async () => restoreNativeMcp?.())
+    const keepRuntime = Boolean(process.env.ENG03_A_KEEP_RUNTIME)
+    if (!cleanupErrors.length && !keepRuntime && runId) {
+      const threadId = runId
+      await close(async () => checkpoints?.saver.deleteThread(threadId))
+    }
+    await close(async () => checkpoints?.close())
+    await close(async () => pool?.end())
+    if (!cleanupErrors.length && !keepRuntime) await close(() => dropFixtureSchema(admin, schema))
+    await close(() => admin.end())
+    timing.totalMs = Math.round(performance.now() - scenarioBegan)
+    runtimeTimingChannel.unsubscribe(captureTiming)
+    evidence.droppedTimingRecords = droppedTimingRecords
+    evidence.finishedAt = new Date().toISOString()
+    evidence.resourcesRetained = keepRuntime || cleanupErrors.length > 0
+    evidence.cleanupErrors = cleanupErrors.map(error => error instanceof Error ? error.message : String(error))
+    if (evidence.error || evidence.startError || cleanupErrors.length) {
+      console.error(`Native acceptance failure ${nativeFailureSummary(evidence, nativeSecrets)}`)
+    }
+    await close(async () => {
+      await writeFile(ownedTestPath(artifactPath), JSON.stringify(nativePersistenceRedactor(nativeSecrets).value(evidence), null, 2), { mode: 0o600 })
+      await archiveNativeAcceptanceEvidence(basename(artifactPath), nativePersistenceRedactor(nativeSecrets).value(evidence))
+    })
     process.stdout.write(`ENG03 evidence ${artifactPath}\n`)
+    if (!cleanupErrors.length && !keepRuntime) {
+      await close(async () => {
+        await removeFixtureDirectory(root)
+        completeTestResourceCleanup(invocation, cleanupId)
+      })
+    }
   }
+  if (cleanupErrors.length) {
+    const errors = [...(failure ? [failure.error] : []), ...cleanupErrors]
+    throw new AggregateError(errors, `Native acceptance cleanup remains unconfirmed; resources retained at ${root}`, { cause: failure?.error })
+  }
+  if (failure) throw failure.error
+  return result!
 }

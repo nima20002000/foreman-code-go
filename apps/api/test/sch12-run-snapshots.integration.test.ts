@@ -172,8 +172,8 @@ describe.skipIf(!postgresEnabled)('SCH-12 historical Run snapshots / PostgreSQL 
         expect(JSON.stringify(denied)).toContain(http.json<{ error: { code: string } }>().error.code)
         expect(http.json()).not.toHaveProperty('snapshot')
       }
-      const unauthenticated = await api.app.inject({ method: 'GET', url: snapshotPath(allowed) })
-      expect(unauthenticated.statusCode).toBe(401)
+      const invalid = await api.app.inject({ method: 'GET', url: snapshotPath(allowed), headers: { authorization: 'Bearer invalid' } })
+      expect(invalid.statusCode).toBe(401)
       expect(await historicalRows(f.db.pool, [allowed.runId, foreign.run.id])).toEqual(before)
       expect(api.native.size).toBe(0)
     } finally { try { await api?.close() } finally { await f.close() } }

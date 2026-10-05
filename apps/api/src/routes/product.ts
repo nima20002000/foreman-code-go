@@ -11,6 +11,8 @@ import {
   ListAgentsResponseSchema,
   ListInteractionsResponseSchema,
   GetInteractionResponseSchema,
+  RespondToInteractionRequestSchema,
+  RespondToInteractionResponseSchema,
   SaveHarnessDefaultsRequestSchema,
   SaveHarnessDefaultsResponseSchema,
 } from '@foreman-code/contracts'
@@ -130,8 +132,17 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
       })
       app.get<{ Params: { interactionId: string } }>('/api/management/interactions/:interactionId', async (request) => {
         const detail = await interactions.reviewStatusVisible(requirePrincipal(request), request.params.interactionId)
-        return GetInteractionResponseSchema.parse({ ...detail, canRespond: false })
+        return GetInteractionResponseSchema.parse({ ...detail, canRespond: detail.activity.response.available })
       })
+      app.post<{ Params: { interactionId: string }; Body: unknown }>(
+        '/api/management/interactions/:interactionId/respond', async (request) => {
+          const input = RespondToInteractionRequestSchema.parse(request.body)
+          if (input.interactionId !== request.params.interactionId) {
+            throw new DomainError('INVALID_INTERACTION', 'The response does not match the requested interaction.', 400)
+          }
+          return RespondToInteractionResponseSchema.parse(await interactions.respond(
+            { kind: 'operator', principal: requirePrincipal(request) }, input))
+        })
     }
   }
 

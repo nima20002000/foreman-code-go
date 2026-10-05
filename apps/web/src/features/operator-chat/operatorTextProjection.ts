@@ -1,4 +1,5 @@
 import { ActivityChangeEnvelopeV1Schema, type Message } from '@foreman-code/contracts'
+import { TextTruncationSchema } from '@foreman-code/contracts/activity-text'
 
 export const OPERATOR_TEXT_ITEMS = 128
 export const OPERATOR_TEXT_BYTES = 128 * 1024
@@ -13,7 +14,8 @@ export function operatorTextPartKey(native: NonNullable<Message['activityNative'
 export type OperatorTimelineEntry = { kind: 'activity'; id: string } | { kind: 'text'; id: string; partId: string; text: string }
 /** Bounded presentation bridge between notifications and Query-owned canonical reads.
  * Discarded on rebootstrap; never owns persisted text, lifecycle or scope revision. */
-export interface OperatorTextProjection { requestId: string; parts: Record<string, string>; timeline: OperatorTimelineEntry[]; finalParts?: Record<string, true>; seen?: string[] }
+export interface OperatorTextProjection { requestId: string; parts: Record<string, string>; timeline: OperatorTimelineEntry[]; finalParts?: Record<string, true>; seen?: string[];
+  truncations?: Record<string, NonNullable<Message['truncation']>> }
 
 export function projectOperatorActivity(previous: OperatorTextProjection | undefined, activeRequestId: string | null,
   requestId: string, id: string): OperatorTextProjection | undefined {
@@ -28,6 +30,8 @@ export function projectOperatorText(previous: OperatorTextProjection | undefined
   if (!activeRequestId || data.requestId !== activeRequestId || typeof data.text !== 'string'
     || typeof data.partId !== 'string' || !['append', 'replace'].includes(String(data.mode))) return previous
   const current = previous?.requestId === activeRequestId ? previous : { requestId: activeRequestId, parts: {}, timeline: [] }
+  const truncation = TextTruncationSchema.optional().safeParse(data.truncation)
+  if (!truncation.success) return previous
   if (current.finalParts?.[data.partId]) return current
   const before = current.parts[data.partId] ?? ''
   const after = data.mode === 'replace' ? data.text : before + data.text
@@ -43,7 +47,13 @@ export function projectOperatorText(previous: OperatorTextProjection | undefined
       ? [...timeline.slice(0, -1), { ...last, text: last.text + addition }]
       : [...timeline, { kind: 'text', id: `${data.partId}:${timeline.length}`, partId: data.partId, text: addition }]
   }
-  return { ...current, requestId: activeRequestId, ...(data.final === true ? { finalParts: { ...current.finalParts, [data.partId]: true as const } } : {}), parts: { ...current.parts, [data.partId]: after }, timeline }
+  const truncations = { ...current.truncations }
+  if (truncation.data) truncations[data.partId] = truncation.data
+  else if (data.mode === 'replace') delete truncations[data.partId]
+  return { ...current, requestId: activeRequestId,
+    ...(current.truncations || truncation.data ? { truncations } : {}),
+    ...(data.final === true ? { finalParts: { ...current.finalParts, [data.partId]: true as const } } : {}),
+    parts: { ...current.parts, [data.partId]: after }, timeline }
 }
 
 
@@ -69,6 +79,7 @@ export function projectOperatorEnvelope(previous: OperatorTextProjection | undef
   if (eventKey && current?.seen?.includes(eventKey)) return previous
   if (current?.seen && current.seen.length >= 512 && change.kind === 'text.append') return previous
   const projected = projectOperatorText(current, activeRequestId, { requestId: envelope.owner.requestId, partId: nativeKey,
-    text: change.text, mode: change.kind === 'text.append' ? 'append' : 'replace', final: change.finality === 'authoritative_final' })
+    text: change.text, truncation: change.truncation,
+    mode: change.kind === 'text.append' ? 'append' : 'replace', final: change.finality === 'authoritative_final' })
   return projected && eventKey && (projected.seen?.length ?? 0) < 512 ? { ...projected, seen: [...(projected.seen ?? []), eventKey] } : projected
 }

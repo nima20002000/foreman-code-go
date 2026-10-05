@@ -1,7 +1,8 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
@@ -17,61 +18,32 @@ import { codexChatHostDirectory } from '../src/modules/harnesses/codexFiles/loca
 import type { ApiConfig } from '../src/config.js'
 import type { FileToolContext } from '../src/modules/files/tools/types.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
-import { FixtureServer, configuration as openCodeConfiguration, json } from './opencode-fixtures.js'
+import type { ManagedOpenCodeServerOptions } from '../src/modules/harnesses/opencodeTransport.js'
+import { RecordedOpenCodeServer } from './support/opencodeRecordedServer.js'
 import { calls, emit, finish, fixtureQualification, input, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
+import { deferred } from './helpers/wave25Agent3.js'
 import { fileRuntimeFixture } from './fixtures/codex-file-runtime-helpers.js'
 
-// Provider qualification/transport and the native OS attestation are fixtures.
-// Production manager selection, both native session managers/bridges, receipt
-// admission, PostgreSQL file tools, checksums and host materialization are REAL.
-// This does not qualify a real OpenCode process's source-vault isolation.
+// Codex uses an executable protocol fixture. OpenCode uses its installed server
+// and isolated file host; only its loopback model response is deterministic.
 vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   const actual = await vi.importActual<typeof import('../src/modules/harnesses/codexProtocol.js')>('../src/modules/harnesses/codexProtocol.js')
   return { ...actual, qualifyCodex: fixtureQualification, assertCodexUnchanged: async () => undefined }
 })
-const servers: FixtureServer[] = []
-const serverOptions: Array<{ appMcpAccess?: string; credentialEnvironmentVariable?: string }> = []
-vi.doMock('../src/modules/harnesses/opencodeServer.js', async () => {
-  const actual = await vi.importActual<typeof import('../src/modules/harnesses/opencodeServer.js')>('../src/modules/harnesses/opencodeServer.js')
-  return { ...actual, ManagedOpenCodeServer: class extends FixtureServer {
-    constructor(options: ConstructorParameters<typeof actual.ManagedOpenCodeServer>[0]) {
-      super()
-      serverOptions.push(options)
-      this.config = { mcp: { 'foreman-code': { enabled: false } } }
-      this.mcp = { 'foreman-code': { status: 'disabled' } }
-      this.beforeRequest = (path, init) => {
-        if (new URL(path, 'http://fixture.invalid').pathname === '/mcp' && init.method === 'POST') {
-          const body = JSON.parse(String(init.body)) as { name: string }
-          this.mcp[body.name] = { status: 'connected' }
-          return json(this.mcp)
-        }
-        return undefined
-      }
-      this.onPrompt = (id, body) => {
-        const partial = this.assistant(String(body.messageID), 'working', undefined, false, id)
-        this.emit('message.updated', { info: partial.info })
-        for (const part of partial.parts) this.emit('message.part.updated', { part })
-      }
-      servers.push(this)
-    }
-  } }
-})
-vi.doMock('../src/modules/harnesses/opencodeFiles/host.js', async () => {
-  const actual = await vi.importActual<typeof import('../src/modules/harnesses/opencodeFiles/host.js')>('../src/modules/harnesses/opencodeFiles/host.js')
-  return { ...actual, assertProtectedSourcePaths: async () => undefined }
-})
+const servers: RecordedOpenCodeServer[] = []
+const serverOptions: ManagedOpenCodeServerOptions[] = []
 const { applyApplicationMigrations } = await import('../src/infrastructure/migrations.js')
 const { PostgresAccessService } = await import('../src/modules/access/postgres.js')
 const { PostgresOperatorRepository } = await import('../src/modules/operators/postgres.js')
 const { PostgresOperatorChatAuthority } = await import('../src/modules/conversations/operatorChatAuthority.js')
 const { OperatorChatService, PostgresOperatorConversationRepository } = await import('../src/modules/conversations/operatorChat.js')
-const { nativeCorrelation } = await import('../src/modules/conversations/operatorChatRepository.js')
 const { registerProductionFileStorage } = await import('../src/modules/files/production.js')
 const { productionFileTools } = await import('../src/modules/files/tools/production.js')
 const { NativeRollout } = await import('../src/modules/harnesses/nativeRollout.js')
 const { NativeProcessRegistry } = await import('../src/modules/harnesses/recovery/processRegistry.js')
 const { NativeResponseJournal } = await import('../src/modules/harnesses/recovery/responseJournal.js')
 const { NativeHarnessFactories } = await import('../src/modules/harnesses/runtimeFactory.js')
+const { nativeConfigurationFixture } = await import('./support/opencodeNativeConfiguration.js')
 const { productionOperatorManagers } = await import('../src/modules/harnesses/operatorFiles/managers.js')
 const { adoptOperatorFilePublications } = await import('../src/modules/harnesses/operatorFiles/postgres.js')
 
@@ -97,15 +69,15 @@ async function retainCodexDeclarations(f: Fixture): Promise<void> {
     assert.equal(binary.split(before).length, 2, `missing/ambiguous fixture seam: ${before}`)
     binary = binary.replace(before, after)
   }
-  replace('ephemeral: !!params.ephemeral, turns: [], settings: settings(params)',
-    'ephemeral: !!params.ephemeral, turns: [], dynamicTools: params.dynamicTools || [], settings: settings(params)')
-  replace('if (message.id !== undefined && message.method) outstanding.set', `
-    if (message.method === 'item/tool/call' && !(current.dynamicTools || []).some((tool) =>
+  replace("historyMode: 'legacy', modelProvider: 'openai', model:",
+    "dynamicTools: params.dynamicTools || [], historyMode: 'legacy', modelProvider: 'openai', model:")
+  replace('if (message.id !== undefined && message.method && owner && !outstanding.has(message.id)) {', `
+    if (message.method === 'item/tool/call' && !(owner?.dynamicTools || []).some((tool) =>
       tool.type === 'function' && tool.name === message.params.tool)) {
       log({ undeclaredFileTool: message.params.tool })
       continue
     }
-    if (message.id !== undefined && message.method) outstanding.set`)
+    if (message.id !== undefined && message.method && owner && !outstanding.has(message.id)) {`)
   await writeFile(f.binary, binary)
 }
 async function retainedCodexDeclarations(f: Fixture, sessionId: string) {
@@ -133,6 +105,10 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
   let authority: InstanceType<typeof PostgresOperatorChatAuthority>
   let chat: InstanceType<typeof OperatorChatService>
   let owner: ManagementPrincipal
+  let nativeFixture: Awaited<ReturnType<typeof nativeConfigurationFixture>>
+  let nativeFinished: ReturnType<typeof deferred<void>>
+  let nativeAccepted: ReturnType<typeof deferred<void>>
+  let waitingForNative: boolean
   let setup: ReturnType<typeof vi.spyOn>, prepare: ReturnType<typeof vi.spyOn>
   const issued: Array<{ context: FileToolContext; token: string }> = []
   const managers = new Map<string, NativeHarnessSessionManager>()
@@ -145,10 +121,16 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests.')
     schema = `af02_${randomUUID().replaceAll('-', '')}`
     admin = new pg.Pool({ connectionString })
-    await admin.query(`create schema "${schema}"`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString, max: 4, options: `-c search_path=${schema}` })
     await applyApplicationMigrations(pool)
     f = await fileRuntimeFixture()
+    nativeFinished = deferred()
+    nativeAccepted = deferred()
+    waitingForNative = false
+    const accepted = nativeAccepted
+    nativeFixture = await nativeConfigurationFixture({ files: true, respond: async () => 'done',
+      beforeFinish: async () => { await nativeFinished.promise } })
     // Outside /tmp: Codex workspace-write treats /tmp as writable, so the file host must not live there.
     vault = await mkdtemp(join(homedir(), '.af02-vault-'))
     runtimeHome = await mkdtemp(join(homedir(), '.af02-runtime-'))
@@ -163,13 +145,17 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     config = { host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
       database: { connectionString: connectionString!, maxConnections: 4, connectionTimeoutMs: 2000, queryTimeoutMs: 5000 },
       checkpoints: { schema: 'langgraph' }, workspaceStorageRoot: join(f.directory, 'projects'), fileStorageRoot: join(vault, 'files'),
-      harnesses: { workspaceRoot: join(runtimeHome, 'runtime'), codexBinary: f.binary, openCodeBinary: 'protocol-fixture', timeoutMs: 10000 } }
+      harnesses: { workspaceRoot: join(runtimeHome, 'runtime'), codexBinary: f.binary,
+        openCodeBinary: process.env.OPENCODE_BINARY ?? 'opencode', timeoutMs: 10000 } }
     const cwd = join(config.harnesses.workspaceRoot, 'operator')
     await mkdir(cwd, { recursive: true })
     await mkdir(config.workspaceStorageRoot!, { recursive: true })
     app = Fastify({ logger: false })
     files = registerProductionFileStorage(app, pool, config)
-    await app.ready()
+    await app.listen({ host: '127.0.0.1', port: 0 })
+    const address = app.server.address()
+    assert(address && typeof address !== 'string')
+    config.port = address.port
     tools = productionFileTools(app)
     const access = new PostgresAccessService(pool)
     owner = (await access.issue({ name: 'AF-02 owner', audience: 'operator',
@@ -179,7 +165,16 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     repository = new PostgresOperatorConversationRepository(pool)
     const responseJournal = new NativeResponseJournal(join(f.directory, 'responses'))
     const nativeFactories = new NativeHarnessFactories({ ...config.harnesses,
-      appMcpEndpoint: 'http://127.0.0.1:4100/mcp', responseJournal })
+      openCodeFileStorageRoot: files.bytes.root,
+      appMcpEndpoint: 'http://127.0.0.1:4100/mcp', responseJournal }, {
+      mode: 'native', openCodeServer: options => {
+        serverOptions.push(options)
+        const server = new RecordedOpenCodeServer({ ...options, pure: true })
+        server.onPromptAccepted = () => accepted.resolve()
+        servers.push(server)
+        return server
+      },
+    })
     authority = new PostgresOperatorChatAuthority(pool, access, new NativeRollout({ NODE_ENV: 'test', HOST: '127.0.0.1' }), cwd,
       'http://127.0.0.1:4100/mcp', (manager) => nativeFactories.inspector(manager))
     setup = vi.spyOn(authority, 'setup')
@@ -204,19 +199,47 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
   }, 30000)
 
   afterEach(async () => {
+    if (waitingForNative) nativeAccepted.reject(new Error('Operator fixture is closing.'))
+    nativeFinished?.resolve()
     try { await chat?.shutdown() } finally {
       try { await app?.close() } finally {
         await pool?.end()
-        if (schema) await admin?.query(`drop schema if exists "${schema}" cascade`)
+        if (schema) await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve())
         await admin?.end()
-        if (f) await rm(f.directory, { recursive: true, force: true })
-        if (vault) await rm(vault, { recursive: true, force: true })
-        if (runtimeHome) await rm(runtimeHome, { recursive: true, force: true })
+        await nativeFixture?.close()
+        if (f) await removeFixtureDirectory(f.directory)
+        if (vault) await removeFixtureDirectory(vault)
+        if (runtimeHome) await removeFixtureDirectory(runtimeHome)
         managers.clear(); servers.length = 0; serverOptions.length = 0; issued.length = 0
         vi.restoreAllMocks()
       }
     }
   })
+
+  async function waitForFileCredential(harness: 'codex' | 'opencode', conversationId: string, requestId: string) {
+    if (harness === 'opencode') {
+      waitingForNative = true
+      const unsubscribe = chat.events.subscribe(conversationId, event => {
+        if (event.data.requestId === requestId && (event.type === 'error' || event.data.turnState === 'error')) {
+          nativeAccepted.reject(new Error('Operator native admission failed: ' + JSON.stringify(event.data)))
+        }
+      })
+      try {
+        // Queue admission precedes native startup; the credential deadline follows the actual native ACK.
+        await Promise.all([nativeAccepted.promise, chat.get(conversationId, owner).then(state => {
+          expect(state.turnState, state.error ?? 'Operator native admission failed').not.toBe('error')
+        })])
+      } finally {
+        unsubscribe()
+        waitingForNative = false
+      }
+    }
+    await until(async () => {
+      const state = await chat.get(conversationId, owner)
+      expect(state.turnState, state.error ?? 'Operator file admission failed').not.toBe('error')
+      return issued.length === 1
+    }, 10000)
+  }
 
   it.each(['codex-cli 0.154.0', 'codex-cli 0.156.1'])(
     'R2-1 %s: a completed text-first Operator thread retains callable file tools on attachment resume', async (version) => {
@@ -364,7 +387,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
   for (const harness of ['codex', 'opencode'] as const) for (const item of cases) {
     it(`${harness}: ${item.name} reaches the native request exactly once with Operator-only authority`, async () => {
       const current = await operators.ensure()
-      const native = harness === 'codex' ? input(f.directory).request.configuration.harness : openCodeConfiguration()
+      const native = harness === 'codex' ? input(f.directory).request.configuration.harness : nativeFixture.harness
       await operators.update(native, current.operator.currentConfigurationVersionId)
       const conversation = await chat.create(owner)
       const target = { kind: 'operator' as const, conversationId: conversation.id }
@@ -377,11 +400,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       const command = { requestId: randomUUID(), content: '', attachments: [ref] }
       const read = vi.spyOn(tools, 'readAccepted')
       expect((await chat.send(conversation.id, command, owner)).replayed).toBe(false)
-      await until(async () => {
-        const state = await chat.get(conversation.id, owner)
-        expect(state.turnState, state.error ?? 'Operator file admission failed').not.toBe('error')
-        return issued.length === 1
-      }, 10000)
+      await waitForFileCredential(harness, conversation.id, command.requestId)
       const context = issued[0]!.context
       expect(context.scope).toEqual({ kind: 'temporary', chat: {
         kind: 'operator', ownerPrincipalId: owner.id, operatorId: current.operator.id, conversationId: conversation.id,
@@ -414,6 +433,8 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
           && (entry.cli as string[]).some((arg) => /^mcp_servers\..+\.enabled=false$/.test(arg)))).toBe(true)
       } else {
         const server = servers[0]!
+        expect(server.nativePid).toBeDefined()
+        await server.assertFileSourceIsolation(files.bytes.root, AbortSignal.timeout(10000))
         const turns = server.calls.filter((call) => call.path.includes('/prompt_async'))
         expect(turns).toHaveLength(1)
         const parts = turns[0]!.body!.parts as Array<{ type: string; text?: string; url?: string; mime?: string }>
@@ -446,7 +467,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect(issued).toHaveLength(1)
       expect(read.mock.calls).toHaveLength(readsBeforeReplay)
       if (harness === 'codex') await finish(f.directory, nativeSessionId)
-      else servers[0]!.complete(nativeCorrelation(conversation.id, command.requestId), 'done', nativeSessionId)
+      else nativeFinished.resolve()
       await until(async () => (await chat.get(conversation.id, owner)).turnState === 'idle', 10000)
       await until(async () => managers.size === 0, 10000)
       await expect(tools.sessions.authenticate(issued[0]!.token)).rejects.toThrow()
@@ -465,7 +486,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       const current = await operators.ensure()
       const native = harness === 'codex'
         ? { ...input(f.directory).request.configuration.harness, sandbox: 'workspace-write' as const }
-        : openCodeConfiguration()
+        : nativeFixture.harness
       await operators.update(native, current.operator.currentConfigurationVersionId)
       const conversation = await chat.create(owner)
       const target = { kind: 'operator' as const, conversationId: conversation.id }
@@ -480,11 +501,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       }
       const command = { requestId: randomUUID(), content: '', attachments }
       expect((await chat.send(conversation.id, command, owner)).replayed).toBe(false)
-      await until(async () => {
-        const state = await chat.get(conversation.id, owner)
-        expect(state.turnState, state.error ?? 'Operator file admission failed').not.toBe('error')
-        return issued.length === 1
-      }, 10000)
+      await waitForFileCredential(harness, conversation.id, command.requestId)
       const { context, token } = issued[0]!
       const receipt = async () => (await pool.query<{ input_hash: string; payload: unknown; message_id: string }>(
         'select input_hash,payload,message_id from operator_conversation_turns where conversation_id=$1 and request_id=$2',
@@ -515,7 +532,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect(await readback()).toEqual([...attachments, output])
       expect((await chat.send(conversation.id, command, owner)).replayed).toBe(true)
       if (harness === 'codex') await finish(f.directory, context.nativeSessionId)
-      else servers[0]!.complete(nativeCorrelation(conversation.id, command.requestId), 'done', context.nativeSessionId)
+      else nativeFinished.resolve()
       await until(async () => (await chat.get(conversation.id, owner)).turnState === 'idle', 10000)
       expect(issued).toHaveLength(1)
       expect(await receipt()).toEqual(acceptedReceipt)
@@ -525,7 +542,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
   }
   it('preserves the management MCP setup requirement for text-only Operator turns', async () => {
     const current = await operators.ensure()
-    await operators.update(openCodeConfiguration(), current.operator.currentConfigurationVersionId)
+    await operators.update(nativeFixture.harness, current.operator.currentConfigurationVersionId)
     const conversation = await chat.create(owner)
     await chat.send(conversation.id, { requestId: randomUUID(), content: 'Manage the app.' }, owner)
     // This fixture deliberately has management MCP disabled. A text-only turn

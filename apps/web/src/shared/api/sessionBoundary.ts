@@ -1,7 +1,7 @@
-import { chatStoragePrefix, identityChangedEvent, identityEpochKey, rotateProtectedSession } from './protectedChatStorage'
+import { identityChangedEvent, identityEpochKey, rotateProtectedSession } from './protectedChatStorage'
 import { rotateSessionController, sessionControllerSignal } from './sessionController'
 
-/** A document-lifetime boundary. Old requests cannot enter a new Operator session. */
+/** A document-lifetime boundary. Old requests cannot enter a different app instance. */
 let generation = 0
 let switching = false
 
@@ -32,23 +32,12 @@ export function finishSessionChange(): void {
   switching = false
 }
 
-/** Only these app-owned persisted records contain protected agent snapshots. */
-export function clearProtectedStorage(storage: Pick<Storage, 'length' | 'key' | 'removeItem'>): void {
-  const keys: string[] = []
-  for (let i = 0; i < storage.length; ++i) {
-    const key = storage.key(i)
-    if (key?.startsWith('graphql-local-agents:') || key?.startsWith('graphql-deleted-agents:')
-      || key?.startsWith(chatStoragePrefix) || key === 'graphql.conversation-drafts' || key === 'graphql.operator-chat.ui') keys.push(key)
-  }
-  for (const key of keys) storage.removeItem(key)
-}
-
 if (typeof window !== 'undefined') window.addEventListener('storage', (event) => {
   if (event.key !== identityEpochKey || event.oldValue === event.newValue) return
   switching = true
   rotateSessionController(new SessionChangedError())
   ++generation
   window.dispatchEvent(new Event(identityChangedEvent))
-  // Cookies are shared by tabs. Old closures and cached data must not survive enrollment elsewhere.
+  // A different app instance must not receive drafts or requests from this document.
   window.location.reload()
 })

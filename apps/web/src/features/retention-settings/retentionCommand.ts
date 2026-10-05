@@ -16,8 +16,7 @@ interface Entry { pending?: RetentionCommand; error?: string }
 const useCommands = create<{ entries: Record<string, Entry> }>(() => ({ entries: {} }))
 
 /** Only an outstanding local command is persisted, never a cached server preference.
- * Existing protected outbox keys rotate on account/installation changes and are
- * cleared by the shared sign-out boundary. sessionStorage isolates browser tabs. */
+ * Outbox keys rotate when the app installation changes. sessionStorage isolates browser tabs. */
 export const retentionCommandKey = (ownerPrincipalId: string) => protectedKey('outbox', `file-retention:${ownerPrincipalId}`)
 function update(key: string, entry: Entry) {
   useCommands.setState((state) => ({ entries: { ...state.entries, [key]: entry } }))

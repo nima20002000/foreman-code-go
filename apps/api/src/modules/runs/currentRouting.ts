@@ -24,6 +24,37 @@ export function parseCurrentChoiceResult(result: ExecutionResult, choice: Workfl
 export function currentInitialPrompt(node: { initialPrompt?: string | undefined; choice?: WorkflowChoice | undefined;
   artifactOutputs?: WorkflowArtifactOutputsV1 | undefined }, repeatExit = false,
   handoff = false): string | undefined {
+  if (handoff) {
+    const saved = node.artifactOutputs ? WorkflowArtifactOutputsV1Schema.parse(node.artifactOutputs) : undefined
+    const outcomes = node.choice ? WorkflowChoiceSchema.parse(node.choice).outcomes.map(({ outcome }) => outcome) : []
+    const contract = [
+      'Foreman Code work-handoff result contract (version 1)',
+      `On successful completion, return exactly one complete JSON object with exactly ${saved ? 'routing, data, and artifactOutputs' : 'routing and data'}.`,
+      'routing.kind is request, return, or finish.',
+      `For a NEW work request, use {"kind":"request","outcome":<one of ${JSON.stringify(outcomes)}>}; only saved named outcomes are permitted.`,
+      'A request routing object has exactly kind and outcome. Never include requestId in a new request; requestId belongs only to return routing.',
+      'After reactivation, use executionContext.parentRequest.requestId from the trusted workflow execution context for the outstanding caller.',
+      'If executionContext.parentRequest is null, this activation has no outstanding caller.',
+      'For a work_request activation, use work.request.requestId.',
+      'For correlated feedback, use {"kind":"return","requestId":<the exact request ID in your received work>,"outcome":"accepted" or "needs_changes"}.',
+      'An accepted return approves the deliverable. Any remaining findings are preserved for direction and do not automatically reactivate the requester. Use needs_changes to request another revision.',
+      'To finish this activation, use {"kind":"finish"}; on a choice node this ends the branch without selecting a downstream route. Include a declared outcome to select a final downstream branch. Include unresolved findings honestly.',
+      'data has exactly latestDeliverable (a non-null JSON value) and remainingFindings (an array of JSON values).',
+      ...(saved ? [
+        `Required saved output keys: ${JSON.stringify(saved.outputKeys)}`,
+        'artifactOutputs has exactly version: 1 and outputs: an array containing each required key exactly once.',
+        'Use files_native_output_create, files_native_output_append, files_native_output_seal, then files_native_output_publish to produce each original artifact. These tools supply the execution scope and transfer the sealed bytes.',
+        'Each output entry has exactly outputKey and commandId. Use the exact commandId of that original native turn’s successful files.publish_transferred_result call.',
+        'Admit, transfer, and publish the original bytes before completing. The backend verifies canonical bytes and durable output mappings.',
+        'Do not invent command IDs, select latest files, reuse another execution’s publication, or claim success for an unpublished required output.',
+      ] : []),
+      'Do not invent request IDs, connection IDs, destinations, approval outcomes or permissions. The backend validates saved routes.',
+      'Do not wrap JSON in Markdown, commentary or partial output. The complete result must be at most 65536 UTF-8 bytes.',
+      'Return and handoff-limit notice metadata must also fit that limit. The backend checks delivery size before accepting success; keep deliverables concise or use artifact references.',
+      'End Foreman Code work-handoff result contract.',
+    ].join('\n')
+    return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract
+  }
   if (node.artifactOutputs) {
     const saved = WorkflowArtifactOutputsV1Schema.parse(node.artifactOutputs)
     const outcomes = node.choice ? WorkflowChoiceSchema.parse(node.choice).outcomes.map(item => item.outcome) : undefined
@@ -33,27 +64,12 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       `On success return exactly one complete JSON object with ${outcomes ? 'routing, data, and artifactOutputs' : 'data and artifactOutputs'}.`,
       ...(outcomes ? [`routing has exactly outcome, one of ${JSON.stringify(outcomes)}.`] : []),
       'artifactOutputs has exactly version: 1 and outputs: an array containing each required key exactly once.',
+      'Use files_native_output_create, files_native_output_append, files_native_output_seal, then files_native_output_publish to produce each original artifact. These tools supply the execution scope and transfer the sealed bytes.',
       'Each output entry has exactly outputKey and commandId. Use the exact commandId of that original native turn’s successful files.publish_transferred_result call.',
       'Admit, transfer, and publish the original bytes before completing. A command ID alone does not prove publication; the backend verifies canonical bytes and durable output mappings.',
       'Do not invent command IDs, select latest files, reuse another execution’s publication, or claim success for an unpublished required output.',
       'data is a JSON value. Preserve the accepted task data requirements. Do not wrap the complete JSON in Markdown or commentary. Maximum 65536 UTF-8 bytes.',
       'End Foreman Code saved workflow artifact result contract.',
-    ].join('\n')
-    return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract
-  }
-  if (handoff) {
-    const outcomes = node.choice ? WorkflowChoiceSchema.parse(node.choice).outcomes.map(({ outcome }) => outcome) : []
-    const contract = [
-      'Foreman Code work-handoff result contract (version 1)',
-      'On successful completion, return exactly one complete JSON object with exactly routing and data.',
-      'routing.kind is request, return, or finish.',
-      `For a NEW work request, use {"kind":"request","outcome":<one of ${JSON.stringify(outcomes)}>}; only saved named outcomes are permitted.`,
-      'For correlated feedback, use {"kind":"return","requestId":<the exact request ID in your received work>,"outcome":"accepted" or "needs_changes"}.',
-      'To finish this activation, use {"kind":"finish"}; include a declared outcome when selecting a final downstream branch. Include unresolved findings honestly.',
-      'data has exactly latestDeliverable (a non-null JSON value) and remainingFindings (an array of JSON values).',
-      'Do not invent request IDs, connection IDs, destinations, approval outcomes or permissions. The backend validates saved routes.',
-      'Do not wrap JSON in Markdown, commentary or partial output. The complete result must be at most 65536 UTF-8 bytes.',
-      'End Foreman Code work-handoff result contract.',
     ].join('\n')
     return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract
   }

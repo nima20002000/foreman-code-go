@@ -1,21 +1,41 @@
 import { randomUUID } from 'node:crypto'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { RunSubagentCommandReceiptSchema, RunSubagentInputSchema, RunSubagentInterruptSchema, type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
+import { RunSubagentCommandReceiptSchema, RunSubagentInputSchema, RunSubagentInterruptSchema, RunSubagentRespondSchema,
+  type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import { DomainError } from '../errors.js'
 import { subagentAvailableActions } from './capabilities.js'
 import { reconcileRunSubagents } from './projection.js'
 import { reconcileSubagentCommand } from './recovery.js'
 import { SubagentDispatchRejectedError } from './controlErrors.js'
 import type { RunSubagentService, SubagentReadScope } from './service.js'
+import { withInteractionResponse } from '@foreman-code/contracts'
+import type { z } from 'zod'
+
+type SubagentCommandInput = z.infer<typeof RunSubagentInputSchema> | z.infer<typeof RunSubagentInterruptSchema>
+  | z.infer<typeof RunSubagentRespondSchema>
 
 async function updateReceipt(scope: SubagentReadScope, receipt: RunSubagentCommandReceipt) {
   await scope.sql.query('update run_subagent_command_receipts set record=$2::jsonb where id=$1', [receipt.id, JSON.stringify(RunSubagentCommandReceiptSchema.parse(receipt))])
 }
 export async function executeSubagentCommand(service: RunSubagentService, principal: ManagementPrincipal, source: 'http' | 'mcp',
   operation: RunSubagentCommandReceipt['operation'], raw: unknown): Promise<RunSubagentCommandReceipt> {
-  const input = operation === 'run_subagent_input_v1' ? RunSubagentInputSchema.parse(raw) : RunSubagentInterruptSchema.parse(raw)
-  const action = operation === 'run_subagent_input_v1' ? 'runs:subagents:input' : 'runs:stop'
+  let input: SubagentCommandInput
+  let action: 'runs:subagents:input' | 'runs:stop' | 'interactions:respond'
+  if (operation === 'run_subagent_input_v1') {
+    input = RunSubagentInputSchema.parse(raw)
+    action = 'runs:subagents:input'
+  } else if (operation === 'run_subagent_respond_v1') {
+    input = RunSubagentRespondSchema.parse(raw)
+    action = 'interactions:respond'
+  } else {
+    input = RunSubagentInterruptSchema.parse(raw)
+    action = 'runs:stop'
+  }
+  const available = (actions: ReturnType<typeof subagentAvailableActions>) => {
+    if (operation === 'run_subagent_respond_v1') return actions.respond
+    return operation === 'run_subagent_input_v1' ? actions.sendInput : actions.interrupt
+  }
   const inputHash = commandInputHash(input)
   let isNew = false
   const accepted = await service.scoped(principal, input, action, async scope => {
@@ -31,14 +51,32 @@ export async function executeSubagentCommand(service: RunSubagentService, princi
     if (child.revision !== input.expectedRevision) throw new DomainError('SUBAGENT_REVISION_CONFLICT', 'The child revision changed; read it again.', 409)
     const lease = service.controls(child)
     const actions = subagentAvailableActions(child, scope.principal, scope.stopped, lease)
-    if (!(operation === 'run_subagent_input_v1' ? actions.sendInput : actions.interrupt) || !lease) {
+    if (!available(actions) || !lease) {
       throw new DomainError(actions.blockedReason ?? 'SUBAGENT_ACTION_UNAVAILABLE', 'This child action is not currently qualified and available.', 409)
     }
     lease.assertCurrent()
+    let response: RunSubagentCommandReceipt['response']
+    if (operation === 'run_subagent_respond_v1' && 'nativeRequestId' in input) {
+      const pending = lease.pendingInteraction?.()
+      const offered = pending?.responseOptions.find(option => option.optionId === input.optionId)
+      if (!pending || !offered || pending.turn.nativeRequestId !== input.nativeRequestId) {
+        throw new DomainError('SUBAGENT_RESPONSE_STALE', 'Read the current child request before answering.', 409)
+      }
+      const prior = await scope.sql.query(`select 1 from run_subagent_command_receipts
+        where subagent_id=$1 and operation='run_subagent_respond_v1'
+          and record->'response'->>'nativeRequestId'=$2 and record->>'state' <> 'rejected'`,
+      [child.id, pending.turn.nativeRequestId])
+      if (prior.rowCount) throw new DomainError('SUBAGENT_RESPONSE_RECORDED', 'This child response is already recorded.', 409)
+      response = { nativeRequestId: pending.turn.nativeRequestId!, nativeRequestType: pending.nativeRequestType,
+        option: withInteractionResponse(offered, input.response) }
+    }
     const now = new Date().toISOString()
     const receipt = RunSubagentCommandReceiptSchema.parse({ schemaVersion: 1, id: randomUUID(), principalId: principal.id, operation, commandId: input.commandId,
       workspaceId: input.workspaceId, runId: input.runId, subagentId: child.id, expectedRevision: input.expectedRevision,
-      nativeGeneration: lease.generation, nativeTurnId: lease.nativeTurnId, nativeCorrelationId: `msg_${randomUUID().replaceAll('-', '')}`,
+      nativeGeneration: lease.generation,
+      nativeTurnId: response ? lease.pendingInteraction!()!.turn.nativeTurnId ?? null : lease.nativeTurnId,
+      nativeCorrelationId: `msg_${randomUUID().replaceAll('-', '')}`,
+      ...(response ? { response } : {}),
       state: 'accepted', acceptedAt: now, updatedAt: now })
     await scope.sql.query(`insert into run_subagent_command_receipts(id,principal_id,operation,command_id,subagent_id,input_hash,record)
       values($1,$2,$3,$4,$5,$6,$7::jsonb)`, [receipt.id, principal.id, operation, input.commandId, child.id, inputHash, JSON.stringify(receipt)])
@@ -56,8 +94,9 @@ export async function executeSubagentCommand(service: RunSubagentService, princi
     const child = await service.child(scope, input)
     const lease = service.controls(child)
     const actions = subagentAvailableActions(child, scope.principal, scope.stopped, lease)
-    if (!lease || !lease.matches(child) || lease.generation !== accepted.nativeGeneration || lease.nativeTurnId !== accepted.nativeTurnId
-      || child.revision !== accepted.expectedRevision || !(operation === 'run_subagent_input_v1' ? actions.sendInput : actions.interrupt)) return undefined
+    const turnId = accepted.response ? lease?.pendingInteraction?.()?.turn.nativeTurnId ?? null : lease?.nativeTurnId
+    if (!lease || !lease.matches(child) || lease.generation !== accepted.nativeGeneration || turnId !== accepted.nativeTurnId
+      || child.revision !== accepted.expectedRevision || !available(actions)) return undefined
     lease.assertCurrent()
     return lease
   })
@@ -68,6 +107,7 @@ export async function executeSubagentCommand(service: RunSubagentService, princi
     try {
       dispatch.assertCurrent()
       if (operation === 'run_subagent_input_v1' && 'text' in input && typeof input.text === 'string') await dispatch.sendInput!(dispatching, input.text)
+      else if (operation === 'run_subagent_respond_v1') await dispatch.respond!(dispatching)
       else await dispatch.interrupt!(dispatching)
       state = 'acknowledged'; reasonCode = undefined
     } catch (error) {

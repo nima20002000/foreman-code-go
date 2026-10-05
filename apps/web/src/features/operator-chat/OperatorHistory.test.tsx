@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '@foreman-code/contracts'
 import type { OperatorConversationHistoryPage } from '@foreman-code/contracts/operator-chat'
 import { getOperatorConversationHistory } from '../../shared/api/operatorChatHistory'
-import { beginSessionChange, clearProtectedStorage, finishSessionChange } from '../../shared/api/sessionBoundary'
+import { beginSessionChange, finishSessionChange } from '../../shared/api/sessionBoundary'
 import { identityEpoch } from '../../shared/api/protectedChatStorage'
 import { useOperatorChatStore } from './operatorChatStore'
 import { OperatorHistory } from './OperatorHistory'
@@ -32,7 +32,7 @@ function mount() {
   render(<QueryClientProvider client={client}><OperatorHistory /></QueryClientProvider>)
   fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
 }
-describe('Operator history pagination and identity-switch isolation', () => {
+describe('Operator history pagination and app-instance isolation', () => {
   it('loads older messages with the original opaque cursor and hides receipt metadata without a resend control', async () => {
     vi.mocked(getOperatorConversationHistory).mockResolvedValueOnce(page('Recent command', '9007199254740994', '9007199254740994'))
       .mockResolvedValueOnce(page('Older command', '9007199254740993', null))
@@ -45,12 +45,12 @@ describe('Operator history pagination and identity-switch isolation', () => {
     expect(vi.mocked(getOperatorConversationHistory).mock.calls[1]?.[1]).toEqual({ before: '9007199254740994' })
     expect(screen.queryByRole('button', { name: /resend/i })).toBeNull()
   })
-  it('removes old-owner cached pages and never displays them under a newly enrolled owner', async () => {
+  it('removes previous-instance cached pages and never displays them under a different app instance', async () => {
     const previousEpoch = identityEpoch()
     vi.mocked(getOperatorConversationHistory).mockResolvedValue(page('Old owner private command', '1', null))
     mount()
     await screen.findByText('Old owner private command')
-    act(() => { beginSessionChange(); clearProtectedStorage(window.localStorage); finishSessionChange() })
+    act(() => { beginSessionChange(); finishSessionChange() })
     expect(screen.queryByText('Old owner private command')).toBeNull()
     expect(client.getQueryData(['operator-chat', 'history', previousEpoch, 'chat'])).toBeUndefined()
     vi.mocked(getOperatorConversationHistory).mockRejectedValue(new Error('Conversation not found for this owner'))

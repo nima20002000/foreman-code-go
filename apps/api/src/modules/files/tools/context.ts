@@ -8,7 +8,7 @@ import type { FileAccess, FileConversation, FileConversationAuthorization } from
 import { fileScopeIdentity } from '../requests.js'
 import { ALL_FILE_TOOL_NAMES, type AuthorizedFileCaller, type FileToolContext, type FileToolOperation, type FileToolRepository } from './types.js'
 
-const ContextSchema = z.object({
+export const FileToolContextSchema = z.object({
   ownerPrincipalId: z.string().min(1), scope: TemporaryFileScopeSchema,
   nativeSessionId: z.string().min(1).max(500), turnId: z.string().min(1).max(500).optional(),
   nativeMessageId: z.string().min(1).max(500).optional(),
@@ -52,14 +52,18 @@ export class FileToolSessions {
   }
 
   /** Server-only pre-ack authority; no credential is issued or accepted from a caller. */
-  authorizeAccepted(context: FileToolContext): Promise<AuthorizedFileCaller> {
-    return this.current(ContextSchema.parse(context), 'read')
+  authorizeAccepted(binding: FileToolContext, tool?: FileToolOperation): Promise<AuthorizedFileCaller> {
+    const context = FileToolContextSchema.parse(binding)
+    if (tool && (!context.allowedTools.includes(tool) || (isMutation(tool) && !context.allowMutation))) {
+      throw new DomainError('FILE_TOOL_DENIED', 'This session does not allow that file operation.', 403)
+    }
+    return this.current(context, tool && isMutation(tool) ? 'write' : 'read')
   }
 
   /** Internal issuer only. Call from the already authenticated native-session/turn admission.
    * No HTTP/MCP issuance route exists. The adapter must supply accepted harness write restrictions. */
   async issueForAcceptedSession(binding: FileToolContext, expiresAt: Date, transport?: 'opencode'): Promise<string> {
-    const context = ContextSchema.parse(binding)
+    const context = FileToolContextSchema.parse(binding)
     const caller = await this.current(context, context.allowMutation && context.allowedTools.some(isMutation) ? 'write' : 'read')
     const expiry = Math.min(expiresAt.getTime(), Date.parse(caller.principal.expiresAt), this.clock().getTime() + 60 * 60 * 1_000)
     if (!Number.isFinite(expiry) || expiry <= this.clock().getTime()) throw new DomainError('FILE_SESSION_INVALID', 'A live file session expiry is required.', 400)
@@ -83,7 +87,7 @@ export class FileToolSessions {
     if (!token || !/^gql_file_[A-Za-z0-9_-]{43}$/.test(token)) throw new DomainError('FILE_SESSION_REQUIRED', 'A scoped file-session credential is required.', 401)
     const session = await this.repository.session(digest(token), this.clock().toISOString())
     if (!session || Date.parse(session.expiresAt) <= this.clock().getTime()) throw new DomainError('FILE_SESSION_EXPIRED', 'The file session is expired or revoked.', 401)
-    const context = ContextSchema.parse(session.context)
+    const context = FileToolContextSchema.parse(session.context)
     if (tool && (!context.allowedTools.includes(tool) || (isMutation(tool) && !context.allowMutation))) {
       throw new DomainError('FILE_TOOL_DENIED', 'This session does not allow that file operation.', 403)
     }

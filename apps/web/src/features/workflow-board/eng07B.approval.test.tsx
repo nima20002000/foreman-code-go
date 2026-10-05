@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { HttpResponse } from 'msw'
 import { DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, RespondToInteractionRequestSchema } from '@foreman-code/contracts'
-import { BrowserAccessSessionSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
+import { LocalHumanAccessSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
 import { CurrentRunDetailsSchema, RepeatGraphCurrentV3Schema, RunExecutionDetailSchema } from '@foreman-code/contracts/wave25'
 import { boardHref, installBoardTestLifecycle, measureBoardWire, mountMeasuredBoard, openRunDetails } from './eng05D.testSupport'
 import { eng07BoardFixture } from './eng07B.testSupport'
@@ -43,7 +43,7 @@ describe('ENG07-B S3-04 human approval on the mounted ordinary Board', () => {
     let terminalPublished = false
     const wire = measureBoardWire(f.mock, async (request) => {
       const url = new URL(request.url)
-      if (url.pathname === '/api/auth/session') return HttpResponse.json(BrowserAccessSessionSchema.parse({ principal: {
+      if (url.pathname === '/api/local-human') return HttpResponse.json(LocalHumanAccessSchema.parse({ principal: {
         id: 'eng07-human', name: 'ENG07 human', expiresAt: '2099-01-01T00:00:00.000Z',
         grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: [f.scope.workspaceId] } }],
       } }))

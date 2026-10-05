@@ -7,9 +7,9 @@ import { ApiError } from '../../../shared/api/client'
 import { createStreamReadback } from '../../../shared/api/streamReadback'
 import { subscribeAgentChat, type AgentChatConnection } from '../../../shared/api/agentChatStream'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../../shared/api/sessionBoundary'
-import { useBrowserAccessQuery } from '../../../shared/api/settingsExperience'
-import { isAuthAccessError } from '../../auth/accessError'
-import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
+import { useLocalHumanAccessQuery } from '../../../shared/api/settingsExperience'
+import { isApiAccessError } from '../../../shared/api/accessError'
+import { useProtectedAccessError } from '../../../shared/api/useProtectedAccessError'
 import { canUseBoardAction } from '../../workflow-board/permissions'
 import { useConversationDraftStore } from '../conversationDraftStore'
 import { messageAttachmentRefs, sameAttachmentRefs, type ChatAttachmentAttempt } from '../chatAttachmentAttempt'
@@ -83,7 +83,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
       && (!result?.conversationId || result.conversationId === selected.key?.conversationId)
   } } : { mutationKey: commandKey, exact: true }, [selected, generation, draftKey, creationDraftKey, commandKey])
   const online = useSyncExternalStore(subscribeNetwork, isOnline, () => true)
-  const access = useBrowserAccessQuery()
+  const access = useLocalHumanAccessQuery()
   const permits = (action: ManagementAction) => !sessionIsSwitching() && generation === sessionGeneration()
     && !access.isError && !!access.data && Date.parse(access.data.principal.expiresAt) > Date.now()
     && canUseBoardAction(access.data.principal.grants, action, context)
@@ -139,14 +139,14 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
         return result
       } catch (error) {
         // A state GET started before a known denial cannot clear it with a stale response.
-        if (isAuthAccessError(error)) await client.cancelQueries({ queryKey: key, exact: true })
+        if (isApiAccessError(error)) await client.cancelQueries({ queryKey: key, exact: true })
         throw error
       }
     },
     initialPageParam: undefined as string | undefined, getNextPageParam: (page) => page.nextCursor ?? undefined,
     enabled: false, retry: false,
   })
-  const historyDenial = history.errorUpdatedAt >= query.dataUpdatedAt && isAuthAccessError(history.error) ? history.error : undefined
+  const historyDenial = history.errorUpdatedAt >= query.dataUpdatedAt && isApiAccessError(history.error) ? history.error : undefined
   const denial = useProtectedAccessError(query, historyDenial
     ?? (latestCommand && latestCommand.submittedAt > query.dataUpdatedAt ? latestCommand.error : undefined))
   const state = canRead && isCurrent() && !denial && !(selected && query.isError) && query.data && matches(query.data) ? query.data : undefined
@@ -166,12 +166,12 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
   const accept = useCallback((incoming: AgentChatState, source: 'read' | 'receipt' = 'receipt') => {
     assertSession(generation)
     if (sessionIsSwitching() || !isCurrent() || !matches(incoming)) return
-    if (isAuthAccessError(client.getQueryState(key)?.error)) return
+    if (isApiAccessError(client.getQueryState(key)?.error)) return
     const historyRead = client.getQueryState(selected
       ? ['agent-chat', generation, draftKey, 'history', incoming.conversation?.id, selected.visitId]
       : ['agent-chat', generation, incoming.context, incoming.conversation?.id, 'history'])
     // A late SSE/command snapshot cannot undo a known denial; require a fresh state GET.
-    if (historyRead && isAuthAccessError(historyRead.error) && historyRead.errorUpdatedAt >= (client.getQueryState(key)?.dataUpdatedAt ?? 0)) return
+    if (historyRead && isApiAccessError(historyRead.error) && historyRead.errorUpdatedAt >= (client.getQueryState(key)?.dataUpdatedAt ?? 0)) return
     client.setQueryData<AgentChatState>(key, (previous) => acceptAgentChatState(previous, incoming, source))
   }, [client, generation, key, draftKey, selected, isCurrent, matches])
   const refresh = useCallback(() => {
@@ -233,7 +233,9 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
           : await agentChatApi.interrupt(workspaceId, command.conversationId,
             { requestId: command.requestId, ...(command.expectedNativeTurnId ? { expectedNativeTurnId: command.expectedNativeTurnId } : {}) })
           : command.kind === 'cancel' ? await agentChatApi.cancelQueued(workspaceId, command.conversationId, command.turnRequestId, { requestId: command.requestId })
-            : await agentChatApi.respond(workspaceId, command.conversationId, { requestId: command.requestId, nativeRequestId: command.nativeRequestId, optionId: command.optionId })
+            : await agentChatApi.respond(workspaceId, command.conversationId, { requestId: command.requestId,
+              nativeRequestId: command.nativeRequestId, optionId: command.optionId,
+              ...(command.response !== undefined ? { response: command.response } : {}) })
       if (!matches(result.state)
         || command.kind !== 'send' && result.state.conversation?.id !== command.conversationId
         || command.kind === 'send' && (!('turn' in result) || (result as { turn: { requestId: string } }).turn.requestId !== command.input.requestId
@@ -315,11 +317,12 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
     if (blocked('agent_chat:cancel') || !state?.conversation || state.turns.find((turn) => turn.requestId === turnRequestId)?.delivery !== 'queued') return
     runCommand(() => ({ kind: 'cancel', conversationId: state.conversation!.id, requestId: `agent-chat-cancel-${crypto.randomUUID()}`, turnRequestId }))
   }
-  const respond = (optionId: string) => {
+  const respond = (optionId: string, response?: Extract<Command, { kind: 'respond' }>['response']) => {
     if (blocked('agent_chat:respond') || !state?.conversation || !approvalReplyAvailable(state)
       || !state.pendingInteraction?.responseOptions.some((option) => option.optionId === optionId)) return
     runCommand(() => ({ kind: 'respond', conversationId: state.conversation!.id, requestId: `agent-chat-response-${crypto.randomUUID()}`,
-      nativeRequestId: state.pendingInteraction!.turn.nativeRequestId!, optionId }))
+      nativeRequestId: state.pendingInteraction!.turn.nativeRequestId!, optionId,
+      ...(response !== undefined ? { response } : {}) }))
   }
   return { state, query, history, access, canRead, denial, online, pending, connection, commands, latestCommand, latestReceipt, currentReceipt, confirmedReceipt, localError, blocked,
     send, stop, cancelQueued, respond, refresh, draftKey }

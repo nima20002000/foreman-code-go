@@ -69,8 +69,19 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       || lane.live !== true || lane.owner_agent_id !== execution.agentId
       || lane.native_session_id !== execution.nativeSessionId) throw new DomainError('SESSION_LANE_LEASE_LOST',
       'The native writer is no longer the current workflow owner.', 409)
-    const ownerFence = await owner.readOneShotFence(sql)
     const generation = String(lane.record.connectionGeneration)
+    const correlationKey = `execution:${execution.id}`
+    const prior = await readNativeGraphCorrelation(sql, scope, key, correlationKey)
+    // The original capture still checks physical ownership before publication
+    // and commit. An unchanged correlation has no graph mutation for transcript-only frames.
+    const transcriptOnly = !approval && normalized.event.payload.nativeMessageId === undefined
+      && normalized.event.type !== OPENCODE_RECONCILIATION_EVENT
+      && normalized.event.type !== 'transport.disconnected'
+      && selectNativeGraphEvidence(normalized.event.type, normalized.event.payload).kind === 'ignored'
+    if (transcriptOnly && prior && prior.connectionId === (normalized.event.connectionId ?? null)
+      && String(prior.connectionGeneration) === generation
+      && prior.nativeTurnId === (lease.providerId ?? null)) return
+    const ownerFence = await owner.readOneShotFence(sql)
     const guard: NativeGraphProjectionGuard = { expected: { scope, key, ownerId: lease.token,
       fence: ownerFence.fence, connectionGeneration: generation },
     readCurrentLocked: async (transaction) => {
@@ -103,8 +114,6 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       if (held.rowCount !== 1) throw new DomainError('SESSION_LANE_LEASE_LOST',
         'The native writer lease expired before graph publication committed.', 409)
     })
-    const correlationKey = `execution:${execution.id}`
-    const prior = await readNativeGraphCorrelation(sql, scope, key, correlationKey)
     // A reconciliation observation is not a new live attachment. It can only
     // complete the original same-generation writer correlation.
     if (normalized.event.type === OPENCODE_RECONCILIATION_EVENT && (!prior || !reconciled

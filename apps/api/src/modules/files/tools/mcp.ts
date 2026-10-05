@@ -23,6 +23,8 @@ export type FileMcpService = Pick<AgentFileToolService, 'list' | 'read' | 'creat
   & Partial<Pick<AgentFileToolService, 'writeWorkingCopy' | 'applyFormatEdit'>> & {
   sessions: Pick<AgentFileToolService['sessions'], 'authenticate'>
     & Partial<Pick<AgentFileToolService['sessions'], 'authenticateSharedEndpoint'>>
+    // Discovery authorizes the manifest; operation callbacks still authenticate file access.
+    & { discover?: AgentFileToolService['sessions']['authenticate'] }
   /** Trusted runner annotation only; never a tool input or an immutable source path. */
   workingCopyLocation?(token: string, artifactId: string): Promise<string>
 }
@@ -42,11 +44,12 @@ const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), 
 const annotations = (write: boolean) => ({ readOnlyHint: !write, destructiveHint: false, idempotentHint: true, openWorldHint: false })
 
 export async function createFileMcpServer(service: FileMcpService, token: string): Promise<McpServer> {
-  const caller = await service.sessions.authenticate(token)
+  const discover = service.sessions.discover ?? service.sessions.authenticate.bind(service.sessions)
+  const caller = await discover(token)
   const enabled = new Set<FileToolOperation>()
   for (const name of ALL_FILE_TOOL_NAMES) {
     if (!caller.context.allowedTools.includes(name) || (isMutation(name) && !caller.context.allowMutation)) continue
-    try { await service.sessions.authenticate(token, name); enabled.add(name) }
+    try { await discover(token, name); enabled.add(name) }
     catch (error) { if (!(error instanceof DomainError) || error.status !== 403) throw error }
   }
   const allowed = (name: FileToolOperation) => enabled.has(name)
@@ -109,14 +112,15 @@ export function registerFileToolsMcp(app: FastifyInstance, service: FileMcpServi
       requireLocalRequest(request)
       const selected = mounted.get((request.params as { mountId: string }).mountId)
       if (!selected) throw new DomainError('FILE_SESSION_INVALID', 'The file turn is not mounted.', 401)
-      await selected.sessions.authenticate(bearer(request.headers.authorization))
+      await (selected.sessions.discover ?? selected.sessions.authenticate).call(
+        selected.sessions, bearer(request.headers.authorization))
     },
   }, async (request, reply) => {
     requireLocalRequest(request)
     const selected = mounted.get((request.params as { mountId: string }).mountId)
     if (!selected) throw new DomainError('FILE_SESSION_INVALID', 'The file turn is not mounted.', 401)
     const token = bearer(request.headers.authorization)
-    await selected.sessions.authenticate(token)
+    await (selected.sessions.discover ?? selected.sessions.authenticate).call(selected.sessions, token)
     const server = await createFileMcpServer(selected, token!)
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
@@ -129,13 +133,14 @@ export function registerFileToolsMcp(app: FastifyInstance, service: FileMcpServi
   app.post(FILE_TOOLS_MCP_PATH, { bodyLimit: 4 * Math.ceil(MAX_FILE_WRITE_BYTES / 3) + 512 * 1024,
     onRequest: async (request) => {
       requireLocalRequest(request)
-      await (service.sessions.authenticateSharedEndpoint ?? service.sessions.authenticate).call(
+      await (service.sessions.authenticateSharedEndpoint ?? service.sessions.discover ?? service.sessions.authenticate).call(
         service.sessions, bearer(request.headers.authorization))
     },
   }, async (request, reply) => {
     requireLocalRequest(request)
     const token = bearer(request.headers.authorization)
-    await (service.sessions.authenticateSharedEndpoint ?? service.sessions.authenticate).call(service.sessions, token)
+    await (service.sessions.authenticateSharedEndpoint ?? service.sessions.discover ?? service.sessions.authenticate).call(
+      service.sessions, token)
     const call = ToolCall.safeParse(request.body)
     if (call.success && ALL_FILE_TOOL_NAMES.includes(call.data.params.name as FileToolOperation)) {
       const name = call.data.params.name as FileToolOperation

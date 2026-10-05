@@ -8,7 +8,7 @@ import { currentWorkflowFixture as makeWave25Fixture } from '../../../shared/moc
 import type { DraftRequest } from './state'
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
-describe('Agent 6 existing authenticated HTTP boundary (mock responses, not backend auth proof)', () => {
+describe('workflow HTTP client boundary', () => {
   function harness() {
     const saved = makeWave25Fixture('transport')
     const mock = createCurrentBoardMock({ workspaceId: saved.scope.workspaceId, initialWorkflow: saved.version.definition,
@@ -21,7 +21,7 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     })
     return { saved, mock, fetch, api: createNextDraftApi(new ApiClient({ fetch })) }
   }
-  it('acknowledges graph edits locally then sends the complete pinned definition with cookies', async () => {
+  it('acknowledges graph edits locally then sends the complete pinned definition without browser credentials', async () => {
     const { saved, mock, fetch, api } = harness()
     const draft = await api.open(saved.scope.workspaceId, saved.scope.workflowId)
     const target = { ...draft.graph, nodes: draft.graph.nodes.map((node) => ({ ...node, initialPrompt: 'Edited' })) }
@@ -34,7 +34,8 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     await api.write({ ...request, kind: 'save', commandId: 'shared-save', expectedRevision: applied.draft.revision, operations: undefined })
     const [url, init] = fetch.mock.calls.at(-1)!
     expect(String(url)).toMatch(/\/definition$/)
-    expect(init!.credentials).toBe('same-origin')
+    expect(init!.credentials).toBe('omit')
+    expect(new Headers(init!.headers).has('Authorization')).toBe(false)
     // Optional undefined form fields are absent on the JSON wire, not lost edits.
     expect(JSON.parse(String(init!.body))).toEqual({ graph: JSON.parse(JSON.stringify(target)), expectedRevision: draft.revision,
       expectedWorkflowVersionId: draft.baseWorkflowVersionId, commandId: 'shared-save', executionSemanticsVersion: 3,
@@ -96,7 +97,7 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     expect(fetch.mock.calls.map(([url]) => new URL(String(url), 'http://localhost').pathname.split('/').at(-1))).toEqual([
       saved.scope.workflowId, 'definition', 'agents', saved.scope.workflowId, 'definition'])
   })
-  it('starts the exact saved V3 version through authenticated HTTP and rejects mismatched admission', async () => {
+  it('starts the saved V3 version through local HTTP and rejects mismatched admission', async () => {
     const saved = makeWave25Fixture('web-start')
     const input = { workspaceId: saved.scope.workspaceId, workflowId: saved.scope.workflowId,
       workflowVersionId: saved.scope.workflowVersionId, executionSemanticsVersion: 3 as const,
@@ -108,7 +109,8 @@ describe('Agent 6 existing authenticated HTTP boundary (mock responses, not back
     expect((await api.start(input)).run.id).toBe(saved.scope.runId)
     const [url, init] = fetch.mock.calls[0]!
     expect(String(url)).toContain(`/workspaces/${saved.scope.workspaceId}/workflows/${saved.scope.workflowId}/runs`)
-    expect(init!.credentials).toBe('same-origin')
+    expect(init!.credentials).toBe('omit')
+    expect(new Headers(init!.headers).has('Authorization')).toBe(false)
     const sent = JSON.parse(String(init!.body))
     expect(sent).toEqual(input)
     expect(sent).not.toHaveProperty('draftId')

@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { removeFixtureDirectory } from './helpers/testResources.js'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import pg from 'pg'
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AgentConfigurationVersionSchema, CODEX_APPROVAL_OPTIONS_FIXTURE, NativeHarnessEventSchema,
   type ExecutionResult, type HarnessExecution, type NativeSessionReference,
@@ -26,7 +27,7 @@ import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { seedAgent3 } from './helpers/wave25Agent3.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_agent_chat_test'
+const connectionString = process.env.TEST_DATABASE_URL!
 
 /** Only provider I/O is fake. Migrations, SQL, receipts, authorization, HTTP and MCP are real. */
 class FakeNative implements NativeHarnessSessionManager {
@@ -34,6 +35,7 @@ class FakeNative implements NativeHarnessSessionManager {
   created: NativeSessionStart[] = []; attached: NativeSessionStart[] = []; forked: Array<{ source: string; input: NativeSessionStart }> = []
   prompts: string[] = []; steers: NativeSteerInput[] = []; cancels = 0
   hold = false
+  deferCancelTerminal = false
   private turn = 0
   private readonly histories = new Map<string, NativeHistory>()
   private active: { id: string; correlation: string; release: () => void } | undefined
@@ -87,7 +89,7 @@ class FakeNative implements NativeHarnessSessionManager {
   async cancel() {
     this.cancels++
     if (!this.active) return false
-    this.finish({ outcome: 'canceled' })
+    if (!this.deferCancelTerminal) this.finish({ outcome: 'canceled' })
     return true
   }
   async pending() { return undefined }
@@ -176,7 +178,7 @@ beforeAll(async () => {
 })
 afterAll(async () => {
   await pool?.end()
-  if (root) await rm(root, { recursive: true, force: true })
+  if (root) await removeFixtureDirectory(root)
 })
 beforeEach(async () => {
   await pool.query(`delete from operator_conversations where kind='agent' and workspace_id=$1`, [fixture.scope.workspaceId])
@@ -184,6 +186,34 @@ beforeEach(async () => {
 })
 
 describe('selected-Agent chat service', { timeout: 60_000 }, () => {
+  it('keeps later accepted-turn reconciliation idempotent while preserving the initial startup receipt', async () => {
+    const { service } = makeService()
+    const first = request(codexNode, 'first', null)
+    const initial = await service.send(writer, fixture.scope.workspaceId, first)
+    const id = initial.state.conversation!.id
+    const read = () => service.read(writer, fixture.scope.workspaceId, query(codexNode))
+    await settled(service, read)
+    const native = FakeNative.all[0]!
+    native.hold = true
+    try {
+      await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later', id))
+      const active = await settled(service, read, state => Boolean(state.activeTurn?.nativeTurnId && native.activeTurn))
+      const repository = new PostgresAgentChatRepository(pool)
+      const before = (await repository.get(id))!
+      expect(before.record.startupReceipt).toEqual({ requestId: first.requestId, nativeSessionId: before.native_session_id })
+      expect(active.activeTurn!.requestId).not.toBe(first.requestId)
+      for (let observation = 0; observation < 2; observation++) {
+        expect(await repository.accepted(id, active.activeTurn!.requestId, active.activeTurn!.nativeTurnId!)).toBe(false)
+      }
+      const after = (await repository.get(id))!
+      expect(after.revision).toBe(before.revision)
+      expect(after.updated_at).toEqual(before.updated_at)
+      expect(after.record.startupReceipt).toEqual(before.record.startupReceipt)
+      expect((await repository.turn(id, active.activeTurn!.requestId))?.delivery).toBe('accepted')
+      expect(native.prompts).toHaveLength(2)
+    } finally { await service.shutdown() }
+  })
+
   it('creates exactly one native session on first send and continues it after completion', async () => {
     const { service } = makeService()
     const empty = await service.read(writer, fixture.scope.workspaceId, query(codexNode))
@@ -693,14 +723,29 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
       await conflict('/responses', 'agent_chat_respond', { ...respond, optionId: 'codex-reject' })
       expect(responses).toBe(1)
       expect((await read()).pendingInteraction?.turn.nativeRequestId).toBe('approval-two')
+      native.deferCancelTerminal = true
+      const cancelDelivery = vi.spyOn(native, 'cancel')
+        .mockRejectedValueOnce(new Error('Cancel transport disconnected before acknowledgment'))
+        .mockResolvedValueOnce(false)
       const interrupt = { requestId: randomUUID() }
       const interrupted = await http('/interrupt', interrupt)
       expect(interrupted.statusCode, interrupted.body).toBe(200)
       const interruptReceipt = await receipt(interrupt.requestId)
+      await service.recover()
+      await service.recover()
+      await service.recover()
+      expect(cancelDelivery).toHaveBeenCalledTimes(3)
+      expect(native.cancels).toBe(1)
+      expect((await read()).activeTurn?.requestId).toBe(active.activeTurn!.requestId)
+      expect(native.prompts).toHaveLength(2)
+      native.finish({ outcome: 'canceled' })
+      native.deferCancelTerminal = false
       await settled(service, read)
       await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later active', id))
       const next = await settled(service, read, (state) => Boolean(state.activeTurn?.nativeTurnId && native.activeTurn))
-      expect((await replay('agent_chat_interrupt', interrupt)).structuredContent).toEqual({ state: await read() })
+      await vi.waitFor(async () => {
+        expect((await replay('agent_chat_interrupt', interrupt)).structuredContent).toEqual({ state: await read() })
+      })
       expect(await receipt(interrupt.requestId)).toEqual(interruptReceipt)
       expect(interruptReceipt.result).toMatchObject({ status: 'completed', state: { conversation: { id },
         turns: expect.arrayContaining([expect.objectContaining({ requestId: active.activeTurn!.requestId, nativeTurnId: active.activeTurn!.nativeTurnId })]) } })

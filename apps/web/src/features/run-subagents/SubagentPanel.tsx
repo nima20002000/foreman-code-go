@@ -1,14 +1,18 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { createStore, useStore } from 'zustand'
-import { SUBAGENT_LIMITS, type RunSubagentMessage, type RunSubagentTool, type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
+import { SUBAGENT_LIMITS,
+  type RunSubagentMessage, type RunSubagentTool, type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import { Button, CodeBlock, Drawer, EmptyState, ErrorState, MessageBubble, Spinner, StatusBadge, Tabs, Textarea, ToolCallCard } from '../../shared/ui/nocturne'
 import { ApiError } from '../../shared/api/client'
 import { subagentsApi } from './client'
 import { formatBytes, formatClock, providerNames, subagentName, subagentStatus, subagentTiming, toolStatus } from './presentation'
 import { subagentsKey, useSubagentDetail, useSubagentMessages, useSubagentTools, type SubagentsScope } from './query'
+import type { InteractionResponseValue } from '@foreman-code/contracts'
+import { NativeInteractionResponse } from '../../shared/ui/NativeInteractionResponse'
 
-type CommandVariables = { operation: 'input' | 'interrupt'; commandId: string; expectedRevision: string; text: string }
+type CommandVariables = { operation: 'input' | 'interrupt' | 'respond'; commandId: string; expectedRevision: string;
+  text: string; nativeRequestId?: string; optionId?: string; response?: InteractionResponseValue }
 
 const coverageNote = (coverage: 'complete' | 'partial' | 'unavailable', what: string, provider: string) =>
   coverage === 'partial' ? `Only part of this subagent's ${what} was captured.`
@@ -16,7 +20,9 @@ const coverageNote = (coverage: 'complete' | 'partial' | 'unavailable', what: st
 
 /** Plain-language command outcome. Delivery is not completion: the subagent decides what to do with it. */
 function receiptText(receipt: RunSubagentCommandReceipt) {
-  const what = receipt.operation === 'run_subagent_interrupt_v1' ? 'Interrupt' : 'Message'
+  let what = 'Message'
+  if (receipt.operation === 'run_subagent_interrupt_v1') what = 'Interrupt'
+  else if (receipt.operation === 'run_subagent_respond_v1') what = 'Response'
   switch (receipt.state) {
     case 'accepted': case 'dispatching': return `${what} is being sent…`
     case 'acknowledged': return `${what} delivered to the subagent.`
@@ -47,6 +53,9 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
   const command = useMutation({ mutationKey, retry: false, gcTime: 60 * 60_000,
     mutationFn: (input: CommandVariables) => {
       const body = { workspaceId: scope.workspaceId, runId: scope.runId, subagentId, commandId: input.commandId, expectedRevision: input.expectedRevision }
+      if (input.operation === 'respond') return subagentsApi.respond({ ...body,
+        nativeRequestId: input.nativeRequestId!, optionId: input.optionId!,
+        ...(input.response !== undefined ? { response: input.response } : {}) })
       return input.operation === 'input' ? subagentsApi.input({ ...body, text: input.text }) : subagentsApi.interrupt(body)
     },
     onSuccess: (receipt) => {
@@ -90,8 +99,12 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
       </div>
       {revisionConflict ? <Button size="sm" loading={detail.isFetching} onClick={() => void refresh()}>Refresh</Button>
         : unsettled && lastCommand?.variables ? <Button size="sm" disabled={pending} onClick={recheck}>Check again</Button> : null}
-      {canInterrupt && <Button variant="danger" disabled={pending || unsettled} onClick={() => send('interrupt')}>Interrupt</Button>}
-      {canSend && <Button variant="primary" disabled={!text.trim() || pending || unsettled} onClick={() => send('input')}>Send</Button>}
+      {canInterrupt && <Button variant="danger"
+        disabled={pending || unsettled}
+        onClick={() => send('interrupt')}>Interrupt</Button>}
+      {canSend && <Button variant="primary"
+        disabled={!text.trim() || pending || unsettled}
+        onClick={() => send('input')}>Send</Button>}
     </div>
   </div> : undefined
   return <Drawer open onOpenChange={(open) => { if (!open) onClose() }} title={child ? subagentName(child) : 'Subagent'}
@@ -104,8 +117,24 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
           <StatusBadge label={status.label} tone={status.tone} busy={child.status === 'running'} />
           <span>{subagentTiming(child)}</span>
           {child.evidence !== 'confirmed' && <p className="run-subagent-note">This status isn't confirmed yet and may still change.</p>}
-          {!canSend && !canInterrupt && <p className="run-subagent-note">View only — {provider} subagents can't be messaged or interrupted from here.</p>}
+          {!canSend && !canInterrupt && !record.availableActions.respond
+            && <p className="run-subagent-note">Controls are unavailable for this subagent right now.</p>}
         </section>
+        {record.pendingInteraction ? <section aria-label="Subagent request">
+          <p>This subagent needs your response.</p>
+          {record.pendingInteraction.responseOptions.some(option => option.input)
+            ? <NativeInteractionResponse key={record.pendingInteraction.turn.nativeRequestId}
+              options={record.pendingInteraction.responseOptions}
+              disabled={!record.availableActions.respond || pending || unsettled}
+              onSelect={(optionId, response) => command.mutate({ operation: 'respond', commandId: crypto.randomUUID(),
+                expectedRevision: child.revision, text: '', nativeRequestId: record.pendingInteraction!.turn.nativeRequestId!,
+                optionId, ...(response !== undefined ? { response } : {}) })} />
+            : record.pendingInteraction.responseOptions.map(option => <Button key={option.optionId}
+              disabled={!record.availableActions.respond || pending || unsettled}
+              onClick={() => command.mutate({ operation: 'respond', commandId: crypto.randomUUID(),
+                expectedRevision: child.revision, text: '', nativeRequestId: record.pendingInteraction!.turn.nativeRequestId!,
+                optionId: option.optionId })}>{option.label}</Button>)}
+        </section> : null}
         <Tabs label="Subagent activity" value={tab} onValueChange={setTab} items={[
           { value: 'messages', label: 'Messages', ...(messageItems.length ? { badge: `${messageItems.length}${messages.hasNextPage ? '+' : ''}` } : {}), content: <div className="run-subagent-feed">
             {coverageNote(messages.data?.pages.at(-1)?.coverage.transcript ?? child.coverage.transcript, 'conversation', provider) &&

@@ -4,7 +4,7 @@ import type { FileToolContext } from '../../files/tools/types.js'
 import type { OpenCodeServerController } from '../opencodeTransport.js'
 import { createOpenCodeFileMcpFacade } from './facade.js'
 import { OpenCodeFileTurn, type PreparedOpenCodeFiles } from './turn.js'
-import { checkFileCondition, type AcceptedOpenCodeFileTurn, type OpenCodeAcceptedFileReader,
+import { checkFileCondition, OpenCodeFileCleanupError, type AcceptedOpenCodeFileTurn, type OpenCodeAcceptedFileReader,
   type OpenCodeFileTurnOptions } from './types.js'
 
 /** The manager supplies all native fields. The resolver uses the durable accepted
@@ -30,13 +30,16 @@ export interface OpenCodeChatFileBinding {
   adoptPublished(context: FileToolContext): Promise<void>
   /** Dedicated file-only listener, or an exact-token registry entry. Must install
    * the supplied facade without unknown-token fallback. Mounting the listener
-   * grants no authority: no token exists until the native prompt is acknowledged.
+   * grants no file authority: discovery connects before submission; file calls
+   * wait for an acknowledged native prompt and a scoped file-session credential.
    * Return an idempotent unmount function; failures must leave a retryable fence.
    */
   mount(service: FileMcpService): Promise<() => Promise<void>>
 }
 
 export interface OpenCodeChatFiles {
+  /** Reclaim registered materializations only after their original native process is confirmed closed. */
+  recover?(signal: AbortSignal, retainedTurnIds: ReadonlySet<string>): Promise<void>
   /** Return undefined only when the accepted turn has no file-tool context.
    * Agent turns need a context for inherited references even without attachments.
    * An unavailable reader/host/listener for a file-enabled turn must THROW.
@@ -51,15 +54,26 @@ export class OpenCodeManagedFileTurn {
     readonly bridge: OpenCodeFileTurn,
     readonly inputs: PreparedOpenCodeFiles,
     private readonly unmount: () => Promise<void>,
+    readonly nativeTurnId: string,
   ) {}
 
   private async close(operation: () => Promise<void>): Promise<void> {
     const errors: unknown[] = []
-    try { await operation() } catch (error) { errors.push(error) }
+    let released: boolean
+    try {
+      await operation()
+      released = true
+    } catch (error) {
+      released = error instanceof OpenCodeFileCleanupError
+      errors.push(error)
+    }
     if (!this.unmounted) {
       try { await this.unmount(); this.unmounted = true } catch (error) { errors.push(error) }
     }
-    if (errors.length) throw new AggregateError(errors, 'OpenCode chat file cleanup needs retry.')
+    if (errors.length) {
+      if (released) throw new OpenCodeFileCleanupError(errors)
+      throw new AggregateError(errors, 'OpenCode chat file cleanup needs retry.')
+    }
   }
 
   finish(evidence: 'terminal' | 'definite_rejection', signal: AbortSignal): Promise<void> {
@@ -68,6 +82,10 @@ export class OpenCodeManagedFileTurn {
 
   nativeProcessClosed(signal: AbortSignal): Promise<void> {
     return this.close(() => this.bridge.nativeProcessClosed(signal))
+  }
+
+  retryCleanup(signal: AbortSignal): Promise<void> {
+    return this.close(() => this.bridge.retryCleanup(signal))
   }
 }
 
@@ -98,7 +116,7 @@ export async function prepareOpenCodeChatFiles(runtime: OpenCodeChatFiles,
   const unmount = await binding.mount(createOpenCodeFileMcpFacade(binding.options.service, () => bridge))
   try {
     const inputs = await bridge.prepareInputs(admission, binding.read, signal)
-    return new OpenCodeManagedFileTurn(bridge, inputs, unmount)
+    return new OpenCodeManagedFileTurn(bridge, inputs, unmount, identity.nativeTurnId)
   } catch (error) {
     const errors: unknown[] = [error]
     try { await bridge.retryCleanup(AbortSignal.timeout(10_000)) } catch (cleanup) { errors.push(cleanup) }

@@ -49,7 +49,7 @@ export function jobCapabilities(context:JobMcpContext,resource:AuthorizedResourc
   return JOB_TOOLS.filter(name => jobToolAvailable(context, name, resource)).map(name => ({
     name, actions: [actions[name]],
     detail: name.startsWith('job_cancellation_recovery')
-      ? 'Cleanup requires jobs:cancel and separate browser-owner approval. MCP cannot approve itself or authorize execution.'
+      ? 'Cleanup requires jobs:cancel and separate local-human approval. MCP cannot approve itself or authorize execution.'
       : JOB_QUEUE_CAPABILITY_DETAIL + ' Accepted specifications and file revisions are immutable. '
         + 'No Agent, provider login or Operator credential enters the build.',
   }))
@@ -140,7 +140,7 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   }, input => invoke(context, 'job_cancel', async () => ({ execution: await service.cancel(context.principal,
     'mcp', input.workspaceId, input.executionId, input.commandId, input.recovery) })))
   if (jobToolAvailable(context, 'job_cancellation_recovery_propose')) server.registerTool('job_cancellation_recovery_propose', {
-    description: 'Propose cleanup of one original manual Job on a revoked Worker, pinned to its retained journal digest. This creates no cleanup authority. Only the signed-in human application owner may approve the reviewed proposal in the browser.',
+    description: 'Propose cleanup of one original manual Job on a revoked Worker, pinned to its retained journal digest. This creates no cleanup authority. Only the local human may approve the reviewed proposal in the browser.',
     inputSchema: JobCancellationProposalInputSchema, outputSchema: JobCancellationRecoveryReadSchema, annotations: write,
   }, input => invoke(context, 'job_cancellation_recovery_propose', () =>
     service.proposeCancellationRecovery(context.principal, 'mcp', input)))

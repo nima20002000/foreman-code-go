@@ -105,7 +105,7 @@ async function closureFixture() {
   const closeRegistration=vi.spyOn(f.registry,'closeRegistration').mockResolvedValue(undefined)
   const closeOwner=vi.spyOn(f.registry,'closeOwner').mockResolvedValue(false)
   const history={events:[],pendingInteractions:[],nativeTurnId:'original-turn',terminalTurn:{correlationId:'execution:execution',providerId:'original-turn',result:{outcome:'succeeded' as const}}}
-  return {...f,journal,captured,manager,close,closeOwner,closeRegistration,history}
+  return {...f,root,journal,captured,manager,close,closeOwner,closeRegistration,history}
 }
 describe('positive installed native closure consumption',()=>{
   it('does not promote provider success when the original physical owner closure is unconfirmed',async()=>{
@@ -133,6 +133,42 @@ describe('positive installed native closure consumption',()=>{
     expect(await settleInstalledWorkflowNativeOwner({...f,history:{events:[],pendingInteractions:[]}})).toBeNull()
     expect(f.close).not.toHaveBeenCalled();expect(f.closeOwner).not.toHaveBeenCalled()
   })
+  it.each(['malformed-json', 'missing-key', 'missing-publication'] as const)(
+    'closes and retains the original %s result through Stop and journal restart', async defect => {
+      const f = await closureFixture()
+      const artifactOutputs = { version: 1 as const, outputKeys: ['report'] }
+      const mappings = { version: 1, outputs: [{ outputKey: 'report', commandId: 'original-publication' }] }
+      const result = { outcome: 'succeeded' as const, output: { text: defect === 'malformed-json' ? '{'
+        : JSON.stringify({ data: { original: true }, artifactOutputs: defect === 'missing-key'
+          ? { version: 1, outputs: [{ outputKey: 'another', commandId: 'original-publication' }] } : mappings }) } }
+      const history = { ...f.history, terminalTurn: { ...f.history.terminalTurn, result } }
+      const original = structuredClone(history)
+      const input = { ...f, history, artifactOutputs, publications: new Map() }
+      // An unconfirmed physical owner stays pending regardless of invalid artifact data.
+      expect(await settleInstalledWorkflowNativeOwner(input)).toBeNull()
+      await f.journal.control({ schemaVersion: 1, protocolVersion: 1,
+        commandId: 'original-stop', operationId: f.intent.operationId,
+        attemptId: f.intent.attemptId, executionId: f.intent.executionId,
+        bindingHash: f.intent.bindingHash, owner: f.intent.owner, action: { kind: 'stop' } })
+      f.closeOwner.mockResolvedValue(true)
+      const terminal = await settleInstalledWorkflowNativeOwner(input)
+      expect(terminal).toMatchObject({ kind: 'completed', result, artifactDigests: [],
+        artifactValidationError: { code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT',
+          reason: defect === 'missing-publication' ? 'missing_publication' : 'invalid_result' } })
+      expect(history).toEqual(original)
+      if (!terminal) throw new Error('Original native closure required')
+      await f.journal.terminal(f.intent.operationId, terminal)
+      await f.journal.close()
+      const reopened = await RemoteOperationJournal.open(join(f.root, 'journal'))
+      journals.push(reopened)
+      f.close.mockClear()
+      f.closeOwner.mockClear()
+      expect(await settleInstalledWorkflowNativeOwner({ ...input, journal: reopened })).toEqual(terminal)
+      expect((await reopened.status(f.intent.operationId))).toMatchObject({ status: 'known',
+        receipt: { phase: 'confirmed_terminal', stopFence: true, terminal } })
+      expect(f.close).not.toHaveBeenCalled()
+      expect(f.closeOwner).not.toHaveBeenCalled()
+    })
 })
 
 async function sourceFixture(relativeCwd='') {

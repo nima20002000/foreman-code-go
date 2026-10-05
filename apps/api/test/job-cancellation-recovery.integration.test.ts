@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -13,6 +14,7 @@ import { publicKeyFingerprint } from '@foreman-code/contracts/device-identity-no
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresJobCancellationRecovery } from '../src/modules/jobs/cancellationRecovery.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
@@ -48,7 +50,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
   const sha = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex')
   beforeAll(async () => {
     database = await agent3Database()
-    directory = await mkdtemp('/tmp/job-revoked-cancellation-')
+    directory = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/job-revoked-cancellation-`)
     const pool = database.pool
     const mainId = (await pool.query<{ id: string }>('select id from application_installation where singleton=true')).rows[0]!.id
     await loadOrCreateMainDeviceIdentity(pool, mainId)
@@ -60,9 +62,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
         'jobs:read', 'jobs:start', 'jobs:cancel'], scope: { workspaceIds: [workspaceId] } }] })
     reader = await access.issue({ name: 'Read only Job caller', audience: 'operator', expiresAt: new Date(Date.now() + 3600000),
       grants: [{ actions: ['jobs:read'], scope: { workspaceIds: [workspaceId] } }] })
-    const userId = randomUUID()
-    await pool.query('insert into browser_auth_user(id,name,email) values($1,$2,$3)', [userId, 'Owner', `${userId}@example.test`])
-    await pool.query('insert into browser_auth_owner(singleton,user_id,principal_id) values(true,$1,$2)', [userId, writer.principal.id])
+    await pool.query('update local_human_principal set principal_id=$1', [writer.principal.id])
     const deviceId = randomUUID(), workerInstallationId = randomUUID(), policyId = randomUUID()
     const registration = { mainId, deviceId, workerInstallationId, keyRevision: 1, authorizationRevision: 2,
       publicKeyFingerprint: publicKeyFingerprint(publicKey), status: 'revoked', scopes: ['connect', 'heartbeat'] }
@@ -169,6 +169,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
       preparation: { choices: forbidden, validate: forbidden, accept: forbidden, adoptFinalBinding: forbidden, revalidateAccepted: forbidden },
       artifacts: { list: forbidden, read: forbidden } })
     app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      localHuman: new PostgresLocalHumanAccess(pool, access),
       operator: { access, services: { jobs, commands } as unknown as OperatorServices } })
     address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
@@ -184,7 +185,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
       expect(result.isError).not.toBe(true)
       proposal = JobCancellationRecoveryReadSchema.parse(result.structuredContent)
       const approved = await app.inject({ method: 'POST', url: `${route()}/approve`,
-        headers: { cookie: `graphql_operator=${writer.token}`, origin: address }, payload: { commandId: randomUUID() } })
+        headers: { origin: 'http://127.0.0.1:5173' }, payload: { commandId: randomUUID() } })
       expect(approved.statusCode).toBe(200)
       const grant = SignedJobCancellationGrantSchema.parse(approved.json()).grant
       const command = { schemaVersion: 1 as const, protocolVersion: 1 as const, commandId: cancelCommandId,
@@ -206,7 +207,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
   }, 90000)
   afterAll(async () => {
     await client?.close(); await deniedClient?.close(); await app?.close(); await dispatch?.close()
-    await database?.close(); if (directory) await rm(directory, { recursive: true, force: true })
+    await database?.close(); if (directory) await removeFixtureDirectory(directory)
   })
   function route() { return `/api/management/workspaces/${workspaceId}/jobs/executions/${execution.id}/cancellation-recovery/${proposal.id}` }
   async function importClosure(override = apply, caller = client, commandId = randomUUID()) {

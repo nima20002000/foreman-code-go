@@ -163,7 +163,7 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
     <Button disabled={busy} onClick={() => void submit()}>Reconcile original selection</Button></> : null
   if (!current) return <section aria-label="Project folder">{guard}{recovery}{workspace.isError ? <Alert tone="danger" title="Execution workspace could not be loaded." /> : <LoadingState label="Loading execution workspace…" />}</section>
   if (current.locationValidation.status === 'restricted') return <>{guard}{recovery}<Alert tone="danger" title="You do not have permission to read this workspace’s execution location." /></>
-  if (saved.isError || choices.isError) return <section aria-label="Project folder">{guard}{recovery}{archived ? <Alert tone="warning" title="This workspace is archived. Its execution location cannot be edited." /> : null}<Alert tone="danger" title="Authenticated execution location or computer roots could not be read." /><Button onClick={() => void reload()}>Retry location readback</Button></section>
+  if (saved.isError || choices.isError) return <section aria-label="Project folder">{guard}{recovery}{archived ? <Alert tone="warning" title="This workspace is archived. Its execution location cannot be edited." /> : null}<Alert tone="danger" title="Project folder or computer roots could not be loaded." /><Button onClick={() => void reload()}>Retry location readback</Button></section>
   if (!saved.isSuccess || !choices.isSuccess) return <>{guard}{recovery}<LoadingState label="Loading saved execution computer and approved roots…" /></>
   const savedPath = saved.data.executionLocation?.rootPath ?? ''
   const browsingCurrent = sameRootSelection(browse.data?.selection, selection)

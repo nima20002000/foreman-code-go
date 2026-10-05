@@ -1,4 +1,5 @@
-import type { PendingNativeInteraction } from '@foreman-code/contracts'
+import type { PendingNativeInteraction, InteractionResponseValue } from '@foreman-code/contracts'
+import { NativeInteractionResponse } from '../../shared/ui/NativeInteractionResponse'
 import { Fragment, useId } from 'react'
 import { summarizeApprovalRequest } from '../approvals/approvalPresentation'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
@@ -12,7 +13,7 @@ export function OperatorApprovalCard({ interaction, disabled, onSelect, onBrowse
   interaction: PendingNativeInteraction
   disabled: boolean
   actor?: 'Operator' | 'Agent'
-  onSelect: (optionId: string) => void
+  onSelect: (optionId: string, response?: InteractionResponseValue) => void
   onBrowse?: () => void
 }) {
   const scopeId = useId()
@@ -66,7 +67,10 @@ export function OperatorApprovalCard({ interaction, disabled, onSelect, onBrowse
       <p>Full request</p>
       <pre className="operator-approval-request" tabIndex={0} aria-label="Full approval request">{JSON.stringify(interaction.request, null, 2)}</pre>
     </details>
-    <div className="operator-approval-actions">{[...once, ...persistent, ...other].map(renderOption)}</div>
-    {decline.length ? <div className="operator-approval-decline">{decline.map(renderOption)}</div> : null}
+    {options.some((option) => option.input) ? <NativeInteractionResponse
+      key={interaction.turn.nativeRequestId} options={options} disabled={disabled} onSelect={onSelect} /> : <>
+      <div className="operator-approval-actions">{[...once, ...persistent, ...other].map(renderOption)}</div>
+      {decline.length ? <div className="operator-approval-decline">{decline.map(renderOption)}</div> : null}
+    </>}
   </section>
 }

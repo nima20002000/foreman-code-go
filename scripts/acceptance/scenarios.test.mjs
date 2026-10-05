@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { configuration, OPEN_CODE_MODEL, SCENARIOS, scenarioGraph, seed } from './scenarios.mjs'
 
 const workflow = { id: 'wf-test', workspaceId: 'ws-test', name: 'test', executionSemanticsVersion: 3,
-  entryNodeId: null, nodes: [], edges: [], executionCondition: { kind: 'manual' } }
+  entryNodeId: null, nodes: [], edges: [], executionCondition: { kind: 'manual' }, handoffs: { contractVersion: 1 } }
 test('all eight concrete scenarios use semantics 3 and distinct real Agent identities', () => {
   const ids = new Set()
   for (const spec of SCENARIOS) {
@@ -22,6 +22,7 @@ test('all eight concrete scenarios use semantics 3 and distinct real Agent ident
     }
     assert.equal(graph.edges.every((edge) => edge.kind === 'execution'), true)
     assert.equal(Object.hasOwn(graph, 'repeat'), Boolean(spec.repeat))
+    assert.deepEqual(graph.handoffs, spec.repeat ? undefined : workflow.handoffs)
   }
   assert.equal(ids.size, 27)
 })
@@ -119,8 +120,8 @@ test('seed uses real-route request shapes and reserved journal commands, never R
     assert.equal(demo.workflowIds.length, 8); assert.equal(demo.agentCount, 27)
     assert.equal(calls.some((call) => call.path.includes('/runs')), false)
     const native = JSON.parse(await readFile(join(folder, 'opencode.json'), 'utf8'))
-    assert.deepEqual(native.mcp['graphql'], { type: 'remote', url: 'http://127.0.0.1:3307/mcp',
-      enabled: true, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' } })
+    assert.deepEqual(native.mcp['foreman-code'], { type: 'remote', url: 'http://127.0.0.1:3307/mcp',
+      enabled: true, oauth: false, headers: { Authorization: 'Bearer {env:FOREMAN_CODE_MCP_TOKEN}' } })
     assert.equal(calls.filter((call) => call.body?.action === 'stage_edits').length, 8)
     assert.equal(calls.filter((call) => call.body?.action === 'stop_and_save').length, 8)
   } finally { globalThis.fetch = original; await rm(state, { recursive: true, force: true }) }

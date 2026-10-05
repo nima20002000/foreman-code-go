@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, it, vi } from 'vitest'
 import { AgentConfigurationVersionSchema, type ExecutionResult } from '@foreman-code/contracts'
 import { SendAgentChatMessageResponseSchema, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 
 import { buildApp } from '../src/app.js'
@@ -46,7 +47,8 @@ async function eventually(check: () => boolean | Promise<boolean>) {
 type Mode = 'reject' | 'success' | 'uncertain' | 'cleanup-failure' | 'activation-failure'
 
 /** Opt in with the repository's PostgreSQL test setting. Never real-native acceptance evidence. */
-describe.skipIf(!postgresEnabled)('H1 persisted creation / authenticated HTTP-MCP legacy replay', { timeout: 60_000 }, () => {
+describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
+  'Agent chat creation and replay with %s MCP', { timeout: 60_000 }, (serverName) => {
   let database: Awaited<ReturnType<typeof agent3Database>>
   let pool: pg.Pool
   let saved: ReturnType<typeof makeCurrentWorkflowFixture>
@@ -75,11 +77,20 @@ describe.skipIf(!postgresEnabled)('H1 persisted creation / authenticated HTTP-MC
   beforeEach(async () => {
     await pool.query(`delete from operator_conversations where kind='agent' and workspace_id=$1`, [saved.scope.workspaceId])
     vi.mocked(qualifyNativeCodexModel).mockReset().mockResolvedValue(undefined)
-    vi.mocked(runCommand).mockReset().mockImplementation(async (_binary, args) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(
-      args[1] === 'list' ? [{ name: 'graphql' }] : {
-        name: 'graphql', enabled: false, transport: { type: 'stdio', command: 'not-executed', args: [], env_vars: [] },
-      },
-    ) }))
+    const entry = {
+      name: serverName,
+      enabled: false,
+      transport: { type: 'stdio', command: 'not-executed', args: [], env_vars: [] },
+    }
+    vi.mocked(runCommand).mockReset().mockImplementation(async (_binary, args) => {
+      assert.equal(args[0], 'mcp')
+      if (args[1] === 'list') return { exitCode: 0, stderr: '', stdout: JSON.stringify([{ name: serverName }]) }
+      assert.equal(args[1], 'get')
+      if (args[2] !== serverName) return {
+        exitCode: 1, stdout: '', stderr: `Error: No MCP server named '${args[2]}' found.`,
+      }
+      return { exitCode: 0, stderr: '', stdout: JSON.stringify(entry) }
+    })
   })
   afterAll(async () => { await database?.close() })
 
@@ -221,7 +232,7 @@ describe.skipIf(!postgresEnabled)('H1 persisted creation / authenticated HTTP-MC
         await eventually(async () => (await f.repository.turn(id, first.requestId))?.delivery === 'unknown')
         const state = await f.read(), row = (await f.repository.get(id))!
         assert.equal(state.availability.canSend, false); assert.equal(state.sessionState, 'unavailable')
-        assert.equal(row.record.sessionCreation?.requestId, first.requestId); assert.ok(row.record.sessionUnavailable)
+        assert.equal(row.record.sessionCreation?.requestId, first.requestId); assert.equal(row.record.sessionUnavailable, undefined)
         assert.equal(row.native_session_id, null)
         assert.equal(f.created.length, mode === 'cleanup-failure' ? 0 : 1)
         assert.equal(f.calls.filter((call) => call.method === 'turn/start').length, 0)

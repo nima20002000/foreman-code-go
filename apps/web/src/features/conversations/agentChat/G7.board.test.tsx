@@ -3,7 +3,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import { BrowserAccessSessionSchema } from '@foreman-code/contracts/management'
+import { LocalHumanAccessSchema } from '@foreman-code/contracts/management'
 import { agentChatFixtures, type AgentChatContext } from '@foreman-code/contracts/agent-chat'
 import { server } from '../../../mocks/server'
 import { agentChatFixtureFor, agentChatTestActions, createAgentChatMock } from '../../../shared/mocks/agentChatHandlers'
@@ -30,12 +30,12 @@ describe('G7 T-03/T-06/T-08/RISK-01 mounted Board action area', () => {
     state.messages = state.messages.filter((message) => message.role !== 'assistant')
     const chat = createAgentChatMock(state)
     server.use(...chat.handlers.slice(1), ...fixture.mock.handlers)
-    server.use(http.get('/api/auth/session', () => HttpResponse.json(BrowserAccessSessionSchema.parse({ principal: {
+    server.use(http.get('/api/local-human', () => HttpResponse.json(LocalHumanAccessSchema.parse({ principal: {
       id: 'g7-board-chat-reader-writer', name: 'G7 tester', expiresAt: '2099-01-01T00:00:00.000Z', grants: [{
         scope: { workspaceIds: [scope.workspaceId] },
         actions: ['workspaces:read', 'workflows:read', 'agents:read', 'graph:read', 'interactions:read', 'runs:read', ...agentChatTestActions],
       }],
-    }, account: { name: 'G7 tester', email: 'g7@example.test' } }))))
+    } }))))
     const beforeRun = structuredClone(fixture.mock.runs.get(scope.runId))
     const mounted = await mountMeasuredBoard(boardHref(scope))
     const trigger = await screen.findByRole('button', { name: `Open ${fixture.first.name!} chat` })

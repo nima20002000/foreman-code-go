@@ -7,8 +7,6 @@ import {
 import { ApprovalInboxSearchSchema, UrlSearchSelectionSchema } from '@foreman-code/contracts'
 import { RunsSelectorSearchSchema } from '../features/runs-selector'
 import { RootShell } from './RootShell'
-import { BrowserAuthSearchSchema } from '@foreman-code/contracts/management'
-import { SignInRoute, OwnerSetupRoute } from '../features/auth/AuthRoutes'
 import { AgentSettingsSearchSchema, SkillSettingsSearchSchema } from '@foreman-code/contracts/management'
 import { AccountRouteEntry, NewSkillRouteEntry, SkillDetailRouteEntry, SkillsSettingsRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
@@ -26,7 +24,6 @@ import {
   HarnessSettingsRouteEntry,
   AgentSettingsRouteEntry,
   WorkflowSettingsRouteEntry,
-  OperatorAccessSettingsRouteEntry,
   GlobalApprovalsRouteEntry,
   WorkspaceApprovalsRouteEntry,
   WorkspaceLocationSettingsRouteEntry,
@@ -193,11 +190,6 @@ const workflowSettingsRoute = createRoute({
   path: '/settings/workflows',
   component: WorkflowSettingsRouteEntry,
 })
-const operatorAccessSettingsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/settings/operator-access',
-  component: OperatorAccessSettingsRouteEntry,
-})
 const globalApprovalsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/approvals',
@@ -211,22 +203,7 @@ const workspaceApprovalsRoute = createRoute({
   component: WorkspaceApprovalsRouteEntry,
 })
 
-const signInRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/sign-in',
-  validateSearch: BrowserAuthSearchSchema,
-  component: SignInRoute,
-})
-const ownerSetupRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/setup',
-  validateSearch: BrowserAuthSearchSchema,
-  component: OwnerSetupRoute,
-})
-
 export const routeTree = rootRoute.addChildren([
-  signInRoute,
-  ownerSetupRoute,
   indexRoute,
   workspacesRoute,
   workspaceRoute.addChildren([nextDraftRoute, runGraphRoute]),
@@ -253,7 +230,6 @@ export const routeTree = rootRoute.addChildren([
   skillDetailRoute,
   workflowSettingsRoute,
   workspaceDefaultsSettingsRoute,
-  operatorAccessSettingsRoute,
   globalApprovalsRoute,
   workspaceApprovalsRoute,
 ])

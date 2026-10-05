@@ -31,7 +31,7 @@ interface PrincipalRow {
   name: string
   audience: ManagementAudience
   agent_id: string | null
-  token_hash: string
+  token_hash: string | null
   grants: unknown
   expires_at: Date
   revoked_at: Date | null
@@ -69,7 +69,7 @@ export class PostgresAccessService {
       [tokenHash],
     )
     const row = result.rows[0]
-    if (!row || !sameDigest(row.token_hash, tokenHash)) {
+    if (!row?.token_hash || !sameDigest(row.token_hash, tokenHash)) {
       throw new DomainError('AUTH_INVALID', 'The supplied credential is invalid.', 401)
     }
     if (!audiences.includes(row.audience)) throw new DomainError('AUTH_WRONG_AUDIENCE', 'The credential cannot access this endpoint.', 403)

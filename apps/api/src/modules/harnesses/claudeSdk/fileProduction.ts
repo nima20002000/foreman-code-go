@@ -13,7 +13,7 @@ import type { FileToolOperation } from '../../files/tools/types.js'
 export function productionClaudeFileAdmission(input: {
   pool: pg.Pool
   binding: Exclude<ClaudeDomainBinding, { kind: 'workflow' }>
-  manager(): ClaudeNativeSessionManager | undefined
+  manager(): Pick<ClaudeNativeSessionManager, 'nativeCallbackContext' | 'callbackAuthority'> | undefined
   allowMutation: boolean
 }): ClaudeFileAdmission {
   return { current: async identity => {

@@ -1,6 +1,6 @@
 import { WorkspaceFolderPicker } from './WorkspaceFolderPicker'
-import { ProtectedAccessError } from '../auth/ProtectedAccessError'
-import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { ProtectedAccessError } from '../../shared/ui/ProtectedAccessError'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { WorkspaceDefaultsSchema, type WorkspaceDefaults } from '@foreman-code/contracts/management'
 import { Button, ErrorState, LoadingState, TextField, Textarea } from '../../shared/ui/nocturne'
 import { useWorkspaceDefaultsQuery, useUpdateWorkspaceDefaultsMutation } from '../../shared/api/settingsExperience'

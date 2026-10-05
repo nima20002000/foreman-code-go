@@ -44,11 +44,13 @@ import { approvalFixture } from './wave25ApprovalFixture.js'
  * registration are retained. Only provider transport and filesystem identity
  * qualification are synthetic. This is not a buildProductionApp/HTTP test. */
 export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerExecution: 1 | 2 = 1,
-  options: { acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
+  options: { databaseUrl?: string; acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
+    nativeSourcePersisted?: Parameters<typeof createWorkflowRepositoryServices>[2];
+    nativeCommitted?: ConstructorParameters<typeof PostgresRunRepository>[4];
     approvalNodeIds?: string[]; insertRun?: boolean; outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
     /** Exact physical closure port; omitted unless a fixture supplies native lifetimes. */
     recoverNativeProcesses?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[11] } = {}) {
-  const db = await agent3Database()
+  const db = await agent3Database(options.databaseUrl)
   const engines: LangGraphWorkflowEngine[] = []
   try {
     const f = options.fixture ?? makeCurrentWorkflowFixture(randomUUID())
@@ -98,7 +100,9 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
       const workflowCapture = createWorkflowNativeCaptureChannel()
       const reviewCapture = createReviewNativeCaptureChannel()
       const runs = new PostgresRunRepository(db.pool, workflows, locations,
-        { runtimeRoot: db.directory, ...createWorkflowRepositoryServices(workflowCapture.verify) })
+        { runtimeRoot: db.directory,
+          ...createWorkflowRepositoryServices(workflowCapture.verify, undefined, options.nativeSourcePersisted) },
+        options.nativeCommitted)
       const repository = new Wave25InteractionRepository(db.pool, new ReviewNativeProofServices(reviewCapture.verify)), budgets = new PostgresApprovalBudgetRepository(db.pool)
       const managers = new ExecutionScopedNativeSessionManagerResolver(() => provider.connection())
       const credentials = new Wave25WorkerCredentialService(db.pool, access)

@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -92,7 +93,7 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
   })
   afterAll(async () => {
     await app?.close()
-    if (storageRoot) await rm(storageRoot, { recursive: true, force: true })
+    if (storageRoot) await removeFixtureDirectory(storageRoot)
     await database?.close()
   })
 
@@ -386,10 +387,15 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
     assert.equal((await get(owner)).revision, 1)
   })
 
-  it('rejects unauthenticated, invalid bearer and worker credentials', async () => {
+  it('allows local preferences while rejecting remote clients, invalid bearer and worker credentials', async () => {
     const worker = await access.issue({ name: 'FIL-40 worker', audience: 'worker', agentId: 'synthetic-agent', grants,
       expiresAt: new Date(Date.now() + 600000) })
-    for (const authorization of [undefined, 'Bearer invalid']) {
+    const local = await app.inject({ method: 'GET', url: FILE_RETENTION_PATH, headers: { host: 'localhost' } })
+    assert.equal(local.statusCode, 200, local.body)
+    FileRetentionGetResultSchema.parse(local.json())
+    const remote = await app.inject({ method: 'GET', url: FILE_RETENTION_PATH, remoteAddress: '192.0.2.1' })
+    assert.equal(remote.statusCode, 403, remote.body)
+    for (const authorization of ['Bearer invalid', 'invalid']) {
       const response = await app.inject({ method: 'GET', url: FILE_RETENTION_PATH,
         headers: { host: 'localhost', ...(authorization ? { authorization } : {}) } })
       assert.equal(response.statusCode, 401, response.body)

@@ -86,19 +86,25 @@ export async function adoptOpenCodePublications(pool: pg.Pool, context: FileTool
   const client = await pool.connect()
   try {
     await client.query('begin')
-    const row = (await client.query<{ request_id: string; message_record: unknown }>(`select t.request_id,m.record as message_record
+    const publishedTurn = await client.query(`select 1 from file_tool_publications p
+      join file_allocations a on a.owner_principal_id=p.owner_principal_id and a.request_id=p.request_id
+      where p.binding=$1 and a.state='finalized' limit 1`, [bindingIdentity(context)])
+    const row = (await client.query<{ request_id: string; native_turn_id: string | null; message_record: unknown }>(
+      `select t.request_id,t.native_turn_id,m.record as message_record
       from operator_conversations c
       join operator_conversation_turns t on t.conversation_id=c.id and t.message_id=$2
       join operator_conversation_messages m on m.id=t.message_id and m.conversation_id=c.id
       where c.id=$1 and c.kind='agent' and c.deleted_at is null and c.native_session_id=$3
-        and t.native_turn_id=$4 and c.agent_id=$5 and c.workspace_id=$6 and c.workflow_id=$7
+        and (t.native_turn_id is null or t.native_turn_id=$4)
+        and c.agent_id=$5 and c.workspace_id=$6 and c.workflow_id=$7
         and c.origin_run_id is not distinct from $8 and c.origin_execution_id is not distinct from $9
         and t.payload->>'ownerPrincipalId'=$10
       for update of m`, [chat.conversationId, context.messageId, context.nativeSessionId,
       context.turnId, chat.agentId, chat.workspaceId, chat.workflowId, chat.runId ?? null, chat.executionId ?? null,
       context.ownerPrincipalId])).rows[0]
     if (!row) throw new DomainError('FILE_ADOPTION_MISMATCH', 'The originating native chat message is unavailable.', 409)
-    if (nativeMessageId(agentChatCorrelation(chat.conversationId, row.request_id)) !== context.turnId) {
+    if (nativeMessageId(agentChatCorrelation(chat.conversationId, row.request_id)) !== context.turnId
+      || (publishedTurn.rowCount ?? 0) > 0 && row.native_turn_id !== context.turnId) {
       throw new DomainError('FILE_ADOPTION_MISMATCH', 'The native turn does not match its receipt.', 409)
     }
     const message = MessageSchema.omit({ attachments: true }).extend({
@@ -118,6 +124,11 @@ export async function adoptOpenCodePublications(pool: pg.Pool, context: FileTool
       chat.workspaceId, chat.workflowId, chat.runId ?? null, chat.executionId ?? null])).rows[0]
     if (Number(pins?.count) !== originals.length) {
       throw new DomainError('FILE_ADOPTION_MISMATCH', 'The originating attachments have another scope or revision.', 409)
+    }
+    // Validate the prepared turn even when a crash preceded acknowledgement and publication.
+    if (!publishedTurn.rowCount) {
+      await client.query('commit')
+      return
     }
     const published = (await client.query<{ file_id: string; revision_id: string }>(`select p.file_id,p.revision_id
       from file_tool_publications p join file_allocations a

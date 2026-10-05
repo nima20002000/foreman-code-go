@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { captureOriginalCodexSession, type OriginalCodexSession } from './originalCodexSession.js'
 import { createAdmittedNativeManager } from './admittedManager.js'
 import type { ClaudeOwnedVersionObservation } from './claudeSdk/currentPin.js'
@@ -78,6 +79,8 @@ export class NativeHarnessFactories {
   constructor(private readonly config: {
     codexBinary: string
     openCodeBinary: string
+    openCodeFileStorageRoot?: string
+    workspaceRoot?: string
     appMcpEndpoint?: string
     responseJournal?: NativeResponseJournal
     instances?: HarnessInstanceRegistry
@@ -237,13 +240,21 @@ export class NativeHarnessFactories {
         throw new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE', 'Native output requires the original scoped workflow allocation.', 403)
       }
       const manager = new CodexAppServerSessionManager(input.selection?.installation.launcher.resolvedLauncher ?? this.config.codexBinary, undefined, undefined,
-        recovery, input.appMcpAccess, input.chatFiles, dependencies, undefined, input.nativeOutputs)
+        recovery, input.appMcpAccess, input.chatFiles, dependencies, undefined, input.nativeOutputs,
+        this.config.responseJournal)
       this.originalCodexManagers.set(manager, () => manager)
       result = { harness: 'codex', manager, inspector: codexMcpInspectorAdapter(manager) }
     } else if (input.harness === 'opencode') {
       const options: ManagedOpenCodeServerOptions = {
         binary: input.selection?.installation.launcher.resolvedLauncher ?? this.config.openCodeBinary, workingDirectory: input.workingDirectory,
         ownerAgentId: input.ownerAgentId, appMcpAccess: input.appMcpAccess,
+        ...(this.config.openCodeFileStorageRoot
+          ? { protectedFileStorageRoot: this.config.openCodeFileStorageRoot,
+            nativeStorage: { root: join(this.config.workspaceRoot ?? input.workingDirectory, 'opencode-sessions'),
+              owner: recovery?.owner ?? `${input.role}:${input.ownerAgentId}:${input.workingDirectory}` } } : {}),
+        ...(input.chatFiles && this.config.openCodeFileStorageRoot
+          ? { managedFileRoot: join(this.config.workspaceRoot ?? input.workingDirectory, 'chat-files') } : {}),
+        ...(input.role === 'workflow' && recovery ? { restartDetachable: true as const } : {}),
         ...(recovery ? { processRecovery: recovery } : {}),
         ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
         ...(input.advancedConfiguration ? { advancedConfiguration: input.advancedConfiguration } : {}),
@@ -470,8 +481,10 @@ export class NativeHarnessFactories {
         if (qualified.binary !== pin.binary) throw new DomainError('CODEX_DIAGNOSTIC_PIN_MISMATCH', 'The diagnostic binary differs from its native session pin.', 409)
         return (native?.assertUnchanged ?? assertCodexUnchanged)(qualified)
       }),
-      qualifyModel: (configuration, _binary, _cwd, _environment, request) => track(() =>
-        (native?.qualifyModel ?? qualifyNativeCodexModel)(configuration, pin.binary, pin.cwd, { ...environment }, combined(request), recovery)),
+      qualifyModel: (configuration, _binary, _cwd, _environment, request, _recovery, inspection) => track(() =>
+        (native?.qualifyModel ?? qualifyNativeCodexModel)(configuration, pin.binary, pin.cwd,
+          { ...environment }, combined(request), recovery,
+          inspection ? { ...inspection, assertUnchanged: io.assertUnchanged } : undefined)),
       runCommand: (_binary, args, _cwd, request, _environment, options) => track(() => {
         const readonlyCommand = (args.length === 4 && args[0] === 'mcp' && args[1] === 'get' && args[3] === '--json')
           || (args.length === 3 && args[0] === 'mcp' && args[1] === 'list' && args[2] === '--json')

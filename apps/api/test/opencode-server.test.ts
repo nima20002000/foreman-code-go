@@ -3,10 +3,12 @@ import assert from 'node:assert/strict'
 import { it } from 'vitest'
 
 import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
+import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { nativeMessageId, nativePolicy, normalizedHistory, object, OPENCODE_EVENT_LIMIT, OPENCODE_ID_LIMIT } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation,
   matchesOpenCodeHistorySource } from '../src/modules/harnesses/opencodeReconciliation.js'
+import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
 import { forgetQualifiedProfile, rememberQualifiedProfile } from '../src/modules/harnesses/qualification/profiles.js'
 
 import { advanced, brokenBody, configuration, environment, errorCode, FixtureServer, json, manager, permission, request, sessionFor } from './opencode-fixtures.js'
@@ -16,6 +18,42 @@ async function collect(events: AsyncIterable<NativeHarnessEvent>) {
   for await (const event of events) result.push(event)
   return result
 }
+
+it('carries confirmed non-creation from MCP preflight and permits an explicit retry after cleanup', async () => {
+  const server = new FixtureServer()
+  const native = manager(server)
+  const harness = configuration()
+  harness.advanced = { ...advanced(), mcp: { ...advanced().mcp, serverEnabled: { missing: true } } }
+  await assert.rejects(native.createSession({ request: request(harness), environment: environment() }), (error) => {
+    assert(error instanceof NativeDeliveryError)
+    assert.equal(error.operation, 'session_creation')
+    assert.equal(error.delivery, 'not_sent')
+    assert.equal(error.cleanup, 'confirmed')
+    assert.equal(error.result.error?.code, 'OPENCODE_MCP_SERVER_NOT_CONFIGURED')
+    return true
+  })
+  assert.equal(server.calls.filter((call) => call.method === 'POST' && call.path.startsWith('/session?')).length, 0)
+  assert.equal(server.disposals, 1)
+  const session = await sessionFor(native)
+  assert(server.sessionInfos.has(session.nativeSessionId))
+  assert.equal(server.calls.filter((call) => call.method === 'POST' && call.path.startsWith('/session?')).length, 1)
+  await native.dispose()
+})
+
+it('keeps creation uncertain after a successful POST with an unreadable response', async () => {
+  const server = new FixtureServer()
+  server.beforeRequest = (path, init) => path.startsWith('/session?') && init.method === 'POST'
+    ? brokenBody() : undefined
+  const native = manager(server)
+  await assert.rejects(sessionFor(native), (error) => {
+    assert(error instanceof NativeDeliveryError)
+    assert.equal(error.operation, 'session_creation')
+    assert.equal(error.delivery, 'unknown')
+    return true
+  })
+  assert.equal(server.calls.filter((call) => call.method === 'POST' && call.path.startsWith('/session?')).length, 1)
+  await native.dispose()
+})
 
 it('reads the server version during ensure before checking its profile', async () => {
   const server = new FixtureServer()
@@ -456,7 +494,13 @@ it('[F17] session creation uses mutation certainty for accepted-body failures an
       return undefined
     }
     await assert.rejects(sessionFor(manager(server)), (error: unknown) => {
-      assert(error instanceof OpenCodeNativeDeliveryError); assert.equal(error.certainty, 'uncertain'); return true
+      assert(error instanceof NativeDeliveryError)
+      assert.equal(error.operation, 'session_creation')
+      assert.equal(error.delivery, 'unknown')
+      assert.equal(error.cleanup, 'confirmed')
+      assert(error.cause instanceof OpenCodeNativeDeliveryError)
+      assert.equal(error.cause.certainty, 'uncertain')
+      return true
     })
     assert(server.sessionInfos.has('ses_committed'))
     assert.equal(server.calls.filter((call) => call.method === 'POST' && call.path.startsWith('/session?')).length, 1)
@@ -506,6 +550,36 @@ it('[F20] hides actual reasoning updates and deltas before retention, reconnect 
   assert(!JSON.stringify(await native.history(session)).includes('PRIVATE_REASONING'))
   const states = (native as unknown as { sessions: Map<string, { events: NativeHarnessEvent[] }> }).sessions
   assert(!JSON.stringify(states.get(session.nativeSessionId)?.events).includes('PRIVATE_REASONING'))
+})
+
+it('retains newly verified terminal source after attaching an original completed turn', async () => {
+  const server = new FixtureServer()
+  const original = manager(server)
+  const session = await sessionFor(original)
+  const correlationId = 'execution:execution-1'
+  server.user(correlationId)
+  server.complete(correlationId, 'original completed answer')
+  const restored = manager(server)
+  try {
+    await restored.attachSession(session, { request: request(), environment: environment(), correlationId })
+    const first = await restored.reconcile(session, correlationId)
+    const repeated = await restored.reconcile(session, correlationId)
+    for (const history of [first, repeated]) {
+      assert.equal(history.terminalResult?.outcome, 'succeeded')
+      assertOriginalWorkflowTerminal({ id: 'execution-1', agentId: 'agent-1' }, session, history)
+      const marker = history.events.find(event => event.type === OPENCODE_RECONCILIATION_EVENT)
+      assert(marker)
+      const proof = readOpenCodeReconciliation(marker, { ownerAgentId: 'agent-1',
+        nativeSessionId: session.nativeSessionId, providerVersion: session.providerVersion,
+        correlationId, nativeTurnId: nativeMessageId(correlationId) })
+      assert(proof)
+      assert(history.events.some(event => matchesOpenCodeHistorySource(proof, event)))
+    }
+    assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 0)
+  } finally {
+    await restored.dispose()
+    await original.dispose()
+  }
 })
 
 it('[F21] authoritative history reconstructs missed tool completion and final output after replacement', async () => {
@@ -592,7 +666,7 @@ it('[F26] requires evidence for every named variant and represents no selection 
   const session = await sessionFor(native, noVariant)
   server.onPrompt = () => { server.complete('no-variant') }
   await collect(native.startTurn(session, { prompt: 'hello', clientCorrelationId: 'no-variant' }))
-  assert(!Object.hasOwn(server.calls.find((call) => call.path.includes('/prompt_async'))!.body!, 'variant'))
+  assert.equal(server.calls.find((call) => call.path.includes('/prompt_async'))!.body!.variant, '')
 })
 
 it('[F27] bounds transient event and identity state while older authoritative history stays pageable', async () => {

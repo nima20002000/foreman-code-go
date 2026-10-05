@@ -117,11 +117,18 @@ describe('NIM-2691 native work result boundary', () => {
         workflowNodeId: node.id, agentId: node.agentId, agentConfigurationVersionId: configuration.id,
         attempt: 1, input, state: 'starting', createdAt: fixture.createdAt,
         workingDirectory: directory, runtimeDirectory })
+      const executionContext = {
+        parentRequest: { requestId, requesterNodeId: version.definition.nodes[0]!.id },
+      }
       let received: HarnessExecutionRequest | undefined
       const observer = repeatNativeObserver({ run, version,
         owner: { runId: run.id, assertOwned() {}, client: {} } as never,
         store: { readExecution: async () => ({ execution, ref: { nodeId: node.id, occurrence: null } }),
           claimLaunch: async () => execution, beginNativeEntry: async () => undefined,
+          readWorkExecutionContext: async (id: string) => {
+            expect(id).toBe(execution.id)
+            return executionContext
+          },
           assertExecutionAdmission: async () => undefined } as never,
         native: { observeExact: async (value: { request: HarnessExecutionRequest }) => {
           received = value.request
@@ -135,6 +142,7 @@ describe('NIM-2691 native work result boundary', () => {
       })
       await observer(execution, new AbortController().signal)
       expect(received?.input).toEqual(input)
+      expect(received?.executionContext).toEqual(executionContext)
       const routing = received?.initialPrompt?.split('\n').find((line) => line.startsWith('{'))
       expect(routing && JSON.parse(routing)).toEqual({ kind: 'return', requestId })
     } finally {

@@ -8,7 +8,7 @@ import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { RunsSelectorSearchSchema } from '../runs-selector/search'
 import { runReadErrorLabel, useSelectedRunSnapshot } from '../runs-selector/query'
 import { createChatVisit, type SelectedChatBinding } from '../conversations/agentChat/selectedRunChatModel'
-import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { readRunActivities, readRunActivityFeed, mergeOlderRunActivities, isTransientRunActivityError,
   runActivitiesKey, runActivitiesRefetchInterval, type RunActivityFeed, type RunActivityScope } from './runActivitiesQuery'
 import './activities.css'

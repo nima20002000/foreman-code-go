@@ -9,7 +9,8 @@ if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 256) {
 
 export default defineConfig({
   test: {
-    globalSetup: ['../../scripts/vitest-heavy-setup.mjs'],
+    globalSetup: ['../../scripts/vitest-heavy-setup.mjs', '../../scripts/vitest-test-resources.mjs'],
+    setupFiles: ['./test/setupResources.ts'],
     // Leave CPU headroom for the Vitest coordinator and application processes.
     maxWorkers,
   },

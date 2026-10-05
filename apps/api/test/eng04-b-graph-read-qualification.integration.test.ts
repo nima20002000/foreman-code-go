@@ -49,7 +49,7 @@ describe.skipIf(!postgresEnabled)('ENG04-B primary canonical read qualification'
     expect(mcp.result?.isError).not.toBe(true)
     expect(remote).toEqual(http.json())
     expect(http.headers['cache-control']).toBe('private, no-store')
-    expect(http.headers.vary).toBe('Authorization, Cookie')
+    expect(http.headers.vary).toBe('Authorization')
     for (const secret of [privateCanary, db.directory, t.writer.token, token, t.writer.principal.id]) {
       expect(http.body).not.toContain(secret)
       expect(JSON.stringify(remote)).not.toContain(secret)

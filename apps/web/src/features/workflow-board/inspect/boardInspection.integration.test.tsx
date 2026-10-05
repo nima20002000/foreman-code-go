@@ -143,7 +143,8 @@ describe('Run inspection inside the one mounted Board', () => {
     const panel = await screen.findByRole('dialog', { name: 'Native child' })
     await within(panel).findByText('Child answer')
     expect(history.location.hash).toContain('selectedSubagentId=parent-child')
-    expect(within(panel).getByText("View only — Codex subagents can't be messaged or interrupted from here.")).toBeVisible()
+    expect(within(panel).getByText('Controls are unavailable for this subagent right now.')).toBeVisible()
+    expect(within(panel).queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: 'Interrupt' })).not.toBeInTheDocument()
     await userEvent.click(within(panel).getByRole('button', { name: 'Load more messages' }))
     await within(panel).findByText('Earlier child answer')
@@ -260,15 +261,21 @@ describe('Run inspection inside the one mounted Board', () => {
     const { cache } = await mount(href(scope, { runNodeId: fixture.first.id }))
     await screen.findByRole('button', { name: 'Refresh accepted Run facts' })
     await screen.findByRole('region', { name: 'Selected Run actions' })
-    await waitFor(() => expect(cache.getQueryState(currentRunKey(scope)))
-      .toMatchObject({ status: 'success', fetchStatus: 'idle' }))
-    expect(cache.getQueryData(currentRunKey(scope))).toMatchObject({ state: { run: { cleanupPending: true } } })
+    // Unrelated Board queries keep polling; settlement depends on this Run's readbacks.
+    await waitFor(() => expect(cache.getQueryState<typeof current>(currentRunKey(scope))).toMatchObject({
+      status: 'success', fetchStatus: 'idle', data: { state: { run: { cleanupPending: true } } },
+    }))
+    const stop = await screen.findByRole('region', { name: 'Stop and cleanup' })
+    await waitFor(() => expect(within(stop).getByRole('button', { name: 'Verify cleanup settlement' })).toBeEnabled())
     expect(readBoardStop(scope)).toEqual(journal)
     await act(async () => {
       current.state.run.cleanupPending = false
       current.asOfSequence = '1'
       await cache.invalidateQueries({ queryKey: currentRunKey(scope), exact: true })
     })
+    await waitFor(() => expect(cache.getQueryData<typeof current>(currentRunKey(scope))).toMatchObject({
+      asOfSequence: '1', state: { run: { cleanupPending: false } },
+    }))
     await waitFor(() => expect(readBoardStop(scope)).toBeUndefined())
     expect(fixture.mock.calls.filter((call) => call.method === 'POST')).toEqual([])
   })

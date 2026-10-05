@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { CodexAppServerSessionManager, type CodexSessionDependencies, type CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
 import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 
@@ -19,7 +21,9 @@ function replay() {
     assertUnchanged: async () => { calls.push('assertUnchanged') },
     runCommand: async (_binary, args) => {
       calls.push(args.join(' '))
-      return { stdout: args[1] === 'list' ? '[]' : '', stderr: '', exitCode: args[1] === 'get' ? 1 : 0, exitSignal: null }
+      return { stdout: args[1] === 'list' ? '[]' : '',
+        stderr: args[1] === 'get' ? `Error: No MCP server named '${args[2]}' found.` : '',
+        exitCode: args[1] === 'get' ? 1 : 0, exitSignal: null }
     },
     qualifyModel: async () => { calls.push('qualifyModel') },
     id: () => 'recorded-connection', now: () => new Date('2026-10-01T00:00:00Z'),
@@ -74,31 +78,131 @@ describe('Codex production/replay dependency boundary', () => {
   })
 })
 
-describe('Codex original placed inspection directory',()=>{
-  it.each([undefined,'/actual-admitted-source/src'])('qualifies and inspects MCP in the same actual directory with option %s',async workingDirectory=>{
-    const f=replay(),qualified:string[]=[],commands:string[]=[]
-    const qualify=f.dependencies.qualify
-    f.dependencies.qualify=async(...args)=>{qualified.push(args[2]);return qualify(...args)}
-    f.dependencies.runCommand=async(...args)=>{
-      commands.push(args[2])
-      if (args[1][1] === 'list') {
-        assert.deepEqual(args[1], ['mcp', 'list', '--json'])
-        return { stdout: JSON.stringify([{ name: 'graphql' }]), stderr: '', exitCode: 0 }
-      }
-      assert.deepEqual(args[1], ['mcp', 'get', 'graphql', '--json'])
-      return { stdout: JSON.stringify({ enabled: false, transport: { type: 'stdio' } }), stderr: '', exitCode: 0 }
-    }
-    const manager=new CodexAppServerSessionManager('/nonexistent-recorded-codex',undefined,undefined,undefined,undefined,undefined,f.dependencies,
-      workingDirectory?{workingDirectory}:{})
-    await manager.capabilities()
-    const inspected = await manager.inspectMcp()
-    assert.equal(inspected.serverName, 'graphql')
-    assert.equal(inspected.state, 'disabled')
-    await manager.qualificationEvidence()
-    assert.deepEqual(qualified,[workingDirectory??process.cwd(),workingDirectory??process.cwd(),workingDirectory??process.cwd()])
-    assert.deepEqual(commands,[workingDirectory??process.cwd(),workingDirectory??process.cwd()])
-    assert(!f.calls.includes('start'))
-    assert(!f.calls.includes('qualifyModel'))
-    await manager.shutdown()
+describe('Codex native model discovery', () => {
+  it('does not publish fallback options after native diagnostics report a failed remote refresh', async () => {
+    const f = replay()
+    f.dependencies.transport = (...args) => ({
+      start: async () => { args[10]?.() }, close: async () => undefined,
+      respond: async () => undefined, reject: async () => undefined,
+      request: async method => {
+        assert.equal(method, 'model/list')
+        return { data: [], nextCursor: null }
+      },
+    })
+    const manager = new CodexAppServerSessionManager('/recorded-codex',
+      undefined, undefined, undefined, undefined, undefined, f.dependencies)
+    try {
+      await assert.rejects(manager.discoverModels('/recorded-workspace'), (error: unknown) => {
+        assert(error instanceof HarnessExecutionError)
+        assert.equal(error.result.error?.code, 'CODEX_MODEL_CATALOG_UNAVAILABLE')
+        assert.equal(error.result.error?.retryable, true)
+        return true
+      })
+      assert(!f.calls.includes('thread/start'))
+    } finally { await manager.shutdown() }
   })
+
+  it('publishes native model and effort capabilities from a metadata-only inspection', async () => {
+    const f = replay()
+    f.dependencies.transport = () => ({
+      start: async () => undefined, close: async () => undefined,
+      respond: async () => undefined, reject: async () => undefined,
+      request: async method => {
+        assert.equal(method, 'model/list')
+        return { data: [{ model: 'recorded-model', displayName: 'Recorded model', hidden: false,
+          supportedReasoningEfforts: [{ reasoningEffort: 'medium' }], additionalSpeedTiers: ['fast'] }], nextCursor: null }
+      },
+    })
+    const manager = new CodexAppServerSessionManager('/recorded-codex',
+      undefined, undefined, undefined, undefined, undefined, f.dependencies)
+    try {
+      assert.deepEqual((await manager.discoverModels('/recorded-workspace')).models, [{
+        id: 'recorded-model', name: 'Recorded model', defaultPriority: 0,
+        reasoningEfforts: ['medium'], variants: [], serviceTiers: ['standard', 'priority'],
+      }])
+      assert(!f.calls.includes('thread/start'))
+    } finally { await manager.shutdown() }
+  })
+})
+
+describe('Codex original placed inspection directory', () => {
+  it.each(APP_MCP_SERVER_NAMES.flatMap(serverName => [undefined, '/actual-admitted-source/src']
+    .map(workingDirectory => ({ serverName, workingDirectory }))))(
+    'qualifies and reads a disabled $serverName entry in the accepted directory with option $workingDirectory',
+    async ({ serverName, workingDirectory }) => {
+      const f = replay()
+      const qualified: string[] = []
+      const commands: Array<{ args: string[]; cwd: string }> = []
+      const qualify = f.dependencies.qualify
+      f.dependencies.qualify = async (...args) => {
+        qualified.push(args[2])
+        return qualify(...args)
+      }
+      f.dependencies.runCommand = async (_binary, args, cwd) => {
+        commands.push({ args, cwd })
+        if (args[2] !== serverName) return { stdout: '',
+          stderr: `Error: No MCP server named '${args[2]}' found.`, exitCode: 1 }
+        assert.deepEqual(args, ['mcp', 'get', serverName, '--json'])
+        return { stdout: JSON.stringify({ name: serverName, enabled: false, transport: { type: 'stdio' } }),
+          stderr: '', exitCode: 0 }
+      }
+      const manager = new CodexAppServerSessionManager('/nonexistent-recorded-codex', undefined, undefined,
+        undefined, undefined, undefined, f.dependencies, workingDirectory ? { workingDirectory } : {})
+      try {
+        await manager.capabilities()
+        const detected = await manager.inspectMcp()
+        await manager.qualificationEvidence()
+        const cwd = workingDirectory ?? process.cwd()
+        assert.deepEqual(qualified, [cwd, cwd, cwd])
+        assert.deepEqual(commands, ['foreman-code', 'graphql'].map(name => ({ args: ['mcp', 'get', name, '--json'], cwd })))
+        assert.equal(detected.serverName, serverName)
+        assert.equal(detected.state, 'disabled')
+        assert(!f.calls.includes('start'))
+        assert(!f.calls.includes('qualifyModel'))
+      } finally { await manager.shutdown() }
+    })
+  for (const serverName of [undefined, 'foreman-code', 'graphql']) {
+    it.each([undefined, '/actual-admitted-source/src'])(
+      `qualifies and inspects ${serverName ?? 'absent'} MCP in the accepted directory with option %s`,
+      async (workingDirectory) => {
+        const f = replay()
+        const qualified: string[] = []
+        const commands: Array<{ args: string[]; cwd: string }> = []
+        const qualify = f.dependencies.qualify
+        f.dependencies.qualify = async (...args) => {
+          qualified.push(args[2])
+          return qualify(...args)
+        }
+        f.dependencies.runCommand = async (_binary, args, cwd) => {
+          commands.push({ args, cwd })
+          if (args[0] === 'mcp' && args[1] === 'list') return {
+            stdout: JSON.stringify(serverName ? [{ name: serverName }] : []),
+            stderr: '', exitCode: 0, exitSignal: null,
+          }
+          if (args[1] === 'get' && args[2] !== serverName) return { stdout: '',
+            stderr: `Error: No MCP server named '${args[2]}' found.`, exitCode: 1, exitSignal: null }
+          assert.deepEqual(args, ['mcp', 'get', serverName, '--json'])
+          return { stdout: JSON.stringify({ enabled: true, transport: { type: 'streamable_http',
+            url: 'http://127.0.0.1:3000/mcp', bearer_token_env_var: 'FOREMAN_CODE_MCP_TOKEN' } }),
+          stderr: '', exitCode: 0, exitSignal: null }
+        }
+        const manager = new CodexAppServerSessionManager('/nonexistent-recorded-codex', undefined, undefined,
+          undefined, undefined, undefined, f.dependencies, workingDirectory ? { workingDirectory } : {})
+        try {
+          await manager.capabilities()
+          const detected = await manager.inspectMcp()
+          await manager.qualificationEvidence()
+          const cwd = workingDirectory ?? process.cwd()
+          assert.deepEqual(qualified, [cwd, cwd, cwd])
+          const expected = ['foreman-code', 'graphql'].map((name) => ({ args: ['mcp', 'get', name, '--json'], cwd }))
+          assert.deepEqual(commands, expected)
+          assert.equal(detected.serverName, serverName ?? 'foreman-code')
+          assert.equal(detected.state, serverName ? 'status_unavailable' : 'not_detected')
+          assert.equal(detected.credentialEnvironmentVariable, serverName ? 'FOREMAN_CODE_MCP_TOKEN' : null)
+          assert(!f.calls.includes('start'))
+          assert(!f.calls.includes('qualifyModel'))
+        } finally { await manager.shutdown() }
+      },
+    )
+  }
 })

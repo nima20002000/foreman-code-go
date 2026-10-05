@@ -30,7 +30,7 @@ export async function readClaudeMessagePublications(query: Pick<pg.PoolClient, '
     join operator_conversation_messages m on m.id=t.message_id and m.conversation_id=c.id
       and m.client_request_id=t.request_id and m.role='user'
     where c.id=$1 and c.harness='claude' and c.deleted_at is null
-      and c.kind in ('agent','operator') and t.intent<>'steer' and t.message_id=any($2::text[])
+      and c.kind in ('agent','operator') and (c.kind='operator' or t.intent<>'steer') and t.message_id=any($2::text[])
       and t.payload->'nativeSubmission'->>'kind'='message'
       and length(t.payload->'nativeSubmission'->>'nativeSessionId')>0
       and length(t.payload->'nativeSubmission'->>'nativeMessageId')>0

@@ -1,9 +1,17 @@
+import { waitForStartedBranches } from './helpers/nativeAcceptanceState.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { existsSync } from 'node:fs'
+import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import pg from 'pg'
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema, HarnessExecutionSchema,
   type NativeSessionReference } from '@foreman-code/contracts'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -17,6 +25,13 @@ import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCh
 import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
 import { nativeAcceptanceBinaries, runEng03NativeScenario, type Eng03NativeControl } from './helpers/eng03NativeAcceptance.js'
 import { qualifyEng03OpenCode } from './helpers/eng03OpenCodeQualification.js'
+import { configureNativeWorkflowMcp } from './helpers/nativeWorkflowMcp.js'
+import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
+import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
+import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
+import { provisionTestResources } from '../../../scripts/test-resources.mjs'
+import { stopGroup } from '../../../scripts/integration-process.mjs'
 
 describe('acceptance Job binary configuration', () => {
   it('denies missing in-image binaries instead of selecting owner installations', () => {
@@ -36,20 +51,10 @@ describe('acceptance Job binary configuration', () => {
   })
 })
 
-async function startedBranches({ pool, runId, nodeIds, runs }: Eng03NativeControl) {
-  const deadline = Date.now() + 120_000
-  let started: Array<{ execution_id: string; native_session_id: string }> = []
-  while (Date.now() < deadline) {
-    started = (await pool.query<{ execution_id: string; native_session_id: string }>(
-      `select distinct he.id as execution_id,he.record->>'nativeSessionId' as native_session_id
-       from harness_executions he join harness_native_events ne on ne.execution_id=he.id
-       where he.run_id=$1 and he.workflow_node_id=any($2::text[])
-         and ne.record->>'type'='turn.started' and he.record->>'nativeSessionId' is not null`,
-      [runId, [nodeIds[1], nodeIds[2]]],
-    )).rows
-    if (started.length === 2 || (await runs.get(runId))?.executionState === 'completed') break
-    await delay(250)
-  }
+const require = createRequire(import.meta.url)
+
+async function startedBranches(context: Eng03NativeControl) {
+  const started = await waitForStartedBranches(context)
   expect(started).toHaveLength(2)
   expect(new Set(started.map((item) => item.native_session_id)).size).toBe(2)
   return started
@@ -57,9 +62,111 @@ async function startedBranches({ pool, runId, nodeIds, runs }: Eng03NativeContro
 
 /** Paid-provider, task-owned internal qualification. Public app acceptance is separate. */
 describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live native lifecycle', () => {
-  let closeQualification: (() => Promise<void>) | undefined
-  beforeAll(async () => { closeQualification = await qualifyEng03OpenCode() }, 360_000)
-  afterAll(async () => { await closeQualification?.() }, 30_000)
+  it('uses the fixture MCP launcher and rejects an unmanaged replacement before credential delivery', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'native-workflow-mcp-'))
+    const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? harnessBinaries(process.env).codexBinary
+    const manager = new CodexAppServerSessionManager(codexBinary)
+    let restore: (() => Promise<void>) | undefined
+    try {
+      restore = await configureNativeWorkflowMcp({ projectDirectory: directory,
+        runtimeDirectory: directory, codexBinary })
+      const configured = await manager.inspectMcpConfiguration(directory)
+      expect(configured.configured.automaticEndpoint).toBe(true)
+      const detection = new McpDetectionService(codexMcpInspectorAdapter(manager), 'http://127.0.0.1:1/mcp')
+      const input = { harness: 'codex' as const, runnerId: 'fixture', workingDirectory: directory }
+      expect((await detection.preflight(input)).detection.state).toBe('status_unavailable')
+      await writeFile(join(process.env.CODEX_HOME!, 'config.toml'), [
+        `[mcp_servers.${configured.serverName}]`,
+        `command = ${JSON.stringify(process.execPath)}`,
+        'args = ["--version"]',
+        `env_vars = [${JSON.stringify(configured.configured.bearerTokenEnvironmentVariable)}]`,
+        '',
+      ].join('\n'), { mode: 0o600 })
+      await expect(detection.preflight(input)).rejects.toMatchObject({ code: 'APP_MCP_PREFLIGHT_FAILED' })
+    } finally {
+      try { await manager.dispose() }
+      finally {
+        try { await restore?.() }
+        finally { await removeFixtureDirectory(directory) }
+      }
+    }
+  }, 90_000)
+  it.each(['unset', 'enabled'])(
+    'retains the acceptance helper database and runtime after uncertain closure with keep-runtime %s', async keep => {
+      const input = { ...process.env }
+      delete input.FOREMAN_CODE_TEST_ROOT
+      delete input.FOREMAN_CODE_TEST_OWNER
+      const resources = await provisionTestResources(input)
+      const environment = { ...resources.environment }
+      if (keep === 'enabled') environment.ENG03_A_KEEP_RUNTIME = '1'
+      else delete environment.ENG03_A_KEEP_RUNTIME
+      const observation = join(environment.FOREMAN_CODE_TEST_ROOT!, 'acceptance-retention.json')
+      const probe = fileURLToPath(new URL('./helpers/nativeAcceptanceRetentionProbe.ts', import.meta.url))
+      const child = spawn(process.execPath, ['--import', require.resolve('tsx'), probe, observation], {
+        env: environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      child.stdout?.resume()
+      child.stderr?.resume()
+      const errors: unknown[] = []
+      try {
+        const [code] = await once(child, 'exit', { signal: AbortSignal.timeout(200_000) })
+        expect(code).toBe(0)
+        const reported = JSON.parse(await readFile(observation, 'utf8')) as {
+          runId: string; artifactPath: string; branchCount: number
+        }
+        expect(reported.branchCount).toBe(2)
+        const artifact = JSON.parse(await readFile(reported.artifactPath, 'utf8')) as {
+          resources: { invocation: { directory: string; token: string }; cleanupId: string;
+            root: string; schema: string; registryDirectory: string }
+          resourcesRetained: boolean
+        }
+        expect(artifact.resourcesRetained).toBe(true)
+        expect(existsSync(artifact.resources.registryDirectory)).toBe(true)
+        await expect(resources.close()).rejects.toThrow('cleanup remains unconfirmed')
+        const pool = new pg.Pool({ connectionString: resources.environment.TEST_DATABASE_URL,
+          options: `-c search_path=${artifact.resources.schema}`, max: 1 })
+        try {
+          expect((await pool.query('select id from runs where id=$1', [reported.runId])).rows)
+            .toEqual([{ id: reported.runId }])
+        } finally { await pool.end() }
+        const registryModule = new URL('../src/modules/harnesses/recovery/processRegistry.ts', import.meta.url).href
+        const resourcesModule = new URL('../../../scripts/test-resources.mjs', import.meta.url).href
+        const recovery = spawn(process.execPath, ['--import', require.resolve('tsx'), '--input-type=module', '-e', `
+          import pg from ${JSON.stringify(pathToFileURL(require.resolve('pg')).href)};
+          import { NativeProcessRegistry } from ${JSON.stringify(registryModule)};
+          import { completeTestResourceCleanup, dropFixtureSchema, ownedTestDatabaseUrl, removeFixtureDirectory }
+            from ${JSON.stringify(resourcesModule)};
+          const saved = ${JSON.stringify(artifact.resources)};
+          const registry = new NativeProcessRegistry(saved.registryDirectory);
+          for (const owner of new Set(registry.snapshot().launches.map(launch => launch.owner))) {
+            if (!await registry.closeOwner(owner)) throw new Error('Native closure remains unconfirmed');
+          }
+          const pool = new pg.Pool({ connectionString: ownedTestDatabaseUrl(), max: 1 });
+          try { await dropFixtureSchema(pool, saved.schema); } finally { await pool.end(); }
+          await removeFixtureDirectory(saved.root);
+          completeTestResourceCleanup(saved.invocation, saved.cleanupId);
+        `], { env: resources.environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+        recovery.stdout?.resume()
+        recovery.stderr?.resume()
+        try {
+          const [code] = await once(recovery, 'exit')
+          expect(code).toBe(0)
+        } finally { await stopGroup(recovery.pid) }
+        expect(existsSync(artifact.resources.root)).toBe(false)
+        await resources.close()
+        expect(existsSync(resources.environment.FOREMAN_CODE_TEST_ROOT!)).toBe(false)
+      } catch (error) { errors.push(error) }
+      finally {
+        try { await stopGroup(child.pid) }
+        catch (error) { errors.push(error) }
+        if (existsSync(resources.environment.FOREMAN_CODE_TEST_ROOT!)) {
+          try { await resources.close() }
+          catch (error) { errors.push(error) }
+        }
+      }
+      if (errors.length) throw new AggregateError(errors, 'Acceptance retention probe failed')
+    }, 240_000)
+
   it('E03-L01 stops two positively started Codex branches without starting Reviewer', async () => {
     let started: Array<{ execution_id: string; native_session_id: string }> = []
     const result = await runEng03NativeScenario('E03-L01', 'codex', 'codex', {
@@ -251,168 +358,174 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     }, null, 2))
   }, 180_000)
 
-  it('E03-A01 isolates a native approval wait from its progressing sibling', async () => {
-    const outside = await mkdtemp(join(tmpdir(), 'eng03-c-approval-'))
-    const target = join(outside, 'approved.txt')
-    const command = `echo APPROVED > '${target}'`
-    let interactionId = '', sessionId = '', siblingActiveAtWait = false
-    let approvalEvidence: unknown
-    try {
-      const result = await runEng03NativeScenario('E03-A01', 'opencode', 'codex', {
-        harnessOverrides: { A: { harness: 'opencode', model: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna',
-          variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false,
-          advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-            permissionRules: [{ permission: 'bash', pattern: '*', effect: 'ask' }] } } },
-        prompts: { A: [
-          `Use the shell tool once to run exactly: ${command}.`,
-          'Leave workdir unset so the shell uses the accepted project directory.',
-          'Do not inspect directories, read files, or run any other commands.',
-          'This is a task-owned output path outside your project.',
-          'Wait for the User approval, finish the command, and end with A-APPROVED.',
-        ].join(' '),
-          B: 'Read the accepted Entry result. Without tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. End with B-PROGRESSED.' },
-        control: async ({ pool, runId, nodeIds, runs, approvals, interactions, budgets, engine, startTask }) => {
-          const controlStarted = Date.now()
-          const progress = (stage: string) => process.stdout.write(`ENG03 A01 progress ${JSON.stringify({
-            runId, stage, elapsedMs: Date.now() - controlStarted,
-          })}\n`)
-          progress('control started')
-          const deadline = Date.now() + 120_000
-          let pending: ReturnType<typeof DurableInteractionSchema.parse> | undefined
-          let observedInterruptId: string | undefined
-          while (Date.now() < deadline) {
-            const row = (await pool.query<{ record: unknown }>(
-              `select record from durable_interactions where run_id=$1 order by created_at limit 1`, [runId],
-            )).rows[0]
-            if (row) {
-              pending = DurableInteractionSchema.parse(row.record)
-              interactionId = pending.id; sessionId = pending.nativeSessionId
-              if (pending.graphInterruptId && pending.graphInterruptId !== observedInterruptId) {
-                observedInterruptId = pending.graphInterruptId
-                progress('approval bound')
+  describe('OpenCode approval lifecycle', () => {
+    let closeQualification: (() => Promise<void>) | undefined
+    beforeAll(async () => { closeQualification = await qualifyEng03OpenCode() }, 360_000)
+    afterAll(async () => { await closeQualification?.() }, 30_000)
+
+    it('E03-A01 isolates a native approval wait from its progressing sibling', async () => {
+      const outside = await mkdtemp(join(tmpdir(), 'eng03-c-approval-'))
+      const target = join(outside, 'approved.txt')
+      const command = `echo APPROVED > '${target}'`
+      let interactionId = '', sessionId = '', siblingActiveAtWait = false
+      let approvalEvidence: unknown
+      try {
+        const result = await runEng03NativeScenario('E03-A01', 'opencode', 'codex', {
+          harnessOverrides: { A: { harness: 'opencode', model: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna',
+            variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false,
+            advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+              permissionRules: [{ permission: 'bash', pattern: '*', effect: 'ask' }] } } },
+          prompts: { A: [
+            `Use the shell tool once to run exactly: ${command}.`,
+            'Leave workdir unset so the shell uses the accepted project directory.',
+            'Do not inspect directories, read files, or run any other commands.',
+            'This is a task-owned output path outside your project.',
+            'Wait for the User approval, finish the command, and end with A-APPROVED.',
+          ].join(' '),
+            B: 'Read the accepted Entry result. Without tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. End with B-PROGRESSED.' },
+          control: async ({ pool, runId, nodeIds, runs, approvals, interactions, budgets, engine, startTask }) => {
+            const controlStarted = Date.now()
+            const progress = (stage: string) => process.stdout.write(`ENG03 A01 progress ${JSON.stringify({
+              runId, stage, elapsedMs: Date.now() - controlStarted,
+            })}\n`)
+            progress('control started')
+            const deadline = Date.now() + 120_000
+            let pending: ReturnType<typeof DurableInteractionSchema.parse> | undefined
+            let observedInterruptId: string | undefined
+            while (Date.now() < deadline) {
+              const row = (await pool.query<{ record: unknown }>(
+                `select record from durable_interactions where run_id=$1 order by created_at limit 1`, [runId],
+              )).rows[0]
+              if (row) {
+                pending = DurableInteractionSchema.parse(row.record)
+                interactionId = pending.id; sessionId = pending.nativeSessionId
+                if (pending.graphInterruptId && pending.graphInterruptId !== observedInterruptId) {
+                  observedInterruptId = pending.graphInterruptId
+                  progress('approval bound')
+                }
+                const sibling = (await readCurrentExecutions(runs, runId)).find((item) => item.workflowNodeId === nodeIds[2])
+                const nativeStarted = (await pool.query(`select 1 from harness_native_events where execution_id=$1
+                  and record->>'type'='turn.started' limit 1`, [sibling?.id ?? ''])).rowCount === 1
+                if (nativeStarted && sibling?.state !== 'completed') siblingActiveAtWait = true
+                if (pending.graphInterruptId && (await runs.get(runId))?.executionState === 'waiting'
+                  && sibling?.result?.outcome === 'succeeded') break
               }
-              const sibling = (await readCurrentExecutions(runs, runId)).find((item) => item.workflowNodeId === nodeIds[2])
-              const nativeStarted = (await pool.query(`select 1 from harness_native_events where execution_id=$1
-                and record->>'type'='turn.started' limit 1`, [sibling?.id ?? ''])).rowCount === 1
-              if (nativeStarted && sibling?.state !== 'completed') siblingActiveAtWait = true
-              if (pending.graphInterruptId && (await runs.get(runId))?.executionState === 'waiting'
-                && sibling?.result?.outcome === 'succeeded') break
+              if ((await runs.get(runId))?.executionState === 'completed') break
+              await delay(250)
             }
-            if ((await runs.get(runId))?.executionState === 'completed') break
-            await delay(250)
-          }
-          expect(pending?.graphInterruptId).toBeTruthy()
-          progress('approval wait assertions')
-          expect(pending!.request).toMatchObject({ permission: 'bash', metadata: { command } })
-          expect(siblingActiveAtWait).toBe(true)
-          expect((await runs.get(runId))?.executionState).toBe('waiting')
-          const budget = (await pool.query<{ active_started_at: Date | null; approval_wait_started_at: Date | null }>(
-            'select active_started_at,approval_wait_started_at from approval_execution_state where execution_id=$1',
-            [pending!.executionId],
-          )).rows[0]!
-          expect(budget.active_started_at).toBeNull()
-          expect(budget.approval_wait_started_at).not.toBeNull()
-          const service = new InteractionService(interactions, budgets, approvals,
-            (interaction) => engine.resumeInteraction(interaction))
-          registerApprovalCheckpointResume(service, engine)
-          const access = new PostgresAccessService(pool)
-          const wrong = await access.issue({ name: 'C wrong approval handler', audience: 'operator',
-            expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:respond'], scope: { runIds: [runId] } }] })
-          const option = pending!.responseOptions.find((item) => item.semantic === 'approve_once')
-          expect(option).toBeDefined()
-          await expect(service.respond({ kind: 'user', principal: wrong.principal }, { interactionId: pending!.id,
-            optionId: option!.optionId, expectedRevision: pending!.revision })).rejects.toBeDefined()
-          const user = await access.issue({ name: 'C exact User', audience: 'user',
-            expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:read', 'interactions:respond'],
-              scope: { runIds: [runId] } }] })
-          progress('response started')
-          const response = await service.respond({ kind: 'user', principal: user.principal }, { interactionId: pending!.id,
-            optionId: option!.optionId, expectedRevision: pending!.revision })
-          progress(`response returned ${response.interaction.deliveryState}`)
-          const delivered = response.interaction.deliveryState === 'uncertain'
-            ? await service.reconcile(response.interaction) : response.interaction
-          if (delivered.deliveryState !== 'delivered') {
-            const attempts = (await pool.query<{ attempt: number; state: string; error: string | null;
-              evidence: unknown; approval_write_started_at: Date | null }>(
-              `select attempt,state,error,evidence,approval_write_started_at from interaction_delivery_attempts
-               where interaction_id=$1 order by attempt`, [pending!.id],
+            expect(pending?.graphInterruptId).toBeTruthy()
+            progress('approval wait assertions')
+            expect(pending!.request).toMatchObject({ permission: 'bash', metadata: { command } })
+            expect(siblingActiveAtWait).toBe(true)
+            expect((await runs.get(runId))?.executionState).toBe('waiting')
+            const budget = (await pool.query<{ active_started_at: Date | null; approval_wait_started_at: Date | null }>(
+              'select active_started_at,approval_wait_started_at from approval_execution_state where execution_id=$1',
+              [pending!.executionId],
+            )).rows[0]!
+            expect(budget.active_started_at).toBeNull()
+            expect(budget.approval_wait_started_at).not.toBeNull()
+            const service = new InteractionService(interactions, budgets, approvals,
+              (interaction) => engine.resumeInteraction(interaction))
+            registerApprovalCheckpointResume(service, engine)
+            const access = new PostgresAccessService(pool)
+            const wrong = await access.issue({ name: 'C wrong approval handler', audience: 'operator',
+              expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:respond'], scope: { runIds: [runId] } }] })
+            const option = pending!.responseOptions.find((item) => item.semantic === 'approve_once')
+            expect(option).toBeDefined()
+            await expect(service.respond({ kind: 'user', principal: wrong.principal }, { interactionId: pending!.id,
+              optionId: option!.optionId, expectedRevision: pending!.revision })).rejects.toBeDefined()
+            const user = await access.issue({ name: 'C exact User', audience: 'user',
+              expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:read', 'interactions:respond'],
+                scope: { runIds: [runId] } }] })
+            progress('response started')
+            const response = await service.respond({ kind: 'user', principal: user.principal }, { interactionId: pending!.id,
+              optionId: option!.optionId, expectedRevision: pending!.revision })
+            progress(`response returned ${response.interaction.deliveryState}`)
+            const delivered = response.interaction.deliveryState === 'uncertain'
+              ? await service.reconcile(response.interaction) : response.interaction
+            if (delivered.deliveryState !== 'delivered') {
+              const attempts = (await pool.query<{ attempt: number; state: string; error: string | null;
+                evidence: unknown; approval_write_started_at: Date | null }>(
+                `select attempt,state,error,evidence,approval_write_started_at from interaction_delivery_attempts
+                 where interaction_id=$1 order by attempt`, [pending!.id],
+              )).rows
+              const native = (await pool.query<{ type: string; occurred_at: string }>(
+                `select record->>'type' as type,record->>'occurredAt' as occurred_at from harness_native_events
+                 where execution_id=$1 order by sequence`, [pending!.executionId],
+              )).rows
+              await writeFile(join(tmpdir(), `eng03-c-a01-diagnostic-${runId}.json`), JSON.stringify({
+                runId, interactionId: pending!.id, nativeSessionId: pending!.nativeSessionId,
+                nativeRequestId: pending!.nativeRequestId, responseOptionId: option!.optionId,
+                firstDeliveryState: response.interaction.deliveryState, reconciledDeliveryState: delivered.deliveryState,
+                attempts, native,
+              }, null, 2))
+            }
+            expect(delivered.deliveryState).toBe('delivered')
+            progress('response delivered')
+            await startTask.catch(() => undefined)
+            progress('original Run task joined')
+            // The original Start may already have finished at the waiting
+            // checkpoint. Join the exact current resumed/reconciled Run task.
+            await engine.start(runId)
+            progress('continued Run task joined')
+            expect((await runs.get(runId))?.outcome).toBe('succeeded')
+            const effects = await pool.query<{ effect_kind: string; count: number }>(
+              `select effect_kind,count(*)::int as count from run_graph_effects where run_id=$1
+               and effect_kind in ('approval.decide','approval.deliver') group by effect_kind`, [runId],
+            )
+            expect(effects.rows).toEqual(expect.arrayContaining([
+              { effect_kind: 'approval.decide', count: 1 }, { effect_kind: 'approval.deliver', count: 1 },
+            ]))
+            const attempts = (await pool.query<{ attempt: number; state: string; evidence: unknown }>(
+              'select attempt,state,evidence from interaction_delivery_attempts where interaction_id=$1 order by attempt',
+              [pending!.id],
             )).rows
-            const native = (await pool.query<{ type: string; occurred_at: string }>(
-              `select record->>'type' as type,record->>'occurredAt' as occurred_at from harness_native_events
-               where execution_id=$1 order by sequence`, [pending!.executionId],
-            )).rows
-            await writeFile(join(tmpdir(), `eng03-c-a01-diagnostic-${runId}.json`), JSON.stringify({
-              runId, interactionId: pending!.id, nativeSessionId: pending!.nativeSessionId,
-              nativeRequestId: pending!.nativeRequestId, responseOptionId: option!.optionId,
-              firstDeliveryState: response.interaction.deliveryState, reconciledDeliveryState: delivered.deliveryState,
-              attempts, native,
-            }, null, 2))
-          }
-          expect(delivered.deliveryState).toBe('delivered')
-          progress('response delivered')
-          await startTask.catch(() => undefined)
-          progress('original Run task joined')
-          // The original Start may already have finished at the waiting
-          // checkpoint. Join the exact current resumed/reconciled Run task.
-          await engine.start(runId)
-          progress('continued Run task joined')
-          expect((await runs.get(runId))?.outcome).toBe('succeeded')
-          const effects = await pool.query<{ effect_kind: string; count: number }>(
-            `select effect_kind,count(*)::int as count from run_graph_effects where run_id=$1
-             and effect_kind in ('approval.decide','approval.deliver') group by effect_kind`, [runId],
-          )
-          expect(effects.rows).toEqual(expect.arrayContaining([
-            { effect_kind: 'approval.decide', count: 1 }, { effect_kind: 'approval.deliver', count: 1 },
-          ]))
-          const attempts = (await pool.query<{ attempt: number; state: string; evidence: unknown }>(
-            'select attempt,state,evidence from interaction_delivery_attempts where interaction_id=$1 order by attempt',
-            [pending!.id],
-          )).rows
-          const resume = (await pool.query<{ state: string }>(
-            'select state from interaction_graph_resumes where interaction_id=$1', [pending!.id],
-          )).rows[0]
-          approvalEvidence = { runId, interactionId: pending!.id, executionId: pending!.executionId,
-            nativeSessionId: pending!.nativeSessionId, nativeRequestId: pending!.nativeRequestId,
-            optionId: option!.optionId, siblingActiveAtWait, wrongHandlerDenied: true,
-            waitBudgetPaused: budget.active_started_at === null && budget.approval_wait_started_at !== null,
-            firstDeliveryState: response.interaction.deliveryState, finalDeliveryState: delivered.deliveryState,
-            attempts, resume, effects: effects.rows }
-        },
-      })
-      const artifact = JSON.parse(await readFile(result.artifactPath, 'utf8')) as {
-        runOutcome: string; cleanup: boolean; sourceGraph: { nodes: Array<{ id: string }> }
-        executions: Array<{ id: string; nativeSessionId?: string; nodeId: string; result?: unknown; input: unknown }>
-        accepted: RepeatNodeInput['predecessors']
-        bindings: RepeatInputBinding[]
-      }
-      expect(artifact.runOutcome).toBe('succeeded')
-      expect(artifact.cleanup).toBe(true)
-      expect(interactionId).toBeTruthy()
-      expect(artifact.executions.some((item) => item.nativeSessionId === sessionId)).toBe(true)
-      expect(await readFile(target, 'utf8')).toBe('APPROVED\n')
-      const reviewer = artifact.executions.find((item) => item.nodeId === artifact.sourceGraph.nodes[3]?.id)!
-      const input = reviewer.input as RepeatNodeInput
-      expect(input.predecessors).toHaveLength(2)
-      expect(artifact.accepted).toEqual(input.predecessors)
-      expect(artifact.bindings).toHaveLength(2)
-      const recipientDigest = repeatDigest(reviewer.input)
-      for (const [ordinal, predecessor] of input.predecessors.entries()) {
-        const sender = artifact.executions.find((item) => item.id === predecessor.execution.executionId)!
-        const binding = artifact.bindings.find((item) => 'relationshipId' in item.source && item.source.relationshipId === predecessor.relationshipId)!
-        expect(predecessor.acceptedResult).toEqual(sender.result)
-        expect(binding).toMatchObject({ ordinal, source: { execution: { executionId: sender.id }, acceptedResultDigest: repeatDigest(sender.result) },
-          recipient: { executionId: reviewer.id }, inputDigest: recipientDigest })
-      }
-      await writeFile(result.artifactPath.replace('.json', '-approval.json'), JSON.stringify({
-        scenario: 'E03-A01', mode: 'native internal User approval',
-        providerEvidence: result.artifactPath, approvalEvidence,
-        outcome: artifact.runOutcome, cleanup: artifact.cleanup,
-        exactJoin: { reviewerExecutionId: reviewer.id, recipientInputDigest: recipientDigest,
-          predecessors: input.predecessors.map((item) => ({ relationshipId: item.relationshipId,
-            senderExecutionId: item.execution.executionId, acceptedResultDigest: repeatDigest(item.acceptedResult) })) },
-      }, null, 2))
-    } finally { await rm(outside, { recursive: true, force: true }) }
-  }, 180_000)
+            const resume = (await pool.query<{ state: string }>(
+              'select state from interaction_graph_resumes where interaction_id=$1', [pending!.id],
+            )).rows[0]
+            approvalEvidence = { runId, interactionId: pending!.id, executionId: pending!.executionId,
+              nativeSessionId: pending!.nativeSessionId, nativeRequestId: pending!.nativeRequestId,
+              optionId: option!.optionId, siblingActiveAtWait, wrongHandlerDenied: true,
+              waitBudgetPaused: budget.active_started_at === null && budget.approval_wait_started_at !== null,
+              firstDeliveryState: response.interaction.deliveryState, finalDeliveryState: delivered.deliveryState,
+              attempts, resume, effects: effects.rows }
+          },
+        })
+        const artifact = JSON.parse(await readFile(result.artifactPath, 'utf8')) as {
+          runOutcome: string; cleanup: boolean; sourceGraph: { nodes: Array<{ id: string }> }
+          executions: Array<{ id: string; nativeSessionId?: string; nodeId: string; result?: unknown; input: unknown }>
+          accepted: RepeatNodeInput['predecessors']
+          bindings: RepeatInputBinding[]
+        }
+        expect(artifact.runOutcome).toBe('succeeded')
+        expect(artifact.cleanup).toBe(true)
+        expect(interactionId).toBeTruthy()
+        expect(artifact.executions.some((item) => item.nativeSessionId === sessionId)).toBe(true)
+        expect(await readFile(target, 'utf8')).toBe('APPROVED\n')
+        const reviewer = artifact.executions.find((item) => item.nodeId === artifact.sourceGraph.nodes[3]?.id)!
+        const input = reviewer.input as RepeatNodeInput
+        expect(input.predecessors).toHaveLength(2)
+        expect(artifact.accepted).toEqual(input.predecessors)
+        expect(artifact.bindings).toHaveLength(2)
+        const recipientDigest = repeatDigest(reviewer.input)
+        for (const [ordinal, predecessor] of input.predecessors.entries()) {
+          const sender = artifact.executions.find((item) => item.id === predecessor.execution.executionId)!
+          const binding = artifact.bindings.find((item) => 'relationshipId' in item.source && item.source.relationshipId === predecessor.relationshipId)!
+          expect(predecessor.acceptedResult).toEqual(sender.result)
+          expect(binding).toMatchObject({ ordinal, source: { execution: { executionId: sender.id }, acceptedResultDigest: repeatDigest(sender.result) },
+            recipient: { executionId: reviewer.id }, inputDigest: recipientDigest })
+        }
+        await writeFile(result.artifactPath.replace('.json', '-approval.json'), JSON.stringify({
+          scenario: 'E03-A01', mode: 'native internal User approval',
+          providerEvidence: result.artifactPath, approvalEvidence,
+          outcome: artifact.runOutcome, cleanup: artifact.cleanup,
+          exactJoin: { reviewerExecutionId: reviewer.id, recipientInputDigest: recipientDigest,
+            predecessors: input.predecessors.map((item) => ({ relationshipId: item.relationshipId,
+              senderExecutionId: item.execution.executionId, acceptedResultDigest: repeatDigest(item.acceptedResult) })) },
+        }, null, 2))
+      } finally { await removeFixtureDirectory(outside) }
+    }, 180_000)
+  })
 
   it('E03-L04 restarts after one native terminal result but before its graph acceptance', async () => {
     let cutExecutionId = '', cutNativeSessionId = ''

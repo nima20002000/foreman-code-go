@@ -8,7 +8,7 @@ import { createChatFileBackend, fileContext, fileScope, fileSignal, hasFileCode 
 async function fixture(mode: 'read' | 'write' = 'write') {
   const backend = createChatFileBackend()
   const requests: { path: string; body?: Record<string, unknown> }[] = []
-  const statuses: Record<string, unknown> = { graphql: { status: 'disabled' } }
+  const statuses: Record<string, unknown> = { 'foreman-code': { status: 'disabled' } }
   let generation = 1, failConnect = false
   const http = createServer(async (request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname
@@ -17,7 +17,7 @@ async function fixture(mode: 'read' | 'write' = 'write') {
     const body = text ? JSON.parse(text) : undefined
     requests.push({ path, ...(body ? { body } : {}) })
     response.setHeader('content-type', 'application/json')
-    if (path === '/config') return response.end(JSON.stringify({ mcp: { graphql: { enabled: false } } }))
+    if (path === '/config') return response.end(JSON.stringify({ mcp: { 'foreman-code': { enabled: false } } }))
     if (path === '/mcp' && request.method === 'POST') {
       backend.audit.push('connect')
       if (failConnect) { response.statusCode = 503; return response.end(JSON.stringify(body)) }
@@ -42,11 +42,16 @@ async function fixture(mode: 'read' | 'write' = 'write') {
     attachments: [backend.add()], mode, executionHostId: 'execution-b', directory: '/workspace/project',
     expiresAt: new Date(Date.now() + 60_000) }
   const options = { service: backend.service, host: backend.host, server, endpoint: 'http://127.0.0.1:9876/mcp/files',
-    appMcpServerName: 'graphql', maxFileBytes: 25 * 1024 * 1024, maxAttachments: 10,
+    appMcpServerName: 'foreman-code', maxFileBytes: 25 * 1024 * 1024, maxAttachments: 10,
     adoptPublished: backend.adoptPublished }
   const turn = new OpenCodeFileTurn(options)
   const prepare = () => turn.prepareInputs(admission, backend.readAccepted(admission.context), fileSignal())
-  const acknowledge = async () => { turn.submissionAttempted(); backend.audit.push('native_ack'); await turn.acknowledge(fileSignal()) }
+  const acknowledge = async () => {
+    await turn.connectTools(fileSignal())
+    turn.submissionAttempted()
+    backend.audit.push('native_ack')
+    await turn.acknowledge(fileSignal())
+  }
   return { backend, server, options, turn, admission, requests, prepare, acknowledge,
     failConnect() { failConnect = true }, restart() { generation++ },
     async close() {
@@ -86,7 +91,7 @@ export function registerOpenCodeChatFileCases(test: (name: string, body: () => P
       assert.match(prepared.identity, /^[a-f0-9]{64}$/)
     } finally { await f.close() }
   })
-  test('requires attempted submission, then issues and registers exactly once after ack', async () => {
+  test('connects discovery once and issues file authority only after native acknowledgement', async () => {
     const f = await fixture()
     try {
       await f.prepare()
@@ -94,7 +99,8 @@ export function registerOpenCodeChatFileCases(test: (name: string, body: () => P
       await f.acknowledge()
       await f.turn.acknowledge(fileSignal())
       assert.equal(f.backend.issued.length, 1)
-      assert.deepEqual(f.backend.audit.filter((event) => ['native_ack', 'issue', 'connect'].includes(event)), ['native_ack', 'issue', 'connect'])
+      assert.deepEqual(f.backend.audit.filter((event) => ['native_ack', 'issue', 'connect'].includes(event)),
+        ['connect', 'native_ack', 'issue'])
       assert.deepEqual(f.backend.issued[0]!.context, f.admission.context)
       assert.match(f.backend.token, /^gql_file_[A-Za-z0-9_-]{43}$/)
       assert.throws(() => f.turn.submissionAttempted(), hasFileCode('FILE_SUBMISSION_FENCED'))
@@ -213,7 +219,7 @@ export function registerOpenCodeChatFileCases(test: (name: string, body: () => P
   test('uncertain delivery retains inputs, but definite rejection removes them without issuing a token', async () => {
     const f = await fixture()
     try {
-      await f.prepare(); f.turn.submissionAttempted()
+      await f.prepare(); await f.turn.connectTools(fileSignal()); f.turn.submissionAttempted()
       await assert.rejects(f.turn.retryCleanup(fileSignal()), hasFileCode('FILE_SUBMISSION_FENCED'))
       assert.equal(f.backend.hostFiles.size, 1)
       assert.equal(f.backend.issued.length, 0)
@@ -249,18 +255,17 @@ export function registerOpenCodeChatFileCases(test: (name: string, body: () => P
       assert.equal(f.backend.hostFiles.size, 0)
     } finally { await f.close() }
   })
-  test('registration failure revokes its token without deleting an accepted turn input', async () => {
+  test('registration failure has no file authority or native submission and releases prepared inputs', async () => {
     const f = await fixture()
     try {
-      await f.prepare(); f.failConnect(); f.turn.submissionAttempted()
-      await assert.rejects(f.turn.acknowledge(fileSignal()), (error: unknown) => {
-        assert.equal(String(error).includes(f.backend.token), false)
-        return hasFileCode('FILE_NATIVE_SETUP_FAILED')(error)
-      })
-      assert.equal(f.backend.revocations, 1)
+      await f.prepare(); f.failConnect()
+      await assert.rejects(f.turn.connectTools(fileSignal()), hasFileCode('FILE_NATIVE_SETUP_FAILED'))
+      assert.equal(f.backend.revocations, 0)
       assert.equal(f.backend.hostFiles.size, 1)
-      await assert.rejects(f.turn.acknowledge(fileSignal()), hasFileCode('FILE_SUBMISSION_INVALID'))
-      assert.equal(f.backend.issued.length, 1)
+      assert.throws(() => f.turn.submissionAttempted(), hasFileCode('FILE_SUBMISSION_FENCED'))
+      await f.turn.finish('definite_rejection', fileSignal())
+      assert.equal(f.backend.hostFiles.size, 0)
+      assert.equal(f.backend.issued.length, 0)
     } finally { await f.close() }
   })
   test('adoption failure still revokes and cleans; retry adopts without the revoked token', async () => {

@@ -1,4 +1,21 @@
 import { OpenCodeNativeDeliveryError, type OpenCodeServerController } from './opencodeTransport.js'
+import { openCodeMediaStream } from './opencodeMedia.js'
+
+interface OpenCodeHistoryTransfer {
+  source: ReadableStream<Uint8Array>
+  settled: Promise<PromiseSettledResult<void>[]>
+}
+const historyTransfers = new WeakMap<Response, OpenCodeHistoryTransfer>()
+
+async function releaseHistoryTransfer(response: Response): Promise<void> {
+  const transfer = historyTransfers.get(response)
+  if (!transfer) return
+  await transfer.settled
+  // A rejected in-flight pipe write can settle shutdown without cancelling its source.
+  // Cancelling an errored source repeats the error already reported by the reader.
+  await Promise.allSettled([transfer.source.cancel()])
+  historyTransfers.delete(response)
+}
 
 export interface OpenCodeHttpEvidence {
   readonly operation: { readonly method: string; readonly path: string }
@@ -86,6 +103,20 @@ export function createOpenCodeBoundFetch(options: OpenCodeBoundFetchOptions): ty
       await response.body?.cancel().catch(() => undefined)
       throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native generation or owner lifetime changed after dispatch.', 'uncertain')
     }
+    const history = request.method === 'GET' && /^\/session\/[^/]+\/message(?:\/[^/]+)?$/.test(url.pathname)
+    if (history && response.ok && response.body) {
+      const headers = new Headers(response.headers)
+      headers.delete('content-length')
+      const media = openCodeMediaStream()
+      const projected = new Response(media.readable, {
+        status: response.status, statusText: response.statusText, headers,
+      })
+      // Response may wrap its input stream; bind cleanup to the returned response.
+      historyTransfers.set(projected, { source: response.body,
+        settled: Promise.allSettled([response.body.pipeTo(media.writable, { signal: combined })]),
+      })
+      return projected
+    }
     return response
   }
 }
@@ -93,11 +124,19 @@ export type OpenCodeClientFactory = typeof createOpenCodeBoundFetch
 
 export const OPENCODE_HTTP_BODY_LIMIT = 8_000_000
 
+export class OpenCodeResponseTooLargeError extends Error {
+  constructor() {
+    super('OpenCode response exceeds the bounded native page buffer.')
+    this.name = 'OpenCodeResponseTooLargeError'
+  }
+}
+
 /** Keep generated SDK text parsing inside the same native-page byte budget. */
 export async function readOpenCodeResponseText(response: Response, ownerSignal?: AbortSignal): Promise<string> {
   const signal = ownerSignal ? AbortSignal.any([ownerSignal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000)
   if (signal.aborted) {
     await response.body?.cancel().catch(() => undefined)
+    await releaseHistoryTransfer(response)
     signal.throwIfAborted()
   }
   if (!response.body) return ''
@@ -114,12 +153,13 @@ export async function readOpenCodeResponseText(response: Response, ownerSignal?:
       signal.throwIfAborted()
       if (chunk.done) return text + decoder.decode()
       bytes += chunk.value.byteLength
-      if (bytes > OPENCODE_HTTP_BODY_LIMIT) throw new Error('OpenCode response exceeds the bounded native page buffer.')
+      if (bytes > OPENCODE_HTTP_BODY_LIMIT) throw new OpenCodeResponseTooLargeError()
       text += decoder.decode(chunk.value, { stream: true })
     }
   } finally {
     signal.removeEventListener('abort', abort)
     await reader.cancel().catch(() => undefined)
+    await releaseHistoryTransfer(response)
     reader.releaseLock()
   }
 }

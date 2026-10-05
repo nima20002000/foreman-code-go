@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AgentSettingsSearchSchema, HarnessSettingsSearchSchema, WorkspaceDefaultsSchema, WorkspaceDefaultsUpdateInputSchema,
-  BrowserCredentialSetupSchema, BrowserAccessSessionSchema } from '../src/management/index.js'
+  LocalHumanAccessSchema } from '../src/management/index.js'
 
 describe('Settings experience contracts', () => {
   it('parses direct links and rejects unsupported agent section selections', () => {
@@ -17,19 +17,12 @@ describe('Settings experience contracts', () => {
     expect(WorkspaceDefaultsUpdateInputSchema.parse({ value: { suggestedName: 'Project', description: '' }, commandId: 'command-1', expectedRevision: 0 }).value.description).toBe('')
     expect(WorkspaceDefaultsUpdateInputSchema.safeParse({ value: { suggestedName: 'Project', description: '' }, commandId: 'x', expectedRevision: -1 }).success).toBe(false)
   })
-  it('allows quoted browser names but not shell flags or control characters', () => {
-    const valid = { name: "Sam's browser", days: 30, access: 'read-only' }
-    expect(BrowserCredentialSetupSchema.parse(valid)).toEqual(valid)
-    for (const name of ['--access', 'a\nb', 'a\0b']) expect(BrowserCredentialSetupSchema.safeParse({ ...valid, name }).success).toBe(false)
-    expect(BrowserCredentialSetupSchema.safeParse({ ...valid, days: 0 }).success).toBe(false)
-    expect(BrowserCredentialSetupSchema.safeParse({ ...valid, access: 'root' }).success).toBe(false)
-  })
-  it('session readback excludes credentials', () => {
+  it('local permission readback excludes credentials', () => {
     const value = { principal: { id: 'principal-x', name: 'Browser', expiresAt: '2099-01-01T00:00:00Z', grants: [] } }
-    expect(BrowserAccessSessionSchema.safeParse(value).success).toBe(true)
-    expect(BrowserAccessSessionSchema.safeParse({ ...value, localDev: true }).success).toBe(true)
-    expect(BrowserAccessSessionSchema.safeParse({ ...value, localDev: false }).success).toBe(false)
-    expect(BrowserAccessSessionSchema.safeParse({ ...value, token: 'secret' }).success).toBe(false)
-    expect(BrowserAccessSessionSchema.safeParse({ principal: { ...value.principal, tokenHash: 'secret' } }).success).toBe(false)
+    expect(LocalHumanAccessSchema.safeParse(value).success).toBe(true)
+    expect(LocalHumanAccessSchema.safeParse({ ...value, localDev: true }).success).toBe(false)
+    expect(LocalHumanAccessSchema.safeParse({ ...value, localDev: false }).success).toBe(false)
+    expect(LocalHumanAccessSchema.safeParse({ ...value, token: 'secret' }).success).toBe(false)
+    expect(LocalHumanAccessSchema.safeParse({ principal: { ...value.principal, tokenHash: 'secret' } }).success).toBe(false)
   })
 })

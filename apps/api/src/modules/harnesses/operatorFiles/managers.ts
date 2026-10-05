@@ -28,7 +28,7 @@ export function productionOperatorManagers(input: {
   workingDirectory: string
   endpointHost: string
   appMcpEndpoint: string
-  processRegistry: Pick<NativeProcessRegistry, 'scope'>
+  processRegistry: Pick<NativeProcessRegistry, 'scope' | 'closeOwner'>
   responseJournal: NativeResponseJournal
   managers: Map<string, NativeHarnessSessionManager>
   nativeFactories?: NativeHarnessFactories
@@ -37,6 +37,7 @@ export function productionOperatorManagers(input: {
   selectInstallation?: (configuration: OperatorConfigurationVersion) => RegistryHarnessSelection | undefined
 }): NativeManagerResolver {
   const factories = input.nativeFactories ?? new NativeHarnessFactories({ ...input.config.harnesses,
+    openCodeFileStorageRoot: input.config.fileStorageRoot ?? defaultFileStorageRoot(),
     appMcpEndpoint: input.appMcpEndpoint, responseJournal: input.responseJournal })
   const modes = new Map<string, boolean>()
   const resolver: NativeManagerResolver = (configuration, conversationId, fileInputs = false) => {
@@ -87,6 +88,7 @@ export function productionOperatorManagers(input: {
     return manager
   }
   resolver.release = (id) => { input.managers.delete(id); modes.delete(id) }
+  resolver.closeRecoveredRuntime = (id, signal) => input.processRegistry.closeOwner(`conversation:${id}`, signal)
   resolver.hasFileInputs = (id, requestId) => operatorTurnHasFileInputs(input.pool, id, requestId)
   const submissions = new PostgresOperatorConversationRepository(input.pool)
   resolver.recordFileMessageSubmission = async (id, requestId, receipt) => {

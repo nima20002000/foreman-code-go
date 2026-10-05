@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
@@ -7,10 +7,15 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import type { TemporaryFileScope } from '@foreman-code/contracts/files'
 import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
+import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import type { CodexNativeOutputCallback, CodexNativeOutputTurnPin,
   CodexNativeOutputQualificationInput } from '../../harnesses/codexNativeOutput.js'
 import { ResumableByteTransferService } from '../../byte-transfer/service.js'
 import { createInstalledNativeOutputs, type InstalledNativeOutputProviders } from './installedNativeOutput.js'
+import { createInstalledWorkflowNativeOutputProviders } from './installedWorkflowNativeOutputs.js'
+import { createNativeOutputBudgetLedger } from './installedNativeOutputStorage.js'
+import { NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
+import { runCommand } from '../../harnesses/process.js'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
@@ -64,10 +69,66 @@ async function fixture() {
     connectionId: pin.connectionId, runtimeGeneration: pin.runtimeGeneration, effectiveSandbox: qualification.expectedSandbox }, signal)
   const callback = (check = () => {}) => ({ ...pin, rpcId: 'rpc', callId: randomUUID(), assertCurrent: check } satisfies CodexNativeOutputCallback)
   const command = () => ({ operation: 'create' as const, commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' as const })
-  return { root, ports, scope, qualification, pin, release, reserve, native, signal, prepare, callback, command }
+  return { directory, root, binding, intent, placement, ports, scope, qualification, pin,
+    release, reserve, native, signal, prepare, callback, command }
 }
 
 describe('installed native common composition, no native qualification', () => {
+  it('retries installed ledger initialization after storage failure while retaining qualification checks', async () => {
+    const f = await fixture()
+    const stateDirectory = join(f.directory, 'installed')
+    const budgetDirectory = join(stateDirectory, 'native-output-budget')
+    await mkdir(budgetDirectory, { recursive: true, mode: 0o700 })
+    const residue = join(budgetDirectory, 'unreconciled')
+    await writeFile(residue, 'original storage residue', { mode: 0o600 })
+    const filesystem = { device: '1', inode: '2', mountId: '3' }
+    const materialization = SourceMaterializationRecordSchema.parse({
+      receipt: { version: 1, materializationId: randomUUID(),
+        binding: { version: 1, mainId: f.binding.mainId, deviceId: f.binding.deviceId,
+          workerInstallationId: f.binding.workerInstallationId, workspaceId: 'workspace', rootId: randomUUID(),
+          bindingRevision: 1, locationRevision: 1, canonicalPath: '/workspace', filesystem,
+          accessMode: 'exclusive-write', snapshotId: randomUUID(), manifestDigest: 'e'.repeat(64) },
+        placementHash: f.intent.bindingHash, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+        keyRevision: 1, authorizationRevision: 1, verifiedManifestDigest: 'e'.repeat(64),
+        verifiedEntries: 0, verifiedBytes: 0, verifiedAt: '2026-01-01T00:00:00.000Z', localTreeIdentity: filesystem },
+      rootPolicyId: 'policy', rootPolicyRevision: '1', operationId: f.intent.operationId, reservationId: randomUUID(),
+      sourceBindingHash: 'e'.repeat(64), finalDispatchBindingHash: f.intent.bindingHash, state: 'running',
+    })
+    // This test reaches the qualification boundary without claiming a protected native producer.
+    const qualify = vi.fn(async () => { throw new Error('External native qualification boundary') })
+    const providers = createInstalledWorkflowNativeOutputProviders({ stateDirectory,
+      context: { intent: f.intent, placement: f.placement, binding: f.binding, materialization,
+        applicationAccess: () => ({ kind: 'scoped-worker-mcp', token: 'unit-only', executionId: f.intent.executionId,
+          agentId: 'agent', operationId: f.intent.operationId, attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash }),
+        publicationCompleted: () => {}, assertCurrent: async (_pin, signal) => { signal?.throwIfAborted() } },
+      registry: new NativeProcessRegistry(join(f.directory, 'processes')),
+      qualification: { qualify, command: runCommand },
+      captureRequest: () => ({ binding: f.binding, request: async () => ({ payload: {
+        version: 1, mainId: f.binding.mainId, audience: 'worker', principalId: 'owner',
+        executionId: f.intent.executionId, agentId: 'agent', operationId: f.intent.operationId,
+        attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, expiresAt: '2099-01-01T00:00:00.000Z',
+        agentConfigurationVersionId: 'configuration', outputOperations: ['create', 'append', 'seal', 'publish'],
+      } }) }),
+    })
+    await expect(providers.assertQualified(f.qualification, f.signal))
+      .rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_STORAGE_UNAVAILABLE' })
+    expect(qualify).not.toHaveBeenCalled()
+    await unlink(residue)
+    await expect(providers.assertQualified(f.qualification, f.signal)).rejects.toThrow('External native qualification boundary')
+    expect(qualify).toHaveBeenCalledTimes(1)
+    const limits = { maxDiskBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
+      maxSnapshotBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
+      maxCommandRecords: BYTE_TRANSFER_POLICY.maxRecords * BYTE_TRANSFER_POLICY.maxActiveGlobal }
+    const recovered = await createNativeOutputBudgetLedger({ rootDirectory: budgetDirectory,
+      installation: { mainId: f.binding.mainId, deviceId: f.binding.deviceId, workerInstallationId: f.binding.workerInstallationId },
+      limits })
+    const reservation = await recovered.reserve({ owner: { intent: f.intent, binding: f.binding,
+      session: f.pin.session, nativeTurnId: f.pin.nativeTurnId, runtimeGeneration: f.pin.runtimeGeneration },
+      artifactId: randomUUID(), limits, requested: { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 } })
+    await reservation.assertCurrent()
+    await reservation.release()
+  })
+
   it('requires genuine provider qualification and opens nothing until durable activation', async () => {
     const f = await fixture()
     vi.mocked(f.ports.assertQualified).mockRejectedValueOnce(new Error('No actual qualification'))
@@ -76,6 +137,7 @@ describe('installed native common composition, no native qualification', () => {
     expect(await readdir(f.root)).toEqual([]); expect(f.reserve).not.toHaveBeenCalled()
     await expect(bridge.dispatch(f.command(), f.callback(), f.signal)).rejects.toThrow()
     await bridge.activate(f.pin, f.signal)
+    expect(f.ports.authorize).not.toHaveBeenCalled()
     await expect(bridge.activate(f.pin, f.signal)).rejects.toThrow()
     const reply = await bridge.dispatch(f.command(), f.callback(), f.signal)
     expect(reply.operation).toBe('create'); expect(f.reserve).toHaveBeenCalledTimes(1)
@@ -84,7 +146,8 @@ describe('installed native common composition, no native qualification', () => {
     const f = await fixture(), bridge = await f.prepare(); cleanups.push(() => bridge.close())
     if (f.scope.chat.kind !== 'agent') throw new Error('fixture')
     vi.mocked(f.ports.authorize).mockResolvedValue({ ...f.scope, chat: { ...f.scope.chat, executionId: 'foreign' } })
-    await expect(bridge.activate(f.pin, f.signal)).rejects.toThrow()
+    await bridge.activate(f.pin, f.signal)
+    await expect(bridge.dispatch(f.command(), f.callback(), f.signal)).rejects.toThrow()
     expect(f.reserve).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([])
   })
   it('carries each original callback through authority awaits without a latest-call slot', async () => {
@@ -97,13 +160,14 @@ describe('installed native common composition, no native qualification', () => {
     expect(await readdir(f.root)).toEqual([])
     expect((await bridge.dispatch(f.command(), f.callback(), f.signal)).operation).toBe('create')
   })
-  it('drains an in-flight activation after withdrawal before completing close', async () => {
+  it('drains an in-flight first callback after withdrawal before completing close', async () => {
     const f = await fixture(), bridge = await f.prepare(); cleanups.push(() => bridge.close())
     let release!: () => void, entered!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
     const started = new Promise<void>(resolve => { entered = resolve })
     vi.mocked(f.ports.authorize).mockImplementationOnce(async () => { entered(); await gate; return f.scope })
-    const opening = bridge.activate(f.pin, f.signal)
+    await bridge.activate(f.pin, f.signal)
+    const opening = bridge.dispatch(f.command(), f.callback(), f.signal)
     const rejected = expect(opening).rejects.toThrow()
     await started
     let closed = false

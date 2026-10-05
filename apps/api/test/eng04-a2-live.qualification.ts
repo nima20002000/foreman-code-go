@@ -1,3 +1,5 @@
+import { assertOwnedExecutionDestinations, assertOwnedTestApi,
+  ownedTestDatabaseUrl, ownedTestPath } from './helpers/testResources.js'
 /** EXPLICIT OPT-IN, real running loopback product + same task-owned PostgreSQL.
  * No provider mocks, seed conversion, direct accepted-result/native/closure writes
  * or custom CurrentRunProductionBinding. Run from apps/api with pinned tsx.
@@ -26,7 +28,7 @@ type Case = { id: string; mode: 'complete' | 'stop-native' | 'stop-approval'; st
   expectedExit?: 'early_exit' | 'limit_exit'; existingRunId?: string; minimumGenerations?: number; stopCommandId?: string }
 function required(name: string): string { const value = process.env[name]; assert.ok(value, `${name} is required`); return value }
 assert.equal(process.env.RUN_ENG04_A2_REAL_PROVIDERS, '1', 'This program requires explicit real-provider opt-in')
-const origin = new URL(required('A2_QUALIFICATION_ORIGIN')), connection = new URL(required('WAVE25_TEST_DATABASE_URL'))
+const origin = new URL(required('A2_QUALIFICATION_ORIGIN')), connection = new URL(ownedTestDatabaseUrl('WAVE25_TEST_DATABASE_URL'))
 const local = (url: URL) => ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
 assert.ok(local(origin) && origin.protocol === 'http:' && !origin.username && !origin.password, 'Use only the task-owned loopback app')
 assert.ok(local(connection) && connection.pathname.toLowerCase().includes('test'), 'Use only an explicitly named loopback test database')
@@ -37,9 +39,9 @@ assert.ok(path, 'Pass the prepared current saved-workflow case manifest as the o
 const cases: Case[] = JSON.parse(await readFile(path, 'utf8'))
 assert.ok(Array.isArray(cases) && cases.length > 0 && cases.length <= 20)
 assert.equal(new Set(cases.map((c) => c.id)).size, cases.length)
-const output = process.env.A2_QUALIFICATION_REPORT ?? 'a2-native-qualification-report.json'
+const output = ownedTestPath(required('A2_QUALIFICATION_REPORT'))
 const pool = new pg.Pool({ connectionString: connection.toString(), max: 4,
-  options: `-c search_path=${schema},public -c lock_timeout=5000 -c statement_timeout=10000` })
+  options: `-c search_path=${schema} -c lock_timeout=5000 -c statement_timeout=10000` })
 const evidence: Record<string, unknown>[] = []
 const deadlineMs = 300000
 async function http(method: string, route: string, body?: unknown) {
@@ -68,10 +70,14 @@ async function waitFor(predicate: () => Promise<boolean>, label: string) {
   throw new Error(`${label}: timed out with original identity retained; no settlement is inferred`)
 }
 try {
+  await assertOwnedTestApi(origin, pool)
   assert.equal((await pool.query('select version from application_migrations where version=264602')).rowCount, 1)
   for (const item of cases) {
     assert.ok(['complete', 'stop-native', 'stop-approval'].includes(item.mode))
     const input = RunStartV3InputSchema.parse(item.start)
+    await assertOwnedExecutionDestinations(pool, { workspaceId: input.workspaceId,
+      agentConfigurationVersionIds: Object.values(input.expectedAgentConfigurationVersionIds),
+      ...(item.existingRunId ? { runId: item.existingRunId } : {}) })
     const wfPath = `/api/management/workspaces/${encodeURIComponent(input.workspaceId)}/workflows/${encodeURIComponent(input.workflowId)}`
     const savedResponse = await http('GET', `${wfPath}/definition`)
     assert.equal(savedResponse.status, 200)

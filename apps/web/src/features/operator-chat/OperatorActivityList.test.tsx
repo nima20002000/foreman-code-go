@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import type { OperatorActivity } from '@foreman-code/contracts'
+import { CODEX_UNSUPPORTED_INTERACTION_ERRORS, type OperatorActivity } from '@foreman-code/contracts'
 import { OperatorActivityList } from './OperatorActivityList'
 import { mergeOperatorActivity } from '../../shared/api/operatorActivity'
 
@@ -11,6 +11,12 @@ const activity = (kind: OperatorActivity['kind'], sequence = '9007199254740993')
 })
 
 describe('Operator activity disclosures', () => {
+  it.each(Object.values(CODEX_UNSUPPORTED_INTERACTION_ERRORS))('keeps unsupported-request errors visible: %s', (message) => {
+    render(<OperatorActivityList entries={[{ ...activity('tool'), status: 'failed', title: message, output: message }]}
+      onBrowse={vi.fn()} />)
+    expect(screen.getByText(`Tool · ${message}`)).toBeVisible()
+    expect(screen.getByText('Failed')).toBeVisible()
+  })
   it('does not invent a thinking summary when the provider supplies none', () => {
     render(<OperatorActivityList entries={[{ ...activity('thinking'), output: '' }]} onBrowse={vi.fn()} />)
     expect(screen.queryByRole('button', { name: 'Thinking' })).not.toBeInTheDocument()

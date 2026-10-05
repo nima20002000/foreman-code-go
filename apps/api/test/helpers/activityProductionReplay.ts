@@ -69,7 +69,8 @@ export class ActivityProductionReplay {
           if (mode === 'reject') throw new CodexRpcError(method, 'recorded-rejection', false, 'CODEX_REQUEST_FAILED')
           const turn: Turn = { id: `recorded-turn-${thread.turns.length + 1}`, status: 'inProgress', itemsView: 'full',
             error: null, startedAt: 1, completedAt: null, durationMs: null,
-            items: [{ id: params.clientUserMessageId, type: 'userMessage', content: params.input }] }
+            items: [{ id: `recorded-user-${thread.turns.length + 1}`, clientId: params.clientUserMessageId ?? null,
+              type: 'userMessage', content: params.input }] }
           thread.turns.push(turn)
           this.starts.push({ sessionId: thread.id, nativeTurnId: turn.id, correlationId: String(params.clientUserMessageId),
             promptDigest: createHash('sha256').update(JSON.stringify(params.input)).digest('hex') })
@@ -187,8 +188,12 @@ export class ActivityProductionReplay {
 
   infrastructure(): ProductionHarnessInfrastructure {
     const command: Extract<CodexSessionDependencies, { mode: 'replay' }>['runCommand'] = async (_binary, args) => {
-      if (args[0] === 'mcp' && args[1] === 'get') return outcome(JSON.stringify({ name: 'graphql', enabled: true, required: true,
-        transport: { type: 'stdio', command: process.execPath, args: [appLauncherPath()], env_vars: ['GRAPHQL_MCP_TOKEN'] } }))
+      if (args[0] === 'mcp' && args[1] === 'get') {
+        if (args[2] !== 'graphql') return { ...outcome('', 1),
+          stderr: `Error: No MCP server named '${args[2]}' found.` }
+        return outcome(JSON.stringify({ name: 'graphql', enabled: true, required: true,
+          transport: { type: 'stdio', command: process.execPath, args: [appLauncherPath()], env_vars: ['GRAPHQL_MCP_TOKEN'] } }))
+      }
       if (args[0] === 'mcp' && args[1] === 'list') return outcome('[{"name":"graphql"}]')
       if (args[0] === 'debug' && args[1] === 'models') return outcome(JSON.stringify({ models: [{ slug: 'test-model', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }], additional_speed_tiers: ['fast'] }] }))
       throw new Error(`Unexpected replay CLI operation: ${args.join(' ')}`)

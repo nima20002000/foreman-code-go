@@ -232,7 +232,7 @@ describe('selected saved Run board (real Router, Query, HTTP/MSW and canvas)', (
     const { client } = await mount(); await savedNode('Y')
     server.use(http.get(snapshotRoute, () => denied(status)))
     await act(async () => { await client.refetchQueries({ queryKey: runsSelectorKeys.snapshot(latest!) }) })
-    await screen.findByText(status === 401 ? 'Sign in' : status === 403 ? 'No access' : 'Run not found')
+    await screen.findByText(status === 401 ? 'Access unavailable' : status === 403 ? 'No access' : 'Run not found')
     noGraph()
     expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
   })

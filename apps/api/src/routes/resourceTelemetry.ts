@@ -6,7 +6,7 @@ import { readTelemetry, RESOURCE_TELEMETRY_READ_ROUTE, type TelemetryDenialAudit
 /** Register under existing authenticated Operator HTTP hook, never as a worker endpoint. */
 export function registerResourceTelemetryRoutes(app: FastifyInstance, reads: TelemetryReadService<ManagementPrincipal>, audit: TelemetryDenialAudit): void {
   app.post(RESOURCE_TELEMETRY_READ_ROUTE, { bodyLimit: 8192 }, async (request, reply) => {
-    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization')
     const principal = requirePrincipal(request)
     const controller = new AbortController()
     const abort = () => controller.abort()

@@ -27,7 +27,6 @@ export function useApproveJobRuntime(workspaceId: string) {
   return useMutation({ mutationKey: [...keys.workspace(workspaceId), 'approve'],
     mutationFn: async ({ approval, commandId }: { approval: JobRuntimeApprovalRecord; commandId: string }) => {
       if (approval.workspaceId !== workspaceId) throw new ApiError({ code: 'INVALID_REQUEST', message: 'Select the original workspace for this runtime approval.' })
-      // The client sends the browser session through its existing credential boundary.
       const { approval: result } = await apiClient.request(`${path(workspaceId)}/runtime-qualifications/${encodeURIComponent(approval.id)}/approve`,
         z.object({ approval: JobRuntimeApprovalRecordSchema }).strict(), { method: 'POST', body: JobRuntimeQualificationCommandSchema.parse({ commandId }) })
       if (result.id !== approval.id || result.workspaceId !== workspaceId || result.profileId !== approval.profileId || result.profileRevision !== approval.profileRevision

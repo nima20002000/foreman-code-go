@@ -1,19 +1,18 @@
 import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
 import { createContext, useContext, memo, useMemo, useRef, useState } from 'react'
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQueries } from '@tanstack/react-query'
 import { Background, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import type { RepeatGraphScopeV3, WorkflowRelationship } from '@foreman-code/contracts/wave25'
 import { AgentNodeView, AgentPopover, Dialog, Alert, Button, type AgentNodeState, type AgentNodeTransition } from '../../../shared/ui/nocturne'
-import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../../shared/api/useProtectedAccessError'
 import type { AgentPanelRenderer, OpenAgentPanel } from '../../graph/nextDraft/DraftCanvas'
 import { AgentHandles } from '../../graph/AgentHandles'
 import { SignalEdgeShape } from '../../graph/SignalEdgeShape'
 import { agentNodeFacts, edgeBend, relationshipLines, useFloatingCurve } from '../../graph/signalEdge'
 import type { EdgePulse } from '../../graph/SignalEdgeShape'
 import { useWorkflowBoard } from '../context'
-import { currentRunKey } from '../currentRunQuery'
 import { readPinnedAgentVersion } from '../runDetailsClient'
-import { useSelectedRunRecord } from '../runFacts'
+import { useSelectedRunQueryState, useSelectedRunRecord } from '../runFacts'
 import { useRunHandoffsQuery } from '../runHandoffsQuery'
 import { runInspectionQueryKey, useRunVersionQuery } from './queries'
 import { pinnedNodeStates, pinnedTopology } from './pinnedTopology'
@@ -96,8 +95,14 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
   const query = useRunVersionQuery(scope)
   const denied = useProtectedAccessError(query)
   // Observe (never fetch) the canonical Run read: its confirmed denial hides the pinned topology too.
-  const canonical = useQuery({ queryKey: currentRunKey(scope), enabled: false })
-  const canonicalDenied = useProtectedAccessError(canonical)
+  const canonical = useSelectedRunQueryState()
+  const canonicalDenied = useProtectedAccessError({
+    error: canonical?.error,
+    failureReason: canonical?.fetchFailureReason,
+    isSuccess: canonical?.status === 'success',
+    failureCount: canonical?.fetchFailureCount ?? 0,
+    dataUpdatedAt: canonical?.dataUpdatedAt ?? 0,
+  })
   const version = query.isError || denied || canonicalDenied ? undefined : query.data?.version
   const handoffsQuery = useRunHandoffsQuery(scope, Boolean(version?.definition.handoffs))
   const handoffsDenied = useProtectedAccessError(handoffsQuery)

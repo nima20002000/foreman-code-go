@@ -1,7 +1,7 @@
-import type { DurableInteraction } from '@foreman-code/contracts'
+import type { DurableInteraction, InteractionResponseValue } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { NativeResponseJournal } from '../harnesses/recovery/responseJournal.js'
-import { hasAction, requireAuthorization } from '../access/policy.js'
+import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
 import { projectInteractionActivity, type InteractionActivityEvidence } from './activityProjection.js'
 import { DomainError } from '../errors.js'
 import type { WorkerInteractionAuthority } from './authorization.js'
@@ -14,6 +14,7 @@ import { deliverApproval, respondToApproval, resumeApproval,
 
 export type InteractionResponder =
   | { kind: 'user'; principal?: ManagementPrincipal }
+  | { kind: 'operator'; principal: ManagementPrincipal; source?: 'http' | 'mcp' }
   | { kind: 'orchestrator'; authority: WorkerInteractionAuthority; principal?: ManagementPrincipal;
       /** Rejected explicitly; audit belongs to the shared G1 decision writer. */
       beforeCommit?: unknown }
@@ -23,6 +24,12 @@ const message = (error: unknown) => error instanceof DomainError ? error.code : 
  * and graph complexity never select another repository or approval protocol. */
 export class InteractionService {
   private atomicApprovalResume: AtomicApprovalResumeConsumer | undefined
+  private prepareRequester: ((interaction: DurableInteraction) => Promise<void>) | undefined
+  useApprovalPreparation(prepare: (interaction: DurableInteraction) => Promise<void>): void {
+    if (this.prepareRequester && this.prepareRequester !== prepare) throw new DomainError(
+      'APPROVAL_RESUME_ALREADY_BOUND', 'The requester recovery consumer is already bound.', 409)
+    this.prepareRequester = prepare
+  }
   useAtomicApprovalResume(consumer: AtomicApprovalResumeConsumer): void {
     if (this.atomicApprovalResume && this.atomicApprovalResume !== consumer) throw new DomainError(
       'APPROVAL_RESUME_ALREADY_BOUND', 'The production checkpoint consumer is already bound.', 409)
@@ -32,7 +39,8 @@ export class InteractionService {
   private approvalDependencies(): ApprovalRuntimeDependencies {
     return { repository: this.interactions, nativeRuntime: this.nativeRuntime,
       ...(this.responseJournal ? { journal: this.responseJournal } : {}),
-      ...(this.atomicApprovalResume ? { atomicResume: this.atomicApprovalResume } : {}) }
+      ...(this.atomicApprovalResume ? { atomicResume: this.atomicApprovalResume } : {}),
+      ...(this.prepareRequester ? { prepareRequester: this.prepareRequester } : {}) }
   }
   constructor(private readonly interactions: Wave25InteractionRepository,
     _budgets: PostgresApprovalBudgetRepository, private readonly nativeRuntime: InteractionNativeRuntime,
@@ -76,7 +84,9 @@ export class InteractionService {
 
   async reviewStatusVisible(principal: ManagementPrincipal, id: string) {
     const interaction = await this.getVisible(principal, id)
-    const activity = await this.readActivity(interaction, false)
+    const authorized = interaction.approval.handler === 'user' && principal.audience === 'operator'
+      && isAuthorized(principal, 'interactions:respond', interaction)
+    const activity = await this.readActivity(interaction, authorized)
     const reviewerId = interaction.approval.designatedOrchestratorAgentId
     if (interaction.approval.handler !== 'orchestrator' || !reviewerId) return { interaction, activity }
     const job = await this.interactions.coordination.findReviewJob(id, reviewerId)
@@ -115,7 +125,8 @@ export class InteractionService {
     return { items, nextCursor: rows.length > input.limit ? items.at(-1)!.id : null, ...counts }
   }
 
-  respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number; commandId?: string },
+  respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number;
+    commandId?: string; response?: InteractionResponseValue | undefined },
     options: InteractionResponseOptions = {}) {
     return respondToApproval(this.approvalDependencies(), responder, input, options)
   }

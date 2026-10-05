@@ -159,8 +159,21 @@ export class RunInspectionService {
       if (error instanceof z.ZodError || error instanceof SyntaxError) throw new DomainError(
         'RUN_INSPECTION_EVIDENCE_CONFLICT', 'Persisted inspection evidence is invalid or unavailable.', 409)
       const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
-      if (['ECONNREFUSED', 'ECONNRESET', '57P01', '57P02', '57P03', '57014', '55P03', '53300', '42P01', '42703'].includes(code) || code.startsWith('08')) {
-        throw new DomainError('RUN_INSPECTION_UNAVAILABLE', 'The Run inspection store is unavailable.', 503)
+      const readTimeout = error instanceof Error && error.message === 'Query read timeout'
+      const reasons: Record<string, string> = {
+        '57014': 'query_canceled', '55P03': 'lock_timeout', '40P01': 'deadlock',
+        '53300': 'connection_limit', '42P01': 'schema_unavailable', '42703': 'schema_unavailable',
+      }
+      if (readTimeout || Object.hasOwn(reasons, code)
+        || ['ECONNREFUSED', 'ECONNRESET', '57P01', '57P02', '57P03'].includes(code) || code.startsWith('08')) {
+        const failure = new DomainError('RUN_INSPECTION_UNAVAILABLE',
+          readTimeout ? 'The Run inspection query exceeded its database read deadline.' : 'The Run inspection store is unavailable.',
+          503, { reason: readTimeout ? 'query_read_timeout' : reasons[code] ?? 'connection_unavailable',
+            ...(/^\d[A-Z0-9]{4}$/.test(code) ? { sqlState: code } : {}) })
+        // Retain the original exception for server diagnostics; HTTP/MCP expose
+        // only the static reason and SQLSTATE, never private database text.
+        failure.cause = error
+        throw failure
       }
       throw error
     }

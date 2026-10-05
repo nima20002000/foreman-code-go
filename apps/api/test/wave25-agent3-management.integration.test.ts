@@ -167,7 +167,7 @@ describe.skipIf(!postgresEnabled)('Current authenticated management editing pari
       const audit = (await db.pool.query('select source,outcome from management_audit where principal_id=$1', [caller.principal.id])).rows
       expect(audit).toEqual(expect.arrayContaining([expect.objectContaining({ source: 'http', outcome: 'denied' }), expect.objectContaining({ source: 'mcp', outcome: 'denied' })]))
     }
-    expect((await t.app.inject({ method: 'PUT', url: t.url, headers: graphHeaders(), payload: t.input })).statusCode).toBe(401)
+    expect((await t.app.inject({ method: 'PUT', url: t.url, headers: graphHeaders('invalid'), payload: t.input })).statusCode).toBe(401)
     await t.access.revoke(t.writer.principal.id)
     expect((await httpSave(t)).statusCode).toBe(401)
     expect((await t.call(CURRENT_WORKFLOW_TOOLS.save, t.input)).status).toBe(401)

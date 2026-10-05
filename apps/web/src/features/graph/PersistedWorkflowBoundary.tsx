@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { WorkflowDefinitionV3Schema } from '@foreman-code/contracts/wave25'
-import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { boardDraftContextKey } from '../workflow-board/keys'
 import { NextDraftEditor } from './nextDraft/NextDraftEditor'
 import { nextDraftApi } from './nextDraft/transport'

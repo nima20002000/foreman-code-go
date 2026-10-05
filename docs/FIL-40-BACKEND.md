@@ -42,13 +42,12 @@ share-locked through that transaction.
 
 This follows the existing root-human authority convention in
 `modules/access/runAuthority.ts`: a non-delegated Operator principal represents
-its own human owner. Both a verified owner browser session and the owner's
-non-delegated bearer credential can act. This is credential authority, not a
-new human-presence check. Worker/User audiences and delegated native
+its own root authority. The implicit local human and explicitly granted
+non-delegated Operator credentials can act. Worker/User audiences and delegated native
 Operator/Run credentials cannot manage retention, even with broad settings
 grants. Delegates are never silently translated to their parent owner.
-Authentication and browser Origin/CSRF protections remain at the existing HTTP
-and `/mcp` boundaries. Authorization denials from this service are audited for
+Loopback and Origin protections remain at the HTTP boundary; `/mcp` still requires
+explicit bearer authentication. Authorization denials from this service are audited for
 both transports; direct MCP calls to grant-hidden retention tools are also
 audited and return an explicit denial.
 
@@ -60,7 +59,7 @@ read that chat. No ownership backfill or delegated-owner remapping is included.
 
 ## API and MCP
 
-All payloads/readbacks use the unchanged `@graphql/contracts/files` schemas.
+All payloads/readbacks use the unchanged `@foreman-code/contracts/files` schemas.
 Transport paths and MCP registration names are backend additions:
 
 | HTTP | Operator MCP | Input / result |
@@ -172,11 +171,11 @@ tests skip; skipped tests are not evidence of passing behavior.
 Suggested commands in a full checkout with the repository's pinned toolchain:
 
 ```sh
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-retention.test.ts
-corepack pnpm --filter @graphql/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-retention.integration.test.ts --no-file-parallelism
-corepack pnpm --filter @graphql/api typecheck
-corepack pnpm --filter @graphql/api lint
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-retention.test.ts
+corepack pnpm --filter @foreman-code/api exec node ../../scripts/heavy-job.mjs -- vitest run test/file-retention.integration.test.ts --no-file-parallelism
+corepack pnpm --filter @foreman-code/api typecheck
+corepack pnpm --filter @foreman-code/api lint
 ```
 
 Supply a disposable loopback `TEST_DATABASE_URL` whose database name contains

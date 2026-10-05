@@ -1,3 +1,4 @@
+import { beginRuntimeTiming, timeRuntimeOperation, runtimeTimingPoint } from '../../infrastructure/runtimeTiming.js'
 import type { ResponseAvailabilityInspector } from '../harnesses/responseAvailability.js'
 import { randomUUID } from 'node:crypto'
 import { nativeEventBatches } from './nativeEventBatches.js'
@@ -39,9 +40,10 @@ export class LeaseGuard {
       this.deadline.unref()
     }
     armDeadline(expiresAt)
+    runtimeTimingPoint('harness', 'lease.heartbeat_interval', { intervalMs: Math.max(1, Math.floor(leaseMs / 3)) })
     this.timer = setInterval(() => {
       if (this.stopped || this.renewal || this.signal.aborted) return
-      this.renewal = Promise.resolve().then(renew).then((expiry) => { if (!this.stopped && !this.signal.aborted) armDeadline(expiry) }).catch(() => { if (!this.stopped) this.controller.abort(new DomainError(lostCode, 'The lease could not be renewed.', 409)) })
+      this.renewal = Promise.resolve().then(() => timeRuntimeOperation('harness', 'lease.renew', renew)).then((expiry) => { if (!this.stopped && !this.signal.aborted) armDeadline(expiry) }).catch(() => { if (!this.stopped) this.controller.abort(new DomainError(lostCode, 'The lease could not be renewed.', 409)) })
         .finally(() => { this.renewal = undefined })
     }, Math.max(1, Math.floor(leaseMs / 3)))
     this.timer.unref()
@@ -49,7 +51,7 @@ export class LeaseGuard {
 
   async check(): Promise<void> {
     this.signal.throwIfAborted()
-    try { await this.assertOwned() } catch {
+    try { await timeRuntimeOperation('harness', 'lease.check', () => this.assertOwned()) } catch {
       const error = new DomainError(this.lostCode, 'The lease could not be confirmed.', 409)
       this.controller.abort(error)
       throw error
@@ -59,12 +61,13 @@ export class LeaseGuard {
 
   async wait<T>(work: Promise<T>, signal: AbortSignal = this.signal): Promise<T> {
     const ownedSignal = signal === this.signal ? signal : AbortSignal.any([this.signal, signal])
+    const finished = beginRuntimeTiming('harness', 'lease.wait')
     let abort: (() => void) | undefined
     return Promise.race([work, new Promise<never>((_resolve, reject) => {
       abort = () => reject(ownedSignal.reason)
       ownedSignal.addEventListener('abort', abort, { once: true })
       if (ownedSignal.aborted) abort()
-    })]).finally(() => { if (abort) ownedSignal.removeEventListener('abort', abort) })
+    })]).finally(() => { finished(); if (abort) ownedSignal.removeEventListener('abort', abort) })
   }
 
   async stop(): Promise<void> {
@@ -113,7 +116,7 @@ function observeEvents<T>(events: AsyncIterable<T>, signal: AbortSignal,
         await guard?.check()
         const next = await waitForSignal(Promise.resolve().then(() => {
           observedSignal.throwIfAborted()
-          return iterator.next()
+          return timeRuntimeOperation('harness', 'native.event_read', () => iterator.next())
         }), observedSignal)
         await guard?.check()
         observedSignal.throwIfAborted()
@@ -161,6 +164,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   readonly startInitialTurnBatches?: (start: NativeSessionStart, input: NativeInitialTurnInput,
     signal?: AbortSignal) => AsyncIterable<NativeHarnessEvent[]>
   readonly inspectResponseAvailability?: NonNullable<ResponseAvailabilityInspector['inspectResponseAvailability']>
+  readonly recoverEnvironment?: NonNullable<NativeHarnessSessionManager['recoverEnvironment']>
 
   constructor(
     private readonly manager: NativeHarnessSessionManager & ResponseAvailabilityInspector,
@@ -169,6 +173,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     private readonly leaseMs = 30_000,
   ) {
     this.harness = manager.harness
+    if (manager.recoverEnvironment) this.recoverEnvironment = manager.recoverEnvironment.bind(manager)
     if (manager.inspectResponseAvailability) this.inspectResponseAvailability = manager.inspectResponseAvailability.bind(manager)
     if (manager.startInitialTurn) {
       this.startInitialTurn = (start, input, signal) => this.initialTurn(start, input, signal)
@@ -249,22 +254,25 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   async acquire(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<SessionWriteLease> {
     signal?.throwIfAborted()
     if (this.disposal) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The captured native manager is disposed.', 409)
-    const previous = await this.ensure(session, 'uncertain')
-    const token = `writer-${randomUUID()}`
-    // Preserve the unresolved turn correlation through attach/control operations and failed preflight.
-    const lane = await this.coordination.claimLane(previous.id, previous.revision, this.agentId, token,
-      new Date(Date.now() + this.leaseMs).toISOString(), previous.correlationId ?? correlationId)
-    const guard = new LeaseGuard(this.leaseMs,
-      () => this.coordination.assertLaneLease(lane.id, token),
-      () => this.coordination.renewLane(lane.id, token, this.leaseMs), signal, lane.leaseExpiresAt)
-    let finish!: () => void
-    const finished = new Promise<void>((resolve) => { finish = resolve })
-    return {
-      finished, finish,
-      fence: { id: lane.id, token }, guard, previous,
-      observedStatus: previous.observedStatus,
-      ...(previous.currentTurnOrMessageId ? { providerId: previous.currentTurnOrMessageId } : {}),
-    }
+    const finishTiming = beginRuntimeTiming('harness', 'lease.acquire', { nativeSessionId: session.nativeSessionId })
+    try {
+      const previous = await this.ensure(session, 'uncertain')
+      const token = `writer-${randomUUID()}`
+      // Preserve the unresolved turn correlation through attach/control operations and failed preflight.
+      const lane = await this.coordination.claimLane(previous.id, previous.revision, this.agentId, token,
+        new Date(Date.now() + this.leaseMs).toISOString(), previous.correlationId ?? correlationId)
+      const guard = new LeaseGuard(this.leaseMs,
+        () => this.coordination.assertLaneLease(lane.id, token),
+        () => this.coordination.renewLane(lane.id, token, this.leaseMs), signal, lane.leaseExpiresAt)
+      let finish!: () => void
+      const finished = new Promise<void>((resolve) => { finish = resolve })
+      return {
+        finished, finish,
+        fence: { id: lane.id, token }, guard, previous,
+        observedStatus: previous.observedStatus,
+        ...(previous.currentTurnOrMessageId ? { providerId: previous.currentTurnOrMessageId } : {}),
+      }
+    } finally { finishTiming() }
   }
 
   private async release(lease: SessionWriteLease): Promise<void> {
@@ -280,7 +288,8 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
 
   private async releaseSession(session: NativeSessionReference, lease: SessionWriteLease): Promise<void> {
     if (this.active.get(session.nativeSessionId) === lease) this.active.delete(session.nativeSessionId)
-    const release = this.release(lease)
+    const release = timeRuntimeOperation('harness', 'lease.release', () => this.release(lease),
+      { nativeSessionId: session.nativeSessionId })
     // Removing the observer does not release its persisted lane. Restart close
     // must observe this exact release before attempting another fenced claim.
     this.releasing.set(session.nativeSessionId, release)

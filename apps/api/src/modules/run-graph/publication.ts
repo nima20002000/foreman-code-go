@@ -1,3 +1,4 @@
+import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { readPublicRunStateLocked } from './publicRunState.js'
 import { capturePublicProjectionLocked, assertPublicProjectionUnchangedLocked, assertPublicProjectionCommittedLocked } from './publicProjectionReceipt.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -141,7 +142,8 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
     if (key !== constructionKey) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
     this.sql = sql
     this.scope = Object.freeze({ ...scope })
-    beforeGraphCommit(sql, () => this.finalize())
+    beforeGraphCommit(sql, () => timeRuntimeOperation('db', 'graph.finalize', () => this.finalize(),
+      { runId: this.scope.runId }))
   }
   /** Source/projection bookkeeping; grants no authority for a workflow effect.
    * Exact duplicate sources do not call mutate; conflicts poison the transaction. */
@@ -282,53 +284,68 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
    * in this G1 transaction; there is no caller facts/authority/mutation callback.
    * A source-only receipt anchors to the existing committed cut and does not
    * fabricate a cursor advance, a result, native activity or acknowledgement. */
-  async retainNativeSource(owner: RunOwnership, proofId: string): Promise<{
+  async retainNativeSource(owner: RunOwnership, proofId: string) {
+    const [receipt] = await this.retainNativeSources(owner, [proofId])
+    return receipt!
+  }
+
+  async retainNativeSources(owner: RunOwnership, proofIds: readonly string[]): Promise<Array<{
     evidence: GraphEvidence; sourceDigest: string; semanticDigest: string
-  }> {
+  }>> {
     let entered = false
     try {
       assertGraphTransaction(this.sql)
       if (this.#finalized || this.#admissionOnly) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
       if (this.#busy) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
-      this.#busy = true; entered = true
+      this.#busy = true
+      entered = true
       owner.assertOwned()
       if (owner.runId !== this.scope.runId) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
       const fence = await owner.readOneShotFence(this.sql)
-      const row = (await this.sql.query<{ record: unknown; source_digest: string }>(
-        'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 for share',
-        [proofId, owner.runId])).rows[0]
-      if (!row || graphSourceDigest(row.record) !== row.source_digest) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
-      const evidence = GraphEvidenceSchema.parse({ sourceKind: 'native_event', sourceId: proofId, sourceRevision: '1' })
-      const sourceDigest = GraphDigestSchema.parse(row.source_digest)
-      const semanticDigest = graphSourceDigest({ evidence, facts: [], effect: null })
-      const key = canonicalGraphJson(evidence), staged = this.#sources.get(key)
-      const saved = staged ? undefined : (await this.sql.query<{ source_digest: string; semantic_digest: string }>(
-        `select source_digest,semantic_digest from run_graph_sources where run_id=$1
-         and source_kind='native_event' and source_id=$2 and source_revision=1`, [owner.runId, proofId])).rows[0]
-      if (staged || saved) this.assertSame(staged ?? { sourceDigest: saved!.source_digest,
-        semanticDigest: saved!.semantic_digest }, sourceDigest, semanticDigest)
-      else {
-        const head = (await this.sql.query<{ sequence: string }>(
-          'select head_sequence::text as sequence from run_graph_heads where run_id=$1', [owner.runId])).rows[0]
-        if (!head || BigInt(GraphSequenceSchema.parse(head.sequence)) < 1n) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
-        const bytes = graphJsonBytes({ evidence, sourceDigest, semanticDigest })
-        if (this.#sources.size >= RUN_GRAPH_LIMITS.transactionSources || this.#bytes + bytes > RUN_GRAPH_LIMITS.transactionBytes) {
-          throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
+      const rows = await this.sql.query<{ proof_id: string; record: unknown; source_digest: string;
+        saved_digest: string | null; semantic_digest: string | null; sequence: string }>(
+        `select p.proof_id,p.record,p.source_digest,s.source_digest as saved_digest,s.semantic_digest,
+          h.head_sequence::text as sequence from workflow_native_proofs p
+          join run_graph_heads h on h.run_id=p.run_id
+          left join run_graph_sources s on s.run_id=p.run_id and s.source_kind='native_event'
+            and s.source_id=p.proof_id and s.source_revision=1
+          where p.run_id=$1 and p.proof_id=any($2::text[]) for share of p`, [owner.runId, [...proofIds]])
+      const originals = new Map(rows.rows.map((row) => [row.proof_id, row]))
+      const receipts = proofIds.map((proofId) => {
+        const row = originals.get(proofId)
+        if (!row || graphSourceDigest(row.record) !== row.source_digest) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+        const evidence = GraphEvidenceSchema.parse({ sourceKind: 'native_event', sourceId: proofId, sourceRevision: '1' })
+        const sourceDigest = GraphDigestSchema.parse(row.source_digest)
+        const semanticDigest = graphSourceDigest({ evidence, facts: [], effect: null })
+        const key = canonicalGraphJson(evidence)
+        const staged = this.#sources.get(key)
+        if (staged || row.saved_digest !== null) {
+          this.assertSame(staged ?? { sourceDigest: row.saved_digest!, semanticDigest: row.semantic_digest! },
+            sourceDigest, semanticDigest)
+        } else {
+          if (BigInt(GraphSequenceSchema.parse(row.sequence)) < 1n) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
+          const bytes = graphJsonBytes({ evidence, sourceDigest, semanticDigest })
+          if (this.#sources.size >= RUN_GRAPH_LIMITS.transactionSources
+            || this.#bytes + bytes > RUN_GRAPH_LIMITS.transactionBytes) throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
+          this.#sources.set(key, { evidence, sourceDigest, semanticDigest, events: [], firstSequence: row.sequence })
+          this.#bytes += bytes
         }
-        this.#sources.set(key, { evidence, sourceDigest, semanticDigest, events: [], firstSequence: head.sequence })
-        this.#bytes += bytes
-      }
+        return { evidence, sourceDigest, semanticDigest }
+      })
       beforeGraphCommit(this.sql, async () => {
         owner.assertOwned()
         const current = await owner.readOneShotFence(this.sql)
-        const latest = (await this.sql.query<{ record: unknown; source_digest: string }>(
-          'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2', [proofId, owner.runId])).rows[0]
-        if (current.ownerId !== fence.ownerId || current.fence !== fence.fence || !latest
-          || latest.source_digest !== sourceDigest || graphSourceDigest(latest.record) !== sourceDigest) {
-          throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
-        }
+        const latest = await this.sql.query<{ proof_id: string; record: unknown; source_digest: string }>(
+          'select proof_id,record,source_digest from workflow_native_proofs where run_id=$1 and proof_id=any($2::text[])',
+          [owner.runId, [...proofIds]])
+        const persisted = new Map(latest.rows.map((row) => [row.proof_id, row]))
+        if (current.ownerId !== fence.ownerId || current.fence !== fence.fence
+          || receipts.some(({ evidence, sourceDigest }) => {
+            const row = persisted.get(evidence.sourceId)
+            return !row || row.source_digest !== sourceDigest || graphSourceDigest(row.record) !== sourceDigest
+          })) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
       })
-      return { evidence, sourceDigest, semanticDigest }
+      return receipts
     } catch (error) { poisonGraphTransaction(this.sql); throw error }
     finally { if (entered) this.#busy = false }
   }
@@ -675,7 +692,8 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
         })))],
       )
     }
-    const projection = await capturePublicProjectionLocked(this.sql, this.scope)
+    const projection = await timeRuntimeOperation('db', 'graph.capture_projection',
+      () => capturePublicProjectionLocked(this.sql, this.scope), { runId: this.scope.runId })
     if (projection) {
       const key = canonicalGraphJson(projection.evidence)
       if (this.#sources.has(key)) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
@@ -683,7 +701,8 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
         semanticDigest: projection.semanticDigest, events: [RepeatGraphEventContentV3Schema.parse({ eventId: randomUUID(),
           evidence: projection.evidence, sourceDigest: projection.sourceDigest, semanticDigest: projection.semanticDigest,
           effect: null, fact: projection.fact })] })
-      beforeGraphCommit(this.sql, () => assertPublicProjectionUnchangedLocked(this.sql, this.scope, projection))
+      beforeGraphCommit(this.sql, () => timeRuntimeOperation('db', 'graph.recheck_projection',
+        () => assertPublicProjectionUnchangedLocked(this.sql, this.scope, projection), { runId: this.scope.runId }))
     }
     if (this.#sources.size > RUN_GRAPH_LIMITS.transactionSources
       || graphJsonBytes([...this.#sources.values()]) > RUN_GRAPH_LIMITS.transactionBytes) throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')

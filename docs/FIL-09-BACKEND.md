@@ -14,7 +14,7 @@ The only existing source file changed is `apps/api/src/modules/files/tools/mcp.t
 
 `opencodeFiles/attachments.ts` reads exact file/revision pins through FIL-05 in 64 KiB ranges. It checks range continuity, declared size, SHA-256, end-of-file and a final authorization/expiry read. It never reads an API storage path. The returned prompt fragment contains filenames, execution-host paths and artifact/pin identities, not contents, credentials or startup instructions. PNG/JPEG/WebP/GIF use native `type: file` image parts with encoded execution-host `file://` URLs. Other formats remain files, not injected text or active previews.
 
-`opencodeFiles/turn.ts` issues credentials only through `issueForAcceptedSession` using an accepted server binding. Before issuance it requires a matching execution host, an isolation check and disabled workflow App MCP. It registers a uniquely named remote file-only MCP connection with a `gql_file_` Authorization header, then checks connection readback. No Operator/worker credential or GraphQL App MCP enable operation is introduced.
+`opencodeFiles/turn.ts` issues credentials only through `issueForAcceptedSession` using an accepted server binding. Before issuance it requires a matching execution host, an isolation check and disabled workflow App MCP. It registers a uniquely named remote file-only MCP connection with a `gql_file_` Authorization header, then checks connection readback. No Operator/worker credential or Foreman Code App MCP enable operation is introduced.
 
 An instance owns one accepted native turn. Replayed preparation preserves working copies, does not reissue a credential and conflicts on changed input. Helpers sharing one controller cannot hold overlapping file turns. This is a component guard, not a substitute for a production process-wide admission lease. The host/process must be dedicated to the chat binding; other sessions must not be able to use its resident MCP configuration.
 
@@ -23,6 +23,10 @@ Write-mode attachments become detached, registered temporary artifacts. The arti
 `opencodeFiles/host.ts` provides a Linux execution-host implementation. Descriptor-anchored directory traversal and `O_NOFOLLOW` prevent path replacement from redirecting a snapshot through a symlink. Publication rejects hard links, directories, devices and oversized files; two bounded reads plus file identity/timestamp checks detect changes during capture. Unicode display names that exceed practical filesystem byte limits receive a short physical filename without changing revision metadata. Retried materialization does not overwrite native edits. Cleanup removes registered files and empty directories only; it does not recursively delete unregistered editor-created entries.
 
 `assertProtectedSourcePaths` checks the actual non-root native UID, supplementary groups, IDs, DAC capabilities and mount namespace before checking a complete trusted source-path inventory. A source or ancestor that is writable, native-owned or a symlink is rejected. A directory vault must be inaccessible to that identity; making only its directory non-writable does not make its contents immutable. Same-UID chmod is deliberately not accepted as isolation. The inventory must cover the whole vault and aliases, not only currently selected references.
+
+Production chat uses `OpenCodeVaultIsolation` instead of applying that identity check to the API-owned vault. The local OpenCode factory launches the native process through the system-owned `/usr/bin/bwrap`, with private mount, PID, user and IPC namespaces. The vault is replaced by an empty read-only tmpfs, its ancestors are pinned mountpoints, and a private procfs hides the API's open byte descriptors. Workspace paths remain shared so the API can deliver detached inputs and snapshot native working copies through the existing mediated file services. The vault remains private and API-owned.
+
+A trusted helper checks the namespace, mounts, dropped capabilities and `no_new_privs` inside the sandbox before executing OpenCode. The controller binds its startup acknowledgement to that process generation and rechecks the original vault identity before admitting files. This local composition requires Linux, Bubblewrap with user namespace support, and the pinned Node.js 22.23.2 runtime, which includes `process.execve`. Plain chat keeps scoped tools for inherited references without creating attachment copies. File ownership, accepted sender validation, native permissions and token issuance remain enforced by the same services.
 
 ## Lifecycle contract for the missing adapter wiring
 
@@ -72,8 +76,8 @@ Not executed: `opencode-files-mcp.test.ts` against the actual FIL-05/MCP depende
 
 ```sh
 corepack pnpm install
-corepack pnpm --filter @graphql/contracts build
-corepack pnpm --filter @graphql/api exec vitest run test/opencode-files.test.ts test/opencode-files-mcp.test.ts
+corepack pnpm --filter @foreman-code/contracts build
+corepack pnpm --filter @foreman-code/api exec vitest run test/opencode-files.test.ts test/opencode-files-mcp.test.ts
 node scripts/test-opencode-files.mjs
 corepack pnpm typecheck
 corepack pnpm lint

@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-q
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults } from '@foreman-code/contracts'
+import { CODEX_INTERACTION_SUPPORT, DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults } from '@foreman-code/contracts'
 import { queryKeys } from '../../shared/api/query'
 import { HarnessDefaultsSettings } from './HarnessDefaultsSettings'
 import { clearRevisionedFormPersistence } from './revisionedForm'
@@ -36,6 +36,22 @@ function renderSettings(defaults: HarnessDefaults=DEFAULT_HARNESS_DEFAULTS, sele
 beforeEach(()=>{saveDefaults.mockReset();saveDefaults.mockImplementation(async(input)=>({value:{defaults:input.defaults,revision:1},replayed:false}))})
 afterEach(()=>{cleanup();clearRevisionedFormPersistence();for(const client of clients.splice(0))client.clear()})
 describe('Harness overview and draft regressions',()=>{
+  it('shows the server-reported supported and unsupported Codex interaction subsets', async () => {
+    const client = renderSettings(DEFAULT_HARNESS_DEFAULTS, 'codex')
+    act(() => client.setQueryData(queryKeys.managedHarnessCatalog, [
+      { harness: 'codex', defaults: DEFAULT_HARNESS_DEFAULTS.codex, defaultsRevision: 0,
+        capability: null, discoveryError: null, interactionSupport: CODEX_INTERACTION_SUPPORT },
+      { harness: 'opencode', defaults: DEFAULT_HARNESS_DEFAULTS.opencode, defaultsRevision: 0,
+        capability: null, discoveryError: null, interactionSupport: [] },
+    ]))
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Access & approvals' }))
+    const support = screen.getByRole('region', { name: 'Supported Codex requests' })
+    for (const item of CODEX_INTERACTION_SUPPORT) {
+      expect(within(support).getByText(item.label)).toBeVisible()
+      expect(within(support).getByText(item.supported)).toBeVisible()
+      expect(within(support).getByText(item.unsupported)).toBeVisible()
+    }
+  })
   it.each(['codex', 'opencode'] as const)('shows %s model settings without routine preset or catalog prose', async (harness) => {
     renderSettings(DEFAULT_HARNESS_DEFAULTS, harness)
     expect(await screen.findByRole('combobox', { name: 'Model' })).toBeVisible()

@@ -46,16 +46,6 @@
 .settings-editor-page .harness-section-heading h4 { font-size: 13px; }
 .settings-single-column { display: grid; gap: var(--space-4); padding: 26px; border: 1px solid var(--n-border); border-radius: var(--n-radius-lg); background: var(--n-surface); }
 .settings-single-column > .n-field { max-width: 680px; }
-.access-page { max-width: 840px; }
-.access-session, .access-setup, .access-connect { display: grid; gap: var(--space-4); padding: 24px; border: 1px solid var(--n-border); border-radius: var(--n-radius-lg); background: var(--n-surface); min-width: 0; }
-.access-session p, .access-session summary { color: var(--n-muted); font-size: 12px; line-height: 1.65; }
-.access-session summary { cursor: pointer; }
-.access-grant { padding: 12px 0; overflow-wrap: anywhere; border-bottom: 1px solid var(--n-border); }
-.access-command { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); align-items: start; min-width: 0; }
-.access-command pre { padding: 14px; margin: 0; background: var(--n-canvas); color: var(--n-text); border: 1px solid var(--n-border); border-radius: var(--radius-md); font: 12px/1.7 var(--n-mono); overflow-wrap: anywhere; white-space: pre-wrap; user-select: all; }
-.access-command > span { grid-column: 1 / -1; color: var(--n-muted); font-size: 12px; }
-.access-connect .settings-enrollment-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: end; }
-.access-connect .settings-enrollment-form > .n-button { min-height: 40px; }
 @media (max-width: 840px) {
   .settings-editor-layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
   .settings-editor-nav { display: flex; flex-wrap: wrap; gap: var(--space-1); }
@@ -67,12 +57,10 @@
   .settings-page.settings-experience { padding: 16px; }
   .settings-choice { padding: 18px; }
   .settings-editor-page { gap: var(--space-4); }
-  .settings-editor-content, .settings-single-column, .access-session, .access-setup, .access-connect { padding: 18px; }
+  .settings-editor-content, .settings-single-column { padding: 18px; }
   .settings-editor-page .settings-save-actions { gap: var(--space-2); }
   .settings-editor-page .settings-footer-options { flex-basis: 100%; }
   .settings-editor-page .settings-save-actions > p { flex-basis: 100%; }
-  .access-command, .access-connect .settings-enrollment-form { grid-template-columns: minmax(0, 1fr); }
-  .access-command > button { justify-self: start; }
 }
 @media (prefers-reduced-motion: reduce) { .settings-choice { transition: none; } }
 @media (forced-colors: active) {

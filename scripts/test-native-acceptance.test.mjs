@@ -57,9 +57,38 @@ test('acceptance retains the general test database fallback when no native datab
   assert.equal(configuration.opencodeBinary, undefined)
 })
 
-test('acceptance selects explicit files and retains the default lifecycle gate', () => {
+test('acceptance keeps executable lookup deferred and respects explicit provider paths', () => {
+  assert.equal(nativeAcceptanceConfiguration({ PATH: '' }).opencodeBinary, undefined)
+  assert.equal(nativeAcceptanceConfiguration({ OPENCODE_BINARY: '/installed/opencode' }).opencodeBinary,
+    '/installed/opencode')
+  assert.equal(nativeAcceptanceConfiguration({ OPENCODE_BINARY: '/installed/opencode',
+    ENG03_A_OPENCODE_BINARY: '/qualified/opencode' }).opencodeBinary, '/qualified/opencode')
+})
+
+test('the native gate includes local-human isolation and production recovery by default', () => {
+  assert.deepEqual(nativeAcceptanceFiles([]), [
+    'test/eng03-c-native.acceptance.test.ts',
+    'test/local-human-native.acceptance.test.ts',
+    'test/local-human-native-recovery.acceptance.test.ts',
+  ])
+})
+
+test('an explicit native gate selects only its requested files', () => {
+  const file = 'test/local-human-native-recovery.acceptance.test.ts'
+  assert.deepEqual(nativeAcceptanceFiles(['--files', file, `apps/api/${file}`]), [file])
+})
+
+test('native selection rejects empty, unknown and non-acceptance inputs', () => {
+  for (const arguments_ of [
+    ['--files'], ['--start-at', 'test/local-human-native.acceptance.test.ts'],
+    ['--files', 'apps/api/test/../test/local-human-native.acceptance.test.ts'],
+    ['--files', 'apps/api/test/local-human.integration.test.ts'],
+    ['--files', 'apps/api/test/missing.acceptance.test.ts'],
+  ]) assert.throws(() => nativeAcceptanceFiles(arguments_))
+})
+
+test('acceptance selects explicit API qualification files', () => {
   const file = 'test/opencode-qualification.acceptance.test.ts'
-  assert.deepEqual(nativeAcceptanceFiles([]), ['test/eng03-c-native.acceptance.test.ts'])
   assert.deepEqual(nativeAcceptanceFiles(['--files', file, file]), [file])
 })
 
@@ -74,18 +103,17 @@ test('acceptance runs a selected case and leaves the complete gate as its defaul
 test('acceptance rejects empty selections, broad filters and paths outside API tests', () => {
   for (const args of [['--files'], ['--files', 'opencode'], ['--files', '../test/opencode.acceptance.test.ts'],
     ['--files', 'test/../opencode.acceptance.test.ts'], ['--testNamePattern', 'qualification']]) {
-    assert.throws(() => nativeAcceptanceFiles(args), /explicit API acceptance test paths/)
+    assert.throws(() => nativeAcceptanceFiles(args))
   }
 })
 
-test('the root acceptance command forwards file selectors before building or opening a database', () => {
+test('the root acceptance command forwards file selection and rejects invalid paths before native execution', () => {
   const result = spawnSync('corepack', ['pnpm', 'test:acceptance', '--files', '../outside.acceptance.test.ts'], {
-    cwd: fileURLToPath(new URL('../', import.meta.url)), encoding: 'utf8', timeout: 20_000,
-    env: { ...process.env, ENG03_A_TEST_DATABASE_URL: 'postgresql://fixture@203.0.113.1:5432/native_test' },
+    cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', timeout: 10_000,
   })
-  assert.equal(result.error, undefined)
-  assert.equal(result.status, 1)
-  assert.match(result.stderr, /explicit API acceptance test paths/)
+  assert.ifError(result.error)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stdout + result.stderr, /Invalid acceptance test file:/)
 })
 
 test('physical transfer and provider cases are selected explicitly as acceptance suites', () => {

@@ -173,7 +173,7 @@ describe('PR17 Agent3: durable Operator chat recovery', () => {
     expect(f.row.active_request_id).toBeNull()
     expect(f.finishResults[0]?.outcome).toBe(terminal ? 'succeeded' : 'canceled')
     expect(f.prepared()).toBe(0) // No new delegated authority.
-    expect(f.manager.attachInputs[0]?.environment?.variables).toEqual({ GRAPHQL_MCP_TOKEN: 'operator-cleanup-disabled' })
+    expect(f.manager.attachInputs[0]?.environment?.variables).toEqual({ FOREMAN_CODE_MCP_TOKEN: 'operator-cleanup-disabled' })
     expect(f.manager.stoppedAutomatic).toBeGreaterThan(0)
     await expect(f.chat.send(f.row.id, { requestId: 'denied', content: 'New execution' }, f.owner)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
     await f.chat.shutdown()

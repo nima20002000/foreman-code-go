@@ -1,10 +1,14 @@
-import { spawn, spawnSync, execFileSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { statSync } from 'node:fs'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { delimiter, dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { adminDatabaseUrl, requireLoopbackTestDatabase } from './test-integration.mjs'
+import { assertTestPath, completeTestResourceCleanup, createFixtureDatabase, createFixtureSchema,
+  dropFixtureDatabase, ownedTestDatabaseUrl, ownedTestPath, registerTestResourceCleanup,
+  testAdminPool, testEnvironment } from './test-resources.mjs'
+import { stopGroup } from './integration-process.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
@@ -20,18 +24,28 @@ export function nativeAcceptanceConfiguration(environment) {
   return {
     databaseUrl: environment.ENG03_A_TEST_DATABASE_URL ?? environment.TEST_DATABASE_URL,
     evidenceRoot: environment.ENG03_A_EVIDENCE_DIR ?? join(root, '.logs', 'native-acceptance'),
-    opencodeBinary: environment.ENG03_A_OPENCODE_BINARY,
+    opencodeBinary: environment.ENG03_A_OPENCODE_BINARY ?? environment.OPENCODE_BINARY,
   }
 }
 
-export function nativeAcceptanceFiles(args) {
-  if (args.length === 0) return ['test/eng03-c-native.acceptance.test.ts']
-  const [option, ...files] = args
-  if (option !== '--files' || files.length === 0 || files.some((file) =>
-    !/^(?:test|src\/modules)\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.acceptance\.test\.ts$/.test(file))) {
+export function nativeAcceptanceFiles(arguments_) {
+  if (!arguments_.length) return [
+    'test/eng03-c-native.acceptance.test.ts',
+    'test/local-human-native.acceptance.test.ts',
+    'test/local-human-native-recovery.acceptance.test.ts',
+  ]
+  if (arguments_[0] !== '--files' || arguments_.length < 2) {
     throw new Error('Use --files followed by explicit API acceptance test paths.')
   }
-  return [...new Set(files)]
+  const files = [...new Set(arguments_.slice(1).map(file =>
+    file.startsWith('apps/api/') ? file.slice('apps/api/'.length) : file))]
+  for (const file of files) {
+    if (!/^(?:test|src\/modules)\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.acceptance\.test\.ts$/.test(file)
+      || posix.normalize(file) !== file || !statSync(join(root, 'apps/api', file)).isFile()) {
+      throw new Error(`Invalid acceptance test file: ${file}`)
+    }
+  }
+  return files
 }
 
 export function nativeAcceptanceVitestArguments(files, environment) {
@@ -40,68 +54,125 @@ export function nativeAcceptanceVitestArguments(files, environment) {
     ...(pattern ? ['--testNamePattern', pattern] : [])]
 }
 
+async function pendingCleanup(invocation, ownId) {
+  const folder = assertTestPath(invocation, join(invocation.directory, '.graphql-test-cleanup'))
+  for (const name of await readdir(folder)) {
+    const record = JSON.parse(await readFile(assertTestPath(invocation, join(folder, name)), 'utf8'))
+    if (record.token !== invocation.token) throw new Error('Native acceptance cleanup ownership mismatch')
+    if (record.id !== ownId && record.kind !== 'suite-process-group') return true
+  }
+  return false
+}
+
 export async function withNativeAcceptanceDatabase(configured, evidenceRoot, execute) {
-  if (configured) requireLoopbackTestDatabase(configured)
-  const server = adminDatabaseUrl(configured)
-  const admin = new Pool({ connectionString: server, max: 1 })
-  const name = `graphql_native_${randomUUID().replaceAll('-', '')}_test`
-  const evidence = join(evidenceRoot, name)
-  const record = { name, created: false, exitCode: null, removed: false }
-  await mkdir(evidence, { recursive: true, mode: 0o700 })
+  const parentUrl = ownedTestDatabaseUrl()
+  if (configured !== undefined && configured !== parentUrl) throw new Error('Native acceptance requires its owned test database')
+  ownedTestPath(evidenceRoot)
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER }
+  const admin = await testAdminPool()
+  let resource
+  let evidence
+  let cleanupId
+  const record = { name: null, created: false, exitCode: null, removed: false }
   try {
-    await admin.query(`create database "${name}"`)
-    record.created = true
-    const database = new URL(server)
+    const name = `foreman_code_native_${randomUUID().replaceAll('-', '')}_test`
+    const parent = new Pool({ connectionString: parentUrl, max: 1 })
+    try { await createFixtureDatabase(parent, name) } finally { await parent.end() }
+    const database = new URL(parentUrl)
     database.pathname = `/${name}`
-    record.exitCode = await execute({ databaseUrl: database.toString(), evidence })
+    resource = { ...invocation, name, databaseUrl: database.toString() }
+    record.name = resource.name
+    record.created = true
+    cleanupId = registerTestResourceCleanup(invocation,
+      { kind: 'native-acceptance-database', databaseUrl: resource.databaseUrl, name: resource.name })
+    evidence = join(evidenceRoot, resource.name)
+    await mkdir(evidence, { recursive: true, mode: 0o700 })
+    const setup = new Pool({ connectionString: resource.databaseUrl, max: 1 })
+    try {
+      await createFixtureSchema(setup, 'native_acceptance')
+      await setup.query(`alter database "${resource.name}" set search_path to native_acceptance`)
+    } finally { await setup.end() }
+    const environment = testEnvironment(process.env, resource)
+    record.exitCode = await execute({ databaseUrl: resource.databaseUrl, evidence, environment })
   } finally {
     try {
-      if (record.created) {
-        const callers = await admin.query('select count(*)::int as count from pg_stat_activity where datname=$1', [name])
-        if (callers.rows[0].count === 0) {
-          await admin.query(`drop database "${name}"`)
+      if (resource) {
+        const callers = await admin.query('select count(*)::int as count from pg_stat_activity where datname=$1', [resource.name])
+        if (callers.rows[0].count === 0 && !await pendingCleanup(invocation, cleanupId)) {
+          const parent = new Pool({ connectionString: parentUrl, max: 1 })
+          try { await dropFixtureDatabase(parent, resource.name) } finally { await parent.end() }
+          completeTestResourceCleanup(invocation, cleanupId)
           record.removed = true
         } else {
-          console.error('Task-owned acceptance database retained because callers remain active.')
+          console.error('Owned acceptance database and recovery state retained because cleanup is unconfirmed.')
           record.exitCode = 1
         }
       }
-      await writeFile(join(evidence, 'database.json'), JSON.stringify(record, null, 2))
-    } finally {
-      await admin.end()
-    }
+      if (evidence) await writeFile(join(evidence, 'database.json'), JSON.stringify(record, null, 2), { mode: 0o600 })
+    } finally { await admin.end() }
   }
   return record
 }
 
+async function runNativeAcceptance(environment, files) {
+  const invocation = { directory: environment.FOREMAN_CODE_TEST_ROOT, token: environment.FOREMAN_CODE_TEST_OWNER }
+  const cleanupId = registerTestResourceCleanup(invocation,
+    { kind: 'native-acceptance-process-group', wrapperPid: process.pid, databaseUrl: environment.TEST_DATABASE_URL })
+  const child = spawn(process.execPath, [
+    'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
+    'vitest', ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=1',
+  ], {
+    cwd: root, stdio: 'inherit', detached: true,
+    env: environment,
+  })
+  let interrupted
+  let stopping
+  let cleanupError
+  const stop = signal => {
+    interrupted = signal
+    stopping ??= stopGroup(child.pid, { signal }).catch(error => { cleanupError = error })
+  }
+  const interrupt = () => stop('SIGINT')
+  const terminate = () => stop('SIGTERM')
+  process.on('SIGINT', interrupt)
+  process.on('SIGTERM', terminate)
+  let code
+  try {
+    code = await new Promise((yes, no) => {
+      child.once('error', no)
+      child.once('exit', (status, signal) => yes(status ?? (signal === 'SIGINT' ? 130 : 143)))
+    })
+  } finally {
+    process.off('SIGINT', interrupt)
+    process.off('SIGTERM', terminate)
+    await stopping
+    await stopGroup(child.pid)
+    completeTestResourceCleanup(invocation, cleanupId)
+  }
+  if (cleanupError) throw cleanupError
+  if (interrupted === 'SIGINT') return 130
+  if (interrupted) return 143
+  return code
+}
+
 async function main() {
   const files = nativeAcceptanceFiles(process.argv.slice(2))
-  const build = spawnSync('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'],
-    { cwd: root, env: process.env, stdio: 'inherit' })
-  if (build.error) throw build.error
-  if (build.status !== 0) {
-    process.exitCode = build.status ?? (build.signal === 'SIGINT' ? 130 : 143)
+  const contracts = spawnSync('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'], {
+    cwd: root, stdio: 'inherit',
+  })
+  if (contracts.status !== 0) {
+    process.exitCode = contracts.status ?? 1
     return
   }
   const configuration = nativeAcceptanceConfiguration(process.env)
-  const opencode = configuration.opencodeBinary ?? execFileSync('which', ['opencode'], { encoding: 'utf8' }).trim()
+  const opencode = configuration.opencodeBinary ?? process.env.OPENCODE_BINARY ?? 'opencode'
   const record = await withNativeAcceptanceDatabase(configuration.databaseUrl,
-    configuration.evidenceRoot, async ({ databaseUrl, evidence }) => {
-      const environment = { ...nativeAcceptanceEnvironment(process.env),
-        RUN_ENG03_C_NATIVE_TESTS: '1',
-        ENG03_A_TEST_DATABASE_URL: databaseUrl,
-        ENG03_A_OPENCODE_BINARY: opencode,
-        ENG03_A_EVIDENCE_DIR: evidence,
-      }
-      delete environment.TEST_DATABASE_URL
-      return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [
-          'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
-          'vitest', ...nativeAcceptanceVitestArguments(files, environment),
-        ], { cwd: root, env: environment, stdio: 'inherit' })
-        child.once('error', reject)
-        child.once('exit', (code, signal) => resolve(code ?? (signal === 'SIGINT' ? 130 : 143)))
-      })
+    configuration.evidenceRoot, async ({ environment: isolated, evidence }) => {
+      const environment = nativeAcceptanceEnvironment(isolated)
+      console.log(`[acceptance] Native evidence: ${evidence}`)
+      return runNativeAcceptance({ ...environment, RUN_ENG03_C_NATIVE_TESTS: '1',
+        RUN_REAL_HARNESS_TESTS: '1', NIM2691_REAL_NATIVE: '1', NIM2691_POSTGRES: '1',
+        ENG03_A_OPENCODE_BINARY: opencode }, files)
     })
   process.exitCode = record.exitCode
 }

@@ -1,14 +1,14 @@
 import { sourceMaterializationClaimName, restoreQuotaMaterializationClaim, writeSourceClaim } from './quotaClaims.js'
 import { reclaimMaterializationQuota, reclaimPreparationQuota } from './quotaReclamation.js'
 import { constants } from 'node:fs'
-import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { open, mkdir, rename, statfs, readdir, readlink, stat, readFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest, sourceMaterializationParent, sourceMaterializationComponents, type SourceProjectQuotaSlot } from '@foreman-code/contracts/source-materialization'
 import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
-import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
+import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot,
+  withPrivateDirectoryLock } from './privateFilesystem.js'
 import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPort } from './ports.js'
 import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
@@ -16,37 +16,15 @@ import { verifyJobQuotaOwnership, type JobQuotaReader } from '../jobs/quotaOwner
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 
 const equal = isDeepStrictEqual
-/** Lock the anchored directory inode, never a replaceable lock pathname. Linux
- * flock is shared across processes and automatically released on process death. */
+/** Preserve the claim API while sharing Main's joined directory-lock implementation. */
 export async function withClaimLock<T>(root: FileHandle, work: () => Promise<T>,
   options: { nonBlocking?: boolean; signal?: AbortSignal | undefined } = {}): Promise<T> {
-  const signal = options.signal
-  signal?.throwIfAborted()
-  const guard = await open(anchored(root), constants.O_RDONLY | constants.O_DIRECTORY)
-  try {
-    signal?.throwIfAborted()
-    await new Promise<void>((resolve, reject) => {
-      // The inherited description holds the lock until both the child and guard close.
-      const child = spawn('/usr/bin/flock', ['--exclusive', ...(options.nonBlocking ? ['--nonblock'] : []), '3'],
-        { stdio: ['ignore', 'ignore', 'ignore', guard.fd] })
-      let failure: Error | undefined
-      const abort = () => { child.kill('SIGKILL') }
-      child.once('error', error => { failure = error })
-      child.once('close', code => {
-        signal?.removeEventListener('abort', abort)
-        if (signal?.aborted) reject(signal.reason)
-        else if (failure) reject(failure)
-        else if (code === 0) resolve()
-        else reject(new SourceError('SOURCE_CLAIM_LOCK_FAILED', 'Source ownership serialization failed.'))
-      })
-      signal?.addEventListener('abort', abort, { once: true })
-      if (signal?.aborted) abort()
-    })
-    signal?.throwIfAborted()
+  return withPrivateDirectoryLock(root, async () => {
+    options.signal?.throwIfAborted()
     const result = await work()
-    signal?.throwIfAborted()
+    options.signal?.throwIfAborted()
     return result
-  } finally { await guard.close() }
+  }, options)
 }
 export async function materializationDirectory(root: FileHandle, receipt: Pick<MaterializationReceipt, 'materializationId' | 'quota'>): Promise<FileHandle> {
   let directory = await open(anchored(root), constants.O_RDONLY | constants.O_DIRECTORY)
@@ -484,7 +462,7 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
   try {
     cleanupSignal.throwIfAborted()
     if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Original source cleanup root changed.')
-    return await withClaimLock(root, async () => {
+    return await withPrivateDirectoryLock(root, async () => {
       const proofName = `closed-preparation-${reconciliationId}.json`, archiveName = `closed-preparation-${reconciliationId}.claim.json`
       const readRecord = async (name: string) => {
         cleanupSignal.throwIfAborted()

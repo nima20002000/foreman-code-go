@@ -31,6 +31,25 @@ export class FileToolArtifacts {
     return { ...artifact, snapshot: artifact.snapshot }
   }
 
+  /** Read only an owned immutable artifact snapshot, never an execution-host path. */
+  async readSnapshot(caller: AuthorizedFileCaller, artifactId: string,
+    signal: AbortSignal): Promise<{ revision: ArtifactSnapshot['revision']; bytes: Buffer }> {
+    const artifact = await this.get(caller, artifactId)
+    if (artifact.state === 'writing' || !artifact.snapshot) {
+      throw new DomainError('FILE_ARTIFACT_INCOMPLETE', 'The artifact has no available snapshot.', 409)
+    }
+    const { snapshot } = artifact
+    const stream = await this.bytes.download(snapshot.storageKey, snapshot.revision)
+    try {
+      const data = await completedBytes(stream, MAX_FILE_BYTES, signal)
+      if (data.length !== snapshot.revision.byteSize
+        || createHash('sha256').update(data).digest('hex') !== snapshot.revision.sha256) {
+        throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The artifact bytes do not match their revision.', 410)
+      }
+      return { revision: snapshot.revision, bytes: data }
+    } finally { stream.destroy() }
+  }
+
   /** Internal native-runner API. Accepted file mutation permission is mandatory. */
   async create(token: string, filename: string, mediaType: FileToolArtifact['mediaType'],
     source?: { ref: MessageAttachmentRef; sha256: string }, permission: ArtifactPermission = 'files.publish_result'): Promise<{ artifactId: string; writeId: string }> {

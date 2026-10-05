@@ -51,6 +51,50 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     expect(proofs.rowCount).toBe(0)
   }, 60_000)
 
+  it('rolls back a transcript batch when its native lease expires before commit', async () => {
+    let expiredExecutionId: string | undefined
+    const f = await checkpointRuntimeFixture(1, 1, {
+      approvalNodeIds: [],
+      nativeSourcePersisted: async (sql, _evidence, record) => {
+        if (expiredExecutionId || record.original.type !== 'event'
+          || record.original.event.type !== 'native.notification') return
+        expiredExecutionId = record.execution.executionId
+        const published = await sql.query<{ count: number }>(
+          `select count(*)::int as count from harness_native_events
+           where execution_id=$1 and record->>'type'='native.notification'`, [expiredExecutionId])
+        const retained = await sql.query<{ count: number }>(
+          `select count(*)::int as count from workflow_native_proofs
+           where execution_id=$1 and record#>>'{original,event,type}'='native.notification'`, [expiredExecutionId])
+        expect(published.rows[0]?.count).toBe(16)
+        expect(retained.rows[0]?.count).toBe(16)
+        await sql.query(`update native_session_lanes set record=jsonb_set(record,'{leaseExpiresAt}',
+          to_jsonb((clock_timestamp()-interval '1 second')::text)) where id=$1`, [record.lane!.id])
+      },
+    })
+    closes.push(f.close)
+    const original = f.provider.startTurn.bind(f.provider)
+    vi.spyOn(f.provider, 'startTurn').mockImplementation(async function* (session, input) {
+      for await (const event of original(session, input)) {
+        yield event
+        if (event.type !== 'turn.started') continue
+        for (let index = 0; index < 16; index++) {
+          yield { ...event, sequence: index + 10, type: 'native.notification', payload: { text: `frame-${index}` } }
+        }
+      }
+    })
+    await expect(f.engine.start(f.f.run.id)).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+    expect(expiredExecutionId).toBeTruthy()
+    const raw = await f.db.pool.query(
+      `select 1 from harness_native_events where execution_id=$1 and record->>'type'='native.notification'`,
+      [expiredExecutionId])
+    expect(raw.rowCount).toBe(0)
+    const proofs = await f.db.pool.query(
+      `select 1 from workflow_native_proofs where execution_id=$1
+       and record#>>'{original,event,type}'='native.notification'`, [expiredExecutionId])
+    expect(proofs.rowCount).toBe(0)
+    expect((await f.runs.get(f.f.run.id))?.outcome).toBe('pending')
+  }, 60_000)
+
   it('releases a silent stream after publication failure and recovers without another native submission', async () => {
     const f = await checkpointRuntimeFixture(1, 1, { approvalNodeIds: [] })
     closes.push(f.close)
@@ -128,10 +172,13 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     const batches: number[] = []
     const initialFramesPublished = deferred()
     let publishedFrames = 0
+    let publicationMs = 0
     const append = f.runs.appendNativeEvents.bind(f.runs)
     vi.spyOn(f.runs, 'appendNativeEvents').mockImplementation(async (...args) => {
       batches.push(args[0].length)
-      await append(...args)
+      const began = performance.now()
+      try { await append(...args) }
+      finally { publicationMs += performance.now() - began }
       publishedFrames += args[0].filter(({ event }) => event.type === 'native.notification').length
       if (publishedFrames === 64) initialFramesPublished.resolve()
     })
@@ -206,6 +253,7 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
          on s.run_id=p.run_id and s.source_kind='native_event' and s.source_id=p.proof_id
          where p.run_id=$1 and p.record#>>'{original,event,type}'='native.notification'`, [runId])
       expect(sources.rows[0]?.count).toBe(512)
+      expect(publicationMs).toBeLessThan(10_000)
       expect(await f.runs.hasPendingCleanup(runId)).toBe(false)
       await (await graphParity(f.db.pool, scope)).compare()
       const read = await graphRpc(operator.app, operator.reader.token, 'tools/call', { name: 'run_get',

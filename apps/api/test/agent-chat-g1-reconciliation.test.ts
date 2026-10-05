@@ -390,12 +390,13 @@ describe('G1 cancellation and reconciliation', () => {
       f.repository.row.native_session_id = null; f.repository.row.provider_version = null
       f.native.loseCreation = fault === 'lost-creation'; f.repository.bindFailure = fault === 'failed-binding'
       await f.internal.runTurn('conversation', f.repository.storedReceipts[0]!)
-      assert.match(f.repository.row.record.sessionUnavailable!, /read-only/)
+      assert.equal(f.repository.row.record.sessionUnavailable, undefined)
       assert.equal(f.repository.storedReceipts[0]!.delivery, 'unknown')
       assert.equal(f.repository.row.active_request_id, 'first')
       await f.service.shutdown()
       const restarted = await fixture(f.repository)
       await restarted.service.recover()
+      assert.match(f.repository.row.record.sessionUnavailable!, /read-only/)
       assert.equal(restarted.native.created, 0)
       assert.deepEqual(restarted.native.starts, [])
     })

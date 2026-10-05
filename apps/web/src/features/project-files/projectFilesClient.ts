@@ -6,7 +6,6 @@ import {
   type FilePage, type FileRow, type FileWithRevision,
 } from '@foreman-code/contracts/files'
 import { apiClient, ApiError } from '../../shared/api/client'
-import { notifyAuthenticationRequired } from '../../shared/api/authEvents'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { inspectAttachment } from '../attachments/attachmentFiles'
 import { readExactBytes, readUploadBytes, sha256Hex } from './projectFilesBytes'
@@ -61,7 +60,7 @@ async function rawRequest(path: string, operation: ReturnType<typeof boundary>, 
       method: body === undefined ? 'GET' : 'PUT', body,
       headers: body === undefined ? { Accept: 'application/octet-stream' }
         : { Accept: 'application/json', 'Content-Type': 'application/octet-stream' },
-      credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: operation.signal,
+      credentials: 'omit', cache: 'no-store', redirect: 'error', signal: operation.signal,
     })
   } catch (error) {
     guard(operation)
@@ -72,7 +71,6 @@ async function rawRequest(path: string, operation: ReturnType<typeof boundary>, 
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => undefined)
     guard(operation)
-    if (response.status === 401) notifyAuthenticationRequired()
     const error = ApiErrorResponseSchema.safeParse(payload)
     throw new ApiError(error.success ? error.data.error
       : { code: 'HTTP_ERROR', message: 'The file request failed.' }, response.status)

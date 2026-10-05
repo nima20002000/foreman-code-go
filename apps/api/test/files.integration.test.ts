@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -62,7 +63,7 @@ describe.skipIf(!postgresEnabled)('FIL-03 temporary file HTTP and repository int
     registerFileRoutes(app, service)
     await app.ready()
   })
-  afterAll(async () => { await app?.close(); if (root) await rm(root, { recursive: true, force: true }); await database?.close() })
+  afterAll(async () => { await app?.close(); if (root) await removeFixtureDirectory(root); await database?.close() })
   async function allocate(requestId: string, fixture = fileFixtures[0]!, conversationId = first) {
     const reply = await app.inject({ method: 'POST', url: `${base(conversationId)}/uploads`, headers: headers(), payload: { requestId, ...fileMetadata(fixture) } })
     assert.ok([200, 201].includes(reply.statusCode), reply.body)
@@ -105,7 +106,7 @@ describe.skipIf(!postgresEnabled)('FIL-03 temporary file HTTP and repository int
     assert.equal((await app.inject({ method: 'GET', url: content(second, value.file.fileId, value.revision.revisionId), headers: headers() })).statusCode, 404)
     assert.equal((await app.inject({ method: 'GET', url: content(first, value.file.fileId, value.revision.revisionId),
       headers: { ...headers(), authorization: `Bearer ${other.token}` } })).statusCode, 404)
-    assert.equal((await app.inject({ method: 'GET', url: base(first), headers: { host: 'localhost' } })).statusCode, 401)
+    assert.equal((await app.inject({ method: 'GET', url: base(first), headers: { host: 'localhost', authorization: 'Bearer invalid' } })).statusCode, 401)
     assert.equal((await app.inject({ method: 'GET', url: content(first, value.file.fileId, randomUUID()), headers: headers() })).statusCode, 404)
     assert.equal((await upload(requestId, fileFixtures[0]!.bytes, second)).statusCode, 404)
   })

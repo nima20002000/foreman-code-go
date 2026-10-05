@@ -102,7 +102,7 @@ not certify the system rsync as approved for transfers or silently replace it.
 
 Consumed root shared DTO commit ee0fcad5 (local prerequisite e86a6f50); core setup,
 probe, consent and readiness shapes now import
-`@graphql/contracts/trusted-device-connection`. Do not cherry-pick the borrowed
+`@foreman-code/contracts/trusted-device-connection`. Do not cherry-pick the borrowed
 shared commit again.
 
 New owned `trustedConnectionHumanAuthority.ts` and its focused test implement the
@@ -116,8 +116,8 @@ const setup = new PostgresTrustedConnectionSetup(pool, mainId, {
 registerTrustedConnectionApprovalRoutes(app, authority)
 ```
 
-These four approval routes require `requireBrowserSession(request)` plus live
-unscoped settings authority and exact `browser_auth_owner` principal mapping:
+These four approval routes require `requireLocalHuman(request)` plus live
+unscoped settings authority and exact `local_human_principal` principal mapping:
 
 - POST `/api/devices/connection-approvals`: `{requestCommandId, action}`;
   action is TrustedConnectionConfigure without approvalId. Server issues ID,

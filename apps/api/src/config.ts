@@ -4,7 +4,6 @@ import { resolveLocalBrowserOrigin } from '@foreman-code/contracts/browser-origi
 import { z } from 'zod'
 import type { WorkerExecutionSettings } from '@foreman-code/contracts/management'
 import { defaultFileStorageRoot } from './modules/files/storage.js'
-import { readBrowserAuthConfig, type BrowserAuthConfig } from './modules/browser-auth/config.js'
 import { harnessBinaries } from './modules/harnesses/binaries.js'
 
 const databaseSchemaName = z
@@ -14,7 +13,9 @@ const databaseSchemaName = z
   .regex(/^[a-z_][a-z0-9_]*$/, 'must be a lowercase PostgreSQL identifier')
 
 const EnvironmentSchema = z.object({
-  HOST: z.string().trim().min(1).default('127.0.0.1'),
+  HOST: z.enum(['127.0.0.1', '::1', 'localhost'], {
+    error: 'The local app requires a loopback HOST: 127.0.0.1, ::1 or localhost.',
+  }).default('127.0.0.1'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   DATABASE_URL: z.string().url().startsWith('postgresql://'),
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
@@ -41,8 +42,7 @@ export interface ApiConfig {
   workspaceStorageRoot?: string
   /** App-managed durable upload storage; separate from workspace and harness directories. */
   fileStorageRoot?: string
-  browserAuth?: BrowserAuthConfig
-  localDevBrowserAccess?: { origin: string; principalId?: string | undefined }
+  browserOrigin?: string
   host: string
   port: number
   readinessTimeoutMs: number
@@ -71,32 +71,13 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
       || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(parsed.DATABASE_URL).hostname))) {
     throw new Error('Local production requires a loopback API and database.')
   }
-  const browserAuth = readBrowserAuthConfig(environment)
-  const localDevBrowserAccess = environment.FOREMAN_CODE_DEV_BROWSER_ACCESS === '1'
-  if (environment.FOREMAN_CODE_DEV_BROWSER_ACCESS !== undefined && !['0', '1'].includes(environment.FOREMAN_CODE_DEV_BROWSER_ACCESS)) {
-    throw new Error('FOREMAN_CODE_DEV_BROWSER_ACCESS must be 0 or 1.')
-  }
-  const browserOrigin = localDevBrowserAccess ? resolveLocalBrowserOrigin(environment).origin : undefined
-  if (localDevBrowserAccess && (environment.NODE_ENV === 'production' || parsed.HOST !== '127.0.0.1'
-    || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(parsed.DATABASE_URL).hostname)
-    || (browserAuth && browserAuth.origin !== browserOrigin))) {
-    throw new Error('Local development browser access requires a loopback API, database and browser origin outside production.')
-  }
-  const localDevBrowserPrincipalId = environment.FOREMAN_CODE_DEV_OPERATOR_PRINCIPAL_ID?.trim()
-  if (localDevBrowserPrincipalId && localDevBrowserPrincipalId.length > 200) {
-    throw new Error('FOREMAN_CODE_DEV_OPERATOR_PRINCIPAL_ID must be a valid principal ID.')
-  }
+  const browserOrigin = resolveLocalBrowserOrigin(environment).origin
   return {
     workerExecution: {
       enabled: parsed.FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED === '1',
       managedBy: 'startup',
     },
-    ...(browserAuth ? { browserAuth } : {}),
-    ...(localDevBrowserAccess ? { localDevBrowserAccess: {
-      origin: browserOrigin!,
-      ...(localDevBrowserPrincipalId || browserAuth?.ownerPrincipalId
-        ? { principalId: localDevBrowserPrincipalId || browserAuth?.ownerPrincipalId } : {}),
-    } } : {}),
+    browserOrigin,
     fileStorageRoot: parsed.FILE_STORAGE_ROOT ?? defaultFileStorageRoot(),
     ...(parsed.WORKSPACE_STORAGE_ROOT ? { workspaceStorageRoot: parsed.WORKSPACE_STORAGE_ROOT } : {}),
     host: parsed.HOST,

@@ -1,25 +1,34 @@
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import type { CodexHarnessConfiguration, NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
+import { CODEX_INTERACTION_SUPPORT,
+  type CodexHarnessConfiguration, type NativeSessionReference, type PendingNativeInteraction,
+  type InteractionResponseValue } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
-import { afterEach, beforeEach, describe, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, onTestFailed, vi } from 'vitest'
 
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
 import { DomainError } from '../src/modules/errors.js'
 import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
 import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
+import type { ThreadItem, Turn } from '../src/modules/harnesses/codexMethodTypes.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { codexResponseSurfaceFixtures } from './fixtures/codex-response-surfaces.js'
-import { calls, collect, emit, errorCode, finish, fixture, fixtureQualification, input, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
+import {
+  calls, collect, emit, errorCode, finish, fixture, fixtureProtocol, fixtureQualification,
+  input, nativeThread, processesForRequests, state, until, type Fixture,
+} from './fixtures/codex-test-helpers.js'
+import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
+import { completeTestResourceCleanup, createTestRoot, registerTestResourceCleanup, removeTestRoot,
+  type TestRoot } from '../../../scripts/test-resources.mjs'
 
 // Only qualification is replaced here. Every lifecycle/translation/transport path
-// below runs the repository implementation. The real schema gate has its own tests.
+// below runs the repository implementation, including the pinned native schema gate.
 vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   const actual = await vi.importActual<typeof import('../src/modules/harnesses/codexProtocol.js')>('../src/modules/harnesses/codexProtocol.js')
   return { ...actual, qualifyCodex: fixtureQualification, assertCodexUnchanged: async () => undefined }
@@ -37,6 +46,9 @@ const managers: Manager[] = []
 let f: Fixture
 let manager: Manager
 let source: WorkflowNativeSessionStart
+let scratch: TestRoot
+let scratchCleanupId: string
+const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
 function makeManager(): Manager { const value = new CodexAppServerSessionManager(f.binary); managers.push(value); return value }
 function codex(value = source): CodexHarnessConfiguration {
   const harness = value.request.configuration.harness
@@ -59,7 +71,9 @@ async function pending(session: NativeSessionReference): Promise<PendingNativeIn
 }
 async function inject(session: NativeSessionReference, method: string, extra: JsonObject = {}, id = 4000): Promise<void> {
   const current = await state(f.directory, session.nativeSessionId)
-  await emit(f.directory, { id, method, params: { threadId: session.nativeSessionId, turnId: current.turns.at(-1)!.id, ...extra } })
+  await emit(f.directory, { id, method, params: {
+    threadId: session.nativeSessionId, turnId: current.turns.at(-1)!.id, startedAtMs: 1, ...extra,
+  } })
 }
 function responseQuery(value: PendingNativeInteraction): NativeResponseAvailabilityQuery {
   const { nativeRequestId, nativeTurnId } = value.turn
@@ -78,21 +92,133 @@ async function assertDead(pid: number): Promise<void> {
   await until(async () => { try { process.kill(pid, 0); return false } catch { return true } })
 }
 async function assertSpawnedEnvironment(expected: Record<string, string | null>, launches: number): Promise<void> {
-  const processes = (await calls(f.directory)).filter((entry) => typeof entry.pid === 'number')
+  const processes = await processesForRequests(f.directory, 'thread/start', 'thread/resume', 'thread/fork')
   assert.equal(processes.length, launches)
   assert.equal(new Set(processes.map((entry) => entry.pid)).size, launches)
   assert.deepEqual(processes.at(-1)!.environmentMatches,
     Object.fromEntries(Object.keys(expected).map((key) => [key, true])))
+  for (const entry of await calls(f.directory)) {
+    if (typeof entry.pid !== 'number') continue
+    assert(isObject(entry.environmentMatches))
+    for (const [key, value] of Object.entries(expected)) {
+      if (value === null) assert.equal(entry.environmentMatches[key], true, key)
+    }
+  }
+  await assertMetadataProcessesClosed()
 }
+async function assertMetadataProcessesClosed(): Promise<void> {
+  for (const entry of await processesForRequests(f.directory, 'model/list')) {
+    assert(typeof entry.pid === 'number')
+    await assertDead(entry.pid)
+  }
+}
+
+describe('Codex fixture user-message contract', () => {
+  const userMessage = {
+    type: 'userMessage', id: 'native-item-123', clientId: 'application-request-456',
+    content: [{ type: 'text', text: 'hello', text_elements: [] }],
+  } satisfies ThreadItem
+  const turn = {
+    id: 'native-turn-1', items: [userMessage], itemsView: 'full', status: 'inProgress',
+    error: null, startedAt: 1, completedAt: null, durationMs: null,
+  } satisfies Turn
+  const surfaces: Array<{ name: string; validate(item: JsonObject): void }> = [
+    { name: 'turn/start response', validate: (item) => fixtureProtocol.response('turn/start', {
+      turn: { ...turn, items: [item] },
+    }) },
+    { name: 'thread/read response', validate: (item) => fixtureProtocol.response('thread/read', {
+      thread: nativeThread({ turns: [{ ...turn, items: [item as ThreadItem] }] }),
+    }) },
+    { name: 'thread/turns/list response', validate: (item) => fixtureProtocol.response('thread/turns/list', {
+      data: [{ ...turn, items: [item] }], nextCursor: null, prevCursor: null,
+    }) },
+    ...['turn/started', 'turn/completed'].map((method) => ({
+      name: `${method} notification`, validate: (item: JsonObject) => fixtureProtocol.notification({
+        method, params: { threadId: 'native-thread-1', turn: { ...turn, items: [item] } },
+      }),
+    })),
+    ...['item/started', 'item/completed'].map((method) => ({
+      name: `${method} notification`, validate: (item: JsonObject) => fixtureProtocol.notification({
+        method, params: { threadId: 'native-thread-1', turnId: turn.id, item, startedAtMs: 1, completedAtMs: 2 },
+      }),
+    })),
+  ]
+
+  for (const surface of surfaces) {
+    it(`validates separate native/app identities and nullable clientId on ${surface.name}`, () => {
+      assert.doesNotThrow(() => surface.validate(userMessage))
+      const uncorrelated = { ...userMessage, clientId: null } satisfies ThreadItem
+      assert.doesNotThrow(() => surface.validate(uncorrelated))
+      const noClientId: JsonObject = { ...userMessage }
+      delete noClientId.clientId
+      assert.doesNotThrow(() => surface.validate(noClientId))
+      assert.doesNotThrow(() => surface.validate({ ...userMessage, id: userMessage.clientId }))
+    })
+
+    it(`rejects malformed user-message identities and content on ${surface.name}`, () => {
+      const missingId: JsonObject = { ...userMessage }
+      delete missingId.id
+      for (const item of [
+        missingId,
+        { ...userMessage, id: 123 },
+        { ...userMessage, clientId: 456 },
+        { ...userMessage, content: {} },
+        { ...userMessage, content: [{ type: 'text', text: 123 }] },
+        { ...userMessage, content: [{ type: 'localImage', path: 123 }] },
+        { ...userMessage, content: [{ type: 'text', text: 'hello', text_elements: [
+          { byteRange: { start: 'bad', end: 1 } },
+        ] }] },
+      ]) assert.throws(() => surface.validate(item))
+    })
+
+    it(`validates other thread item variants on ${surface.name}`, () => {
+      const agentMessage = { type: 'agentMessage', id: 'assistant-item', text: 'hello', phase: 'commentary' }
+      const command = { type: 'commandExecution', id: 'command-item', command: 'printf hello',
+        commandActions: [], cwd: process.cwd(), status: 'completed' }
+      assert.doesNotThrow(() => surface.validate(agentMessage))
+      assert.doesNotThrow(() => surface.validate(command))
+      assert.throws(() => surface.validate({ ...agentMessage, text: 123 }))
+      assert.throws(() => surface.validate({ ...agentMessage, memoryCitation: { entries: [{}], threadIds: [] } }))
+      assert.throws(() => surface.validate({ ...command, commandActions: [{}] }))
+      assert.throws(() => surface.validate({ type: 'inventedItem', id: 'unknown-item' }))
+    })
+  }
+
+  it('validates the native turn identity in steer acknowledgements', () => {
+    assert.doesNotThrow(() => fixtureProtocol.response('turn/steer', { turnId: turn.id }))
+    assert.throws(() => fixtureProtocol.response('turn/steer', {}))
+    assert.throws(() => fixtureProtocol.response('turn/steer', { turnId: 123 }))
+  })
+})
 
 // Executable fixtures use a POSIX shebang. Pure protocol tests cover portable shapes.
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
-  beforeEach(async () => { f = await fixture(); manager = makeManager(); source = input(f.directory) })
-  afterEach(async () => {
+  beforeEach(async () => {
+    // This file exercises a 500 ms wire deadline; fixture persistence uses owned temporary storage.
+    scratch = createTestRoot('/tmp', 'foreman-code-codex-wire-')
+    scratchCleanupId = registerTestResourceCleanup(invocation, {
+      kind: 'codex-wire-fixture', directory: scratch.directory, owner: scratch.token,
+    })
+    f = await fixture({ root: scratch })
+    await flag('record-wire-timing')
+    manager = makeManager()
+    source = input(f.directory)
+  })
+  afterEach(async context => {
     const results = await Promise.allSettled(managers.splice(0).map((value) => value.shutdown()))
-    await rm(f.directory, { recursive: true, force: true })
+    if (context.task.result?.state === 'fail' || results.some(value => value.status === 'rejected')) {
+      let timing = ''
+      try { timing = await readFile(join(f.directory, 'wire-timing.jsonl'), 'utf8') }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      await writeNativeAcceptanceEvidence(`codex-fixture-${randomUUID()}.json`, {
+        test: context.task.name, calls: await calls(f.directory),
+        wireTiming: timing.split('\n').filter(Boolean).map(line => JSON.parse(line) as unknown),
+      })
+    }
     const failure = results.find((value) => value.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
+    removeTestRoot(scratch)
+    completeTestResourceCleanup(invocation, scratchCleanupId)
   })
 
   it('reattaches an original resident without launching, resuming, replaying or reading turn history', async () => {
@@ -132,7 +258,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const session = await manager.createSession(source)
     const { result } = await start(session)
     const lifetime = manager.originalSessionLifetime(session, source)!
-    const launched = (await calls(f.directory)).find((entry) => typeof entry.pid === 'number')
+    const launched = (await processesForRequests(f.directory, 'thread/start'))[0]
     assert(launched && typeof launched.pid === 'number')
     process.kill(launched.pid, 'SIGTERM')
     await until(async () => (await manager.history(session)).events.some((event) => event.type === 'transport.disconnected'))
@@ -203,7 +329,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const read = manager.reattachOriginalSession(session, source, lifetime.residency)
     void read.catch(() => undefined)
     await until(async () => (await wire('thread/read')).length > 0)
-    const launched = (await calls(f.directory)).find((entry) => typeof entry.pid === 'number')
+    const launched = (await processesForRequests(f.directory, 'thread/start'))[0]
     assert(launched && typeof launched.pid === 'number')
     process.kill(launched.pid, 'SIGTERM')
     await assert.rejects(read)
@@ -276,7 +402,8 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     }
   }, 15_000)
 
-  for (const key of ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD', 'GRAPHQL_PRODUCTION_DB_PASSWORD']) {
+  for (const key of ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD',
+    'FOREMAN_CODE_PRODUCTION_DB_PASSWORD', 'GRAPHQL_PRODUCTION_DB_PASSWORD']) {
     it(`rejects ${key} reinjection on launch, credential refresh and cold resume`, async () => {
       const invalid = structuredClone(source)
       invalid.environment = {
@@ -287,8 +414,11 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
       assert.equal((await calls(f.directory)).length, 0)
 
       const session = await manager.createSession(source)
+      const beforeRefresh = await calls(f.directory)
       await assertCode(manager.refreshProcessEnvironment(session, invalid.environment!), 'CODEX_ENVIRONMENT_INVALID')
-      assert.equal((await calls(f.directory)).filter((entry) => typeof entry.pid === 'number').length, 1)
+      assert.deepEqual(await calls(f.directory), beforeRefresh)
+      assert.equal((await processesForRequests(f.directory, 'thread/start')).length, 1)
+      await assertMetadataProcessesClosed()
       assert.equal((await wire('thread/resume')).length, 0)
       await manager.inspectConfiguration(session)
 
@@ -417,7 +547,10 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const interaction = await pending(session)
     const current = (await state(f.directory, session.nativeSessionId)).turns.at(-1)!
     await emit(f.directory, { method: 'turn/completed', params: { threadId: 'foreign', turn: { ...current, status: 'completed' } } })
-    await emit(f.directory, { method: 'item/completed', params: { threadId: session.nativeSessionId, turnId: 'turn-1', item: { id: 'stale', type: 'agentMessage', phase: 'final_answer', text: 'WRONG' } } })
+    await emit(f.directory, { method: 'item/completed', params: {
+      threadId: session.nativeSessionId, turnId: 'turn-1', completedAtMs: 2,
+      item: { id: 'stale', type: 'agentMessage', phase: 'final_answer', text: 'WRONG' },
+    } })
     await emit(f.directory, { method: 'turn/completed', params: { threadId: session.nativeSessionId, turn: { status: 'bad' } } })
     await until(async () => (await manager.history(session)).events.some((event) => event.type === 'native.malformed'))
     assert.equal((await manager.pending(session))?.turn.nativeRequestId, interaction.turn.nativeRequestId)
@@ -447,15 +580,140 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('turn/start')).length, 1)
   })
 
-  it('F06/F12: uncertain start is reconciled by its own correlation, without replay', async () => {
+  it('recovers a lost start acknowledgement by clientId while retaining the native item and turn identities', async () => {
     const session = await manager.createSession(source)
-    await assert.rejects(collect(manager.startTurn(session, { prompt: 'lost-start', clientCorrelationId: 'lost' })))
+    const clientCorrelationId = 'application-request-456'
+    await assert.rejects(collect(manager.startTurn(session, { prompt: 'lost-start', clientCorrelationId })))
+    const native = (await state(f.directory, session.nativeSessionId)).turns[0]!
+    const userMessage = (native.items as JsonObject[])[0]!
+    assert.equal(userMessage.type, 'userMessage')
+    assert.equal(userMessage.clientId, clientCorrelationId)
+    assert.notEqual(userMessage.id, clientCorrelationId)
     await assertCode(manager.reconcile(session, 'wrong-correlation'), 'CODEX_CORRELATION_MISMATCH')
     await assertCode(collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'unsafe-retry' })), 'CODEX_TURN_ACTIVE')
-    const history = await manager.reconcile(session, 'lost')
+    const history = await manager.reconcile(session, clientCorrelationId)
     assert.deepEqual(history.terminalResult?.output, { text: 'recovered-answer' })
+    assert.equal(history.nativeTurnId, native.id)
+    assert.equal(history.terminalTurn?.providerId, native.id)
+    assert.equal(history.terminalTurn?.correlationId, clientCorrelationId)
     assert.equal((await wire('turn/start')).length, 1)
+    assert.equal((await wire('thread/start')).length, 1)
     await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'next' }))
+  })
+
+  it('recovers a lost steer acknowledgement by clientId only in its expected turn without replay or retargeting', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const native = (await state(f.directory, session.nativeSessionId)).turns[0]!
+    const expectedTurnId = String(native.id)
+    const clientCorrelationId = 'application-steer-456'
+    await assertCode(manager.steerTurn(session, {
+      prompt: 'lost-steer', clientCorrelationId, expectedTurnId,
+    }), 'CODEX_APP_SERVER_TIMEOUT')
+    const persisted = (await state(f.directory, session.nativeSessionId)).turns[0]!
+    const userMessage = (persisted.items as JsonObject[]).at(-1)!
+    assert.equal(userMessage.clientId, clientCorrelationId)
+    assert.notEqual(userMessage.id, clientCorrelationId)
+    const before = await manager.history(session)
+    assert.deepEqual(await manager.reconcileSteers(session, [
+      { clientCorrelationId, expectedTurnId: 'another-turn' },
+      { clientCorrelationId: String(userMessage.id), expectedTurnId },
+      { clientCorrelationId: 'missing-steer', expectedTurnId },
+    ]), [])
+    assert.deepEqual(await manager.reconcileSteers(session, [{ clientCorrelationId, expectedTurnId }]), [{
+      nativeSessionId: session.nativeSessionId, nativeTurnId: expectedTurnId, correlationId: clientCorrelationId,
+    }])
+    assert.deepEqual(await manager.history(session), before)
+    assert.equal((await wire('turn/steer')).length, 1)
+    assert.equal((await wire('turn/start')).length, 1)
+    assert.equal((await wire('thread/start')).length, 1)
+    await finish(f.directory, session.nativeSessionId)
+    await result
+    assert.deepEqual(await manager.reconcileSteers(session, [{ clientCorrelationId, expectedTurnId }]), [{
+      nativeSessionId: session.nativeSessionId, nativeTurnId: expectedTurnId, correlationId: clientCorrelationId,
+    }])
+  })
+
+  it('keeps a lost start fenced when the native item id matches but clientId does not', async () => {
+    const session = await manager.createSession(source)
+    const clientCorrelationId = 'application-request-456'
+    await assert.rejects(collect(manager.startTurn(session, { prompt: 'lost-start', clientCorrelationId })))
+    const persisted = await state(f.directory, session.nativeSessionId)
+    const userMessage = (persisted.turns[0]!.items as JsonObject[])[0]!
+    userMessage.id = clientCorrelationId
+    userMessage.clientId = 'another-request'
+    await json(`state-${session.nativeSessionId}.json`, persisted)
+    await assertCode(manager.reconcile(session, clientCorrelationId), 'CODEX_RECONCILIATION_UNCERTAIN')
+    await assertCode(collect(manager.startTurn(session, {
+      prompt: 'complete', clientCorrelationId: 'unsafe-retry',
+    })), 'CODEX_TURN_ACTIVE')
+    assert.equal((await wire('turn/start')).length, 1)
+  })
+
+  it('rejects conflicting start correlations in native history without replay', async () => {
+    const session = await manager.createSession(source)
+    const clientCorrelationId = 'application-request-456'
+    await assert.rejects(collect(manager.startTurn(session, { prompt: 'lost-start', clientCorrelationId })))
+    const persisted = await state(f.directory, session.nativeSessionId)
+    const duplicate = structuredClone(persisted.turns[0]!)
+    duplicate.id = 'another-turn'
+    const duplicateUserMessage = (duplicate.items as JsonObject[])[0]!
+    duplicateUserMessage.id = 'another-native-item'
+    persisted.turns.push(duplicate)
+    await json(`state-${session.nativeSessionId}.json`, persisted)
+    await assertCode(manager.reconcile(session, clientCorrelationId), 'CODEX_CORRELATION_AMBIGUOUS')
+    assert.equal((await wire('turn/start')).length, 1)
+  })
+
+  it('rejects conflicting steer correlations across native turns', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const persisted = await state(f.directory, session.nativeSessionId)
+    const native = persisted.turns[0]!
+    const clientCorrelationId = 'application-steer-456'
+    const userMessage = { type: 'userMessage', id: 'native-steer-item', clientId: clientCorrelationId, content: [] }
+    const items = native.items as JsonObject[]
+    items.push(userMessage)
+    persisted.turns.push({ ...structuredClone(native), id: 'another-turn' })
+    await json(`state-${session.nativeSessionId}.json`, persisted)
+    await assertCode(manager.reconcileSteers(session, [{
+      clientCorrelationId, expectedTurnId: String(native.id),
+    }]), 'CODEX_CORRELATION_AMBIGUOUS')
+    assert.equal((await wire('turn/steer')).length, 0)
+    assert.equal((await wire('turn/start')).length, 1)
+    await emit(f.directory, { method: 'turn/completed', params: {
+      threadId: session.nativeSessionId, turn: { ...native, status: 'completed' },
+    } })
+    await result
+  })
+
+  it('rejects another thread during steer reconciliation without changing the live owner', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const persisted = await state(f.directory, session.nativeSessionId)
+    const before = await manager.history(session)
+    persisted.id = 'another-thread'
+    await json(`state-${session.nativeSessionId}.json`, persisted)
+    await assertCode(manager.reconcileSteers(session, [{
+      clientCorrelationId: 'application-steer-456', expectedTurnId: 'turn-1',
+    }]), 'CODEX_SESSION_ID_MISMATCH')
+    assert.deepEqual(await manager.history(session), before)
+    assert.equal((await wire('thread/turns/list')).length, 0)
+    persisted.id = session.nativeSessionId
+    await json(`state-${session.nativeSessionId}.json`, persisted)
+    await finish(f.directory, session.nativeSessionId)
+    await result
+  })
+
+  it('keeps the active turn owner when reconciling an older clientId', async () => {
+    const session = await manager.createSession(source)
+    await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'older-request' }))
+    const { result } = await start(session, 'wait', 'active-request')
+    const before = await manager.history(session)
+    await assertCode(manager.reconcile(session, 'older-request'), 'CODEX_SESSION_BUSY')
+    assert.deepEqual(await manager.history(session), before)
+    await finish(f.directory, session.nativeSessionId)
+    await result
   })
 
   it('F07: failed restart cleans the candidate process and retains the original session', async () => {
@@ -463,9 +721,11 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: 'recover' }))
     await flag('fail-resume')
     await assertCode(manager.reconcile(session, 'recover'), 'CODEX_APP_SERVER_REQUEST_FAILED')
-    const pids = (await calls(f.directory)).flatMap((entry) => typeof entry.pid === 'number' ? [entry.pid] : [])
+    const pids = (await processesForRequests(f.directory, 'thread/start', 'thread/resume'))
+      .flatMap(entry => typeof entry.pid === 'number' ? [entry.pid] : [])
     assert.equal(pids.length, 2)
     await assertDead(pids[1]!)
+    await assertMetadataProcessesClosed()
     await unflag('fail-resume')
     assert.equal((await manager.reconcile(session, 'recover')).terminalResult?.outcome, 'succeeded')
   })
@@ -490,14 +750,16 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('thread/start')).length, 1)
   })
 
-  it('F14: retention is bounded with monotonic cursors, without truncating a delivered large event', async () => {
+  it('retains large qualified events with bounded history and monotonic cursors', async () => {
     const session = await manager.createSession(source)
     const large = 'x'.repeat(1_100_000)
-    await emit(f.directory, { method: 'test/notification', params: { threadId: session.nativeSessionId, large } })
-    await until(async () => (await manager.history(session)).events.some((event) => event.payload.large === large))
-    const batch = Array.from({ length: 1_100 }, (_, value) => JSON.stringify({ method: 'test/notification', params: { threadId: session.nativeSessionId, value } })).join('\n') + '\n'
+    await emit(f.directory, { method: 'thread/name/updated',
+      params: { threadId: session.nativeSessionId, threadName: large } })
+    await until(async () => (await manager.history(session)).events.some((event) => event.payload.threadName === large))
+    const batch = Array.from({ length: 1_100 }, (_, value) => JSON.stringify({ method: 'thread/name/updated',
+      params: { threadId: session.nativeSessionId, threadName: `thread-name-${value}` } })).join('\n') + '\n'
     await appendFile(join(f.directory, 'inbox-agent-a.jsonl'), batch)
-    await until(async () => (await manager.history(session)).events.some((event) => event.payload.value === 1099))
+    await until(async () => (await manager.history(session)).events.some((event) => event.payload.threadName === 'thread-name-1099'))
     const history = await manager.history(session)
     assert(history.events.length <= 1024)
     assert((history.firstRetainedSequence ?? 0) > 0)
@@ -649,7 +911,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const old = await pending(session)
     const oldQuery = responseQuery(old)
     const original = await manager.inspectResponseAvailability(session, oldQuery)
-    const launched = (await calls(f.directory)).find((entry) => typeof entry.pid === 'number')
+    const launched = (await processesForRequests(f.directory, 'thread/start'))[0]
     assert(launched && typeof launched.pid === 'number')
     process.kill(launched.pid, 'SIGTERM')
     await until(async () => (await manager.history(session)).events.some((event) => event.type === 'transport.disconnected'))
@@ -765,15 +1027,41 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await finish(f.directory, session.nativeSessionId); await result
   })
 
-  it('F19: generic tool input is explicitly unsupported, never invented as permission grants', async () => {
+  it('keeps generic questions pending until an explicit valid answer is supplied', async () => {
     const session = await manager.createSession(source)
     const { result } = await start(session)
     await inject(session, 'item/tool/requestUserInput', { itemId: 'tool', isBlocking: true, autoResolutionMs: null, questions: [{
       id: 'generic', header: 'Question', question: 'Choose', isOther: false, isSecret: false,
       options: ['Decline', 'Cancel'].map((label) => ({ label, description: '' })),
     }] })
-    await until(async () => (await wire()).some((message) => message.id === 4000 && isObject(message.error)))
+    const value = await pending(session)
+    const option = value.responseOptions[0]!
+    assert.equal(option.input?.kind, 'questions')
+    assert.equal((await wire()).filter((message) => message.id === 4000 && message.result).length, 0)
+    await assert.rejects(manager.respond(session, value.turn.nativeRequestId!, { ...option,
+      response: { generic: { answers: ['invented'] } } }))
+    assert.equal((await manager.pending(session))?.turn.nativeRequestId, value.turn.nativeRequestId)
+    await manager.respond(session, value.turn.nativeRequestId!, { ...option,
+      response: { generic: { answers: ['Decline'] } } })
+    assert.deepEqual((await wire()).find((message) => message.id === 4000 && message.result)!.result,
+      { answers: { generic: { answers: ['Decline'] } } })
+    assert(!(await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'))
     assert.equal(await manager.pending(session), undefined)
+    await finish(f.directory, session.nativeSessionId); await result
+  })
+
+  it('answers the supported MCP approval question only after an explicit offered choice', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    await inject(session, 'item/tool/requestUserInput', { itemId: 'tool', isBlocking: true, autoResolutionMs: null,
+      questions: [{ id: 'mcp_tool_call_approval_tool', header: 'Approve app tool call?', question: 'Allow?',
+        isOther: false, isSecret: false, options: ['Allow', 'Cancel'].map((label) => ({ label, description: '' })) }] })
+    const value = await pending(session)
+    assert.equal((await wire()).filter((message) => message.id === 4000 && (message.result || message.error)).length, 0)
+    await respond(session, value)
+    assert.deepEqual((await wire()).find((entry) => entry.id === 4000 && entry.result)!.result,
+      { answers: { mcp_tool_call_approval_tool: { answers: ['Allow'] } } })
+    assert(!(await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'))
     await finish(f.directory, session.nativeSessionId); await result
   })
 
@@ -802,21 +1090,115 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await finish(f.directory, session.nativeSessionId); await result
   })
 
-  it('F20/F21: data-entry and standalone elicitations are explicitly rejected, never attached to an old turn', async () => {
+  it('answers standalone elicitations explicitly without attaching them to an old turn', async () => {
     const session = await manager.createSession(source)
     for (const afterTurn of [false, true]) {
       if (afterTurn) await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'old' }))
       const id = afterTurn ? 4001 : 4000
       await emit(f.directory, { id, method: 'mcpServer/elicitation/request', params: { threadId: session.nativeSessionId, turnId: null,
         mode: 'url', url: 'https://example.invalid/', elicitationId: 'standalone', serverName: 'app', message: 'Authorize', _meta: null } })
-      await until(async () => (await wire()).some((entry) => entry.id === id && isObject(entry.error)))
+      const value = await pending(session)
+      assert.equal(value.turn.nativeTurnId, undefined)
+      assert.equal((await wire()).filter((entry) => entry.id === id && entry.result).length, 0)
+      const availability = await manager.inspectResponseAvailability(session, {
+        nativeRequestId: value.turn.nativeRequestId!, nativeRequestType: value.nativeRequestType,
+      })
+      assert.equal(availability.state, 'available')
+      await respond(session, value)
+      assert.deepEqual((await wire()).find((entry) => entry.id === id && entry.result)!.result,
+        { action: 'accept', content: null, _meta: null })
+      assert(!(await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'))
       assert.equal(await manager.pending(session), undefined)
     }
+  })
+
+  it.each(['form', 'openai/form', 'openaiForm'])('validates %s data-entry forms before writing the user response', async (mode) => {
+    let phase = 'creating session'
+    onTestFailed(() => { console.error(`Codex ${mode} data-entry failure during ${phase}`) })
+    const session = await manager.createSession(source)
+    phase = 'starting turn'
     const { result } = await start(session)
-    await inject(session, 'mcpServer/elicitation/request', { mode: 'form', serverName: 'app', message: 'Enter email', _meta: null,
-      requestedSchema: { type: 'object', properties: { email: { type: 'string' } }, required: ['email'] } }, 4002)
-    await until(async () => (await wire()).some((entry) => entry.id === 4002 && isObject(entry.error)))
+    phase = 'injecting form'
+    const requestedSchema = { type: 'object', properties: { email: { type: 'string', format: 'email' } },
+      required: ['email'], ...(mode === 'form' ? {} : { additionalProperties: false }) }
+    await inject(session, 'mcpServer/elicitation/request', { mode, serverName: 'app', message: 'Enter email', _meta: null,
+      requestedSchema }, 4002)
+    phase = 'waiting for form'
+    const value = await pending(session)
+    const option = value.responseOptions[0]!
+    assert.equal((await wire()).filter((entry) => entry.id === 4002 && entry.result).length, 0)
+    const invalidResponses: InteractionResponseValue[] = [{}, { email: 'invalid' }, { email: 42 },
+      ...(mode === 'form' ? [] : [{ email: 'user@example.com', extra: true }])]
+    for (const response of invalidResponses) {
+      phase = `rejecting invalid form: ${JSON.stringify(response)}`
+      await assert.rejects(manager.respond(session, value.turn.nativeRequestId!, { ...option, response }))
+    }
+    assert.equal((await manager.pending(session))?.turn.nativeRequestId, value.turn.nativeRequestId)
+    assert.equal((await wire()).filter((entry) => entry.id === 4002 && entry.result).length, 0)
+    const response: InteractionResponseValue = { email: 'user@example.com', ...(mode === 'form' ? { extra: true } : {}) }
+    phase = 'delivering valid form'
+    await manager.respond(session, value.turn.nativeRequestId!, { ...option, response })
+    phase = 'reading delivered form'
+    assert.deepEqual((await wire()).find((entry) => entry.id === 4002 && entry.result)!.result,
+      { action: 'accept', content: response, _meta: null })
+    assert(!(await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'))
     assert.equal(await manager.pending(session), undefined)
+    phase = 'finishing turn'
+    await finish(f.directory, session.nativeSessionId)
+    phase = 'draining terminal turn'
+    await result
+  })
+
+  it('rejects a malformed standard form envelope before offering input', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    await inject(session, 'mcpServer/elicitation/request', { mode: 'form', serverName: 'app', message: 'Enter email',
+      requestedSchema: { type: 'object', additionalProperties: false,
+        properties: { email: { type: 'string', format: 'email' } }, required: ['email'] } }, 4003)
+    const rejected = await until(async () => (await wire()).find((entry) => entry.id === 4003 && entry.error))
+    assert(isObject(rejected.error))
+    assert.equal(rejected.error.code, -32602)
+    assert.equal(await manager.pending(session), undefined)
+    await finish(f.directory, session.nativeSessionId)
+    await result
+  })
+
+  it('does not resend answered questions for repeated or conflicting callback identities', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const question = { itemId: 'question', isBlocking: true, autoResolutionMs: null, questions: [{
+      id: 'generic', header: 'Question', question: 'Choose', isOther: true, isSecret: false, options: null,
+    }] }
+    await inject(session, 'item/tool/requestUserInput', question)
+    const value = await pending(session)
+    await manager.respond(session, value.turn.nativeRequestId!, { ...value.responseOptions[0]!,
+      response: { generic: { answers: ['User-entered answer'] } } })
+    await inject(session, 'item/tool/requestUserInput', question)
+    await inject(session, 'item/tool/requestUserInput', { ...question, itemId: 'conflicting-question' })
+    await until(async () => (await manager.history(session)).events.some((event) => event.type === 'protocol.conflicting_request_identity'))
+    assert.equal((await wire()).filter((entry) => entry.id === 4000 && (entry.result || entry.error)).length, 1)
+    assert.equal((await manager.history(session)).events.filter((event) => event.type === 'interaction.unsupported').length, 0)
+    await finish(f.directory, session.nativeSessionId); await result
+  })
+
+  it('advertises question and schema-validated form support', async () => {
+    const capabilities = await manager.capabilities()
+    assert.deepEqual(capabilities.interactionSupport, CODEX_INTERACTION_SUPPORT)
+    assert(capabilities.supportedInteractionKinds.includes('mcp_tool_call_approval_question'))
+    assert(capabilities.supportedInteractionKinds.includes('mcp_confirmation'))
+    assert(capabilities.supportedInteractionKinds.includes('tool_user_input'))
+    assert(capabilities.supportedInteractionKinds.includes('mcp_elicitation'))
+  })
+
+  it.each(['foreign-thread', 'old-turn'])('keeps form responses behind the %s ownership fence', async (target) => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    await inject(session, 'mcpServer/elicitation/request', { mode: 'form', serverName: 'app', message: 'Enter email',
+      _meta: null, requestedSchema: { type: 'object', properties: { email: { type: 'string' } } },
+      ...(target === 'foreign-thread' ? { threadId: 'foreign-thread' } : { turnId: 'old-turn' }) })
+    await until(async () => (await wire()).some((entry) => entry.id === 4000 && entry.error))
+    assert.equal((await wire()).filter((entry) => entry.id === 4000 && entry.result).length, 0)
+    assert(!(await manager.history(session)).events.some((event) => event.type === 'interaction.unsupported'))
     await finish(f.directory, session.nativeSessionId); await result
   })
 
@@ -846,7 +1228,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const requests: Record<string, [string, JsonObject]> = {
       command: ['item/commandExecution/requestApproval', { itemId: 'cmd', availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'] }],
       file: ['item/fileChange/requestApproval', { itemId: 'file', reason: null, grantRoot: null }],
-      permissions: ['item/permissions/requestApproval', { itemId: 'permission', permissions: {} }],
+      permissions: ['item/permissions/requestApproval', { itemId: 'permission', cwd: f.directory, permissions: {} }],
       tool: ['item/tool/requestUserInput', { itemId: 'tool', isBlocking: true, autoResolutionMs: null, questions: [{ id: 'mcp_tool_call_approval_t', header: 'Approve app tool call?', question: 'Allow?', isOther: false, isSecret: false, options: ['Allow', 'Allow for this session', 'Cancel'].map((label) => ({ label, description: '' })) }] }],
       elicitation: ['mcpServer/elicitation/request', { mode: 'form', serverName: 'app', message: 'Confirm', requestedSchema: { type: 'object', properties: {} }, _meta: { codex_approval_kind: 'mcp_tool_call', persist: 'session' } }],
     }

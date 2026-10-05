@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, lstat, mkdir, open, readFile, readlink, rmdir, unlink, type FileHandle } from 'node:fs/promises'
+import { access, link, lstat, mkdir, open, readFile, readdir, readlink, rename, rmdir, unlink,
+  type FileHandle } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from 'node:path'
 import type { FileRevision } from '@foreman-code/contracts/files'
 import { sha256 } from './attachments.js'
@@ -11,10 +13,20 @@ const at = (directory: FileHandle, name: string) => `/proc/self/fd/${directory.f
 const opaque = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)
 const code = (error: unknown) => (error as NodeJS.ErrnoException)?.code
 
+export function recoveredOpenCodeVersion(handle: string, name: string, label: string,
+  revision: FileRevision, filename: string, bytes: Uint8Array) {
+  const hash = sha256(bytes)
+  const extension = extname(filename)
+  const stem = filename.slice(0, filename.length - extension.length).slice(0, 170)
+  return { id: sha256(JSON.stringify([handle, name, label, hash])), bytes,
+    revision: { ...revision, filename: `${stem}-recovered-${label}${extension}`,
+      byteSize: bytes.byteLength, sha256: hash } }
+}
+
 /** Linux openat-style traversal. Every component is anchored to an already-open descriptor.
  * A user-owned ancestor cannot race a path check and redirect a snapshot into the API byte vault.
  */
-async function openDirectory(path: string): Promise<FileHandle> {
+export async function openDirectory(path: string): Promise<FileHandle> {
   checkFileCondition(process.platform === 'linux' && isAbsolute(path) && normalize(path) === path,
     'FILE_HOST_UNSUPPORTED', 'Registered local file delivery requires a canonical Linux execution-host directory.')
   let fd = await open('/', directoryFlags)
@@ -28,12 +40,85 @@ async function openDirectory(path: string): Promise<FileHandle> {
   } catch (error) { await fd.close(); throw error }
 }
 
+export async function assertDirectoryEntry(parent: FileHandle, name: string, directory: FileHandle): Promise<void> {
+  const held = await directory.stat({ bigint: true })
+  const named = await lstat(at(parent, name), { bigint: true })
+  checkFileCondition(held.ino === named.ino && held.dev === named.dev && named.isDirectory(),
+    'FILE_CLEANUP_REQUIRED', 'The owned directory moved; do not remove an unregistered replacement.')
+}
+
+export async function removeDirectoryContents(directory: FileHandle): Promise<void> {
+  const parent = await directory.stat({ bigint: true })
+  for (const name of await readdir(at(directory, '.'))) {
+    const path = at(directory, name)
+    const named = await lstat(path, { bigint: true })
+    if (!named.isDirectory()) {
+      // unlink removes links themselves, without opening their targets.
+      await unlink(path)
+      continue
+    }
+    checkFileCondition(named.dev === parent.dev, 'FILE_CLEANUP_REQUIRED',
+      'Do not traverse a mounted filesystem while cleaning an owned directory.')
+    const child = await open(path, directoryFlags)
+    try {
+      const held = await child.stat({ bigint: true })
+      checkFileCondition(held.dev === named.dev && held.ino === named.ino,
+        'FILE_CLEANUP_REQUIRED', 'The child directory changed before cleanup.')
+      await removeDirectoryContents(child)
+      await assertDirectoryEntry(directory, name, child)
+      await rmdir(path)
+    } finally {
+      await child.close()
+    }
+  }
+}
+
+export async function readOpenCodeFileSnapshot(directory: FileHandle, filename: string,
+  maxFileBytes: number, signal: AbortSignal): Promise<Uint8Array> {
+  signal.throwIfAborted()
+  const file = await open(at(directory, filename), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  try {
+    const before = await file.stat({ bigint: true })
+    checkFileCondition(before.isFile() && before.nlink === 1n && before.size <= BigInt(maxFileBytes),
+      'FILE_ARTIFACT_INVALID', 'Publish a bounded regular file, never a link, device, FIFO or directory.')
+    const length = Number(before.size)
+    const read = async () => {
+      const data = Buffer.alloc(length)
+      let offset = 0
+      while (offset < length) {
+        signal.throwIfAborted()
+        const next = await file.read(data, offset, Math.min(65_536, length - offset), offset)
+        checkFileCondition(next.bytesRead > 0, 'FILE_ARTIFACT_CHANGED', 'The working copy changed while being read.')
+        offset += next.bytesRead
+      }
+      return data
+    }
+    const first = await read()
+    const second = await read()
+    const after = await file.stat({ bigint: true })
+    checkFileCondition(before.dev === after.dev && before.ino === after.ino && before.size === after.size
+      && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs && after.nlink === 1n
+      && sha256(first) === sha256(second), 'FILE_ARTIFACT_CHANGED', 'Finish native writes before publishing the working copy.')
+    // Detect rename-based edits too; the FD must still be the currently registered directory entry.
+    const current = await lstat(at(directory, filename), { bigint: true })
+    checkFileCondition(current.dev === after.dev && current.ino === after.ino
+      && current.mtimeNs === after.mtimeNs && current.ctimeNs === after.ctimeNs,
+    'FILE_ARTIFACT_CHANGED', 'The working copy was replaced during publication.')
+    signal.throwIfAborted()
+    return first
+  } finally { await file.close() }
+}
+
 interface Registered {
   file: OpenCodeRegisteredFile
   directory: FileHandle
   filename: string
   inputHash: string
   writable: boolean
+  revision: FileRevision
+  versions: Map<string, string>
+  savedVersions: Set<string>
+  cleanup?: { name: string; directory: FileHandle; moved: boolean; emptied: boolean }
 }
 interface LocalFileOptions {
   executionHostId: string
@@ -44,6 +129,7 @@ interface LocalFileOptions {
    * Use assertProtectedSourcePaths or an equivalent runner-side isolation check, not chmod(0444).
    */
   assertSourceIsolation(signal: AbortSignal): Promise<void>
+  preserveVersion?(input: { id: string; revision: FileRevision; bytes: Uint8Array }, signal: AbortSignal): Promise<void>
 }
 
 /** Runner-side only. Instantiate where OpenCode actually executes, not in a remote API process. */
@@ -81,6 +167,7 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
       const old = this.entries.get(input.handle)
       const inputHash = sha256(JSON.stringify([input.revision, input.writable]))
       if (old) {
+        checkFileCondition(!old.cleanup, 'FILE_CLEANUP_REQUIRED', 'The registered handle is being removed.')
         checkFileCondition(old.inputHash === inputHash, 'FILE_ARTIFACT_CONFLICT', 'A registered handle cannot change its source.')
         return { ...old.file } // Never overwrite native edits when preparation is retried.
       }
@@ -93,6 +180,7 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
       const filename = Buffer.byteLength(input.revision.filename, 'utf8') <= 200 ? input.revision.filename
         : `attachment${extname(input.revision.filename).slice(0, 12)}`
       const entry: Registered = { directory, filename, inputHash, writable: input.writable,
+        revision: input.revision, versions: new Map(), savedVersions: new Set(),
         file: { handle: input.handle, executionHostId: this.executionHostId,
           path: join(this.options.root, input.handle, filename) } }
       this.entries.set(input.handle, entry)
@@ -109,41 +197,120 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
   }
 
   snapshot(handle: string, signal: AbortSignal): Promise<Uint8Array> {
+    return this.exclusive(() => this.snapshotReady(handle, signal))
+  }
+
+  private async snapshotReady(handle: string, signal: AbortSignal): Promise<Uint8Array> {
+    const entry = this.entries.get(handle)
+    checkFileCondition(entry?.writable && !entry.cleanup, 'FILE_ARTIFACT_NOT_FOUND', 'Snapshot only a registered writable artifact handle.')
+    await this.preserveVersions(entry, signal)
+    return this.readSnapshot(entry.directory, entry.filename, signal)
+  }
+
+  private async preserveVersions(entry: Registered, signal: AbortSignal): Promise<void> {
+    const retained: { name: string; label: string; bytes: Uint8Array }[] = []
+    for (const [name, baseHash] of entry.versions) {
+      const versions = await open(at(entry.directory, name), directoryFlags)
+      try {
+        await assertDirectoryEntry(entry.directory, name, versions)
+        for (const label of ['native', 'edited']) {
+          let bytes: Uint8Array
+          try { bytes = await this.readSnapshot(versions, label, signal) }
+          catch (error) {
+            if (code(error) === 'ENOENT') continue
+            throw error
+          }
+          if (label === 'native' && sha256(bytes) === baseHash) continue
+          retained.push({ name, label, bytes })
+        }
+      } finally {
+        await versions.close()
+      }
+    }
+    if (!retained.length) return
+    retained.push({ name: 'current', label: 'working-copy',
+      bytes: await this.readSnapshot(entry.directory, entry.filename, signal) })
+    checkFileCondition(this.options.preserveVersion, 'FILE_ARTIFACT_CONFLICT',
+      'Recover the retained native and file-tool versions before publishing or removing this working copy.')
+    for (const version of retained) {
+      const recovered = recoveredOpenCodeVersion(entry.file.handle, version.name, version.label,
+        entry.revision, entry.filename, version.bytes)
+      if (entry.savedVersions.has(recovered.id)) continue
+      await this.options.preserveVersion(recovered, signal)
+      entry.savedVersions.add(recovered.id)
+    }
+  }
+
+  private async readSnapshot(directory: FileHandle, filename: string, signal: AbortSignal): Promise<Uint8Array> {
+    return readOpenCodeFileSnapshot(directory, filename, this.options.maxFileBytes, signal)
+  }
+
+  async replace(handle: string, bytes: Uint8Array, expectedSha256: string, signal: AbortSignal): Promise<void> {
+    checkFileCondition(sha256(await this.snapshot(handle, signal)) === expectedSha256,
+      'FILE_ARTIFACT_CONFLICT', 'The native working copy changed during the file-tool edit.')
     return this.exclusive(async () => {
       const entry = this.entries.get(handle)
-      checkFileCondition(entry?.writable, 'FILE_ARTIFACT_NOT_FOUND', 'Snapshot only a registered writable artifact handle.')
-      signal.throwIfAborted()
-      const file = await open(at(entry.directory, entry.filename), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      checkFileCondition(entry?.writable && !entry.cleanup,
+        'FILE_ARTIFACT_NOT_FOUND', 'Replace only a registered writable working copy.')
+      checkFileCondition(bytes.byteLength <= this.options.maxFileBytes,
+        'FILE_ARTIFACT_TOO_LARGE', 'The edited working copy exceeds the file limit.')
+      const root = await this.rootDirectory()
+      await assertDirectoryEntry(root, handle, entry.directory)
+      const versionName = `.versions-${randomUUID()}`
+      await mkdir(at(entry.directory, versionName), { mode: 0o700 })
+      entry.versions.set(versionName, expectedSha256)
+      const versions = await open(at(entry.directory, versionName), directoryFlags)
       try {
-        const before = await file.stat({ bigint: true })
-        checkFileCondition(before.isFile() && before.nlink === 1n && before.size <= BigInt(this.options.maxFileBytes),
-          'FILE_ARTIFACT_INVALID', 'Publish a bounded regular file, never a link, device, FIFO or directory.')
-        const length = Number(before.size)
-        const read = async () => {
-          const data = Buffer.alloc(length)
-          let offset = 0
-          while (offset < length) {
-            signal.throwIfAborted()
-            const next = await file.read(data, offset, Math.min(65_536, length - offset), offset)
-            checkFileCondition(next.bytesRead > 0, 'FILE_ARTIFACT_CHANGED', 'The working copy changed while being read.')
-            offset += next.bytesRead
-          }
-          return data
+        const edited = await open(at(versions, 'edited'),
+          constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
+        try {
+          await edited.writeFile(bytes)
+          await edited.sync()
+        } finally {
+          await edited.close()
         }
-        const first = await read(), second = await read()
-        const after = await file.stat({ bigint: true })
-        checkFileCondition(before.dev === after.dev && before.ino === after.ino && before.size === after.size
-          && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs && after.nlink === 1n
-          && sha256(first) === sha256(second), 'FILE_ARTIFACT_CHANGED', 'Finish native writes before publishing the working copy.')
-        // Detect rename-based edits too; the FD must still be the currently registered directory entry.
-        const current = await lstat(at(entry.directory, entry.filename), { bigint: true })
-        checkFileCondition(current.dev === after.dev && current.ino === after.ino
-          && current.mtimeNs === after.mtimeNs && current.ctimeNs === after.ctimeNs,
-        'FILE_ARTIFACT_CHANGED', 'The working copy was replaced during publication.')
         signal.throwIfAborted()
-        return first
-      } finally { await file.close() }
+        await assertDirectoryEntry(root, handle, entry.directory)
+        await assertDirectoryEntry(entry.directory, versionName, versions)
+        // Keep the displaced inode: native writers may still have it open, or rename a new version here.
+        await rename(at(entry.directory, entry.filename), at(versions, 'native'))
+        await versions.sync()
+        await entry.directory.sync()
+        try {
+          const displaced = await this.readSnapshot(versions, 'native', signal)
+          checkFileCondition(sha256(displaced) === expectedSha256,
+            'FILE_ARTIFACT_CONFLICT', 'The native edit and file-tool edit are retained in the versions directory.')
+          // link is create-only: a concurrent native rename or write at the leaf is never overwritten.
+          await link(at(versions, 'edited'), at(entry.directory, entry.filename))
+          await unlink(at(versions, 'edited'))
+          await entry.directory.sync()
+        } catch (error) {
+          try {
+            await link(at(versions, 'native'), at(entry.directory, entry.filename))
+            await unlink(at(versions, 'native'))
+          } catch (restoreError) {
+            if (code(restoreError) !== 'EEXIST') {
+              throw new AggregateError([error, restoreError], 'Working-copy versions are retained for recovery.',
+                { cause: restoreError })
+            }
+          }
+          if (code(error) === 'EEXIST') {
+            throw new OpenCodeFileError('FILE_ARTIFACT_CONFLICT',
+              'A concurrent native edit remains at the working-copy path; both other versions are retained.',
+              { cause: error })
+          }
+          throw error
+        }
+        await assertDirectoryEntry(root, handle, entry.directory)
+      } finally {
+        await versions.close()
+      }
     })
+  }
+
+  assertReleased(): void {
+    checkFileCondition(this.entries.size === 0, 'FILE_CLEANUP_REQUIRED',
+      'Registered handles must be released before removing the owned turn directory.')
   }
 
   remove(handle: string): Promise<void> {
@@ -151,15 +318,32 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
       const entry = this.entries.get(handle)
       if (!entry) return
       const root = await this.rootDirectory()
-      const held = await entry.directory.stat()
-      const named = await lstat(at(root, handle))
-      checkFileCondition(held.ino === named.ino && held.dev === named.dev && named.isDirectory(),
-        'FILE_CLEANUP_REQUIRED', 'The registered directory moved; do not remove an unregistered replacement.')
-      try { await unlink(at(entry.directory, entry.filename)) }
-      catch (error) { if (code(error) !== 'ENOENT') throw error }
-      // Do not recursively follow or delete unregistered editor-created entries.
-      await rmdir(at(root, handle))
+      if (!entry.cleanup) {
+        await assertDirectoryEntry(root, handle, entry.directory)
+        if (entry.writable) await this.preserveVersions(entry, AbortSignal.timeout(120_000))
+        // Detach the native path before deletion; failed cleanup keeps its descriptors and ownership.
+        const name = `.cleanup-${randomUUID()}`
+        await mkdir(at(root, name), { mode: 0o700 })
+        entry.cleanup = { name, directory: await open(at(root, name), directoryFlags), moved: false, emptied: false }
+      }
+      const cleanup = entry.cleanup
+      await assertDirectoryEntry(root, cleanup.name, cleanup.directory)
+      if (!cleanup.moved) {
+        await assertDirectoryEntry(root, handle, entry.directory)
+        await rename(at(root, handle), at(cleanup.directory, 'files'))
+        cleanup.moved = true
+      }
+      if (!cleanup.emptied) {
+        await assertDirectoryEntry(cleanup.directory, 'files', entry.directory)
+        await removeDirectoryContents(entry.directory)
+        await assertDirectoryEntry(cleanup.directory, 'files', entry.directory)
+        await rmdir(at(cleanup.directory, 'files'))
+        cleanup.emptied = true
+      }
+      await assertDirectoryEntry(root, cleanup.name, cleanup.directory)
+      await rmdir(at(root, cleanup.name))
       await entry.directory.close()
+      await cleanup.directory.close()
       this.entries.delete(handle)
       if (!this.entries.size && this.root) { await this.root.close(); this.root = undefined }
     })

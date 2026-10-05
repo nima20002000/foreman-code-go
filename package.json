@@ -1,7 +1,7 @@
 {
   "name": "foreman-code",
   "private": true,
-  "version": "0.0.19",
+  "version": "0.0.43",
   "type": "module",
   "packageManager": "pnpm@11.27.0",
   "engines": {
@@ -14,17 +14,18 @@
     "dev": "node scripts/dev.mjs",
     "dev:web": "corepack pnpm --filter @foreman-code/contracts build && corepack pnpm --parallel --filter @foreman-code/contracts --filter @foreman-code/web dev",
     "dev:api": "corepack pnpm --filter @foreman-code/contracts build && corepack pnpm --parallel --filter @foreman-code/contracts --filter @foreman-code/api dev",
-    "db:up": "docker compose up -d --wait postgres",
-    "db:down": "docker compose down",
+    "db:up": "node scripts/test-db.mjs up",
+    "db:down": "node scripts/test-db.mjs down",
     "typecheck": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --if-present typecheck\"",
     "lint": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --no-bail --no-sort --if-present lint\"",
-    "test": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --no-bail --workspace-concurrency=1 --if-present test && corepack pnpm test:scripts\"",
+    "test": "node scripts/heavy-job.mjs -- node scripts/test-command.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --no-bail --workspace-concurrency=1 --if-present test && corepack pnpm test:scripts\"",
     "test:integration": "node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-integration.mjs",
-    "test:acceptance": "node scripts/heavy-job.mjs -- node scripts/test-native-acceptance.mjs",
-    "test:production": "node scripts/heavy-job.mjs -- node scripts/production-smoke.mjs",
-    "test:production:installed": "node scripts/heavy-job.mjs -- node scripts/test-local-production.mjs",
+    "test:acceptance": "node scripts/heavy-job.mjs -- node scripts/test-command.mjs -- sh -c 'corepack pnpm --filter @foreman-code/contracts build && node scripts/test-native-acceptance.mjs \"$@\"' --",
+    "test:production": "node scripts/heavy-job.mjs -- node scripts/test-command.mjs -- node scripts/production-smoke.mjs",
     "build": "node scripts/heavy-job.mjs -- corepack pnpm -r --if-present build",
     "production:install": "node scripts/heavy-job.mjs -- node scripts/local-production.mjs install",
+    "test:files": "node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-command.mjs -- node scripts/test-files.mjs",
+    "production:verify": "node scripts/heavy-job.mjs -- node scripts/verify-local-production.mjs"
     "verify:job": "node scripts/verify-repository.mjs",
     "test:scripts": "node scripts/heavy-job.mjs -- node --test scripts/local-production.test.mjs scripts/heavy-job.test.mjs scripts/integration-process.test.mjs scripts/test-integration.test.mjs scripts/verification-reports.test.mjs scripts/verify-repository.test.mjs"
   }

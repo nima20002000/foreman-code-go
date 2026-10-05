@@ -4,7 +4,10 @@ import { posix, win32 } from 'node:path'
 import type { RegisteredCodexCopy } from './port.js'
 
 export class CodexFileDeliveryError extends Error {
-  constructor(readonly code: string) { super(code); this.name = 'CodexFileDeliveryError' }
+  constructor(readonly code: string, options?: ErrorOptions) {
+    super(code, options)
+    this.name = 'CodexFileDeliveryError'
+  }
 }
 export function fail(code: string): never { throw new CodexFileDeliveryError(code) }
 export const sha256 = (data: Uint8Array): string => createHash('sha256').update(data).digest('hex')

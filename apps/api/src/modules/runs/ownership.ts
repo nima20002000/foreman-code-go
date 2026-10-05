@@ -1,3 +1,4 @@
+import { beginRuntimeTiming } from '../../infrastructure/runtimeTiming.js'
 import pg from 'pg'
 
 import { ExclusiveGraphConnection, type GraphSqlClient } from '../run-graph/connection.js'
@@ -25,7 +26,7 @@ export class RunOwnership {
   oneShotConnection(): ExclusiveGraphConnection {
     this.assertOwned()
     if (!this.graphConnection) {
-      const connection = new ExclusiveGraphConnection(this.rawClient, () => this.assertOwned())
+      const connection = new ExclusiveGraphConnection(this.rawClient, () => this.assertOwned(), new Map())
       this.graphConnection = connection
       this.queryClient = new Proxy(this.rawClient, {
         get: (target, property) => {
@@ -48,7 +49,7 @@ export class RunOwnership {
     const result = await sql.query<{ owner_id: string; fence: string }>(
       `select pg_backend_pid()::text as owner_id,
               (extract(epoch from a.backend_start)*1000000)::bigint::text as fence
-       from pg_stat_activity a
+       from pg_stat_get_activity(pg_backend_pid()) a
        where a.pid=pg_backend_pid() and exists (
          select 1 from pg_locks l where l.pid=a.pid and l.locktype='advisory'
          and l.classid=810002::oid and l.objid=(hashtext($1)::bigint & 4294967295)::oid
@@ -95,6 +96,7 @@ export class RunOwnership {
   async release(): Promise<void> {
     if (this.released) return
     this.released = true
+    const finished = beginRuntimeTiming('db', 'owner.release', { runId: this.runId })
     // Closing, rather than returning this session to a pool, always releases
     // its advisory lock, including after a failed query or lost connection.
     try {
@@ -103,6 +105,7 @@ export class RunOwnership {
       await this.rawClient.end().catch(() => undefined)
       this.rawClient.removeListener('error', this.handleLoss)
       this.rawClient.removeListener('end', this.handleLoss)
+      finished()
     }
   }
 }

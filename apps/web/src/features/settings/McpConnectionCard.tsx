@@ -4,7 +4,7 @@ import type { AgentHarness, ExecutionLocation, McpDetection } from '@foreman-cod
 import type { ApiError } from '../../shared/api/client'
 import { useMcpDetectionQuery } from '../../shared/api/query'
 import { Alert, Badge, Button, Icon, type IconName, type Tone } from '../../shared/ui/nocturne'
-import { useProtectedAccessError } from '../auth/useProtectedAccessError'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 
 const states: Record<McpDetection['state'], { label: string; hint?: string; tone: Tone; icon: IconName }> = {
   connected: { label: 'Connected', tone: 'success', icon: 'check' },
@@ -17,27 +17,25 @@ const states: Record<McpDetection['state'], { label: string; hint?: string; tone
   check_failed: { label: 'Check failed', hint: 'The connection check could not finish.', tone: 'danger', icon: 'warning' },
 }
 
-export function McpAccessNotice({ error, returnTo, retry }: { error: ApiError; returnTo: string; retry: ReactNode }) {
-  return error.status === 401 ? <Alert live tone="warning" title="Sign in to check connections" action={
-    <Link className="n-button n-button--secondary n-button--sm" to="/sign-in" search={{ returnTo }}>Sign in</Link>
-  }>Your browser session has expired.</Alert> : <Alert live tone="warning" title="Connection access is restricted" action={retry}>
-    Ask the workspace owner for access. Signing in again will not change your permissions.
+export function McpAccessNotice({ error, retry }: { error: ApiError; retry: ReactNode }) {
+  return <Alert live tone="warning" title="Connection access is unavailable" action={retry}>
+    {error.message} Refresh after checking the local API connection.
   </Alert>
 }
 
-export function McpConnectionCard({ workspaceId, harness, location, returnTo }: {
-  workspaceId: string; harness: AgentHarness; location: ExecutionLocation; returnTo: string
+export function McpConnectionCard({ workspaceId, harness, location }: {
+  workspaceId: string; harness: AgentHarness; location: ExecutionLocation
 }) {
   if (harness === 'claude') return <article className="mcp-connection-card" aria-label="Claude">
     <div className="mcp-provider-heading"><h3>Claude</h3></div>
     <Alert title="Claude workspace connection checks are not available here.">This native workspace check supports Codex and OpenCode. Claude uses MCP servers pinned in its accepted configuration.</Alert>
     <Link className="n-button n-button--secondary n-button--sm" to="/settings/harnesses" search={{ harness: 'claude', section: 'connections' }}>Configure Claude MCP</Link>
   </article>
-  return <SupportedMcpConnectionCard workspaceId={workspaceId} harness={harness} location={location} returnTo={returnTo} />
+  return <SupportedMcpConnectionCard workspaceId={workspaceId} harness={harness} location={location} />
 }
 
-function SupportedMcpConnectionCard({ workspaceId, harness, location, returnTo }: {
-  workspaceId: string; harness: Exclude<AgentHarness, 'claude'>; location: ExecutionLocation; returnTo: string
+function SupportedMcpConnectionCard({ workspaceId, harness, location }: {
+  workspaceId: string; harness: Exclude<AgentHarness, 'claude'>; location: ExecutionLocation
 }) {
   const query = useMcpDetectionQuery(workspaceId, harness)
   const accessError = useProtectedAccessError(query)
@@ -72,7 +70,7 @@ function SupportedMcpConnectionCard({ workspaceId, harness, location, returnTo }
       <span className="mcp-provider-icon"><Icon name={harness === 'codex' ? 'terminal' : 'code'} size={22} /></span>
       <h3 id={headingId}>{name}</h3>
     </div>
-    {accessError ? <McpAccessNotice error={accessError} returnTo={returnTo} retry={check} /> : <>
+    {accessError ? <McpAccessNotice error={accessError} retry={check} /> : <>
       <div className="mcp-status" role="status" aria-live="polite" aria-atomic="true">
         <Badge tone={stale ? 'warning' : state?.tone ?? (query.isError ? 'danger' : 'neutral')}>
           <Icon name={stale ? 'history' : state?.icon ?? (query.isError ? 'warning' : 'clock')} size={14} />{label}

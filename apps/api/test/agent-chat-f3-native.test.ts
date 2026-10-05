@@ -4,7 +4,7 @@ import type { NativeSessionReference } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { APP_MCP_SERVER_NAME, appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
-import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
+import { HarnessExecutionError, NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
 import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
@@ -33,6 +33,11 @@ function scopedCodexEntry(enabled = true) {
   const entry = appLauncherConnection()
   return { name: APP_MCP_SERVER_NAME, enabled, transport: { type: 'stdio', command: entry.executable, args: entry.arguments, env_vars: entry.environmentVariables } }
 }
+function scopedCodexCommand(args: readonly string[], entry = scopedCodexEntry()) {
+  if (args[1] === 'get' && args[2] !== APP_MCP_SERVER_NAME) return { exitCode: 1, stdout: '',
+    stderr: `Error: No MCP server named '${args[2]}' found.` }
+  return { exitCode: 0, stdout: JSON.stringify(args[1] === 'list' ? [entry] : entry), stderr: '' }
+}
 function code(expected: string) {
   return (error: unknown) => error instanceof HarnessExecutionError && error.result.error?.code === expected
 }
@@ -56,8 +61,7 @@ const openCodeSource: NativeSessionReference = { harness: 'opencode', providerVe
 describe('F3 safe native boundaries (mock command output and HTTP only)', () => {
   for (const operation of ['create', 'attach', 'fork'] as const) {
     it(`A-R01: Codex ${operation} refuses injected scoped credentials before opening a transport`, async () => {
-      vi.mocked(runCommand).mockImplementation(async (_binary, args) => ({ exitCode: 0,
-        stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry()] : scopedCodexEntry()), stderr: '' }))
+      vi.mocked(runCommand).mockImplementation(async (_binary, args) => scopedCodexCommand(args))
       const { manager, transport } = codex(), input = codexInput()
       input.environment = { agentId: input.request.configuration.agentId, variables: { GRAPHQL_MCP_TOKEN: 'must-not-be-injected' } }
       const snapshot = structuredClone(input)
@@ -83,16 +87,14 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
     })
   }
   it('A-R01: disabled Codex entry is credential-free while non-chat scoped validation remains mandatory', async () => {
-    vi.mocked(runCommand).mockImplementation(async (_binary, args) => ({ exitCode: 0,
-      stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry(false)] : scopedCodexEntry(false)), stderr: '' }))
+    vi.mocked(runCommand).mockImplementation(async (_binary, args) => scopedCodexCommand(args, scopedCodexEntry(false)))
     const { manager } = codex(), input = codexInput()
     const prepared = await manager['prepareInput'](input)
     assert.equal(prepared.scopedCredentialVariable, undefined); assert.equal(prepared.input.environment, undefined)
     assert.equal(prepared.environment.GRAPHQL_MCP_TOKEN, undefined)
     assert.deepEqual(prepared.harnessConfiguration, input.request.configuration.harness)
     const ordinary = codex(false).manager
-    vi.mocked(runCommand).mockImplementation(async (_binary, args) => ({ exitCode: 0,
-      stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry()] : scopedCodexEntry()), stderr: '' }))
+    vi.mocked(runCommand).mockImplementation(async (_binary, args) => scopedCodexCommand(args))
     await assert.rejects(ordinary['prepareInput'](input), code('CODEX_SCOPED_ENVIRONMENT_REQUIRED'))
     await assert.rejects(manager['prepareInput']({ ...input, environment: { agentId: input.request.configuration.agentId,
       variables: { GRAPHQL_MCP_TOKEN: 'must-not-be-injected' } } }), code('CODEX_APP_MCP_UNAVAILABLE'))
@@ -116,9 +118,17 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
         const input: WorkflowNativeSessionStart = { request: request() }
         const result = operation === 'attach' ? manager.attachSession(openCodeSource, input) : manager.forkSession(openCodeSource, input)
         await assert.rejects(result, (error: unknown) => {
-          assert(error instanceof OpenCodeNativeDeliveryError)
-          assert.equal(error.certainty, status === 404 ? 'definite' : 'uncertain')
-          assert.equal(error.code, status === 404 ? 'OPENCODE_SESSION_NOT_FOUND'
+          let cause = error
+          if (operation === 'fork') {
+            assert(error instanceof NativeDeliveryError)
+            assert.equal(error.operation, 'session_creation')
+            assert.equal(error.delivery, status === 404 ? 'not_sent' : 'unknown')
+            assert.equal(error.cleanup, 'confirmed')
+            cause = error.cause
+          }
+          assert(cause instanceof OpenCodeNativeDeliveryError)
+          assert.equal(cause.certainty, status === 404 ? 'definite' : 'uncertain')
+          assert.equal(cause.code, status === 404 ? 'OPENCODE_SESSION_NOT_FOUND'
             : operation === 'attach' ? 'OPENCODE_SERVER_REQUEST_FAILED' : 'OPENCODE_NATIVE_DELIVERY_REJECTED')
           return true
         })

@@ -100,6 +100,12 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
         return { value: editable(response.value.defaults, harness), revision: response.value.revision }
       }, (value) => { ManagementHarnessDefaultsSchema.parse(prepared(value)); return value })} />}>
     {section === 'workspace' && harness !== 'claude' ? <HarnessCompatibilityPanel harness={harness} /> : null}
+    {harness === 'codex' && section === 'permissions' ? <section aria-label="Supported Codex requests">
+      <h3>Supported requests</h3>
+      {query.data?.find((entry) => entry.harness === 'codex')?.interactionSupport?.map((support) => <div key={support.kind}>
+        <h4>{support.label}</h4><p>{support.supported}</p><p>{support.unsupported}</p>
+      </div>)}
+    </section> : null}
     {harness === 'claude' && !draft.claude ? <ClaudePresetSetup value={draft.claudeSetup ?? {}} issues={issuesAt(form.issues ?? [], ['claude'])}
       onChange={(claudeSetup) => form.setDraft((current) => current && ({ ...current, claudeSetup }))} />
       : section === 'plugins' && harness === 'codex' ? <CodexPluginManager /> : <HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]!} onChange={update} issues={issuesAt(form.issues ?? [], [harness])}

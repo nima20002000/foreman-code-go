@@ -12,7 +12,7 @@ The public export is `ChatRetentionSettings`; it takes no props and requires onl
 the application's existing `QueryClientProvider` and Nocturne theme/styles.
 It does not read a workspace, workflow, selected conversation or router context.
 
-In `apps/web/src/features/auth/AccountAccess.tsx`, add:
+In `apps/web/src/features/settings/LocalAccount.tsx`, add:
 
 ```tsx
 import { ChatRetentionSettings } from '../retention-settings'
@@ -93,11 +93,9 @@ of that POST, including when the GET fails with a structured 4xx.
 The journal is written before sending bytes and is cleared only after current readback
 or a definitive command rejection. Reload in the same tab restores it only after the
 current owner's GET; restoration never automatically sends a request. Its key uses the
-existing protected identity epoch and owner, and the existing sign-out cleanup covers
-the protected sessionStorage prefix. A changed account/installation does not adopt an
-old journal. Storage errors or malformed records fail closed rather than silently
-minting a new command. Closing the tab, manually clearing browser storage or signing
-out clears/discards this tab-local recovery state; there is no cross-tab command queue.
+existing protected identity epoch and owner, and installation changes isolate
+the protected sessionStorage prefix. A changed installation does not adopt an old journal. Storage errors or malformed records fail closed rather than silently
+minting a new command. Closing the tab or manually clearing browser storage discards this tab-local recovery state; there is no cross-tab command queue.
 
 The backend remains responsible for ownership, grants, immutable file revisions,
 retention application, tombstones and exclusion of permanent references. No local

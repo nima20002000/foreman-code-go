@@ -76,7 +76,7 @@ describe('authenticated target-local execution folder', () => {
   it('shows denied root metadata and does not expose the local folder browser as a fallback', async () => {
     server.use(http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'Root access denied.' } }, { status: 403 })))
     mount()
-    expect(await screen.findByText('Authenticated execution location or computer roots could not be read.')).toBeVisible()
+    expect(await screen.findByText('Project folder or computer roots could not be loaded.')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Project folder' })).not.toBeInTheDocument()
   })
 })

@@ -54,11 +54,15 @@ describe('authenticated computer HTTP readback registrars',()=>{
       expect(result.statusCode).toBe(403);expect(f.devices.readMainIdentity).not.toHaveBeenCalled()
     } finally {await f.app.close()}
   })
-  it('requires authentication rather than exposing selected-main metadata publicly',async()=>{
+  it('allows local human metadata reads while rejecting remote clients and invalid bearer credentials',async()=>{
     const f=await fixture(principal(['settings:read']))
     try {
-      expect((await f.app.inject({method:'GET',url:'/api/devices/main'})).statusCode).toBe(401)
+      expect((await f.app.inject({method:'GET',url:'/api/devices/main',remoteAddress:'192.0.2.1'})).statusCode).toBe(403)
+      expect((await f.app.inject({method:'GET',url:'/api/devices/main',headers:{authorization:'Bearer invalid'}})).statusCode).toBe(401)
       expect(f.devices.readMainIdentity).not.toHaveBeenCalled()
+      const local=await f.app.inject({method:'GET',url:'/api/devices/main'})
+      expect(local.statusCode).toBe(200)
+      expect(local.json()).toEqual(mainIdentity)
     } finally {await f.app.close()}
   })
   it('mounts the static registry readback ahead of the provider parameter route',async()=>{

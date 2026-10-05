@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
@@ -16,15 +17,15 @@ import type { ClaudeSdkClient } from '../src/modules/harnesses/claudeSdk/port.js
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 
 async function claudeMcpFixture() {
-  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
   const schema = `claude_resume_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ ...admin.options, options: `-c search_path=${schema}` })
   let app: ReturnType<typeof buildApp> | undefined
   const clients: Client[] = []
   const close = async () => {
     await Promise.allSettled(clients.map(client => client.close())); await app?.close(); await pool.end()
-    try { await admin.query(`drop schema "${schema}" cascade`) } finally { await admin.end() }
+    try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
   }
   try {
     await applyApplicationMigrations(pool)
@@ -91,9 +92,9 @@ describe('NEW-CLAUDE F-13 authenticated resumed query', () => {
                   const read = await query.transport!.callTool({ name: 'workspace_get', arguments: { workspaceId: createdId! } })
                   expect(read.structuredContent).toMatchObject({ workspace: { id: createdId, name: workspaceName } })
                 }
-                frames.offer({ type: 'system', subtype: 'init', session_id: saved.nativeSessionId, claude_code_version: saved.providerVersion, cwd: '/work' })
-                frames.offer({ type: 'assistant', uuid: 'reply', session_id: saved.nativeSessionId, user_message_uuid: message.uuid })
-                frames.offer({ type: 'result', uuid: 'result', session_id: saved.nativeSessionId, user_message_uuid: message.uuid,
+                void frames.offer({ type: 'system', subtype: 'init', session_id: saved.nativeSessionId, claude_code_version: saved.providerVersion, cwd: '/work' })
+                void frames.offer({ type: 'assistant', uuid: 'reply', session_id: saved.nativeSessionId, user_message_uuid: message.uuid })
+                void frames.offer({ type: 'result', uuid: 'result', session_id: saved.nativeSessionId, user_message_uuid: message.uuid,
                   subtype: 'success', is_error: false, result: 'MCP checked' })
               }
             })().catch(error => frames.close(error))

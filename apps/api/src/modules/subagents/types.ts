@@ -1,5 +1,6 @@
 import type { HarnessNativeEvent } from '@foreman-code/contracts'
-import type { RunSubagent, RunSubagentCommandReceipt, RunSubagentMessage, RunSubagentTool, SubagentNativeMode } from '@foreman-code/contracts/subagents'
+import type { RunSubagent, RunSubagentCommandReceipt, RunSubagentMessage, RunSubagentTool,
+  SubagentCapabilities, SubagentNativeMode } from '@foreman-code/contracts/subagents'
 
 export interface SubagentProjectionContext {
   workspaceId: string; workflowId: string; workflowVersionId: string; runId: string
@@ -16,10 +17,13 @@ export type SubagentChange =
 /** Only an admitted computer-owned manager may supply this lease. Main must never borrow a remote session. */
 export interface SubagentControlLease {
   generation: string; nativeTurnId: string | null
+  capabilities?: Pick<SubagentCapabilities, 'sendInput' | 'interrupt' | 'executionResume' | 'inputTiming'>
   matches(child: RunSubagent): boolean
   assertCurrent(): void
   sendInput?(receipt: RunSubagentCommandReceipt, text: string): Promise<void>
   interrupt?(receipt: RunSubagentCommandReceipt): Promise<void>
+  pendingInteraction?(): import('@foreman-code/contracts').PendingNativeInteraction | undefined
+  respond?(receipt: RunSubagentCommandReceipt): Promise<void>
   /** Read exact native correlation, never retry a prompt after uncertain delivery. */
   reconcile?(receipt: RunSubagentCommandReceipt): Promise<'acknowledged' | 'rejected' | 'uncertain'>
 }

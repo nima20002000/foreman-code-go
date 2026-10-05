@@ -5,8 +5,8 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, it } from 'vitest'
 
-import { CodexRpcError, CodexStdioTransport, type CodexProtocol } from '../src/modules/harnesses/codexStdioTransport.js'
-import { errorCode, fixture, until, type Fixture } from './fixtures/codex-test-helpers.js'
+import { CodexRpcError, CodexStdioTransport, isObject, type CodexProtocol } from '../src/modules/harnesses/codexStdioTransport.js'
+import { calls, errorCode, fixture, fixtureProtocol, until, type Fixture } from './fixtures/codex-test-helpers.js'
 
 // Transport fault tests intentionally isolate framing, IO and correlation from
 // schema conversion. codex-protocol.test.ts exercises the qualified schema gate.
@@ -27,6 +27,20 @@ describe.skipIf(process.platform === 'win32')('Codex owned stdio transport', () 
   afterEach(async () => {
     await Promise.all(transports.splice(0).map((value) => value.close()))
     await rm(f.directory, { recursive: true, force: true })
+  })
+
+  it('declares full-schema form support through the qualified native initialization request', async () => {
+    const value = new CodexStdioTransport(f.binary, f.directory, {}, fixtureProtocol,
+      async () => undefined, () => undefined, () => undefined)
+    transports.push(value)
+    await value.start()
+    const initialize = (await calls(f.directory)).find((entry) =>
+      isObject(entry.wire) && entry.wire.method === 'initialize')
+    assert(isObject(initialize?.wire))
+    assert(isObject(initialize.wire.params))
+    assert.deepEqual(initialize.wire.params.capabilities,
+      { experimentalApi: true, extensions: { 'openai/form': {} } })
+    assert.equal(value.isConnected(), true)
   })
 
   it('drains large stderr output before initialization without forwarding diagnostics', async () => {

@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdtemp, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -91,7 +92,7 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
     assert.equal(services.fileReferences, references)
     mcpUrl = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp`
   }, 60_000)
-  afterAll(async () => { await app?.close(); if (root) await rm(root, { recursive: true, force: true }); await database?.close() })
+  afterAll(async () => { await app?.close(); if (root) await removeFixtureDirectory(root); await database?.close() })
 
   async function allocate(scope: PermanentFileScope, bytes = text, requestId = randomUUID()) {
     const response = await app.inject({ method: 'POST', url: `${base(scope)}/uploads`, headers: headers(), payload: { requestId, ...metadata(bytes) } })
@@ -162,7 +163,7 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
     assert.equal((await app.inject({ method: 'GET', url: `${pinned(sibling, row)}/content`, headers: headers() })).statusCode, 404)
     assert.equal((await app.inject({ method: 'GET', url: `${pinned(workspace, row)}/content`, headers: headers() })).statusCode, 404)
     assert.equal((await app.inject({ method: 'GET', url: `${base(workflow)}/${row.file.fileId}/revisions/missing/content`, headers: headers() })).statusCode, 404)
-    assert.equal((await app.inject({ method: 'GET', url: base(workspace), headers: { host: 'localhost' } })).statusCode, 401)
+    assert.equal((await app.inject({ method: 'GET', url: base(workspace), headers: { host: 'localhost', authorization: 'Bearer invalid' } })).statusCode, 401)
   })
   it('keeps same filenames in all scopes distinct; cursors cannot cross scopes', async () => {
     const scopes = [workspace, workflow, sibling, otherWorkspace]

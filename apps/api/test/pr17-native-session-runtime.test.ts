@@ -1,97 +1,83 @@
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
-import { describe, it } from 'vitest'
-import type { ApprovalResponseOption, CodexHarnessConfiguration, NativeSessionReference } from '@foreman-code/contracts'
-import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { afterEach, describe, it, vi } from 'vitest'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
-import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTransport.js'
+import { CodexStdioTransport, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { normalizedHistory } from '../src/modules/harnesses/opencodeProtocol.js'
-import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import { bounded, openCodeFixture, session as openCodeSession, start } from './fixtures/pr17-native-runtime.js'
-import { fixtureProtocol } from './fixtures/codex-test-helpers.js'
+import { agentMessage, calls, collect, emit, fixtureProtocol, input, state, until } from './fixtures/codex-test-helpers.js'
+import { deliveryFixture } from './fixtures/codex-delivery.js'
+import * as nativeProcesses from '../src/modules/harnesses/process.js'
 
 function nativeCode(code: string) {
   return (error: unknown) => error instanceof HarnessExecutionError && error.result.error?.code === code
 }
 
-type Runtime = ReturnType<CodexAppServerSessionManager['requireRuntime']>
-type Waiting = Runtime['interactions'] extends Map<string, infer T> ? T : never
-const codexSession: NativeSessionReference = { harness: 'codex', providerVersion: 'codex-cli 0.154.0', nativeSessionId: 'thread-test' }
-const option: ApprovalResponseOption = {
-  optionId: 'accept', semantic: 'approve_once', label: 'Approve', persistence: 'request',
-  affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false,
-}
-function codexFixture() {
-  let responses = 0
-  const transport = {
-    request: async () => ({ turn: { id: 'turn-test', status: 'inProgress', items: [] } }),
-    respond: async () => { responses += 1 },
-    close: async () => undefined,
-  } as unknown as CodexStdioTransport
-  const runtime: Runtime = {
-    connectionId: randomUUID(), schemaIdentity: 'fixture-schema', arrivalOrdinal: 0, attached: false, binding: '', ownerId: 'agent', configurationIdentity: '',
-    input: {} as NativeSessionStart, workingDirectory: '/workspace',
-    configuration: { serviceTier: 'standard' } as CodexHarnessConfiguration,
-    scopedCredentialVariable: undefined, strippedCredentialVariable: undefined, transport, session: codexSession, generation: 0,
-    qualified: { binary: 'fixture-only', identity: 'fixture-identity', providerVersion: codexSession.providerVersion,
-      protocol: fixtureProtocol, schemaManifestSha256: 'fixture-schema', stableSchemaGitBlob: 'fixture-stable', referenceSchemaManifestSha256: 'fixture-reference' },
-    phase: 'idle', streamActive: false, starting: undefined, cancellation: undefined,
-    files: undefined, fileCleanup: undefined, fileRequests: new Map(),
-    activeTurnId: undefined, activeCorrelationId: undefined, terminalResult: undefined,
-    finalAnswer: undefined, lastAgentMessage: undefined, finalAnswerId: undefined, lastAgentMessageId: undefined,
-    interactions: new Map(), resolvedRequests: new Map(), events: [], eventSizes: [], eventBytes: 0, sequence: 0,
-    seenNotifications: new Set(), wake: new Set(), closed: false, disposed: false,
-  }
-  const manager = new CodexAppServerSessionManager('fixture-only', codexSession.providerVersion)
-  const seam = manager as unknown as {
-    runtimes: Map<string, Runtime>
-    record(runtime: Runtime, type: string, payload: Record<string, unknown>): void
-    loginControl: { transport: CodexStdioTransport } | undefined
-  }
-  seam.runtimes.set(codexSession.nativeSessionId, runtime)
-  return { manager, runtime, seam, responses: () => responses }
-}
-function waiting(id: string, delivery: Waiting['delivery'], transport: Runtime['transport']): Waiting {
-  return {
-    pending: { session: codexSession, turn: { nativeTurnId: 'turn-test', nativeRequestId: id },
-      nativeRequestType: 'item/commandExecution/requestApproval', request: {}, responseOptions: [option] },
-    requestId: id, method: 'item/commandExecution/requestApproval', generation: 0, transport, signature: id,
-    responses: new Map([[option.optionId, { option, nativeResponse: { decision: 'accept' } }]]),
-    delivery, resolution: new Promise(() => undefined), resolve: () => undefined,
-  }
+const codexFixtures: Awaited<ReturnType<typeof deliveryFixture>>[] = []
+afterEach(async () => {
+  for (const fixture of codexFixtures.splice(0)) await fixture.close()
+})
+
+async function codexFixture() {
+  const fixture = await deliveryFixture()
+  codexFixtures.push(fixture)
+  const source = input(fixture.directory)
+  delete source.environment
+  const manager = fixture.makeManager()
+  const session = await manager.createSession(source)
+  return { fixture, source, manager, session }
 }
 
-describe('PR17 native session runtime regressions', () => {
-  it('F9: exposes a later pending approval without mutating or replaying an earlier uncertain response', async () => {
-    const { manager, runtime, responses } = codexFixture()
-    const first = waiting('first', 'uncertain', runtime.transport)
-    const second = waiting('second', 'pending', runtime.transport)
-    runtime.interactions.set('first', first)
-    runtime.interactions.set('second', second)
-    assert.equal((await manager.pending(codexSession))?.turn.nativeRequestId, 'second')
-    const history = await manager.history(codexSession)
-    assert.equal(history.pendingInteraction?.turn.nativeRequestId, 'second')
+describe('native session runtime regressions', () => {
+  it('exposes a later approval without replaying an earlier uncertain response', async () => {
+    const { fixture, manager, session } = await codexFixture()
+    await fixture.flag('no-resolution')
+    const completed = collect(manager.startTurn(session, { prompt: 'multi', clientCorrelationId: 'approval-turn' }))
+    const first = await until(() => manager.pending(session))
+    const option = first.responseOptions[0]!
+    const abort = new AbortController()
+    const response = manager.respond(session, first.turn.nativeRequestId!, option, abort.signal)
+    const rejected = assert.rejects(response, /stop awaiting confirmation/)
+    await until(async () => (await manager.history(session)).interactionDeliveries?.[0]?.state === 'submitted')
+    await until(async () => (await calls(fixture.directory))
+      .filter((entry) => isObject(entry.wire) && 'result' in entry.wire).length === 1)
+    abort.abort(new Error('stop awaiting confirmation'))
+    await rejected
+    const second = await until(() => manager.pending(session))
+    assert.notEqual(second.turn.nativeRequestId, first.turn.nativeRequestId)
+    const history = await manager.history(session)
+    assert.equal(history.pendingInteraction?.turn.nativeRequestId, second.turn.nativeRequestId)
     assert.deepEqual(history.interactionDeliveries?.map((entry) => entry.state), ['uncertain', 'pending'])
-    await assert.rejects(manager.respond(codexSession, 'first', option), nativeCode('NATIVE_RESPONSE_RECONCILIATION_REQUIRED'))
-    assert.equal(first.delivery, 'uncertain')
-    assert.equal(runtime.interactions.get('first'), first)
-    assert.equal(responses(), 0)
+    const before = await calls(fixture.directory)
+    await assert.rejects(manager.respond(session, first.turn.nativeRequestId!, option),
+      nativeCode('NATIVE_RESPONSE_RECONCILIATION_REQUIRED'))
+    assert.deepEqual((await manager.history(session)).interactionDeliveries, history.interactionDeliveries)
+    assert.deepEqual(await calls(fixture.directory), before)
+    await manager.cancel(session)
+    await completed
   })
 
-  for (const terminal of [false, true]) it(`F16: drains an event queued while suspended at yield (terminal=${terminal})`, async () => {
-    const { manager, runtime, seam } = codexFixture()
+  for (const terminal of [false, true]) it(`drains an event queued while suspended at yield (terminal=${terminal})`, async () => {
+    const { fixture, manager, session } = await codexFixture()
     const controller = new AbortController()
-    const iterator = manager.startTurn(codexSession, { prompt: 'test', clientCorrelationId: 'correlation' }, controller.signal)[Symbol.asyncIterator]()
+    const iterator = manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'queued-event' },
+      controller.signal)[Symbol.asyncIterator]()
     let next: ReturnType<typeof iterator.next> | undefined
     try {
       assert.equal((await iterator.next()).value?.type, 'turn.started')
-      if (terminal) runtime.terminalResult = { outcome: 'succeeded', output: { text: '' } }
-      seam.record(runtime, terminal ? 'turn.completed' : 'event.B', { marker: 'B' })
+      const current = await state(fixture.directory, session.nativeSessionId)
+      const turn = current.turns.at(-1)!
+      const eventType = terminal ? 'turn.completed' : 'item.started'
+      await emit(fixture.directory, terminal
+        ? { method: 'turn/completed', params: { threadId: session.nativeSessionId,
+          turn: { ...turn, status: 'completed', completedAt: 2 } } }
+        : { method: 'item/started', params: { threadId: session.nativeSessionId, turnId: turn.id,
+          item: agentMessage('queued-message', 'B'), startedAtMs: 1 } })
+      await until(async () => (await manager.history(session)).events.some((event) => event.type === eventType))
       next = iterator.next()
       const result = await bounded(next)
       assert.equal(result.done, false)
-      assert.equal(result.value?.payload.marker, 'B')
-      assert.equal(runtime.wake.size, 0)
+      assert.equal(result.value?.type, eventType)
+      if (terminal) assert.equal((await iterator.next()).done, true)
     } finally {
       controller.abort()
       await next?.catch(() => undefined)
@@ -99,44 +85,77 @@ describe('PR17 native session runtime regressions', () => {
     }
   })
 
-  it('F14: retries transport cleanup, coalesces in-flight calls and keeps native requests fenced', async () => {
+  it('retries transport cleanup, coalesces in-flight calls and keeps native requests fenced', async () => {
+    const fixture = await deliveryFixture()
+    codexFixtures.push(fixture)
     let calls = 0
     let reject!: (error: Error) => void
-    const transport = new CodexStdioTransport('fixture', '/workspace', {}, {
-      request: () => undefined, notification: () => undefined, serverRequest: () => undefined,
-      response: () => undefined, serverResponse: () => undefined,
-    }, async () => undefined, () => undefined, () => undefined)
-    Object.assign(transport, { owned: { child: { stdin: { destroyed: false } }, close: () => {
-      calls += 1
-      return calls === 1 ? new Promise<void>((_resolve, fail) => { reject = fail }) : Promise.resolve()
-    } } })
-    const first = transport.close()
-    assert.equal(transport.close(), first)
-    const failure = assert.rejects(first, /fixture cleanup failure/)
-    reject(new Error('fixture cleanup failure'))
-    await failure
-    await assert.rejects(transport.request('turn/start', {}), nativeCode('CODEX_APP_SERVER_DISCONNECTED'))
-    const second = transport.close()
-    assert.notEqual(second, first)
-    await second
-    assert.equal(calls, 2)
-    assert.equal(transport.close(), second)
-    await assert.rejects(transport.start(), nativeCode('CODEX_TRANSPORT_REUSED'))
+    const spawn = nativeProcesses.spawnOwnedStdioProcess
+    const cleanup = vi.spyOn(nativeProcesses, 'spawnOwnedStdioProcess').mockImplementation((options) => {
+      const owned = spawn(options)
+      return { ...owned, close: () => {
+        calls += 1
+        if (calls === 1) return new Promise<void>((_resolve, fail) => { reject = fail })
+        return owned.close()
+      } }
+    })
+    const transport = new CodexStdioTransport(fixture.binary, fixture.directory, {}, fixtureProtocol,
+      async () => undefined, () => undefined, () => undefined)
+    try {
+      await transport.start()
+      const first = transport.close()
+      assert.equal(transport.close(), first)
+      const failure = assert.rejects(first, /fixture cleanup failure/)
+      reject(new Error('fixture cleanup failure'))
+      await failure
+      await assert.rejects(transport.request('turn/start', {}), nativeCode('CODEX_APP_SERVER_DISCONNECTED'))
+      const second = transport.close()
+      assert.notEqual(second, first)
+      await second
+      assert.equal(calls, 2)
+      assert.equal(transport.close(), second)
+      await assert.rejects(transport.start(), nativeCode('CODEX_TRANSPORT_REUSED'))
+    } finally {
+      await transport.close()
+      cleanup.mockRestore()
+    }
   })
 
-  it('F14: retains a failed Codex login cleanup and prevents reattaching a disposed runtime', async () => {
-    const { manager, runtime, seam } = codexFixture()
+  it('retains a failed login cleanup and prevents reattaching a disposed session', async () => {
+    const fixture = await deliveryFixture()
+    codexFixtures.push(fixture)
     let calls = 0
-    const control = { transport: { close: async () => { if (++calls === 1) throw new Error('cleanup') } } as unknown as CodexStdioTransport }
-    seam.loginControl = control
-    await assert.rejects(manager.closeLoginControl(), /cleanup/)
-    assert.equal(seam.loginControl, control)
+    let sessionCleanupFailure = false
+    const manager = fixture.makeManager(undefined, { transport: (...args) => {
+      const transport = new CodexStdioTransport(...args)
+      const close = transport.close.bind(transport)
+      transport.close = async () => {
+        calls += 1
+        if (calls === 1) throw new Error('cleanup failed')
+        if (sessionCleanupFailure) {
+          sessionCleanupFailure = false
+          throw new Error('session cleanup failed')
+        }
+        await close()
+      }
+      return transport
+    } })
+    await manager.startDeviceCodeLogin()
+    await assert.rejects(manager.closeLoginControl(), /cleanup failed/)
+    await assert.rejects(manager.startDeviceCodeLogin(), nativeCode('CODEX_LOGIN_ACTIVE'))
     await manager.closeLoginControl()
     assert.equal(calls, 2)
-    assert.equal(seam.loginControl, undefined)
-    runtime.closed = true
-    runtime.disposed = true
-    await assert.rejects(manager.attachSession(codexSession, {} as NativeSessionStart), nativeCode('CODEX_SESSION_UNAVAILABLE'))
+    await manager.startDeviceCodeLogin()
+    await manager.closeLoginControl()
+    const source = input(fixture.directory)
+    delete source.environment
+    const session = await manager.createSession(source)
+    sessionCleanupFailure = true
+    await assert.rejects(manager.close(session), /session cleanup failed/)
+    await assert.rejects(manager.attachSession(session, source), nativeCode('CODEX_SESSION_UNAVAILABLE'))
+    await manager.close(session)
+    assert.deepEqual(await manager.attachSession(session, source), session)
+    assert.equal((await fixture.wire('thread/start')).length, 1)
   })
 
   it('F10: returns the exact session ID when abort fires after the successful native POST response', async () => {

@@ -1,4 +1,5 @@
-import type { DurableInteraction } from '@foreman-code/contracts'
+import { RespondToInteractionRequestSchema, type DurableInteraction } from '@foreman-code/contracts'
+import { requireAuthorization } from '../access/policy.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { InteractionService } from './service.js'
 
@@ -24,6 +25,13 @@ export class OperatorInteractionService {
     return {pendingCount: page.pendingCount, pendingByWorkflow: page.pendingByWorkflow}
   }
   async get(principal: ManagementPrincipal, interactionId: string) {
-    return this.service.reviewStatusVisible(principal, interactionId)
+    const detail = await this.service.reviewStatusVisible(principal, interactionId)
+    return { ...detail, canRespond: detail.activity.response.available }
+  }
+  async respond(principal: ManagementPrincipal, input: unknown, source: 'http' | 'mcp' = 'http') {
+    const request = RespondToInteractionRequestSchema.parse(input)
+    const interaction = await this.service.getVisible(principal, request.interactionId)
+    requireAuthorization(principal, 'interactions:respond', interaction)
+    return this.service.respond({ kind: 'operator', principal, source }, request)
   }
 }

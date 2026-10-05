@@ -18,7 +18,8 @@ describe('schedule HTTP client', () => {
   it('reads the latest occurrence through the shared client with bounded paging', async () => {
     server.use(http.get(`${schedulePath(scope)}/occurrences`, ({ request }) => {
       const query = new URL(request.url).searchParams
-      expect(request.credentials).toBe('same-origin')
+      expect(request.credentials).toBe('omit')
+      expect(request.headers.has('authorization')).toBe(false)
       expect(query.get('limit')).toBe('1')
       expect(query.get('cursor')).toBe('cursor/with?reserved&values')
       return HttpResponse.json({ items: [rejected], pageInfo: { nextCursor: null } })
@@ -48,13 +49,16 @@ describe('schedule HTTP client', () => {
   })
   it('reads absence without synthesizing a schedule', async () => {
     server.use(http.get(schedulePath(scope), ({ request }) => {
-      expect(request.credentials).toBe('same-origin')
+      expect(request.credentials).toBe('omit')
+      expect(request.headers.has('authorization')).toBe(false)
       return HttpResponse.json({ schedule: null })
     }))
     expect(await scheduleApi.get(scope)).toEqual({ schedule: null })
   })
   it('sends the shared save envelope and validates persisted readback', async () => {
     server.use(http.put(schedulePath(scope), async ({ request }) => {
+      expect(request.credentials).toBe('omit')
+      expect(request.headers.has('authorization')).toBe(false)
       const { workspaceId, workflowId, ...body } = input; void workspaceId; void workflowId
       expect(await request.json()).toEqual(body)
       return HttpResponse.json({ value, replayed: false })

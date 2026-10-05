@@ -32,15 +32,22 @@ function fixture(appMcpAccess: 'scoped' | 'none' = 'scoped') {
       providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema',
       stableSchemaGitBlob: 'recorded-stable', referenceSchemaManifestSha256: 'recorded-reference' }),
     assertUnchanged: async () => undefined, qualifyModel: async () => undefined,
-    runCommand: async (_binary, args) => ({ stdout: args[1] === 'list' ? '[{"name":"graphql"}]'
+    runCommand: async (_binary, args) => args[1] === 'get' && args[2] !== 'graphql'
+      ? { stdout: '', stderr: `Error: No MCP server named '${args[2]}' found.`, exitCode: 1 }
+      : ({ stdout: args[1] === 'list' ? '[{"name":"graphql"}]'
       : JSON.stringify({ enabled: true, transport: { type: 'streamable_http',
         url: 'http://127.0.0.1:3000/mcp/app', bearer_token_env_var: 'CUSTOM_APP_BEARER' } }), stderr: '', exitCode: 0 }),
     id: () => 'recorded-connection', now: () => new Date('2026-10-01T00:00:00Z'),
     schedule: setTimeout, cancelTimer: clearTimeout,
     transport: (...args) => {
       disconnect = () => args[6](new Error('fixture transport disconnected'))
+      let closed = false
       return {
-        start: async () => undefined, close: async () => { closes += 1 },
+        start: async () => undefined,
+        close: async () => {
+          if (!closed) closes += 1
+          closed = true
+        },
         respond: async () => undefined, reject: async () => undefined,
         request: async (method, params) => {
           requests.push(method)
@@ -85,8 +92,8 @@ describe('idle diagnostic credential and control-dispatch fences', () => {
     try {
       const session = await f.manager.createSession(f.source)
       await f.manager.reloadNativeMcp(session)
-      assert.ok(f.pins[0]!.scopedCredentialVariables.includes('GRAPHQL_MCP_TOKEN'))
       assert.ok(f.pins[0]!.scopedCredentialVariables.includes('FOREMAN_CODE_MCP_TOKEN'))
+      assert.ok(f.pins[0]!.scopedCredentialVariables.includes('GRAPHQL_MCP_TOKEN'))
       assert.ok(f.pins[0]!.scopedCredentialVariables.includes('CUSTOM_APP_BEARER'))
       assert.ok(f.diagnosticEnvironments.length > 0)
       assert.ok(f.diagnosticEnvironments.every((environment) => environment.CUSTOM_APP_BEARER === undefined
@@ -102,6 +109,7 @@ describe('idle diagnostic credential and control-dispatch fences', () => {
       const f = fixture()
       const controller = new AbortController()
       const cleanup = f.holdCleanup()
+      let shutdown: Promise<void> | undefined
       try {
         const session = await f.manager.createSession(f.source)
         const running = operation === 'reload' ? f.manager.reloadNativeMcp(session, controller.signal)
@@ -110,10 +118,11 @@ describe('idle diagnostic credential and control-dispatch fences', () => {
         await f.workFinished.promise
         if (ending === 'caller-abort') controller.abort(new Error('fixture caller canceled'))
         else if (ending === 'disconnect') f.disconnect()
-        else await f.manager.shutdown().catch(() => undefined) // The pending lifecycle retains its cleanup lock.
+        else shutdown = f.manager.shutdown()
         const shutdownCloses = f.closes()
         cleanup.release()
         await rejected
+        await shutdown
         assert.equal(f.requests.filter((method) => method === 'config/mcpServer/reload' || method === 'thread/resume').length, 0)
         assert.equal(f.closes(), shutdownCloses)
       } finally {

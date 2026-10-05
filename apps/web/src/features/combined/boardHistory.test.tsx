@@ -9,8 +9,8 @@ import { DEFAULT_FILE_RETENTION_SECONDS, FilePageSchema, FileWithRevisionSchema,
   type FileWithRevision } from '@foreman-code/contracts/files'
 import { AgentChatStateSchema, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
+import { RunActivitiesPageSchema, type RunGraphScope } from '@foreman-code/contracts/wave25'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
-import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
 import { bindMockInstallation } from '../../shared/mocks/handlers'
@@ -52,15 +52,29 @@ async function mountBoard(entry = runsUrl('run-a', scope)) {
   return { ...render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>), router }
 }
 
-async function choose(runId: string, user: ReturnType<typeof userEvent.setup>) {
-  const controls = screen.getByRole('group', { name: 'Board controls' })
-  await user.click(within(controls).getByRole('button', { name: 'Runs' }))
+async function choose(user: ReturnType<typeof userEvent.setup>, trigger: HTMLElement, runId: string) {
+  await user.click(trigger)
   const menu = await screen.findByRole('menu', { name: 'Runs' })
   await user.click(await waitFor(() => {
     const row = menu.querySelector<HTMLButtonElement>(`[data-run-id="${runId}"]`)
     expect(row).not.toBeNull()
     return row!
   }))
+}
+
+function installBoardHistory() {
+  const fixture = getMockFixture(scope.workspaceId)!
+  server.use(
+    http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json({ workspace: fixture.workspace,
+      revision: 1, archivedAt: null, executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
+      locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' } })),
+    http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/summaries', () => HttpResponse.json(page([runA, runB]))),
+    http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), scope))),
+    http.get('*/api/workspaces/:workspaceId/workflows/:workflowId/reference-files', () =>
+      HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
+    http.get('*/api/workspaces/:workspaceId/reference-files', () =>
+      HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
+  )
 }
 
 function SelectedSurface() {
@@ -100,6 +114,21 @@ beforeEach(() => {
   installFlowLayout(320, 480); installChatSource()
   server.use(http.get('*/api/management/workspaces/:workspaceId/runs/:runId/subagents', () =>
     HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })), selectedChatUnavailable,
+    http.get('*/api/management/workspaces/workspace-1/runs/:runId/activities', ({ params, request }) => {
+      const runId = String(params.runId)
+      const snapshot = reply(runId, scope).snapshot
+      if (snapshot.kind !== 'available') throw new Error('The Activities fixture requires a saved Run')
+      const runScope: RunGraphScope = {
+        ...scope, runId, workflowVersionId: snapshot.workflowVersionId, executionSemanticsVersion: 3,
+      }
+      const newer = new URL(request.url).searchParams.has('cursor')
+      return HttpResponse.json(RunActivitiesPageSchema.parse({
+        scope: runScope, mode: newer ? 'newer' : 'initial', highWater: '1', retainedFrom: '1',
+        nextCursor: `cursor-${runId}`, olderCursor: null, hasMore: false,
+        items: newer ? [] : [{ id: `activity-${runId}`, scope: runScope, sequence: '1', occurredAt: snapshot.capturedAt,
+          source: 'backend', kind: 'run', status: 'recorded', severity: 'info', summary: `Saved run ${runId}`, refs: {} }],
+      }))
+    }),
     http.get('*/api/management/workspaces/:workspaceId/runs/:runId/activities', ({ params }) => {
       const runId = String(params.runId)
       const snapshot = reply(runId, scope).snapshot
@@ -128,26 +157,16 @@ afterEach(() => {
 })
 
 describe('FIL-17 + SCH selected Board', () => {
-  it('keeps the 320px controls together and Files read only across A, B, A', async () => {
+  it('keeps the 320px controls together and Files read only on the selected Run', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('innerWidth', 320)
-    const fixture = getMockFixture(scope.workspaceId)!
-    server.use(
-      http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json({ workspace: fixture.workspace,
-        revision: 1, archivedAt: null, executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
-        locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' } })),
-      http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/summaries', () => HttpResponse.json(page([runA, runB]))),
-      http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), scope))),
-      http.get('*/api/workspaces/:workspaceId/workflows/:workflowId/reference-files', () =>
-        HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
-      http.get('*/api/workspaces/:workspaceId/reference-files', () =>
-        HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
-    )
+    installBoardHistory()
     await mountBoard()
-    await screen.findByRole('region', { name: 'Selected Run board' })
-    const board = () => within(screen.getByRole('region', { name: 'Selected Run board' }))
-    expect(await board().findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
+    const board = await screen.findByRole('region', { name: 'Selected Run board' })
+    const graph = within(board)
+    expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    expect(await within(screen.getByRole('region', { name: 'Run-wide Activities' })).findByText('Saved run run-a')).toBeVisible()
     const controls = screen.getByRole('group', { name: 'Board controls' })
     const clock = within(controls).getByRole('button', { name: 'Schedule workflow' })
     const runs = within(controls).getByRole('button', { name: 'Runs' })
@@ -160,13 +179,41 @@ describe('FIL-17 + SCH selected Board', () => {
     expect(within(dialog).queryByRole('button', { name: 'Upload workflow file' })).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Choose workflow file')).not.toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Close files' }))
-    await choose('run-b', user)
-    expect(await board().findByRole('img', { name: 'X in B, saved agent, read only' })).toBeVisible()
-    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-b')
+    await waitFor(() => expect(dialog).not.toBeInTheDocument())
+  })
+
+  it.each([320, 1024])('keeps the saved graph and chat selection together across A, B, A at %spx', async (width) => {
+    const user = userEvent.setup()
+    vi.stubGlobal('innerWidth', width)
+    installBoardHistory()
+    await mountBoard()
+    const board = await screen.findByRole('region', { name: 'Selected Run board' })
+    const graph = within(board)
+    const sidePanel = within(screen.getByRole('complementary', { name: 'Agent chat' }))
+    const activities = within(sidePanel.getByRole('region', { name: 'Run-wide Activities' }))
+    expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
+    expect(sidePanel.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    expect(await activities.findByText('Saved run run-a')).toBeVisible()
+    const controls = screen.getByRole('group', { name: 'Board controls' })
+    const runs = within(controls).getByRole('button', { name: 'Runs' })
+    if (width === 320) {
+      await user.click(within(controls).getByRole('button', { name: 'Files' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Files' })
+      await user.click(within(dialog).getByRole('button', { name: 'Close files' }))
+      await waitFor(() => expect(dialog).not.toBeInTheDocument())
+    }
+    await choose(user, runs, 'run-b')
+    expect(await graph.findByRole('img', { name: 'X in B, saved agent, read only' })).toBeVisible()
+    expect(sidePanel.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-b')
+    expect(await activities.findByText('Saved run run-b')).toBeVisible()
+    expect(screen.queryByText('Saved run run-a')).not.toBeInTheDocument()
     expect(screen.queryByRole('img', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
-    await choose('run-a', user)
-    expect(await board().findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
-    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    await choose(user, runs, 'run-a')
+    expect(await graph.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
+    expect(sidePanel.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
+    expect(await activities.findByText('Saved run run-a')).toBeVisible()
+    expect(screen.queryByText('Saved run run-b')).not.toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: 'X in B, saved agent, read only' })).not.toBeInTheDocument()
   })
 
   it('keeps same-named Operator file cards bound to chats A and B while a Board is open', async () => {
@@ -193,7 +240,7 @@ describe('FIL-17 + SCH selected Board', () => {
     useOperatorChatStore.setState({ open: true, historyOpen: false, selectedConversationId: 'conversation-a' })
     const fixture = getMockFixture(scope.workspaceId)!
     server.use(
-      http.get('/api/auth/session', () => HttpResponse.json({ principal: { id: owner, name: 'Combined tester',
+      http.get('/api/local-human', () => HttpResponse.json({ principal: { id: owner, name: 'Combined tester',
         expiresAt: '2099-01-01T00:00:00.000Z', grants: [] } })),
       http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 1, versionId: null,
         value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator,
@@ -201,7 +248,7 @@ describe('FIL-17 + SCH selected Board', () => {
       http.get('/api/operator/setup', () => HttpResponse.json(configuredOperatorSetup('codex'))),
       http.get('/api/operator/conversations/summaries', () => HttpResponse.json({ conversations: [...states.values()].map(summarizeOperatorConversation) })),
       http.get('/api/operator/conversations/:id', ({ params }) => HttpResponse.json(states.get(String(params.id)))),
-      http.get('/api/operator/conversations/:id/files', ({ params }) => {
+      http.get('*/api/operator/conversations/:id/files', ({ params }) => {
         const state = states.get(String(params.id))
         if (!state) throw new Error('Unknown Operator conversation')
         return HttpResponse.json(FilePageSchema.parse({

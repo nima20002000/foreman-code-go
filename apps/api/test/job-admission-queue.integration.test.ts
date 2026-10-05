@@ -626,6 +626,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect(retried.isError).not.toBe(true)
     const retry = z.object({ admission: JobPendingAdmissionSchema }).parse(retried.structuredContent)
     expect(retry.admission.ticket.id).toBe(admission.ticket.id)
+    await f.jobs.wakeQueue()
     const read = await readOnly.callTool({ name: 'job_queue_get', arguments: {
       workspaceId: f.workspaceId, ticketId: admission.ticket.id,
     } })
@@ -660,19 +661,21 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const override = await client.callTool({ name: 'job_start', arguments: overrideInput })
     expect(override.isError).not.toBe(true)
     const overrideAdmission = z.object({ admission: JobPendingAdmissionSchema }).parse(override.structuredContent)
+    expect((await client.callTool({ name: 'job_start', arguments: overrideInput })).structuredContent)
+      .toMatchObject({ admission: { ticket: { id: overrideAdmission.admission.ticket.id } } })
+    await f.jobs.wakeQueue()
     const overrideTicket = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, overrideAdmission.admission.ticket.id)
     expect(overrideTicket).toMatchObject({ placement: overrideInput.placementOverride,
       placementOverride: overrideInput.placementOverride, definition })
-    expect((await client.callTool({ name: 'job_start', arguments: overrideInput })).structuredContent)
-      .toMatchObject({ admission: { ticket: { id: overrideTicket.id } } })
     const overrideRead = await readOnly.callTool({ name: 'job_queue_get', arguments: {
       workspaceId: f.workspaceId, ticketId: overrideTicket.id,
     } })
     expect(overrideRead.structuredContent).toEqual({ ticket: overrideTicket })
     await f.jobs.cancelQueued(writer.principal, 'mcp', f.workspaceId, { commandId: randomUUID(),
       ticketId: overrideTicket.id, expectedRevision: overrideTicket.revision })
+    const cancellationTicket = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, persisted.id)
     const cancelInput = { workspaceId: f.workspaceId, commandId: randomUUID(), ticketId: persisted.id,
-      expectedRevision: persisted.revision }
+      expectedRevision: cancellationTicket.revision }
     expect((await readOnly.callTool({ name: 'job_queue_cancel', arguments: cancelInput })).isError).toBe(true)
     const foreign = await access.issue({ name: 'Other workspace', audience: 'operator',
       expiresAt: new Date(Date.now() + 300000), grants: [{ actions: ['jobs:read', 'jobs:start', 'jobs:cancel'],
@@ -697,10 +700,10 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const deniedCancel = await app.inject({ method: 'POST',
       url: `/api/management/workspaces/${workspaceId}/jobs/queue/${persisted.id}/cancel`,
       headers: { authorization: `Bearer ${reader.token}` },
-      payload: { commandId: randomUUID(), expectedRevision: persisted.revision } })
+      payload: { commandId: randomUUID(), expectedRevision: cancelInput.expectedRevision } })
     expect(deniedCancel.statusCode).toBe(403)
     const staleCancel = await client.callTool({ name: 'job_queue_cancel', arguments: {
-      ...cancelInput, commandId: randomUUID(), expectedRevision: persisted.revision + 1,
+      ...cancelInput, commandId: randomUUID(), expectedRevision: cancelInput.expectedRevision + 1,
     } })
     expect(staleCancel.isError).toBe(true)
     expect(JSON.stringify(staleCancel.content)).toContain('REVISION_CONFLICT')

@@ -5,7 +5,6 @@ import {
   type FileMediaType, type FileWithRevision, type TemporaryFileScope,
 } from '@foreman-code/contracts/files'
 import { apiClient, ApiError } from '../../shared/api/client'
-import { notifyAuthenticationRequired } from '../../shared/api/authEvents'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { attachmentDraftKey, inspectAttachment } from './attachmentFiles'
 
@@ -153,7 +152,6 @@ function uploadBytes(path: string, body: File, signal: AbortSignal,
         let payload: unknown
         try { payload = JSON.parse(xhr.responseText) } catch { payload = undefined }
         if (xhr.status < 200 || xhr.status >= 300) {
-          if (xhr.status === 401) notifyAuthenticationRequired()
           const parsed = ApiErrorResponseSchema.safeParse(payload)
           throw new ApiError(parsed.success ? parsed.data.error : { code: 'HTTP_ERROR', message: 'The attachment could not be uploaded.' }, xhr.status)
         }

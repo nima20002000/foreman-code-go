@@ -1,7 +1,6 @@
 import { ApiErrorResponseSchema } from '@foreman-code/contracts'
 import { FileWithRevisionSchema, MAX_FILE_BYTES, fileStateAt, type FileWithRevision, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { ApiError } from '../../shared/api/client'
-import { notifyAuthenticationRequired } from '../../shared/api/authEvents'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { hasRasterSignature, isRasterImage } from './fileCardPresentation'
 
@@ -79,7 +78,7 @@ async function readBytes(response: Response, limit: number, signal: AbortSignal)
 }
 
 /** Binary sibling to the shared JSON-only ApiClient, following FIL-11's scoped boundary.
- * All networking is here (never in components), with the same auth/session error behavior.
+ * All networking is here (never in components), with the same API error and app-instance cancellation behavior.
  * Global fetch is resolved at call time so MSW intercepts the real HTTP boundary. */
 export function createFileCardHttpClient(paths: FileCardHttpPaths): FileCardClient {
   fileDownloadPath(paths.download, { fileId: 'validate-file', revisionId: 'validate-revision' })
@@ -100,7 +99,7 @@ export function createFileCardHttpClient(paths: FileCardHttpPaths): FileCardClie
       let response: Response
       try {
         response = await globalThis.fetch(url, {
-          method: 'GET', credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+          method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error',
           headers: { Accept: file.revision.mediaType }, signal: requestSignal,
         })
       } catch (error) {
@@ -117,7 +116,6 @@ export function createFileCardHttpClient(paths: FileCardHttpPaths): FileCardClie
           payload = JSON.parse(new TextDecoder().decode(bytes))
         } catch { payload = undefined }
         verify()
-        if (response.status === 401) notifyAuthenticationRequired()
         const error = ApiErrorResponseSchema.safeParse(payload)
         if (error.success) throw new ApiError(error.data.error, response.status)
         throw failure('HTTP_ERROR', 'The download could not be completed.', response.status)

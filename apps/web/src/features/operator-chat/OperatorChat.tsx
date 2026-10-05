@@ -2,7 +2,7 @@ import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@foreman
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { OperatorChatSetup, OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@foreman-code/contracts'
-import { BrowserAccessSessionSchema } from '@foreman-code/contracts/management'
+import { LocalHumanAccessSchema } from '@foreman-code/contracts/management'
 
 import { newerOperatorConversationState as newer } from './operatorConversationReadback'
 import { useConversationDraftStore } from '../conversations'
@@ -57,7 +57,7 @@ export function OperatorChat(props: { settingsWarning?: string } = {}) {
 function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) {
   const enabled = useOperatorChatVisibility()
   const browserAccess = useQuery({ queryKey: settingsExperienceKeys.access(), enabled: false,
-    queryFn: ({ signal }) => apiClient.request('/api/auth/session', BrowserAccessSessionSchema, { signal }),
+    queryFn: ({ signal }) => apiClient.request('/api/local-human', LocalHumanAccessSchema, { signal }),
   })
   const attachmentReceipts = useOperatorAttachmentReceipts()
   const { panelRef, size, grip, moveGrip } = useOperatorChatResize()
@@ -362,7 +362,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
     && Boolean(setup.data.configurationVersionId)
   const settingsReady = Boolean(preferences.query.data) && !preferencesDenied && !preferences.form.isDirty && !preferences.form.isSaving && !preferences.form.uncertain
-  const requestId = conversation?.activeRequestId
+  const requestId = conversation?.activeRequestId ?? conversation?.pendingInteraction?.turn.nativeRequestId
   const scopedSendError = send.variables?.id === selectedId && send.variables?.command.requestId === pending.command?.requestId
     && send.error instanceof Error ? send.error.message : undefined
   const sendError = preparationError && preparationError.id === selectedId ? preparationError.message
@@ -516,8 +516,9 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
               approval={(onBrowse) => <><ChatDecisionReceipts snapshot={conversation.activitySnapshot} pending={selected.isFetching} onRefresh={() => { void selected.refetch() }} />
                 {requestId && conversation.pendingInteraction ? <OperatorApprovalCard interaction={conversation.pendingInteraction!} onBrowse={onBrowse}
                 disabled={Boolean(archived || !conversation.responseAvailability?.available || conversation.responseAvailability && (conversation.responseAvailability.nativeRequestId !== conversation.pendingInteraction?.turn.nativeRequestId || conversation.responseAvailability.nativeSessionId !== conversation.pendingInteraction?.session.nativeSessionId || conversation.responseAvailability.nativeRequestType !== conversation.pendingInteraction?.nativeRequestType) || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling')}
-                onSelect={(optionId) => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
-                  input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId } })} /> : null}</>} />
+                onSelect={(optionId, response) => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
+                  input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId,
+                    ...(response !== undefined ? { response } : {}) } })} /> : null}</>} />
             {conversation.pendingInteraction || conversation.error || pending.error || pending.command || sendError
               || (respondVariables?.id === selectedId && respond.error) || (cancelVariables?.id === selectedId && cancel.error) ? <div className="operator-chat-decision-area">
               {conversation.pendingInteraction && !conversation.responseAvailability?.available ? <p role="status">{conversation.responseAvailability?.message ?? 'Refresh this conversation to check reply availability.'}</p> : null}

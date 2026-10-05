@@ -15,7 +15,7 @@ export const EXECUTION_SEMANTICS_VERSION = 3 as const
 export const ExecutionSemanticsVersionSchema = z.literal(EXECUTION_SEMANTICS_VERSION)
 const CurrentExecutionSemanticsSchema = ExecutionSemanticsVersionSchema
 
-export const ApprovalHandlerSchema = z.enum(["user", "orchestrator"]);
+export const ApprovalHandlerSchema = z.enum(["user", "orchestrator", "native"]);
 export type ApprovalHandler = z.infer<typeof ApprovalHandlerSchema>;
 
 /** Editable selection. Orchestrator designation may remain incomplete until executable save. */

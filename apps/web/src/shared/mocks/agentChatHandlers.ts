@@ -39,7 +39,7 @@ export function createAgentChatMock(initial: AgentChatState = agentChatFixtures.
   const record = (request: Request, body?: unknown) => calls.push({ method: request.method, path: new URL(request.url).pathname, body })
   const commandState = (state: AgentChatState) => { setState(state); return HttpResponse.json({ state: getState(state.context) }) }
   const handlers = [
-    http.get('/api/auth/session', () => HttpResponse.json({ principal: { id: 'chat-test-principal', name: 'Chat tester',
+    http.get('/api/local-human', () => HttpResponse.json({ principal: { id: 'chat-test-principal', name: 'Chat tester',
       expiresAt: '2099-01-01T00:00:00.000Z', grants: actions.length ? [{ actions, scope: {} }] : [] } })),
     http.get(root, ({ request, params }) => {
       record(request)

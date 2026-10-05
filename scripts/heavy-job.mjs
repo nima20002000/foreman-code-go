@@ -1,4 +1,5 @@
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+import { retainedHeavyJobTokens } from './heavy-job-slots.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -67,6 +68,12 @@ const groupUsed = (pgid, conservative = false) => {
   } catch { return true }
   return false
 }
+const workUsed = (record) => {
+  const launchedGroup = record.phase === 'running' && Number.isSafeInteger(record.pgid) && record.pgid > 0
+  // A published empty group is not retained by unrelated unreadable environments.
+  // Visible token-bearing workers still retain ownership after detaching.
+  return groupUsed(record.pgid, true) || tokenUsed(record.token, 0, !launchedGroup)
+}
 const usedPath = (path) => {
   try {
     for (const entry of readdirSync('/proc')) {
@@ -101,17 +108,17 @@ function cleanQueue() {
   for (const name of readdirSync(running)) {
     const path = join(running, name)
     const record = readJson(path)
-    if (record?.common === common && ageMs(path) > 10_000 && !alive(record) && !groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)) rmSync(path, { force: true })
+    if (record?.common === common && ageMs(path) > 10_000 && !alive(record) && !workUsed(record)) rmSync(path, { force: true })
   }
   const held = readJson(join(active, 'owner.json'))
-  if (held?.common === common && ageMs(active) > 10_000 && !alive(held) && !groupUsed(held.pgid, true) && !tokenUsed(held.token, 0, true)) rmSync(active, { recursive: true, force: true })
+  if (held?.common === common && ageMs(active) > 10_000 && !alive(held) && !workUsed(held)) rmSync(active, { recursive: true, force: true })
   for (const name of readdirSync(queue)) {
     const path = join(queue, name)
     const record = readJson(path)
     // A queued coordinator has not acquired a slot or spawned token-bearing work.
     // The durable phase changes before acquisition, including its crash windows.
     const neverLaunched = record?.phase === 'queued' && record.pgid === null
-    if (record?.common === common && !alive(record) && (neverLaunched || (!groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)))) rmSync(path, { force: true })
+    if (record?.common === common && !alive(record) && (neverLaunched || !workUsed(record))) rmSync(path, { force: true })
   }
 }
 const slotRecords = () => readdirSync(running).map((name) => readJson(join(running, name)))
@@ -139,16 +146,21 @@ if (process.argv[2] === '__schedule') {
       else rmSync(active, { recursive: true, force: true })
     }
   } else {
-    const records = slotRecords()
+    let records = slotRecords()
     const held = readJson(join(active, 'owner.json'))
     const legacy = existsSync(active) && !isGate(held) && !records.some((record) => record?.token && record.token === held?.token)
+    const tickets = readdirSync(queue).sort().map(name => ({ name, record: readJson(join(queue, name)) }))
+    const retained = retainedHeavyJobTokens(tickets.map(ticket => ticket.record), records, held)
+    // Repair the original reservation so older coordinators also retain its capacity and skip its FIFO ticket.
+    for (const ticket of tickets) {
+      if (retained.has(ticket.record?.token)) writeFileSync(join(running, ticket.name), JSON.stringify(ticket.record))
+    }
+    records = slotRecords()
     const occupied = records.length + Number(legacy)
     // Running tickets stay in queue to fence old callers after their active
     // directory disappears. Only skip those tickets when admitting new code.
-    const first = readdirSync(queue).sort().find((name) => {
-      const record = readJson(join(queue, name))
-      return !(record?.token && (records.some((slot) => slot?.token === record.token) || record.token === held?.token))
-    })
+    const first = tickets.find(({ record }) => !(record?.token && (retained.has(record.token)
+      || records.some(slot => slot?.token === record.token) || record.token === held?.token)))?.name
     const record = readJson(join(queue, ticket))
     if (first === ticket && record?.token === token && occupied < slotCount()) {
       const acquiring = { ...record, phase: 'acquiring' }

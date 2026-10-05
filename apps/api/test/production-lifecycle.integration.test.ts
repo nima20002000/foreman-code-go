@@ -1,6 +1,7 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
-import { mkdir, rename, rm } from 'node:fs/promises'
+import { mkdir, rename } from 'node:fs/promises'
 
 import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -11,6 +12,7 @@ import { loadConfig } from '../src/config.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { seedAgent3 } from './helpers/wave25Agent3.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService as WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
@@ -27,7 +29,7 @@ import { FixtureServer } from './opencode-fixtures.js'
 import { buildProductionApp } from '../src/production.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.TEST_DATABASE_URL!
 let schema: string, root: string, project: string, address: string
 let admin: pg.Pool, database: ReturnType<typeof createDatabase>, checkpoints: ReturnType<typeof createCheckpointStore>
 let production: ReturnType<typeof buildProductionApp>
@@ -72,7 +74,8 @@ beforeEach(async () => {
   root = await privateFixtureDirectory('pr15-runtime-')
   project = await privateFixtureDirectory('pr15-project-')
   admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
+  await createFixtureSchema(admin, `${schema}_checkpoints`)
   const url = new URL(connectionString)
   url.searchParams.set('options', `-c search_path=${schema}`)
   config = loadConfig({ DATABASE_URL: url.toString(), DATABASE_POOL_MAX: '1', DATABASE_QUERY_TIMEOUT_MS: '5000', HARNESS_WORKSPACE_ROOT: root, HARNESS_TIMEOUT_MS: '30000', PORT: '4100' })
@@ -88,22 +91,22 @@ beforeEach(async () => {
   // lanes, delivery, budgets, checkpoints, HTTP and MCP use production wiring.
   vi.spyOn(CodexAppServerSessionManager.prototype, 'inspectMcpConfiguration').mockImplementation(async (cwd) => {
     native.inspections++
-    return { providerVersion: '0.154.0', binary: 'fixture', cwd, serverName: 'graphql', inspectionScope: 'effective_config', configured: {
+    return { providerVersion: '0.154.0', binary: 'fixture', cwd, serverName: 'foreman-code', inspectionScope: 'effective_config', configured: {
       enabled: true, required: true, transport: 'streamable_http', url: 'http://127.0.0.1:4100/mcp',
-      bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', enabledTools: null, disabledTools: [], defaultToolsApprovalMode: null, tools: {},
+      bearerTokenEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN', enabledTools: null, disabledTools: [], defaultToolsApprovalMode: null, tools: {},
     } }
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async function (this: CodexAppServerSessionManager, input) {
     if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
     const reference = { harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: `session-${input.request.executionId}` }
     sessions.set(reference.nativeSessionId, { input, pending: [], turns: new Map(), asks: 0 })
-    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_MCP_TOKEN!, sessionId: reference.nativeSessionId })
+    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.FOREMAN_CODE_MCP_TOKEN!, sessionId: reference.nativeSessionId })
     return reference
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'attachSession').mockImplementation(async function (this: CodexAppServerSessionManager, reference, input) {
     native.attaches++
     if (!sessions.has(reference.nativeSessionId)) throw new Error('Cannot replace a native session')
-    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_MCP_TOKEN!, sessionId: reference.nativeSessionId })
+    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.FOREMAN_CODE_MCP_TOKEN!, sessionId: reference.nativeSessionId })
     event(this, 'thread.attached', { threadId: reference.nativeSessionId })
     return reference
   })
@@ -177,9 +180,9 @@ beforeEach(async () => {
     if (!server) {
       server = new FixtureServer()
       server.providers = { all: [{ id: 'opencode-go', models: { 'gpt-5.6-luna': { variants: { high: {} } } } }] }
-      server.config = { mcp: { 'graphql': { type: 'remote', url: 'http://127.0.0.1:4100/mcp', enabled: true } } }
-      server.mcpCredentialReferences['graphql'] = 'GRAPHQL_MCP_TOKEN'
-      server.mcp = { 'graphql': { status: 'connected' } }
+      server.config = { mcp: { 'foreman-code': { type: 'remote', url: 'http://127.0.0.1:4100/mcp', enabled: true } } }
+      server.mcpCredentialReferences['foreman-code'] = 'FOREMAN_CODE_MCP_TOKEN'
+      server.mcp = { 'foreman-code': { status: 'connected' } }
       server.nextSessionIds.push(`ses_${input.request.executionId}`)
       const external = server
       server.onPrompt = (sessionId, body) => {
@@ -206,8 +209,8 @@ beforeEach(async () => {
   })
   vi.spyOn(OpenCodeNativeSessionManager.prototype, 'inspectNativeMcp').mockImplementation(async (cwd) => {
     native.inspections++
-    return { cwd, providerVersion: '1.18.31', serverName: 'graphql', nativeStatus: 'connected', transport: 'streamable-http',
-      endpoint: 'http://127.0.0.1:4100/mcp', credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
+    return { cwd, providerVersion: '1.18.31', serverName: 'foreman-code', nativeStatus: 'connected', transport: 'streamable-http',
+      endpoint: 'http://127.0.0.1:4100/mcp', credentialEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN',
       endpointMatches: true, baseConfigurationFilters: [], policyScope: 'base_configuration_only' }
   })
   vi.spyOn(OpenCodeNativeSessionManager.prototype, 'startTurn').mockImplementation(async function* (this: OpenCodeNativeSessionManager, reference, input, signal) {
@@ -221,7 +224,7 @@ beforeEach(async () => {
         const interactionId = /interaction (\S+)\./.exec(input.prompt)![1]!
         const interaction = (await interactions.get(interactionId))!
         if (!reviewNoDecision) {
-          const response = await mcp(server.environment!.variables.GRAPHQL_MCP_TOKEN!, {
+          const response = await mcp(server.environment!.variables.FOREMAN_CODE_MCP_TOKEN!, {
             interactionId, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision,
           })
           expect(response.isError, JSON.stringify(response)).not.toBe(true)
@@ -242,10 +245,10 @@ afterEach(async () => {
   await production?.shutdown()
   await production?.app.close()
   await checkpoints?.close(); await database?.close()
-  await admin?.query(`drop schema if exists "${schema}" cascade`)
-  await admin?.query(`drop schema if exists "${schema}_checkpoints" cascade`)
+  await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve())
+  await (admin ? dropFixtureSchema(admin, `${schema}_checkpoints`) : Promise.resolve())
   await admin?.end()
-  await rm(root, { recursive: true, force: true }); await rm(project, { recursive: true, force: true })
+  await removeFixtureDirectory(root); await removeFixtureDirectory(project)
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
 })
@@ -265,8 +268,8 @@ async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
       harness: 'opencode' as const, model: 'opencode-go/gpt-5.6-luna', variant: 'high', nativeAgent: 'build', thinking: false,
       autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
         { permission: '*', pattern: '*', effect: 'deny' as const },
-        { permission: 'graphql_interaction_get', pattern: '*', effect: 'allow' as const },
-        { permission: 'graphql_interaction_respond', pattern: '*', effect: 'allow' as const },
+        { permission: 'foreman-code_interaction_get', pattern: '*', effect: 'allow' as const },
+        { permission: 'foreman-code_interaction_respond', pattern: '*', effect: 'allow' as const },
       ] },
     } : fixture.configurations[1]!.harness,
   }))
@@ -303,24 +306,26 @@ async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
   return { run, issuer, pending: (await interactions.list({ runId: run.id, status: 'pending', limit: 10 }))[0]! }
 }
 
-it('answers a production User approval through its own authenticated API while excluding Operator and App authority', async () => {
+it('answers a production User approval through the local API while excluding Operator and App authority', async () => {
   const { run, issuer, pending } = await start('user')
-  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { runIds: [run.id] } }], expiresAt: new Date(Date.now() + 600_000) })
+
   const url = `/api/user/interactions/${pending.id}/respond`
   const payload = { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision }
   expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${issuer.token}` }, payload })).statusCode).toBe(403)
   const worker = await new WorkerCredentialService(database.pool, access).issueForExecution(pending.executionId)
-  expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${worker.environment.variables.GRAPHQL_MCP_TOKEN}` }, payload })).statusCode).toBe(403)
-  const denied = await mcp(worker.environment.variables.GRAPHQL_MCP_TOKEN!, payload)
+  const workerToken = readProductEnvironment(worker.environment.variables, 'MCP_TOKEN')
+  expect(workerToken).toEqual(expect.any(String))
+  expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${workerToken}` }, payload })).statusCode).toBe(403)
+  const denied = await mcp(workerToken!, payload)
   expect(denied.isError).toBe(true)
   expect(JSON.stringify(denied.content)).toContain('ROLE_NOT_ALLOWED')
-  const headers = { authorization: `Bearer ${human.token}` }
+  const headers = {}
   const list = await production.app.inject({ method: 'GET', url: `/api/user/interactions?runId=${run.id}`, headers })
   expect(list.statusCode, list.body).toBe(200)
   expect(list.json().items.map((item: { id: string }) => item.id)).toEqual([pending.id])
   expect((await production.app.inject({ method: 'GET', url: `/api/user/interactions/${pending.id}`, headers })).statusCode).toBe(200)
   expect(production.app.hasRoute({ method: 'GET', url: '/api/interactions/:interactionId' })).toBe(false)
-  const response = await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${human.token}` }, payload })
+  const response = await production.app.inject({ method: 'POST', url, headers: {}, payload })
   expect(response.statusCode, response.body).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('delivered')
   await production.engine.resume(run.id)
@@ -339,19 +344,19 @@ for (const change of ['location', 'authority'] as const) it(`rejects a waiting c
     expect(native.attaches).toBe(before.attaches)
     expect(native.responses).toBe(before.responses)
     expect((await runs.get(run.id))?.executionState).toBe('waiting')
-    const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+
     const response = await production.app.inject({ method: 'POST', url: `/api/user/interactions/${pending.id}/respond`,
-      headers: { authorization: `Bearer ${human.token}` }, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
+      headers: {}, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
     expect(response.statusCode).toBe(change === 'location' ? 409 : 403)
     const untouched = await interactions.get(pending.id)
     expect(untouched?.selectedOptionId).toBeUndefined()
     expect(untouched?.status).toBe('pending')
-  } finally { if (change === 'location') { await rm(project, { recursive: true }); await rename(`${project}-old`, project) } }
+  } finally { if (change === 'location') { await removeFixtureDirectory(project, { force: false }); await rename(`${project}-old`, project) } }
 })
 
 it('makes production Stop and native delivery progress with a one-slot pool', async () => {
   const { run, issuer, pending } = await start('user')
-  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+
   const respond = vi.mocked(CodexAppServerSessionManager.prototype.respond)
   const original = respond.getMockImplementation()!
   let entered!: () => void, release!: () => void
@@ -363,7 +368,7 @@ it('makes production Stop and native delivery progress with a one-slot pool', as
     return original.apply(this, args)
   })
   const delivery = production.app.inject({ method: 'POST', url: `/api/user/interactions/${pending.id}/respond`,
-    headers: { authorization: `Bearer ${human.token}` }, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
+    headers: {}, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
   // inject starts when awaited/then'ed; keep both requests live.
   const delivered = Promise.resolve(delivery)
   await writing
@@ -383,7 +388,7 @@ it('makes production Stop and native delivery progress with a one-slot pool', as
 
 it('revalidates the accepting authority again between attachment and the native response', async () => {
   const { issuer, pending } = await start('user')
-  const human = await access.issue({ name: 'Human', audience: 'user', grants: [{ actions: ['interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+
   const coordinator = runtime()
   const attach = coordinator.attachInteraction.bind(coordinator)
   vi.spyOn(coordinator, 'attachInteraction').mockImplementationOnce(async (...args) => {
@@ -392,7 +397,7 @@ it('revalidates the accepting authority again between attachment and the native 
     return attached
   })
   const response = await production.app.inject({ method: 'POST', url: `/api/user/interactions/${pending.id}/respond`,
-    headers: { authorization: `Bearer ${human.token}` }, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
+    headers: {}, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
   expect(response.statusCode, response.body).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('failed')
   expect(native.responses).toBe(0)

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
-import type { AgentConfigurationVersion, ExecutionResult, Message, NativeSessionReference } from '@foreman-code/contracts'
+import type { AgentConfigurationVersion, AgentHarness, ExecutionResult, Message, NativeSessionReference } from '@foreman-code/contracts'
 import type { AgentChatContext, AgentChatTurn, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { AgentChatService } from '../../src/modules/conversations/agentChat.js'
@@ -78,6 +78,16 @@ export class F1Store {
     const result = (rows: unknown[] = [], rowCount = rows.length) => ({ rows: structuredClone(rows), rowCount })
     const id = String(values[1])
     const receipt = this.turns.get(id)
+    if (sql.startsWith('update operator_conversations c') && sql.includes('nativeNonSubmission')) {
+      if (this.row.id !== values[0] || this.row.active_request_id !== id || this.row.active_native_turn_id
+        || values[4] === 'session_creation' && this.row.native_session_id
+        || !receipt || receipt.native_turn_id || 'nativeSubmission' in receipt.payload) return result()
+      this.row.record.nativeNonSubmission = JSON.parse(String(values[2]))
+      this.row.turn_state = 'uncertain'
+      this.row.last_error = values[3] as string | null
+      this.row.revision = Number(this.row.revision) + 1
+      return result([], 1)
+    }
     if (sql.startsWith('select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals')) {
       return result(values[0] === principal.id ? [{ id: principal.id, name: principal.name, audience: principal.audience,
         grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [])
@@ -274,7 +284,7 @@ export class F1Store {
 }
 
 export class F1Native implements NativeHarnessSessionManager {
-  readonly harness = 'codex' as const
+  readonly harness: AgentHarness = 'codex'
   readonly session: NativeSessionReference = { harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'session' }
   readonly starts: string[] = []
   readonly cancels: string[] = []

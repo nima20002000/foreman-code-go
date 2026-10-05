@@ -122,6 +122,30 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     const audit = await database.pool.query("select outcome from management_audit where action='build.computer.update' and principal_id=$1", [writer.principal.id])
     expect(audit.rows.map(row => row.outcome)).toContain('succeeded')
   })
+  it('edits build participation without login while preserving read-only MCP permissions', async () => {
+    const f = await fixture()
+    const target = f.computers[0]!.target
+    const read = await f.app.inject({ method: 'POST', url: '/api/management/settings/build-computers/read',
+      payload: { target } })
+    expect(read.statusCode, read.body).toBe(200)
+    const input = { target, commandId: randomUUID(), expectedRevision: read.json().preference.revision,
+      buildEnabled: true, buildPriority: 45 }
+    const saved = await f.app.inject({ method: 'POST', url: '/api/management/settings/build-computers/update',
+      payload: input })
+    expect(saved.statusCode, saved.body).toBe(200)
+    expect(saved.json().preference).toMatchObject({ target, buildEnabled: true, buildPriority: 45 })
+    const client = await f.connect(reader.token)
+    expect((await client.callTool({ name: 'build_computer_get', arguments: { target } })).structuredContent)
+      .toEqual(saved.json())
+    const denied = await client.callTool({ name: 'build_computer_update',
+      arguments: { ...input, commandId: randomUUID(), expectedRevision: saved.json().preference.revision } })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    const persisted = await f.app.inject({ method: 'POST', url: '/api/management/settings/build-computers/read',
+      payload: { target } })
+    expect(persisted.statusCode, persisted.body).toBe(200)
+    expect(persisted.json()).toEqual(saved.json())
+  })
   it('saves Auto offline, chooses by enrollment and priority at Start and preserves accepted facts across edits and retries', async () => {
     const f = await fixture()
     f.computers.forEach(computer => { computer.candidate.ready = false })

@@ -9,14 +9,13 @@ import { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, Trust
 export { TrustedConnectionApprovalRequestSchema, TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema, TrustedConnectionApprovalReadSchema } from '@foreman-code/contracts/trusted-device-connection'
 export type { TrustedConnectionApprovalReceipt, TrustedConnectionApprovalRead } from '@foreman-code/contracts/trusted-device-connection'
 import { z } from 'zod'
-import { requireBrowserSession, requirePrincipal } from '../access/http.js'
+import { requireLocalHuman, requirePrincipal } from '../access/http.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator, commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { intersectGrants } from '../access/operatorDelegation.js'
 import { operatorChatGrants } from '../access/operatorChatDelegation.js'
-import type { LocalDevBrowserAccess } from '../access/localDevBrowser.js'
 
 // Use the exact root-owned nested schema; never reconstruct or strip its binding.
 export const TrustedConnectionApplyAuthoritySchema = TrustedConnectionApprovalReceiptSchema.shape.applyAuthority.unwrap()
@@ -30,18 +29,17 @@ const EventSchema = z.object({ id: z.uuid(), ownerId: z.string(), actionHash: z.
 const ConsumedSchema = EventSchema.extend({ configureCommandId: z.string().min(8) }).strict()
 const reject = (code: string, message: string, status = 403): never => { throw new DomainError(code, message, status) }
 
-/** Connection-specific human authority. Only verified browser routes issue approval.
+/** Connection-specific human authority. Only local human routes issue approval.
  * Uses immutable original command receipts; no generic approval IDs or Job authority. */
 export class PostgresTrustedConnectionHumanAuthority {
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
-    private readonly localDevBrowserAccess?: Pick<LocalDevBrowserAccess, 'authenticate'>,
   ) {}
   private target(id: string) { return `${this.mainId}:${id}` }
   private async currentOwner(client: pg.PoolClient, write: boolean): Promise<string> {
-    const row = (await client.query<{ principal_id: string }>('select principal_id from browser_auth_owner where singleton=true for share')).rows[0]
-    const ownerId = row?.principal_id ?? (await this.localDevBrowserAccess?.authenticate())?.id
+    const row = (await client.query<{ principal_id: string }>('select principal_id from local_human_principal where singleton=true for share')).rows[0]
+    const ownerId = row?.principal_id
     if (!ownerId) return reject('DEVICE_CONNECTION_WRONG_OWNER', 'The current application owner is unavailable.')
     requireAuthorization(await readLiveManagementPrincipal(client, ownerId), write ? 'settings:update' : 'settings:read')
     return ownerId
@@ -50,7 +48,7 @@ export class PostgresTrustedConnectionHumanAuthority {
     requireAuthorization(principal, write ? 'settings:update' : 'settings:read')
     requireAuthorization(await readLiveManagementPrincipal(client, principal.id), write ? 'settings:update' : 'settings:read')
     const ownerId = await this.currentOwner(client, write)
-    if (ownerId !== principal.id) reject('DEVICE_CONNECTION_WRONG_OWNER', 'Only the current signed-in application owner can authorize this action.')
+    if (ownerId !== principal.id) reject('DEVICE_CONNECTION_WRONG_OWNER', 'Only the local human can authorize this action.')
     return ownerId
   }
   private async delegateAuthority(client: pg.PoolClient, ownerId: string, principalId: string): Promise<TrustedConnectionApplyAuthority> {
@@ -74,7 +72,7 @@ export class PostgresTrustedConnectionHumanAuthority {
       authorityHash: commandInputHash({ ...facts, effectiveGrants: effective.grants, acceptedExpiresAt: effective.expiresAt }).slice('sha256:'.length) })
   }
   private browser(request: FastifyRequest): ManagementPrincipal {
-    requireBrowserSession(request)
+    requireLocalHuman(request)
     return requirePrincipal(request)
   }
   private async transaction<T>(operation: (client: pg.PoolClient) => Promise<T>): Promise<T> {

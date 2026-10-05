@@ -52,7 +52,7 @@ describe('FE-R2-001 current V3 HTTP/MCP shared read boundaries', () => {
       const current = CanonicalRunGraphCurrentSchema.parse(response.json())
       expect(current.kind).toBe('current'); expect(current.scope.executionSemanticsVersion).toBe(3)
       expect(response.headers['cache-control']).toBe('private, no-store')
-      expect(response.headers.vary).toBe('Authorization, Cookie')
+      expect(response.headers.vary).toBe('Authorization')
       expect(JSON.stringify(current)).not.toMatch(/PRIVATE-RUN-INPUT|executionLocation|authorizationPrincipalId|nativeSessionId/)
       const tool = tools({ principal, services }, f.reads).get(CANONICAL_RUN_GRAPH_MCP_TOOLS.current)!
       expect(tool.definition.inputSchema).toBe(CanonicalRunGraphReadRequestSchema)
@@ -67,7 +67,7 @@ describe('FE-R2-001 current V3 HTTP/MCP shared read boundaries', () => {
         expect(history.batches).toHaveLength(1); expect(history.throughSequence).toBe('1'); expect(history.hasMore).toBe(false)
       }
       const calls = f.db.calls.length
-      expect((await app.inject({ method: 'GET', url: url(), headers: { host: 'localhost' } })).statusCode).toBe(401)
+      expect((await app.inject({ method: 'GET', url: url(), headers: { host: 'localhost', authorization: 'Bearer invalid' } })).statusCode).toBe(401)
       const retired = await app.inject({ method: 'GET', headers, url: url().replace('executionSemanticsVersion=3', 'executionSemanticsVersion=2') })
       expect(retired.statusCode).toBe(409); expect(retired.json().error.code).toBe('GRAPH_SCOPE_MISMATCH')
       principal = currentGraphPrincipal(false)

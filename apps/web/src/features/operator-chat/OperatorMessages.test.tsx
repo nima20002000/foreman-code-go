@@ -10,6 +10,23 @@ const thinking: OperatorActivity = { id: 'native-thought', requestId: 'turn', se
 const tool: OperatorActivity = { ...thinking, id: 'native-read', sequence: '2', kind: 'file_read', title: 'Read file', input: 'note.txt', output: 'file content' }
 
 describe('Operator message ownership', () => {
+  it('identifies shortened live and persisted answers, then clears the notice for a complete answer', () => {
+    const truncation = { truncated: true, originalBytes: 30_000 }
+    const timeline = projectOperatorText(undefined, 'turn', { requestId: 'turn', partId: 'answer',
+      mode: 'append', text: 'Retained prefix', truncation })
+    const view = render(<OperatorMessages messages={[user]} activities={[]} activeRequestId="turn"
+      partialText="Retained prefix" timeline={timeline} onBrowse={() => {}} />)
+    expect(screen.getByRole('note', { name: 'Shortened message' })).toHaveTextContent('remaining text is not shown')
+    const saved: Message = { id: 'saved', conversationId: 'chat', requestId: 'turn', role: 'assistant',
+      content: 'Retained prefix', truncation }
+    view.rerender(<OperatorMessages messages={[user, saved]} activities={[]} onBrowse={() => {}} />)
+    expect(screen.getByRole('note', { name: 'Shortened message' })).toBeVisible()
+    expect(screen.getByText('Retained prefix')).toBeVisible()
+    view.rerender(<OperatorMessages messages={[user, { ...saved, truncation: { truncated: false, originalBytes: 15 } }]}
+      activities={[]} onBrowse={() => {}} />)
+    expect(screen.queryByRole('note', { name: 'Shortened message' })).not.toBeInTheDocument()
+  })
+
   it('labels each assistant with its accepted turn model, including live output and unavailable catalog entries', () => {
     const modelCatalogs: Partial<Record<HarnessOptions['harness'], HarnessOptions['models']>> = {
       codex: [{ id: 'gpt-6.1-sol', name: 'Sol 6.1', reasoningEfforts: ['medium'], variants: [], serviceTiers: [] }],

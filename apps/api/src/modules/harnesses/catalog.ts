@@ -3,7 +3,8 @@ import { canonical } from './codexProtocol.js'
 import { QualificationCache } from './qualificationCache.js'
 import { qualificationError } from './qualificationErrors.js'
 
-import { HarnessDefaultsSchema, HarnessQualificationSchema, withAdvancedDefaults, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@foreman-code/contracts'
+import { CODEX_INTERACTION_SUPPORT, HarnessDefaultsSchema, HarnessQualificationSchema, withAdvancedDefaults,
+  type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 
 import { requireAuthorization } from '../access/policy.js'
@@ -75,12 +76,13 @@ export class HarnessCatalogService {
     requireAuthorization(principal, 'harnesses:read')
     const configuration = defaults[harness]
     if (!configuration) throw new DomainError('HARNESS_PROFILE_REQUIRED', 'Save a Claude preset with an actual host-local profile, model, authentication and sandbox choice in Claude settings. Installation alone does not create this app configuration.', 409)
+    const support = harness === 'codex' ? { interactionSupport: structuredClone(CODEX_INTERACTION_SUPPORT) } : {}
     try {
       const capability = await this.qualifyConfiguration(configuration)
-      return { harness, defaults: configuration, defaultsRevision: revision, capability, discoveryError: null }
+      return { harness, defaults: configuration, defaultsRevision: revision, capability, discoveryError: null, ...support }
     } catch (error) {
       return {
-        harness, defaults: configuration, defaultsRevision: revision, capability: null,
+        harness, defaults: configuration, defaultsRevision: revision, capability: null, ...support,
         discoveryError: { code: error instanceof DomainError ? error.code : 'HARNESS_DISCOVERY_UNAVAILABLE', message: error instanceof Error ? error.message : 'Harness discovery failed.' },
       }
     }

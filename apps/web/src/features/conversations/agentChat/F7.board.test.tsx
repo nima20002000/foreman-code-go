@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
-import { BrowserAccessSessionSchema } from '@foreman-code/contracts/management'
+import { LocalHumanAccessSchema } from '@foreman-code/contracts/management'
 import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import type { AgentChatContext, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import { server } from '../../../mocks/server'
@@ -49,12 +49,12 @@ async function selectionFixture(harness: typeof chatHarnesses[number], width: nu
   chat.setState(agentChatFixtureFor(providerFixture(harness), runContext))
   server.use(...chat.handlers.slice(1), ...mock.handlers)
   // Grant chat actions explicitly; this fixture does NOT grant graph writes or Run Stop authority.
-  server.use(http.get('/api/auth/session', () => HttpResponse.json(BrowserAccessSessionSchema.parse({ principal: {
+  server.use(http.get('/api/local-human', () => HttpResponse.json(LocalHumanAccessSchema.parse({ principal: {
     id: 'f7-board-reader-and-chat-writer', name: 'F7 Board tester', expiresAt: '2099-01-01T00:00:00.000Z', grants: [{
       scope: { workspaceIds: [workspaceId] },
       actions: ['workspaces:read', 'workflows:read', 'agents:read', 'graph:read', 'interactions:read', 'runs:read', ...agentChatTestActions],
     }],
-  }, account: { name: 'F7 Board tester', email: 'f7@example.test' } }))))
+  } }))))
   return { fixture, chat, saved, draftContext, runContext }
 }
 

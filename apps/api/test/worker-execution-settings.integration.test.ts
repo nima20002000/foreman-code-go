@@ -15,8 +15,8 @@ const resources: Array<() => Promise<void>> = []
 const settingsPath = '/api/management/settings/worker-execution'
 const startupCases = [
   { label: 'absent', environment: {}, enabled: false },
-  { label: 'zero', environment: { GRAPHQL_LAPTOP_EXECUTION_ENABLED: '0' }, enabled: false },
-  { label: 'one', environment: { GRAPHQL_LAPTOP_EXECUTION_ENABLED: '1' }, enabled: true },
+  { label: 'zero', environment: { FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: '0' }, enabled: false },
+  { label: 'one', environment: { FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: '1' }, enabled: true },
 ]
 
 beforeAll(async () => {
@@ -146,10 +146,13 @@ it.each(startupCases)(
 )
 
 it.each(['0', '1'])(
-  'denies missing credentials, unrelated grants and workspace-scoped grants with startup status %s',
+  'allows local reads and denies missing MCP credentials, unrelated grants and workspace-scoped grants with startup status %s',
   async (enabled) => {
-    const { app, issue, connect } = await settingsApp({ GRAPHQL_LAPTOP_EXECUTION_ENABLED: enabled })
-    expect((await app.inject({ method: 'GET', url: settingsPath })).statusCode).toBe(401)
+    const { app, issue, connect } = await settingsApp({ FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: enabled })
+    const local = await app.inject({ method: 'GET', url: settingsPath })
+    expect(local.statusCode).toBe(200)
+    expect(WorkerExecutionSettingsSchema.parse(local.json()).enabled).toBe(enabled === '1')
+    expect((await app.inject({ method: 'GET', url: settingsPath, headers: { authorization: 'Bearer invalid' } })).statusCode).toBe(401)
     const anonymousMcp = await app.inject({
       method: 'POST',
       url: '/mcp',

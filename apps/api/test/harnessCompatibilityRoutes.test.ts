@@ -23,7 +23,7 @@ function fixture(identity = principal()) {
     cache: { load: async () => null, save: async () => undefined },
   })
   const access = { authenticate: async (token: string | undefined) => {
-    if (token !== 'owner-token') throw new DomainError('AUTH_REQUIRED', 'Sign in.', 401)
+    if (token !== 'owner-token') throw new DomainError('AUTH_REQUIRED', 'Invalid credential.', 401)
     return identity
   } } as unknown as PostgresAccessService
   registerOperatorHttpSecurity(app, access)
@@ -39,9 +39,12 @@ const readUrl = '/api/management/harnesses/compatibility'
 const retryUrl = '/api/management/harnesses/codex/compatibility/retry'
 const authorized = { authorization: 'Bearer owner-token' }
 describe('compatibility route authorization and request boundaries', () => {
-  it('requires authentication and never starts a process on a status read', async () => {
+  it('allows local status reads, rejects invalid credentials, and never starts a process on a status read', async () => {
     const { app, inspect } = fixture()
-    expect((await app.inject({ method: 'GET', url: readUrl })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'GET', url: readUrl, headers: { authorization: 'Bearer invalid' } })).statusCode).toBe(401)
+    const local = await app.inject({ method: 'GET', url: readUrl })
+    expect(local.statusCode).toBe(200)
+    expect(local.json().canRetry).toBe(true)
     const response = await app.inject({ method: 'GET', url: readUrl, headers: authorized })
     expect(response.statusCode).toBe(200)
     expect(response.headers['cache-control']).toBe('no-store')
@@ -67,9 +70,9 @@ describe('compatibility route authorization and request boundaries', () => {
     expect((await app.inject({ method: 'POST', url: retryUrl.replace('/codex/', '/other/'), headers: authorized, payload: {} })).statusCode).toBe(400)
     expect(inspect).not.toHaveBeenCalled()
   })
-  it('keeps the existing browser mutation Origin boundary', async () => {
+  it('rejects cross-site browser mutations and foreign origins', async () => {
     const { app, inspect } = fixture()
-    expect((await app.inject({ method: 'POST', url: retryUrl, headers: { cookie: 'graphql_operator=owner-token' }, payload: {} })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: retryUrl, headers: { cookie: 'graphql_operator=obsolete', 'sec-fetch-site': 'cross-site' }, payload: {} })).statusCode).toBe(403)
     expect((await app.inject({ method: 'POST', url: retryUrl, headers: { ...authorized, origin: 'https://attacker.invalid' }, payload: {} })).statusCode).toBe(403)
     expect(inspect).not.toHaveBeenCalled()
   })

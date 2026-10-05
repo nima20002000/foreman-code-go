@@ -1,7 +1,9 @@
+import { beginRuntimeTiming, runtimeTimingPoint } from '../../infrastructure/runtimeTiming.js'
 import { HarnessExecutionError } from './errors.js'
 import { spawnOwnedStdioProcess } from './process.js'
 import { nativeProcessExit, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { redactKnownSecrets } from './secrets.js'
+import { openCodexRuntimeTiming } from './codexRuntimeTiming.js'
 
 export type JsonObject = Record<string, unknown>
 export type RequestId = string | number
@@ -31,10 +33,13 @@ export class CodexRpcError extends HarnessExecutionError {
     readonly uncertain: boolean,
     code: string,
     readonly nativeMessage?: string,
+    options?: ErrorOptions,
   ) {
-    super(code, uncertain
+    const message = uncertain
       ? `The outcome of ${method} is uncertain; reconcile the operation before retrying.`
-      : `Codex did not accept ${method}.`)
+      : `Codex did not accept ${method}.`
+    const preflightMessage = options?.cause instanceof HarnessExecutionError ? options.cause.message : undefined
+    super(code, preflightMessage ?? message, false, options)
   }
 }
 
@@ -49,6 +54,7 @@ interface Operation {
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_FRAME_BYTES = 4 * 1024 * 1024
 const MAX_OPERATIONS = 256
+const MODEL_REFRESH_FAILURE = 'failed to refresh available models:'
 
 /** All stream and dispatch failures end at this boundary, never at EventEmitter. */
 export class CodexStdioTransport {
@@ -59,6 +65,8 @@ export class CodexStdioTransport {
   private nextId = 1
   private stopped = false
   private closePromise: Promise<void> | undefined
+  private timing: Awaited<ReturnType<typeof openCodexRuntimeTiming>> | undefined
+  private diagnosticTail = ''
 
   constructor(
     private readonly binary: string,
@@ -72,6 +80,7 @@ export class CodexStdioTransport {
     private readonly processRecovery?: NativeProcessRecovery,
     /** Process-local only; never edits the native configuration file. */
     private readonly disabledMcpServerNames: readonly string[] = [],
+    private readonly onModelRefreshFailure?: () => void,
   ) {}
 
   async start(signal?: AbortSignal): Promise<void> {
@@ -80,22 +89,35 @@ export class CodexStdioTransport {
     if (this.disabledMcpServerNames.some((name) => !/^[A-Za-z0-9_-]+$/.test(name))) {
       throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'The App MCP name cannot be represented safely by a native dotted-key override.')
     }
-    this.owned = spawnOwnedStdioProcess({
-      binary: this.binary, args: ['app-server', '--stdio',
-        ...this.disabledMcpServerNames.flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`]),
-      ], cwd: this.cwd, environment: this.environment,
-      onError: (error) => this.fail(error),
-      ...(this.processRecovery ? { recovery: this.processRecovery } : {}),
-    })
+    if (this.environment.FOREMAN_CODE_CODEX_RUNTIME_TIMING === '1') {
+      try { this.timing = await openCodexRuntimeTiming() }
+      catch { runtimeTimingPoint('harness', 'native.api_timing_unavailable', { eventType: 'receiver_unavailable' }) }
+    }
+    try {
+      this.owned = spawnOwnedStdioProcess({
+        binary: this.binary, args: ['app-server', '--stdio',
+          ...this.disabledMcpServerNames.flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`]),
+          ...(this.timing?.arguments ?? []),
+        ], cwd: this.cwd, environment: this.environment,
+        onError: (error) => this.fail(error),
+        ...(this.onModelRefreshFailure ? { preserveReadableDrain: true } : {}),
+        ...(this.processRecovery ? { recovery: this.processRecovery } : {}),
+      })
+    } catch (error) { await this.closeTiming(); throw error }
     const { child, closed } = this.owned
     // Drain diagnostics without retaining or exposing provider stderr.
-    child.stderr.resume()
+    if (this.onModelRefreshFailure) child.stderr.on('data', (chunk: Buffer) => {
+      const text = this.diagnosticTail + chunk.toString('utf8')
+      if (text.includes(MODEL_REFRESH_FAILURE)) this.onModelRefreshFailure?.()
+      this.diagnosticTail = text.slice(-(MODEL_REFRESH_FAILURE.length - 1))
+    })
+    else child.stderr.resume()
     void this.readFrames().catch((error: unknown) => this.fail(error instanceof Error ? error : new Error('Codex dispatch failed.')))
     void closed.then(() => this.fail(new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Codex app-server disconnected.')))
     try {
       await this.request('initialize', {
         clientInfo: { name: 'foreman-code', title: 'Foreman Code', version: '0.1.0' },
-        capabilities: { experimentalApi: true },
+        capabilities: { experimentalApi: true, extensions: { 'openai/form': {} } },
       }, signal)
       await this.write({ method: 'initialized' })
     } catch (error) {
@@ -108,21 +130,30 @@ export class CodexStdioTransport {
     method: string, params?: JsonObject, signal?: AbortSignal,
     late?: (value: unknown, error?: Error) => void,
   ): Promise<unknown> {
-    signal?.throwIfAborted()
-    this.assertConnected()
     const id = this.nextId++
-    const message: RpcRequest = { id, method, ...(params === undefined ? {} : { params }) }
-    this.protocol.request(message)
-    const frame = this.encode({ ...message })
-    if (this.operations.size + this.uncertainOperations.size >= MAX_OPERATIONS) {
-      throw new HarnessExecutionError('CODEX_OPERATION_LIMIT', 'Too many unresolved provider operations; reconcile before submitting more.')
+    let frame: string
+    try {
+      signal?.throwIfAborted()
+      this.assertConnected()
+      const message: RpcRequest = { id, method, ...(params === undefined ? {} : { params }) }
+      this.protocol.request(message)
+      frame = this.encode({ ...message })
+      if (this.operations.size + this.uncertainOperations.size >= MAX_OPERATIONS) {
+        throw new HarnessExecutionError('CODEX_OPERATION_LIMIT', 'Too many unresolved provider operations; reconcile before submitting more.')
+      }
+    } catch (error) {
+      const fallback = signal?.aborted ? 'CODEX_APP_SERVER_REQUEST_CANCELED' : 'CODEX_PROTOCOL_INVALID'
+      const code = error instanceof HarnessExecutionError ? error.result.error!.code : fallback
+      throw new CodexRpcError(method, id, false, code, undefined, { cause: error })
     }
+    const finished = beginRuntimeTiming('harness', 'native.rpc', { operation: method, intervalMs: this.timeoutMs,
+      ...(typeof params?.threadId === 'string' ? { nativeSessionId: params.threadId } : {}) })
     return new Promise<unknown>((resolve, reject) => {
       const abort = () => this.settleFailure(id, 'CODEX_APP_SERVER_REQUEST_CANCELED')
       const timer = setTimeout(() => this.settleFailure(id, 'CODEX_APP_SERVER_TIMEOUT'), this.timeoutMs)
       const operation: Operation = {
         method, resolve, reject, submitted: false, ...(late ? { late } : {}),
-        cleanup: () => { clearTimeout(timer); signal?.removeEventListener('abort', abort) },
+        cleanup: () => { finished(); clearTimeout(timer); signal?.removeEventListener('abort', abort) },
       }
       this.operations.set(id, operation)
       signal?.addEventListener('abort', abort, { once: true })
@@ -161,11 +192,43 @@ export class CodexStdioTransport {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise
     this.stop(new HarnessExecutionError('CODEX_APP_SERVER_CLOSED', 'Codex transport was closed.'))
-    const attempt = this.owned?.close() ?? Promise.resolve()
+    const physical = this.onModelRefreshFailure ? this.closeModelInspection()
+      : this.owned?.close() ?? Promise.resolve()
+    const attempt = this.timing ? physical.then(() => this.closeTiming()) : physical
     this.closePromise = attempt
     // A failed cleanup stays fenced, but the next explicit close must retry it.
     void attempt.catch(() => { if (this.closePromise === attempt) this.closePromise = undefined })
     return attempt
+  }
+
+  private async closeTiming() {
+    // Optional diagnostics cannot change native execution or physical-closure results.
+    try { await this.timing?.close() }
+    catch { runtimeTimingPoint('harness', 'native.api_timing_unavailable', { eventType: 'receiver_close_failed' }) }
+  }
+
+  private async closeModelInspection(): Promise<void> {
+    if (!this.owned) return
+    let timer: NodeJS.Timeout | undefined
+    let failed = false
+    let failure: unknown
+    try {
+      // EOF and child close drain stderr before deciding whether discovery succeeded.
+      this.owned.child.stdin.end()
+      await Promise.race([this.owned.closed, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE',
+          'Native model diagnostics did not finish.', true)), this.timeoutMs)
+      })])
+    } catch (error) {
+      failed = true
+      failure = error
+    } finally { clearTimeout(timer) }
+    try { await this.owned.close() }
+    catch (cleanup) {
+      if (failed) throw new AggregateError([failure, cleanup], 'Native model diagnostics and cleanup failed.', { cause: cleanup })
+      throw cleanup
+    }
+    if (failed) throw failure
   }
 
   /** Current writable callback channel only; this snapshot is not delivery evidence. */
@@ -230,7 +293,10 @@ export class CodexStdioTransport {
     stdout.setEncoding('utf8')
     let pending = ''
     for await (const chunk of stdout) {
-      if (this.stopped) break
+      if (this.stopped) {
+        if (this.onModelRefreshFailure) continue
+        break
+      }
       pending += String(chunk)
       let newline: number
       while ((newline = pending.indexOf('\n')) >= 0) {
@@ -238,7 +304,10 @@ export class CodexStdioTransport {
         pending = pending.slice(newline + 1)
         if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new Error('Codex stdout frame exceeded its limit.')
         if (line.trim()) await this.receive(line)
-        if (this.stopped) return
+        if (this.stopped) {
+          if (this.onModelRefreshFailure) { pending = ''; break }
+          return
+        }
       }
       if (Buffer.byteLength(pending) > MAX_FRAME_BYTES) throw new Error('Codex stdout frame exceeded its limit.')
     }

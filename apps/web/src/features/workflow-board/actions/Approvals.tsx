@@ -3,6 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import type { DurableInteraction } from '@foreman-code/contracts'
 import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { approvalOptionScope } from '../../../shared/ui/approvalOptionScope'
+import { NativeInteractionResponse } from '../../../shared/ui/NativeInteractionResponse'
 import { runActionsClient } from './client'
 import { actionKey, useActionLifetime, useDisclosure } from './state'
 import { approvalDeliveryMessage, type ActionRun } from './policy'
@@ -27,6 +28,7 @@ function Approval({ scope, item, run, permitted, refresh }: {
   } })
   const value = detail.isError ? undefined : detail.data
   const interaction = value?.interaction
+  const hasInput = interaction?.responseOptions.some((option) => option.input)
   const reason = !permitted ? 'Response permission is unavailable for this exact Run.'
     : !value ? 'Read the exact authorized interaction before responding.'
       : value.canRespond !== true ? 'The human approval service does not permit this caller to respond.'
@@ -43,7 +45,14 @@ function Approval({ scope, item, run, permitted, refresh }: {
         <p>Execution <code>{interaction.executionId}</code> · node <code>{value.execution.workflowNodeId}</code> · technical attempt {value.execution.attempt} · interaction revision {interaction.revision}.</p>
         <pre tabIndex={0} aria-label="Exact human approval request">{JSON.stringify(interaction.request, null, 2)}</pre>
         <p role="status">{approvalDeliveryMessage(interaction.status, interaction.deliveryState)}</p>
-        {interaction.status === 'pending' ? <div role="group" aria-label="Offered human responses">{interaction.responseOptions.map((option) => <div key={option.optionId} className="run-action-option">
+        {interaction.status === 'pending' && hasInput
+          ? <NativeInteractionResponse key={interaction.id} options={interaction.responseOptions}
+            disabled={!!reason || response.isPending || response.isError || detail.isFetching}
+            onSelect={(optionId, values) => response.mutate({ expected: interaction, input: {
+              interactionId: interaction.id, optionId, expectedRevision: interaction.revision,
+              ...(values !== undefined ? { response: values } : {}),
+            } })} /> : null}
+        {interaction.status === 'pending' && !hasInput ? <div role="group" aria-label="Offered human responses">{interaction.responseOptions.map((option) => <div key={option.optionId} className="run-action-option">
           <p><strong>{option.label}</strong> — {approvalOptionScope(option)} {option.scopeSummary ?? ''}</p>
           <button type="button" disabled={!!reason || response.isPending || response.isError || detail.isFetching}
             title={reason} onClick={() => response.mutate({ expected: interaction, input: {

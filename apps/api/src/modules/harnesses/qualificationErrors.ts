@@ -8,6 +8,8 @@ export function qualificationError(error: unknown): DomainError {
     const code = error.result.outcome === 'failed' ? error.result.error?.code ?? 'HARNESS_QUALIFICATION_FAILED' : 'HARNESS_QUALIFICATION_FAILED'
     const unavailable = /UNAVAILABLE|DISCONNECTED|TIMEOUT|UNQUALIFIED|SCHEMA|EXECUTABLE_CHANGED/.test(code)
     const message = /AUTH|LOGIN/.test(code) ? 'Sign in to this harness on the server, then refresh.'
+      : code === 'CODEX_MODEL_CATALOG_UNAVAILABLE' ? 'The native model catalog could not be read. Check the native connection and sign-in, then refresh.'
+      : code === 'CODEX_MODEL_UNAVAILABLE' ? 'The selected model is absent from the native Codex catalog. Refresh the catalog and review this selection.'
       : /MODEL_UNAVAILABLE/.test(code) ? 'This model is not available to the signed-in native harness.'
       : /SETTING_UNSUPPORTED/.test(code) ? 'The native harness does not support this model, effort, or setting combination.'
       : /MCP/.test(code) ? 'An MCP policy does not match the native server configuration. Review the MCP servers below.'

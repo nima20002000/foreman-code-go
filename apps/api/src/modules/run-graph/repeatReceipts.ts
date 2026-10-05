@@ -1,3 +1,4 @@
+import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import {
   GraphDigestSchema, GraphEvidenceSchema, GraphIdSchema, GraphSequenceSchema,
   RepeatMetadataScopeV1Schema, type GraphEvidence,
@@ -44,7 +45,8 @@ export async function assertRepeatCanonicalReceiptLocked(sql: GraphTransactionSq
   input: RepeatCanonicalReceipt): Promise<void> {
   assertGraphTransaction(sql)
   try {
-    await assertRepeatCanonicalReceipt(sql, input)
+    await timeRuntimeOperation('db', 'graph.check_receipt', () => assertRepeatCanonicalReceipt(sql, input),
+      { runId: input.scope.runId })
   } catch (error) {
     // Catching a missing proof must not accidentally commit the domain mutation.
     poisonGraphTransaction(sql)

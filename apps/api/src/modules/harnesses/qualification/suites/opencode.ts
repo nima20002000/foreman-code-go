@@ -1,7 +1,9 @@
+import { qualifyOpenCodeSubagentInput } from './opencodeSubagentInput.js'
 import { closeQualificationResources } from '../cleanup.js'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import Fastify from 'fastify'
 import type { File, FileRevision } from '@foreman-code/contracts/files'
 import { registerFileToolsMcp, type FileMcpService } from '../../../files/tools/mcp.js'
@@ -18,7 +20,7 @@ class CandidateOpenCodeServer extends ManagedOpenCodeServer {
     super({ binary: input.binary, workingDirectory: input.workDirectory,
       ...(input.processRecovery ? { processRecovery: input.processRecovery } : {}),
       ...(input.assertInstallation ? { assertInstallation: input.assertInstallation } : {}),
-      ownerAgentId: 'qualification', appMcpAccess: 'none', appMcpServerName: 'graphql', startupTimeoutMs: 30_000 })
+      ownerAgentId: 'qualification', appMcpAccess: 'none', startupTimeoutMs: 30_000 })
     Object.defineProperty(this, 'expectedVersion', { value: input.version })
   }
 }
@@ -28,7 +30,7 @@ const requiredPaths = ['/session', '/session/status', '/session/{sessionID}', '/
   '/permission', '/permission/{requestID}/reply', '/question', '/question/{requestID}/reject', '/event', '/config', '/mcp']
 
 export const opencodeQualificationSuite: QualificationSuite = {
-  harness: 'opencode', revision: 'opencode-live-5',
+  harness: 'opencode', revision: 'opencode-live-6',
   async run(input: NativeQualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const server = new CandidateOpenCodeServer(input)
@@ -96,10 +98,17 @@ export const opencodeQualificationSuite: QualificationSuite = {
       createWorkingCopy: async () => { throw new Error('files.create_working_copy is not enabled.') },
       publish: async (_token: string, request: { artifactId: string; scope: FileToolContext['scope']; filename: string; mediaType: string }) => {
         try {
-          requireCondition(request.artifactId === 'qualification-result' && request.filename === 'qualification-result.md'
-            && request.mediaType === 'text/markdown' && JSON.stringify(request.scope) === JSON.stringify(scope), 'Wrong publication target.')
+          const targetMatches = request.artifactId === 'qualification-result' && request.filename === 'qualification-result.md'
+            && request.mediaType === 'text/markdown' && isDeepStrictEqual(request.scope, scope)
+          const publication = { targetMatches, outputAvailable: false, markerMatches: false, editMatches: false }
+          const attempts = (evidence.mcpPublications ??= []) as unknown[]
+          attempts.push(publication)
+          requireCondition(targetMatches, 'Wrong publication target.')
           const bytes = await readFile(outputPath)
-          requireCondition(bytes.toString('utf8').includes(marker) && bytes.toString('utf8').includes('QUALIFIED'),
+          publication.outputAvailable = true
+          publication.markerMatches = bytes.toString('utf8').includes(marker)
+          publication.editMatches = bytes.toString('utf8').includes('QUALIFIED')
+          requireCondition(publication.markerMatches && publication.editMatches,
             'Published Markdown does not contain the source marker and edit.')
           published = true
           const createdAt = new Date().toISOString()
@@ -158,6 +167,21 @@ export const opencodeQualificationSuite: QualificationSuite = {
           && (message.info.error || (typeof message.info.time?.completed === 'number'
             && message.info.finish !== undefined && message.info.finish !== 'tool-calls')))
         if (terminal) {
+          if (terminal.info?.error) {
+            const error = object(terminal.info.error)
+            const data = object(error.data)
+            const names = ['ProviderAuthError', 'UnknownError', 'MessageOutputLengthError', 'MessageAbortedError',
+              'StructuredOutputError', 'ContextOverflowError', 'ContentFilterError', 'APIError']
+            const name = typeof error.name === 'string' && names.includes(error.name) ? error.name : 'UnknownError'
+            // Provider responses can contain credentials and model content; retain only diagnostic metadata.
+            const failure = { name, statusCode: typeof data.statusCode === 'number' ? data.statusCode : null,
+              isRetryable: typeof data.isRetryable === 'boolean' ? data.isRetryable : null,
+              providerID: terminal.info.providerID ?? model?.[0] ?? null,
+              modelID: terminal.info.modelID ?? model?.slice(1).join('/') ?? null }
+            const failures = (evidence.nativeTurnErrors ??= []) as unknown[]
+            failures.push(failure)
+            throw new Error(`Native turn failed: ${name}${failure.statusCode === null ? '' : ` (HTTP ${failure.statusCode})`}.`)
+          }
           requireCondition(!terminal.info?.error && typeof terminal.info?.time?.completed === 'number', 'Native turn failed.')
           if (terminal.info.providerID && terminal.info.modelID) evidence.modelUsed = `${terminal.info.providerID}/${terminal.info.modelID}`
           return
@@ -195,6 +219,11 @@ export const opencodeQualificationSuite: QualificationSuite = {
         await turn('Reply with a short sentence confirming this qualification text turn. Do not call tools.')
         return 'Asynchronous text turn completed.'
       }],
+      ['subagent-input', async () => {
+        requireCondition(sessionId, 'The qualification parent is unavailable.')
+        evidence.subagentInput = await qualifyOpenCodeSubagentInput(request, sessionId, input.model)
+        return 'Idle child input preserves native identity, agent, model, variant and system instructions.'
+      }],
       ['mcp-file-tools', async () => {
         await writeFile(sourcePath, sourceBytes, { flag: 'wx', mode: 0o400 })
         const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -204,7 +233,14 @@ export const opencodeQualificationSuite: QualificationSuite = {
         mcpReady = true
         requireCondition(object(object(await request('/mcp'))[mcpName]).status === 'connected', 'File MCP did not connect.')
         evidence['mcp-file-toolsAttempts'] = 1
-        await turn(`Use files.read with fileId ${sourceId} and revisionId ${sourceRevisionId} to read the Markdown marker. Write ${JSON.stringify(outputPath)} with that marker and the word QUALIFIED. Then call files.publish_result with artifactId qualification-result, commandId ${randomUUID()}, filename qualification-result.md, mediaType text/markdown, and scope ${JSON.stringify(scope)}. Do not use shell commands or other paths.`)
+        // Create after MCP registration without the earlier turn's no-tools instructions.
+        await createSession()
+        try {
+          await turn(`Use files.read with fileId ${sourceId} and revisionId ${sourceRevisionId} to read the Markdown marker. Write ${JSON.stringify(outputPath)} with that marker and the word QUALIFIED. Then call files.publish_result with artifactId qualification-result, commandId ${randomUUID()}, filename qualification-result.md, mediaType text/markdown, and scope ${JSON.stringify(scope)}. Do not use shell commands or other paths.`)
+        } finally {
+          const attempts = (evidence.mcpFileAttempts ??= []) as unknown[]
+          attempts.push({ attempt: 1, read, published })
+        }
         requireCondition(read && published, 'Native turn did not complete MCP read and publication.')
         return 'MCP read and publication completed.'
       }],

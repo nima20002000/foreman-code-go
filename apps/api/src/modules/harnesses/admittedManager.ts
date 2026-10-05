@@ -3,6 +3,7 @@ import { DomainError } from '../errors.js'
 import type { NativeMcpInspector } from './mcpDetection.js'
 import type { NativeHarnessSessionManager } from './port.js'
 import { unavailableNativeResponse } from './responseAvailability.js'
+import { NativeDeliveryError } from './errors.js'
 
 /** One async domain admission behind the existing synchronous role factory.
  * The returned lifetime owns initialization and its actual adapter cleanup. */
@@ -31,13 +32,29 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
   }
   const manager: NativeHarnessSessionManager = {
     harness,
+    requiresRuntimeClosure: () => allocation?.manager.requiresRuntimeClosure?.() ?? Boolean(allocation),
     capabilities: async signal => (await actual(signal)).capabilities(signal),
     inspectMcp: async signal => (await actual(signal)).inspectMcp(signal),
-    createSession: async (start, signal) => (await actual(signal)).createSession(start, signal),
+    createSession: async (start, signal) => {
+      let current: T
+      try { current = await actual(signal) } catch (error) {
+        throw new NativeDeliveryError('session_creation', 'not_sent', error)
+      }
+      return current.createSession(start, signal)
+    },
     attachSession: async (session, start, signal) => (await actual(signal)).attachSession(session, start, signal),
-    async *startTurn(session, input, signal) { yield* (await actual(signal)).startTurn(session, input, signal) },
+    async *startTurn(session, input, signal) {
+      let current: T
+      try { current = await actual(signal) } catch (error) {
+        throw new NativeDeliveryError('turn_submission', 'not_sent', error)
+      }
+      yield* current.startTurn(session, input, signal)
+    },
     forkSession: async (source, start, signal) => {
-      const current = await actual(signal)
+      let current: T
+      try { current = await actual(signal) } catch (error) {
+        throw new NativeDeliveryError('session_creation', 'not_sent', error)
+      }
       if (!current.forkSession) throw new DomainError('HARNESS_FORK_UNAVAILABLE', 'The admitted driver has no fork capability.', 409)
       return current.forkSession(source, start, signal)
     },
@@ -82,6 +99,18 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
   // Keep provider capabilities observable through the original port. OpenCode
   // has no exact-turn steering; Codex has no paged server-history primitive.
   if (harness === 'codex') {
+    manager.reconcileSessionCreation = async (start, signal, forkSource) => {
+      signal?.throwIfAborted()
+      lifetime.signal.throwIfAborted()
+      const current = allocation?.manager
+      if (!current?.reconcileSessionCreation) {
+        throw new DomainError('HARNESS_CREATION_UNCONFIRMED', 'The original native creation is not available.', 409)
+      }
+      const session = await current.reconcileSessionCreation(start, signal, forkSource)
+      signal?.throwIfAborted()
+      lifetime.signal.throwIfAborted()
+      return session
+    }
     manager.steerTurn = async (session, input, signal) => {
       const current = await actual(signal)
       if (!current.steerTurn) throw new DomainError('HARNESS_STEER_UNAVAILABLE', 'The admitted driver cannot steer this turn.', 409)
@@ -89,9 +118,29 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     }
     manager.reconcileSteers = async (session, inputs, signal) => (await actual(signal)).reconcileSteers?.(session, inputs, signal) ?? []
   }
-  if (harness === 'opencode') manager.historyPage = async (session, before, signal) => {
-    const current = await actual(signal)
-    return current.historyPage ? current.historyPage(session, before, signal) : current.history(session, signal)
+  if (harness === 'opencode') {
+    manager.recoverEnvironment = async signal => (await actual(signal)).recoverEnvironment?.(signal)
+    manager.captureNativeOutputCall = async (session, toolName, args, signal) => {
+      signal?.throwIfAborted()
+      lifetime.signal.throwIfAborted()
+      const current = allocation?.manager
+      if (!current?.captureNativeOutputCall) throw new DomainError('HARNESS_NATIVE_OUTPUT_CAPTURE_UNAVAILABLE',
+        'The original admitted native output owner is not allocated.', 409)
+      const captured = await current.captureNativeOutputCall(session, toolName, args,
+        signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal)
+      const assertCurrent = () => {
+        lifetime.signal.throwIfAborted()
+        if (allocation?.manager !== current) throw new DomainError('HARNESS_NATIVE_OUTPUT_CAPTURE_UNAVAILABLE',
+          'The original admitted native output owner changed.', 409)
+        captured.assertCurrent()
+      }
+      assertCurrent()
+      return { ...captured, assertCurrent }
+    }
+    manager.historyPage = async (session, before, signal) => {
+      const current = await actual(signal)
+      return current.historyPage ? current.historyPage(session, before, signal) : current.history(session, signal)
+    }
   }
   const inspector: NativeMcpInspector = { async inspect(request) {
     await actual(request.signal)

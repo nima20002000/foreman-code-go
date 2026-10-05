@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -15,10 +16,10 @@ import { WorkflowManagementService } from '../src/modules/workflows/management.j
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 it('batch archives workspaces through authenticated MCP with atomic conflicts, active-run protection, scoped denial and replay', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
+  const connectionString = process.env.TEST_DATABASE_URL!
   const schema = 'batch_page_' + randomUUID().replaceAll('-', '')
   const admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
   const locations = new WorkspaceLocationService(pool, commands)
@@ -108,6 +109,6 @@ it('batch archives workspaces through authenticated MCP with atomic conflicts, a
   } finally {
     for (const client of clients) await client.close()
     await app.close(); await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`); await admin.end()
+    await dropFixtureSchema(admin, schema); await admin.end()
   }
 }, 30_000)

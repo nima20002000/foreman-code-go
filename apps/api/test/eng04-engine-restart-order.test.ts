@@ -25,6 +25,7 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
   const owner = { runId: f.run.id, assertOwned() {}, release: async () => { events.push('release') } }
   const runs = {
     repeatRepositoryFactory: () => ({}), acquireOwnership: async () => owner,
+    get: async (runId: string) => { assert.equal(runId, f.run.id); return f.run },
     requestCleanup: async (runId: string, actual: typeof owner) => {
       assert.equal(runId, f.run.id); assert.equal(actual, owner); events.push('cleanup-intent')
     },
@@ -43,7 +44,9 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
     cancelRun: vi.fn(), finishRun: vi.fn(),
   }
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
-  const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {} as Args[1],
+  const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {
+    getVersion: async (versionId: string) => { assert.equal(versionId, f.version.id); return f.version },
+  } as unknown as Args[1],
     native as unknown as Args[2], new MemorySaver(), '/tmp/eng04-restart-order', {} as Args[5], {} as Args[6], {} as Args[7])
   runtime.work = async ({ signal }) => {
     entered.resolve()
@@ -96,6 +99,7 @@ test('restart retains the original owner when cleanup persistence fails and retr
   const owner = { runId: f.run.id, assertOwned() {}, release: async () => { events.push('release') } }
   const runs = {
     repeatRepositoryFactory: () => ({}), acquireOwnership: async () => owner,
+    get: async (runId: string) => { assert.equal(runId, f.run.id); return f.run },
     getRepeatSnapshot: async () => ({ run: f.run, version: f.version, configurations: f.configurations,
       stopRequested: false, cleanupPending: false }),
     requestCleanup: vi.fn(async (runId: string, actual: typeof owner) => {
@@ -107,7 +111,9 @@ test('restart retains the original owner when cleanup persistence fails and retr
   const native = { requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { events.push('close') }),
     cancelRun: vi.fn(), finishRun: vi.fn() }
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
-  const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {} as Args[1],
+  const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {
+    getVersion: async (versionId: string) => { assert.equal(versionId, f.version.id); return f.version },
+  } as unknown as Args[1],
     native as unknown as Args[2], new MemorySaver(), '/tmp/eng04-restart-intent-failure', {} as Args[5], {} as Args[6], {} as Args[7])
   runtime.work = async ({ signal }) => {
     entered.resolve()
@@ -139,6 +145,7 @@ for (const failFirst of [false, true]) test(`naturally completing drive holds it
   const owner = { runId: f.run.id, assertOwned() { assert.equal(released, false) }, release: async () => { released = true; events.push('release') } }
   const runs = {
     repeatRepositoryFactory: () => ({}), acquireOwnership: async () => owner,
+    get: async (runId: string) => { assert.equal(runId, f.run.id); return f.run },
     getRepeatSnapshot: async () => ({ run: f.run, version: f.version, configurations: f.configurations, stopRequested: false, cleanupPending: false }),
     requestCleanup: async () => {
       attempt++; persisting.resolve(); await persisted.promise; owner.assertOwned()
@@ -148,7 +155,9 @@ for (const failFirst of [false, true]) test(`naturally completing drive holds it
   }
   const native = { requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { owner.assertOwned(); events.push('close') }) }
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
-  const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {} as Args[1], native as unknown as Args[2],
+  const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {
+    getVersion: async (versionId: string) => { assert.equal(versionId, f.version.id); return f.version },
+  } as unknown as Args[1], native as unknown as Args[2],
     new MemorySaver(), '/tmp/eng04-natural-finish', {} as Args[5], {} as Args[6], {} as Args[7])
   runtime.work = async () => { entered.resolve(); await complete.promise }
   const active = engine.start(f.run.id), activeResult = active.then(() => null, (error: unknown) => error)

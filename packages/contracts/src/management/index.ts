@@ -1,4 +1,5 @@
 import { GRAPHQL_OPERATOR_TOOLS } from '../graphqlMcpTools.js'
+import { NativeInteractionSupportSchema } from '../nativeInteractionSupport.js'
 import { ClaudeHarnessConfigurationSchema } from '../claude.js';
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
@@ -11,7 +12,6 @@ export * from "./harnessSettings.js";
 export * from './workerExecution.js'
 export * from "./codexPlugins.js";
 export * from "./settingsExperience.js";
-export * from "./browserAuth.js";
 
 import {
   AgentSchema,
@@ -140,16 +140,13 @@ export const ManagementPrincipalSchema = z
   });
 export type ManagementPrincipal = z.infer<typeof ManagementPrincipalSchema>;
 
-/** Browser identity readback. No bearer token, cookie, or token hash is returned. */
-export const BrowserAccessSessionSchema = z.object({
-  localDev: z.literal(true).optional(),
+/** The implicit local human's product permissions; contains no credentials. */
+export const LocalHumanAccessSchema = z.object({
   principal: z.object({
     id: IdSchema, name: z.string().min(1), expiresAt: TimestampSchema,
     grants: z.array(ManagementGrantSchema),
   }).strict(),
-  account: z.object({ name: z.string().min(1), email: z.string().email() }).strict().optional(),
 }).strict();
-export const BrowserAccessLogoutSchema = z.object({ signedOut: z.literal(true) }).strict();
 
 // Native automatic handling is supported by the server. The shared schema
 // still enforces agreement between autoApprove and Advanced permission handling.
@@ -178,10 +175,6 @@ export const ManagementPageInfoSchema = z
   .object({ nextCursor: z.string().nullable() })
   .strict();
 
-export const OperatorEnrollmentRequestSchema = z.object({ token: z.string().trim().min(1) }).strict();
-export const OperatorEnrollmentResponseSchema = z.object({
-  principal: z.object({ id: IdSchema, name: z.string().trim().min(1), expiresAt: TimestampSchema }).strict(),
-}).strict();
 
 export const ManagedWorkspaceSchema = z
   .object({
@@ -567,6 +560,7 @@ export const HarnessCatalogEntrySchema = z.object({
   defaultsRevision: ExpectedRevisionSchema,
   capability: HarnessQualificationSchema.nullable(),
   discoveryError: z.object({ code: z.string(), message: z.string() }).strict().nullable(),
+  interactionSupport: z.array(NativeInteractionSupportSchema).optional(),
 }).strict();
 export const HarnessCatalogSchema = z.array(HarnessCatalogEntrySchema);
 export const HarnessCatalogResultSchema = z.object({ items: HarnessCatalogSchema }).strict();
@@ -622,7 +616,9 @@ export const ManagedInteractionPageSchema = z.object({
   pendingCount: z.number().int().nonnegative().optional(),
   pendingByWorkflow: z.record(z.string(), z.number().int().nonnegative()).optional(),
 }).strict();
-export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema, activity: InteractionActivityProjectionSchema.optional(), review: ReviewStatusSchema.optional() }).strict();
+export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema,
+  activity: InteractionActivityProjectionSchema.optional(), review: ReviewStatusSchema.optional(),
+  canRespond: z.boolean().optional() }).strict();
 
 /** Deployment capability, separate from the candidate-only A0 schema. False
  * stays literal until native admission AND durable repeat edit intents qualify.
@@ -749,8 +745,9 @@ export const OperatorToolNameSchema = z.enum([
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_draft_layout", "graph_draft_revert_applied", "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1", "run_history_get_v1",
   "run_events_list", "run_handoffs_get_v1", "run_activities_get_v1", "run_start", "run_stop",
-  "run_subagents_list_v1", "run_subagent_get_v1", "run_subagent_messages_list_v1", "run_subagent_tools_list_v1", "run_subagent_input_v1", "run_subagent_interrupt_v1",
-  "interaction_list", "interaction_get",
+  "run_subagents_list_v1", "run_subagent_get_v1", "run_subagent_messages_list_v1", "run_subagent_tools_list_v1",
+  "run_subagent_input_v1", "run_subagent_interrupt_v1", "run_subagent_respond_v1",
+  "interaction_list", "interaction_get", "interaction_respond",
 ]);
 export type OperatorToolName = z.infer<typeof OperatorToolNameSchema>;
 
