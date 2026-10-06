@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import type { AgentFilePublishInput, AgentFilePublishResult } from '@graphql/contracts/files'
-import type { AcceptedNodePlacement, DispatchIntent } from '@graphql/contracts/node-placement'
+import type { AgentFilePublishInput, AgentFilePublishResult } from '@foreman-code/contracts/files'
+import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { WorkflowNativeArtifactResults } from './workflowNativeArtifactResults.js'
 
 function fixture() {

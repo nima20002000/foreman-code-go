@@ -138,7 +138,7 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   readonly retainsReviewerSession?: boolean
   prepareReview?(session: NativeSessionReference, job: ReviewJob, signal?: AbortSignal): Promise<void>
   originalApplicationAccess?(session: NativeSessionReference, signal?: AbortSignal):
-    Promise<import('@graphql/contracts/remote-execution').RemoteApplicationAccess>
+    Promise<import('@foreman-code/contracts/remote-execution').RemoteApplicationAccess>
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>

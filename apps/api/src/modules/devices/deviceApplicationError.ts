@@ -1,4 +1,4 @@
-import type { DeviceApplicationFailure } from '@graphql/contracts/device-application'
+import type { DeviceApplicationFailure } from '@foreman-code/contracts/device-application'
 
 const retryability: Readonly<Record<string, boolean>> = {
   'extension-rejected': false,

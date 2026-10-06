@@ -16,7 +16,7 @@ import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.j
 import type { AgentPlacementProducer } from './agentProducer.js'
 import { DomainError } from '../errors.js'
 import { assertRemoteReviewAssignment, remoteReviewerPolicy } from './remoteReviewerAuthority.js'
-import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 
 const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', 'Exact original execution authority is unavailable or revoked.', 403) }
 /** Read-only admission fence. This NEVER issues an entry capability, command,

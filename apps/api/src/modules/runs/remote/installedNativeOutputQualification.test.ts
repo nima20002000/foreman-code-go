@@ -91,6 +91,15 @@ async function fixture() {
 }
 
 describe('installed native output diagnostic wiring', () => {
+  it('refuses revoked authorization before starting a native output diagnostic', async () => {
+    const f = await fixture()
+    f.input.assertCurrent.mockRejectedValue(new Error('Original execution authorization revoked'))
+    await expect(qualifyInstalledNativeOutputSandbox(f.input))
+      .rejects.toThrow('Original execution authorization revoked')
+    expect(recorded.qualify).not.toHaveBeenCalled()
+    expect(f.closeOwner).toHaveBeenCalledOnce()
+  })
+
   it('still closes the original owner when transport cleanup fails', async () => {
     const f = await fixture()
     recorded.close.mockRejectedValue(new Error('Diagnostic transport close failed'))

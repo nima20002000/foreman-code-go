@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile, unlink } from 'node:fs/promises'
-import { withAdvancedDefaults } from '@graphql/contracts'
+import { withAdvancedDefaults } from '@foreman-code/contracts'
 import type { CodexNativeOutputQualificationInput } from '../../harnesses/codexNativeOutput.js'
 import { CodexStdioTransport, object } from '../../harnesses/codexStdioTransport.js'
 import { createInstalledCodexDependencies } from '../../harnesses/installedCodexDependencies.js'
