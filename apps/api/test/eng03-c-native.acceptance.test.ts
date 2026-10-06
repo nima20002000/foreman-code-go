@@ -23,6 +23,8 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
+import { inspectOpenCodeMcpConfiguration } from '../src/modules/harnesses/opencodeMcpConfiguration.js'
+import { APP_MCP_SERVER_NAME, isSupportedAppMcpTokenName } from '../src/modules/harnesses/appMcpLauncher.js'
 
 async function startedBranches({ pool, runId, nodeIds, runs, publicationChanged }: Eng03NativeControl) {
   const deadline = Date.now() + 120_000
@@ -54,11 +56,16 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
   it('uses the fixture MCP launcher and rejects an unmanaged replacement before credential delivery', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'native-workflow-mcp-'))
     const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? harnessBinaries(process.env).codexBinary
+    const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? harnessBinaries(process.env).openCodeBinary
     const manager = new CodexAppServerSessionManager(codexBinary)
     let restore: (() => Promise<void>) | undefined
     try {
       restore = await configureNativeWorkflowMcp({ projectDirectory: directory,
-        runtimeDirectory: directory, codexBinary })
+        runtimeDirectory: directory, codexBinary, openCodeBinary })
+      const openCode = await inspectOpenCodeMcpConfiguration({ binary: openCodeBinary,
+        workingDirectory: directory, serverName: APP_MCP_SERVER_NAME, pure: true })
+      expect(openCode?.automaticEndpoint).toBe(true)
+      expect(isSupportedAppMcpTokenName(openCode?.credentialEnvironmentVariable)).toBe(true)
       const configured = await manager.inspectMcpConfiguration(directory)
       expect(configured.configured.automaticEndpoint).toBe(true)
       const detection = new McpDetectionService(codexMcpInspectorAdapter(manager), 'http://127.0.0.1:1/mcp')
