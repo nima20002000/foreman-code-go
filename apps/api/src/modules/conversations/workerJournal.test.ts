@@ -27,6 +27,19 @@ async function opened() {
   return { ...j, ...f }
 }
 
+it('persists the effective Plan mode with the accepted worker turn and rejects changed-mode replay', async () => {
+  const f = await opened()
+  const hash = commandInputHash({ prompt: 'Accepted Plan task', mode: 'plan' })
+  await f.chats.reserveTurn(f.binding, 'plan-task', hash, { mode: 'plan' })
+  await f.store.close()
+  const reopened = await RemoteOperationJournal.open(f.path)
+  closing.push(() => reopened.close())
+  expect((await reopened.conversations.read(f.binding))?.turns.find(turn => turn.correlationId === 'plan-task')?.sessionMode)
+    .toBe('plan')
+  await expect(reopened.conversations.reserveTurn(f.binding, 'plan-task', hash, { mode: 'regular' }))
+    .rejects.toThrow('original turn input changed')
+})
+
 it('reserves one native creation concurrently and retains its real session across reopen', async () => {
   const f = workerConversationFixture()
   const j = await journal()

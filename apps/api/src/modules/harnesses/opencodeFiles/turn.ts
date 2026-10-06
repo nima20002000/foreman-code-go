@@ -54,6 +54,7 @@ export class OpenCodeFileTurn {
   private processClosed = false
   private publicationsAdopted = false
   private toolAdmissionClosed = false
+  private refreshing = false
 
   constructor(private readonly options: OpenCodeFileTurnOptions) {
     checkFileCondition(Number.isSafeInteger(options.maxFileBytes) && options.maxFileBytes > 0
@@ -294,6 +295,33 @@ export class OpenCodeFileTurn {
     await this.assertChat(signal)
   }
 
+  /** Replace authority on the retained process and inputs; the caller verifies the persisted native acknowledgement. */
+  refreshCredential(rebind: () => Promise<Date>, signal: AbortSignal): Promise<void> {
+    return this.exclusive(async () => {
+      checkFileCondition(this.accepted && this.token && this.toolsReady && this.submission === 'submitted'
+        && !this.closed && !this.revoked && !this.toolAdmissionClosed && !this.processClosed
+        && (this.options.server.generation ?? 0) === this.generation,
+      'FILE_NATIVE_PROCESS_CHANGED', 'Rebind only the retained, acknowledged native file turn.')
+      this.refreshing = true
+      try {
+        this.accepted.expiresAt = await rebind()
+        this.token = undefined
+        await this.options.host.assertSourceIsolation(signal)
+        await this.assertChat(signal)
+        this.token = await this.options.service.sessions.issueForAcceptedSession(this.accepted.context, this.accepted.expiresAt)
+        this.options.rememberCredential?.(this.token)
+        await this.connect(signal)
+      } catch (error) {
+        this.toolAdmissionClosed = true
+        try { await this.revokeReady() }
+        catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], 'Native file credential recovery needs cleanup.', { cause: cleanupError })
+        }
+        throw error
+      } finally { this.refreshing = false }
+    })
+  }
+
   /** Standalone API. Production uses prepareInputs, connectTools and acknowledge. */
   async prepare(admission: AcceptedOpenCodeFileTurn, signal: AbortSignal): Promise<PreparedOpenCodeFiles> {
     return this.exclusive(async () => {
@@ -367,7 +395,7 @@ export class OpenCodeFileTurn {
 
   /** Used only by the per-turn file MCP facade; never serialize this credential. */
   assertCredential(token: string | undefined): asserts token is string {
-    checkFileCondition(!this.closed && !this.revoked && !this.toolAdmissionClosed && this.token && token,
+    checkFileCondition(!this.closed && !this.revoked && !this.toolAdmissionClosed && !this.refreshing && this.token && token,
       'FILE_TURN_CLOSED', 'This file turn is unavailable.')
     checkFileCondition(!this.processClosed && (this.options.server.generation ?? 0) === this.generation,
       'FILE_NATIVE_PROCESS_CHANGED', 'The credential belongs to a previous native process.')

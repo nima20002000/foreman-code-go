@@ -344,9 +344,12 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     }
     const accepted = this.receipt?.turns.find(turn => turn.correlationId === correlationId)
     const submission = this.harness === 'claude' ? accepted?.nativeSubmission : undefined
-    const recoveredTurnId = this.harness === 'codex' && this.options.files
+    const files = this.harness === 'codex' && this.options.files
+      || this.harness === 'opencode' && this.options.openCodeFiles
+    const recoveredTurnId = files
       && accepted?.status !== 'completed' ? accepted?.nativeTurnId : undefined
-    const frame = this.frame({ method: 'conversation.reconcile', session, correlationId })
+    const frame = this.frame({ method: 'conversation.reconcile', session, correlationId,
+      ...(accepted?.sessionMode ? { sessionMode: accepted.sessionMode } : {}) })
     const lease = this.capture(frame, { ...(submission ? { recoveredSubmission: submission } : {}),
       ...(recoveredTurnId ? { recoveredTurnId } : {}) })
     try {

@@ -196,9 +196,13 @@ export async function createInstalledWorkerConversations(input: {
         workflowNodeId: owner.workflowNodeId, correlationId: options.correlationId,
         workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
     }
+    const nativeFiles = openCodeFiles
     return { manager, inspector, nativeOwner, start,
       ...(harness === 'codex' && appMcpAccess === 'none' ? {
         recoverFiles: (request, nativeTurnId, signal) => files.recover(request, nativeTurnId, signal),
+      } satisfies Pick<WorkerConversationAllocation, 'recoverFiles'> : {}),
+      ...(nativeFiles ? {
+        recoverFiles: (request, nativeTurnId, signal) => nativeFiles.recover(request, nativeTurnId, signal),
       } satisfies Pick<WorkerConversationAllocation, 'recoverFiles'> : {}),
       async close() {
         await manager.dispose?.()

@@ -25,15 +25,16 @@ async function fixture(readOnly = false) {
     configuration: configuration() }
   const request = workerConversationFixture('agent', 'opencode')
   const source: WorkerConversationRpcRequest = { method: 'conversation.start-turn', binding: request.binding,
-    admissionId: randomUUID(), session: request.session, prompt: 'Read the accepted file',
+    admissionId: randomUUID(), session: { ...request.session, nativeSessionId: context.nativeSessionId }, prompt: 'Read the accepted file',
     correlationId: identity.clientCorrelationId }
   let acknowledgedTurnId: string | undefined
   let token: string | undefined
   let endpoint: string | undefined
   const adopt = vi.fn(async () => {})
-  const main = new MainWorkerOpenCodeFiles({ service: () => files.service,
+  const ports = { service: () => files.service,
     sourceHost: () => ({ bootId: randomUUID(), storageRoot: '/main-private-vault' }),
-    resolve: async () => ({ context, attachments: [ref] }), adopt })
+    resolve: async () => ({ context, attachments: [ref] }), adopt }
+  let main = new MainWorkerOpenCodeFiles(ports)
   const server = new FixtureServer()
   server.config = { mcp: { 'foreman-code': { enabled: false }, graphql: { enabled: false } } }
   server.mcp = { 'foreman-code': { status: 'disabled' }, graphql: { status: 'disabled' } }
@@ -52,8 +53,10 @@ async function fixture(readOnly = false) {
   const worker = createWorkerOpenCodeFiles({ stateDirectory: root, source: () => source, server,
     signal: AbortSignal.timeout(10000), assertCurrent: async () => {}, assertSourceIsolation: isolation,
     callbacks: { openCodeFiles: async (original, received, action, signal) => {
-      expect(original).toEqual(source)
-      return main.handle(received, action, { readOnly, acknowledgedTurnId, signal })
+      expect(original.binding).toEqual(source.binding)
+      expect('correlationId' in original && original.correlationId).toBe(source.correlationId)
+      return main.handle(received, action, { readOnly, acknowledgedTurnId, signal,
+        recovering: original.method === 'conversation.reconcile' })
     } } })
   const client = new Client({ name: 'Worker OpenCode file transport test', version: '1' })
   let managed: OpenCodeManagedFileTurn | undefined
@@ -69,6 +72,18 @@ async function fixture(readOnly = false) {
       await client.connect(new StreamableHTTPClientTransport(new URL(endpoint!), { authProvider: { token: async () => token! } }))
       return token!
     },
+    async recover() {
+      await main.close()
+      main = new MainWorkerOpenCodeFiles(ports)
+      const recovery: WorkerConversationRpcRequest = { method: 'conversation.reconcile', binding: source.binding,
+        session: source.session, correlationId: source.correlationId, admissionId: randomUUID(),
+        sessionMode: readOnly ? 'plan' : 'regular' }
+      await worker.recover(recovery, identity.nativeTurnId, AbortSignal.timeout(10000))
+      const renewed = token!
+      await worker.recover(recovery, identity.nativeTurnId, AbortSignal.timeout(10000))
+      expect(token).toBe(renewed)
+      return renewed
+    },
     async close() {
       const errors: unknown[] = []
       for (const close of [() => client.close(),
@@ -80,6 +95,46 @@ async function fixture(readOnly = false) {
       if (errors.length) throw new AggregateError(errors, 'Worker file fixture cleanup failed.')
     } }
 }
+
+it('rebinds Main authority on the same listener and copies, revokes the old credential and publishes retained edits', async () => {
+  const f = await fixture()
+  try {
+    const managed = await f.prepare()
+    const original = await f.acknowledge()
+    const copy = await f.client.callTool({ name: 'files.create_working_copy', arguments: {
+      commandId: randomUUID(), source: f.ref, destination: f.files.scope,
+    } })
+    const artifactId = AgentFileCreateWorkingCopyResultSchema.parse(copy.structuredContent).value.artifactId
+    const path = await managed.bridge.workingCopyLocation(original, artifactId)
+    await writeFile(path, '# edits before reconnection\n')
+    const roots = await readdir(join(f.root, 'opencode-chat-files'))
+    const renewed = await f.recover()
+    expect(renewed).not.toBe(original)
+    await expect(f.files.sessions.authenticate(original)).rejects.toMatchObject({ status: 401 })
+    expect(await managed.bridge.workingCopyLocation(renewed, artifactId)).toBe(path)
+    expect(await readFile(path, 'utf8')).toBe('# edits before reconnection\n')
+    expect(await readdir(join(f.root, 'opencode-chat-files'))).toEqual(roots)
+    const result = await f.client.callTool({ name: 'files.publish_result', arguments: {
+      commandId: randomUUID(), artifactId, scope: f.files.scope, filename: 'reconnected.md', mediaType: 'text/markdown',
+    } })
+    const published = AgentFilePublishResultSchema.parse(result.structuredContent)
+    const read = await f.files.service.read(renewed, { fileId: published.value.file.fileId,
+      revisionId: published.value.revision.revisionId, offset: 0, length: 65536 })
+    expect(read.status === 'ready' && Buffer.from(read.contentBase64, 'base64').toString('utf8'))
+      .toBe('# edits before reconnection\n')
+  } finally { await f.close() }
+})
+
+it('keeps recovered Plan credentials read-only', async () => {
+  const f = await fixture(true)
+  try {
+    await f.prepare()
+    await f.acknowledge()
+    await f.recover()
+    expect((await f.client.listTools()).tools.map(tool => tool.name)).toEqual(['files.list', 'files.read'])
+    expect(f.files.tools.artifacts.size).toBe(0)
+  } finally { await f.close() }
+})
 
 it('carries accepted inputs and native working copies through the file-only MCP listener and Main publication service', async () => {
   const f = await fixture()

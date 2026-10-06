@@ -34,6 +34,7 @@ export class MainWorkerOpenCodeFiles {
   private token: string | undefined
   private issuance: Promise<string> | undefined
   private revoked = false
+  private recoveryVerified = false
   private readonly writes = new Map<string, WriteTransfer>()
 
   constructor(private readonly ports: MainOpenCodeFilePorts) {}
@@ -67,6 +68,7 @@ export class MainWorkerOpenCodeFiles {
 
   async handle(identity: WorkerOpenCodeFileIdentity, action: WorkerOpenCodeFileAction, input: {
     readOnly: boolean; acknowledgedTurnId?: string | undefined; signal: AbortSignal;
+    recovering?: boolean;
   }): Promise<unknown> {
     input.signal.throwIfAborted()
     const prepared = await this.preparation(identity, input.readOnly)
@@ -81,6 +83,13 @@ export class MainWorkerOpenCodeFiles {
     if (action.phase === 'read-input') {
       if (!attachments.some(ref => ref.fileId === action.input.fileId && ref.revisionId === action.input.revisionId)) this.denied()
       return service.readAccepted(context, action.input)
+    }
+    if (action.phase === 'recover') {
+      if (!input.recovering || input.acknowledgedTurnId !== context.turnId
+        || !isDeepStrictEqual(context, action.context) || this.issuance || this.revoked) this.denied()
+      await service.sessions.recoverAcceptedSession(context)
+      this.recoveryVerified = true
+      return { acknowledged: true }
     }
     if (action.phase === 'close') {
       await this.close()
@@ -99,7 +108,8 @@ export class MainWorkerOpenCodeFiles {
     }
     if (input.acknowledgedTurnId !== context.turnId) this.denied()
     if (action.phase === 'issue') {
-      if (!isDeepStrictEqual(context, action.context) || this.revoked) this.denied()
+      if (!isDeepStrictEqual(context, action.context) || this.revoked
+        || input.recovering && !this.recoveryVerified) this.denied()
       this.issuance ??= service.sessions.issueForAcceptedSession(context, new Date(action.expiresAt), 'opencode')
       this.token = await this.issuance
       if (this.revoked) {

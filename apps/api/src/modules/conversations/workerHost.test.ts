@@ -260,6 +260,7 @@ for (const harness of ['codex', 'claude', 'opencode'] as const) {
     await vi.waitFor(async () => expect((await f.journal.conversations.read(f.binding))?.turns[0]?.status).toBe('completed'))
     expect(f.manager.prompts).toEqual(['One planned task'])
     expect(f.manager.modes).toEqual(['plan'])
+    expect((await f.journal.conversations.read(f.binding))?.turns[0]?.sessionMode).toBe('plan')
     const controls = await f.request({ method: 'conversation.controls-read', session: f.session })
     expect(controls).toMatchObject({ context: { usedTokens: 50, capacityTokens: 1000, lifetimeTokens: 350 }, preferences })
     expect(receipt(controls).closed).toBe(false)

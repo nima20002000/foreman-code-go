@@ -51,6 +51,7 @@ const artifact = { token, artifactId: z.uuid() }
 const transfer = { ...artifact, transferId: z.uuid(), writeId: z.uuid() }
 export const WorkerOpenCodeFileActionSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('prepare') }).strict(),
+  z.object({ phase: z.literal('recover'), context: WorkerOpenCodeFileContextSchema }).strict(),
   z.object({ phase: z.literal('read-input'), input: z.object({ fileId: id, revisionId: id,
     offset: z.number().int().nonnegative(), length: z.number().int().min(1).max(65536) }).strict() }).strict(),
   z.object({ phase: z.literal('issue'), context: WorkerOpenCodeFileContextSchema,

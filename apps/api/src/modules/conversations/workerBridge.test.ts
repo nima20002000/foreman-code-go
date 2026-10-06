@@ -40,12 +40,13 @@ it('binds OpenCode file callbacks to their admitted chat and persisted acknowled
   const current = vi.fn(async () => {})
   const submitted = vi.fn(async () => {})
   const bridge = new MainWorkerConversationBridge()
+  const openCodeFiles = { service: () => files.service,
+    sourceHost: () => ({ bootId: f.connection.bootId, storageRoot: '/main-private-vault' }),
+    resolve: async () => ({ context, attachments: [ref] }), adopt: async () => {} }
   const lease = bridge.capture({ request: { method: 'conversation.start-turn', binding, session,
     prompt: 'Accepted input', correlationId, sessionMode: 'plan' }, current,
   channel: { binding: f.connection, request: async () => ({ payload: {} }) }, callbacks: {
-    submitted, openCodeFiles: { service: () => files.service,
-      sourceHost: () => ({ bootId: f.connection.bootId, storageRoot: '/main-private-vault' }),
-      resolve: async () => ({ context, attachments: [ref] }), adopt: async () => {} },
+    submitted, openCodeFiles,
   } })
   const invoke = (action: unknown, actual = identity, connection = f.connection) => bridge.handle({
     method: 'conversation.opencode-files', binding, admissionId: lease.admissionId, identity: actual, action,
@@ -58,13 +59,28 @@ it('binds OpenCode file callbacks to their admitted chat and persisted acknowled
     await bridge.handle({ method: 'conversation.submitted', binding, admissionId: lease.admissionId,
       correlationId, identity: { nativeTurnId: turnId } }, f.connection, AbortSignal.timeout(5000))
     expect(submitted).toHaveBeenCalledOnce()
-    await expect(invoke(issue)).resolves.toMatchObject({ token: expect.any(String) })
+    const original = await invoke(issue) as { token: string }
     await expect(invoke({ phase: 'prepare' }, { ...identity, nativeSessionId: 'foreign' }))
       .rejects.toMatchObject({ status: 403 })
     await expect(invoke({ phase: 'prepare' }, identity, { ...f.connection, connectionGeneration: 2 }))
       .rejects.toMatchObject({ status: 403 })
     current.mockRejectedValueOnce(new Error('Sender revoked'))
     await expect(invoke({ phase: 'read-input', input: { ...ref, offset: 0, length: 1 } })).rejects.toThrow('Sender revoked')
+    await lease.close()
+    const recovered = bridge.capture({ request: { method: 'conversation.reconcile', binding, session,
+      correlationId, sessionMode: 'plan' }, current, recoveredTurnId: turnId,
+    channel: { binding: f.connection, request: async () => ({ payload: {} }) }, callbacks: { openCodeFiles } })
+    const recover = (action: unknown) => bridge.handle({ method: 'conversation.opencode-files', binding,
+      admissionId: recovered.admissionId, identity, action }, f.connection, AbortSignal.timeout(5000))
+    await expect(recover(issue)).rejects.toMatchObject({ status: 403 })
+    await expect(recover({ phase: 'recover', context: { ...prepared.context, allowMutation: true } }))
+      .rejects.toMatchObject({ status: 403 })
+    await recover({ phase: 'recover', context: prepared.context })
+    const replacement = await recover(issue) as { token: string }
+    expect(replacement.token).not.toBe(original.token)
+    await expect(files.sessions.authenticate(original.token)).rejects.toMatchObject({ status: 401 })
+    expect((await files.sessions.authenticate(replacement.token)).context.allowMutation).toBe(false)
+    await recovered.close()
   } finally {
     await lease.close()
     await bridge.close()

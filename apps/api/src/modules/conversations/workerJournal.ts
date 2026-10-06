@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { CompactionState, ExecutionResult, NativeSessionReference, SessionPreferences } from '@foreman-code/contracts'
+import type { CompactionState, ExecutionResult, NativeSessionReference, SessionPreferences, SessionMode } from '@foreman-code/contracts'
 import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
@@ -163,17 +163,20 @@ export class WorkerConversationJournal {
     })
   }
 
-  reserveTurn(binding: WorkerConversationBinding, correlationId: string, inputHash: string) {
+  reserveTurn(binding: WorkerConversationBinding, correlationId: string, inputHash: string,
+    options?: { mode: SessionMode }) {
     return this.change(binding, record => {
       writable(record)
       const original = record.turns.find(turn => turn.correlationId === correlationId)
       if (original) {
-        if (original.inputHash !== inputHash) conflict('The original turn input changed.')
+        if (original.inputHash !== inputHash || original.sessionMode !== undefined
+          && original.sessionMode !== (options?.mode ?? 'regular')) conflict('The original turn input changed.')
         return { dispatch: false, record }
       }
       if (unsettled(record)) conflict('Recover the pending native operation before sending another turn.')
       if (record.turns.length >= 1000) conflict('The conversation turn journal is full.')
-      record.turns.push({ correlationId, inputHash, status: 'reserved', nativeTurnId: null })
+      record.turns.push({ correlationId, inputHash, status: 'reserved', nativeTurnId: null,
+        sessionMode: options?.mode ?? 'regular' })
       return { dispatch: true, record }
     })
   }

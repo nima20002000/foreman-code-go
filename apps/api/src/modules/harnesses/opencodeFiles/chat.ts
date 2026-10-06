@@ -45,6 +45,7 @@ export interface OpenCodeChatFiles {
    * An unavailable reader/host/listener for a file-enabled turn must THROW.
    */
   resolve(identity: OpenCodeChatFileIdentity, signal: AbortSignal): Promise<OpenCodeChatFileBinding | undefined>
+  retain?(identity: OpenCodeChatFileIdentity, turn: OpenCodeManagedFileTurn): void
 }
 
 /** Retained by the native OwnedTurn, not by an SSE subscription. */
@@ -116,7 +117,9 @@ export async function prepareOpenCodeChatFiles(runtime: OpenCodeChatFiles,
   const unmount = await binding.mount(createOpenCodeFileMcpFacade(binding.options.service, () => bridge))
   try {
     const inputs = await bridge.prepareInputs(admission, binding.read, signal)
-    return new OpenCodeManagedFileTurn(bridge, inputs, unmount, identity.nativeTurnId)
+    const managed = new OpenCodeManagedFileTurn(bridge, inputs, unmount, identity.nativeTurnId)
+    runtime.retain?.(identity, managed)
+    return managed
   } catch (error) {
     const errors: unknown[] = [error]
     try { await bridge.retryCleanup(AbortSignal.timeout(10_000)) } catch (cleanup) { errors.push(cleanup) }

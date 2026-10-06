@@ -53,6 +53,7 @@ export const WorkerConversationTurnSchema = z.object({
   correlationId: id, inputHash: digest,
   status: z.enum(['reserved', 'submitted', 'completed', 'uncertain']),
   nativeTurnId: id.nullable(), nativeSubmission: NativeMessageSubmissionSchema.optional(),
+  sessionMode: SessionModeSchema.optional(),
   result: z.lazy(() => ExecutionResultSchema).optional(),
 }).strict()
 export const WorkerConversationReceiptSchema = z.object({
@@ -166,7 +167,7 @@ export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method',
     configuration: WorkerConversationConfigurationSchema, applicationAccess }).strict(),
   z.object({ method: z.literal('conversation.release-preparation'), ...binding }).strict(),
   z.object({ method: z.enum(['conversation.history', 'conversation.reconcile']), ...native,
-    correlationId: id.optional(), before: id.optional() }).strict(),
+    correlationId: id.optional(), before: id.optional(), sessionMode: SessionModeSchema.optional() }).strict(),
   z.object({ method: z.enum(['conversation.capabilities', 'conversation.inspect-mcp']), ...binding,
     configuration: WorkerConversationConfigurationSchema }).strict(),
   z.object({ method: z.literal('conversation.inspect-entry'), ...binding,

@@ -465,7 +465,8 @@ export class WorkerConversationHost {
       const creation = await this.ports.journal.reserveCreation(request.binding, request.operationId,
         commandInputHash({ mode: 'initial-turn', correlationId: request.correlationId }))
       const turn = await this.ports.journal.reserveTurn(request.binding, request.correlationId, commandInputHash({
-        prompt: request.prompt, mode: request.sessionMode ?? 'regular', preferences: request.preferences ?? null }))
+        prompt: request.prompt, mode: request.sessionMode ?? 'regular', preferences: request.preferences ?? null }),
+      { mode: request.sessionMode ?? 'regular' })
       if (creation.dispatch && turn.dispatch) {
         if (request.preferences) {
           await manager.configureSessionPreferences?.(request.preferences)
@@ -490,7 +491,8 @@ export class WorkerConversationHost {
     switch (request.method) {
       case 'conversation.start-turn': {
         const reserved = await this.ports.journal.reserveTurn(request.binding, request.correlationId, commandInputHash({
-          prompt: request.prompt, mode: request.sessionMode ?? 'regular', preferences: request.preferences ?? null }))
+          prompt: request.prompt, mode: request.sessionMode ?? 'regular', preferences: request.preferences ?? null }),
+        { mode: request.sessionMode ?? 'regular' })
         if (reserved.dispatch) this.pump(resident, request, connection, () => manager.startTurn(request.session,
           this.callbacks(resident, request, this.lifetime.signal), this.lifetime.signal))
         return { receipt: await this.ports.journal.read(request.binding) }
@@ -503,6 +505,7 @@ export class WorkerConversationHost {
           await this.authorize(request, connection, signal)
         }
         if (request.method === 'conversation.reconcile' && turn?.nativeTurnId && turn.status !== 'completed') {
+          if ((request.sessionMode ?? 'regular') !== (turn.sessionMode ?? 'regular')) unavailable('The recovered turn mode changed.')
           await resident.allocation.recoverFiles?.(request, turn.nativeTurnId, signal)
           await this.authorize(request, connection, signal)
         }

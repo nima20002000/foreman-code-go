@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { lstat, mkdir, mkdtemp, realpath, rmdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { z } from 'zod'
@@ -6,7 +7,7 @@ import { AgentFileReadResultSchema, MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS } fr
 import { WorkerOpenCodeFilePreparationSchema, type WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { FileMcpService } from '../files/tools/mcpServer.js'
 import { createNativeFileMcpServer } from '../files/tools/nativeServer.js'
-import type { OpenCodeChatFiles } from '../harnesses/opencodeFiles/chat.js'
+import type { OpenCodeChatFiles, OpenCodeChatFileIdentity, OpenCodeManagedFileTurn } from '../harnesses/opencodeFiles/chat.js'
 import { LocalOpenCodeExecutionFiles } from '../harnesses/opencodeFiles/host.js'
 import { checkFileCondition } from '../harnesses/opencodeFiles/types.js'
 import type { OpenCodeServerController } from '../harnesses/opencodeTransport.js'
@@ -15,6 +16,12 @@ import { createWorkerOpenCodeFileService } from './workerOpenCodeFileService.js'
 import type { assertWorkerOpenCodeFileHost } from './workerOpenCodeFileHost.js'
 
 const acknowledged = z.object({ acknowledged: z.literal(true) }).strict()
+interface Delivery {
+  source: WorkerConversationRpcRequest
+  identity: OpenCodeChatFileIdentity
+  prepared: z.infer<typeof WorkerOpenCodeFilePreparationSchema>
+  turn?: OpenCodeManagedFileTurn
+}
 
 /** The installed native manager owns each listener and filesystem copy until settlement. */
 export function createWorkerOpenCodeFiles(input: {
@@ -27,13 +34,18 @@ export function createWorkerOpenCodeFiles(input: {
   signal: AbortSignal
 }) {
   const cleanups = new Set<() => Promise<void>>()
+  const deliveries = new Map<string, Delivery>()
+  const key = (identity: OpenCodeChatFileIdentity) => JSON.stringify([identity.nativeSessionId, identity.nativeTurnId])
   const adapter: OpenCodeChatFiles = { async resolve(identity, signal) {
     const source = input.source()
     await input.assertCurrent(source, signal)
-    const proxy = createWorkerOpenCodeFileService({ ...input, source: () => source, identity })
+    checkFileCondition(!deliveries.has(key(identity)), 'FILE_TURN_CONFLICT', 'The native file turn is already retained.')
+    let delivery: Delivery | undefined
+    const proxy = createWorkerOpenCodeFileService({ ...input, source: () => delivery?.source ?? source, identity })
     const raw = await proxy.call({ phase: 'prepare' }, signal)
     if (raw === null) return undefined
     const prepared = WorkerOpenCodeFilePreparationSchema.parse(raw)
+    delivery = { source, identity: structuredClone(identity), prepared }
     const parent = join(input.stateDirectory, 'opencode-chat-files')
     await mkdir(parent, { recursive: true, mode: 0o700 })
     const stat = await lstat(parent)
@@ -54,6 +66,7 @@ export function createWorkerOpenCodeFiles(input: {
       await rmdir(root)
       closed = true
       cleanups.delete(cleanup)
+      deliveries.delete(key(identity))
     }
     cleanups.add(cleanup)
     try {
@@ -61,9 +74,10 @@ export function createWorkerOpenCodeFiles(input: {
       const host = new LocalOpenCodeExecutionFiles({ root, executionHostId: `worker:${randomUUID()}`,
         maxFileBytes: MAX_FILE_BYTES,
         assertSourceIsolation: async checkSignal => {
-          await input.assertCurrent(source, checkSignal)
-          await input.assertSourceIsolation(input.server.nativePid ?? 0, prepared.sourceHost, checkSignal)
+          await input.assertCurrent(delivery!.source, checkSignal)
+          await input.assertSourceIsolation(input.server.nativePid ?? 0, delivery!.prepared.sourceHost, checkSignal)
         } })
+      deliveries.set(key(identity), delivery)
       return {
         admission: { context: prepared.context, attachments: prepared.attachments,
           expiresAt: new Date(prepared.expiresAt), executionHostId: host.executionHostId,
@@ -90,6 +104,38 @@ export function createWorkerOpenCodeFiles(input: {
       }
       throw error
     }
+  }, retain(identity, turn) {
+    const delivery = deliveries.get(key(identity))
+    checkFileCondition(delivery && !delivery.turn && isDeepStrictEqual(delivery.identity, identity),
+      'FILE_TURN_CONFLICT', 'Retain only the prepared native file identity.')
+    delivery.turn = turn
   } }
-  return { adapter, async close() { await Promise.all([...cleanups].map(cleanup => cleanup())) } }
+  return { adapter,
+    async recover(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.history' | 'conversation.reconcile' }>,
+      nativeTurnId: string, signal: AbortSignal) {
+      const found = [...deliveries.values()].filter(value => value.identity.nativeSessionId === request.session.nativeSessionId
+        && value.identity.nativeTurnId === nativeTurnId && value.identity.clientCorrelationId === request.correlationId
+        && isDeepStrictEqual(value.source.binding, request.binding))
+      if (!found.length) return
+      checkFileCondition(found.length === 1 && request.method === 'conversation.reconcile' && request.admissionId,
+        'FILE_CONTEXT_DENIED', 'Recover the original file turn through an admitted reconciliation.')
+      const delivery = found[0]!
+      if (delivery.source.admissionId === request.admissionId) return
+      checkFileCondition(delivery.turn, 'FILE_TURN_CONFLICT', 'The native file input has not been retained.')
+      await input.assertCurrent(request, signal)
+      const call = (action: Parameters<typeof input.callbacks.openCodeFiles>[2]) =>
+        input.callbacks.openCodeFiles(request, delivery.identity, action, signal)
+      const prepared = WorkerOpenCodeFilePreparationSchema.parse(await call({ phase: 'prepare' }))
+      checkFileCondition(isDeepStrictEqual(prepared.context, delivery.prepared.context)
+        && isDeepStrictEqual(prepared.attachments, delivery.prepared.attachments),
+      'FILE_CONTEXT_DENIED', 'Recovery cannot change the original file scope, pins or permissions.')
+      await delivery.turn.bridge.refreshCredential(async () => {
+        acknowledged.parse(await call({ phase: 'recover', context: prepared.context }))
+        delivery.source = request
+        delivery.prepared = prepared
+        return new Date(prepared.expiresAt)
+      }, signal)
+    },
+    async close() { await Promise.all([...cleanups].map(cleanup => cleanup())) },
+  }
 }

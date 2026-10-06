@@ -66,8 +66,9 @@ export class MainWorkerConversationBridge {
       admission.identities.set(submission.clientCorrelationId, { nativeSubmission: structuredClone(submission) })
     }
     if (input.recoveredTurnId) {
-      if (request.method !== 'conversation.reconcile' || request.binding.harness !== 'codex'
-        || !request.correlationId || !admission.callbacks.files) denied()
+      const files = request.binding.harness === 'codex' && admission.callbacks.files
+        || request.binding.harness === 'opencode' && admission.callbacks.openCodeFiles
+      if (request.method !== 'conversation.reconcile' || !request.correlationId || !files) denied()
       admission.identities.set(request.correlationId, { nativeTurnId: input.recoveredTurnId })
     }
     this.admissions.set(admissionId, admission)
@@ -165,9 +166,11 @@ export class MainWorkerConversationBridge {
       const request = admission.request
       const session = 'session' in request ? request.session : admission.session
       const identity = callback.identity
+      const recovering = request.method === 'conversation.reconcile' && request.correlationId !== undefined
+        && admission.identities.get(request.correlationId)?.nativeTurnId === identity.nativeTurnId
       if (!admission.openCodeFiles || callback.binding.harness !== 'opencode'
         || callback.binding.appMcpAccess !== 'none'
-        || request.method !== 'conversation.start-turn' && request.method !== 'conversation.initial-turn'
+        || !recovering && request.method !== 'conversation.start-turn' && request.method !== 'conversation.initial-turn'
         || !('correlationId' in request) || identity.clientCorrelationId !== request.correlationId
         || !session || session.nativeSessionId !== identity.nativeSessionId
         || identity.nativeTurnId !== nativeMessageId(request.correlationId)
@@ -177,7 +180,8 @@ export class MainWorkerConversationBridge {
       const submitted = admission.identities.get(request.correlationId)?.nativeTurnId
       const result = await admission.openCodeFiles.handle(identity, callback.action, {
         signal, acknowledgedTurnId: submitted,
-        readOnly: request.sessionMode === 'plan' || identity.configuration.nativeAgent === 'plan',
+        readOnly: 'sessionMode' in request && request.sessionMode === 'plan' || identity.configuration.nativeAgent === 'plan',
+        recovering,
       })
       await this.current(admission, callback.binding, connection, signal)
       return result
