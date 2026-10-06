@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.36] - 2026-10-06
+
+### Fixed
+
+- Copy Codex plugin caches into disposable native acceptance storage without following stale internal version aliases. Preserve linked caches and available plugin assets while isolating writes from the original profile.
+- Verify internal and external plugin links stay isolated and temporary storage is removed on success and failure.
+
 ## [0.0.35] - 2026-10-06
 
 ### Fixed
