@@ -188,6 +188,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const domain = publicRequestError(error)
     if (domain.status >= 500) request.log.error({ err: error }, domain.message)
     const mcpRequest = request.url.split('?')[0] === '/mcp'
+    if (mcpRequest && domain.status >= 400 && domain.status < 500 && domain.status !== 401) {
+      request.log.warn({ code: domain.code, statusCode: domain.status }, 'MCP request rejected')
+    }
     if (options.operator && (domain.status === 401 || domain.status === 403)
       && (request.url.startsWith('/api/') || mcpRequest)) {
       await options.operator.services.commands.recordDenied(

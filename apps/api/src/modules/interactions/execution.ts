@@ -1862,6 +1862,13 @@ export class ApprovalExecutionCoordinator {
       if (credential) knownSecrets.push(...Object.values(credential.environment.variables))
       const error = safeError(signal.aborted && signal.reason instanceof DomainError
         && signal.reason.code === 'WORKER_CREDENTIAL_EXPIRING' ? signal.reason : rawError)
+      // Codes only: provider messages may carry model content or secrets.
+      componentLogger('engine').warn({ executionId: execution.id, aborted: signal.aborted,
+        code: error instanceof DomainError ? error.code : rawError instanceof HarnessExecutionError
+          ? rawError.result.outcome === 'failed' ? rawError.result.error?.code ?? null : rawError.result.outcome
+          : error instanceof Error ? error.constructor.name : typeof error,
+        reason: error instanceof DomainError && typeof (error.details as { reason?: unknown } | undefined)?.reason === 'string'
+          ? (error.details as { reason: string }).reason : undefined }, 'Workflow native execution failed')
       if (execution.state === 'completed' && !signal.aborted) {
         input.owner.assertOwned()
         throw error

@@ -127,6 +127,10 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
     await server.connect(transport)
     reply.hijack()
+    reply.raw.once('finish', () => {
+      if (reply.raw.statusCode >= 400) request.log.warn({ statusCode: reply.raw.statusCode, audience: principal.audience, role,
+        method: (request.body as { method?: unknown } | null)?.method ?? null }, 'MCP transport rejected request')
+    })
     await transport.handleRequest(request.raw, reply.raw, request.body)
   })
   for (const method of ['GET', 'DELETE'] as const) {
