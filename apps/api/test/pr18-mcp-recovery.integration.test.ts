@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { beforeEach, afterEach, expect, it, vi } from 'vitest'
@@ -17,9 +18,9 @@ let reads = 0, writes = 0, loseAcknowledgement = false, preWriteFailure = false
 const cleanup = vi.fn(async () => {})
 const endpoint = 'http://127.0.0.1:3000/mcp'
 beforeEach(async () => {
-  admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+  admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
   schema = `pr18_mcp_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   pool = new pg.Pool({ ...admin.options, max: 4, options: `-c search_path=${schema}` })
   await applyApplicationMigrations(pool)
   owner = (await new PostgresAccessService(pool).issue({ name: 'PR18 owner', audience: 'operator',
@@ -44,7 +45,7 @@ beforeEach(async () => {
 }, 30_000)
 afterEach(async () => {
   await service?.shutdown(); await pool?.end()
-  await admin?.query(`drop schema if exists "${schema}" cascade`); await admin?.end()
+  await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve()); await admin?.end()
 })
 function managed(harness: 'codex' | 'opencode' = 'codex') {
   return { harness, commandId: randomUUID(), preset: 'graphql' as const, installed: true, expectedRevision: snapshots[harness].revision }

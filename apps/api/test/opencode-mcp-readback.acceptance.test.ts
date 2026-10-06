@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
@@ -92,7 +93,9 @@ it.each([TEXT_MIRROR_BYTES - 1, TEXT_MIRROR_BYTES + 1])(
       const child = spawn(process.env.OPENCODE_BINARY ?? 'opencode', [
         'run', '--model', 'fixture/readback', '--agent', 'readback', '--format', 'json', 'Read the interaction.',
       ], { cwd: directory, timeout: 45_000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'], env: {
-        PATH: process.env.PATH, OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+        PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR,
+        CODEX_HOME: process.env.CODEX_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+        OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
         XDG_CONFIG_HOME: join(directory, 'config'), XDG_DATA_HOME: join(directory, 'data'),
         XDG_CACHE_HOME: join(directory, 'cache'), XDG_STATE_HOME: join(directory, 'state'),
       } })
@@ -115,7 +118,7 @@ it.each([TEXT_MIRROR_BYTES - 1, TEXT_MIRROR_BYTES + 1])(
           visible[0]!.content!.text.length + visible[1]!.content!.text.length))
     } finally {
       await app.close()
-      await rm(directory, { recursive: true, force: true })
+      await removeFixtureDirectory(directory)
     }
   }, 60_000,
 )

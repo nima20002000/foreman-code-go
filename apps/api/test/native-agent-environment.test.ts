@@ -23,6 +23,29 @@ it('keeps provider credentials and native login paths while excluding production
   assert.equal(source.GRAPHQL_PRODUCTION_DB_PASSWORD, 'production-database-credential')
 })
 
+it('withholds database selectors and test-controller credentials from native agents', () => {
+  const source = {
+    DATABASE_URL: 'postgresql://test/database',
+    TEST_DATABASE_URL: 'postgresql://test/database',
+    SUBAGENT_CORE_ADMIN_DATABASE_URL: 'postgresql://test/database',
+    HRT_F03_DATABASE_URL: 'postgresql://test/database',
+    PGPASSWORD: 'controller-password',
+    FOREMAN_CODE_TEST_OWNER: 'controller-owner',
+    FOREMAN_CODE_TEST_OPENAI_API_KEY: 'test-key-alias',
+    NODE_OPTIONS: '--import=controller-bootstrap.mjs',
+    OPENAI_API_KEY: 'explicit-provider-key',
+    HOME: '/private/native-home',
+  }
+  const environment = inheritedAgentEnvironment(source)
+  for (const key of Object.keys(source)) {
+    if (key === 'OPENAI_API_KEY' || key === 'HOME') continue
+    assert.equal(environment[key], undefined)
+  }
+  assert.equal(environment.OPENAI_API_KEY, source.OPENAI_API_KEY)
+  assert.equal(environment.HOME, source.HOME)
+  assert.equal(source.HRT_F03_DATABASE_URL, 'postgresql://test/database')
+})
+
 it('starts native children with their binary directory first and removes pnpm bin directories', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'native-path-'))
   const output = join(directory, 'path.txt')

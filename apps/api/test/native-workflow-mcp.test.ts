@@ -43,6 +43,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
   const previousSourceLauncher = process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
   const previousOpenCodeConfig = process.env.OPENCODE_CONFIG
   const previousOpenCodeConfigDirectory = process.env.OPENCODE_CONFIG_DIR
+  const previousAuthentication = process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
   let restore: (() => Promise<void>) | undefined
   try {
     const home = join(directory, 'source-home')
@@ -56,6 +57,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
     process.env.OPENCODE_CONFIG_DIR = sourceConfigDirectory
     await writeFile(join(home, 'auth.json'), JSON.stringify({ fixture: true }), { mode: 0o600 })
     process.env.CODEX_HOME = home
+    process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE = join(home, 'auth.json')
     process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'source-launcher')
     source.name = identity.name
     source.token = identity.token
@@ -107,6 +109,8 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
       else process.env.OPENCODE_CONFIG = previousOpenCodeConfig
       if (previousOpenCodeConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR
       else process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDirectory
+      if (previousAuthentication === undefined) delete process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
+      else process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE = previousAuthentication
       await rm(directory, { recursive: true, force: true })
     }
   }

@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -98,7 +99,7 @@ describe.skipIf(!postgresEnabled)('FIL-01 artifact byte lifecycle', () => {
     }
     async function close() {
       for (const value of tokens) await sessions.revoke(value)
-      await rm(root, { recursive: true, force: true })
+      await removeFixtureDirectory(root)
     }
     return { owner, scope, root, repository, files, bytes, tools, sessions, artifacts, service,
       context, token, issue, upload, reference, retain, close }

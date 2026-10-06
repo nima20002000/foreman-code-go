@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { expect, it } from 'vitest'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 
 it('keeps source development commands usable after successful and failed production deployment', async () => {
   const script = new URL('../../../scripts/local-production-runtime.mjs', import.meta.url).href
@@ -65,6 +66,6 @@ it('keeps source development commands usable after successful and failed product
     await expect(deployProductionApi(run, blockedDestination)).rejects.toThrow()
     await verifyDevelopment()
   } finally {
-    await rm(directory, { recursive: true, force: true })
+    await removeFixtureDirectory(directory)
   }
 }, 180_000)

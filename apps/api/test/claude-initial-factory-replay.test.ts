@@ -64,8 +64,8 @@ describe('Claude actual initial factory replay: ten admitted-boundary cases', ()
     const pending = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: start.correlationId,
       onSessionObserved: async (session) => { sawSid.resolve(session); await bound.promise }, onMessageSubmitted: ack }))
     const input = await f.next(); expect(ack).not.toHaveBeenCalled()
-    f.init(); const session = await sawSid.promise
-    f.reply(input.uuid); f.result(input.uuid)
+    void f.init(); const session = await sawSid.promise
+    void f.reply(input.uuid); void f.result(input.uuid)
     expect(ack).not.toHaveBeenCalled(); bound.resolve()
     const events = await pending
     expect(session.nativeSessionId).toBe('observed-session')
@@ -76,13 +76,13 @@ describe('Claude actual initial factory replay: ten admitted-boundary cases', ()
     const f = fixture(), input = { prompt: 'first', clientCorrelationId: start.correlationId, onSessionObserved: async () => undefined }
     const output = drain(f.manager.startInitialTurn(start, input)); const message = await f.next()
     f.manager.startInitialTurn(start, input)
-    expect(f.query).toHaveBeenCalledOnce(); f.init(); f.reply(message.uuid); f.result(message.uuid); await output; await f.manager.dispose?.()
+    expect(f.query).toHaveBeenCalledOnce(); void f.init(); void f.reply(message.uuid); void f.result(message.uuid); await output; await f.manager.dispose?.()
   })
   it('failed SID persistence never exposes body or converts uncertainty into replay', async () => {
     const f = fixture(), ack = vi.fn()
     const pending = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: start.correlationId,
       onSessionObserved: async () => { throw new Error('injected bind failure') }, onMessageSubmitted: ack }))
-    const message = await f.next(); f.init(); f.reply(message.uuid)
+    const message = await f.next(); void f.init(); void f.reply(message.uuid)
     await expect(pending).rejects.toThrow('bind failure'); expect(ack).not.toHaveBeenCalled()
     expect(f.query).toHaveBeenCalledOnce(); await f.manager.dispose?.()
   })
@@ -90,18 +90,18 @@ describe('Claude actual initial factory replay: ten admitted-boundary cases', ()
     const f = fixture(); let session!: NativeSessionReference
     const first = drain(f.manager.startInitialTurn(start, { prompt: 'instructions\nfirst', clientCorrelationId: start.correlationId,
       onSessionObserved: async (observed) => { session = observed } }))
-    const a = await f.next(); f.init(); f.reply(a.uuid); f.result(a.uuid); await first
+    const a = await f.next(); void f.init(); void f.reply(a.uuid); void f.result(a.uuid); await first
     const second = drain(f.manager.startTurn(session, { prompt: 'second', clientCorrelationId: 'conversation:request-2' }))
     const b = await f.next(); expect(b.message.content).toBe('second'); expect(b.uuid).not.toBe(a.uuid)
-    f.reply(b.uuid, 'second'); f.result(b.uuid); await second
+    void f.reply(b.uuid, 'second'); void f.result(b.uuid); await second
     expect(f.query).toHaveBeenCalledOnce(); await f.manager.dispose?.()
   })
   it('unowned wake result does not settle the newly admitted prompt', async () => {
     const f = fixture(); let session!: NativeSessionReference
     const pending = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: start.correlationId,
       onSessionObserved: async (observed) => { session = observed } }))
-    const input = await f.next(); f.init(); f.frames.offer({ type: 'result', uuid: 'wake', session_id: 'observed-session', subtype: 'success', is_error: false })
-    f.reply(input.uuid); f.result(input.uuid); await pending
+    const input = await f.next(); void f.init(); void f.frames.offer({ type: 'result', uuid: 'wake', session_id: 'observed-session', subtype: 'success', is_error: false })
+    void f.reply(input.uuid); void f.result(input.uuid); await pending
     expect((await f.manager.reconcile(session, start.correlationId)).terminalTurn?.providerId).toBe(input.uuid)
     await f.manager.dispose?.()
   })
@@ -126,7 +126,7 @@ describe('Claude actual initial factory replay: ten admitted-boundary cases', ()
       qualified: true, state: 'available', path: 'live_callback', reason: 'live_callback' }))
     const f = fixture({ inspectCallbackAvailability: inspect }); let session!: NativeSessionReference
     const events = f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: start.correlationId, onSessionObserved: async (observed) => { session = observed } })[Symbol.asyncIterator]()
-    const first = events.next(), input = await f.next(); f.init(); f.reply(input.uuid); await first
+    const first = events.next(), input = await f.next(); void f.init(); void f.reply(input.uuid); await first
     expect(f.manager.inspectResponseAvailability).toBeTypeOf('function')
     expect((await f.manager.inspectResponseAvailability!(session, { nativeRequestId: 'actual-control-envelope', nativeRequestType: 'canUseTool' })).state).toBe('available')
     expect(inspect).toHaveBeenCalledOnce(); await events.return?.(); await f.manager.dispose?.()
@@ -164,13 +164,13 @@ it('common writer persists observed SID before message receipt and exposes the o
     })) events.push(event.type)
   })()
   const message = await f.next()
-  f.init()
+  void f.init()
   await observed.promise
-  f.reply(message.uuid)
+  void f.reply(message.uuid)
   expect(received).toEqual([])
   expect(events).toEqual([])
   commit.resolve()
-  f.result(message.uuid)
+  void f.result(message.uuid)
   await work
   expect(received).toHaveLength(1)
   expect(f.query).toHaveBeenCalledTimes(1)
@@ -194,7 +194,7 @@ it('keeps workflow, Operator, Agent and selected-Run chat managers independently
   const output = drain(agent.manager.startInitialTurn(start, { prompt: 'still owned',
     clientCorrelationId: start.correlationId, onSessionObserved: async () => undefined }))
   const input = await agent.next()
-  agent.init(); agent.reply(input.uuid); agent.result(input.uuid)
+  void agent.init(); void agent.reply(input.uuid); void agent.result(input.uuid)
   expect((await output).some(event => event.type === 'claude.text')).toBe(true)
   await Promise.all(owners.slice(1).map(owner => owner.manager.dispose?.()))
 })

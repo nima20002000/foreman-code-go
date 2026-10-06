@@ -1,4 +1,6 @@
+import { ClaudeInputNotDeliveredError } from './port.js'
 import { ClaudeBoundedQueue } from './queue.js'
+import { isDeepStrictEqual } from 'node:util'
 import type {
   ClaudeNativeObservation, ClaudePersistedSession, ClaudeSdkClient, ClaudeSdkOpenInput,
   ClaudeSdkOutput, ClaudeSdkQuery, ClaudeSdkRunner, ClaudeSdkSession, ClaudeSdkUserMessage, ClaudeSessionScope,
@@ -27,6 +29,70 @@ function observationOf(raw: unknown): ClaudeNativeObservation | undefined {
   }
 }
 
+function responseObservations(continuation: (frame: Record<string, unknown>) => Promise<readonly string[] | undefined>) {
+  const owners = new Map<string, readonly string[]>()
+  const finished = new Set<string>()
+  let response: readonly string[] | undefined
+  let stream: readonly string[] | undefined
+  let streamMessageId: string | undefined
+  return async (raw: unknown): Promise<ClaudeNativeObservation | undefined> => {
+    if (!raw || typeof raw !== 'object') return undefined
+    const frame = raw as Record<string, unknown>
+    if (typeof frame.session_id !== 'string' || !frame.session_id || frame.parent_tool_use_id != null) return undefined
+    if (!['assistant', 'stream_event', 'result'].includes(String(frame.type))) return undefined
+    const message = frame.message as { id?: unknown } | undefined
+    const event = frame.event as { type?: unknown; message?: { id?: unknown } } | undefined
+    const messageId = message?.id ?? event?.message?.id
+    const ids: string[] = []
+    if (typeof frame.uuid === 'string' && (frame.type !== 'stream_event' || event?.type === 'message_start')) {
+      ids.push(`frame:${frame.uuid}`)
+    }
+    if (typeof messageId === 'string') ids.push(`message:${messageId}`)
+    if (frame.type === 'stream_event' && event?.type === 'message_start') {
+      streamMessageId = typeof messageId === 'string' ? messageId : undefined
+    }
+    const echo = observationOf(raw)
+    if (echo && frame.type === 'stream_event' && streamMessageId && !ids.includes(`message:${streamMessageId}`)) {
+      ids.push(`message:${streamMessageId}`)
+    }
+    const known = ids.map(id => owners.get(id)).find(owner => owner !== undefined)
+    if (echo && known && !isDeepStrictEqual(echo.promptUuids, known)) {
+      throw new Error('Claude response identity was reused for another input')
+    }
+    // New API messages require transcript ancestry; arrival order cannot establish ownership.
+    let promptUuids = echo?.promptUuids ?? (frame.type === 'result' ? undefined : known)
+    if (!promptUuids && frame.type !== 'result') {
+      promptUuids = frame.type === 'stream_event' && event?.type !== 'message_start'
+        ? stream : await continuation(frame)
+    }
+    if (echo?.kind === 'reply' && !known && !echo.promptUuids.some(uuid => finished.has(uuid))) {
+      response = echo.promptUuids
+      if (frame.type === 'stream_event') stream = echo.promptUuids
+    }
+    if (frame.type === 'stream_event' && event?.type === 'message_start') stream = promptUuids
+    if (promptUuids) {
+      for (const id of ids) {
+        const previous = owners.get(id)
+        if (previous && !isDeepStrictEqual(previous, promptUuids)) {
+          throw new Error('Claude response identity was reused for another input')
+        }
+        owners.set(id, promptUuids)
+      }
+    }
+    if (frame.type === 'result') {
+      for (const uuid of promptUuids ?? []) finished.add(uuid)
+      if (promptUuids && isDeepStrictEqual(promptUuids, response)) {
+        response = undefined
+        stream = undefined
+        streamMessageId = undefined
+      }
+    }
+    if (!promptUuids) return undefined
+    return { nativeSessionId: frame.session_id, promptUuids, kind: frame.type === 'result' ? 'result' : 'reply',
+      ...(typeof frame.uuid === 'string' ? { providerMessageId: frame.uuid } : {}) }
+  }
+}
+
 /** Aborting local consumption settles next() even when an SDK generator ignores return(). */
 function nextOwned(iterator: AsyncIterator<unknown>, signal: AbortSignal): Promise<IteratorResult<unknown>> {
   signal.throwIfAborted()
@@ -50,7 +116,9 @@ export function createClaudeSdkRunner(input: {
   const sessions = new Set<ClaudeSdkSession>()
   const openings = new Set<Promise<ClaudeSdkSession>>()
   let disposed = false
+  let queryDispatched = false
   const runner: ClaudeSdkRunner = {
+    requiresRuntimeClosure: () => queryDispatched,
     open(options) {
       if (disposed) return Promise.reject(new Error('Claude runner disposed'))
       const opening = openSession(options)
@@ -119,8 +187,50 @@ export function createClaudeSdkRunner(input: {
     const outputQueue = new ClaudeBoundedQueue<ClaudeSdkOutput>(input.outputCapacity ?? 256)
     const receipts = new Map<string, ClaudeNativeObservation[]>()
     const offered = new Set<string>()
+    let client: ClaudeSdkClient | undefined
+    const observeResponse = responseObservations(async frame => {
+      const messageId = (frame.message as { id?: unknown } | undefined)?.id
+        ?? ((frame.event as { message?: { id?: unknown } } | undefined)?.message?.id)
+      if (typeof messageId !== 'string' && typeof frame.uuid !== 'string') return undefined
+      let owner: string | undefined
+      const ancestry = new Map<string, string | undefined>()
+      // getSessionMessages returns the SDK's parentUuid-linked root conversation chain.
+      // Tool-result user records continue it; a new prompt creates a new input boundary.
+      for (let offset = 0; ; offset += 256) {
+        abort.signal.throwIfAborted()
+        const page = await client!.getSessionMessages(String(frame.session_id), { dir: options.scope.cwd, offset, limit: 256 })
+        for (const raw of page) {
+          if (!raw || typeof raw !== 'object') continue
+          const entry = raw as Record<string, unknown>
+          if (entry.session_id !== frame.session_id || entry.parent_tool_use_id != null) continue
+          const message = entry.message as { id?: unknown; content?: unknown } | undefined
+          const parentOwner = typeof entry.parentUuid === 'string' ? ancestry.get(entry.parentUuid) : owner
+          if (entry.type === 'user') {
+            const content = message?.content
+            const toolResult = Array.isArray(content) && content.some(block => block && typeof block === 'object'
+              && (block as { type?: unknown }).type === 'tool_result')
+            if (entry.isCompactSummary === true) {
+              // The SDK omits parentUuid after selecting its native ancestry chain.
+              owner = parentOwner
+            } else if (!toolResult) {
+              owner = typeof entry.uuid === 'string' ? entry.uuid : undefined
+            } else {
+              owner = parentOwner
+            }
+          } else {
+            owner = parentOwner
+          }
+          if (typeof entry.uuid === 'string') ancestry.set(entry.uuid, owner)
+          if (entry.type === 'assistant' && (entry.uuid === frame.uuid || messageId && message?.id === messageId)) {
+            return owner && offered.has(owner) ? [owner] : undefined
+          }
+        }
+        if (page.length < 256) return undefined
+      }
+    })
     let nativeSessionId: string | undefined
     let query: ClaudeSdkQuery | undefined
+    let queryOpening: Promise<ClaudeSdkQuery> | undefined
     let pump: Promise<void> | undefined
     let closing: Promise<void> | undefined
     let closeFailure: unknown
@@ -136,17 +246,26 @@ export function createClaudeSdkRunner(input: {
       if (errors.length) closeFailure = new AggregateError(errors, 'Claude SDK close failed')
       else { stopped = true; closeFailure = undefined }
     }
-    const externalAbort = () => { void session.close().catch(() => undefined) }
+    const externalAbort = () => {
+      abort.abort(options.signal?.reason)
+      void session.close().catch(() => undefined)
+    }
     const session: ClaudeSdkSession = {
       output: outputQueue,
       get nativeSessionId() { return nativeSessionId },
+      assertInputCapacity() {
+        if (offered.size >= (input.receiptCapacity ?? 256)) {
+          throw new ClaudeInputNotDeliveredError('Claude receipt window exhausted; resume the completed session before offering input.')
+        }
+      },
       async offer(message, signal) {
         signal?.throwIfAborted()
         abort.signal.throwIfAborted()
         if (!message.promptUuid || offered.has(message.promptUuid)) throw new Error('Claude prompt identity missing or already offered; never replay uncertain input')
-        if (offered.size >= (input.receiptCapacity ?? 256)) throw new Error('Claude receipt window exhausted')
-        inputQueue.offer({ type: 'user', message: { role: 'user', content: message.content }, parent_tool_use_id: null, uuid: message.promptUuid })
+        session.assertInputCapacity()
         offered.add(message.promptUuid)
+        await inputQueue.offer({ type: 'user', message: { role: 'user', content: message.content }, parent_tool_use_id: null, uuid: message.promptUuid }, signal)
+        abort.signal.throwIfAborted()
         return { state: 'queue-offered', promptUuid: message.promptUuid }
       },
       async interrupt() {
@@ -175,6 +294,13 @@ export function createClaudeSdkRunner(input: {
         if (closing) return closing
         closing = (async () => {
           stop()
+          if (!query && queryOpening) {
+            const [opened] = await Promise.allSettled([queryOpening])
+            if (opened?.status === 'fulfilled') {
+              query = opened.value
+              query.close()
+            }
+          }
           await pump
           await query?.joinClosed?.()
           options.signal?.removeEventListener('abort', externalAbort)
@@ -190,7 +316,7 @@ export function createClaudeSdkRunner(input: {
     sessions.add(session)
     options.signal?.addEventListener('abort', externalAbort, { once: true })
     try {
-      const client = await input.loadClient()
+      client = await input.loadClient()
       abort.signal.throwIfAborted()
       if (disposed) throw new Error('Claude runner disposed during startup')
       if (options.resume) {
@@ -198,12 +324,16 @@ export function createClaudeSdkRunner(input: {
         abort.signal.throwIfAborted()
         if (!info || info.sessionId !== options.resume.nativeSessionId) throw new Error('Exact Claude session history is unavailable')
       }
-      query = client.query({ prompt: inputQueue, options: {
+      queryOpening = Promise.resolve(client.query({ prompt: inputQueue, options: {
         ...options.options, cwd: options.scope.cwd, abortController: abort,
         env: { ...(options.options.env as Record<string, string> | undefined),
           ...(process.env.HOME ? { HOME: process.env.HOME } : {}), CLAUDE_CONFIG_DIR: options.scope.profilePath },
         ...(options.resume ? { resume: options.resume.nativeSessionId } : {}),
-      } })
+      } }))
+      query = await queryOpening
+      queryDispatched = true
+      abort.signal.throwIfAborted()
+      if (disposed) throw new Error('Claude runner disposed during query startup')
       // The Query itself owns close(), unlike a wrapping async generator's blocked return().
       const iterator = query[Symbol.asyncIterator]()
       pump = (async () => {
@@ -218,7 +348,7 @@ export function createClaudeSdkRunner(input: {
               if (options.resume && options.resume.nativeSessionId !== frame.session_id) throw new Error('Claude resumed a different native session')
               nativeSessionId = frame.session_id
             }
-            const observation = observationOf(raw)
+            const observation = await observeResponse(raw)
             if (observation) {
               const ownedUuids = observation.promptUuids.filter((uuid) => offered.has(uuid))
               if (ownedUuids.length) {
@@ -231,7 +361,7 @@ export function createClaudeSdkRunner(input: {
                 }
               }
             }
-            outputQueue.offer({ raw, ...(observation ? { observation } : {}) })
+            await outputQueue.offer({ raw, ...(observation ? { observation } : {}) })
           }
           outputQueue.close()
         } catch (error) {
@@ -244,6 +374,7 @@ export function createClaudeSdkRunner(input: {
       })()
       return session
     } catch (error) {
+      queryDispatched ||= client?.requiresRuntimeClosure?.() ?? false
       await session.close()
       throw error
     }

@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -20,7 +21,7 @@ describe.skipIf(!databaseUrl)('FIL-05 PostgreSQL durability and compare-and-set'
     if (!['postgres:', 'postgresql:'].includes(url.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
       || !/test/i.test(url.pathname)) throw new Error('Use an explicit loopback TEST_DATABASE_URL whose database name includes test.')
     admin = new pg.Pool({ connectionString: databaseUrl })
-    await admin.query(`create schema ${schema}`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString: databaseUrl, options: `-c search_path=${schema} -c statement_timeout=5000` })
     // Minimal FIL-03 FK boundary, not a substitute for files.integration.test.ts or its full migration.
     await pool.query(`create table files(file_id text primary key,owner_principal_id text not null,unique(file_id,owner_principal_id));
@@ -35,7 +36,7 @@ describe.skipIf(!databaseUrl)('FIL-05 PostgreSQL durability and compare-and-set'
   })
   afterAll(async () => {
     await pool?.end()
-    if (admin) { try { await admin.query(`drop schema if exists ${schema} cascade`) } finally { await admin.end() } }
+    if (admin) { try { await dropFixtureSchema(admin, schema) } finally { await admin.end() } }
   })
 
   it('persists hashed sessions across repository reconstruction; expiry and revocation fail closed', async () => {

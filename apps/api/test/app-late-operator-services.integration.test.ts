@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -27,7 +28,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('exposes late Operator services throug
     options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
   const clients: Client[] = []
   let app: ReturnType<typeof buildApp> | undefined
-  await admin.query(`create schema ${schema}`)
+  await createFixtureSchema(admin, schema)
   try {
     await applyApplicationMigrations(pool)
     const workspaceId = randomUUID(), foreignWorkspaceId = randomUUID()
@@ -98,6 +99,6 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('exposes late Operator services throug
     await Promise.allSettled(clients.map(client => client.close()))
     await app?.close()
     await pool.end()
-    try { await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() }
+    try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
   }
 }, 120_000)

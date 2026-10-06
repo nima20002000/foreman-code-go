@@ -90,6 +90,7 @@ interface Runtime {
   creationInput?: NativeSessionStart
   configuration: AgentConfigurationVersion
   retiring?: boolean
+  acknowledgedCancel?: { requestId: string; nativeId: string }
   disposal?: Promise<void>
   /** Detach only this turn's observer after its durable terminal settlement. */
   observer?: { requestId: string; controller: AbortController }
@@ -745,8 +746,12 @@ export class AgentChatService {
       // Claude submissions have a native message receipt instead of a native turn ID.
       const nativeId = row.active_native_turn_id ?? (await this.repository.turn(id, target.requestId))?.nativeSubmission?.nativeMessageId
       if (!nativeId) return // Submission or exact-history recovery will retry this durable intent.
+      if (runtime.acknowledgedCancel?.requestId === target.requestId
+        && runtime.acknowledgedCancel.nativeId === nativeId) return
       try {
-        await runtime.manager.cancel(runtime.session, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(10_000)]), nativeId)
+        const acknowledged = await runtime.manager.cancel(runtime.session,
+          AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(10_000)]), nativeId)
+        if (acknowledged) runtime.acknowledgedCancel = { requestId: target.requestId, nativeId }
       } catch (error) {
         this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Interrupt delivery failed.' })
       }
@@ -1101,7 +1106,10 @@ export class AgentChatService {
     const message = completedNativeAssistantMessage(event, runtime.manager.harness)
     if (!message) return true
     if (await this.messages.appendAssistantMessage(id, requestId, message.id, message.text,
-      message.parentMessageId ? { parentMessageId: message.parentMessageId, complete: message.complete === true } : undefined)) {
+      message.parentMessageId || message.truncation ? {
+        ...(message.parentMessageId ? { parentMessageId: message.parentMessageId } : {}),
+        ...(message.truncation ? { truncation: message.truncation } : {}), complete: message.complete === true,
+      } : undefined)) {
       this.events.publish(id, 'message', { requestId, nativeMessageId: message.id })
       return true
     }
@@ -1139,6 +1147,22 @@ export class AgentChatService {
     const current = await this.repository.get(id)
     if (!current || current.active_request_id !== requestId || current.native_session_id !== row.native_session_id) return
     const pending = pendingInteractionAfterHistory(current.pending_interaction, history)
+    if (runtime.manager.harness === 'claude' && messageIdentity) {
+      const sender = (await this.pool.query<{ principal_id: string }>(`select payload->>'ownerPrincipalId' as principal_id
+        from operator_conversation_turns where conversation_id=$1 and request_id=$2`, [id, requestId])).rows[0]
+      if (sender?.principal_id) {
+        const principal = await readLiveManagementPrincipal(this.pool, sender.principal_id)
+        const state = await this.readConversation(principal, row.workspace_id, id)
+        const scope = state.activitySnapshot?.scope
+        if (scope) {
+          await this.commands.reconcileStoredResponses(id, requestId, scope, runtime.session!, receipt!, state)
+          for (const proof of history.responseDeliveries ?? []) {
+            if (proof.nativeIdentity) await this.commands.reconcileResponses(id, requestId, scope, runtime.session!,
+              proof.nativeIdentity, history.responseDeliveries!, state)
+          }
+        }
+      }
+    }
     if (history.terminalResult && !pending) {
       await this.settle(id, requestId, history.terminalResult, history.nativeMessageId)
     } else {
@@ -1155,7 +1179,9 @@ export class AgentChatService {
 
   private async settle(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, rejectedSessionCreation = false): Promise<void> {
     if (await this.repository.finish(id, requestId, result, nativeMessageId, rejectedSessionCreation)) {
-      const observer = this.runtimes.get(id)?.observer
+      const runtime = this.runtimes.get(id)
+      if (runtime?.session) await runtime.manager.retireTurn?.(runtime.session, agentChatCorrelation(id, requestId))
+      const observer = runtime?.observer
       if (observer?.requestId === requestId) observer.controller.abort(new Error('Agent chat turn settled.'))
       this.events.publish(id, 'message', { requestId })
       this.scheduleReconcile(id)

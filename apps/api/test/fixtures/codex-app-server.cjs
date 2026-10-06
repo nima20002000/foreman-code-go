@@ -16,6 +16,10 @@ const save = (name, value) => {
 }
 const flag = (name) => fs.existsSync(path.join(root, name))
 const log = (value) => fs.appendFileSync(path.join(root, 'calls.jsonl'), JSON.stringify({ processPid: process.pid, ...value }) + '\n')
+const timing = (value) => {
+  if (flag('record-wire-timing')) fs.appendFileSync(path.join(root, 'wire-timing.jsonl'),
+    JSON.stringify({ at: Date.now(), fixtureProcessId: process.pid, ...value }) + '\n')
+}
 const args = process.argv.slice(2)
 const processDisabledMcp = new Set(args.flatMap((argument, index) => {
   if (argument !== '-c') return []
@@ -80,7 +84,11 @@ const replyOrHold = (kind, reply) => {
   if (flag(`hold-${kind}`)) heldReplies.push({ kind, reply })
   else reply()
 }
-const send = (value) => process.stdout.write(JSON.stringify(value) + '\n')
+const send = (value) => {
+  if (value.id !== undefined) timing({ direction: 'response', id: value.id, method: value.method,
+    errorCode: value.error?.code })
+  return process.stdout.write(JSON.stringify(value) + '\n')
+}
 const result = (id, value) => send({ id, result: value })
 const fail = (id) => send({ id, error: { code: -32000, message: 'fixture rejection' } })
 const store = (owner) => save(`state-${owner.id}.json`, owner)
@@ -205,6 +213,7 @@ setInterval(() => {
 }, 10)
 readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line) => {
   const message = JSON.parse(line)
+  timing({ direction: 'request', id: message.id, method: message.method })
   log({ wire: message })
   const params = message.params || {}
   if (message.method === 'initialize') result(message.id, { userAgent: 'codex-cli 0.154.0', platformFamily: 'unix', platformOs: 'linux', codexHome: root })

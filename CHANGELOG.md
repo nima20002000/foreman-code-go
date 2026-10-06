@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.41] - 2026-10-06
+## [Unreleased]
 
 ### Fixed
 
@@ -28,6 +28,60 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Retain redacted private Operator failure events and attempt independent test resource cleanup when another cleanup step fails.
 - Retain bounded database wait and blocker diagnostics during installed recovery verification.
 - Document OpenCode runtime isolation, private native storage and the Node/Bubblewrap requirements after the installed file-runtime upgrade.
+
+## [0.0.42] - 2026-10-06
+
+### Added
+
+- Dedicated test PostgreSQL, owned disposable databases, and private homes, storage, MCP routes and runtime directories for each test invocation.
+- Ownership and cleanup recovery checks for database-backed tests and native acceptance.
+
+### Changed
+
+- Root and API test commands, including selected-file runs, provision isolated resources and preserve current Foreman Code local-human and scoped MCP behavior.
+- Installed production verification uses the separate `production:verify` command and refuses disposable test contexts.
+
+### Fixed
+
+- Keep source capture and qualification fixtures inside owned storage, join pending work on teardown, and keep controller Node startup options out of native commands.
+- Local smoke shutdown drains pending web requests before closing its dev server; settled resources are removed after failed assertions too.
+- Native acceptance uses explicit private provider profiles and managed MCP configuration, with retained diagnostics when physical cleanup cannot be confirmed.
+- Bounded MCP readback fills its response budget while preserving JSON characters, identity, choices and continuation integrity.
+
+### Security
+
+- Tests reject application and production database connections, ambient database fallbacks, and cleanup outside owned database or filesystem roots.
+- Native agents receive scoped provider and MCP settings without inheriting test-controller credentials, database selectors or the ambient user home.
+- Codex model diagnostics strip App and controller credentials and disable only configured App MCP entries, preserving provider sign-in and native startup with empty MCP configuration.
+
+## [0.0.41] - 2026-10-06
+
+### Added
+
+- Add an opt-in live Haiku check for the installed Claude SDK, covering native lifecycle, resume, fork, history and full-access tool policy.
+- Show when live or saved chat messages have been shortened, including matching HTTP, SSE and Operator MCP readback.
+
+### Changed
+
+- Qualify the installed Haiku profile for full-access lifecycle and tool policy. Active cancellation, startup prompts, read-only sandbox and workspace-write sandbox remain unqualified in this profile.
+- Apply backpressure to Claude event streams while retaining a bounded UTF-8 text prefix and terminal events.
+- Retire completed callback and file-call resources while keeping persisted retry records available.
+
+### Fixed
+
+- Resume ended or failed Claude sessions automatically with their saved native session ID, retaining failure records and avoiding duplicate input.
+- Keep response ownership through tool rounds and compaction, and handle terminal results that contain no assistant reply.
+- Recover approvals, cancellation and chat closure after interrupted storage writes without replaying prompts or repeating acknowledged native effects.
+- Save terminal history before settling chat turns while keeping accepted message inputs unchanged across database upgrades.
+- Retry interrupted Operator cleanup without reading stopped native managers, preserving known unsent inputs and their saved failures.
+- Wait for fixture native turn state before injecting startup-persistence recovery events.
+- Support Claude management and file tools through the official SDK with configured Foreman Code MCP connections, supported installation aliases and decoded Markdown readback.
+- Roll over full session bookkeeping safely and preserve active-turn and observer ownership checks.
+
+### Security
+
+- Enforce saved tool policies, delegated grants, callback ownership and replay protection for native tool calls and authenticated MCP operations.
+- Reject database credentials before Claude runtime allocation and preserve scoped credential identity across supported installation aliases.
 
 ## [0.0.40] - 2026-10-06
 

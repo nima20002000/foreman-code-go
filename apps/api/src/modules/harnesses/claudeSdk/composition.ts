@@ -44,6 +44,8 @@ export function allocateClaudeNativeHarness(input: ClaudeNativeAllocation): Clau
     ...(input.credentialEnvironmentVariables ? { credentialEnvironmentVariables: input.credentialEnvironmentVariables } : {}),
     ...(input.supportedInteractionKinds ? { supportedInteractionKinds: input.supportedInteractionKinds } : {}),
     ...(input.pendingInteractions ? { pendingInteractions: input.pendingInteractions } : {}),
+    ...(input.responseDeliveries ? { responseDeliveries: input.responseDeliveries } : {}),
+    ...(input.messageSubmitted ? { messageSubmitted: input.messageSubmitted } : {}),
     ...(input.interactionPort ? { interactionPort: input.interactionPort } : {}),
     ...(input.liveCallbacks ? { liveCallbacks: input.liveCallbacks } : {}),
     ...(input.cancelPendingRequests ? { cancelPendingRequests: input.cancelPendingRequests } : {}),

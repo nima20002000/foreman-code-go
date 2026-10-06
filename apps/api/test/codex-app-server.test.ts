@@ -1,7 +1,7 @@
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -23,6 +23,9 @@ import {
   calls, collect, emit, errorCode, finish, fixture, fixtureProtocol, fixtureQualification,
   input, nativeThread, processesForRequests, state, until, type Fixture,
 } from './fixtures/codex-test-helpers.js'
+import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
+import { completeTestResourceCleanup, createTestRoot, registerTestResourceCleanup, removeTestRoot,
+  type TestRoot } from '../../../scripts/test-resources.mjs'
 
 // Only qualification is replaced here. Every lifecycle/translation/transport path
 // below runs the repository implementation, including the pinned native schema gate.
@@ -43,6 +46,9 @@ const managers: Manager[] = []
 let f: Fixture
 let manager: Manager
 let source: WorkflowNativeSessionStart
+let scratch: TestRoot
+let scratchCleanupId: string
+const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
 function makeManager(): Manager { const value = new CodexAppServerSessionManager(f.binary); managers.push(value); return value }
 function codex(value = source): CodexHarnessConfiguration {
   const harness = value.request.configuration.harness
@@ -187,12 +193,32 @@ describe('Codex fixture user-message contract', () => {
 
 // Executable fixtures use a POSIX shebang. Pure protocol tests cover portable shapes.
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
-  beforeEach(async () => { f = await fixture(); manager = makeManager(); source = input(f.directory) })
-  afterEach(async () => {
+  beforeEach(async () => {
+    // This file exercises a 500 ms wire deadline; fixture persistence uses owned temporary storage.
+    scratch = createTestRoot('/tmp', 'foreman-code-codex-wire-')
+    scratchCleanupId = registerTestResourceCleanup(invocation, {
+      kind: 'codex-wire-fixture', directory: scratch.directory, owner: scratch.token,
+    })
+    f = await fixture({ root: scratch })
+    await flag('record-wire-timing')
+    manager = makeManager()
+    source = input(f.directory)
+  })
+  afterEach(async context => {
     const results = await Promise.allSettled(managers.splice(0).map((value) => value.shutdown()))
-    await rm(f.directory, { recursive: true, force: true })
+    if (context.task.result?.state === 'fail' || results.some(value => value.status === 'rejected')) {
+      let timing = ''
+      try { timing = await readFile(join(f.directory, 'wire-timing.jsonl'), 'utf8') }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      await writeNativeAcceptanceEvidence(`codex-fixture-${randomUUID()}.json`, {
+        test: context.task.name, calls: await calls(f.directory),
+        wireTiming: timing.split('\n').filter(Boolean).map(line => JSON.parse(line) as unknown),
+      })
+    }
     const failure = results.find((value) => value.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
+    removeTestRoot(scratch)
+    completeTestResourceCleanup(invocation, scratchCleanupId)
   })
 
   it('reattaches an original resident without launching, resuming, replaying or reading turn history', async () => {

@@ -1,3 +1,5 @@
+import { HarnessExecutionError } from '../errors.js'
+
 /** Narrow injectable boundary for the pinned official streaming SDK. */
 export interface ClaudeSdkUserMessage {
   type: 'user'
@@ -19,7 +21,8 @@ export interface ClaudeSdkQuery extends AsyncIterable<unknown> {
 
 export interface ClaudeSdkClient {
   readonly sdkVersion: string
-  query(input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: Readonly<Record<string, unknown>> }): ClaudeSdkQuery
+  query(input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: Readonly<Record<string, unknown>> }): ClaudeSdkQuery | Promise<ClaudeSdkQuery>
+  requiresRuntimeClosure?(): boolean
   getSessionInfo(sessionId: string, options: { dir: string }): Promise<{ sessionId: string } | undefined>
   getSessionMessages(sessionId: string, options: { dir: string; limit?: number; offset?: number }): Promise<readonly unknown[]>
   listSubagents?(sessionId: string, options: { dir: string }): Promise<string[]>
@@ -42,7 +45,7 @@ export interface ClaudeNativeObservation {
   nativeSessionId: string
   /** Native output frame identity, never an application/native turn ID. */
   providerMessageId?: string
-  /** Client UUIDs positively echoed by native output; not native IDs. */
+  /** Client UUIDs from the native input echo that owns this response sequence; not native IDs. */
   promptUuids: readonly string[]
   kind: 'reply' | 'result'
 }
@@ -63,9 +66,22 @@ export interface ClaudeSdkOpenInput {
   cancelPendingRequests?(): void
 }
 
+export class ClaudeInputNotDeliveredError extends HarnessExecutionError {
+  readonly code = 'CLAUDE_INPUT_NOT_DELIVERED'
+  readonly deliveryState = 'not-delivered'
+  readonly certainty = 'definite'
+  readonly uncertain = false
+
+  constructor(message: string) {
+    super('CLAUDE_INPUT_NOT_DELIVERED', message, true)
+    this.name = 'ClaudeInputNotDeliveredError'
+  }
+}
+
 export interface ClaudeSdkSession {
   readonly output: AsyncIterable<ClaudeSdkOutput>
   readonly nativeSessionId: string | undefined
+  assertInputCapacity(): void
   offer(input: { promptUuid: string; content: string }, signal?: AbortSignal): Promise<{ state: 'queue-offered'; promptUuid: string }>
   interrupt(): Promise<unknown>
   initializationResult?(): Promise<unknown>
@@ -78,6 +94,7 @@ export interface ClaudeSdkSession {
 }
 
 export interface ClaudeSdkRunner {
+  requiresRuntimeClosure?(): boolean
   open(input: ClaudeSdkOpenInput): Promise<ClaudeSdkSession>
   fork(source: ClaudePersistedSession, target: ClaudeSessionScope, signal?: AbortSignal): Promise<ClaudePersistedSession>
   history(session: ClaudePersistedSession, scope: ClaudeSessionScope, signal?: AbortSignal, page?: { offset: number; limit: number }): Promise<readonly unknown[]>

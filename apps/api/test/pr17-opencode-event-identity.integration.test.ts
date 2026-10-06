@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -9,7 +10,7 @@ import { appendNativeEvent } from '../src/modules/runs/nativeEvents.js'
 import { normalizedHistory } from '../src/modules/harnesses/opencodeProtocol.js'
 import { openCodeFixture, start } from './fixtures/pr17-native-runtime.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.TEST_DATABASE_URL!
 
 it('F1: appends real OpenCode manager events after durable-execution reattachment and keeps exact replay idempotent', async () => {
   const schema = `opencode_identity_${randomUUID().replaceAll('-', '')}`
@@ -17,7 +18,7 @@ it('F1: appends real OpenCode manager events after durable-execution reattachmen
   let created = false
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   try {
-    await admin.query(`create schema "${schema}"`)
+    await createFixtureSchema(admin, schema)
     created = true
     await applyApplicationMigrations(pool)
     await ensureAcceptanceSeed(pool)
@@ -74,6 +75,6 @@ it('F1: appends real OpenCode manager events after durable-execution reattachmen
     await recovered.manager.dispose()
   } finally {
     await pool.end()
-    try { if (created) await admin.query(`drop schema "${schema}" cascade`) } finally { await admin.end() }
+    try { if (created) await dropFixtureSchema(admin, schema) } finally { await admin.end() }
   }
 }, 20_000)

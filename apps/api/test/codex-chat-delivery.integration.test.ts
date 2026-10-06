@@ -318,7 +318,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       if (kind === 'operator') await sendOperator(id, 'retained', 'wait')
       const nativeRequest = await until(async () => (await native.wire('turn/start'))[0])
       const sessionId = String((nativeRequest.params as { threadId: string }).threadId)
-      const turn = (await state(native.directory, sessionId)).turns[0]!
+      const turn = await until(async () => (await state(native.directory, sessionId)).turns[0])
       const commentary = agentMessage('commentary', 'Before the final answer', 'commentary')
       const answer = agentMessage('answer', 'The final answer')
       const params = { threadId: sessionId, turnId: turn.id }
@@ -395,6 +395,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         let cleanupFails = true
         let preparationFails = true
         let rechecks = 0
+        let closureAttempts = 0
         const files: CodexChatFiles = {
           prepare: async ({ session, signal }) => prepareCodexFileTurn({
             ownerPrincipalId: 'owner-a', scope: fileScope, nativeSessionId: session.nativeSessionId,
@@ -407,6 +408,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
               return ports.dependencies.source.recheck()
             },
           }, host: { ...ports.host, close: async () => {
+            closureAttempts++
             if (cleanupFails) throw new Error('Host closure is unconfirmed.')
             await ports.host.close()
           } } }, signal),
@@ -419,11 +421,16 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         try {
           await until(async () => {
             const row = kind === 'agent' ? await repository.get(id) : await messages.active(id)
-            return row && nativeNonSubmission(row.record, 'unsent') || undefined
+            return closureAttempts >= 2 && row && nativeNonSubmission(row.record, 'unsent') || undefined
           })
           assert.equal((await native.wire('turn/start')).length, 0)
           if (kind === 'agent') assert.equal((await readAgent()).availability.canSend, false)
-          else assert.equal((await readOperator(id)).activeRequestId, 'unsent')
+          else {
+            assert.equal((await readOperator(id)).activeRequestId, 'unsent')
+            const terminal = await messages.terminal(id, 'unsent')
+            assert.equal(terminal?.observation.result.outcome, 'failed')
+            assert.equal(terminal?.closureState, 'pending')
+          }
         } finally { cleanupFails = false }
         if (restart) {
           if (kind === 'agent') {
@@ -445,6 +452,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
           return (await readOperator(id)).turnState === 'error' || undefined
         })
         assert(ports.events.includes('host:close'))
+        assert(closureAttempts >= 3)
         assert.equal((await native.wire('turn/start')).length, 0)
         assert.equal((await native.wire('thread/read')).length, 0)
         preparationFails = false

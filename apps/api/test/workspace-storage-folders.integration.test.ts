@@ -1,5 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, readFile, rename, rm, lstat, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rename, lstat, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -25,7 +26,7 @@ it('discovers real unregistered folders without writes and safely deletes conten
   await mkdir(root); await mkdir(external)
   const schema = 'storage_folders_' + randomUUID().replaceAll('-', '')
   const admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
   const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local', root)
@@ -114,7 +115,7 @@ it('discovers real unregistered folders without writes and safely deletes conten
     const replacement = second.items[0]!
     const moved = join(directory, 'moved'); await rename(replacement.path, moved); await mkdir(replacement.path)
     await expect(workspaces.storageFolders.delete(owner.principal, 'http', { commandId: randomUUID(), path: replacement.path, expectedIdentity: replacement.identity })).rejects.toMatchObject({ code: 'DIRECTORY_CHANGED' })
-    await rm(replacement.path, { recursive: true }); await rename(moved, replacement.path)
+    await removeFixtureDirectory(replacement.path, { force: false }); await rename(moved, replacement.path)
     // Storage root, nested paths, external paths, links and registered destinations are protected.
     for (const path of [root, external, join(root, 'outside-link'), registered.executionLocation!.rootPath, join(root, 'C missing', 'nested')]) {
       const result = await client.callTool({ name: 'workspace_storage_folder_delete', arguments: { commandId: randomUUID(), path, expectedIdentity: third.items[0]!.identity } })
@@ -164,7 +165,7 @@ it('discovers real unregistered folders without writes and safely deletes conten
   } finally {
     for (const client of clients) await client.close()
     await app.close(); await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`); await admin.end()
-    await rm(directory, { recursive: true, force: true })
+    await dropFixtureSchema(admin, schema); await admin.end()
+    await removeFixtureDirectory(directory)
   }
 }, 30_000)

@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,7 +11,7 @@ import { createDatabase } from '../src/infrastructure/database.js'
 import { readRuntimeIdentity } from '../src/infrastructure/runtimeIdentity.js'
 
 it('rejects reuse of a matching API that still trusts a different browser port', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres'
+  const connectionString = process.env.TEST_DATABASE_URL!
   const database = createDatabase({ connectionString, maxConnections: 2, connectionTimeoutMs: 5000, queryTimeoutMs: 5000 })
   const root = fileURLToPath(new URL('../../../', import.meta.url))
   const directory = await mkdtemp(join(tmpdir(), 'startup-origin-'))
@@ -44,7 +45,10 @@ it('rejects reuse of a matching API that still trusts a different browser port',
     const file = join(directory, 'api.env')
     await writeFile(file, `DATABASE_URL=${connectionString}\nPORT=${address.port}\nHOST=127.0.0.1\nFOREMAN_CODE_BROWSER_ORIGIN=${browserOrigin}\nFOREMAN_CODE_WEB_PORT=${frontendAddress.port}\n`, { mode: 0o600 })
     const environment = resolveProductEnvironment(process.env)
-    for (const key of ['DATABASE_URL', 'PORT', 'HOST', 'FOREMAN_CODE_BROWSER_ORIGIN', 'FOREMAN_CODE_WEB_PORT']) delete environment[key]
+    for (const key of ['DATABASE_URL', 'PORT', 'HOST', 'FOREMAN_CODE_API_ENV_FILE', 'GRAPHQL_API_ENV_FILE',
+      'FOREMAN_CODE_BROWSER_ORIGIN', 'GRAPHQL_BROWSER_ORIGIN', 'FOREMAN_CODE_WEB_PORT', 'GRAPHQL_WEB_PORT']) {
+      delete environment[key]
+    }
     coordinator = spawn('corepack', ['pnpm', 'dev'], { cwd: root,
       env: { ...environment, FOREMAN_CODE_API_ENV_FILE: file }, stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
@@ -64,6 +68,6 @@ it('rejects reuse of a matching API that still trusts a different browser port',
     if (coordinator?.pid) { try { coordinator.kill('SIGTERM') } catch { /* Already exited. */ } }
     await new Promise<void>((resolve) => api.close(() => resolve()))
     await database.close()
-    await rm(directory, { recursive: true, force: true })
+    await removeFixtureDirectory(directory)
   }
 }, 30_000)

@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -12,7 +13,7 @@ describe.skipIf(!connectionString)('activity source records in PostgreSQL', () =
   let admin: pg.Pool; let pool: pg.Pool; let schema: string
   beforeEach(async () => {
     admin = new pg.Pool({ connectionString }); schema = `activity_sources_${randomUUID().replaceAll('-', '')}`
-    await admin.query(`create schema "${schema}"`); pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
+    await createFixtureSchema(admin, schema); pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
     await pool.query(`create table operator_conversations (id text primary key,kind text,revision bigint not null default 0,workspace_id text,workflow_id text,
       workflow_node_id text,agent_id text,origin_run_id text,origin_execution_id text,native_session_id text,active_native_turn_id text,
       active_request_id text,deleted_at timestamptz,harness text,updated_at timestamptz);
@@ -28,7 +29,7 @@ describe.skipIf(!connectionString)('activity source records in PostgreSQL', () =
     await pool.query(`insert into operator_conversations (id,kind,workspace_id,workflow_id,workflow_node_id,agent_id,native_session_id,active_native_turn_id,active_request_id,harness)
       values ('conversation','agent','ws','wf','node','agent','session','turn','A','codex')`)
   })
-  afterEach(async () => { await pool?.end(); if (admin) { await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end() } })
+  afterEach(async () => { await pool?.end(); if (admin) { await dropFixtureSchema(admin, schema); await admin.end() } })
   const operation = (sequence: number, text: string, final = false): ActivityTextOperation => ({ identity: {
     scope: { kind: 'agent_chat', conversationId: 'conversation', workspaceId: 'ws', workflowId: 'wf', nodeId: 'node', agentId: 'agent' },
     requestId: 'A', sessionId: 'session', turnId: 'turn', itemId: 'item', channel: 'assistant' },

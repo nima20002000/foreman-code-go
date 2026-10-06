@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { link, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -80,7 +81,7 @@ describe.skipIf(!postgresEnabled)('FIL-04 temporary cleanup integration', () => 
   })
   afterAll(async () => {
     await physical?.close()
-    if (storageRoot) await rm(storageRoot, { recursive: true, force: true })
+    if (storageRoot) await removeFixtureDirectory(storageRoot)
     await database?.close()
   })
 

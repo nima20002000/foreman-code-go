@@ -1,3 +1,4 @@
+import { TextTruncationSchema } from '@foreman-code/contracts/activity-text'
 import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import type { ActivityTextIdentity, ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import { completedNativeAssistantMessage, nativeAssistantText } from './operatorText.js'
@@ -60,6 +61,7 @@ export function normalizeNativeTextOperations(event: NativeHarnessEvent, input: 
     const completed = completedNativeAssistantMessage(event, input.harness)
     return deltas.map((delta): ActivityTextOperation | undefined => {
       const payload = event.payload
+      const truncation = TextTruncationSchema.optional().parse(payload.truncation)
       const item = payload.item && typeof payload.item === 'object' ? payload.item as Record<string, unknown> : {}
       const part = payload.part && typeof payload.part === 'object' ? payload.part as Record<string, unknown> : {}
       const nativeItemId = payload.itemId ?? item.id ?? payload.partID ?? part.id
@@ -77,7 +79,7 @@ export function normalizeNativeTextOperations(event: NativeHarnessEvent, input: 
       return { observedAt: event.occurredAt, identity: { ...input.owner(), ...(typeof payload.nativeSessionId === 'string' ? { sessionId: payload.nativeSessionId } : {}),
         ...(typeof payload.nativeTurnId === 'string' ? { turnId: payload.nativeTurnId } : {}), ...(typeof payload.nativeGeneration === 'string' ? { generation: payload.nativeGeneration } : {}), itemId: nativeItemId, ...(partId ? { partId } : {}),
         ...(parentId ? { parentId } : {}), channel: delta.partId.startsWith('thinking:') ? 'reasoning' : 'assistant' },
-      mode: delta.mode, text: delta.text, final: !!completed && completed.complete !== false,
+      ...(truncation ? { truncation } : {}), mode: delta.mode, text: delta.text, final: !!completed && completed.complete !== false,
       ...(event.connectionId || eventId || nativeSequence ? { source: {
         ...(event.connectionId ? { connectionId: event.connectionId, sequence: event.sequence } : {}),
         ...(eventId ? { eventId } : {}), ...(nativeSequence ? { nativeSequence } : {}),

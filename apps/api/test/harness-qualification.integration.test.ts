@@ -1,5 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -31,7 +32,7 @@ it('registers the qualification migration after earlier blocks', () => {
 it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticated HTTP and MCP, denies a reader, and reads persisted trust', async () => {
   const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL })
   const schema = `harness_qualification_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path=${schema}` })
   const home = await mkdtemp(join(tmpdir(), 'harness-qualification-test-'))
   const binary = join(home, 'fake-codex')
@@ -117,8 +118,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     await Promise.allSettled(clients.map((client) => client.close()))
     await app?.close()
     await pool.end()
-    await rm(home, { recursive: true, force: true })
-    await admin.query(`drop schema if exists "${schema}" cascade`)
+    await removeFixtureDirectory(home)
+    await dropFixtureSchema(admin, schema)
     await admin.end()
   }
 }, 60_000)

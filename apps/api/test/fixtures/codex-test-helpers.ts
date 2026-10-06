@@ -11,10 +11,12 @@ import type { MessagePhase, Thread, ThreadItem } from '../../src/modules/harness
 import { isObject, type JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'
 import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 import { runCommand } from '../../src/modules/harnesses/process.js'
+import { assertTestRoot, type TestRoot } from '../../../../scripts/test-resources.mjs'
 
 export interface Fixture { directory: string; binary: string }
-export async function fixture(): Promise<Fixture> {
-  const directory = await mkdtemp(join(tmpdir(), 'graphql-codex-regression-'))
+export async function fixture(options: { root?: TestRoot } = {}): Promise<Fixture> {
+  if (options.root) assertTestRoot(options.root.directory, options.root.token)
+  const directory = options.root?.directory ?? await mkdtemp(join(tmpdir(), 'graphql-codex-regression-'))
   const binary = join(directory, 'codex')
   const source = await readFile(new URL('./codex-app-server.cjs', import.meta.url), 'utf8')
   await writeFile(binary, `#!${process.execPath}\n${source}`)

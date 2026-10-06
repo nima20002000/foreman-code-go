@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -92,7 +93,7 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
   })
   afterAll(async () => {
     await app?.close()
-    if (storageRoot) await rm(storageRoot, { recursive: true, force: true })
+    if (storageRoot) await removeFixtureDirectory(storageRoot)
     await database?.close()
   })
 
