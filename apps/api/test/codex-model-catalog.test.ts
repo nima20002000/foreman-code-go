@@ -98,6 +98,26 @@ function recordedInspection(request: () => Promise<unknown>, close: () => Promis
     transportFactory: () => ({ start: async () => undefined, reject: async () => undefined, request, close }) }
 }
 
+it('excludes App and controller credentials from model metadata while retaining provider sign-in', async () => {
+  const source = { CODEX_HOME: '/private-provider-profile', OPENAI_API_KEY: 'provider-fixture-key',
+    FOREMAN_CODE_MCP_TOKEN: 'scoped-fixture-token', GRAPHQL_MCP_TOKEN: 'legacy-scoped-token',
+    JOB_DISPATCH_DATABASE_URL: 'controller-database', FOREMAN_CODE_TEST_OWNER: 'controller-owner',
+    NODE_OPTIONS: '--import=controller-loader' }
+  const inspection = recordedInspection(async () => ({ data: [], nextCursor: null }), async () => undefined)
+  const factory = inspection.transportFactory!
+  let delivered: NodeJS.ProcessEnv | undefined
+  inspection.transportFactory = (...args) => {
+    delivered = args[2]
+    return factory(...args)
+  }
+  await readNativeCodexModelCatalog(inspection, '/recorded-workspace', source)
+  expect(delivered).toMatchObject({ CODEX_HOME: source.CODEX_HOME, OPENAI_API_KEY: source.OPENAI_API_KEY })
+  for (const key of ['FOREMAN_CODE_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN', 'JOB_DISPATCH_DATABASE_URL',
+    'FOREMAN_CODE_TEST_OWNER', 'NODE_OPTIONS']) expect(delivered?.[key]).toBeUndefined()
+  expect(source.FOREMAN_CODE_MCP_TOKEN).toBe('scoped-fixture-token')
+  expect(source.NODE_OPTIONS).toBe('--import=controller-loader')
+})
+
 it('rejects empty continuation pages and confirms cleanup without unbounded metadata reads', async () => {
   let reads = 0
   let closed = false
