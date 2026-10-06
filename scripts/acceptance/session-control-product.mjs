@@ -9,11 +9,13 @@ export async function sessionControlProduct(input) {
   assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname))
   const require = createRequire(new URL('../../apps/api/package.json', import.meta.url))
   const { Client, StreamableHTTPClientTransport } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/client')).href)
-  const [contracts, agentChat, management, profiles, placements, workflows] = await Promise.all([
+  const [contracts, agentChat, management, profiles, placements, workflows, roots, boundLocations] = await Promise.all([
     import('../../packages/contracts/dist/index.js'), import('../../packages/contracts/dist/agentChat.js'),
     import('../../packages/contracts/dist/management/index.js'), import('../../packages/contracts/dist/harnessRegistry.js'),
     import('../../packages/contracts/dist/nodePlacement.js'),
     import('../../packages/contracts/dist/wave25/index.js'),
+    import('../../packages/contracts/dist/workspaceRootPolicies.js'),
+    import('../../packages/contracts/dist/workspaceBoundLocation.js'),
   ])
   const headers = sessionControlHeaders(input)
   const read = async path => {
@@ -26,7 +28,8 @@ export async function sessionControlProduct(input) {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', base), {
       authProvider: { token: async () => process.env[input.mcpTokenEnv] },
     }))
-    return { contracts, agentChat, management, profiles, placements, workflows, read, identity: await read('/health/identity'),
+    return { contracts, agentChat, management, profiles, placements, workflows, roots, boundLocations,
+      read, identity: await read('/health/identity'),
       close: () => client.close(), tool: async (name, args, options = {}) => {
         const result = await client.callTool({ name, arguments: args }, { timeout: 360000, ...options })
         assert.ok(!result.isError, `Product tool ${name} failed.`)

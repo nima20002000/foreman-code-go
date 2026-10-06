@@ -3,10 +3,12 @@ import { randomUUID } from 'node:crypto'
 import test from 'node:test'
 import { provisionSessionControlSubjects } from './provision-session-controls.mjs'
 
-const [contracts, management, profiles, placements, workflows] = await Promise.all([
+const [contracts, management, profiles, placements, workflows, roots, boundLocations] = await Promise.all([
   import('../../packages/contracts/dist/index.js'), import('../../packages/contracts/dist/management/index.js'),
   import('../../packages/contracts/dist/harnessRegistry.js'), import('../../packages/contracts/dist/nodePlacement.js'),
   import('../../packages/contracts/dist/wave25/index.js'),
+  import('../../packages/contracts/dist/workspaceRootPolicies.js'),
+  import('../../packages/contracts/dist/workspaceBoundLocation.js'),
 ])
 const createdAt = '2026-10-06T00:00:00.000Z'
 const digest = `sha256:${'a'.repeat(64)}`
@@ -16,6 +18,12 @@ function fixture() {
   const mainId = randomUUID()
   const deviceId = randomUUID()
   const workerInstallationId = randomUUID()
+  const allowedBaseId = randomUUID()
+  const filesystem = { device: '1', inode: '2', mountId: '3' }
+  const allowlist = { schemaVersion: 1, hostRef: { kind: 'device', mainId, deviceId },
+    applicationInstallationId: workerInstallationId, configurationRevision: '1',
+    bases: [{ baseId: allowedBaseId, canonicalPath: '/worker/projects', filesystem, accessModes: ['read-only'] }],
+    managedRuntimeRoot: '/worker/runtime', runtimeFilesystem: filesystem }
   const identity = { installationId: mainId, checkoutId: 'b'.repeat(64), databaseId: 'c'.repeat(64) }
   const defaults = { value: structuredClone(contracts.DEFAULT_AGENT_DEFAULTS), revision: 0, versionId: null }
   const subjects = []
@@ -27,14 +35,14 @@ function fixture() {
     if (harness === 'codex') configuration.reasoningEffort = 'medium'
     const hostRef = kind === 'main' ? { kind, mainId } : { kind, mainId, deviceId }
     subjects.push({ hostRef, configuration, parentPath: '/owned/projects', compactionInputs: ['Accepted context'],
-      ...(kind === 'device' ? { placement: { schemaVersion: 1, hostRef, rootPolicyId: randomUUID(),
-        rootPolicyRevision: '1', locationRevision: '1', projectRoot: '/worker/projects/controls',
-        cwdPolicy: 'project-root', relativeCwd: '', rootBinding: { rootId: randomUUID(), bindingRevision: 1 } } } : {}) })
+      ...(kind === 'device' ? { rootSelection: { hostRef, allowedBaseId, configurationRevision: '1',
+        relativePath: 'controls', accessMode: 'read-only' } } : {}) })
   }
   const input = { subjects, expectedIdentity: identity }
   const overrides = new Map()
   const workspaces = new Map()
   const nodes = new Map()
+  const locations = new Map()
   const calls = []
   let qualified = true
   let readbackChanged = false
@@ -90,6 +98,47 @@ function fixture() {
       workspaces.set(value.workspace.id, value)
       return { value, replayed: false }
     }
+    if (name === 'workspace_root_configuration_adopt') {
+      boundLocations.WorkspaceRootConfigurationAdoptSchema.parse(args)
+      assert.ok(workspaces.has(args.workspaceId))
+      assert.deepEqual(args.hostRef, allowlist.hostRef)
+      return { value: allowlist, replayed: false }
+    }
+    if (name === 'workspace_root_choices_list') return { workspaceId: args.workspaceId,
+      policies: [], allowlists: [allowlist], readiness: 'metadata-only' }
+    if (name === 'workspace_root_location_validate') {
+      const selection = roots.WorkspaceRootSelectionSchema.parse(args)
+      assert.equal(selection.expectedLocationRevision, workspaces.get(selection.workspaceId).locationRevision)
+      assert.equal(selection.expectedRootPolicyRevision, 0)
+      assert.equal(selection.allowedBaseId, allowedBaseId)
+      return { workspaceId: selection.workspaceId, selection, checkedAt: createdAt,
+        attestation: { schemaVersion: 1, attestationId: randomUUID(), requestDigest: 'a'.repeat(64),
+          hostRef: selection.hostRef, applicationInstallationId: workerInstallationId,
+          configurationRevision: selection.configurationRevision, allowedBaseId, relativePath: selection.relativePath,
+          accessMode: selection.accessMode, canonicalProjectRoot: '/worker/projects/controls', filesystem,
+          directoryIdentityHash: 'b'.repeat(64), managedRuntimeRoot: allowlist.managedRuntimeRoot,
+          runtimeFilesystem: filesystem, attestationDigest: 'c'.repeat(64) } }
+    }
+    if (name === 'workspace_root_location_set') {
+      const selection = boundLocations.WorkspaceBoundLocationSetInputSchema.parse(args)
+      const workspace = workspaces.get(selection.workspaceId)
+      assert.equal(workspace.locationRevision, selection.expectedLocationRevision)
+      workspace.locationRevision++
+      const value = { evidence: 'bound', workspaceId: selection.workspaceId,
+        locationRevision: workspace.locationRevision,
+        executionLocation: { runnerId: workerInstallationId, rootPath: '/worker/projects/controls' },
+        binding: { schemaVersion: 1, rootPolicyId: randomUUID(), rootPolicyRevision: '1',
+          workspaceId: selection.workspaceId, hostRef: selection.hostRef, applicationInstallationId: workerInstallationId,
+          registration: { workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+          locationRevision: String(workspace.locationRevision), ownerPrincipalId: 'recorded-sender', allowedBaseId,
+          configurationRevision: selection.configurationRevision, relativePath: selection.relativePath,
+          accessMode: selection.accessMode, canonicalProjectRoot: '/worker/projects/controls', filesystem,
+          directoryIdentityHash: 'b'.repeat(64), managedRuntimeRoot: allowlist.managedRuntimeRoot,
+          runtimeFilesystem: filesystem, attestationId: randomUUID(), attestationDigest: 'c'.repeat(64) } }
+      locations.set(selection.workspaceId, value)
+      return { value, replayed: false }
+    }
+    if (name === 'workspace_root_location_get') return locations.get(args.workspaceId)
     if (name === 'workflow_create') {
       workflows.CurrentWorkflowCreateInputSchema.parse(args)
       return { value: { workflow: { id: randomUUID(), workspaceId: args.workspaceId, name: args.name,
@@ -130,7 +179,7 @@ function fixture() {
     throw new Error(`Unexpected product tool ${name}`)
   }
   return { input, calls, defaults, workspaces, nodes, overrides,
-    ports: { contracts, management, profiles, placements, workflows, identity, tool },
+    ports: { contracts, management, profiles, placements, workflows, roots, boundLocations, identity, tool },
     failQualification() { qualified = false }, changeReadback() { readbackChanged = true }, disconnect() { connected = false } }
 }
 
@@ -179,6 +228,11 @@ test('provisions six saved nodes and independently checked host profiles without
     if (subject.hostKind === 'device') {
       assert.deepEqual(saved.request.graph.nodes[0].placement.hostRef, selected.target.hostRef)
       assert.equal(saved.request.graph.nodes[0].placement.instanceId, selected.instanceId)
+      assert.equal(saved.request.expectedLocationRevision, 2)
+      assert.equal(saved.request.graph.nodes[0].placement.locationRevision, '2')
+      const related = f.calls.filter(call => call.args.workspaceId === subject.agent.workspaceId)
+      assert.ok(related.findIndex(call => call.name === 'workspace_root_location_set')
+        < related.findIndex(call => call.name === 'workflow_create'))
     }
   }
   assert.deepEqual(f.defaults, original)
@@ -203,13 +257,13 @@ test('rejects failed qualification or changed persisted proof before creating an
   }
 })
 
-test('does not save a profile for an offline Worker or accept a foreign node placement', async () => {
+test('does not save a profile for an offline Worker or accept a foreign root selection', async () => {
   const f = fixture()
   const worker = f.input.subjects.find(value => value.hostRef.kind === 'device')
-  worker.placement.hostRef = { ...worker.hostRef, deviceId: randomUUID() }
+  worker.rootSelection.hostRef = { ...worker.hostRef, deviceId: randomUUID() }
   await assert.rejects(provisionSessionControlSubjects(f.input, f.ports), /another host/)
   assert.equal(f.calls.length, 0)
-  worker.placement.hostRef = worker.hostRef
+  worker.rootSelection.hostRef = worker.hostRef
   f.input.subjects = [worker, ...f.input.subjects.filter(value => value !== worker)]
   f.disconnect()
   await assert.rejects(provisionSessionControlSubjects(f.input, f.ports), /not connected/)
