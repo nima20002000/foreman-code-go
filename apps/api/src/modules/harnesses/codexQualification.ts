@@ -17,7 +17,7 @@ export async function qualifyNativeCodexModel(
   inspection?: CodexModelInspection,
 ): Promise<void> {
   const qualified = inspection?.qualified
-    ?? await qualifyCodex(binary, undefined, workingDirectory, environment, true, signal, recovery)
+    ?? await qualifyCodex(binary, workingDirectory, environment, true, signal, recovery)
   const { models } = await readNativeCodexModelCatalog({ ...inspection, qualified },
     workingDirectory, environment, signal, recovery)
   const model = models.find((entry) => entry.slug === configuration.model)

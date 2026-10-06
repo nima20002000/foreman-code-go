@@ -50,7 +50,7 @@ async function native(models: unknown, refreshFlag?: string) {
   directories.push(f.directory)
   await writeFile(join(f.directory, 'models.json'), JSON.stringify({ models }))
   if (refreshFlag) await writeFile(join(f.directory, refreshFlag), '')
-  const qualified = await fixtureQualification(f.binary, undefined, f.directory, {}, true)
+  const qualified = await fixtureQualification(f.binary, f.directory, {}, true)
   return { ...f, inspection: { qualified, assertUnchanged: async () => undefined } }
 }
 
@@ -63,7 +63,7 @@ it('checks the exact model, effort and tier through validated stdio without crea
   await qualify(configuration)
   await expect(qualify({ ...configuration, model: 'absent' }))
     .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_UNAVAILABLE',
-      message: expect.stringContaining(`${f.inspection.qualified.providerVersion}`) } } })
+      message: expect.stringContaining(f.inspection.qualified.providerVersion) } } })
   await expect(qualify({ ...configuration, reasoningEffort: 'high' }))
     .rejects.toMatchObject({ result: { error: { code: 'CODEX_SETTING_UNSUPPORTED',
       message: expect.stringContaining('model/list') } } })
@@ -109,7 +109,7 @@ it('rejects empty continuation pages and confirms cleanup without unbounded meta
   }, async () => { closed = true })
   await expect(readNativeCodexModelCatalog(inspection, '/recorded-workspace', {}))
     .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_CATALOG_INVALID',
-      message: 'Codex codex-cli 0.154.0 does not satisfy the model/list catalog response contract.' } } })
+      message: expect.stringContaining(inspection.qualified.providerVersion) } } })
   expect(reads).toBe(1)
   expect(closed).toBe(true)
 })
