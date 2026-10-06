@@ -49,6 +49,8 @@ async function fixture() {
     },
     reserveDirectory: () => directories.reserveDirectory(f.binding),
     reserveTurn: (correlationId: string) => journal!.conversations.reserveTurn(f.binding, correlationId, commandInputHash(correlationId)),
+    finishTurn: (correlationId = 'accepted-input') => journal!.conversations.finishTurn(f.binding, correlationId,
+      { outcome: 'succeeded', output: 'Recorded completed turn' }),
     create: (correlationId = 'accepted-input', nativeSessionId: string = f.session.nativeSessionId) =>
       directories.create(f.binding, correlationId, nativeSessionId),
     record: () => journal!.conversations.read(f.binding),
@@ -79,13 +81,16 @@ it('rejects a traversal owner before allocating a native file mount', () => {
   expect(() => new ManagedOpenCodeServer({ binary: '/recorded-not-launched', workingDirectory: '/recorded-project',
     ownerAgentId: 'agent', managedFileRoot: '/recorded-files',
     managedFileOwner: { id: '../foreign', prepareDirectory: async () => {} } }))
-    .toThrow(expect.objectContaining({ result: { error: expect.objectContaining({ code: 'FILE_SOURCE_ISOLATION_REQUIRED' }) } }))
+    .toThrow(expect.objectContaining({ result: expect.objectContaining({
+      error: expect.objectContaining({ code: 'FILE_SOURCE_ISOLATION_REQUIRED' }),
+    }) }))
 })
 
 it('keeps two file turns in one owned conversation mount until the native process is closed', async () => {
   const f = await fixture()
   const directory = await f.prepareDirectory()
   const first = await f.create()
+  await f.finishTurn()
   await f.reserveTurn('second-input')
   const second = await f.create('second-input')
   await writeFile(join(first.path, 'first.md'), '# first turn\n')
@@ -128,6 +133,7 @@ it('keeps the mount and another turn’s bytes when only one closed turn is reco
   const f = await fixture()
   const directory = await f.prepareDirectory()
   await f.create()
+  await f.finishTurn()
   await f.reserveTurn('other-turn')
   const other = await f.create('other-turn')
   await writeFile(join(other.path, 'other.md'), '# another admitted turn\n')

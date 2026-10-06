@@ -109,6 +109,12 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
       row.pending_interaction = values[2] ? JSON.parse(String(values[2])) : null
       return { rows: [], rowCount: 1 }
     }
+    if (sql === 'select active_request_id from operator_conversations where id=$1') {
+      return { rows: [{ active_request_id: row.active_request_id }] }
+    }
+    if (sql === 'select * from operator_conversations where id=$1') {
+      return { rows: [row] }
+    }
     if (sql.includes('m.id as message_id')) return { rows: [{ ...row, sender_id: 'sender',
       message_id: 'user-message', native_submission: row.payload.nativeSubmission }] }
     if (sql.includes('select kind,id,owner_principal_id,operator_id')) return { rows: [{ ...row, id: surface, agent_id: 'agent' }] }
