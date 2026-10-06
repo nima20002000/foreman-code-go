@@ -9,6 +9,7 @@ import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema } 
 import type { ApiConfig } from '../src/config.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
+import { DomainError } from '../src/modules/errors.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresOperatorConversationRepository, nativeCorrelation } from '../src/modules/conversations/operatorChatRepository.js'
 import { readConversationPublicationReceipts } from '../src/modules/conversations/messagePublications.js'
@@ -21,6 +22,12 @@ describe.skipIf(!postgresEnabled)('Operator Claude publication recovery', () => 
   it('reads finalized MCP publications from the originating Operator message after credential revocation', async () => {
     const db = await agent3Database()
     const app = Fastify({ logger: false })
+    app.setErrorHandler((error, _request, reply) => {
+      if (error instanceof DomainError) {
+        return reply.code(error.status).send({ error: { code: error.code, message: error.message } })
+      }
+      return reply.send(error)
+    })
     const client = new Client({ name: 'Operator file publication test', version: '1' })
     onTestFinished(async () => {
       try { await client.close() }
@@ -58,11 +65,14 @@ describe.skipIf(!postgresEnabled)('Operator Claude publication recovery', () => 
       generation: 'recorded-query', toolUseId: 'recorded-root' }
     const callback = { nativeSessionId, nativeMessageId: submission.nativeMessageId,
       clientCorrelationId: submission.clientCorrelationId, generation: identity.generation }
+    const manager = {
+      nativeCallbackContext: (sessionId: string, toolUseId: string) =>
+        sessionId === nativeSessionId && toolUseId === identity.toolUseId ? callback : undefined,
+      callbackAuthority: () => ({ ownerPrincipalId: owner.id, attemptId: requestId }),
+    }
     const admission = productionClaudeFileAdmission({ pool: db.pool, allowMutation: true,
       binding: { kind: 'operator', conversationId: conversation.id, repository },
-      manager: () => ({ nativeCallbackContext: (sessionId, toolUseId) =>
-        sessionId === nativeSessionId && toolUseId === identity.toolUseId ? callback : undefined,
-      callbackAuthority: () => ({ ownerPrincipalId: owner.id, attemptId: requestId }) }) })
+      manager: () => manager })
     const accepted = await admission.current(identity)
     expect(accepted).toBeDefined()
     const token = await service.sessions.issueForAcceptedSession(accepted!.context, accepted!.expiresAt)
