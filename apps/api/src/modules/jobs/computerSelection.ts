@@ -198,6 +198,7 @@ export class JobComputerSelection {
     const compatibleTargetCount = new Set(enrolled.map(candidate => buildComputerKey(candidate.preference.target))).size
     const maximumCandidates = enrolled.filter(candidate => this.fitsEmptyComputer(candidate))
     const exceedsMaximum = enrolled.length > 0 && maximumCandidates.length === 0
+      && enrolled.every(candidate => candidate.profile.schemaVersion !== 2 || candidate.profile.measurement !== null)
     const waitingHosts: string[] = []
     for (const candidate of orderBuildComputers(enrolled)) {
       if (!this.fitsEmptyComputer(candidate)) {
