@@ -23,10 +23,14 @@ export async function assertOpenCodeNativeOutputCall(sql: FileQuery, capture: Na
   capture.assertCurrent()
   const row = (await sql.query<{ execution: unknown; configuration: unknown; workspace_id: string;
     workflow_id: string; workflow_version_id: string }>(
-    `select e.record as execution,c.record as configuration,r.workspace_id,r.workflow_id,r.workflow_version_id
-     from harness_executions e join runs r on r.id=e.run_id
+    `with parent as materialized (
+       select id,workspace_id,workflow_id,workflow_version_id from runs
+       where id=(select run_id from harness_executions where id=$1) for share
+     )
+     select e.record as execution,c.record as configuration,r.workspace_id,r.workflow_id,r.workflow_version_id
+     from parent r join harness_executions e on e.run_id=r.id
      join agent_configuration_versions c on c.id=e.record->>'agentConfigurationVersionId' and c.agent_id=e.agent_id
-     where e.id=$1 for share of e,r,c`, [input.executionId])).rows[0]
+     where e.id=$1 for share of e,c`, [input.executionId])).rows[0]
   if (!row) return denied()
   const execution = HarnessExecutionSchema.parse(row.execution)
   const configuration = AgentConfigurationVersionSchema.parse(row.configuration)

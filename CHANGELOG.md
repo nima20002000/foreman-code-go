@@ -41,6 +41,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Check derived return and notice sizes against persisted PostgreSQL envelopes before acceptance, including large numeric payloads.
 - Preserve safely unsubmitted or settled handoff work across restart, and physically close invalid artifact turns while retaining validation failures.
 - Reconstruct activation-result publication records for authenticated canonical graph reads after review cycles.
+- Lock the Run before its execution when checking original native output approvals, preventing deadlocks with credential recovery.
 
 ### Security
 

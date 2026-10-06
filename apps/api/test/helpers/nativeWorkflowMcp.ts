@@ -16,6 +16,7 @@ export async function configureNativeWorkflowMcp(input: {
   runtimeDirectory: string
   codexBinary: string
   openCodeBinary?: string
+  appServerName?: string
 }): Promise<() => Promise<void>> {
   const previous = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
   const previousCodexHome = process.env.CODEX_HOME
@@ -40,7 +41,7 @@ export async function configureNativeWorkflowMcp(input: {
     if (sourceLauncher !== undefined) process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = sourceLauncher
     const codex = await new CodexMcpConnections(input.codexBinary, input.projectDirectory)
       .read(AbortSignal.timeout(30_000))
-    const codexName = appMcpServerName(codex.effective)
+    const codexName = appMcpServerName(codex.effective, input.appServerName)
     const entry = record(codex.effective[codexName])
     const reference = appLauncherTokenName('codex', entry) ?? entry.bearer_token_env_var
     const codexToken = typeof reference === 'string' && isSupportedAppMcpTokenName(reference)
@@ -64,7 +65,7 @@ export async function configureNativeWorkflowMcp(input: {
       '',
     ].join('\n'), { mode: 0o600 })
     if (openCode) {
-      const name = appMcpServerName(openCode.effective)
+      const name = appMcpServerName(openCode.effective, input.appServerName)
       const token = openCode.credentialReferences?.[name] ?? APP_MCP_TOKEN
       await writeFile(join(input.projectDirectory, 'opencode.json'), JSON.stringify({ mcp: { [name]: {
         type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,

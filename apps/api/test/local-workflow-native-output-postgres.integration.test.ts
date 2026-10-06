@@ -11,6 +11,8 @@ import { requireAuthorization } from '../src/modules/access/policy.js'
 import type { FileQuery } from '../src/modules/files/repository.js'
 import { LocalWorkflowNativeOutputRepository, type LocalOutputCaller } from '../src/modules/runs/remote/localWorkflowNativeOutputRepository.js'
 import { LocalWorkflowArtifactAuthority } from '../src/modules/runs/remote/localWorkflowArtifactAuthority.js'
+import { assertOpenCodeNativeOutputCall } from '../src/modules/runs/remote/localWorkflowOutputApproval.js'
+import type { NativeOutputCallCapture } from '../src/modules/harnesses/port.js'
 import { runWorkHandoffWithRestart, workHandoffRuntimeFixture } from './helpers/workHandoffRuntimeFixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
@@ -73,7 +75,8 @@ async function fixture(pool: pg.Pool) {
 }
 
 describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('PostgreSQL original native output byte journal', () => {
-  it('keeps artifact reads from locking executions ahead of their Run after acceptance and restart', async () => {
+  it.each(['artifact context', 'output approval'] as const)(
+    'keeps %s reads from locking executions ahead of their Run after acceptance and restart', async boundary => {
     const definition = makeCurrentWorkflowFixture(randomUUID(), 'single')
     definition.version.definition.handoffs = { contractVersion: 1 }
     const f = await workHandoffRuntimeFixture(definition, () => ({ routing: { kind: 'finish' },
@@ -94,7 +97,13 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('PostgreSQL original nativ
       await writer.query('begin')
       await writer.query('select id from runs where id=$1 for update', [f.f.run.id])
       await reader.query('begin')
-      read = authority.execution(reader, accepted[0]!.id)
+      const capture: NativeOutputCallCapture = { descriptor: { nativeSessionId: 'unqualified',
+        rootTurnId: 'unqualified', assistantMessageId: 'unqualified', callId: 'unqualified',
+        toolName: 'files.native_output_create', nativeToolName: 'foreman-code_files_native_output_create',
+        inputDigest: 'unqualified' }, effectivePolicy: 'ask', assertCurrent: () => undefined }
+      read = boundary === 'artifact context' ? authority.execution(reader, accepted[0]!.id)
+        : assertOpenCodeNativeOutputCall(reader, capture, { executionId: accepted[0]!.id,
+          command: { operation: 'create', commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' } })
       const result = Promise.allSettled([read])
       let waiting = false
       for (let attempt = 0; attempt < 100; attempt++) {
@@ -108,7 +117,8 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('PostgreSQL original nativ
         [accepted[0]!.id])).rowCount).toBe(1)
       await writer.query('rollback')
       const [denied] = await result
-      expect(denied).toMatchObject({ status: 'rejected', reason: { code: 'NATIVE_ARTIFACT_AUTHORITY_DENIED' } })
+      expect(denied).toMatchObject({ status: 'rejected', reason: { code: boundary === 'artifact context'
+        ? 'NATIVE_ARTIFACT_AUTHORITY_DENIED' : 'WORKFLOW_OUTPUT_PERMISSION_DENIED' } })
     } finally {
       if (writer) { await writer.query('rollback'); writer.release() }
       if (read) await Promise.allSettled([read])

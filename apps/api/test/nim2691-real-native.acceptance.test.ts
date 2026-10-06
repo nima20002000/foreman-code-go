@@ -20,13 +20,11 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
 import { buildProductionApp } from '../src/production.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, isSupportedAppMcpServerName, appLauncherPath, appLauncherTokenName, appMcpServerName,
-  installAppLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, appMcpServerName } from '../src/modules/harnesses/appMcpLauncher.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
-import { CodexMcpConnections } from '../src/modules/harnesses/codexMcpConnections.js'
 import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
 import { DomainError } from '../src/modules/errors.js'
-import { record } from '../src/modules/harnesses/nativeMcpCommon.js'
+import * as mcpResults from '../src/mcp/shared/results.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
@@ -34,6 +32,7 @@ import { detectedClaudeProfilePath } from '../src/modules/harnesses/claudeSdk/pr
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
+import { configureNativeWorkflowMcp } from './helpers/nativeWorkflowMcp.js'
 import { LocalNativeArtifactOutputSchema } from '../src/modules/runs/remote/nativeArtifactOutputs.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { nativeOpenCodeMcpToolName } from '../src/modules/harnesses/openCodePermissionPolicy.js'
@@ -115,33 +114,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const runtimeRoot = join(directory, 'runtime')
       await mkdir(projectPath, { mode: 0o700 })
       await mkdir(runtimeRoot, { mode: 0o700 })
-      await installAppLauncher()
       const binaries = harnessBinaries(process.env)
-      const codexConnections = await new CodexMcpConnections(binaries.codexBinary, projectPath)
-        .read(AbortSignal.timeout(30_000))
-      const codexServerName = appMcpServerName(codexConnections.effective, appServerName)
-      const codexTokenName = appLauncherTokenName('codex', record(codexConnections.effective[codexServerName]))
-        ?? APP_MCP_TOKEN
-      await mkdir(join(projectPath, '.codex'))
-      await writeFile(join(projectPath, '.codex', 'config.toml'), [
-        `[mcp_servers.${codexServerName}]`,
-        `command = ${JSON.stringify(process.execPath)}`,
-        `args = [${JSON.stringify(appLauncherPath())}]`,
-        `env_vars = [${JSON.stringify(codexTokenName)}]`,
-        '',
-      ].join('\n'), { mode: 0o600 })
       let openCodeServerName: string = appServerName
-      if (scenario.providers.some((provider) => provider === 'opencode')) {
-        const openCodeConnections = await new OpenCodeMcpConnections(binaries.openCodeBinary, projectPath)
-          .read(AbortSignal.timeout(30_000))
-        openCodeServerName = appMcpServerName(openCodeConnections.effective, appServerName)
-        // OpenCode merges environment maps across layers; reuse the installed credential reference.
-        const openCodeTokenName = openCodeConnections.credentialReferences?.[openCodeServerName] ?? APP_MCP_TOKEN
-        await writeFile(join(projectPath, 'opencode.json'), JSON.stringify({ mcp: { [openCodeServerName]: {
-          type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,
-          environment: { [openCodeTokenName]: `{env:${openCodeTokenName}}` },
-        } } }), { mode: 0o600 })
-      }
+      let restoreNativeMcp: (() => Promise<void>) | undefined
       const port = await taskPort()
       const config = { ...loadConfig({ ...process.env, HOST: '127.0.0.1', PORT: String(port),
         DATABASE_URL: suppliedUrl.replace(/^postgres:/, 'postgresql:'),
@@ -155,6 +130,13 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         .filter(([name, value]) => /TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL/.test(name) && value)
         .map(([, value]) => value!))
       const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail }> = []
+      const toolFailure = mcpResults.toolFailure
+      const mcpFailureObserver = vi.spyOn(mcpResults, 'toolFailure').mockImplementation((error, message) => {
+        if (nativeFailures.length < 16 && (!(error instanceof DomainError) || error.status >= 500)) {
+          nativeFailures.push({ stage: 'mcp_tool', error: describeNativeFailure(error, [...secrets]) })
+        }
+        return toolFailure(error, message)
+      })
       const cancellations: Array<{ nativeSessionId: string; caller: string[]; reason?: NativeFailureDetail }> = []
       const createSession = CodexAppServerSessionManager.prototype.createSession
       const sessionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
@@ -219,6 +201,15 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const verify = async () => {
         await database.migrate()
         await checkpoints.setup()
+        const usesOpenCode = scenario.providers.some(provider => provider === 'opencode')
+        restoreNativeMcp = await configureNativeWorkflowMcp({ projectDirectory: projectPath,
+          runtimeDirectory: runtimeRoot, codexBinary: binaries.codexBinary, appServerName,
+          ...(usesOpenCode ? { openCodeBinary: binaries.openCodeBinary } : {}) })
+        if (usesOpenCode) {
+          const connections = await new OpenCodeMcpConnections(binaries.openCodeBinary, projectPath)
+            .read(AbortSignal.timeout(30_000))
+          openCodeServerName = appMcpServerName(connections.effective, appServerName)
+        }
         const settings = new PostgresSettingsRepository(pool)
         const defaults = await settings.getHarnessDefaults()
         await settings.saveHarnessDefaults({ ...defaults, claude: {
@@ -952,6 +943,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       attachmentObserver.mockRestore()
       sessionObserver.mockRestore()
       cancellationObserver.mockRestore()
+      mcpFailureObserver.mockRestore()
       const cleanupErrors: unknown[] = []
       if (artifactBoundary) {
         try { await artifactBoundary.query('rollback') }
@@ -979,6 +971,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       catch (error) { cleanupErrors.push(error) }
       const resources = await Promise.allSettled([checkpoints.close(), database.close()])
       for (const result of resources) if (result.status === 'rejected') cleanupErrors.push(result.reason)
+      try { await restoreNativeMcp?.() }
+      catch (error) { cleanupErrors.push(error) }
       if (cleanupErrors.length) {
         if (failure) cleanupErrors.unshift(failure.error)
         throw new AggregateError(cleanupErrors, 'Native workflow verification or cleanup failed.',

@@ -50,10 +50,14 @@ function fixture() {
     evidence: { source: 'provider_acknowledgement', ...session, nativeRequestId: request.id,
       nativeRequestType: 'permission.asked', optionId: option.optionId, semantic: option.semantic } }
   let approvals = [approval]
-  const sql = { query: vi.fn(async (_query: string) => ({ rows: _query.startsWith('select e.record')
-    ? [{ execution, configuration, workspace_id: 'workspace', workflow_id: 'workflow', workflow_version_id: 'version' }]
-    : approvals })) } as unknown as FileQuery
-  const check = () => assertOpenCodeNativeOutputCall(sql, capture, { executionId: execution.id, command })
+  const query = vi.fn()
+  const sql = { query } as unknown as FileQuery
+  const check = () => {
+    query.mockResolvedValueOnce({ rows: [{ execution, configuration, workspace_id: 'workspace',
+      workflow_id: 'workflow', workflow_version_id: 'version' }] }).mockResolvedValueOnce({ rows: approvals })
+    const result = assertOpenCodeNativeOutputCall(sql, capture, { executionId: execution.id, command })
+    return result.finally(() => query.mockReset())
+  }
   return { check, capture, configuration, approval, proof, command, clearApprovals: () => { approvals = [] } }
 }
 
