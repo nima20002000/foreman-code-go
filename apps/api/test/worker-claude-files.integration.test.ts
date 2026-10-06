@@ -22,6 +22,7 @@ import { createWorkerClaudeFiles } from '../src/modules/conversations/workerClau
 import { readConversationPublicationReceipts } from '../src/modules/conversations/messagePublications.js'
 import { registerProductionFileStorage } from '../src/modules/files/production.js'
 import { productionFileTools } from '../src/modules/files/tools/production.js'
+import { PostgresFileConversationAuthorization } from '../src/modules/files/authorization.js'
 import { workerConversationFixture } from '../src/modules/conversations/workerFixtures.test-support.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 
@@ -113,8 +114,9 @@ async function fixture(readOnly: boolean) {
   }
   await workerFiles.server.instance.connect(serverTransport)
   await client.connect(clientTransport)
-  const scope = { kind: 'temporary' as const, chat: { kind: 'operator' as const, conversationId: conversation.id } }
   const target = { kind: 'operator' as const, conversationId: conversation.id }
+  const scope = await new PostgresFileConversationAuthorization(db.pool).resolve(sender.principal, target,
+    readOnly ? 'read' : 'write')
   const bytes = Buffer.from('Worker attachment contents')
   const uploadId = randomUUID()
   await storage.allocate(sender.principal, target, { requestId: uploadId, filename: 'source.md',
@@ -141,9 +143,11 @@ describe.skipIf(!postgresEnabled)('Claude worker file calls on admitted native m
     const read = await f.call('files.read', f.ref)
     expect(read.structuredContent).toMatchObject({ status: 'ready',
       contentBase64: Buffer.from('Worker attachment contents').toString('base64') })
-    const copied = AgentFileCreateWorkingCopyResultSchema.parse((await f.call('files.create_working_copy', {
+    const copyResult = await f.call('files.create_working_copy', {
       commandId: randomUUID(), source: f.ref, destination: f.scope,
-    })).structuredContent)
+    })
+    expect(copyResult.isError, JSON.stringify(copyResult.content)).not.toBe(true)
+    const copied = AgentFileCreateWorkingCopyResultSchema.parse(copyResult.structuredContent)
     const publish = { commandId: randomUUID(), artifactId: copied.value.artifactId,
       scope: f.scope, filename: 'result.md', mediaType: 'text/markdown' }
     const first = AgentFilePublishResultSchema.parse((await f.call('files.publish_result', publish)).structuredContent)
