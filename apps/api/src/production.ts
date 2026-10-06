@@ -75,7 +75,7 @@ import type { GraphSqlClient } from './modules/run-graph/connection.js'
 import { currentOperatorAuthority } from './modules/access/runAuthority.js'
 import { requireAuthorization } from './modules/access/policy.js'
 import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from './modules/harnesses/instanceSettings/acceptedProfile.js'
-import type { AcceptedProfileSelector } from './modules/harnesses/instanceSettings/acceptedProfile.js'
+import { workflowProfileSelection } from './modules/harnesses/workflowProfileSelection.js'
 import { HarnessExecutionRequestSchema, OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
 import { inspectClaudeOperatorConfiguration } from './modules/harnesses/claudeSdk/operatorConfigurationInspection.js'
 import { requireClaudePolicyQualification } from './modules/harnesses/claudeSdk/configuration.js'
@@ -683,7 +683,6 @@ export function buildProductionApp(
     const recovery = processRegistry.scope(`execution:${context.executionId}`)
     const remote = remoteWorkflow!.manager(context, getOwner)
     if (remote) return remote
-    const placement = context.acceptedPlacement
     const nativeOutputs = configuration.harness === 'codex' && context.artifactOutputs && !context.purpose
       ? createLocalWorkflowNativeOutputs({ executionId: context.executionId, artifacts: () => {
         if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
@@ -696,18 +695,8 @@ export function buildProductionApp(
           'The local workflow no longer owns its native output turn.', 409)
         owner.assertOwned()
       }, qualification: { registry: processRegistry, qualify: qualifyCodex, command: runCommand } }) : undefined
-    let selector: AcceptedProfileSelector | undefined
-    if (placement) {
-      if (placement.payload.kind !== 'agent' || placement.payload.agentId !== context.agentId
-        || placement.payload.agentConfigurationVersionId !== context.configuration.id
-        || placement.runId !== context.runId || (remoteWorkflow!.binding(context.executionId)?.executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd) !== context.workingDirectory
-        || placement.payload.driverId !== configuration.harness) throw new DomainError('PLACEMENT_BINDING_CONFLICT',
-        'The native role must use its exact accepted workflow placement.', 409)
-      selector = { instanceId: placement.payload.instanceId, instanceRevision: placement.payload.instanceRevision,
-        target: { hostRef: placement.hostRef, applicationInstallationId: placement.hostRef.kind === 'main'
-          ? placement.hostRef.mainId : placement.registration!.workerInstallationId,
-        harnessInstallationId: placement.payload.harnessInstallationId, installationFingerprint: placement.payload.installationFingerprint } }
-    }
+    const selector = workflowProfileSelection(context,
+      remoteWorkflow!.binding(context.executionId)?.executionPlacement?.workingTree.canonicalCwd)
     if (configuration.harness === 'claude') {
       requireClaudeProductionCredentialDelivery(configuration)
       if (!context.runId || !context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE',
