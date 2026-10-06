@@ -108,6 +108,7 @@ interface Runtime {
   creationInput?: NativeSessionStart
   environment?: ChildProcessEnvironment
   disposal?: Promise<void>
+  disposalStarted?: boolean
   /** Dummy-credential attachment: inspection/responses only, never launch another turn. */
   observationOnly?: boolean
 }
@@ -789,13 +790,18 @@ export class OperatorChatService {
     const revoking = this.authority.release(id)
     if (runtime && !runtime.disposal) {
       const disposal = (async () => {
-        await this.journalResidentTerminal(id, runtime)
-        const row = await this.repository.active(id)
-        if (row?.active_request_id) {
-          const terminal = await this.repository.terminal(id, row.active_request_id)
-          if (terminal?.closureState === 'observed' && !await this.repository.closurePending(id, row.active_request_id)) {
-            throw new Error('Native closure ownership was lost.')
+        if (!runtime.disposalStarted) {
+          await this.journalResidentTerminal(id, runtime)
+          const row = await this.repository.active(id)
+          if (row?.active_request_id) {
+            const terminal = await this.repository.terminal(id, row.active_request_id)
+            if (terminal?.closureState === 'observed'
+              && !await this.repository.closurePending(id, row.active_request_id)) {
+              throw new Error('Native closure ownership was lost.')
+            }
           }
+          // Native reads stop once disposal begins, including failed cleanup attempts.
+          runtime.disposalStarted = true
         }
         if (runtime.manager.dispose) await runtime.manager.dispose()
         else if (runtime.session) await runtime.manager.close(runtime.session)
@@ -818,6 +824,7 @@ export class OperatorChatService {
     if (!runtime.session) return
     const row = await this.repository.active(id)
     if (!row?.active_request_id || row.native_session_id !== runtime.session.nativeSessionId) return
+    if (nativeNonSubmission(row.record, row.active_request_id)) return
     const correlationId = nativeCorrelation(id, row.active_request_id)
     const history = await runtime.manager.reconcile(runtime.session, correlationId, AbortSignal.timeout(5_000))
     const submission = history.nativeSubmission
@@ -1107,7 +1114,9 @@ export class OperatorChatService {
           if (this.tasks.has(row.id)) return
           if (await this.repository.terminal(row.id, requestId)) {
             const resident = this.runtimes.get(row.id)
-            if (resident?.session && !resident.disposal) await this.observe(row.id, requestId, resident)
+            if (resident?.session && !resident.disposal && !resident.disposalStarted) {
+              await this.observe(row.id, requestId, resident)
+            }
             else await this.settleTerminal(row.id, requestId)
             return
           }
