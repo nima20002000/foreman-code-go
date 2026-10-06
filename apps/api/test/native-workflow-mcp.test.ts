@@ -40,6 +40,7 @@ it.each(storageFixtures)('keeps the verified $token reference in $storage native
   const previousHome = process.env.CODEX_HOME
   const previousLauncherDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
   const previousSourceLauncher = process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
+  const previousAuthentication = process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
   let restore: (() => Promise<void>) | undefined
   try {
     const home = join(directory, 'source-home')
@@ -48,6 +49,7 @@ it.each(storageFixtures)('keeps the verified $token reference in $storage native
     await mkdir(projectDirectory, { mode: 0o700 })
     await writeFile(join(home, 'auth.json'), JSON.stringify({ fixture: true }), { mode: 0o600 })
     process.env.CODEX_HOME = home
+    process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE = join(home, 'auth.json')
     process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'source-launcher')
     source.name = identity.name
     source.token = identity.token
@@ -86,6 +88,8 @@ it.each(storageFixtures)('keeps the verified $token reference in $storage native
       else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previousLauncherDirectory
       if (previousSourceLauncher === undefined) delete process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
       else process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY = previousSourceLauncher
+      if (previousAuthentication === undefined) delete process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
+      else process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE = previousAuthentication
       await rm(directory, { recursive: true, force: true })
     }
   }
