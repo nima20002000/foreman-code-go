@@ -558,7 +558,8 @@ export class WorkerConversationHost {
       case 'conversation.controls-read': return {
         capabilities: await manager.sessionControlCapabilities?.(request.session) ?? null,
         context: manager.contextSnapshot?.(request.session) ?? null,
-        preferences: manager.appliedSessionPreferences?.(request.session) ?? null, receipt: record,
+        preferences: manager.appliedSessionPreferences?.(request.session) ?? null,
+        receipt: await this.ports.journal.read(request.binding),
       }
       case 'conversation.preferences':
         if (!manager.applySessionPreferences) unavailable('The native driver cannot apply these preferences.')

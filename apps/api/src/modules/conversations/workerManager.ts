@@ -96,13 +96,13 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId'] as const) {
       if (receipt.connection[field] !== this.options.channel.binding[field]) conflict('The original worker installation changed.')
     }
-    if (this.receipt && (receipt.revision < this.receipt.revision
-      || this.receipt.session && !isDeepStrictEqual(receipt.session, this.receipt.session)
+    if (this.receipt && (this.receipt.session && !isDeepStrictEqual(receipt.session, this.receipt.session)
       || this.receipt.nativeOwner && !isDeepStrictEqual(receipt.nativeOwner, this.receipt.nativeOwner)
         && (!attachment || !isDeepStrictEqual(this.receipt.session, attachment)
           || !isDeepStrictEqual(receipt.session, attachment)))) {
       conflict('The original worker native owner changed.')
     }
+    if (this.receipt && receipt.revision < this.receipt.revision) return this.receipt
     this.receipt = receipt
     this.applied = receipt.appliedPreferences
     if (receipt.session) this.session = structuredClone(receipt.session)
@@ -453,10 +453,10 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     const value = z.object({ capabilities: SessionControlCapabilitiesSchema, context: ContextSnapshotSchema.nullable(),
       preferences: SessionPreferencesSchema.nullable(), receipt: WorkerConversationReceiptSchema }).parse(
       await this.request({ method: 'conversation.controls-read', session }))
-    this.adopt(value)
+    const receipt = this.adopt(value)
     if (value.context && value.context.nativeSessionId !== session.nativeSessionId) conflict('The worker context belongs to another session.')
     this.context = value.context
-    this.applied = value.preferences
+    this.applied = receipt ? receipt.appliedPreferences : value.preferences
     return value.capabilities
   }
   contextSnapshot(session: NativeSessionReference) { this.assertSession(session); return this.context }

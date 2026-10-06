@@ -15,6 +15,56 @@ import { nativeMessageId } from '../harnesses/opencodeProtocol.js'
 import { WorkerConversationRpcRequestSchema, type WorkerConversationRpcRequest,
   type WorkerConversationReceipt } from '@foreman-code/contracts/remote-execution-rpc'
 
+it.each(['same-owner', 'foreign-session', 'foreign-owner'] as const)(
+  'handles an overtaken controls receipt without accepting %s identity changes', async variant => {
+    const f = workerConversationFixture()
+    if (!('operatorId' in f.configuration)) throw new Error('Operator fixture required')
+    const bridge = new MainWorkerConversationBridge()
+    let latest: WorkerConversationReceipt = { binding: f.binding, connection: f.connection,
+      revision: 1, closed: false, closing: false, session: f.session, nativeOwner: f.nativeOwner,
+      turns: [], compactions: [], desiredPreferences: null, appliedPreferences: null }
+    let releaseRead!: () => void
+    let startedRead!: () => void
+    const gate = new Promise<void>(resolve => { releaseRead = resolve })
+    const started = new Promise<void>(resolve => { startedRead = resolve })
+    const desired = SessionPreferencesSchema.parse({ contextBudget: 3200 })
+    const manager = new WorkerConversationManager({ binding: f.binding, configuration: f.configuration, bridge,
+      current: async () => {}, channel: { binding: f.connection, request: async payload => {
+        const request = WorkerConversationRpcRequestSchema.parse(payload)
+        if (request.method === 'conversation.controls-read') {
+          const older = structuredClone(latest)
+          if (variant === 'foreign-session') older.session = { ...f.session, nativeSessionId: 'foreign-session' }
+          if (variant === 'foreign-owner') older.nativeOwner = { ...f.nativeOwner, processIdentityDigest: 'c'.repeat(64) }
+          startedRead()
+          await gate
+          return { payload: { receipt: older, capabilities: unavailableSessionControls('recorded-controls'),
+            context: null, preferences: null } }
+        }
+        if (request.method === 'conversation.preferences') {
+          latest = { ...latest, revision: latest.revision + 1, desiredPreferences: desired, appliedPreferences: desired }
+        }
+        if (request.method === 'conversation.close') latest = { ...latest, revision: latest.revision + 1, closed: true }
+        return { payload: { receipt: structuredClone(latest) } }
+      } } })
+    try {
+      await manager.createSession({ kind: 'operator', configuration: f.configuration,
+        correlationId: 'seed', workingDirectory: f.binding.workingDirectory })
+      const reading = manager.sessionControlCapabilities(f.session)
+      const result = reading.then(value => ({ value }), error => ({ error }))
+      await started
+      await manager.applySessionPreferences(f.session, desired)
+      releaseRead()
+      const completed = await result
+      if (variant === 'same-owner') expect(completed).toHaveProperty('value')
+      else expect(completed).toMatchObject({ error: { code: 'WORKER_CONVERSATION_CONFLICT' } })
+      expect(manager.appliedSessionPreferences(f.session)).toEqual(desired)
+    } finally {
+      releaseRead()
+      await manager.dispose()
+      await bridge.close()
+    }
+  })
+
 it('carries Plan and context through the issued-request bridge without creating a Run or another session', async () => {
   const f = workerConversationFixture()
   if (!('operatorId' in f.configuration)) throw new Error('Operator fixture required')
