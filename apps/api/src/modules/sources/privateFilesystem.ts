@@ -23,7 +23,8 @@ export async function withPrivateDirectoryLock<T>(root: FileHandle, work: () => 
       let failure: Error | undefined
       child.once('error', error => { failure = error })
       child.once('close', code => {
-        if (failure) reject(failure)
+        if (options.signal?.aborted) reject(options.signal.reason)
+        else if (failure) reject(failure)
         else if (code === 0) resolve()
         else reject(new SourceError('SOURCE_CLAIM_LOCK_FAILED', 'Source ownership serialization failed.'))
       })
