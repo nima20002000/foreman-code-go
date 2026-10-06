@@ -182,9 +182,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     this.streamHistory = undefined
     let sequence = review ? this.receipt?.reviewTurns?.find(turn => turn.assignment.jobId === review.jobId)?.afterSequence ?? -1 : -1
     let submitted = false
-    while (true) {
+    streaming: while (true) {
       signal?.throwIfAborted()
       const requestedSequence = sequence
+      const observedAt = Date.now()
       const value = await this.historyResponse(await this.request('history', { afterSequence: sequence,
         correlationId: input.clientCorrelationId }, signal), signal)
       const receipt = await this.status(value.status)
@@ -195,10 +196,12 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       const submittedId = review
         ? receipt.reviewTurns?.find(turn => turn.assignment.jobId === review.jobId)?.providerId : receipt.native?.turnId
       if (!submitted && submittedId) { await input.onSubmitted?.(submittedId); submitted = true }
-      this.streamHistory = { value: value.history, receipt, observedAt: Date.now() }
+      this.streamHistory = { value: value.history, receipt, observedAt }
       try {
         for (const event of value.history.events) {
           if (event.sequence <= sequence) continue
+          // Publication can outlast the Worker's physical observation window.
+          if (Date.now() - observedAt >= 30_000) continue streaming
           if (event.sequence !== sequence + 1) {
             throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'Remote native event sequences are discontinuous.')
           }

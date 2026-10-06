@@ -80,6 +80,31 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 }
 
 describe('remote native history streaming', () => {
+  it('refreshes authenticated history before a slow consumer uses expired event observations', async () => {
+    let now = Date.now()
+    let observedAt = now
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    try {
+      const f = setup(() => {
+        observedAt = now
+        return terminal([event(0), event(1)])
+      })
+      f.observeOriginalSource.mockImplementation(async () => {
+        if (now - observedAt >= 60_000) throw new Error('Original physical observation expired')
+      })
+      const session = await f.proxy.createSession(f.start)
+      const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+      expect((await stream.next()).value).toEqual(event(0))
+      now += 61_000
+      expect((await stream.next()).value).toEqual(event(1))
+      expect((await stream.next()).done).toBe(true)
+      expect(f.cursors).toEqual([-1, 0])
+      expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
   it.each(['entry', 'non-entry'] as const)('retains a closed %s receipt when preparation has no session acknowledgment', async kind => {
     const f = setup(() => ({ events: [], pendingInteractions: [] }))
     const original = { ...f.receipt }
