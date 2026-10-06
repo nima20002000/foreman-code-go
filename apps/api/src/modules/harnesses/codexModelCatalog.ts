@@ -59,7 +59,11 @@ export async function readNativeCodexModelCatalog(
     catalog = parseCodexModelCatalog({ exitCode: 0, stdout: JSON.stringify({ models }), stderr: '' })
   } catch (error) {
     failed = true
-    failure = error
+    failure = error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_MODEL_CATALOG_INVALID'
+      ? new HarnessExecutionError('CODEX_MODEL_CATALOG_INVALID',
+        `Codex ${inspection.qualified.providerVersion} does not satisfy the model/list catalog response contract.`,
+        false, { cause: error })
+      : error
   }
   try { await transport.close() }
   catch (cleanup) {

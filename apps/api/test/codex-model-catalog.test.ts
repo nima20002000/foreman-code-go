@@ -62,9 +62,11 @@ it('checks the exact model, effort and tier through validated stdio without crea
     f.binary, f.directory, {}, undefined, undefined, f.inspection)
   await qualify(configuration)
   await expect(qualify({ ...configuration, model: 'absent' }))
-    .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_UNAVAILABLE' } } })
+    .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_UNAVAILABLE',
+      message: expect.stringContaining(`${f.inspection.qualified.providerVersion}`) } } })
   await expect(qualify({ ...configuration, reasoningEffort: 'high' }))
-    .rejects.toMatchObject({ result: { error: { code: 'CODEX_SETTING_UNSUPPORTED' } } })
+    .rejects.toMatchObject({ result: { error: { code: 'CODEX_SETTING_UNSUPPORTED',
+      message: expect.stringContaining('model/list') } } })
   const wire = (await calls(f.directory)).filter(entry => entry.wire).map(entry => entry.wire as { method: string })
   expect(wire.filter(entry => entry.method === 'model/list')).toHaveLength(3)
   expect(wire.some(entry => ['thread/start', 'thread/resume', 'turn/start'].includes(entry.method))).toBe(false)
@@ -106,7 +108,8 @@ it('rejects empty continuation pages and confirms cleanup without unbounded meta
     return { data: [], nextCursor: `cursor-${reads}` }
   }, async () => { closed = true })
   await expect(readNativeCodexModelCatalog(inspection, '/recorded-workspace', {}))
-    .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_CATALOG_INVALID' } } })
+    .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_CATALOG_INVALID',
+      message: 'Codex codex-cli 0.154.0 does not satisfy the model/list catalog response contract.' } } })
   expect(reads).toBe(1)
   expect(closed).toBe(true)
 })
