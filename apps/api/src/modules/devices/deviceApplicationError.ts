@@ -49,6 +49,7 @@ const retryability: Readonly<Record<string, boolean>> = {
   SOURCE_OPERATION_AUTHORITY_CONFLICT: false,
   SOURCE_CONNECTION_CONFLICT: false,
   SOURCE_ATTEMPT_CONFLICT: false,
+  ROOT_DIRECTORY_MISSING: false,
   SOURCE_CAPACITY: false,
   SOURCE_DISK_CAPACITY: false,
   SOURCE_REPOSITORY_TIMEOUT: true,

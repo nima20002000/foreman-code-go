@@ -5,6 +5,8 @@ import {
   type ApprovedRootAllowlist, type WorkspaceRootPolicy, type WorkspaceRootWorkerRequest,
 } from '@foreman-code/contracts/workspace-root-policies'
 import { DomainError } from '../errors.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
+import { SourceError } from './manifest.js'
 import { attestWorkspaceRoot, browseApprovedRoot, attestSourceNamespace } from './rootAttestation.js'
 import type { AuthorizedWorkspaceRoot, WorkspaceRootHostPort } from './rootPolicyPorts.js'
 
@@ -12,6 +14,17 @@ export interface RootWorkerClient {
   /** W07 existing selected-main authenticated carrier; namespace/version/payload
    * budgets are WORKSPACE_ROOT_EXTENSION, not a second connection system. */
   request(host: ApprovedRootAllowlist['hostRef'], registration: NonNullable<WorkspaceRootPolicy['registration']>, request: WorkspaceRootWorkerRequest): Promise<unknown>
+}
+/** A folder the operator can fix must reach them as its stable code, from either host. */
+async function publicRootFailure<T>(work: () => Promise<T>): Promise<T> {
+  try { return await work() }
+  catch (error) {
+    if (error instanceof SourceError && error.code === 'ROOT_DIRECTORY_MISSING'
+      || error instanceof DeviceApplicationError && error.code === 'ROOT_DIRECTORY_MISSING') {
+      throw new DomainError('ROOT_DIRECTORY_MISSING', 'The selected folder does not exist on this computer.', 409)
+    }
+    throw error
+  }
 }
 export class InstalledWorkspaceRootHosts implements WorkspaceRootHostPort {
   constructor(private readonly main: ApprovedRootAllowlist,
@@ -34,16 +47,18 @@ export class InstalledWorkspaceRootHosts implements WorkspaceRootHostPort {
       throw new DomainError('ROOT_INSTALLATION_CONFLICT', 'The selected root does not belong to the approved main installation.', 409)
   }
   async attest(root: AuthorizedWorkspaceRoot) {
-    if (root.selection.hostRef.kind === 'main') { this.local(root); return attestWorkspaceRoot(this.main, root.selection) }
+    if (root.selection.hostRef.kind === 'main') { this.local(root); return publicRootFailure(() => attestWorkspaceRoot(this.main, root.selection)) }
     if (!root.registration) throw new DomainError('ROOT_DEVICE_CONFLICT', 'The selected device has no current approved registration.', 409)
-    return WorkspaceRootAttestationSchema.parse(await this.remote.request(root.selection.hostRef, root.registration,
-      { version: 1, operation: 'workspace-roots.attest', selection: root.selection }))
+    const registration = root.registration
+    return WorkspaceRootAttestationSchema.parse(await publicRootFailure(() => this.remote.request(root.selection.hostRef, registration,
+      { version: 1, operation: 'workspace-roots.attest', selection: root.selection })))
   }
   async browse(root: AuthorizedWorkspaceRoot, relativePath: string) {
-    if (root.selection.hostRef.kind === 'main') { this.local(root); return browseApprovedRoot(this.main, root.selection, relativePath) }
+    if (root.selection.hostRef.kind === 'main') { this.local(root); return publicRootFailure(() => browseApprovedRoot(this.main, root.selection, relativePath)) }
     if (!root.registration) throw new DomainError('ROOT_DEVICE_CONFLICT', 'The selected device has no current approved registration.', 409)
-    return WorkspaceRootBrowseResultSchema.parse(await this.remote.request(root.selection.hostRef, root.registration,
-      { version: 1, operation: 'workspace-roots.browse', selection: root.selection, relativePath }))
+    const registration = root.registration
+    return WorkspaceRootBrowseResultSchema.parse(await publicRootFailure(() => this.remote.request(root.selection.hostRef, registration,
+      { version: 1, operation: 'workspace-roots.browse', selection: root.selection, relativePath })))
   }
   async sourceNamespace(policy: WorkspaceRootPolicy, _rootId: string) {
     void _rootId

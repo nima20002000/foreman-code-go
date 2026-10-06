@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile, readdir } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -11,6 +11,7 @@ import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { PrivateSourceMaterializer } from './materialization.js'
 import { createPrivateSourceRepository } from './repository.js'
 import { qualifiedGit } from './capture.js'
+import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 
 const execute = promisify(execFile)
 const phases = vi.hoisted(() => new Map<string, { count: number; ms: number }>())
@@ -147,3 +148,16 @@ it.runIf(process.env.JOBPREP_REAL_TREE === '1')('prepares the actual 7bd78e54 tr
   expect(preparationMs).toBeLessThan(30_000)
   expect([...phases.values()].reduce((sum, phase) => sum + phase.count, 0)).toBeLessThan(20)
 }, 180_000)
+
+it('imports a per-Job quota materialization from its quota namespace', async () => {
+  const files = new Map([['README.md', { bytes: Buffer.from('quota source\n'), executable: false }]])
+  const f = await fixture(files), slot = verificationRuntimeFixture().measurement.fingerprint.quotaPool!.slots[0]!
+  const receipt = { ...f.receipt, quota: slot }
+  await mkdir(join(f.root, slot.namespace), { mode: 0o700 })
+  await rename(join(f.root, f.receipt.materializationId), join(f.root, slot.namespace, f.receipt.materializationId))
+  const record = join(f.root, slot.namespace, f.receipt.materializationId, 'receipt.json')
+  await unlink(record); await writeFile(record, JSON.stringify({ receipt, manifest: f.manifest }), { mode: 0o600 })
+  const repository = await createPrivateSourceRepository({ ...f, receipt })
+  expect(await qualifiedGit(repository.gitDirectory, ['show', 'HEAD:README.md'])).toEqual(files.get('README.md')!.bytes)
+  expect(repository.workTree).toBe(join(f.root, slot.namespace, f.receipt.materializationId, 'tree'))
+})

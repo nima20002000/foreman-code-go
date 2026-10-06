@@ -55,3 +55,10 @@ it('returns only the original allowlist through authenticated configuration adop
   await expect(createWorkspaceRootWorkerHandler(read, authorize)({ version: 1, operation: 'workspace-roots.configuration' })).rejects.toThrow('denied')
   expect(read).not.toHaveBeenCalled()
 })
+it('reports a missing selected folder by its stable code on Main and through a Worker handler', async () => {
+  const f = await fixture(), missing = { ...f.selection, relativePath: 'missing/child' }
+  await expect(attestWorkspaceRoot(f.allowlist, missing)).rejects.toMatchObject({ code: 'ROOT_DIRECTORY_MISSING' })
+  await expect(browseApprovedRoot(f.allowlist, f.selection, 'missing')).rejects.toMatchObject({ code: 'ROOT_DIRECTORY_MISSING' })
+  const handler = createWorkspaceRootWorkerHandler(async () => f.allowlist, async () => {})
+  await expect(handler({ version: 1, operation: 'workspace-roots.attest', selection: missing })).rejects.toMatchObject({ code: 'ROOT_DIRECTORY_MISSING' })
+})

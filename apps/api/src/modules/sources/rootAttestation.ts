@@ -34,7 +34,10 @@ async function openRootDirectory(base: string, relativePath: string, expectedIde
     let privatePrefix = ((await directory.stat()).mode & 0o077) === 0
     if (!isDeepStrictEqual(await identity(directory), expectedIdentity)) throw new SourceError('ROOT_BASE_CHANGED', 'The explicitly approved root base was replaced.')
     for (const component of relativePath.split('/').filter(Boolean)) {
-      const next = await open(anchored(directory, component), directoryFlags)
+      const next = await open(anchored(directory, component), directoryFlags).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') throw new SourceError('ROOT_DIRECTORY_MISSING', 'The selected folder does not exist on this computer.')
+        throw error
+      })
       try {
         const stat = await next.stat(), parentIdentity = await identity(directory), childIdentity = await identity(next)
         if (stat.uid !== process.getuid?.() || (!privatePrefix && (stat.mode & 0o022) !== 0) || parentIdentity.device !== childIdentity.device || parentIdentity.mountId !== childIdentity.mountId)
