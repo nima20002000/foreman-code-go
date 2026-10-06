@@ -146,8 +146,9 @@ it('recovers admitted file versions before cold attachment and accepts the same 
     createSession: async () => { throw new Error('Recovery cannot create a session') },
     attachSession: async () => f.session,
     async *startTurn() { throw new Error('Recovery cannot submit a model input') },
-    history: async () => ({ events: [] }), reconcile: async () => ({ events: [] }),
-    cancel: async () => false, pending: async () => [], respond: async () => false,
+    history: async () => ({ events: [], pendingInteractions: [] }),
+    reconcile: async () => ({ events: [], pendingInteractions: [] }),
+    cancel: async () => false, pending: async () => undefined, respond: async () => {},
   }
   const start: NativeSessionStart = { kind: 'operator', configuration,
     workingDirectory: f.binding.workingDirectory, correlationId: 'original-create' }
@@ -184,7 +185,7 @@ it('recovers admitted file versions before cold attachment and accepts the same 
     allowed = true
     expect(await manager.attachSession(f.session, start)).toEqual(f.session)
     expect(requests).toEqual(['conversation.status', 'conversation.recover-files', 'conversation.open'])
-    expect((await manager.nativeOwner(f.session))?.processIdentityDigest).toBe(nextOwner.processIdentityDigest)
+    expect((await journal.conversations.read(f.binding))?.nativeOwner).toEqual(nextOwner)
   } finally {
     await manager.dispose()
     await host.shutdown()
