@@ -150,6 +150,17 @@ function fixture() {
       const request = workflows.CurrentEditStageInputSchema.parse(args)
       assert.deepEqual(request.graph.approval, { handler: 'user' })
       assert.deepEqual(request.graph.executionPolicy, { maxParallelism: 1, maxNodeExecutions: 1 })
+      const staged = request.stagedAgents[0].agent
+      const configuration = contracts.AgentConfigurationVersionSchema.parse({ id: randomUUID(),
+        workspaceId: request.workspaceId, agentId: staged.id, version: 1,
+        productRole: staged.productRole, harness: staged.harnessConfiguration,
+        harnessProfileSelection: staged.harnessProfileSelection, prompt: staged.prompt,
+        assignedSkills: staged.assignedSkills, contentHash: digest, createdAt })
+      workflows.ExecutableWorkflowV3Schema.parse({ version: { id: randomUUID(), workspaceId: request.workspaceId,
+        workflowId: request.workflowId, version: 1, executionSemanticsVersion: 3,
+        entryNodeId: request.graph.entryNodeId, definition: { ...request.graph, version: 1 },
+        approval: request.graph.approval, agentConfigurationVersionIds: { [staged.id]: configuration.id },
+        contentHash: digest, createdAt }, configurations: [configuration] })
       nodes.set(request.workflowId, { request, versionId: randomUUID(), configurationId: randomUUID(),
         intentId: randomUUID(), advanceCommandId: randomUUID(), discardCommandId: randomUUID(), saveCommandId: randomUUID() })
       return {}
