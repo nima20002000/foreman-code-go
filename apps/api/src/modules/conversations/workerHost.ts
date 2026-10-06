@@ -307,7 +307,8 @@ export class WorkerConversationHost {
   }
 
   private callbacks(resident: Resident, request: Extract<WorkerConversationRpcRequest,
-    { method: 'conversation.initial-turn' | 'conversation.start-turn' }>, signal: AbortSignal): NativeTurnInput {
+    { method: 'conversation.initial-turn' | 'conversation.start-turn' }>,
+    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): NativeTurnInput {
     return {
       prompt: request.prompt, clientCorrelationId: request.correlationId,
       onTerminal: async observation => {
@@ -502,7 +503,7 @@ export class WorkerConversationHost {
         const start = await resident.allocation.start({ correlationId: request.correlationId, instructionsDelivered: false,
           ...(request.applicationAccess ? { applicationAccess: request.applicationAccess } : {}) })
         this.pump(resident, request, connection, () => manager.startInitialTurn!(start, {
-          ...this.callbacks(resident, request, this.lifetime.signal),
+          ...this.callbacks(resident, request, connection, this.lifetime.signal),
           onSessionObserved: session => this.bind(resident, session, request, this.lifetime.signal),
         }, this.lifetime.signal))
       }
@@ -526,7 +527,7 @@ export class WorkerConversationHost {
           prompt: request.prompt, mode: request.sessionMode ?? 'regular', preferences: request.preferences ?? null }),
         { mode: request.sessionMode ?? 'regular' })
         if (reserved.dispatch) this.pump(resident, request, connection, () => manager.startTurn(request.session,
-          this.callbacks(resident, request, this.lifetime.signal), this.lifetime.signal))
+          this.callbacks(resident, request, connection, this.lifetime.signal), this.lifetime.signal))
         return { receipt: await this.ports.journal.read(request.binding) }
       }
       case 'conversation.history':

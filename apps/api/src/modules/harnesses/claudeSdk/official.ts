@@ -34,7 +34,7 @@ export async function loadOfficialClaudeSdk(profilePath: string, recovery: Nativ
   sdkEntrypoint?: string): Promise<ClaudeSdkClient> {
   const sdk = await loadInstalledClaudeSdk(sdkEntrypoint)
   return {
-    sdkVersion: manifest.version,
+    sdkVersion: CLAUDE_SDK_CANDIDATE_VERSION,
     ...ownedClaudeSdkQueries({ sdk, recovery, binary }),
     getSessionInfo: async (id, options) => { assertHelperProfile(profilePath); return sdk.getSessionInfo(id, options) },
     getSessionMessages: async (id, options) => { assertHelperProfile(profilePath); return sdk.getSessionMessages(id, options) },

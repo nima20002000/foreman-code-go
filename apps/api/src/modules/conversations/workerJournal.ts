@@ -11,6 +11,7 @@ import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { WorkerClaudeCallbackRecordSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import type { ClaudeCallbackJournal } from '../harnesses/claudeSdk/callbackJournal.js'
+import { definedProperties } from '../definedProperties.js'
 
 interface ConversationStore {
   read(): Promise<WorkerConversationReceipt[]>
@@ -57,8 +58,9 @@ export class WorkerConversationJournal {
 
   claudeCallbackJournal(binding: WorkerConversationBinding): ClaudeCallbackJournal {
     const records = async () => Object.values((await this.inspectBinding(binding))?.claudeCallbacks ?? {})
+      .map(record => definedProperties({ ...record, identity: definedProperties(record.identity) }))
     return {
-      read: async key => (await this.inspectBinding(binding))?.claudeCallbacks?.[key],
+      read: async key => (await records()).find(record => commandInputHash(record.identity) === key),
       write: async (key, value) => {
         const callback = WorkerClaudeCallbackRecordSchema.parse(value)
         if (key !== commandInputHash(callback.identity)) conflict('The callback journal key differs from its native identity.')

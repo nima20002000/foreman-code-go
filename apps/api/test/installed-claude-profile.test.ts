@@ -1,3 +1,4 @@
+import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -20,8 +21,12 @@ import { workerConversationCallbacks } from '../src/modules/conversations/worker
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { identity, openPrivateRoot } from '../src/modules/sources/privateFilesystem.js'
 
+const journals: RemoteOperationJournal[] = []
 const directories: string[] = []
-afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
+afterEach(async () => {
+  try { await Promise.all(journals.splice(0).map(journal => journal.close())) }
+  finally { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) }
+})
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'installed-claude-profile-'))
@@ -97,11 +102,13 @@ describe('installed worker Claude metadata and saved profile admission', () => {
       operationId: 'initial', correlationId: 'initial', prompt: 'Recorded admission only', admissionId: randomUUID() }
     const callbacks = workerConversationCallbacks({ currentBinding: () => f.input.binding, capture: () => undefined })
     const registry = new NativeProcessRegistry(join(root, 'processes'))
+    const journal = await RemoteOperationJournal.open(join(root, 'operations.json'), { initializeNewInstallation: true })
+    journals.push(journal)
     const allocation = await allocateInstalledWorkerClaude({ binding, configuration, connection: f.input.binding,
       purpose: 'chat', stateDirectory: f.root, selection: f.input.configuration, launcher: f.selected.appMcpLauncher,
       current: () => f.input.binding, source: () => source, callbacks: { ...callbacks,
         profile: async () => ({ installation: target.installation, override, profile: proof, qualification: null }) },
-      approvedRoots: async () => roots, registry,
+      approvedRoots: async () => roots, registry, journal: journal.conversations,
       request: async () => { throw new Error('No native application request is expected') }, signal: f.input.signal })
     try {
       const start = { correlationId: 'initial', instructionsDelivered: true }

@@ -48,6 +48,7 @@
   "apps/api/src/modules/devices/rsyncWriterControl.ts",
   "apps/api/src/modules/devices/workerConnection.ts",
   "apps/api/src/modules/errors.ts",
+  "apps/api/src/modules/definedProperties.ts",
   "apps/api/src/modules/files/claude/callResolver.ts",
   "apps/api/src/modules/files/claude/sdkServer.ts",
   "apps/api/src/modules/files/images/index.ts",

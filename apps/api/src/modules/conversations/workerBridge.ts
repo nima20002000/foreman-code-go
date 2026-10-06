@@ -16,6 +16,7 @@ import type { NativeHistory, NativeTerminalObservation } from '../harnesses/port
 import { DomainError } from '../errors.js'
 import { MainWorkerFiles, type PrepareWorkerFiles } from './mainWorkerFiles.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
+import { definedProperties } from '../definedProperties.js'
 
 export interface WorkerConversationCallbacks {
   profile?(): Promise<WorkerConversationProfileFacts>
@@ -230,7 +231,14 @@ export class MainWorkerConversationBridge {
           || !('correlationId' in request) || request.correlationId !== submission.clientCorrelationId
           || !session || session.harness !== 'claude' || session.nativeSessionId !== submission.nativeSessionId
           || !isDeepStrictEqual(original, submission) || !admission.callbacks.terminalObserved) denied()
-        await admission.callbacks.terminalObserved(callback.observation)
+        const observation = callback.observation
+        const history = observation.history
+        await admission.callbacks.terminalObserved(definedProperties({ ...observation,
+          history: history ? definedProperties({ ...history,
+            responseDeliveries: history.responseDeliveries?.map(definedProperties),
+            interactionDeliveries: history.interactionDeliveries?.map(definedProperties),
+          }) : undefined,
+        }))
       } else if (callback.method === 'conversation.settings-applied') {
         const request = admission.request
         if (!('correlationId' in request) || request.correlationId !== callback.correlationId

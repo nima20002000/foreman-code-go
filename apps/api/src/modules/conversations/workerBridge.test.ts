@@ -52,7 +52,7 @@ it('journals a terminal callback only after its native message was acknowledged 
     current.mockRejectedValueOnce(new Error('Sender revoked'))
     await expect(invoke({ method: 'conversation.terminal-observed', observation })).rejects.toThrow('Sender revoked')
     expect(terminal).toHaveBeenCalledTimes(1)
-  } finally { await lease.release(); await bridge.close() }
+  } finally { await lease.close(); await bridge.close() }
 })
 
 it('binds OpenCode file callbacks to their admitted chat and persisted acknowledgement on the paired channel', async () => {

@@ -38,6 +38,7 @@ import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { resolveOpenCodeFileAdmission, adoptOpenCodePublications } from '../harnesses/opencodeFiles/postgres.js'
 import { resolveOperatorOpenCodeFileAdmission, adoptOperatorFilePublications } from '../harnesses/operatorFiles/postgres.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
+import { definedProperties } from '../definedProperties.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -259,7 +260,7 @@ export function createProductionWorkerConversations(input: {
           })
           if (request.phase === 'admission') return authority.callbackAdmission()
           const { nativeTurnId, nativeRequestId, nativeRequestType, ...required } = request.identity
-          const identity: ClaudeCallbackIdentity = { ...required,
+          const identity: ClaudeCallbackIdentity = { ...definedProperties(required),
             ...(nativeTurnId !== undefined ? { nativeTurnId } : {}),
             ...(nativeRequestId !== undefined ? { nativeRequestId } : {}),
             ...(nativeRequestType !== undefined ? { nativeRequestType } : {}),

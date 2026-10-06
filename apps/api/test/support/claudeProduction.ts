@@ -1,3 +1,4 @@
+import { sessionStartConfiguration, sessionStartDirectory } from '../../src/modules/harnesses/sessionStart.js'
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentFileToolService } from '../../src/modules/files/tools/service.js'
 import Fastify from 'fastify'
@@ -34,15 +35,14 @@ const createdAt = '2026-10-01T00:00:00.000Z'
 export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sharedFactories?: NativeHarnessFactories, endpoint = 'http://127.0.0.1:3000/mcp', fileService?: AgentFileToolService,
   runtime?: { database: pg.Pool; binding: ClaudeDomainBinding; start: NativeSessionStart; sdk: ClaudeSdkClient }) {
   const kind = surface === 'selected-run' ? 'agent' : surface
-  const selection = runtime?.start.kind === 'operator' ? runtime.start.configuration.harnessProfileSelection
-    : runtime?.start.request.configuration.harnessProfileSelection
+  const selection = runtime ? sessionStartConfiguration(runtime.start).harnessProfileSelection : undefined
   const target = selection?.target ?? { hostRef: { kind: 'main' as const, mainId: '77d29f00-408e-4000-8000-000000000001' },
     applicationInstallationId: '77d29f00-408e-4000-8000-000000000001', harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload' }
   const defaultHarness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
     configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
     tools: ['mcp__graphql__workspace_list', 'mcp__graphql-files__files.read'], permissionRules: [], instructions: 'Pinned fixture instructions', mcpServers: { graphql: { type: 'http' as const, url: endpoint } } }
   const harness = runtime
-    ? (runtime.start.kind === 'operator' ? runtime.start.configuration.harness : runtime.start.request.configuration.harness)
+    ? sessionStartConfiguration(runtime.start).harness
     : defaultHarness
   if (harness.harness !== 'claude') throw new Error('The production fixture requires a Claude configuration.')
   const override: HostHarnessOverride = { instanceId: selection?.instanceId ?? 'recorded-profile',
@@ -149,7 +149,7 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     installationDiscovery: async () => launcher })
   const result = productionClaudeManager({ pool, factories, registry: { pinOverride: () => binding } as unknown as ProductionHarnessRegistry,
     profiles, selector: { instanceId: override.instanceId, instanceRevision: override.instanceRevision, target }, binding: domain,
-    role: kind === 'agent' ? 'agent-chat' : kind, configuration: harness, workingDirectory: start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory, ownerAgentId: surface,
+    role: kind === 'agent' ? 'agent-chat' : kind, configuration: harness, workingDirectory: sessionStartDirectory(start), ownerAgentId: surface,
     recovery: { root: '/forbidden-native-recovery', owner: surface }, appMcpAccess: kind === 'agent' ? 'none' : 'scoped', mode: 'replay',
     inspectionStart: async () => start, loadClient,
     ...(fileService ? { files: { service: () => fileService, sdk: async () => ({ createSdkMcpServer, tool }) } } : {}) })

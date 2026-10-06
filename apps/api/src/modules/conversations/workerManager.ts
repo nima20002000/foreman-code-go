@@ -1,4 +1,5 @@
 import { sessionStartConfiguration, sessionStartDirectory } from '../harnesses/sessionStart.js'
+import { definedProperties } from '../definedProperties.js'
 import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
@@ -349,7 +350,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         nativeRequestId: delivery.nativeRequestId, state: delivery.state,
         ...(delivery.selectedOptionId !== undefined ? { selectedOptionId: delivery.selectedOptionId } : {}),
       })) } : {}),
-      ...(history.responseDeliveries ? { responseDeliveries: history.responseDeliveries } : {}),
+      ...(history.responseDeliveries ? { responseDeliveries: history.responseDeliveries.map(definedProperties) } : {}),
       ...(history.canceledRequestIds ? { canceledRequestIds: history.canceledRequestIds } : {}),
     }
   }

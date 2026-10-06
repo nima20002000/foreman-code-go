@@ -101,7 +101,6 @@ interface Runtime {
   sdk: ClaudeSdkSession
   generation: string
   currentAuthorizationScope: string
-  context: NativeSessionStart
   httpCredentialAcknowledgement?: NativeMcpHttpCredentialAcknowledgement
   credentialServers?: Readonly<Record<string, unknown>>
   replacingForResume?: boolean
@@ -424,7 +423,6 @@ export function createClaudeNativeSessionManager(options: {
       start: structuredClone(start),
       generation: randomUUID(),
       currentAuthorizationScope: authorizationScope(start),
-      context: structuredClone(start),
       closed: false,
       events: [],
       nextSequence: 0,
@@ -948,10 +946,9 @@ export function createClaudeNativeSessionManager(options: {
         if (!same) throw new HarnessExecutionError('CLAUDE_MCP_SCOPE_CONFLICT', 'Credential delivery cannot refresh unrelated native MCP servers.')
       }
       const snapshot = await deliverCredentials(runtime, start, servers, signal)
-      runtime.start = structuredClone(start)
       // Record the inspected context after the SDK confirms its credential update.
       inspected.identity = JSON.stringify(canonicalStart(start))
-      runtime.context = structuredClone(start)
+      runtime.start = structuredClone(start)
       return snapshot
     },
     async prepareInspection(start, signal) {
@@ -1002,7 +999,7 @@ export function createClaudeNativeSessionManager(options: {
       const existing = resident.get(session.nativeSessionId) ?? rolloverSources.get(session.nativeSessionId)
         ?? retired.get(session.nativeSessionId)
       if (!existing) return open(start, session, signal)
-      if (!isDeepStrictEqual(sessionContext(existing.context), sessionContext(start))) {
+      if (!isDeepStrictEqual(sessionContext(existing.start), sessionContext(start))) {
         throw new HarnessExecutionError('CLAUDE_SESSION_CONTEXT_CONFLICT',
           'The resident Claude session has another accepted configuration or environment.')
       }
