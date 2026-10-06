@@ -55,7 +55,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     const directory = await mkdtemp(join(tmpdir(), 'native-workflow-mcp-'))
     const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? harnessBinaries(process.env).codexBinary
     const manager = new CodexAppServerSessionManager(codexBinary)
-    let restore: (() => void) | undefined
+    let restore: (() => Promise<void>) | undefined
     try {
       restore = await configureNativeWorkflowMcp({ projectDirectory: directory,
         runtimeDirectory: directory, codexBinary })
@@ -75,8 +75,8 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     } finally {
       try { await manager.dispose() }
       finally {
-        restore?.()
-        await rm(directory, { recursive: true, force: true })
+        try { await restore?.() }
+        finally { await rm(directory, { recursive: true, force: true }) }
       }
     }
   }, 90_000)

@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdir, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -15,14 +15,16 @@ export async function configureNativeWorkflowMcp(input: {
   runtimeDirectory: string
   codexBinary: string
   openCodeBinary?: string
-}): Promise<() => void> {
+}): Promise<() => Promise<void>> {
   const previous = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
   const previousCodexHome = process.env.CODEX_HOME
-  const restore = () => {
+  const codexHomeDirectory = join(input.runtimeDirectory, 'codex')
+  const restore = async () => {
     if (previous === undefined) delete process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
     else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previous
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME
     else process.env.CODEX_HOME = previousCodexHome
+    await rm(join(codexHomeDirectory, 'auth.json'), { force: true })
   }
   try {
     const codex = await new CodexMcpConnections(input.codexBinary, input.projectDirectory)
@@ -32,7 +34,6 @@ export async function configureNativeWorkflowMcp(input: {
     const reference = appLauncherTokenName('codex', entry) ?? entry.bearer_token_env_var
     const codexToken = typeof reference === 'string' && isSupportedAppMcpTokenName(reference)
       ? reference : APP_MCP_TOKEN
-    const codexHomeDirectory = join(input.runtimeDirectory, 'codex')
     await mkdir(codexHomeDirectory, { recursive: true, mode: 0o700 })
     // Reuse only the selected provider login; unrelated native configuration stays outside the fixture.
     await copyFile(join(previousCodexHome ?? join(homedir(), '.codex'), 'auth.json'),
@@ -60,7 +61,10 @@ export async function configureNativeWorkflowMcp(input: {
     }
     return restore
   } catch (error) {
-    restore()
+    try { await restore() }
+    catch (cleanup) {
+      throw new AggregateError([error, cleanup], 'Native fixture configuration and cleanup failed.', { cause: error })
+    }
     throw error
   }
 }

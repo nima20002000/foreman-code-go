@@ -166,7 +166,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let activeRuntime: RuntimeInstance | undefined
   let mcpApp: ReturnType<typeof buildApp> | undefined
   let mcpRoutes: AppMcpRoutes | undefined
-  let restoreNativeMcp: (() => void) | undefined
+  let restoreNativeMcp: (() => Promise<void>) | undefined
   let runId: string | undefined
   let stopRun: (() => Promise<boolean>) | undefined
   const runtimeTimeline: RuntimeTimingRecord[] = []
@@ -657,7 +657,6 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     await activeRuntime?.managers.dispose().catch(() => undefined)
     await mcpRoutes?.close().catch(() => undefined)
     await mcpApp?.close().catch(() => undefined)
-    restoreNativeMcp?.()
     if (runId) await checkpoints?.saver.deleteThread(runId).catch(() => undefined)
     await checkpoints?.close().catch(() => undefined)
     await pool?.end().catch(() => undefined)
@@ -667,8 +666,12 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     runtimeTimingChannel.unsubscribe(captureTiming)
     evidence.droppedTimingRecords = droppedTimingRecords
     evidence.finishedAt = new Date().toISOString()
-    await writeFile(artifactPath, JSON.stringify(evidence, null, 2))
-    if (!process.env.ENG03_A_KEEP_RUNTIME) await rm(root, { recursive: true, force: true })
+    try {
+      await restoreNativeMcp?.()
+      await writeFile(artifactPath, JSON.stringify(evidence, null, 2))
+    } finally {
+      if (!process.env.ENG03_A_KEEP_RUNTIME) await rm(root, { recursive: true, force: true })
+    }
     process.stdout.write(`ENG03 evidence ${artifactPath}\n`)
   }
 }
