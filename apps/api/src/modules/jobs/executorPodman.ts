@@ -68,7 +68,9 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
     }
     const execution = resources.scratchExecutable ? 'exec' : 'noexec'
     temporary = ['--tmpfs', `/tmp:rw,nosuid,nodev,noexec,size=${resources.controlTempBytes}`,
-      '--shm-size', String(resources.shmBytes), '--volume', `${scratch}:/job-scratch:rw,nosuid,nodev,${execution},rprivate`]
+      '--shm-size', String(resources.shmBytes),
+      '--tmpfs', `/dev/shm:rw,nosuid,nodev,noexec,size=${resources.shmBytes}`,
+      '--volume', `${scratch}:/job-scratch:rw,nosuid,nodev,${execution},rprivate`]
     environment = { HOME: '/job-scratch/home', TMPDIR: '/job-scratch/tmp',
       XDG_CACHE_HOME: '/job-scratch/cache', XDG_CONFIG_HOME: '/job-scratch/config', XDG_DATA_HOME: '/job-scratch/data' }
     if (input.verification.parameters) {
