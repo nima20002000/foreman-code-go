@@ -56,7 +56,7 @@ describe('mixed runtime metadata recovery', () => {
   it('waits before re-inspecting a profile the installed worker rejected', async () => {
     const saved = profiles()[0]!
     let now = 1_000_000
-    const capture = vi.fn(async () => { throw new Error('Protected verification installation differs from this profile.') })
+    const capture = vi.fn<() => Promise<unknown>>(async () => { throw new Error('Protected verification installation differs from this profile.') })
     const host = { currentMetadata: async () => null, capture } as unknown as InstalledJobRuntimeHost
     const pool = { query: async () => ({ rows: [{ record: saved }] }) } as unknown as pg.Pool
     const recovery = new JobRuntimeMetadataRecovery(pool, host, vi.fn(), () => now)
@@ -73,7 +73,7 @@ describe('mixed runtime metadata recovery', () => {
   })
   it('retries an inspection that only waited for the worker connection', async () => {
     const saved = profiles()[0]!
-    const capture = vi.fn(async () => {
+    const capture = vi.fn<() => Promise<unknown>>(async () => {
       throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'The original installed qualification connection is unavailable or changed.', 409)
     })
     const host = { currentMetadata: async () => null, capture } as unknown as InstalledJobRuntimeHost

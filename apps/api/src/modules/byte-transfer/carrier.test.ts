@@ -1,4 +1,4 @@
-import { ResumableByteTransferService } from './service.js'
+import { ResumableByteTransferService, TransferExpiredError } from './service.js'
 import { EventEmitter } from 'node:events'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
@@ -123,4 +123,34 @@ it('shares the supplied original canonical journal with fallback and preserves i
     denied = false; bound = { ...original, connectionGeneration: 78 }
     await expect(carrier.handle({ method: 'status', transferId: intent.transferId }, frame)).rejects.toThrow('stale')
   } finally { await canonical.close() }
+})
+
+it('reports an idle-expired receiver transfer to the sender as expired, not as a generic rejection', async () => {
+  const original = binding(), root = await mkdtemp(join(homedir(), '.graphql-byte-carrier-test-')); roots.push(root)
+  const bytes = Buffer.from('data'), intent = { ...intentFor(original, bytes), expiresAt: new Date(Date.now() + 3_600_000).toISOString() }
+  let now = Date.now()
+  const receiver = createAuthenticatedTransferReceiver({ stagingRoot: root, current: () => original, clock: () => now,
+    accepted: { intent: async () => intent, authorize: async () => {} } })
+  const channels = pair(original, receiver.extension)
+  try {
+    await receiver.receiver.start(intent, transferContextForBinding(original))
+    now += 6 * 60_000
+    const send = createChannelTransferClient(channels.worker).sender({ read: async (_, offset, length) => bytes.subarray(offset, offset + length) }).send(intent)
+    await expect(send).rejects.toBeInstanceOf(TransferExpiredError)
+  } finally { await channels.close(); await receiver.receiver.close() }
+})
+
+it('waits for the device to reconnect instead of spending its retries while the channel is absent', async () => {
+  const original = binding(), root = await mkdtemp(join(homedir(), '.graphql-byte-carrier-test-')); roots.push(root)
+  const bytes = Buffer.from('data'), intent = intentFor(original, bytes)
+  const receiver = createAuthenticatedTransferReceiver({ stagingRoot: root, current: () => original,
+    accepted: { intent: async () => intent, authorize: async () => {} } })
+  const channels = pair(original, receiver.extension)
+  let connected = false
+  setTimeout(() => { connected = true }, 1_000)
+  try {
+    const client = createChannelTransferClient({ captureRequest: namespace => connected ? channels.worker.captureRequest(namespace) : undefined })
+    const receipt = await client.sender({ read: async (_, offset, length) => bytes.subarray(offset, offset + length) }).send(intent)
+    expect(receipt.byteSize).toBe(bytes.length)
+  } finally { await channels.close(); await receiver.receiver.close() }
 })

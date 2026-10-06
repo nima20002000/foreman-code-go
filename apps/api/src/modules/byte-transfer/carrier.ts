@@ -6,7 +6,7 @@ import { BYTE_TRANSFER_POLICY, TransferContextSchema, TransferIntentSchema, Tran
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import { DeviceApplicationError, type DeviceApplicationChannel, type DeviceExtensionContext, type DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import { DeviceConnectionError } from '../devices/deviceWire.js'
-import { ResumableByteTransferService, type TransferAuthorization, type TransferOperation } from './service.js'
+import { ResumableByteTransferService, TransferExpiredError, type TransferAuthorization, type TransferOperation } from './service.js'
 import { ResumableByteTransferSender, type ImmutableTransferSource, type TransferSenderConnection } from './sender.js'
 
 export const BYTE_TRANSFER_NAMESPACE = 'byte-transfer-v1'
@@ -56,14 +56,20 @@ export function createAuthenticatedTransferReceiver(input: { stagingRoot: string
     frame.signal.throwIfAborted()
     if (input.receiver) await authority.authorize(intent, context, request.method)
     let payload
-    if (request.method === 'start') payload = await receiver.start(intent, context, frame.signal)
-    else if (request.method === 'status') payload = await receiver.status(intent.transferId, context, frame.signal)
-    else if (request.method === 'finish') payload = await receiver.finish(intent.transferId, context, frame.signal)
-    else if (request.method === 'cancel') payload = await receiver.cancel(intent.transferId, context, frame.signal)
-    else if (request.method === 'append') {
-      if (!frame.bytes || frame.bytes.byteLength !== request.byteLength) throw new Error('Transfer binary length differs')
-      payload = await receiver.append(intent.transferId, context, { offset: request.offset, sha256: request.sha256, bytes: frame.bytes }, frame.signal)
-    } else throw new Error('Unknown transfer operation')
+    try {
+      if (request.method === 'start') payload = await receiver.start(intent, context, frame.signal)
+      else if (request.method === 'status') payload = await receiver.status(intent.transferId, context, frame.signal)
+      else if (request.method === 'finish') payload = await receiver.finish(intent.transferId, context, frame.signal)
+      else if (request.method === 'cancel') payload = await receiver.cancel(intent.transferId, context, frame.signal)
+      else if (request.method === 'append') {
+        if (!frame.bytes || frame.bytes.byteLength !== request.byteLength) throw new Error('Transfer binary length differs')
+        payload = await receiver.append(intent.transferId, context, { offset: request.offset, sha256: request.sha256, bytes: frame.bytes }, frame.signal)
+      } else throw new Error('Unknown transfer operation')
+    } catch (error) {
+      // The sender must allocate a new transfer; resending this identity can never succeed.
+      if (error instanceof TransferExpiredError) throw new DeviceApplicationError('transfer-expired')
+      throw error
+    }
     if (input.receiver) await authority.authorize(intent, context, request.method)
     frame.signal.throwIfAborted()
     return { payload }
@@ -93,7 +99,11 @@ function createClient(capture: () => Capture | undefined) {
     signal?.throwIfAborted()
     if (!channel || !isDeepStrictEqual(transferContextForBinding(channel.binding), TransferContextSchema.parse(context))) throw new DeviceConnectionError('transport')
     // captureRequest closure is fixed to this exact channel, even if the supervisor reconnects.
-    return channel.request(payload, { ...(signal ? { signal } : {}), ...(bytes ? { bytes } : {}) })
+    try { return await channel.request(payload, { ...(signal ? { signal } : {}), ...(bytes ? { bytes } : {}) }) }
+    catch (error) {
+      if (error instanceof DeviceApplicationError && error.code === 'transfer-expired') throw new TransferExpiredError('Transfer expired', { cause: error })
+      throw error
+    }
   }
   const progress = async (context: TransferContext, payload: unknown, id: string, bytes?: Uint8Array) => {
     const result = await request(context, payload, bytes)
@@ -121,7 +131,17 @@ function createClient(capture: () => Capture | undefined) {
   const connection: TransferSenderConnection = {
     async current(signal) {
       signal?.throwIfAborted()
-      const channel = capture()
+      let channel = capture()
+      // A bounded caller waits for the supervisor's reconnect instead of spending its retries.
+      while (!channel && signal) {
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(done, 250)
+          function done() { clearTimeout(timer); signal!.removeEventListener('abort', done); resolve() }
+          signal.addEventListener('abort', done, { once: true })
+        })
+        signal.throwIfAborted()
+        channel = capture()
+      }
       if (!channel) throw new DeviceConnectionError('transport')
       const context = transferContextForBinding(channel.binding)
       if (signal) signals.set(context, signal)

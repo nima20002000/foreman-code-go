@@ -9,11 +9,13 @@ import type { AcceptedSourcePackageSender } from './operationCarrier.js'
 import { sourcePackageHeader, sourcePackageStream } from './operationPackage.js'
 import { SourceError, verifySourceBytes } from './manifest.js'
 import type { ImmutableTransferSource, ResumableByteTransferSender } from '../byte-transfer/sender.js'
+import { TransferExpiredError } from '../byte-transfer/service.js'
 
 export interface SourcePackageTransferAdmission {
   /** Actual persisted source intent/receiver/expiry uses the original Main
    * source reservation and actual authenticated connection; no new fake IDs. */
-  allocate(input: { root: SourceRootRecord; attempt: MaterializationAttempt; identity: z.infer<typeof SourcePreparationIdentitySchema>; sha256: string; byteSize: number }): Promise<TransferIntent>
+  /** `replaces` names the receiver-expired transfer this allocation supersedes. */
+  allocate(input: { root: SourceRootRecord; attempt: MaterializationAttempt; identity: z.infer<typeof SourcePreparationIdentitySchema>; sha256: string; byteSize: number; replaces?: string }): Promise<TransferIntent>
   sender(source: ImmutableTransferSource, root: SourceRootRecord): Pick<ResumableByteTransferSender, 'send'>
   revalidate(root: SourceRootRecord, attempt: MaterializationAttempt, identity: z.infer<typeof SourcePreparationIdentitySchema>): Promise<void>
 }
@@ -25,8 +27,21 @@ export class ExistingByteTransferSourcePackageSender implements AcceptedSourcePa
     const header = sourcePackageHeader(manifest), hash = createHash('sha256'); let byteSize = 0
     for await (const value of sourcePackageStream(manifest, this.bytes, signal)) { const chunk = value as Buffer; hash.update(chunk); byteSize += chunk.byteLength }
     const sha256 = hash.digest('hex')
-    await this.admission.revalidate(root, attempt, identity)
-    const intent = TransferIntentSchema.parse(await this.admission.allocate({ root, attempt, identity, sha256, byteSize }))
+    let replaces: string | undefined
+    for (;;) {
+      await this.admission.revalidate(root, attempt, identity)
+      const intent = TransferIntentSchema.parse(await this.admission.allocate({ root, attempt, identity, sha256, byteSize, ...(replaces ? { replaces } : {}) }))
+      try { return await this.sendIntent(intent, manifest, header, byteSize, root, attempt, identity, signal) }
+      catch (error) {
+        // An idle-expired receiver journal is final; replace it once per expired identity.
+        if (!(error instanceof TransferExpiredError) || signal.aborted) throw error
+        replaces = intent.transferId
+      }
+    }
+  }
+  private async sendIntent(intent: TransferIntent, manifest: SourceManifest, header: Buffer, byteSize: number, root: SourceRootRecord,
+    attempt: MaterializationAttempt, identity: z.infer<typeof SourcePreparationIdentitySchema>, signal: AbortSignal) {
+    const sha256 = intent.sha256
     if (intent.operationId !== identity.operationId || intent.executionId !== attempt.executionId || intent.attemptId !== attempt.attemptId
       || intent.placementHash !== attempt.placementHash || intent.rootId !== root.binding.rootId || intent.rootBindingRevision !== root.binding.bindingRevision
       || intent.mainId !== root.binding.mainId || intent.deviceId !== root.binding.deviceId || intent.workerInstallationId !== root.binding.workerInstallationId

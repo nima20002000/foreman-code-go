@@ -34,15 +34,17 @@ export class PostgresSourcePackageTransfers implements SourcePackageTransferAdmi
     try { await sql.query('begin'); await this.owners.authorizePreparation(sql, root, attempt, identity); this.binding(root); await sql.query('commit') }
     catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
   }
-  async allocate(input: { root: SourceRootRecord; attempt: MaterializationAttempt; identity: Identity; sha256: string; byteSize: number }): Promise<TransferIntent> {
+  async allocate(input: { root: SourceRootRecord; attempt: MaterializationAttempt; identity: Identity; sha256: string; byteSize: number; replaces?: string }): Promise<TransferIntent> {
     const sql = await this.pool.connect()
     let principal
     try { await sql.query('begin'); principal = await this.owners.authorizePreparation(sql, input.root, input.attempt, input.identity); await sql.query('commit') }
     catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
-    return (await this.commands.execute({ principal, source: 'http', operation: 'source.package.admit', commandId: input.identity.operationId,
+    return (await this.commands.execute({ principal, source: 'http', operation: 'source.package.admit', commandId: input.replaces ? `${input.identity.operationId}:replaces:${input.replaces}` : input.identity.operationId,
       targetKey: `source-operation:${input.identity.operationId}`, payload: input,
       authorize: async sql => { await this.owners.authorizePreparation(sql, input.root, input.attempt, input.identity); this.binding(input.root) },
       perform: async sql => {
+        if (input.replaces && (await this.allocation(input.replaces)).identity.operationId !== input.identity.operationId)
+          throw new DomainError('SOURCE_TRANSFER_CONFLICT', 'Only this source operation\'s own expired transfer can be replaced.', 409)
         const reservation = (await sql.query<{ state: string; reserved_bytes: string }>('select state,reserved_bytes from source_storage_reservations where owner_kind=$1 and owner_id=$2 for share', ['materialization', input.identity.operationId])).rows[0]
         if (!reservation || reservation.state === 'reclaimed' || Number(reservation.reserved_bytes) < input.byteSize)
           throw new DomainError('SOURCE_RESERVATION_MISSING', 'The actual source preparation must reserve staging and retained copies before transfer.', 409)

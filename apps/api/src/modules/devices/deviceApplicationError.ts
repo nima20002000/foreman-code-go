@@ -17,6 +17,7 @@ const retryability: Readonly<Record<string, boolean>> = {
   forbidden: false,
   wrong_main: false,
   'job-output-expired': false,
+  'transfer-expired': false,
   'job-publication-pending': true,
   'source-repository-timeout': true,
   'source-repository-uncertain': false,
