@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as contracts from '@foreman-code/contracts'
@@ -61,14 +61,38 @@ async function send(row: Row, content: string, mode: 'regular' | 'plan' = 'regul
   return { input, state: await idle(row) }
 }
 
-async function transcript(row: Row) {
+async function conversation(row: Row) {
   const f = active()
   if (row.role === 'operator') {
     return contracts.OperatorConversationStateSchema.parse(await f.tool('operator_chat_get', {
-      conversationId: row.conversationId })).messages
+      conversationId: row.conversationId }))
   }
   if (!row.readPath) throw new Error('The saved node transcript path is missing.')
-  return agentChat.AgentChatStateSchema.parse(await f.request(row.readPath)).messages
+  return agentChat.AgentChatStateSchema.parse(await f.request(row.readPath))
+}
+
+async function transcript(row: Row) {
+  return (await conversation(row)).messages
+}
+
+async function compactionActivities(row: Row) {
+  return (await conversation(row)).activities?.filter(activity => activity.title === 'Context compacted') ?? []
+}
+
+async function applyPreferences(row: Row, preferences: contracts.SessionPreferences) {
+  const before = await idle(row)
+  const changed = await change(row, { kind: 'preferences', preferences,
+    requestId: randomUUID(), expectedRevision: before.revision })
+  expect(changed.desired).toEqual(preferences)
+  const applied = (await send(row, 'Reply only ACK without changing files.')).state
+  expect(applied.nativeSessionId).toBe(before.nativeSessionId)
+  expect(applied.applied).toEqual(preferences)
+  expect(applied.applicability).toBe('applied')
+  return applied
+}
+
+function contextInput() {
+  return `Retain these notes in the conversation. Do not repeat them; reply only ACK.\n${randomBytes(13000).toString('hex')}`
 }
 
 describe('native session controls through the production Main and installed Worker', () => {
@@ -158,6 +182,54 @@ describe('native session controls through the production Main and installed Work
     expect((await transcript(row)).filter(message => message.role === 'assistant').at(-1)?.content).toContain(marker)
     completed.set(row.conversationId, { marker, compactRequest: request })
   }, 600000)
+
+  it.each(combinations.filter(key => key.harness === 'claude'))(
+    'claude $role on $hostKind applies context settings and automatically compacts at its accepted budget', async key => {
+      const row = rows.find(value => value.harness === key.harness && value.role === key.role && value.hostKind === key.hostKind)!
+      const before = await idle(row)
+      expect(before.capabilities.autoCompact.supported).toBe(true)
+      expect(before.capabilities.autoCompactBudget.supported).toBe(true)
+      expect(before.capabilities.modelCapacity).toBeGreaterThanOrEqual(100000)
+      const off = { ...before.desired, autoCompact: 'off' as const, autoCompactTokens: 100000 }
+      let state = await applyPreferences(row, off)
+      const offBoundaries = await compactionActivities(row)
+      for (let index = 0; index < 24 && (state.context?.usedTokens ?? 0) <= 100000; index++) {
+        state = (await send(row, contextInput())).state
+        expect(await compactionActivities(row)).toEqual(offBoundaries)
+      }
+      expect(state.context?.usedTokens).toBeGreaterThan(100000)
+      expect(state.context?.nativeSessionId).toBe(before.nativeSessionId)
+      expect(state.capabilities.modelCapacity).toBe(before.capabilities.modelCapacity)
+      const manual = await change(row, { kind: 'compact', requestId: randomUUID(), expectedRevision: state.revision })
+      const deadline = Date.now() + 180000
+      let compacted = await controls(row)
+      while (Date.now() < deadline && compacted.compaction && ['accepted', 'running', 'uncertain'].includes(compacted.compaction.status)) {
+        await delay(250)
+        compacted = await controls(row)
+      }
+      if (compacted.compaction && ['accepted', 'running', 'uncertain'].includes(compacted.compaction.status)) {
+        throw new Error('Timed out waiting for manual Claude compaction with automatic compaction Off.')
+      }
+      expect(compacted.compaction?.requestId).toBe(manual.compaction?.requestId)
+      expect(compacted.compaction?.status).toBe('completed')
+      expect(compacted.nativeSessionId).toBe(before.nativeSessionId)
+      for (const profile of before.capabilities.contextProfiles) {
+        const selected = await applyPreferences(row, { ...off, contextProfile: profile.id })
+        expect(selected.capabilities.modelCapacity).toBe(profile.capacity)
+      }
+      const on = { ...off, autoCompact: 'on' as const, contextProfile: null }
+      await applyPreferences(row, on)
+      const baseline = new Set((await compactionActivities(row)).map(activity => activity.id))
+      let automatic = false
+      for (let index = 0; index < 24 && !automatic; index++) {
+        state = (await send(row, contextInput())).state
+        automatic = (await compactionActivities(row)).some(activity => !baseline.has(activity.id))
+      }
+      expect(automatic).toBe(true)
+      expect(state.nativeSessionId).toBe(before.nativeSessionId)
+      expect(state.applied?.autoCompactTokens).toBe(100000)
+      await applyPreferences(row, { ...on, autoCompact: 'default', autoCompactTokens: null })
+    }, 1800000)
 
   it('restores the twelve native chats and compact receipts after Main closes and starts again', async () => {
     expect(completed.size).toBe(12)
