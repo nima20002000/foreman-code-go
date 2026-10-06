@@ -20,6 +20,8 @@ import { clearQualificationGate, installQualificationGate } from '../../src/modu
 import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeServer.js'
 import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
+import { OpenCodeHarnessConfigurationSchema } from '@foreman-code/contracts'
+import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
 
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
@@ -35,12 +37,16 @@ export async function qualifyEng03OpenCode() {
   const pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
   const directory = await mkdtemp(join(tmpdir(), 'eng03-qualification-'))
   const processes = new NativeProcessRegistry(join(directory, 'native-process-registry'))
+  const secrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
+    .map(([, value]) => value).filter((value): value is string => Boolean(value))
+  let factories: NativeHarnessFactories | undefined
   let service: HarnessQualificationService | undefined
   const close = async () => {
     clearQualificationGate()
+    factories?.stopAuxiliaries()
     const errors: unknown[] = []
     const phases = [
-      [() => service?.shutdown()],
+      [() => service?.shutdown(), () => factories?.disposeAuxiliaries()],
       [() => pool.end()],
       [() => admin.query(`drop schema if exists ${schema} cascade`)],
       [() => admin.end(), () => rm(directory, { recursive: true, force: true })],
@@ -95,8 +101,17 @@ export async function qualifyEng03OpenCode() {
       assert.equal((await registry.inspectBinary(binary)).sha256, sha256, 'Native binary changed during qualification')
       signal?.throwIfAborted()
     }
-    const secrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
-      .map(([, value]) => value).filter((value): value is string => Boolean(value))
+    factories = new NativeHarnessFactories({ codexBinary: binaries.codex, openCodeBinary: binaries.opencode,
+      auxiliaryRecovery: role => processes.scope(`${role}:${randomUUID()}`),
+      admitRecovery: recovery => { Object.assign(recovery, processes.reserveLaunch(recovery.owner)) },
+      abandonRecovery: async recovery => { await processes.abandonReservedLaunch(recovery) },
+      closeRecovery: async recovery => {
+        if (!await processes.closeOwner(recovery.owner)) throw new Error('Native provider inspection closure is unconfirmed.')
+      },
+    })
+    await factories.qualifyConfiguration(OpenCodeHarnessConfigurationSchema.parse({
+      ...defaults.opencode, harness: 'opencode', model: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna',
+    }), directory)
     const diagnosticSuite: typeof opencodeQualificationSuite = {
       ...opencodeQualificationSuite,
       async run(input) {
@@ -162,6 +177,7 @@ export async function qualifyEng03OpenCode() {
     installQualificationGate(registry, service)
     return close
   } catch (error) {
+    console.error(`OpenCode qualification failure ${JSON.stringify(describeNativeFailure(error, secrets))}`)
     try {
       await close()
     } catch (cleanupError) {

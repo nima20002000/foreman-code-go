@@ -67,6 +67,7 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
       const source = make()
       const forker = make()
       try {
+        if (harness === 'opencode') await factories.qualifyConfiguration(config.harness, directory)
         const sourceSession = await source.createSession(start(config, directory, 'source', false))
         expect(await turn(source, sourceSession, 'source', 'Remember the codeword KIWI. Reply OK.')).toMatch(/ok/i)
         const before = (await source.history(sourceSession)).events.length
