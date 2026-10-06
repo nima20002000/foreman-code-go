@@ -76,7 +76,7 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
 
 /** Fresh production instances share only persisted data; the Worker runs the
  * shipped installed domains in a separate process with its own native owners. */
-export async function remoteReviewProduction() {
+export async function remoteReviewProduction(options: { workflow?: 'approval' | 'sequential' } = {}) {
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
     const errors: unknown[] = []
@@ -115,9 +115,10 @@ export async function remoteReviewProduction() {
     await execute('git', ['-C', project, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
       'commit', '--quiet', '-m', 'Source fixture'])
     const commit = (await execute('git', ['-C', project, 'rev-parse', 'HEAD'])).stdout.trim()
-    const seed = makeCurrentWorkflowFixture(randomUUID(), 'approval')
+    const shape = options.workflow ?? 'approval'
+    const seed = makeCurrentWorkflowFixture(randomUUID(), shape)
     seed.configurations = seed.configurations.map((configuration, index) => AgentConfigurationVersionSchema.parse({
-      ...configuration, prompt: { system: index === 0
+      ...configuration, prompt: { system: shape === 'sequential' || index === 0
         ? 'fixture-reviewer' : 'fixture-requester' },
       harness: { ...configuration.harness, model: 'test-model' },
     }))
