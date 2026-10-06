@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema } from '@foreman-code/contracts/files'
 import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import { fileToolFixture } from '../../../test/support/fileTools.js'
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { FixtureServer, configuration, json } from '../../../test/opencode-fixtures.js'
 import { prepareOpenCodeChatFiles, type OpenCodeManagedFileTurn } from '../harnesses/opencodeFiles/chat.js'
 import { OpenCodeFileError } from '../harnesses/opencodeFiles/types.js'
@@ -18,7 +18,7 @@ import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 
 async function fixture(readOnly = false) {
-  const root = await mkdtemp(join(tmpdir(), 'foreman-worker-opencode-files-'))
+  const root = await privateFixtureDirectory('foreman-worker-opencode-files-')
   onTestFinished(() => rm(root, { recursive: true, force: true }))
   const files = await fileToolFixture()
   const ref = await files.upload()
