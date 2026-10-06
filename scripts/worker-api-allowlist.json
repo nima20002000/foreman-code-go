@@ -56,6 +56,7 @@
   "apps/api/src/modules/files/tools/context.ts",
   "apps/api/src/modules/files/tools/markdownReadText.ts",
   "apps/api/src/modules/files/tools/mcpServer.ts",
+  "apps/api/src/modules/files/tools/nativeServer.ts",
   "apps/api/src/modules/files/tools/transfers.ts",
   "apps/api/src/modules/files/tools/types.ts",
   "apps/api/src/modules/harnesses/appMcpLauncher.ts",
