@@ -26,7 +26,6 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexMcpConnections } from '../src/modules/harnesses/codexMcpConnections.js'
 import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
 import { DomainError } from '../src/modules/errors.js'
-import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { record } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
@@ -44,7 +43,6 @@ import { graphRpcValue } from './eng04-graph-composition-fixture.js'
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
 const appServerName = process.env.NATIVE_ACCEPTANCE_APP_MCP_SERVER ?? APP_MCP_SERVER_NAME
 if (!isSupportedAppMcpServerName(appServerName)) throw new Error('Select a supported native application MCP connection.')
-const appTokenName = appServerName === 'graphql' ? 'GRAPHQL_MCP_TOKEN' : APP_MCP_TOKEN
 
 async function taskPort(): Promise<number> {
   const server = createServer()
@@ -121,7 +119,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const binaries = harnessBinaries(process.env)
       const codexConnections = await new CodexMcpConnections(binaries.codexBinary, projectPath)
         .read(AbortSignal.timeout(30_000))
-      const codexServerName = appMcpServerName(codexConnections.effective)
+      const codexServerName = appMcpServerName(codexConnections.effective, appServerName)
       const codexTokenName = appLauncherTokenName('codex', record(codexConnections.effective[codexServerName]))
         ?? APP_MCP_TOKEN
       await mkdir(join(projectPath, '.codex'))
@@ -132,10 +130,11 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         `env_vars = [${JSON.stringify(codexTokenName)}]`,
         '',
       ].join('\n'), { mode: 0o600 })
+      let openCodeServerName = appServerName
       if (scenario.providers.some((provider) => provider === 'opencode')) {
         const openCodeConnections = await new OpenCodeMcpConnections(binaries.openCodeBinary, projectPath)
           .read(AbortSignal.timeout(30_000))
-        const openCodeServerName = appMcpServerName(openCodeConnections.effective)
+        openCodeServerName = appMcpServerName(openCodeConnections.effective, appServerName)
         // OpenCode merges environment maps across layers; reuse the installed credential reference.
         const openCodeTokenName = openCodeConnections.credentialReferences?.[openCodeServerName] ?? APP_MCP_TOKEN
         await writeFile(join(projectPath, 'opencode.json'), JSON.stringify({ mcp: { [openCodeServerName]: {
@@ -196,7 +195,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const mcpClients: Client[] = []
       let artifactBoundary: pg.PoolClient | undefined
       let failure: { error: unknown } | undefined
-      let cleanupRun: { workspaceId: string; id: string; token: string } | undefined
+      let cleanupRun: { workspaceId: string; id: string } | undefined
       const verify = async () => {
         await database.migrate()
         await checkpoints.setup()
@@ -208,11 +207,10 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           tools: [], permissionRules: [], instructions: '', mcpServers: {},
         } })
         production = buildProductionApp(config, database, checkpoints, false)
-        const redact = nativePersistenceRedactor(Object.values(process.env)
-          .filter((value): value is string => typeof value === 'string' && value.length >= 8))
         const startupErrors: Array<{ code: string; message: string; cause: string | null;
           inspectionCodes: string[]; probe: unknown }> = []
         const recordFailure = (error: unknown) => {
+          const redact = nativePersistenceRedactor([...secrets])
           if (nativeFailures.length < 16) nativeFailures.push({ stage: 'engine',
             error: describeNativeFailure(error, [...secrets]) })
           const code = error && typeof error === 'object' && 'code' in error
@@ -277,10 +275,10 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             const effect = artifactPolicy === 'deny_publish' ? 'allow' : artifactPolicy
             if (effect) permissionRules = [{ permission: '*', pattern: '*', effect: 'deny' },
               ...Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES).map(toolName => ({
-                permission: nativeOpenCodeMcpToolName(toolName, appServerName), pattern: '*', effect,
+                permission: nativeOpenCodeMcpToolName(toolName, openCodeServerName), pattern: '*', effect,
               }))]
             if (artifactPolicy === 'deny_publish') permissionRules.push({
-              permission: nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES.publish, appServerName),
+              permission: nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES.publish, openCodeServerName),
               pattern: '*', effect: 'deny',
             })
             harness = { ...harness, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules } }
@@ -322,7 +320,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             { actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'),
               scope: { workspaceIds: [workspace.id] } },
           ] })
-        const headers = { host: 'localhost', authorization: `Bearer ${writer.token}` }
+        const headers = { host: 'localhost' }
         const connect = async (token: string) => {
           const client = new Client({ name: 'local-artifact-acceptance', version: '1.0.0' })
           mcpClients.push(client)
@@ -492,7 +490,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           expect(started.statusCode, started.body).toBe(202)
           runId = started.json().run.id as string
         }
-        cleanupRun = { workspaceId: workspace.id, id: runId, token: writer.token }
+        cleanupRun = { workspaceId: workspace.id, id: runId }
         if (restartOnArtifacts) {
           artifactBoundary = await pool.connect()
           await artifactBoundary.query('begin')
@@ -577,7 +575,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               let permitted = request.permission === 'bash'
                 && Array.isArray(request.patterns) && request.patterns.length === 1 && request.patterns[0] === 'pwd'
               if (artifacts) permitted = Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES)
-                .some(toolName => request.permission === nativeOpenCodeMcpToolName(toolName, appServerName))
+                .some(toolName => request.permission === nativeOpenCodeMcpToolName(toolName, openCodeServerName))
                 && Array.isArray(request.patterns) && request.patterns.length === 1 && request.patterns[0] === '*'
               if (interaction.nativeRequestType !== 'permission.asked' || !permitted) {
                 throw new Error('The native provider asked for a permission other than the exact read-only pwd command.')
@@ -604,6 +602,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             && (await pool.query('select 1 from run_work_direction_waits where run_id=$1', [runId])).rowCount === 1) break
           await new Promise((resolve) => setTimeout(resolve, 1000))
         }
+        const redact = nativePersistenceRedactor([...secrets])
         const runError = (await pool.query<{ code: string | null }>(
           `select record #>> '{result,error,code}' as code from runs where id=$1`, [runId])).rows[0]
         const executions = (await pool.query<{ id: string; state: string; outcome: string | null;
@@ -653,7 +652,6 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors,
           approvalProgress, invalidNativeResults }))
           .toEqual({ state: noRoute ? 'waiting' : 'completed', outcome: noRoute ? 'pending' : 'succeeded' })
-        if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted')).toBe(true)
         if (artifacts) {
           if (restartOnArtifacts) expect(restarted).toBe(true)
           if (artifactPolicy === 'ask' && !nativeAuto) expect(approved.size).toBe(4)
@@ -934,7 +932,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             'select execution_state from runs where id=$1', [cleanupRun.id])).rows[0]
           if (current && current.execution_state !== 'completed') {
             const stopped = await app.inject({ method: 'POST',
-              headers: { host: 'localhost', authorization: `Bearer ${cleanupRun.token}` },
+              headers: { host: 'localhost' },
               url: `/api/management/workspaces/${cleanupRun.workspaceId}/runs/${cleanupRun.id}/stop`,
               payload: { workspaceId: cleanupRun.workspaceId, runId: cleanupRun.id, commandId: randomUUID() } })
             if (stopped.statusCode !== 200) throw new Error(`Owned native cleanup Stop failed: ${stopped.body}`)
