@@ -116,7 +116,7 @@ describe('production Claude approval composition', () => {
       const pending = (await f.manager.pending(call.session))!
       f.claim(call.session, 'observed-permission', 'observed-tool')
       let validations = 0
-      validation.mockImplementation(async function (identity, answer) {
+      validation.mockImplementation(async function (this: PostgresClaudeInteractionAuthority, identity, answer) {
         await validateResponse.call(this, identity, answer)
         if (++validations === 2) {
           call.controller.abort(new Error('SDK callback canceled after selection'))
