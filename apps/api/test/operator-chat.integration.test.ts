@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { createStreamFixture } from './claude-streams.testSupport.js'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -118,8 +120,10 @@ let repository: PostgresOperatorConversationRepository
 let manager: ChatManager
 let authority: OperatorChatAuthority
 let chat: OperatorChatService
+let runtimeDirectory: string
 
 beforeEach(async () => {
+  runtimeDirectory = await privateFixtureDirectory('operator-claude-')
   let database: URL
   try { database = new URL(connectionString!) } catch { throw new Error('Use a loopback PostgreSQL database explicitly named for tests') }
   if (!['postgres:', 'postgresql:'].includes(database.protocol)
@@ -142,14 +146,21 @@ beforeEach(async () => {
   authority = { current: (id) => access.currentOperator(id), assertConfiguration() {},
     setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() }),
     prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {} }
-  chat = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', authority)
+  chat = new OperatorChatService(repository, operators, () => manager, runtimeDirectory, authority)
 }, 30_000)
 
 afterEach(async () => {
-  await chat?.shutdown()
-  await pool?.end()
-  await admin?.query(`drop schema if exists "${schema}" cascade`)
-  await admin?.end()
+  try { await chat?.shutdown() }
+  finally {
+    try { await pool?.end() }
+    finally {
+      try { await admin?.query(`drop schema if exists "${schema}" cascade`) }
+      finally {
+        try { await admin?.end() }
+        finally { await rm(runtimeDirectory, { recursive: true, force: true }) }
+      }
+    }
+  }
 })
 
 describe.skipIf(!connectionString)('Operator chat persistence and native binding with stubbed authority', () => {
@@ -263,7 +274,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const openCode = new ChatManager('opencode')
     chat = new OperatorChatService(repository, operators,
       (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
-      '/tmp/graphql-test-operator', authority)
+      runtimeDirectory, authority)
     const source = await chat.create(owner)
     const settings = new PostgresFoundationSettingsRepository(pool)
     const defaults = await settings.getAgentDefaults()
@@ -296,7 +307,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const openCode = new ChatManager('opencode')
     chat = new OperatorChatService(repository, operators,
       (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
-      '/tmp/graphql-test-operator', authority)
+      runtimeDirectory, authority)
     const source = await chat.create(owner)
     await chat.send(source.id, { requestId: 'source-turn', content: 'Please inspect the release.' }, owner)
     await waitFor(async () => (await chat.get(source.id, owner)).turnState === 'idle')
@@ -368,7 +379,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const openCode = new ChatManager('opencode')
       chat = new OperatorChatService(repository, operators,
         (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
-        '/tmp/graphql-test-operator', authority)
+        runtimeDirectory, authority)
       const service = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(pool),
         new PostgresCommandCoordinator(pool), { qualifyConfiguration: async () => ({} as never) }, operators)
       app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
@@ -433,14 +444,14 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     let managersCreated = 0
     const inspectionAuthority: OperatorChatAuthority = { ...authority,
       setupConfiguration: (principal, configuration, signal) => new PostgresOperatorChatAuthority(pool, access, {} as NativeRollout,
-        '/tmp/graphql-test-operator', endpoint, undefined, async () => {}, async (current, selected) => {
+        runtimeDirectory, endpoint, undefined, async () => {}, async (current, selected) => {
           inspected.push({ principalId: current.id, configurationId: selected.id,
             ...(selected.harnessProfileSelection ? { profileId: selected.harnessProfileSelection.instanceId } : {}) })
           return { harness: 'claude', status: 'configured', endpoint, checkedAt: new Date().toISOString() }
         }).setupConfiguration(principal, configuration, signal),
     }
     chat = new OperatorChatService(repository, operators, () => { managersCreated++; throw new Error('Setup must not allocate a turn manager') },
-      '/tmp/graphql-test-operator', inspectionAuthority)
+      runtimeDirectory, inspectionAuthority)
     const service = new FoundationSettingsManagementService(settings, commands, undefined, operators)
     const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: { settings: service, operatorChat: chat, commands } as unknown as OperatorServices } })
@@ -512,7 +523,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       let endpoint = ''
       let token: string | undefined
       const makeAuthority = () => new PostgresOperatorChatAuthority(pool, access, new NativeRollout({ NODE_ENV: 'test', HOST: '127.0.0.1' }),
-        '/tmp/graphql-test-operator', endpoint, () => ({ inspect: async (request) => ({ harness: request.harness,
+        runtimeDirectory, endpoint, () => ({ inspect: async (request) => ({ harness: request.harness,
           providerVersion: 'synthetic-codex-cli', runnerId: request.runnerId, workingDirectory: request.workingDirectory, inspectedAt: new Date().toISOString(),
           entry: { name: 'graphql', enabled: true, transport: 'stdio', automaticEndpoint: true,
             credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', status: 'connected' } }) }), async () => {},
@@ -527,7 +538,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         prepare: async (...input) => { const environment = await nativeAuthority.prepare(...input); token = environment.variables.GRAPHQL_MCP_TOKEN; return environment },
         release: (id) => nativeAuthority.release(id) }
       manager.autoFinish = false
-      chat = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', bound)
+      chat = new OperatorChatService(repository, operators, () => manager, runtimeDirectory, bound)
       const service = new FoundationSettingsManagementService(settings, commands, undefined, operators)
       const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
         operator: { access, services: { settings: service, operatorChat: chat, commands } as unknown as OperatorServices } })
@@ -636,7 +647,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     await operators.update(DEFAULT_HARNESS_DEFAULTS.opencode, (await operators.ensure()).configuration.id)
     const openCode = new ChatManager('opencode')
     chat = new OperatorChatService(repository, operators, (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
-      '/tmp/graphql-test-operator', authority)
+      runtimeDirectory, authority)
     const request = { requestId: 'accepted-change', content: 'Synthetic receipt fixture', configurationVersionId: sourcePin,
       defaultsRevision: saved.revision, settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode) }
     await chat.send(source.id, request, owner)
@@ -935,7 +946,7 @@ function interruptibleClaude() {
       let initialized = false
       void (async () => {
         for await (const message of input.prompt) {
-          if (!initialized) void frames.offer({ type: 'system', subtype: 'init', session_id: 'claude-session', claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
+          if (!initialized) void frames.offer({ type: 'system', subtype: 'init', session_id: 'claude-session', claude_code_version: '2.1.284', cwd: runtimeDirectory })
           initialized = true
           active = message.uuid
           void frames.offer({ type: 'assistant', uuid: `reply:${message.uuid}`, session_id: 'claude-session', parent_tool_use_id: null, user_message_uuid: message.uuid,
@@ -956,7 +967,7 @@ function interruptibleClaude() {
   const managers: ReturnType<typeof createClaudeNativeSessionManager>[] = []
   const manager = () => {
     const created = createClaudeNativeSessionManager({ runner: createClaudeSdkRunner({ loadClient: async () => sdk }),
-      scope: { deviceId: 'main', profilePath: '/synthetic/profile', configRevision: '1', cwd: '/tmp/graphql-test-operator' }, sdkOptions: {},
+      scope: { deviceId: 'main', profilePath: '/synthetic/profile', configRevision: '1', cwd: runtimeDirectory }, sdkOptions: {},
       qualification: { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: false, history: false } })
     managers.push(created)
     return created
@@ -979,14 +990,14 @@ function settlingClaude() {
       const output = new ClaudeBoundedQueue<unknown>(64)
       frames = output
       if (input.options.resume) void output.offer({ type: 'system', subtype: 'init', session_id: 'settling-session',
-        claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
+        claude_code_version: '2.1.284', cwd: runtimeDirectory })
       void (async () => {
         for await (const message of input.prompt) {
           prompts.push(message.message.content)
           promptUuid = message.uuid
           persistedMessages.push({ type: 'user', uuid: message.uuid, session_id: 'settling-session', parent_tool_use_id: null })
           void output.offer({ type: 'system', subtype: 'init', session_id: 'settling-session',
-            claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
+            claude_code_version: '2.1.284', cwd: runtimeDirectory })
           const reply = { type: 'assistant', uuid: `reply:${message.uuid}`, session_id: 'settling-session',
             parent_tool_use_id: null, user_message_uuid: message.uuid,
             message: { id: `answer:${message.uuid}`, content: [{ type: 'text', text: 'Text alone is not completion.' }] } }
@@ -1005,7 +1016,7 @@ function settlingClaude() {
   }
   const manager = () => {
     const created = createClaudeNativeSessionManager({ runner: createClaudeSdkRunner({ loadClient: async () => sdk }),
-      scope: { deviceId: 'main', profilePath: '/synthetic/profile', configRevision: '1', cwd: '/tmp/graphql-test-operator' },
+      scope: { deviceId: 'main', profilePath: '/synthetic/profile', configRevision: '1', cwd: runtimeDirectory },
       sdkOptions: {}, qualification: { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true,
         resume: true, fork: false, history: true } })
     managers.push(created)
@@ -1023,7 +1034,7 @@ async function configureSettlingClaude(claude: ReturnType<typeof settlingClaude>
     tools: [], permissionRules: [], instructions: '',
     mcpServers: { graphql: { type: 'http', url: 'http://127.0.0.1:3050/mcp' } } },
   (await operators.ensure()).configuration.id)
-  chat = new OperatorChatService(repository, operators, claude.manager, '/tmp/graphql-test-operator', authority)
+  chat = new OperatorChatService(repository, operators, claude.manager, runtimeDirectory, authority)
 }
 
 async function startSettlingClaude(claude: ReturnType<typeof settlingClaude>) {
@@ -1044,7 +1055,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
     const closeOwner = vi.fn<NonNullable<NativeManagerResolver['closeRecoveredRuntime']>>(async () => false)
     resolver.closeRecoveredRuntime = closeOwner
     const preparing = { ...authority, prepare: async () => { throw new Error('Profile admission failed before query') } }
-    chat = new OperatorChatService(repository, operators, resolver, '/tmp/graphql-test-operator', preparing)
+    chat = new OperatorChatService(repository, operators, resolver, runtimeDirectory, preparing)
     const fault = vi.spyOn(repository, 'closurePending').mockRejectedValue(new Error('Crash after saving setup failure'))
     const previous = chat
     try {
@@ -1053,7 +1064,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       expect((await repository.terminal(conversation.id, 'setup-failure'))?.observation.requiresRuntimeClosure).toBe(false)
       expect(allocation.requiresRuntimeClosure!()).toBe(false)
       fault.mockRestore()
-      chat = new OperatorChatService(repository, operators, resolver, '/tmp/graphql-test-operator', authority)
+      chat = new OperatorChatService(repository, operators, resolver, runtimeDirectory, authority)
       await chat.reconcileActive()
       expect((await chat.get(conversation.id, owner)).activeRequestId).toBeNull()
       expect((await chat.get(conversation.id, owner)).lastResult?.outcome).toBe('failed')
@@ -1083,7 +1094,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
         }
         fault.mockRestore()
         if (method === 'finish') {
-          chat = new OperatorChatService(repository, operators, claude.manager, '/tmp/graphql-test-operator', authority)
+          chat = new OperatorChatService(repository, operators, claude.manager, runtimeDirectory, authority)
         }
         await waitFor(async () => { await chat.reconcileActive(); return !(await chat.get(conversation.id, owner)).activeRequestId })
         expect((await chat.get(conversation.id, owner)).lastResult).toEqual({ outcome: 'succeeded', output: 'Saved native result.' })
@@ -1123,7 +1134,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
         void claude.result()
         await waitFor(async () => (await repository.active(conversation.id))?.turn_state === 'uncertain')
         fault?.mockRestore()
-        chat = new OperatorChatService(repository, operators, claude.manager, '/tmp/graphql-test-operator', authority)
+        chat = new OperatorChatService(repository, operators, claude.manager, runtimeDirectory, authority)
         await chat.reconcileActive()
         const state = await chat.get(conversation.id, owner)
         expect(state.activeRequestId).toBe('terminal-request')
@@ -1144,7 +1155,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       void claude.result()
       await waitFor(async () => (await repository.active(conversation.id))?.turn_state === 'uncertain')
       fault.mockRestore()
-      chat = new OperatorChatService(repository, operators, claude.manager, '/tmp/graphql-test-operator', authority)
+      chat = new OperatorChatService(repository, operators, claude.manager, runtimeDirectory, authority)
       await chat.reconcileActive()
       expect((await chat.get(conversation.id, owner)).activeRequestId).toBe('terminal-request')
       expect((await chat.get(conversation.id, owner)).lastResult).toBeUndefined()
@@ -1166,7 +1177,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       const resolver: NativeManagerResolver = claude.manager
       const closeOwner = vi.fn<NonNullable<NativeManagerResolver['closeRecoveredRuntime']>>(async () => false)
       resolver.closeRecoveredRuntime = closeOwner
-      chat = new OperatorChatService(repository, operators, resolver, '/tmp/graphql-test-operator', authority)
+      chat = new OperatorChatService(repository, operators, resolver, runtimeDirectory, authority)
       await chat.reconcileActive()
       expect((await chat.get(conversation.id, owner)).activeRequestId).toBe('terminal-request')
       expect((await repository.terminal(conversation.id, 'terminal-request'))?.closureState).toBe('pending')
@@ -1254,7 +1265,7 @@ describe.skipIf(!connectionString)('Operator chat Stop on Claude', () => {
       permissionMode: 'default' as const, sandbox: 'danger-full-access' as const, tools: [], permissionRules: [], instructions: '',
       mcpServers: { graphql: { type: 'http' as const, url: 'http://127.0.0.1:3050/mcp' } } }
     await operators.update(harness, (await operators.ensure()).configuration.id)
-    chat = new OperatorChatService(repository, operators, claude.manager, '/tmp/graphql-test-operator', authority)
+    chat = new OperatorChatService(repository, operators, claude.manager, runtimeDirectory, authority)
     const user = await access.issue({ name: 'Claude stop owner', audience: 'operator',
       grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
     const owner = user.principal
@@ -1308,11 +1319,11 @@ describe.skipIf(!connectionString)('Operator chat Stop on Claude', () => {
 
 describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () => {
   it('preserves truncation in persisted messages, HTTP, SSE data and authenticated MCP', async () => {
-    const f = createStreamFixture({ workingDirectory: '/tmp/graphql-test-operator' })
+    const f = createStreamFixture({ workingDirectory: runtimeDirectory })
     await operators.update({ harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: '/profile',
       permissionMode: 'default', sandbox: 'read-only', tools: ['Read'], permissionRules: [], instructions: '', mcpServers: {},
     }, (await operators.ensure()).configuration.id)
-    chat = new OperatorChatService(repository, operators, () => f.manager, '/tmp/graphql-test-operator', authority)
+    chat = new OperatorChatService(repository, operators, () => f.manager, runtimeDirectory, authority)
     const writer = await access.issue({ name: 'truncation owner', audience: 'operator',
       grants: [{ actions: ['operator_chat:read', 'operator_chat:write'], scope: {} }],
       expiresAt: new Date(Date.now() + 600_000) })
@@ -1320,6 +1331,7 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
     const reader = await access.issue({ name: 'truncation reader', audience: 'operator',
       grants: [{ actions: ['operator_chat:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      localHuman: { current: () => access.currentOperator(writer.principal.id) },
       operator: { access, services: { operatorChat: chat, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
     registerOperatorChatRoutes(app, chat)
     const streamed: unknown[] = []
@@ -1330,7 +1342,7 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
       const query = f.queries[0]!
       const message = (await query.messages.next()).value!
       await query.frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session',
-        claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
+        claude_code_version: '2.1.284', cwd: runtimeDirectory })
       const text = 'é'.repeat(24_010)
       await query.frames.offer(f.frame({ type: 'assistant', uuid: 'truncated-answer', message: { id: 'answer',
         content: [{ type: 'text', text }] } }, message.uuid))
@@ -1347,8 +1359,7 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
         name: 'operator_chat_get', arguments: { conversationId: conversation.id },
       })
       expect(deniedMcp.result?.isError).toBe(true)
-      const http = await app.inject({ method: 'GET', url: `/api/operator/conversations/${conversation.id}`,
-        headers: { authorization: `Bearer ${writer.token}` } })
+      const http = await app.inject({ method: 'GET', url: `/api/operator/conversations/${conversation.id}` })
       expect(http.statusCode).toBe(200)
       expect(http.json().messages).toContainEqual(expect.objectContaining({ content: stored.content, truncation }))
       const mcp = await graphRpc(app, writer.token, 'tools/call', { name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
@@ -1366,8 +1377,8 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
       configDirectory: '/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
       tools: ['Read'], permissionRules: [], instructions: '', mcpServers: {} }
     await operators.update(harness, (await operators.ensure()).configuration.id)
-    const f = createStreamFixture({ outputCapacity: 2, workingDirectory: '/tmp/graphql-test-operator' })
-    chat = new OperatorChatService(repository, operators, () => f.manager, '/tmp/graphql-test-operator', authority)
+    const f = createStreamFixture({ outputCapacity: 2, workingDirectory: runtimeDirectory })
+    chat = new OperatorChatService(repository, operators, () => f.manager, runtimeDirectory, authority)
     const conversation = await chat.create(owner)
     let resume!: () => void
     const paused = new Promise<void>(resolve => { resume = resolve })
@@ -1386,7 +1397,7 @@ describe.skipIf(!connectionString)('Operator chat bounded Claude streams', () =>
       const query = f.queries[0]!
       const message = (await query.messages.next()).value!
       await query.frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session',
-        claude_code_version: '2.1.284', cwd: '/tmp/graphql-test-operator' })
+        claude_code_version: '2.1.284', cwd: runtimeDirectory })
       const prefix = 'é'.repeat(24000)
       await query.frames.offer(f.frame({ type: 'assistant', uuid: 'public-parts', message: { id: 'public-message',
         content: [{ type: 'text', text: prefix + 'tail' },

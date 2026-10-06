@@ -274,8 +274,8 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
       } finally {
         vi.restoreAllMocks()
         controller.abort()
-        await app.close()
-        await chat.shutdown()
+        try { await app.close() }
+        finally { await chat.shutdown() }
       }
     })
   }, 120_000)

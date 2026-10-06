@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { expect, it } from 'vitest'
+import { expect, it, onTestFinished } from 'vitest'
+import { deleteSession, listSessions } from '@anthropic-ai/claude-agent-sdk'
 import { ClaudeHarnessConfigurationSchema } from '@foreman-code/contracts/claude'
 import { HostHarnessOverrideSchema } from '@foreman-code/contracts/harness-registry'
 import { claudeQualificationCapabilities } from '@foreman-code/contracts/claude-qualification'
@@ -28,6 +29,33 @@ it.runIf(process.env.RUN_CLAUDE_PROFILE_NATIVE_TESTS === '1')(
       configDirectory: resolve(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')),
       permissionMode: 'default', sandbox: 'danger-full-access', tools: ['Write'],
       permissionRules: [], instructions: '', mcpServers: {},
+    })
+    onTestFinished(async () => {
+      try {
+        for (const child of await readdir(directory, { withFileTypes: true })) {
+          if (!child.isDirectory() || !child.name.startsWith('claude-profile-')) continue
+          const cwd = join(directory, child.name, 'work')
+          const sessions = await listSessions({ dir: cwd })
+          for (const session of sessions) {
+            if (session.cwd !== cwd) throw new Error('Qualification cleanup found another project session.')
+            await deleteSession(session.sessionId, { dir: cwd })
+          }
+          expect(await listSessions({ dir: cwd })).toEqual([])
+          const projects = join(configuration.configDirectory, 'projects')
+          const folders = await readdir(projects, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT') return []
+            throw error
+          })
+          for (const project of folders) {
+            if (project.isDirectory() && project.name.includes(basename(directory))) {
+              await rm(join(projects, project.name), { recursive: true })
+            }
+          }
+        }
+      } finally {
+        await rm(directory, { recursive: true, force: true })
+        await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' })
+      }
     })
     const instanceId = randomUUID()
     const hostRef = { kind: 'main' as const, mainId: randomUUID() }
@@ -80,8 +108,10 @@ it.runIf(process.env.RUN_CLAUDE_PROFILE_NATIVE_TESTS === '1')(
           expect(refreshed.status).toBe('available')
           if (refreshed.status === 'available') expect(refreshed.pin).toEqual(current.pin)
         } })
-      const artifact = join(directory, 'qualification.json')
-      await writeFile(artifact, JSON.stringify({ model: configuration.model, proof }, null, 2), { mode: 0o600 })
+      const evidenceId = proof.claudeProof?.checks.sdkInitialization?.evidenceId
+      const nativeEvidence = evidenceId ? await readFile(evidenceId, 'utf8') : undefined
+      const artifact = join(evidenceRoot, `claude-haiku-qualification-${randomUUID()}.json`)
+      await writeFile(artifact, JSON.stringify({ model: configuration.model, proof, nativeEvidence }, null, 2), { mode: 0o600 })
       console.info(`Claude Haiku qualification evidence ${artifact}`)
       expect(proof, JSON.stringify(proof.failure)).toMatchObject({ authenticated: true, compatible: true, qualified: true })
       expect(proof.claudeProof?.pin).toEqual(current.pin)

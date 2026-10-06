@@ -186,7 +186,7 @@ it('persists one message admission across later tool rounds and validates each c
       .toEqual({ outcome: 'succeeded', output: 'done' })
     expect(query).toHaveBeenCalledTimes(1)
   } finally {
-    await manager?.dispose?.()
-    await db.close()
+    try { await manager?.dispose?.() }
+    finally { await db.close() }
   }
 }, 60_000)

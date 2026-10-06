@@ -91,5 +91,11 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
       arguments: { workspaceId: seeded.scope.workspaceId, request: input } })
     expect(replay.result?.isError).not.toBe(true)
     expect(transport!.offers).toHaveLength(257)
-  } finally { await chat?.shutdown(); await app?.close(); await db.close() }
+  } finally {
+    try { await chat?.shutdown() }
+    finally {
+      try { await app?.close() }
+      finally { await db.close() }
+    }
+  }
 }, 120_000)
