@@ -29,7 +29,7 @@ import { jobDigest } from './digest.js'
 import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import { sourceBindingHash } from '../sources/bindingHash.js'
 import { createHash } from 'node:crypto'
-import { qualificationExecution } from './qualificationExecution.js'
+import { qualificationExecution, publishFailedQualification } from './qualificationExecution.js'
 import { reserveVerificationReportSpace, readBoundedJobFile } from './executorOutputs.js'
 import { finalizeVerificationPublication } from './verificationPublication.js'
 import { interruptActiveQualification } from './qualificationCancellation.js'
@@ -322,7 +322,13 @@ export async function qualifyVerificationRuntime(input: {
       const execution = await podman(['exec', containerId, 'node', 'scripts/verify-repository.mjs',
         '--context', `/workspace/${JOB_INPUT_DIRECTORY}/qualification-context.json`],
       context.executionTimeoutMs + context.cancellationTimeoutMs + candidate.profile.spec.policy.publicationTimeoutMs)
-      if (execution.exitCode !== 0) throw new Error(`Complete ${suite} qualification failed.`)
+      if (execution.exitCode !== 0) {
+        const terminal = { outcome: 'build_failed' as const, exitCode: execution.exitCode,
+          signal: null, finishedAt: new Date().toISOString() }
+        await publishFailedQualification({ suite, exitCode: execution.exitCode, stderr: execution.stderr,
+          closeContainer: () => owner.closeContainer!(),
+          publish: () => publish(context, startedAt, terminal, reserve, materialization) })
+      }
       if (!await owner.closeContainer!()) throw new Error('Ordinary verification descendants are still active.')
       const samples = JSON.parse((await readBoundedJobFile(source.sourceRoot,
         '.logs/verification/parts/resource-samples.json', context.limits.vitestBytes)).toString('utf8'))

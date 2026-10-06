@@ -8,6 +8,18 @@ import { QUALIFICATION_PRESSURE_DRIVER } from './qualificationCancellation.js'
 import { sourceMaterializationDigest } from '../sources/bindingHash.js'
 import { jobDigest } from './digest.js'
 
+export async function publishFailedQualification(input: {
+  suite: string
+  exitCode: number
+  stderr: string
+  closeContainer(): Promise<boolean>
+  publish(): Promise<unknown>
+}): Promise<never> {
+  if (!await input.closeContainer()) throw new Error('Failed verification descendants are still active.')
+  await input.publish()
+  throw new Error(`Complete ${input.suite} qualification failed: ${input.stderr.slice(0, 300)}`)
+}
+
 /** Qualification has human diagnostic admission; it does not borrow a qualified Job grant. */
 export function qualificationExecution(raw: JobQualificationCandidateRecord,
   report: Pick<JobQualificationReport, 'context' | 'terminal' | 'startedAt' | 'materialization'>) {
