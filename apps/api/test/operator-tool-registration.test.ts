@@ -72,7 +72,8 @@ describe('Operator tool registration permissions', () => {
   })
 
   it('registers every supported tool for an unrestricted owner', () => {
-    const expected = [...actionTools.flatMap(([, names]) => names), 'run_handoffs_get_v1', 'run_start'].sort()
+    // These require more than one grant (respond also needs interactions:read).
+    const expected = [...actionTools.flatMap(([, names]) => names), 'interaction_respond', 'run_handoffs_get_v1', 'run_start'].sort()
     expect(registered(context([{ actions: [...ManagementActionSchema.options], scope: {} }]))).toEqual(expected)
   })
 
