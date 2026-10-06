@@ -22,6 +22,7 @@ export function verificationEnvironment(environment) {
     COREPACK_ENABLE_NETWORK: '0',
     COREPACK_DEFAULT_TO_LATEST: '0',
     COREPACK_ENABLE_AUTO_PIN: '0',
+    NODE_OPTIONS: '--max-old-space-size=1536',
     PNPM_CONFIG_OFFLINE: 'true',
     PNPM_CONFIG_STORE_DIR: `${VERIFICATION_SCRATCH}/pnpm-store`,
     PNPM_CONFIG_CACHE_DIR: `${VERIFICATION_SCRATCH}/cache/pnpm`,

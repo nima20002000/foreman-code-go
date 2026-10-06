@@ -220,7 +220,7 @@ test('verification installer fixes offline frozen dev installs, isolates caches 
   assert.equal(environment.PNPM_CONFIG_OFFLINE, 'true');
   assert.equal(environment.FOREMAN_CODE_VERIFICATION_UNIT_WORKERS, '1');
   assert.equal(environment.npm_config_minimum_release_age, undefined);
-  assert.equal(environment.NODE_OPTIONS, undefined);
+  assert.equal(environment.NODE_OPTIONS, '--max-old-space-size=1536');
   const policy = { minimumReleaseAge: 2880, minimumReleaseAgeStrict: true, minimumReleaseAgeIgnoreMissingTime: false };
   assert.doesNotThrow(() => assertEffectivePackagePolicy(policy));
   for (const change of [{ minimumReleaseAge: 0 }, { minimumReleaseAgeStrict: false },
@@ -239,7 +239,12 @@ test('the pinned pnpm reads the enforced offline store and cache from its suppor
   const directory = await mkdtemp(join(persistentFixtureRoot, 'pnpm-effective-policy-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const environment = verificationEnvironment({ ...process.env, PNPM_CONFIG_STORE_DIR: '/owner/store',
-    PNPM_CONFIG_CACHE_DIR: '/owner/cache', PNPM_CONFIG_OFFLINE: 'false', PNPM_CONFIG_WORKSPACE_CONCURRENCY: '9' });
+    PNPM_CONFIG_CACHE_DIR: '/owner/cache', PNPM_CONFIG_OFFLINE: 'false', PNPM_CONFIG_WORKSPACE_CONCURRENCY: '9',
+    NODE_OPTIONS: '--require /owner/unreviewed-preload.mjs' });
+  const heapBytes = Number(execFileSync(process.execPath, ['-e',
+    'process.stdout.write(String(require("node:v8").getHeapStatistics().heap_size_limit))'],
+  { env: environment, encoding: 'utf8', timeout: 5000 }));
+  assert.ok(heapBytes >= 1536 * 2**20 && heapBytes < 2 * 2**30);
   const config = JSON.parse(execFileSync('corepack', ['pnpm', 'config', 'list', '--json'], {
     env: { ...environment, HOME: directory, TMPDIR: directory, COREPACK_HOME: process.env.COREPACK_HOME },
     encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024,
