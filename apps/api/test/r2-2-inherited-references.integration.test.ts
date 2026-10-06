@@ -202,7 +202,8 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
     const id = result.state.conversation!.id
     await until(async () => {
       const state = await chat.current!.readConversation(owner.principal, seeded.scope.workspaceId, id)
-      expect(state.turnState, state.error ?? 'Native inherited-file delivery failed.').not.toBe('error')
+      expect(state.sessionState, state.turns.find(turn => turn.requestId === requestId)?.error?.message
+        ?? state.availability.message).not.toBe('error')
       return issued.length === previous + 1
     }, 10000)
     const active = issued.at(-1)!
