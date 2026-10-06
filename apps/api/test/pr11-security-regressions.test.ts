@@ -14,7 +14,10 @@ import { decodeInteractionCursor } from '../src/modules/interactions/app.js'
 import { McpDetectionService, WorkerLaunchCredentialService, endpointMatches, type NativeMcpEntryEvidence } from '../src/modules/harnesses/mcpDetection.js'
 import { ManagedOpenCodeServer } from '../src/modules/harnesses/opencodeServer.js'
 import { inspectOpenCodeMcpConfiguration } from '../src/modules/harnesses/opencodeMcpConfiguration.js'
-import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { CodexAppServerSessionManager, type CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
+import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
+import { fixtureProtocol } from './fixtures/codex-test-helpers.js'
 import { runCommand, runJsonlProcess } from '../src/modules/harnesses/process.js'
 import { redactKnownSecrets, redactSecretText } from '../src/modules/harnesses/secrets.js'
 
@@ -240,32 +243,48 @@ describe.skipIf(process.platform === 'win32')('PR #11 provider-native resolved c
 })
 
 
-describe.skipIf(process.platform === 'win32')('PR #11 Codex inspection failure classification', () => {
-  it('reports absence only when a successful structured list proves it', async () => {
+describe.skipIf(process.platform === 'win32')('Codex inspection failure classification', () => {
+  it('reports absence only when the named lookup proves it, without falling back to an empty catalog', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'graphql-pr11-codex-'))
     const binary = join(directory, 'codex-fixture.cjs')
     try {
-      for (const [exitCode, stdout, expected] of [
-        [0, '[]', 'CODEX_MCP_NOT_CONFIGURED'],
-        [1, '', 'CODEX_MCP_INSPECTION_FAILED'],
-        [0, '{bad json', 'CODEX_MCP_INSPECTION_FAILED'],
-        [0, '[{"name":"graphql"}]', 'CODEX_MCP_INSPECTION_FAILED'],
+      for (const [exitCode, stdout, stderr, expected] of [
+        [1, '', null, 'CODEX_MCP_NOT_CONFIGURED'],
+        [1, '', 'configuration unavailable', 'CODEX_MCP_INSPECTION_FAILED'],
+        [1, '[]', null, 'CODEX_MCP_INSPECTION_FAILED'],
+        [1, '', "Error: No MCP server named 'another-server' found.", 'CODEX_MCP_INSPECTION_FAILED'],
+        [0, '{bad json', '', 'CODEX_MCP_CONFIG_INVALID'],
+        [0, '[{"name":"foreman-code"}]', '', 'CODEX_MCP_CONFIG_INVALID'],
       ] as const) {
         await writeFile(binary, `#!${process.execPath}
-if (process.argv[3] === 'get') { console.error('configuration unavailable'); process.exit(1); }
-process.stdout.write(${JSON.stringify(stdout)}); process.exit(${exitCode});
+const name = process.argv[4];
+const missing = "Error: No MCP server named '" + name + "' found.";
+if (process.argv[3] === 'list') { console.log('[]'); process.exit(0); }
+if (process.argv[3] !== 'get' || name !== 'foreman-code') { console.error(missing); process.exit(1); }
+process.stdout.write(${JSON.stringify(stdout)});
+process.stderr.write(${JSON.stringify(stderr)} ?? missing);
+process.exit(${exitCode});
 `, { mode: 0o755 })
         await chmod(binary, 0o755)
-        const manager = new CodexAppServerSessionManager(binary)
-        // Qualification itself is covered separately; exercise only the get/list subprocess path.
-        const inspection = manager as unknown as { mcpConfiguration(
-          binary: string, cwd: string, environment: NodeJS.ProcessEnv, providerVersion: string,
-        ): Promise<unknown> }
-        await assert.rejects(inspection.mcpConfiguration(binary, directory, { ...process.env }, 'codex-cli 0.154.0'), (error: unknown) => {
-          const failure = error as { result?: { error?: { code?: string } } }
-          assert.equal(failure.result?.error?.code, expected)
-          return true
-        })
+        const forbidden = () => { throw new Error('Configuration inspection cannot start a native session or model turn.') }
+        // Qualification is recorded; named CLI lookups run through the real subprocess boundary.
+        const dependencies: Extract<CodexSessionDependencies, { mode: 'replay' }> = {
+          mode: 'replay', environment: () => ({ ...process.env }), runCommand,
+          qualify: async () => ({ binary, identity: 'recorded', protocol: fixtureProtocol,
+            providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded',
+            stableSchemaGitBlob: 'recorded', referenceSchemaManifestSha256: 'recorded' }),
+          assertUnchanged: forbidden, qualifyModel: forbidden, transport: forbidden, withDiagnostics: forbidden,
+          id: () => 'recorded', now: () => new Date(), schedule: setTimeout, cancelTimer: clearTimeout,
+        }
+        const manager = new CodexAppServerSessionManager(binary, undefined, undefined,
+          undefined, undefined, undefined, dependencies)
+        try {
+          await assert.rejects(manager.inspectMcpConfiguration(directory), (error: unknown) => {
+            assert(error instanceof HarnessExecutionError)
+            assert.equal(error.result.error?.code, expected)
+            return true
+          })
+        } finally { await manager.dispose() }
       }
     } finally { await rm(directory, { recursive: true, force: true }) }
   })
