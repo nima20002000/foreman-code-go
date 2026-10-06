@@ -227,8 +227,9 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   } else if (message.method === 'thread/compact/start') {
     const owner = loadThread(params.threadId)
     if (!owner) { fail(message.id); return }
-    const compact = turn(`compact-${++nextTurn}`, 'completed')
-    compact.items.push({ id: `boundary-${nextTurn}`, type: 'contextCompaction' })
+    const turnNumber = owner.turns.length + 1
+    const compact = turn(`compact-${turnNumber}`, 'completed')
+    compact.items.push({ id: `boundary-${turnNumber}`, type: 'contextCompaction' })
     owner.turns.push(compact)
     store(owner)
     result(message.id, {})

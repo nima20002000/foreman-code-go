@@ -149,9 +149,9 @@ export async function createInstalledWorkerConversations(input: {
           await before(signal)
           return dependencies.runCommand(executable, args, cwd, signal, environment, { ...options, recovery: scope })
         },
-        qualifyModel: async (configuration, executable, cwd, environment, signal) => {
+        qualifyModel: async (configuration, executable, cwd, environment, signal, _recovery, inspection) => {
           await before(signal)
-          return dependencies.qualifyModel(configuration, executable, cwd, environment, signal, scope)
+          return dependencies.qualifyModel(configuration, executable, cwd, environment, signal, scope, inspection)
         },
       })
       manager = native
