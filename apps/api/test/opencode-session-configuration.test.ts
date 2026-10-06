@@ -66,7 +66,7 @@ it('does not accept the default sentinel for a pinned named variant', async () =
 
 it('retains an advertised named variant whose name is default', async () => {
   const server = new FixtureServer()
-  server.providers = { all: [{ id: 'opencode-go', models: {
+  server.providers = { connected: ['opencode-go'], all: [{ id: 'opencode-go', models: {
     'deepseek-v4.1-flash': { variants: { default: {} } },
   } }] }
   const harness = { ...configuration(), variant: 'default' }
@@ -129,7 +129,7 @@ it('rejects an actual named default variant when the accepted configuration is u
 
 it.each([undefined, '', 'default'])('checks user variant %s against an accepted named default on restart', async variant => {
   const server = new FixtureServer()
-  server.providers = { all: [{ id: 'opencode-go', models: {
+  server.providers = { connected: ['opencode-go'], all: [{ id: 'opencode-go', models: {
     'deepseek-v4.1-flash': { variants: { default: {} } },
   } }] }
   const harness = { ...configuration(), variant: 'default' }

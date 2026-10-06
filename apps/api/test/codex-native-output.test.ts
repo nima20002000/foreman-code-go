@@ -118,8 +118,12 @@ describe('separate Codex native output group alongside scoped App MCP', () => {
           error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_NATIVE_OUTPUT_UNQUALIFIED')
         assert.throws(() => codexNativeOutputDeclarations(f.config, 'codex-cli 0.154.0'))
       }
-      assert.throws(() => new CodexAppServerSessionManager('/unused', undefined, undefined, undefined, 'scoped',
-        { prepare: async () => undefined }), /File-enabled chat cannot receive/)
+      const chat = new CodexAppServerSessionManager('/unused', undefined, undefined, undefined, 'scoped',
+        { prepare: async () => undefined })
+      try {
+        await assert.rejects(chat.createSession(f.source), (error: unknown) =>
+          error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_FILE_CHAT_ISOLATION_REQUIRED')
+      } finally { await chat.dispose() }
       assert.equal(f.replay.starts.length, 0)
     } finally { await f.manager.dispose() }
   })

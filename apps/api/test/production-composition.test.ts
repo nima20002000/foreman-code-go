@@ -148,7 +148,7 @@ it('uses one real approval runtime across production HTTP, Operator MCP, App MCP
 
 it('retains Worker qualification against the outgoing profile-check channel', async () => {
   await production.app.close()
-  const retained = vi.spyOn(nativeRetention, 'createInstalledCodexQualificationRetention')
+  const retained = vi.spyOn(nativeRetention, 'createInstalledHarnessQualificationRetention')
   const binding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
     bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 1, keyRevision: 1, authorizationRevision: 1 }
   const captureRequest = vi.fn(() => ({ binding, request: vi.fn() }))

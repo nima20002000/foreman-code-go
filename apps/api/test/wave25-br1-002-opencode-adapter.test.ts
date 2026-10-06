@@ -148,7 +148,7 @@ for (const cut of ['busy', 'pending', 'unfinished', 'tool-call'] as const) it(`B
   } finally { await native.dispose() }
 })
 
-it('BR1-002: replacement manager cannot promote the previous producer generation', async () => {
+it('BR1-002: replacement manager reconciles on a fresh connection without replaying the previous producer', async () => {
   const server = new FixtureServer(), original = manager(server), correlationId = 'generation-hold'
   const session = await sessionFor(original)
   let first: NativeHarnessEvent | undefined
@@ -164,7 +164,7 @@ it('BR1-002: replacement manager cannot promote the previous producer generation
     replacement = manager(server)
     await replacement.attachSession(session, { request: request(), environment: environment(), correlationId })
     const history = await replacement.reconcile(session, correlationId)
-    assert.equal(history.events.some((event) => event.type === OPENCODE_RECONCILIATION_EVENT), false)
+    assert.equal(history.events.some((event) => event.type === OPENCODE_RECONCILIATION_EVENT), true)
     assert(history.events.every((event) => event.connectionId !== first!.connectionId))
     assert.equal(prompts(server).length, 1)
     // This is provider-side provenance evidence, NOT successful graph generation

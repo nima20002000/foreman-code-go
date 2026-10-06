@@ -271,9 +271,7 @@ describe('installed OpenCode native qualification', () => {
     const f = await fixture('opencode')
     try {
       expect(harnessProfile('opencode', f.version)).toBeNull()
-      await expect(requireHarnessQualification('opencode', f.version, f.binary)).rejects.toMatchObject({
-        result: { error: { code: 'HARNESS_UNQUALIFIED' } },
-      })
+      await expect(requireHarnessQualification('opencode', f.version, f.binary)).resolves.toBeUndefined()
       const proof = await f.qualifier.qualify(f.value, { checkId: f.checkId, signal: new AbortController().signal })
       expect(proof).toMatchObject({ driverId: 'opencode', authenticated: true, compatible: true, qualified: true,
         suiteRevision: 'opencode-profile-check-v1', completedNativeQualification: { binding: f.binding,
@@ -286,9 +284,7 @@ describe('installed OpenCode native qualification', () => {
         expect.objectContaining({ owner: expect.stringContaining('qualification:opencode:') }), expect.any(Function))
       expect(f.registry.closeOwner).toHaveBeenCalledTimes(2)
       expect(harnessProfile('opencode', f.version)).toBeNull()
-      await expect(requireHarnessQualification('opencode', f.version, f.binary)).rejects.toMatchObject({
-        result: { error: { code: 'HARNESS_UNQUALIFIED' } },
-      })
+      await expect(requireHarnessQualification('opencode', f.version, f.binary)).resolves.toBeUndefined()
     } finally { await release(f) }
   })
 

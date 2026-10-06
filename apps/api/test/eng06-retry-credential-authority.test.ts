@@ -59,6 +59,8 @@ function bindingFor(row: AuthorityRow) {
 }
 function database(row: AuthorityRow, binding = bindingFor(row), currentReviewLease = true) {
   const query = vi.fn(async (text: string) => {
+    if (text === 'select record from harness_executions where id=$1') return { rows: [{ record: row.execution }], rowCount: 1 }
+    if (text.startsWith('select operation_id,execution_id,run_id,node_id') || text.startsWith('select record from execution_native_placements')) return { rows: [], rowCount: 0 }
     if (text.includes('e.workflow_node_id as node_id')) return { rows: [{ run: row.run, version: row.version,
       execution: row.execution, node_id: row.execution.workflowNodeId }], rowCount: 1 }
     if (text.includes('from worker_credential_bindings b')) return { rows: [binding], rowCount: 1 }

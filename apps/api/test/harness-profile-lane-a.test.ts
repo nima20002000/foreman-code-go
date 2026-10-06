@@ -23,7 +23,7 @@ it('qualified Codex versions use the newest file declaration profile; unknown ve
   } finally { forgetQualifiedProfile('codex', version) }
 })
 
-it('qualified OpenCode versions retain reviewer message and permission lineage; unknown versions fail closed', () => {
+it('OpenCode reviewer permissions require native message lineage across version profiles', () => {
   const version = '1.18.33'
   const correlation = 'profile-review'
   const messageId = `msg_${createHash('sha256').update(correlation).digest('hex').slice(0, 24)}`
@@ -34,8 +34,9 @@ it('qualified OpenCode versions retain reviewer message and permission lineage; 
   const history = { events: [{ sequence: 0, type: 'message.updated', occurredAt: '2026-09-28T00:00:00.000Z',
     payload: { info: { id: 'assistant-tool', sessionID: session.nativeSessionId, role: 'assistant', parentID: messageId } } }],
     pendingInteractions: [request] }
-  assert.equal(reviewOwnsPermission(session, messageId, request, history), false)
-  assert.equal(new ReviewEvidenceTracker(session, correlation, messageId).snapshot().identityConflict, true)
+  assert.equal(reviewOwnsPermission(session, messageId, request, history), true)
+  assert.equal(reviewOwnsPermission(session, 'foreign-message', request, history), false)
+  assert.equal(new ReviewEvidenceTracker(session, correlation, messageId).snapshot().identityConflict, undefined)
   rememberQualifiedProfile('opencode', version, 'opencode-1.18.31')
   try {
     assert.equal(reviewOwnsPermission(session, messageId, request, history), true)

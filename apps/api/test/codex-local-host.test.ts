@@ -33,7 +33,7 @@ test('Codex chat host delivers verified read-only bytes and rejects mutable path
 
 test('write-mode Operator host stays outside the default temporary harness root', async () => {
   const root = await mkdtemp(join(homedir(), '.codex-host-guard-'))
-  const unsafe = await mkdtemp(join(tmpdir(), 'codex-host-guard-'))
+  const unsafe = await mkdtemp('/tmp/codex-host-guard-')
   try {
     const workingDirectory = join(root, 'operator')
     await mkdir(workingDirectory)
