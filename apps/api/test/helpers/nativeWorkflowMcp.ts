@@ -1,6 +1,7 @@
-import { chmod, copyFile, mkdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, rm, rmdir, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   APP_MCP_TOKEN, appLauncherPath, appLauncherTokenName, appMcpServerName, installAppLauncher,
   isSupportedAppMcpTokenName,
@@ -18,13 +19,20 @@ export async function configureNativeWorkflowMcp(input: {
 }): Promise<() => Promise<void>> {
   const previous = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
   const previousCodexHome = process.env.CODEX_HOME
-  const codexHomeDirectory = join(input.runtimeDirectory, 'codex')
+  // Codex's release build refuses helper aliases beneath TMPDIR.
+  const profileDirectory = fileURLToPath(new URL('../../../../.logs/native-cli/', import.meta.url))
+  await mkdir(profileDirectory, { recursive: true, mode: 0o700 })
+  const codexHomeDirectory = await mkdtemp(join(profileDirectory, 'codex-'))
   const restore = async () => {
     if (previous === undefined) delete process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
     else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previous
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME
     else process.env.CODEX_HOME = previousCodexHome
-    await rm(join(codexHomeDirectory, 'auth.json'), { force: true })
+    await rm(codexHomeDirectory, { recursive: true, force: true })
+    try { await rmdir(profileDirectory) }
+    catch (error) {
+      if (!['ENOENT', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+    }
   }
   try {
     const codex = await new CodexMcpConnections(input.codexBinary, input.projectDirectory)
@@ -34,7 +42,6 @@ export async function configureNativeWorkflowMcp(input: {
     const reference = appLauncherTokenName('codex', entry) ?? entry.bearer_token_env_var
     const codexToken = typeof reference === 'string' && isSupportedAppMcpTokenName(reference)
       ? reference : APP_MCP_TOKEN
-    await mkdir(codexHomeDirectory, { recursive: true, mode: 0o700 })
     // Reuse only the selected provider login; unrelated native configuration stays outside the fixture.
     await copyFile(join(previousCodexHome ?? join(homedir(), '.codex'), 'auth.json'),
       join(codexHomeDirectory, 'auth.json'))
