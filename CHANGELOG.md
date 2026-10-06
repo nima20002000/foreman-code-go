@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.32] - 2026-10-06
+## [0.0.34] - 2026-10-06
 
 ### Fixed
 
@@ -17,13 +17,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Snapshot deployed API and workspace dependencies into independent files so later source builds cannot mutate an installed release.
 - Read committed Run-only snapshots during native publication without taking a mutation-blocking Run lock; preserve live grants, immutable pins, locked execution detail and mutation/Stop checks.
 - Cover delayed read/write responses, persisted write readback, replacement connections after SQL cancellation and bounded missing replies in the PostgreSQL deadline regression.
-- Preserve the installed OpenCode MCP credential reference before switching to an invocation-owned launcher, keeping its effective configuration valid under native merge and preflight checks.
+- Preserve the supported OpenCode credential key when disposable test storage changes launcher identity, with unit and live native preflight coverage for legacy configuration merging.
 
 ### Changed
 
 - Verify compiled production hosting and scoped agent HTTP/MCP readback with denied callers after the noauth upgrade; verify credential-free human creation/edits in the actual browser without altering OS client attribution.
 - Retain redacted private Operator failure events and attempt independent test resource cleanup when another cleanup step fails.
 - Retain bounded database wait and blocker diagnostics during installed recovery verification.
+- Document OpenCode runtime isolation, private native storage and the Node/Bubblewrap requirements after the installed file-runtime upgrade.
 
 ## [0.0.40] - 2026-10-06
 
