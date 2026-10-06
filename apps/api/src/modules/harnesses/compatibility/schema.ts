@@ -202,8 +202,8 @@ export function checkOpenCodeSchema(document: ObjectValue): void {
     supportsEnum(document, rule.action, ['allow', 'ask', 'deny'])
     const prompt = operation(document, '/session/{sessionID}/prompt_async', 'post')
     const promptFields = properties(document, jsonSchema(document, prompt.requestBody))
-    fields(promptFields, ['model', 'agent', 'variant', 'parts'])
-    for (const [name, type] of [['model', 'object'], ['agent', 'string'], ['variant', 'string'], ['parts', 'array']] as const) {
+    fields(promptFields, ['model', 'agent', 'variant', 'system', 'parts'])
+    for (const [name, type] of [['model', 'object'], ['agent', 'string'], ['variant', 'string'], ['system', 'string'], ['parts', 'array']] as const) {
       supportsType(document, promptFields[name], type)
     }
     fields(properties(document, promptFields.model), ['providerID', 'modelID'])

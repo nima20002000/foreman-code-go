@@ -983,6 +983,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     }
     return {
       generation: `${state.connectionId}:${generation}`, nativeTurnId: idle ? null : child.native.currentTurnId ?? null,
+      inputContractVerified: this.readyGeneration === generation,
       matches: other => {
         try { current(); return other.id === child.id && other.parentExecutionId === child.parentExecutionId
           && other.parentAttemptKey === child.parentAttemptKey && isDeepStrictEqual(other.native, child.native)

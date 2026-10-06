@@ -109,6 +109,14 @@ if (process.argv.includes('--version')) {
     response['200'].content['application/json'].schema.required = []
     expect(() => checkOpenCodeSchema(schema)).not.toThrow()
   })
+  it('rejects a native prompt contract that cannot preserve child system instructions', () => {
+    const schema = openCodeSchema()
+    const body = schema.paths['/session/{sessionID}/prompt_async']!.post!.requestBody as {
+      content: { 'application/json': { schema: { properties: Record<string, unknown> } } }
+    }
+    delete body.content['application/json'].schema.properties.system
+    expect(() => checkOpenCodeSchema(schema)).toThrow('system')
+  })
   it.each(['/session/status', '/question/{requestID}/reject', '/session/{sessionID}/message/{messageID}'])(
     'names a missing OpenCode reconciliation or cleanup contract: %s', path => {
       const broken = openCodeSchema()

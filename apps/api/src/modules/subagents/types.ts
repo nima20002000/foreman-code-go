@@ -18,6 +18,8 @@ export type SubagentChange =
 export interface SubagentControlLease {
   generation: string; nativeTurnId: string | null
   capabilities?: Pick<SubagentCapabilities, 'sendInput' | 'interrupt' | 'executionResume' | 'inputTiming'>
+  /** Supplied only by the admitted manager after verifying its current native contracts. */
+  inputContractVerified?: boolean
   matches(child: RunSubagent): boolean
   assertCurrent(): void
   sendInput?(receipt: RunSubagentCommandReceipt, text: string): Promise<void>

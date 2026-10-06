@@ -14,8 +14,11 @@ const child = (parent: string): RunSubagent => ({ schemaVersion: 1, id: 'child',
 const receipt = (): RunSubagentCommandReceipt => ({ schemaVersion: 1, id: 'receipt', principalId: 'principal', operation: 'run_subagent_input_v1',
   commandId: 'command', workspaceId: 'workspace-1', runId: 'run-1', subagentId: 'child', expectedRevision: '1', nativeGeneration: 'captured',
   nativeTurnId: null, nativeCorrelationId: 'msg_child_command', state: 'dispatching', acceptedAt: '2026-10-04T00:00:00.000Z', updatedAt: '2026-10-04T00:00:00.000Z' })
-async function fixture() {
+async function fixture(version = '1.18.31') {
   const server = new FixtureServer(), native = manager(server)
+  server.expectedVersion = version
+  server.beforeRequest = path => new URL(path, 'http://fixture').pathname === '/global/health'
+    ? json({ healthy: true, version }) : undefined
   const session = await sessionFor(native)
   server.addSession('ses_child', session.nativeSessionId, { ...configuration(), nativeAgent: 'plan', variant: '' })
   const prompt = server.user('child-start', 'Child task', 'ses_child')
@@ -23,10 +26,23 @@ async function fixture() {
   prompt.info.system = 'Child instructions'
   server.assistant(String(prompt.info.id), 'Child complete', 'stop', true, 'ses_child')
   const record = child(session.nativeSessionId)
+  record.profile.providerVersion = version
   return { server, native, session, record }
 }
 
 describe('OpenCode exact-parent child control transport', () => {
+  it('verifies an idle input contract under a newer compatible native version', async () => {
+    const f = await fixture('2.0.0')
+    try {
+      const lease = f.native.subagentControl(f.record, () => {})!
+      expect(lease.inputContractVerified).toBe(true)
+      await lease.sendInput!(receipt(), 'Continue the child')
+      expect(f.server.calls.find(call => call.path.includes('prompt_async'))?.body).toMatchObject({
+        agent: 'plan', model: { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' },
+        variant: '', system: 'Child instructions',
+      })
+    } finally { await f.native.dispose() }
+  })
   it('sends an idle child prompt once with durable correlation without changing the parent turn', async () => {
     const f = await fixture()
     try {

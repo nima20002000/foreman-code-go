@@ -72,7 +72,7 @@ export function openCodeSchema() {
   paths['/session']!.post!.requestBody = body({ permission: { type: 'array', items: { type: 'object', properties: {
     permission: { type: 'string' }, pattern: { type: 'string' }, action: { type: 'string', enum: ['allow', 'ask', 'deny'] },
   } } } })
-  paths['/session/{sessionID}/prompt_async']!.post!.requestBody = body({ model: { type: 'object', properties: { providerID: { type: 'string' }, modelID: { type: 'string' } } }, agent: { type: 'string' }, variant: { type: 'string' }, parts: { type: 'array' } })
+  paths['/session/{sessionID}/prompt_async']!.post!.requestBody = body({ model: { type: 'object', properties: { providerID: { type: 'string' }, modelID: { type: 'string' } } }, agent: { type: 'string' }, variant: { type: 'string' }, system: { type: 'string' }, parts: { type: 'array' } })
   paths['/permission/{requestID}/reply']!.post!.requestBody = body({ reply: { type: 'string', enum: ['once', 'always', 'reject'] } })
   return { openapi: '3.1.0', paths }
 }

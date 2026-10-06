@@ -49,7 +49,7 @@ it('dispatches qualified native child input through authenticated MCP with scope
       workingDirectory: f.directory, runId, attempt: 1, configuration }, owner)
     resolved.beginStart!()
     const parent = await native.createSession(start)
-    assert.equal(parent.providerVersion, '1.18.31')
+    assert.equal(parent.providerVersion, server.expectedVersion)
     resolved.markResident!()
     await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
       values($1,$2,$3,$4,1,$5::jsonb)`, [executionId, runId, node.id, node.agentId, JSON.stringify({
