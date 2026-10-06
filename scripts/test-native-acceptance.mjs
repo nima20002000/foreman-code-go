@@ -115,6 +115,9 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
 }
 
 async function runNativeAcceptance(environment, files) {
+  const invocation = { directory: environment.FOREMAN_CODE_TEST_ROOT, token: environment.FOREMAN_CODE_TEST_OWNER }
+  const cleanupId = registerTestResourceCleanup(invocation,
+    { kind: 'native-acceptance-process-group', wrapperPid: process.pid, databaseUrl: environment.TEST_DATABASE_URL })
   const child = spawn(process.execPath, [
     'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
     'vitest', ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=1',
@@ -144,6 +147,7 @@ async function runNativeAcceptance(environment, files) {
     process.off('SIGTERM', terminate)
     await stopping
     await stopGroup(child.pid)
+    completeTestResourceCleanup(invocation, cleanupId)
   }
   if (cleanupError) throw cleanupError
   if (interrupted === 'SIGINT') return 130
