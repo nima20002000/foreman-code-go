@@ -63,7 +63,7 @@ async function removeDirectory(parent: FileHandle, name: string,
   try {
     signal.throwIfAborted()
     const metadata = await directory.stat()
-    if (metadata.uid !== process.getuid()) {
+    if (metadata.uid !== process.getuid!()) {
       throw new SourceError('SOURCE_DIRECTORY_NOT_PRIVATE', 'Quota workload directories must remain worker-owned.')
     }
     const filesystem = await identity(directory)

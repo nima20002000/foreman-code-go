@@ -84,7 +84,7 @@ export class ProductionDeviceRuntime {
     const extensions = (this.domains?.extensions ?? []).map((extension) => ({ ...extension,
       ...(extension.handle ? { handle: (payload, context) => this.track(() => extension.handle!(payload, context)) } : {}),
     } satisfies DeviceExtensionRegistration))
-    const endpoint = new DeviceEndpoint({ mainId, appVersion: API_APPLICATION_VERSION,
+    const endpoint: DeviceEndpoint = new DeviceEndpoint({ mainId, appVersion: API_APPLICATION_VERSION,
       auth: { authenticateDevice: (token, scope) => this.track(() => access.authenticateDevice(token, scope)),
         revalidateDevice: (principal, scope) => this.track(() => access.revalidateDevice(principal, scope)) },
       signMainIdentityProof: sign, extensions,

@@ -82,7 +82,7 @@ describe('actual installed worker mount availability, no physical acceptance', (
     const binding = { mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
       keyRevision: 1, authorizationRevision: 1, bootId, connectionEpoch: randomUUID(), connectionGeneration: 1 }
     const input={stateDirectory,pairing,bootId,configuration:null,approvedRoots:async()=>approved,
-      connection:()=>({ currentBinding:()=>binding, captureRequest:()=>null }),codexSuiteRevision:'source-test-current-suite'}
+      connection:()=>({ currentBinding:()=>binding, captureRequest:()=>undefined }),codexSuiteRevision:'source-test-current-suite'}
     const absent=await createInstalledWorkerDomains(input)
     expect(absent.extensions.some(value=>value.namespace==='job-inputs-v1')).toBe(false)
     expect(extensionDescriptors(absent.extensions).filter(value => value.namespace === 'byte-transfer-v1'))
@@ -108,7 +108,9 @@ describe('actual installed worker mount availability, no physical acceptance', (
       expect(batch.host?.memory).toMatchObject({ state: 'ok', value: { kind: 'host-used-estimate' } })
       if (batch.host?.memory.state !== 'ok' || !('availableBytes' in batch.host.memory.value)) throw new Error('Host memory unavailable')
       expect(batch.host.memory.value.availableBytes).toBeGreaterThan(0)
-      expect(batch.host.memory.value.availableBytes).toBeLessThanOrEqual(batch.host.memory.value.totalBytes)
+      const totalBytes = batch.host.memory.value.totalBytes
+      if (totalBytes === null) throw new Error('Host memory total unavailable')
+      expect(batch.host.memory.value.availableBytes).toBeLessThanOrEqual(totalBytes)
       await expect(telemetry.handle!({ ...payload, challenge: { ...payload.challenge,
         challengeId: randomUUID(), identity: { ...identity, host: { ...identity.host, bootId: randomUUID() } } } }, context))
         .rejects.toThrow()

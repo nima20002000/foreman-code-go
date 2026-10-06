@@ -48,13 +48,17 @@ export async function withPrivateFixtureDirectories<T>(work: () => Promise<T>): 
 }
 
 /** Private fixture bytes stay below the invocation's owned root. */
-export async function privateFixtureDirectory(prefix: string): Promise<string> {
+export async function privateFixtureRoot(): Promise<string> {
   ownedTestDatabaseUrl()
   const parent = join(process.env.FOREMAN_CODE_TEST_ROOT!, 'private-fixtures')
   await mkdir(parent, { recursive: true, mode: 0o700 })
   const handle = await openPrivateRoot(parent)
   await handle.close()
-  const directory = await mkdtemp(join(parent, prefix))
+  return parent
+}
+
+export async function privateFixtureDirectory(prefix: string): Promise<string> {
+  const directory = await mkdtemp(join(await privateFixtureRoot(), prefix))
   directories.getStore()?.add(directory)
   return directory
 }

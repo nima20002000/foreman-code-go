@@ -17,7 +17,7 @@ export async function writeVerificationQualificationContext(inputRoot: string, c
   try {
     const destination = anchored(directory, 'qualification-context.json')
     const previous = await lstat(destination).catch(error => { if (error.code === 'ENOENT') return null; throw error })
-    if (previous && (!previous.isFile() || previous.uid !== process.getuid() || previous.nlink !== 1)) {
+    if (previous && (!previous.isFile() || previous.uid !== process.getuid!() || previous.nlink !== 1)) {
       throw new Error('Previous qualification context is not a private regular file.')
     }
     const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o444)

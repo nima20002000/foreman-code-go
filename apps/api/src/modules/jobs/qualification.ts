@@ -196,7 +196,8 @@ export function createPhysicalJobRuntimeProducer(dependencies: PhysicalJobRuntim
 }
 
 /** Concrete physical command runner, never a caller-supplied observation/ready result. */
-export async function runQualificationCommand(owner: QualificationNativeOwner, binary: string, argv: string[],
+export async function runQualificationCommand(
+  owner: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess'>, binary: string, argv: string[],
   environment: Record<string, string>, signal: AbortSignal, timeoutMs = 30000) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 86400000) {
     throw new Error('Bounded qualification command deadline required.')

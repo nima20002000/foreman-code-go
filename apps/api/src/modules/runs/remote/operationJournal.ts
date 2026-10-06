@@ -792,7 +792,7 @@ export class RemoteOperationJournal {
       }
       let owner = data.jobOwners.find(value => value.operationId === operationId)
       if (!owner) {
-        owner = { operationId, qualificationOperationId: null, timedOut: false,
+        owner = { operationId, qualificationOperationId: null, timedOut: false, nonEntryConfirmed: false,
           connection: receipt.connection, launches: [], container: null }
         data.jobOwners.push(owner)
       }

@@ -11,7 +11,7 @@ import { ApprovedSourceSchema } from '@foreman-code/contracts/source-admission'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { BrowserAuthentication } from '../src/modules/browser-auth/service.js'
+import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { createProductionJobs } from '../src/modules/jobs/production.js'
 import { createJobRuntimeProfileService } from '../src/modules/jobs/runtimeProfileFactory.js'
@@ -128,8 +128,7 @@ describe('installed ordinary verification qualification through authenticated MC
       const profiles = runtime.profiles
       const origin = 'http://127.0.0.1:5173'
       app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-        browserAuth: new BrowserAuthentication(db.pool, access, { origin,
-          secret: 'physical-qualification-browser-secret'.repeat(3), ownerPrincipalId: owner.principal.id }),
+        localHuman: new PostgresLocalHumanAccess(db.pool, access), browserOrigin: origin,
         operator: { access, services: { commands, jobRuntimeProfiles: profiles, jobs: runtime.jobs } as OperatorServices } })
       registerJobRuntimeProfileRoutes(app, profiles)
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -151,15 +150,10 @@ describe('installed ordinary verification qualification through authenticated MC
       const pending = await operator.callTool({ name: 'job_runtime_qualification_request', arguments: request })
       expect(pending.isError, JSON.stringify(pending.content)).not.toBe(true)
       const approvalId = (pending.structuredContent as { approval: { id: string } }).approval.id
-      const browserHeaders = { host: '127.0.0.1:3000', origin }
-      const account = { email: 'physical-owner@example.test', password: 'physical-owner-test-password' }
-      expect((await app.inject({ method: 'POST', url: '/api/auth/setup', headers: browserHeaders, payload: account })).statusCode).toBe(201)
-      const login = await app.inject({ method: 'POST', url: '/api/auth/sign-in/email', headers: browserHeaders, payload: account })
-      const cookies = login.headers['set-cookie']
-      const cookie = (Array.isArray(cookies) ? cookies : [cookies!]).map(value => value.split(';')[0]).join('; ')
+      // The physical runtime approval is the local human's app action, not an MCP grant.
       const approval = await app.inject({ method: 'POST',
         url: `/api/management/workspaces/${workspaceId}/jobs/runtime-qualifications/${approvalId}/approve`,
-        headers: { ...browserHeaders, cookie }, payload: { commandId: randomUUID() } })
+        headers: { origin }, payload: { commandId: randomUUID() } })
       expect(approval.statusCode, approval.body).toBe(200)
       const run = { workspaceId, approvalId, commandId: randomUUID() }
       expect((await readonly.callTool({ name: 'job_runtime_qualification_run', arguments: run })).isError).toBe(true)

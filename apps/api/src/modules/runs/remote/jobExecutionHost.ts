@@ -232,8 +232,8 @@ export class RemoteJobExecutionHost {
       if (!receipt.native && await supervisor.stopExecution(receipt.execution, 0)
         && (await this.ports.journal.jobNativeOwner(receipt.intent.operationId))?.nonEntryConfirmed) {
         const evidence = this.terminalEvidence({ outcome: receipt.stopFence ? 'cancelled' : 'preparation_failed',
-          exitCode: null, signal: null, processStopped: true, recoveryRequired: false,
-          logError: true, logsTruncated: false, outputCollectionError: false }, true)
+          exitCode: null, signal: null, processStopped: true, supervisorIdentity: jobSupervisorIdentity(receipt.execution),
+          containerId: null, recoveryRequired: false, logError: true, logsTruncated: false, outputCollectionError: false }, true)
         await this.publish(await this.ports.journal.jobTerminal(receipt.intent.operationId, evidence))
       } else await this.ports.journal.jobUncertain(receipt.intent.operationId, 'Original OCI supervisor absent: nonexecution not proven')
       return this.ports.journal.jobStatus(receipt.intent.operationId)
@@ -251,7 +251,8 @@ export class RemoteJobExecutionHost {
     if (receipt.native || !retained?.nonEntryConfirmed || !jobContainerNonEntryObserved(retained)) return false
     await this.ports.journal.jobTerminal(receipt.intent.operationId, this.terminalEvidence({
       outcome: receipt.stopFence ? 'cancelled' : 'preparation_failed', exitCode: null, signal: null,
-      processStopped: true, recoveryRequired: false, logError: true, logsTruncated: false,
+      processStopped: true, supervisorIdentity: jobSupervisorIdentity(receipt.execution), containerId: null,
+      recoveryRequired: false, logError: true, logsTruncated: false,
       outputCollectionError: false }, true))
     return true
   }
