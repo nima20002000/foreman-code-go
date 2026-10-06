@@ -5,7 +5,9 @@ import type { NativeManagerResolutionContext } from '../src/modules/interactions
 import { workflowProfileSelection } from '../src/modules/harnesses/workflowProfileSelection.js'
 
 const mainId = '11111111-1111-4111-8111-111111111111'
-const savedProfile = { instanceId: 'saved-profile', instanceRevision: 'saved-revision', target: {
+const savedProfileId = '22222222-2222-4222-8222-222222222222'
+const placedProfileId = '33333333-3333-4333-8333-333333333333'
+const savedProfile = { instanceId: savedProfileId, instanceRevision: 'saved-revision', target: {
   hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
   harnessInstallationId: 'installed-sdk', installationFingerprint: 'installed-payload',
 } }
@@ -33,7 +35,7 @@ function placedContext(): NativeManagerResolutionContext {
     source: { revisionId: 'source-revision', manifestDigest: 'c'.repeat(64),
       materializationId: 'materialization', materializationDigest: 'd'.repeat(64) },
     payload: { kind: 'agent', agentId: value.agentId, agentConfigurationVersionId: value.configuration.id,
-      driverId: 'claude', driverRevision: '1', instanceId: 'placed-profile', instanceRevision: 'placed-revision',
+      driverId: 'claude', driverRevision: '1', instanceId: placedProfileId, instanceRevision: 'placed-revision',
       harnessInstallationId: 'placed-sdk', installationFingerprint: 'placed-payload',
       runtimeContractVersion: 1, protocolRevision: 'protocol', credentialScopeRefs: [] },
     bindingHash: 'e'.repeat(64),
@@ -53,7 +55,7 @@ it('leaves an unselected Claude workflow without invented profile authority', ()
 
 it('uses the accepted placement profile instead of the configuration selection', () => {
   expect(workflowProfileSelection(placedContext())).toEqual({
-    instanceId: 'placed-profile', instanceRevision: 'placed-revision', target: {
+    instanceId: placedProfileId, instanceRevision: 'placed-revision', target: {
       hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId,
       harnessInstallationId: 'placed-sdk', installationFingerprint: 'placed-payload',
     },
@@ -75,5 +77,5 @@ it.each(['run', 'agent', 'configuration', 'harness', 'directory'] as const)(
 it('retains the materialized working-directory binding for a placed execution', () => {
   const value = placedContext()
   value.workingDirectory = '/materialized'
-  expect(workflowProfileSelection(value, '/materialized')?.instanceId).toBe('placed-profile')
+  expect(workflowProfileSelection(value, '/materialized')?.instanceId).toBe(placedProfileId)
 })
