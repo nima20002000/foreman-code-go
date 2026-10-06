@@ -89,6 +89,8 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
         return runtime
       } })
     if (allocation.harness !== 'opencode') throw new Error('Expected the OpenCode allocation.')
+    let failure: unknown
+    const cleanupErrors: unknown[] = []
     try {
       const input = { ...request(harness), configuration: acceptedConfiguration,
         workingDirectory: workspace, runtimeDirectory: workspace }
@@ -213,6 +215,8 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
         await writeFile(join(turnRoot, 'foreign'), 'keep foreign bytes')
         await expect(turn!.finish('definite_rejection', AbortSignal.timeout(10_000))).rejects.toThrow()
         await allocation.manager.dispose()
+        // The persisted journal now owns cleanup; the retired bridge must not remove recovered paths.
+        turn = undefined
         const fresh = factories.allocate({ harness: 'opencode', role: 'agent-chat', workingDirectory: workspace,
           ownerAgentId: node.agentId, appMcpAccess: 'none',
           chatFiles: native => productionOpenCodeChatFiles(() => app, database.pool, config,
@@ -230,17 +234,27 @@ describe.skipIf(!postgresEnabled)('production OpenCode file host', { timeout: 60
           await fresh.manager.dispose()
         }
       }
+    } catch (error) {
+      failure = error
     } finally {
-      try {
-        await turn?.finish('definite_rejection', AbortSignal.timeout(10_000))
-      } finally {
+      const cleanup = [
+        () => turn?.finish('definite_rejection', AbortSignal.timeout(10_000)),
+        () => allocation.manager.dispose(),
+        () => app.close(),
+      ]
+      for (const close of cleanup) {
         try {
-          await allocation.manager.dispose()
-        } finally {
-          await app.close()
+          await close()
+        } catch (error) {
+          cleanupErrors.push(error)
         }
       }
     }
+    if (cleanupErrors.length) {
+      throw new AggregateError(failure === undefined ? cleanupErrors : [failure, ...cleanupErrors],
+        'Production file fixture cleanup failed.', { cause: failure ?? cleanupErrors[0] })
+    }
+    if (failure !== undefined) throw failure
   }
 
   it('recovers deferred cleanup in a fresh native manager after confirmed closure and preserves replacement paths', async () => {

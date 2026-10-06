@@ -200,7 +200,11 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
       ...(conversationId ? { attachments: [] } : {}),
     })
     const id = result.state.conversation!.id
-    await until(async () => issued.length === previous + 1, 10000)
+    await until(async () => {
+      const state = await chat.current!.readConversation(owner.principal, seeded.scope.workspaceId, id)
+      expect(state.turnState, state.error ?? 'Native inherited-file delivery failed.').not.toBe('error')
+      return issued.length === previous + 1
+    }, 10000)
     const active = issued.at(-1)!
     if (harness === 'opencode') {
       const native = nativeServer()
