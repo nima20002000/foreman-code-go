@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import Fastify from 'fastify'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { describe, expect, it, onTestFinished } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest'
 import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema } from '@foreman-code/contracts/files'
 import type { ApiConfig } from '../src/config.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -19,8 +19,14 @@ import { productionClaudeFileAdmission } from '../src/modules/harnesses/claudeSd
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.skipIf(!postgresEnabled)('Operator Claude publication recovery', () => {
+  let db: Awaited<ReturnType<typeof agent3Database>>
+  beforeAll(async () => {
+    db = await agent3Database()
+  })
+  afterAll(async () => {
+    await db?.close()
+  })
   it('reads finalized MCP publications from the originating Operator message after credential revocation', async () => {
-    const db = await agent3Database()
     const app = Fastify({ logger: false })
     app.setErrorHandler((error, _request, reply) => {
       if (error instanceof DomainError) {
@@ -31,7 +37,7 @@ describe.skipIf(!postgresEnabled)('Operator Claude publication recovery', () => 
     const client = new Client({ name: 'Operator file publication test', version: '1' })
     onTestFinished(async () => {
       try { await client.close() }
-      finally { try { await app.close() } finally { await db.close() } }
+      finally { await app.close() }
     })
     const config: ApiConfig = { host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
       database: { connectionString: process.env.TEST_DATABASE_URL!, maxConnections: 4,
