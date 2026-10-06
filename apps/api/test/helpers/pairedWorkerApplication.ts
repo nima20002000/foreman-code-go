@@ -27,6 +27,7 @@ import { codexQualificationSuite } from '../../src/modules/harnesses/qualificati
 import { opencodeQualificationSuite } from '../../src/modules/harnesses/qualification/suites/opencode.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
+import { installFixtureMcp } from './installFixtureMcp.js'
 
 const execute = promisify(execFile)
 const actions: ManagementAction[] = ['settings:read', 'settings:update', 'harnesses:read', 'harnesses:update',
@@ -48,11 +49,9 @@ async function copyProfileFile(source: string, destination: string) {
 
 async function workerEnvironment(home: string) {
   const original = process.env.HOME ?? homedir()
-  const config = process.env.XDG_CONFIG_HOME ?? join(original, '.config')
   const data = process.env.XDG_DATA_HOME ?? join(original, '.local/share')
   const codexProfile = join(home, '.codex')
   const claudeProfile = join(home, '.claude')
-  const openCodeConfig = join(home, '.config/opencode')
   const workerData = join(home, '.local/share')
   const environment: NodeJS.ProcessEnv = { ...process.env, HOME: home, CODEX_HOME: codexProfile,
     CLAUDE_CONFIG_DIR: claudeProfile, XDG_CONFIG_HOME: join(home, '.config'),
@@ -64,13 +63,11 @@ async function workerEnvironment(home: string) {
     delete environment[name]
   }
   const codex = process.env.CODEX_HOME ?? join(original, '.codex')
-  for (const name of ['auth.json', 'config.toml', 'models_cache.json']) {
+  for (const name of ['auth.json', 'models_cache.json']) {
     await copyProfileFile(join(codex, name), join(codexProfile, name))
   }
   await copyProfileFile(join(process.env.CLAUDE_CONFIG_DIR ?? join(original, '.claude'), '.credentials.json'),
     join(claudeProfile, '.credentials.json'))
-  await copyProfileFile(join(process.env.OPENCODE_CONFIG_DIR ?? join(config, 'opencode'), 'opencode.json'),
-    join(openCodeConfig, 'opencode.json'))
   await copyProfileFile(join(data, 'opencode/auth.json'), join(workerData, 'opencode/auth.json'))
   return { environment, claudeProfile }
 }
@@ -113,8 +110,10 @@ async function certificates(root: string) {
   return { certificateFile: certificate, privateKeyFile: key, trustCertificateFile: ca }
 }
 
-async function installerCommand(file: string, args: string[], environment: NodeJS.ProcessEnv, input?: string) {
-  const child = spawn(process.execPath, [file, ...args], { env: environment, stdio: ['pipe', 'pipe', 'pipe'] })
+async function installerCommand(file: string, args: string[], environment: NodeJS.ProcessEnv,
+  options: { input?: string; nodeArgs?: string[] } = {}) {
+  const child = spawn(process.execPath, [...(options.nodeArgs ?? []), file, ...args],
+    { env: environment, stdio: ['pipe', 'pipe', 'pipe'] })
   let output = ''
   let bytes = 0
   child.stdout.on('data', (chunk: Buffer) => {
@@ -123,7 +122,7 @@ async function installerCommand(file: string, args: string[], environment: NodeJ
     else output += chunk.toString('utf8')
   })
   child.stderr.resume()
-  child.stdin.end(input)
+  child.stdin.end(options.input)
   const timer = setTimeout(() => child.kill('SIGTERM'), 90_000)
   try {
     await new Promise<void>((done, fail) => {
@@ -151,6 +150,15 @@ export async function pairedWorkerApplication() {
   let workerClosed: Promise<void> | undefined
   let workerExit: number | null | undefined
   let client: Client | undefined
+  let deniedClient: Client | undefined
+  const previousClaudeProfile = process.env.CLAUDE_CONFIG_DIR
+  const previousCodexProfile = process.env.CODEX_HOME
+  const previousMcpDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
+  const openCodeEnvironmentNames = ['OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'OPENCODE_DB',
+    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME'] as const
+  const previousOpenCodeEnvironment = Object.fromEntries(openCodeEnvironmentNames.map(name => [name, process.env[name]]))
+  const mainClaudeProfile = join(root, 'main-claude-profile')
+  const mainCodexProfile = join(root, 'main-codex-profile')
   let removed = false
   const close = async () => {
     const failures: unknown[] = []
@@ -173,10 +181,22 @@ export async function pairedWorkerApplication() {
     })
     if (worker && workerExit !== 0) failures.push(new Error('The owned Worker did not close successfully.'))
     if (client) await release(() => client!.close())
+    if (deniedClient) await release(() => deniedClient!.close())
     if (production) await release(() => production!.app.close())
     if (checkpoints) await release(() => checkpoints!.close())
     if (database) await release(() => database!.close())
     if (!failures.length && !removed) {
+      if (previousClaudeProfile === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeProfile
+      if (previousCodexProfile === undefined) delete process.env.CODEX_HOME
+      else process.env.CODEX_HOME = previousCodexProfile
+      if (previousMcpDirectory === undefined) delete process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
+      else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previousMcpDirectory
+      for (const name of openCodeEnvironmentNames) {
+        const value = previousOpenCodeEnvironment[name]
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
       await rm(root, { recursive: true, force: true })
       removed = true
     }
@@ -199,6 +219,26 @@ export async function pairedWorkerApplication() {
     const config = loadConfig(applicationEnvironment)
     database = createDatabase(config.database)
     checkpoints = createCheckpointStore(databaseUrl, config.checkpoints.schema, config.database)
+    await copyProfileFile(join(previousClaudeProfile ?? join(homedir(), '.claude'), '.credentials.json'),
+      join(mainClaudeProfile, '.credentials.json'))
+    for (const name of ['auth.json', 'models_cache.json']) {
+      await copyProfileFile(join(previousCodexProfile ?? join(homedir(), '.codex'), name), join(mainCodexProfile, name))
+    }
+    const mainOpenCode = join(root, 'main-opencode-profile')
+    await copyProfileFile(join(previousOpenCodeEnvironment.XDG_DATA_HOME ?? join(homedir(), '.local/share'), 'opencode/auth.json'),
+      join(mainOpenCode, 'data/opencode/auth.json'))
+    await copyProfileFile(join(previousOpenCodeEnvironment.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'opencode/models.json'),
+      join(mainOpenCode, 'cache/opencode/models.json'))
+    process.env.CLAUDE_CONFIG_DIR = mainClaudeProfile
+    process.env.CODEX_HOME = mainCodexProfile
+    process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(root, 'main-app-mcp')
+    delete process.env.OPENCODE_CONFIG
+    process.env.XDG_CONFIG_HOME = join(mainOpenCode, 'config')
+    process.env.XDG_DATA_HOME = join(mainOpenCode, 'data')
+    process.env.XDG_CACHE_HOME = join(mainOpenCode, 'cache')
+    process.env.XDG_STATE_HOME = join(mainOpenCode, 'state')
+    process.env.OPENCODE_CONFIG_DIR = join(mainOpenCode, 'config/opencode')
+    process.env.OPENCODE_DB = join(mainOpenCode, 'data/opencode/opencode.db')
     for (const path of [config.workspaceStorageRoot!, config.fileStorageRoot!, config.harnesses.workspaceRoot]) {
       await mkdir(path, { mode: 0o700 })
     }
@@ -220,10 +260,26 @@ export async function pairedWorkerApplication() {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', baseUrl), {
       authProvider: { token: async () => writer.token },
     }))
+    const denied = await access.issue({ name: 'Native controls reader', audience: 'operator',
+      grants: [{ actions: ['capabilities:read'], scope: {} }], expiresAt: new Date(Date.now() + 6 * 60 * 60_000) })
+    deniedClient = new Client({ name: 'Native controls denied caller', version: '1' })
+    await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', baseUrl), {
+      authProvider: { token: async () => denied.token },
+    }))
     const tool = async (name: string, args: Record<string, unknown>) => {
       const result = await client!.callTool({ name, arguments: args }, { timeout: 180000 })
       assert.ok(!result.isError, `Product tool ${name} failed.`)
       return result.structuredContent
+    }
+    const deniedTool = (name: string, args: Record<string, unknown>) =>
+      deniedClient!.callTool({ name, arguments: args }, { timeout: 180000 })
+    const request = async (path: string, body?: unknown) => {
+      const response = await fetch(new URL(path, baseUrl), {
+        headers: { origin: browserOrigin, 'content-type': 'application/json' },
+        credentials: 'omit', signal: AbortSignal.timeout(180000),
+        ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }) })
+      assert.ok(response.ok, `Fixture product request failed: ${response.status}`)
+      return response.json() as Promise<unknown>
     }
     const identity = RuntimeIdentitySchema.parse(await fetch(new URL('/health/identity', baseUrl))
       .then(response => response.json()))
@@ -247,7 +303,8 @@ export async function pairedWorkerApplication() {
     const approval = DeviceSetupApproveResultSchema.parse(await tool('device_setup_code_create', {
       commandId: randomUUID(), identityRequestCode: code, endpoint, scopes: ['connect', 'heartbeat', 'metrics:report'],
     }))
-    await installerCommand(cli, ['pair', '--state', state, '--enrollment-stdin'], environment, approval.enrollmentCode)
+    await installerCommand(cli, ['pair', '--state', state, '--enrollment-stdin'], environment,
+      { input: approval.enrollmentCode })
     const pairing = await loadWorkerPairing(state)
     assert.equal(pairing.mainId, identity.installationId)
     assert.equal(pairing.deviceId, approval.registration.deviceId)
@@ -265,6 +322,17 @@ export async function pairedWorkerApplication() {
       assert.ok(value?.launcher.resolvedLauncher, `The selected ${driver} installation is unavailable.`)
       return value.launcher.resolvedLauncher
     }
+    const mcpInput = { databaseUrl, endpoint: `${baseUrl}/mcp`, directory: project,
+      codexBinary: installedHarness('codex'), openCodeBinary: installedHarness('opencode') }
+    const mainMcpInput = join(root, 'main-mcp-install.json')
+    await writeFile(mainMcpInput, JSON.stringify({ ...mcpInput, directory: config.harnesses.workspaceRoot,
+      recoveryRoot: join(root, 'main-mcp-processes') }), { mode: 0o600, flag: 'wx' })
+    await installFixtureMcp(mainMcpInput)
+    const workerMcpInput = join(root, 'worker-mcp-install.json')
+    await writeFile(workerMcpInput, JSON.stringify({ ...mcpInput,
+      recoveryRoot: join(root, 'worker-mcp-processes') }), { mode: 0o600, flag: 'wx' })
+    await installerCommand(fileURLToPath(new URL('./installFixtureMcp.ts', import.meta.url)), [workerMcpInput],
+      environment, { nodeArgs: ['--import', 'tsx'] })
     const selection = InstalledWorkflowConfigurationSchema.parse({ schemaVersion: 1,
       codexBinary: installedHarness('codex'), expectedVersion: '0.154.0', payloadPaths: [],
       appMcpLauncher: join(home, '.local/share/graphql/mcp/launcher.mjs'),
@@ -288,8 +356,9 @@ export async function pairedWorkerApplication() {
     }
     assert.equal(inventory?.hostMetadata?.connection?.phase, 'ready', 'The installed Worker did not connect.')
     assert.equal(inventory.hostMetadata.applicationInstallationId, pairing.workerInstallationId)
-    return { root, baseUrl, browserOrigin, identity, hostRef, roots, inventory, tool, close, sourceCommit,
-      workerProfile: claudeProfile }
+    return { root, baseUrl, browserOrigin, identity, hostRef, roots, inventory, tool, deniedTool, request, close,
+      sourceCommit, mainProfile: mainClaudeProfile, workerProfile: claudeProfile,
+      mainProjects: config.workspaceStorageRoot! }
   } catch (error) {
     try { await close() } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'Paired native fixture setup and cleanup failed.', { cause: cleanupError })
