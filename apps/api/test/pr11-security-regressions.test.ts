@@ -15,7 +15,7 @@ import { McpDetectionService, WorkerLaunchCredentialService, endpointMatches, ty
 import { ManagedOpenCodeServer } from '../src/modules/harnesses/opencodeServer.js'
 import { inspectOpenCodeMcpConfiguration } from '../src/modules/harnesses/opencodeMcpConfiguration.js'
 import { CodexAppServerSessionManager, type CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
-import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { fixtureProtocol } from './fixtures/codex-test-helpers.js'
 import { runCommand, runJsonlProcess } from '../src/modules/harnesses/process.js'
@@ -271,7 +271,7 @@ process.exit(${exitCode});
         const dependencies: Extract<CodexSessionDependencies, { mode: 'replay' }> = {
           mode: 'replay', environment: () => ({ ...process.env }), runCommand,
           qualify: async () => ({ binary, identity: 'recorded', protocol: fixtureProtocol,
-            providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded',
+            providerVersion: RECORDED_CODEX_VERSION, schemaManifestSha256: 'recorded',
             stableSchemaGitBlob: 'recorded', referenceSchemaManifestSha256: 'recorded' }),
           assertUnchanged: forbidden, qualifyModel: forbidden, transport: forbidden, withDiagnostics: forbidden,
           id: () => 'recorded', now: () => new Date(), schedule: setTimeout, cancelTimer: clearTimeout,

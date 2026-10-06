@@ -141,6 +141,24 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
       const current = await actual(signal, { purpose: 'observation', session, start })
       return current.attachSessionForObservation!(session, start, signal)
     }
+    manager.recoverEnvironment = async signal => (await actual(signal)).recoverEnvironment?.(signal)
+    manager.captureNativeOutputCall = async (session, toolName, args, signal) => {
+      signal?.throwIfAborted()
+      lifetime.signal.throwIfAborted()
+      const current = allocation?.manager
+      if (!current?.captureNativeOutputCall) throw new DomainError('HARNESS_NATIVE_OUTPUT_CAPTURE_UNAVAILABLE',
+        'The original admitted native output owner is not allocated.', 409)
+      const captured = await current.captureNativeOutputCall(session, toolName, args,
+        signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal)
+      const assertCurrent = () => {
+        lifetime.signal.throwIfAborted()
+        if (allocation?.manager !== current) throw new DomainError('HARNESS_NATIVE_OUTPUT_CAPTURE_UNAVAILABLE',
+          'The original admitted native output owner changed.', 409)
+        captured.assertCurrent()
+      }
+      assertCurrent()
+      return { ...captured, assertCurrent }
+    }
     manager.historyPage = async (session, before, signal) => {
       const current = await actual(signal)
       return current.historyPage ? current.historyPage(session, before, signal) : current.history(session, signal)

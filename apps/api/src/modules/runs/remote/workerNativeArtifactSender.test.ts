@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentFilePublishInput } from '@foreman-code/contracts/files'
 import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
+import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import type { TransferContext, TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { workflowArtifactTransferManifestDigest } from '@foreman-code/contracts/workflow-artifact-transfer-node'
@@ -15,15 +16,17 @@ import { DistributedArtifactPublicationService, type AcceptedArtifactPublication
 import type { DistributedPublicationLink } from '../../files/distributed/publicationLedger.js'
 import { WorkerNativeOutputRegistry } from './workerNativeOutputRegistry.js'
 import { WorkerNativeArtifactSender, type WorkerNativeArtifactApplication } from './workerNativeArtifactSender.js'
+import { createInstalledNativeOutputStorage, createNativeOutputBudgetLedger,
+  type NativeOutputBudgetLedger } from './installedNativeOutputStorage.js'
 
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
-// Synthetic accepted placement/admission/native callback/sandbox/budget ports ONLY.
-// Real files, registry, sender, receiver, canonical FileByteStorage/publication
-// are exercised. No fixture claims DB, authenticated endpoint or native evidence.
-async function fixture(body = Buffer.from('# tool-created workflow output\n'), chunkBytes = 4) {
+// Authority and native protection are fixture ports. Shared-budget scenarios use
+// the installed ledger; registry, sender, receiver and canonical storage use real bytes.
+async function fixture(body = Buffer.from('# tool-created workflow output\n'), chunkBytes = 4,
+  sharedBudget?: { rootDirectory: string; context: TransferContext }) {
   // Avoid the scheduler's group-writable TMPDIR ancestors. This actual Linux
   // sticky-/tmp child is owned 0700 and still uses the full root qualifier.
   const f = await fileToolFixture(), root = await mkdtemp('/tmp/worker-native-sender-test-')
@@ -35,7 +38,8 @@ async function fixture(body = Buffer.from('# tool-created workflow output\n'), c
   if (f.scope.chat.kind !== 'agent') throw new Error('fixture')
   f.scope.chat.runId = randomUUID(); f.scope.chat.executionId = randomUUID()
   const token = await f.issue()
-  const context: TransferContext = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
+  const context: TransferContext = sharedBudget?.context ?? { mainId: randomUUID(), deviceId: randomUUID(),
+    workerInstallationId: randomUUID(), keyRevision: 1,
     authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID() }
   const rootBinding = { rootId: randomUUID(), rootBindingRevision: 1 }
   const intent: DispatchIntent = { schemaVersion: 1, protocolVersion: 1, mainId: context.mainId, runId: f.scope.chat.runId,
@@ -84,12 +88,30 @@ async function fixture(body = Buffer.from('# tool-created workflow output\n'), c
     publish: vi.fn(async input => publisher.publishAccepted(accepted, input.transferId, input.publication, 'mcp')),
   }
   const callback = { assertCurrent: vi.fn(async () => {}) }, call = { assertCurrent: vi.fn(async () => {}) }, protectedStorage = vi.fn(async () => {})
+  const limits = { maxDiskBytes: 2 * MAX_FILE_BYTES, maxSnapshotBytes: 2 * MAX_FILE_BYTES,
+    maxCommandRecords: 2 * BYTE_TRANSFER_POLICY.maxRecords }
+  const nativeTurnId = f.context.turnId
+  if (!nativeTurnId) throw new Error('Fixture requires a native turn')
+  const owner = { intent, binding: { ...context, connectionGeneration: 1 },
+    session: { harness: 'codex' as const, providerVersion: 'codex-cli 0.154.0', nativeSessionId: f.context.nativeSessionId },
+    nativeTurnId, runtimeGeneration: 1 }
+  let budget: NativeOutputBudgetLedger | undefined
+  if (sharedBudget) {
+    await mkdir(sharedBudget.rootDirectory, { recursive: true, mode: 0o700 })
+    budget = await createNativeOutputBudgetLedger({ rootDirectory: sharedBudget.rootDirectory,
+      installation: { mainId: context.mainId, deviceId: context.deviceId, workerInstallationId: context.workerInstallationId },
+      limits, initializeNewStore: true })
+  }
+  const storage = budget ? await createInstalledNativeOutputStorage({ rootDirectory: root, owner, limits, budget,
+    assertCurrent: callback.assertCurrent,
+    protection: { assertProtected: protectedStorage, assertQuiescent: async () => {} } })
+    : { rootDirectory: root, assertProtected: protectedStorage,
+      reserve: async () => ({ assertCurrent: async () => {}, release: async () => {} }) }
   // Existing private root is a test stand-in. No native process is launched or
   // claimed to be fenced by this permissive qualification callback.
   const registry = await WorkerNativeOutputRegistry.open({ configuration: { harness: 'codex', model: 'unit-only', reasoningEffort: 'low',
     sandbox: 'workspace-write', serviceTier: 'standard' }, scope: f.scope, callback, authority: { assertCurrent: async () => { await authority.authorize() } },
-    storage: { rootDirectory: root, assertProtected: protectedStorage,
-      reserve: async () => ({ assertCurrent: async () => {}, release: async () => {} }) },
+    storage,
     publisher: { publish: (input, originalCall, signal) => sender.publish(input, originalCall, signal) } })
   cleanups.push(() => registry.withdraw())
   const connection = { current: vi.fn(async () => context), retryable: (error: unknown) => error instanceof Error && error.message === 'carrier lost' }
@@ -105,10 +127,46 @@ async function fixture(body = Buffer.from('# tool-created workflow output\n'), c
   const publication: AgentFilePublishInput = { ...descriptor, scope: f.scope }
   const publish = () => dispatch({ operation: 'publish', publication: descriptor })
   return { f, root, intent, placement, rootBinding, context, body, registry, callback, call, protectedStorage, sender, main, receiver, connection,
-    files, authority, publication, publish, admissions, links }
+    files, authority, publication, publish, admissions, links, budget, owner, limits }
 }
 
 describe('original worker-native artifact sender', () => {
+  it('publishes simultaneous declared-output turns and releases the shared installation budget', async () => {
+    const rootDirectory = await mkdtemp('/tmp/concurrent-native-output-budget-')
+    cleanups.push(() => rm(rootDirectory, { recursive: true, force: true }))
+    const context: TransferContext = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
+      keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID() }
+    const sharedBudget = { rootDirectory, context }
+    const turns = await Promise.all([
+      fixture(Buffer.from('# first declared report\n'), 64 * 1024, sharedBudget),
+      fixture(Buffer.from('# second declared report\n'), 64 * 1024, sharedBudget),
+    ])
+    const replies = await Promise.all(turns.map(turn => turn.publish()))
+    await Promise.all(turns.map(async (turn, index) => {
+      const reply = replies[index]!
+      if (reply.operation !== 'publish') throw new Error('Expected publication')
+      expect(reply.result.value.revision).toMatchObject({ sha256: hash(turn.body), byteSize: turn.body.length })
+      const downloaded = await turn.files.download(turn.f.principal,
+        { kind: 'agent', workspaceId: 'workspace-a', conversationId: 'conversation-a' },
+        { fileId: reply.result.value.file.fileId, revisionId: reply.result.value.revision.revisionId })
+      const chunks: Buffer[] = []
+      for await (const chunk of downloaded.stream) chunks.push(Buffer.from(chunk))
+      expect(Buffer.concat(chunks)).toEqual(turn.body)
+    }))
+    const first = turns[0]!
+    const recovered = await createNativeOutputBudgetLedger({ rootDirectory,
+      installation: { mainId: context.mainId, deviceId: context.deviceId, workerInstallationId: context.workerInstallationId },
+      limits: first.limits })
+    const extra = { owner: first.owner, limits: first.limits, artifactId: randomUUID(),
+      requested: { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 } }
+    await expect(recovered.reserve(extra)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_STORAGE_UNAVAILABLE' })
+    await Promise.all(turns.map(turn => turn.registry.withdraw()))
+    const reclaimed = await recovered.reserve({ ...extra, artifactId: randomUUID(), requested: first.limits })
+    await reclaimed.assertCurrent()
+    await reclaimed.release()
+    expect(turns.map(turn => turn.links.size)).toEqual([1, 1])
+  }, 60_000)
+
   it('transfers real tool-created bytes, verifies receipt and publishes exact canonical pins', async () => {
     const t = await fixture(), reply = await t.publish()
     if (reply.operation !== 'publish') throw new Error('fixture')

@@ -3,7 +3,7 @@ import { makeCurrentWorkflowFixture } from './currentFixture.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
 import {
   WorkHandoffResultSchema, WorkHandoffUsageSchema, WorkNoticeSchema, WorkReturnSchema,
-  canAdmitWorkHandoff, consumesWorkHandoffSlot, parseWorkHandoffResult,
+  canAdmitWorkHandoff, consumesWorkHandoffSlot, parseWorkHandoffResult, parseWorkHandoffArtifactResult,
   workConnectionForRequest, workLimitNoticeText,
 } from './handoffs.js'
 
@@ -89,6 +89,31 @@ describe('FLOW-01 versioned work handoff contract', () => {
     expect(reverse.definition.nodes[1]?.choice?.outcomes[0]?.outcome).toBe('send_back')
   })
 
+  it('supports handoff and declared artifacts in one original native result', () => {
+    const declaration = { version: 1 as const, outputKeys: ['report'] }
+    const result = { routing: { kind: 'request', outcome: 'review' },
+      data: { latestDeliverable: { revision: 1 }, remainingFindings: [] },
+      artifactOutputs: { version: 1, outputs: [{ outputKey: 'report', commandId: 'original-publication' }] } }
+    const native = { outcome: 'succeeded', output: { text: JSON.stringify(result) } }
+    expect(parseWorkHandoffResult(native)).toEqual(result)
+    expect(parseWorkHandoffArtifactResult(native, declaration)).toEqual(result)
+    expect(() => parseWorkHandoffArtifactResult(native, { ...declaration, outputKeys: ['other'] }))
+      .toThrow('WORKFLOW_ARTIFACT_OUTPUT_KEYS_MISMATCH')
+    expect(() => parseWorkHandoffArtifactResult({ ...native, output: result }, declaration))
+      .toThrow('WORKFLOW_ARTIFACT_NATIVE_TEXT_REQUIRED')
+    const missing = { routing: result.routing, data: result.data }
+    expect(() => parseWorkHandoffArtifactResult({ ...native, output: { text: JSON.stringify(missing) } }, declaration))
+      .toThrow()
+    expect(WorkHandoffResultSchema.safeParse({ ...result, artifactOutputs: { ...result.artifactOutputs,
+      outputs: [{ ...result.artifactOutputs.outputs[0], fileId: 'invented' }] } }).success).toBe(false)
+    const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
+      ...fixture.version.definition, handoffs: { contractVersion: 1 },
+      nodes: fixture.version.definition.nodes.map((node, index) => index ? node : { ...node, artifactOutputs: declaration }),
+    } })
+    const savedNode = version.definition.nodes[0]
+    expect(savedNode?.kind !== 'job' && savedNode?.artifactOutputs).toEqual(declaration)
+  })
+
   it('charges only a new business work request and requires truthful return and notice shapes', () => {
     expect(['work_request', 'work_return', 'permission_exchange', 'approval_exchange',
       'technical_retry', 'replay', 'progress', 'system_notice', 'delivery_acknowledgement']
@@ -112,6 +137,8 @@ describe('FLOW-01 versioned work handoff contract', () => {
     expect(WorkReturnSchema.safeParse({ ...returned, latestDeliverable: null }).success).toBe(false)
     const { continuationActivationId: _unused, ...withoutContinuation } = returned
     expect(WorkReturnSchema.safeParse({ ...withoutContinuation, outcome: 'accepted', remainingFindings: [] }).success).toBe(true)
+    expect(WorkReturnSchema.parse({ ...withoutContinuation, outcome: 'accepted' }).remainingFindings)
+      .toEqual(result.data.remainingFindings)
     expect(WorkReturnSchema.safeParse({ ...returned, outcome: 'accepted' }).success).toBe(false)
     void _unused
     const notice = { scope: fixture.scope, noticeId: 'notice-3', requesterActivationId: 'activation-b-3',

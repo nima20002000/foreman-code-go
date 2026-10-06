@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { it } from 'vitest'
 
 import { ManagedOpenCodeServer } from '../src/modules/harnesses/opencodeServer.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { classifyOpenCodeDelivery, createOpenCodeBoundFetch, type OpenCodeHttpEvidence } from '../src/modules/harnesses/opencodeClient.js'
 import { environment, errorCode } from './opencode-fixtures.js'
 
@@ -21,6 +22,8 @@ if(args.includes('--version')) {
  if(fs.existsSync(dir+'/hang-version')) setInterval(()=>{},1000);
  else console.log('1.18.31');
 } else {
+ let pending=true;
+ fs.appendFileSync(dir+'/server-starts','started\\n');
  const username=process.env.OPENCODE_SERVER_USERNAME || 'opencode';
  const auth='Basic '+Buffer.from(username+':'+process.env.OPENCODE_SERVER_PASSWORD).toString('base64');
  const server=http.createServer((request,response)=>{
@@ -32,6 +35,8 @@ if(args.includes('--version')) {
    const send=()=>response.end(JSON.stringify({healthy:true,version:'1.18.31'}));
    if(fs.existsSync(dir+'/delay-health')) setTimeout(send,250); else send();
   } else if(request.url==='/test-env') response.end(JSON.stringify({token:process.env.GRAPHQL_MCP_TOKEN??null,username,pid:process.pid}));
+  else if(request.url==='/permission') response.end(JSON.stringify(pending?[{id:'original-request',sessionID:'original-session'}]:[]));
+  else if(request.url==='/response' && request.method==='POST') {pending=false;response.end('{}');}
   else if(request.url==='/spawn-child') {
    const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});
    fs.writeFileSync(dir+'/descendant.pid',String(child.pid));
@@ -68,6 +73,72 @@ async function expectStopped(pid: number) {
   }
   assert.fail(`Fixture process ${pid} remained running`)
 }
+
+it.skipIf(process.platform !== 'linux')('adopts the original authenticated OpenCode daemon and pending callback through repeated restarts', async () => {
+  const { directory, binary } = await fixture()
+  const registry = new NativeProcessRegistry(join(directory, 'registry'))
+  const scope = registry.scope('execution:original-workflow')
+  const options = { binary, workingDirectory: directory, ownerAgentId: 'agent-1',
+    processRecovery: scope, restartDetachable: true as const, environment: environment('original-scoped-token') }
+  const original = new ManagedOpenCodeServer(options)
+  const adopted = new ManagedOpenCodeServer({ ...options, processRecovery: registry.scope(scope.owner) })
+  const resumed = new ManagedOpenCodeServer({ ...options, processRecovery: registry.scope(scope.owner) })
+  let pid: number | undefined
+  try {
+    const initial = await (await original.request('/test-env')).json() as { pid: number; token: string }
+    pid = initial.pid
+    const pending = await (await original.request('/permission')).json()
+    assert.equal(await original.detachForRestart(), true)
+    await original.dispose()
+    assert.equal(await isRunning(pid), true)
+    assert.deepEqual(adopted.recoverEnvironment(), options.environment)
+    await adopted.ensure()
+    assert.equal(adopted.generation, original.generation)
+    assert.deepEqual(await (await adopted.request('/test-env')).json(), initial)
+    assert.deepEqual(await (await adopted.request('/permission')).json(), pending)
+    assert.equal(await adopted.detachForRestart(), true)
+    await adopted.dispose()
+    assert.deepEqual(resumed.recoverEnvironment(), options.environment)
+    assert.deepEqual(await (await resumed.request('/test-env')).json(), initial)
+    assert.deepEqual(await (await resumed.request('/permission')).json(), pending)
+    await (await resumed.request('/response', { method: 'POST' })).body?.cancel()
+    assert.deepEqual(await (await resumed.request('/permission')).json(), [])
+    assert.deepEqual((await readFile(join(directory, 'server-starts'), 'utf8')).trim().split('\n'), ['started'])
+    await resumed.dispose()
+    await expectStopped(pid)
+    assert.equal(await registry.closeOwner(scope.owner), true)
+  } finally {
+    await Promise.allSettled([original.dispose(), adopted.dispose(), resumed.dispose()])
+    await registry.closeOwner(scope.owner)
+    if (pid) await expectStopped(pid)
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 30000)
+
+it.skipIf(process.platform !== 'linux')('rejects a changed OpenCode restart binding without allocating another daemon', async () => {
+  const { directory, binary } = await fixture()
+  const registry = new NativeProcessRegistry(join(directory, 'registry'))
+  const scope = registry.scope('execution:bound-workflow')
+  const options = { binary, workingDirectory: directory, ownerAgentId: 'agent-1',
+    processRecovery: scope, restartDetachable: true as const, environment: environment() }
+  const original = new ManagedOpenCodeServer(options)
+  let pid: number | undefined
+  try {
+    pid = (await (await original.request('/test-env')).json() as { pid: number }).pid
+    await original.detachForRestart()
+    await original.dispose()
+    const changed = new ManagedOpenCodeServer({ binary, workingDirectory: directory, ownerAgentId: 'another-agent',
+      processRecovery: registry.scope(scope.owner), restartDetachable: true })
+    assert.throws(() => changed.recoverEnvironment(), errorCode('OPENCODE_RESTART_IDENTITY_CONFLICT'))
+    assert.equal(await isRunning(pid), true)
+    assert.deepEqual((await readFile(join(directory, 'server-starts'), 'utf8')).trim().split('\n'), ['started'])
+  } finally {
+    await original.dispose()
+    await registry.closeOwner(scope.owner)
+    if (pid) await expectStopped(pid)
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 30000)
 
 it.skipIf(process.platform === 'win32')('bound SDK fetch retains non-dispatch proof when controller health recovery replaces its process', async () => {
   const { directory, binary } = await fixture()

@@ -116,7 +116,8 @@ export const codexQualificationSuite: QualificationSuite = {
       const started = object(await transport.request('thread/start', {
         cwd: input.workDirectory, runtimeWorkspaceRoots: [input.workDirectory], sandbox: 'workspace-write',
         approvalPolicy: 'never', ephemeral: false, ...(input.model ? { model: input.model } : {}),
-        config: { ...Object.fromEntries(disabledAppMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
+        config: { ...(input.reasoningEffort ? { model_reasoning_effort: input.reasoningEffort } : {}),
+          ...Object.fromEntries(disabledAppMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
           sandbox_workspace_write: { writable_roots: [], network_access: false, exclude_tmpdir_env_var: true, exclude_slash_tmp: true } },
         dynamicTools: codexFileDynamicTools({ allowedTools: () => ['files.read', 'files.publish_result'] }),
       }, signal))

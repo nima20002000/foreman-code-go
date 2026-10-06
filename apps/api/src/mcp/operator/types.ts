@@ -50,6 +50,7 @@ export interface OperatorServices {
   workflows: WorkflowManagementService
   agents: AgentManagementService
   harnesses: HarnessCatalogService
+  harnessCompatibility?: import('../../modules/harnesses/compatibility/service.js').HarnessCompatibilityService
   harnessQualifications?: import('../../modules/harnesses/qualification/service.js').HarnessQualificationService
   settings?: FoundationSettingsManagementService
   runs: RunManagementService

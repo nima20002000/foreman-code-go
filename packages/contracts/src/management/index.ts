@@ -736,7 +736,7 @@ export const OperatorToolNameSchema = z.enum([
   "run_resume",
   "run_retry",
   "interaction_summary",
-  "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update", "harness_qualifications_list", "harness_qualification_run",
+  "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update", "harness_qualifications_list", "harness_qualification_run", "harness_compatibility_list", "harness_compatibility_retry",
   "agent_defaults_get", "agent_defaults_update", "workflow_defaults_get", "workflow_defaults_update",
   "workspace_folders_list", "workspace_folder_create", "workspace_folder_rename", "workspace_folder_undo", "workspace_folders_delete",
   "workspace_storage_folders_list", "workspace_storage_folder_delete",

@@ -1,10 +1,19 @@
 import { spawn } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+
+export function hasNativeTurnStarted(harness, execution, event) {
+  const session = execution.nativeSessionId
+  if (!session || event.executionId !== execution.id || event.connectionId?.startsWith('history-')) return false
+  if (harness === 'codex') return event.type === 'turn.started' && event.payload.threadId === session
+  if (harness === 'opencode') return event.type === 'message.updated'
+    && event.payload.info?.role === 'assistant' && event.payload.info.sessionID === session
+  return false
+}
 
 export function localProductionEnvironment(desktopHome, password) {
   const current = join(desktopHome, '.local/lib/graphql-production/current')
@@ -28,7 +37,6 @@ export function localProductionEnvironment(desktopHome, password) {
     LOG_DIR: join(state, 'logs'),
     XDG_CACHE_HOME: join(state, 'cache'),
     LANGGRAPH_CHECKPOINT_SCHEMA: 'langgraph',
-    FOREMAN_CODE_DEV_BROWSER_ACCESS: '0',
     NODE_OPTIONS: '',
     NODE_PATH: '',
   }
@@ -38,6 +46,16 @@ export async function deployProductionApi(run, destination) {
   const failures = []
   try {
     await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod', '--legacy', destination])
+    // Workspace output can be hard-linked by deployment and rewritten by later builds.
+    const temporary = await mkdtemp(join(dirname(destination), '.production-api-copy-'))
+    try {
+      const snapshot = join(temporary, 'api')
+      await cp(destination, snapshot, { recursive: true, verbatimSymlinks: true })
+      await rm(destination, { recursive: true })
+      await rename(snapshot, destination)
+    } finally {
+      await rm(temporary, { recursive: true, force: true })
+    }
   } catch (error) {
     failures.push(error)
   }
@@ -50,6 +68,17 @@ export async function deployProductionApi(run, destination) {
   }
   if (failures.length === 1) throw failures[0]
   if (failures.length) throw new AggregateError(failures, 'Production deployment and workspace restoration failed.')
+}
+
+export async function removeUninstalledRelease(release, current) {
+  let installed
+  try {
+    installed = await realpath(current)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+  if (installed === await realpath(release)) return
+  await rm(release, { recursive: true, force: true })
 }
 
 export async function publish(path, content, mode = 0o600) {
@@ -152,18 +181,21 @@ export async function readEnvironment(path) {
 
 export async function preserveOperatorConfiguration(path, previous, owned, validate) {
   const canonicalName = key => key.replace(/^GRAPHQL_/, 'FOREMAN_CODE_')
+  const keepSetting = ([key]) => canonicalName(key) !== 'FOREMAN_CODE_DEV_BROWSER_ACCESS'
   const managed = new Set(Object.keys(owned).map(canonicalName))
-  resolveProductEnvironment(previous ?? {})
+  const previousSettings = Object.fromEntries(Object.entries(previous ?? {}).filter(keepSetting))
+  resolveProductEnvironment(previousSettings)
   let configuration
   try {
     configuration = JSON.parse(await readFile(path, 'utf8'))
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
-    configuration = Object.fromEntries(Object.entries(previous ?? {}).filter(([key]) => !managed.has(canonicalName(key))))
+    configuration = Object.fromEntries(Object.entries(previousSettings).filter(([key]) => !managed.has(canonicalName(key))))
   }
   if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) {
     throw new Error('Operator configuration must be an object of environment settings.')
   }
+  configuration = Object.fromEntries(Object.entries(configuration).filter(keepSetting))
   for (const [key, value] of Object.entries(configuration)) {
     if (managed.has(canonicalName(key))) {
       throw new Error(`${key} is managed by the installer; remove it from operator.json.`)

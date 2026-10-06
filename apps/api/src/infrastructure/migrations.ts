@@ -1,3 +1,11 @@
+import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
+import { localWorkflowNativeOutputMigration } from './localWorkflowNativeOutputMigration.js'
+import { workExhaustedRouteMigration } from './workExhaustedRouteMigration.js'
+import { workJoinRoundMigration } from './workJoinRoundMigration.js'
+import { workUnresolvedRoutesMigration } from './workUnresolvedRoutesMigration.js'
+import { workJoinDispatchMigration } from './workJoinDispatchMigration.js'
+import { workJoinDispositionMigration } from './workJoinDispositionMigration.js'
+import { workParentRequestMigration } from './workParentRequestMigration.js'
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { workflowPresentationMigration } from './workflowPresentationMigration.js'
 import { operatorTerminalMigration } from './operatorTerminalMigration.js'
@@ -826,10 +834,18 @@ export const migrations = [
   runPresentationMigration,
   workflowPresentationMigration,
   workspaceProvisioningMigration,
+  workParentRequestMigration,
+  workJoinRoundMigration,
+  workExhaustedRouteMigration,
+  workDeliverySettlementMigration,
+  workUnresolvedRoutesMigration,
+  workJoinDispatchMigration,
+  workJoinDispositionMigration,
   operatorTerminalMigration,
   operatorTerminalHistoryMigration,
-  claudeCallbackMigration,
+  localWorkflowNativeOutputMigration,
   localHumanMigration,
+  claudeCallbackMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

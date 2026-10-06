@@ -1,3 +1,4 @@
+import { openCodeSchema } from './fixtures/harness-schemas.js'
 import assert from 'node:assert/strict'
 
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
@@ -69,9 +70,9 @@ export class FixtureServer implements OpenCodeServerController {
   mcpCredentialReferences: Record<string, string> = {}
   config: JsonObject = {}
   mcp: JsonObject = {}
-  providers: unknown = { all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }] }
+  providers: unknown = { all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }], connected: [] }
   agents: unknown = [{ name: 'build' }, { name: 'plan' }]
-  paths: JsonObject = requiredPaths
+  paths: JsonObject = { ...requiredPaths, ...openCodeSchema().paths }
   permissions: JsonObject[] = []
   questions: JsonObject[] = []
   disposals = 0
@@ -151,7 +152,8 @@ export class FixtureServer implements OpenCodeServerController {
   }
   assistant(parentID: string, text = 'done', finish: string | undefined = 'stop', completed = true, sessionID = 'ses_test'): OpenCodeMessage {
     const id = `msg_assistant_${this.clock++}`
-    const message: OpenCodeMessage = { info: { id, sessionID, role: 'assistant', parentID,
+    const agent = String(this.sessionInfos.get(sessionID)?.agent ?? 'build')
+    const message: OpenCodeMessage = { info: { id, sessionID, role: 'assistant', parentID, agent, mode: agent,
       time: { created: this.clock++, ...(completed ? { completed: this.clock++ } : {}) }, ...(finish ? { finish } : {}) },
       parts: [{ id: `prt_${this.clock++}`, sessionID, messageID: id, type: 'text', text }] }
     this.append(message)
@@ -188,7 +190,7 @@ export class FixtureServer implements OpenCodeServerController {
     const replacement = await this.beforeRequest?.(path, init)
     if (replacement) return replacement
     if (route === '/global/health') return json({ healthy: true, version: '1.18.31' })
-    if (route === '/doc') return json({ paths: this.paths })
+    if (route === '/doc') return json({ openapi: '3.1.0', paths: this.paths })
     if (route === '/provider') return json(this.providers)
     if (route === '/agent') return json(this.agents)
     if (route === '/config') return json(this.config)

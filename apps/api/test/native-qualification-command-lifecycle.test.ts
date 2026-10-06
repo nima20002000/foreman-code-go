@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { it } from 'vitest'
-import { qualifyCodex, QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { qualifyCodex } from '../src/modules/harnesses/codexProtocol.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { calls, errorCode, fixture, until } from './fixtures/codex-test-helpers.js'
 
@@ -11,9 +11,9 @@ it.skipIf(process.platform !== 'linux')('keeps qualification commands inside one
   const registry = new NativeProcessRegistry(join(f.directory, 'recovery'))
   const owner = 'qualification-owner'
   await writeFile(join(f.directory, 'diagnostic-barrier'), '')
-  const checking = qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory,
+  const checking = qualifyCodex(f.binary, f.directory,
     { ...process.env }, true, undefined, registry.scope(owner))
-  const rejected = assert.rejects(checking, (error: unknown) => errorCode(error) === 'CODEX_SCHEMA_UNQUALIFIED')
+  const rejected = assert.rejects(checking, (error: unknown) => errorCode(error) === 'CODEX_CONTRACT_UNSUPPORTED')
   try {
     await until(async () => (await calls(f.directory)).some((entry) => Array.isArray(entry.cli)
       && entry.cli[0] === 'login'))

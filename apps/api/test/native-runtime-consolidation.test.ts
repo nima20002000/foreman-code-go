@@ -63,7 +63,18 @@ it('accepts native auto in management while preserving ordered deny rules and sa
   const before = structuredClone(o)
   assert.equal(ManagementHarnessConfigurationSchema.safeParse(o).success, true)
   assert.doesNotThrow(() => assertNativeWorkflowConfiguration(o))
+  assert.doesNotThrow(() => assertNativeWorkflowConfiguration(o, { handler: 'native' }))
   assert.deepEqual(o, before)
+})
+
+it('requires explicit native settings for every Agent in a native-handled workflow', () => {
+  const value = codex()
+  assert.throws(() => assertNativeWorkflowConfiguration(value, { handler: 'native' }),
+    code('WORKFLOW_HARNESS_APPROVAL_CONFLICT'))
+  value.advanced!.approvalPolicy = 'never'
+  assert.doesNotThrow(() => assertNativeWorkflowConfiguration(value, { handler: 'native' }))
+  assert.throws(() => assertNativeWorkflowConfiguration(opencode(), { handler: 'native' }),
+    code('WORKFLOW_HARNESS_APPROVAL_CONFLICT'))
 })
 
 it('rejects inconsistent OpenCode auto representations instead of silently repairing them', () => {

@@ -12,8 +12,7 @@ import { FixtureServer, json, request } from './opencode-fixtures.js'
 
 // Native qualification and command output below are test doubles, NOT provider qualification evidence.
 vi.mock('../src/modules/harnesses/codexProtocol.js', () => ({
-  QUALIFIED_CODEX_VERSION: 'codex-cli 0.154.0', QUALIFIED_CODEX_SCHEMA_SHA256: 'fixture-only',
-  isQualifiedCodexVersion: (version: string) => version === 'codex-cli 0.154.0', canonical: JSON.stringify,
+  canonical: JSON.stringify,
   qualifyCodex: vi.fn(async () => ({ binary: 'not-executed', providerVersion: 'codex-cli 0.154.0', protocol: {} })),
   assertCodexUnchanged: vi.fn(async () => {}),
 }))

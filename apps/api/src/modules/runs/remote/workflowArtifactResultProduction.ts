@@ -1,9 +1,10 @@
 import { isDeepStrictEqual as same } from 'node:util'
 import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import type { AcceptedArtifactPublication } from '../../files/distributed/publication.js'
 import { DomainError } from '../../errors.js'
 import type { WorkflowNativeCapture, WorkflowNativeVerificationPort } from '../../interactions/workflowNativeCapture.js'
-import { readDispatchIntent } from '../../placement/persistence.js'
+import { readAcceptedPlacement, readDispatchIntent } from '../../placement/persistence.js'
 import { assertGraphTransaction, beforeGraphCommit, didGraphTransactionCommit, type GraphTransactionSql } from '../../run-graph/connection.js'
 import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit } from '../../run-graph/repeatReceipts.js'
 import { readRepeatExecutionLocked } from '../repeatPostgres.js'
@@ -82,15 +83,17 @@ export function createProductionWorkflowArtifactResultSource(ports: {
   }
   return {
     source,
-    async assertLaunchSupportedLocked(sql: GraphTransactionSql, executionId: string, runId: string): Promise<void> {
+    async assertLaunchDeclarationLocked(sql: GraphTransactionSql, executionId: string, runId: string): Promise<void> {
       assertGraphTransaction(sql)
       const snapshot = await readAcceptedRepeatRunLocked(sql, runId)
       const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
       const node = snapshot.version.definition.nodes.find(item => item.id === stored.ref.nodeId)
-      // The installed host currently has no qualified native output sealer or
-      // sender. A saved declaration cannot substitute for that missing producer.
-      if (node && node.kind !== 'job' && node.artifactOutputs) throw new DomainError(
-        'WORKFLOW_ARTIFACT_NATIVE_HOST_UNAVAILABLE', 'The saved artifact outputs require an original native output sealer and sender before launch.', 409)
+      if (!node) return unavailable()
+      const placement = await readAcceptedPlacement(sql, runId, node.id)
+      if (placement && node.kind !== 'job' && node.artifactOutputs
+        && (placement.payload.kind !== 'agent' || !same(placement.payload.artifactOutputs, node.artifactOutputs))) {
+        return unavailable()
+      }
     },
     async retainOriginalLocked(sql: GraphTransactionSql, evidence: RepeatNativeEvidence, raw: WorkflowNativeProofRecord): Promise<void> {
       assertGraphTransaction(sql)
@@ -101,11 +104,14 @@ export function createProductionWorkflowArtifactResultSource(ports: {
       if (!node || node.kind === 'job' || !node.artifactOutputs) return
       if (!same(capture.source, proof.original) || !same(capture.session, proof.session)
         || !same(repeatExecutionIdentity(capture.execution), proof.execution) || capture.owner.runId !== proof.scope.runId) return unavailable()
-      const transfer = await ports.physical.artifactTerminalContext(sql, capture.owner, capture, proof)
       const original = await readDispatchIntent(sql, capture.execution.id)
       const intent = original && await readReconciledDispatchIntent(sql, original.operationId, true)
       if (!intent || intent.runId !== proof.scope.runId || intent.nodeId !== proof.ref.nodeId
         || intent.inputDigest !== proof.inputDigest || intent.technicalAttempt !== capture.execution.attempt) return unavailable()
+      const terminal = (await sql.query<{ receipt: unknown }>(
+        'select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])).rows[0]
+      if (terminal?.receipt && RemoteOperationReceiptSchema.parse(terminal.receipt).terminal?.artifactValidationError) return
+      const transfer = await ports.physical.artifactTerminalContext(sql, capture.owner, capture, proof)
       const accepted = await ports.authority.resolveWorkflowContext({ workspaceId: proof.scope.workspaceId,
         workflowId: proof.scope.workflowId, runId: proof.scope.runId, nodeId: proof.ref.nodeId,
         executionId: capture.execution.id, attemptId: intent.attemptId, placementHash: intent.bindingHash }, transfer, sql)

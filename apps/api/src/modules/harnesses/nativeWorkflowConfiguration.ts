@@ -21,7 +21,7 @@ export function assertNativeWorkflowConfiguration(
   catch {
     throw new DomainError('WORKFLOW_HARNESS_APPROVAL_CONFLICT', 'The Agent configuration is invalid or native automatic handling conflicts with routed workflow approval. Reopen and save the Agent and workflow settings.', 409)
   }
-  if (approval) {
+  if (approval && approval.handler !== 'native') {
     if (configuration.harness === 'codex'
       && !CodexSessionCompatibilitySchema.safeParse({ configuration, requiresResume: true }).success) {
       throw new DomainError('WORKFLOW_HARNESS_APPROVAL_CONFLICT', 'Routed approval requires a resumable Codex session. Reopen and save the Agent with persistent sessions.', 409)

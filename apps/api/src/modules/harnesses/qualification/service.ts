@@ -64,6 +64,13 @@ export class HarnessQualificationService {
     return this.track(this.prepare(harness, force))
   }
 
+  async verify(harness: CompatibilityHarness): Promise<HarnessQualification> {
+    const state = await this.begin(harness)
+    await this.flights.get(harness)
+    if (!state.binarySha256 || !state.suiteRevision) return state
+    return await this.repository.find(harness, state.version, state.binarySha256, state.suiteRevision) ?? state
+  }
+
   /** Fence admission synchronously; subscriber disconnect never signals this controller. */
   stop(): void { this.cancellation.abort(new DOMException('Qualification is shutting down.', 'AbortError')) }
 
@@ -133,7 +140,8 @@ export class HarnessQualificationService {
       ?? nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, 5000)
     this.probes.add(probe)
     let version: string
-    try { version = (await this.timed(5000, (signal) => probe.inspect(harness, signal))).version }
+    // The probe bounds the CLI command; installation checks and closure have separate ownership.
+    try { version = (await probe.inspect(harness, this.cancellation.signal)).version }
     finally { await closeQualificationProbe(probe, this.probes, () => { this.blocked.add(harness) }) }
     const previous = await this.repository.find(harness, version, sha256, suite.revision)
     this.assertRunning()
@@ -176,7 +184,7 @@ export class HarnessQualificationService {
     } catch (error) {
       if (error instanceof AggregateError) this.blocked.add(harness)
       checks.push({ id: 'static-compatibility', passed: false, detail: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500) })
-      await this.repository.save({ ...base, status: 'failed', checks, failureReason: 'The installed CLI failed static compatibility.', checkedAt: new Date().toISOString() })
+      await this.repository.save({ ...base, status: 'failed', checks, failureReason: `${harness} ${version}: ${checks.at(-1)?.detail ?? 'static protocol contract failed'}`, checkedAt: new Date().toISOString() })
       if (error instanceof AggregateError) throw error
       return
     }
@@ -196,8 +204,8 @@ export class HarnessQualificationService {
       const saved = structuredClone(await this.settings.getManagedHarnessDefaults())
       this.assertRunning()
       const model = saved.revision > 0 ? saved.defaults[harness].model : null
-      const result = await this.timed(240_000, (signal) => runAsQualificationCandidate(harness, sha256,
-        () => suite.run({ binary, version, binarySha256: sha256, profile, model, workDirectory: directory, signal, ownCleanup })))
+      const result = await this.timed(240_000, (signal) => runAsQualificationCandidate(harness, sha256, binary,
+        () => suite.run({ binary, version, binarySha256: sha256, profile, model, ...(harness === 'codex' ? { reasoningEffort: saved.defaults.codex.reasoningEffort } : {}), workDirectory: directory, signal, ownCleanup })))
       if (owned.size) throw new QualificationCleanupError([], 'Qualification resources are still owned.')
       this.assertRunning()
       checks.push(...result.checks)
@@ -225,7 +233,7 @@ export class HarnessQualificationService {
     } catch (error) {
       uncertain = owned.size > 0 || error instanceof AggregateError
       if (uncertain) this.blocked.add(harness)
-      await this.repository.save({ ...base, status: 'failed', checks, failureReason: 'The local qualification suite did not pass.', checkedAt: new Date().toISOString() })
+      await this.repository.save({ ...base, status: 'failed', checks, failureReason: `${harness} ${version}: ${error instanceof Error ? error.message.slice(0, 400) : 'native lifecycle contract failed'}`, checkedAt: new Date().toISOString() })
       if (owned.size) throw new QualificationCleanupError([error], 'Qualification cleanup is unconfirmed.')
       if (error instanceof AggregateError) throw error
     } finally {

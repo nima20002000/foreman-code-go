@@ -106,4 +106,13 @@ describe('one Foreman Code MCP server scoped by role', () => {
     recordDenied.mockRejectedValueOnce(new Error('audit store unavailable'))
     await expect(roleDeniedToolCall(restricted, call('workspace_update'))).rejects.toThrow('audit store unavailable')
   })
+
+  it('audits direct output calls outside the role or saved Agent tool set', async () => {
+    const name = 'files.native_output_publish'
+    expect(await deniedText('operator', name)).toContain('ROLE_NOT_ALLOWED')
+    expect(recordDenied).toHaveBeenCalledWith('operator-1', 'mcp', name, `mcp:${name}`)
+    expect(await deniedText('coder', name, ['context_get'])).toContain('TOOL_NOT_ENABLED')
+    expect(recordDenied).toHaveBeenCalledWith('worker-1', 'mcp', name, `mcp:${name}`)
+    expect(await roleDeniedToolCall(context('coder', [name]), call(name))).toBeUndefined()
+  })
 })

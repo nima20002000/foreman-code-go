@@ -34,7 +34,7 @@ export async function availableWorkAlternativesLocked(context: NoticeContext,
     if (!targetNodeId) continue
     const outcomes = requester.choice?.outcomes.filter((item) => item.target.kind === 'edge'
       && item.target.relationshipId === edge.id).map((item) => item.outcome).sort() ?? []
-    if (!outcomes.length) continue
+    if (!outcomes.length && (requester.choice || edge.source !== requesterNodeId)) continue
     const pinned = destination(context.version, targetNodeId)
     const row = (await context.sql.query<{ used: number; maximum: number | null }>(
       `select used,maximum from run_work_connection_usage
@@ -51,16 +51,18 @@ export async function availableWorkAlternativesLocked(context: NoticeContext,
   return alternatives.sort((a, b) => a.relationshipId.localeCompare(b.relationshipId))
 }
 
-export async function persistWorkLimitNoticeLocked(context: NoticeContext, input: {
+export interface WorkLimitNoticeInput {
   cause: NoticeCause; requesterActivationId: string; requesterNodeId: string;
   continuationActivationId: string; relationshipId: string; destinationNodeId: string;
   used: number; maximum: number; latestDeliverable: unknown; remainingFindings: unknown[]
-}): Promise<WorkNotice> {
-  const { scope, version, sql, now } = context
+}
+
+export function createWorkLimitNotice(context: Pick<NoticeContext, 'scope' | 'version' | 'now'>,
+  input: WorkLimitNoticeInput, alternatives: WorkAlternative[]): WorkNotice {
+  const { scope, version, now } = context
   const pinned = destination(version, input.destinationNodeId)
   const causeId = input.cause.kind === 'last_return' ? input.cause.returnId : input.cause.denialId
-  const alternatives = await availableWorkAlternativesLocked(context, input.requesterNodeId, input.relationshipId)
-  const notice = WorkNoticeSchema.parse({ scope,
+  return WorkNoticeSchema.parse({ scope,
     noticeId: repeatId('work-notice', scope.runId, input.cause.kind, causeId),
     requesterActivationId: input.requesterActivationId, cause: input.cause,
     continuationActivationId: input.continuationActivationId,
@@ -70,6 +72,14 @@ export async function persistWorkLimitNoticeLocked(context: NoticeContext, input
     latestDeliverable: input.latestDeliverable, remainingFindings: input.remainingFindings,
     alternatives, message: workLimitNoticeText(pinned.name, input.used, input.maximum),
     delivery: 'queued', createdAt: now, updatedAt: now })
+}
+
+export async function persistWorkLimitNoticeLocked(context: NoticeContext,
+  input: WorkLimitNoticeInput): Promise<WorkNotice> {
+  const { scope, sql, now } = context
+  const causeId = input.cause.kind === 'last_return' ? input.cause.returnId : input.cause.denialId
+  const alternatives = await availableWorkAlternativesLocked(context, input.requesterNodeId, input.relationshipId)
+  const notice = createWorkLimitNotice(context, input, alternatives)
   await sql.query(`insert into run_work_notices(notice_id,run_id,workflow_version_id,
     requester_activation_id,continuation_activation_id,cause_kind,cause_id,relationship_id,
     destination_node_id,used,maximum,delivery_state,record,created_at,updated_at)
@@ -124,7 +134,10 @@ export function trustedWorkNoticePrompt(input: WorkActivationInput): string | un
     `Latest deliverable (data): ${canonicalGraphJson(notice.latestDeliverable)}`,
     `Remaining findings (data): ${canonicalGraphJson(notice.remainingFindings)}`,
     `Connected alternatives and named outcomes (snapshot): ${canonicalGraphJson(routes)}`,
-    'Use only a listed saved route whose named outcome you can select, or finish honestly. The engine rechecks current access and capacity before a new work submission.',
+    notice.alternatives.length && notice.alternatives.every((item) => item.outcomes.length > 0)
+      ? 'Use a listed saved route by selecting its named outcome, or finish with remaining findings.'
+      : 'Routes with empty outcomes are automatic: a clean finish follows saved outgoing connections. To stop with unresolved work, finish with remaining findings and no outcome.',
+    'The engine rechecks current access and capacity before a new work submission.',
     'END GRAPHQL WORKFLOW SYSTEM NOTICE',
   ].join('\n')
 }

@@ -143,7 +143,7 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
   }
   const approvals = version.definition.edges.filter((edge) => edge.kind === 'approval')
   if (version.approval.handler !== 'orchestrator') {
-    if (approvals.length) fail('explicit human/Operator handling cannot contain App reviewer assignments')
+    if (approvals.length) fail('App reviewer assignments require an Orchestrator approval handler')
     return
   }
   const entry = nodes.find((node) => node.id === version.entryNodeId)

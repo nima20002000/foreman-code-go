@@ -225,7 +225,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   }
   const evidence: Record<string, unknown> = { scenario, timing, runtimeTimeline, mode: 'current V3 native internal acceptance', artifactPath,
     resources: { invocation, cleanupId, root, schema, registryDirectory },
-    models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-5.6-luna',
+    models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-6-luna',
       opencode: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna' },
     expected: { overlap: true, joinedInputs: 2, outcome: 'succeeded' } }
   runtimeTimingChannel.subscribe(captureTiming)

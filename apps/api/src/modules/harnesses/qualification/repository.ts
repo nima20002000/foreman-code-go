@@ -1,6 +1,7 @@
 import type pg from 'pg'
 import { type CompatibilityHarness } from '@foreman-code/contracts'
 import { HarnessQualificationSchema, type HarnessQualification } from '@foreman-code/contracts/harness-qualification'
+import { HostHarnessProfileEvidenceSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 
 export class HarnessQualificationRepository {
   constructor(private readonly pool: pg.Pool) {}
@@ -16,6 +17,20 @@ export class HarnessQualificationRepository {
       [harness, version, binarySha256, suiteRevision],
     )
     return result.rows[0] ? this.parse(result.rows[0] as Record<string, unknown>) : null
+  }
+
+  async findInstalled(target: HostHarnessOverride['target'], binarySha256: string,
+    suiteRevision: string): Promise<HarnessQualification[]> {
+    const result = await this.pool.query<{ record: unknown }>(`select record from harness_instance_profile_evidence
+      where record->'target'=$3::jsonb
+      and record->'completedNativeQualification'->'target'=$3::jsonb
+      and record->'completedNativeQualification'->>'purpose'='explicit-host-qualification'
+      and record->'completedNativeQualification'->'record'->>'binarySha256'=$1
+      and record->'completedNativeQualification'->'record'->>'suiteRevision'=$2
+      and record->'completedNativeQualification'->'record'->>'status'='qualified'
+      and record->>'qualified'='true'
+      order by created_at desc,check_id desc limit 1`, [binarySha256, suiteRevision, JSON.stringify(target)])
+    return result.rows.map(row => HostHarnessProfileEvidenceSchema.parse(row.record).completedNativeQualification!.record)
   }
 
   async save(record: HarnessQualification, evidence: Record<string, unknown> = {}, client?: pg.ClientBase): Promise<void> {

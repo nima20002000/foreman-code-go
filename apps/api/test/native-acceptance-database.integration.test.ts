@@ -1,19 +1,36 @@
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
 import { expect, it } from 'vitest'
+import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { completeTestResourceCleanup, dropFixtureDatabase, ownedTestDatabaseUrl,
   registerTestResourceCleanup } from '../../../scripts/test-resources.mjs'
+
+
+async function disposeRetainedBootstrap(admin: pg.Pool, name: string): Promise<void> {
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
+  const folder = join(invocation.directory, '.graphql-test-cleanup')
+  for (const file of await readdir(folder)) {
+    const pending = JSON.parse(await readFile(join(folder, file), 'utf8')) as {
+      id: string; kind: string; name?: string
+    }
+    if (pending.kind === 'native-acceptance-database' && pending.name === name) {
+      await dropFixtureDatabase(admin, name)
+      completeTestResourceCleanup(invocation, pending.id)
+      return
+    }
+  }
+  throw new Error('Retained bootstrap cleanup record is missing.')
+}
 
 it('acceptance bootstrap supplies an isolated database and removes it after success and failure', async () => {
   const script = new URL('../../../scripts/test-native-acceptance.mjs', import.meta.url).href
   const { withNativeAcceptanceDatabase } = await import(script)
   const configured = process.env.TEST_DATABASE_URL
   if (!configured) throw new Error('TEST_DATABASE_URL is required')
-  const server = new URL(configured)
-  server.pathname = '/postgres'
-  const admin = new pg.Pool({ connectionString: server.toString(), max: 1 })
+  const admin = new pg.Pool({ connectionString: ownedTestDatabaseUrl(), max: 1 })
   const directory = await mkdtemp(join(tmpdir(), 'native-bootstrap-'))
   const ownedNames = new Set<string>()
   try {
@@ -55,6 +72,93 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
       expect(record).toMatchObject({ created: true, removed: true })
       expect((await admin.query('select 1 from pg_database where datname=$1', [name])).rowCount).toBe(0)
     }
+  } finally {
+    await admin.end()
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 30_000)
+
+it.each([false, true])('reports leaked workflow callers and removes owned resources (work failed: %s)', async failed => {
+  const configured = process.env.NIM2691_ADMIN_DATABASE_URL
+  if (!configured) throw new Error('NIM2691_ADMIN_DATABASE_URL is required')
+  const admin = new pg.Pool({ connectionString: configured, max: 1 })
+  const failure = new Error('Workflow verification failed')
+  const directories: string[] = []
+  const connectionErrors: unknown[] = []
+  let client: pg.Client | undefined
+  let ownedName = ''
+  try {
+    const work = nim2691TaskDatabase(async (_pool, directory, databaseUrl) => {
+      directories.push(directory, await privateFixtureDirectory('native-cleanup-'))
+      ownedName = decodeURIComponent(new URL(databaseUrl).pathname.slice(1))
+      client = new pg.Client({ connectionString: databaseUrl })
+      client.on('error', error => { connectionErrors.push(error) })
+      await client.connect()
+      await client.query('select 1')
+      if (failed) throw failure
+      return 'completed'
+    })
+    await expect(work).rejects.toMatchObject({
+      name: 'AggregateError', errors: expect.arrayContaining([
+        expect.objectContaining({ message: 'Native fixture database still had active callers during teardown.' }),
+        ...(failed ? [failure] : []),
+      ]), ...(failed ? { cause: failure } : {}),
+    })
+    expect((await admin.query('select 1 from pg_database where datname=$1', [ownedName])).rowCount).toBe(1)
+    await expect(client!.query('select 1')).resolves.toMatchObject({ rowCount: 1 })
+    await client!.end()
+    expect(connectionErrors).toEqual([])
+    await dropFixtureDatabase(admin, ownedName)
+    expect((await admin.query('select 1 from pg_database where datname=$1', [ownedName])).rowCount).toBe(0)
+    await expect(client!.query('select 1')).rejects.toThrow()
+    expect(directories).toHaveLength(2)
+    for (const directory of directories) await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect((await admin.query('select 1 from pg_database where datname=$1',
+      [decodeURIComponent(new URL(configured).pathname.slice(1))])).rowCount).toBe(1)
+  } finally {
+    await client?.end()
+    await admin.end()
+  }
+}, 30_000)
+
+it('disposes only its owned database with leaked callers while retaining work failure', async () => {
+  const script = new URL('../../../scripts/test-native-acceptance.mjs', import.meta.url).href
+  const { withNativeAcceptanceDatabase } = await import(script)
+  const configured = process.env.TEST_DATABASE_URL
+  if (!configured) throw new Error('TEST_DATABASE_URL is required')
+  const admin = new pg.Pool({ connectionString: ownedTestDatabaseUrl(), max: 1 })
+  const directory = await mkdtemp(join(tmpdir(), 'native-bootstrap-cleanup-'))
+  try {
+    for (const failed of [false, true]) {
+      let ownedName = ''
+      let client: pg.Client | undefined
+      const connectionErrors: unknown[] = []
+          const failure = new Error('Native verification failed')
+      const work = withNativeAcceptanceDatabase(configured, directory,
+        async ({ databaseUrl }: { databaseUrl: string }) => {
+          ownedName = decodeURIComponent(new URL(databaseUrl).pathname.slice(1))
+          client = new pg.Client({ connectionString: databaseUrl })
+          client.on('error', error => { connectionErrors.push(error) })
+          await client.connect()
+          await client.query('select 1')
+          if (failed) throw failure
+          return 0
+        })
+      try {
+        if (failed) await expect(work).rejects.toBe(failure)
+        else await expect(work).resolves.toMatchObject({ removed: false, exitCode: 1 })
+        expect(ownedName).not.toBe(decodeURIComponent(new URL(configured).pathname.slice(1)))
+        expect((await admin.query('select 1 from pg_database where datname=$1', [ownedName])).rowCount).toBe(1)
+        await expect(client!.query('select 1')).resolves.toMatchObject({ rowCount: 1 })
+        await client!.end()
+        expect(connectionErrors).toEqual([])
+        await disposeRetainedBootstrap(admin, ownedName)
+        expect((await admin.query('select 1 from pg_database where datname=$1', [ownedName])).rowCount).toBe(0)
+        await expect(client!.query('select 1')).rejects.toThrow()
+      } finally { await client?.end() }
+    }
+    expect((await admin.query('select 1 from pg_database where datname=$1',
+      [decodeURIComponent(new URL(configured).pathname.slice(1))])).rowCount).toBe(1)
   } finally {
     await admin.end()
     await rm(directory, { recursive: true, force: true })

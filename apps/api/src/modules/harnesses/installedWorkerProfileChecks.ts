@@ -47,8 +47,8 @@ export async function createInstalledWorkerProfileChecks(input: {
           const manager = new CodexAppServerSessionManager(configuration.codexBinary, configuration.expectedVersion,
             undefined, recovery, 'none', undefined, {
               mode: 'native',
-              qualify: (binary, version, cwd, environment, authenticated, effectSignal) => guarded(
-                () => qualifyCodex(binary, version, cwd, environment, authenticated, effectSignal, recovery), effectSignal),
+              qualify: (binary, cwd, environment, authenticated, effectSignal) => guarded(
+                () => qualifyCodex(binary, cwd, environment, authenticated, effectSignal, recovery), effectSignal),
               assertUnchanged: qualified => guarded(() => assertCodexUnchanged(qualified)),
               runCommand: (binary, args, cwd, effectSignal, environment, options) => guarded(
                 () => runCommand(binary, args, cwd, effectSignal, environment, { ...options, recovery }), effectSignal),

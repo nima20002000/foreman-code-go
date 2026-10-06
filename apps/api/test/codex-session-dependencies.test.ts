@@ -1,8 +1,8 @@
+import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { CodexAppServerSessionManager, type CodexSessionDependencies, type CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
-import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
@@ -15,7 +15,7 @@ function replay() {
     environment: () => ({}),
     qualify: async (binary) => {
       calls.push('qualify')
-      return { binary, identity: 'recorded-launcher', protocol: fixtureProtocol, providerVersion: QUALIFIED_CODEX_VERSION,
+      return { binary, identity: 'recorded-launcher', protocol: fixtureProtocol, providerVersion: RECORDED_CODEX_VERSION,
         schemaManifestSha256: 'recorded-schema', stableSchemaGitBlob: 'recorded-stable', referenceSchemaManifestSha256: 'recorded-reference' }
     },
     assertUnchanged: async () => { calls.push('assertUnchanged') },
@@ -135,7 +135,7 @@ describe('Codex original placed inspection directory', () => {
       const commands: Array<{ args: string[]; cwd: string }> = []
       const qualify = f.dependencies.qualify
       f.dependencies.qualify = async (...args) => {
-        qualified.push(args[2])
+        qualified.push(args[1])
         return qualify(...args)
       }
       f.dependencies.runCommand = async (_binary, args, cwd) => {
@@ -170,7 +170,7 @@ describe('Codex original placed inspection directory', () => {
         const commands: Array<{ args: string[]; cwd: string }> = []
         const qualify = f.dependencies.qualify
         f.dependencies.qualify = async (...args) => {
-          qualified.push(args[2])
+          qualified.push(args[1])
           return qualify(...args)
         }
         f.dependencies.runCommand = async (_binary, args, cwd) => {

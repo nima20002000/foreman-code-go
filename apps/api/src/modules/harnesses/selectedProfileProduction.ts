@@ -23,6 +23,7 @@ export function productionSelectedProfileManager(input: {
   appMcpAccess: 'scoped' | 'none'
   credentialEnvironmentVariable?: string
   files?: Extract<NativeHarnessAllocation, { harness: 'codex' }>['chatFiles']
+  nativeOutputs?: Extract<NativeHarnessAllocation, { harness: 'codex' }>['nativeOutputs']
   openCodeFiles?: Extract<NativeHarnessAllocation, { harness: 'opencode' }>['chatFiles']
 }) {
   input = { ...input, configuration: structuredClone(input.configuration), selector: structuredClone(input.selector) }
@@ -52,7 +53,8 @@ export function productionSelectedProfileManager(input: {
         return observation ? input.profiles.revalidateObservation(currentOwner, accepted)
           : input.profiles.revalidate(currentOwner, accepted)
       } }
-    return input.configuration.harness === 'codex' ? { ...common, harness: 'codex', ...(input.files ? { chatFiles: input.files } : {}) }
+    return input.configuration.harness === 'codex' ? { ...common, harness: 'codex',
+      ...(input.files ? { chatFiles: input.files } : {}), ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs } : {}) }
       : { ...common, harness: 'opencode', ...(input.configuration.advanced ? { advancedConfiguration: input.configuration.advanced } : {}),
         ...(input.openCodeFiles ? { chatFiles: input.openCodeFiles } : {}) }
   })

@@ -24,6 +24,7 @@ export interface ApprovalRuntimeDependencies {
   nativeRuntime: InteractionNativeRuntime
   journal?: NativeResponseJournal
   atomicResume?: AtomicApprovalResumeConsumer
+  prepareRequester?: (interaction: DurableInteraction) => Promise<void>
 }
 
 async function read(deps: ApprovalRuntimeDependencies, id: string): Promise<DurableInteraction> {
@@ -132,6 +133,7 @@ export async function respondToApproval(deps: ApprovalRuntimeDependencies, respo
     if (!deps.nativeRuntime.validateInteraction) return fail('APPROVAL_NATIVE_QUALIFICATION_REQUIRED')
     assertInteractionResponseActive(options.signal)
     try {
+      await deps.prepareRequester?.(current)
       await deps.nativeRuntime.validateInteraction(current, options.signal)
     } catch (error) {
       assertInteractionResponseActive(options.signal)

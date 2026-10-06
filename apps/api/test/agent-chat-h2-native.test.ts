@@ -1,3 +1,4 @@
+import { openCodeSchema } from './fixtures/harness-schemas.js'
 import assert from 'node:assert/strict'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
@@ -21,8 +22,7 @@ vi.mock('../src/modules/harnesses/process.js', () => ({ PROCESS_SHUTDOWN_GRACE_M
 vi.mock('../src/modules/harnesses/recovery/processRegistry.js', () => ({ spawnNativeProcess: vi.fn() }))
 vi.mock('../src/modules/harnesses/codexQualification.js', () => ({ qualifyNativeCodexModel: vi.fn(async () => {}) }))
 vi.mock('../src/modules/harnesses/codexProtocol.js', () => ({
-  QUALIFIED_CODEX_VERSION: 'codex-cli 0.154.0', QUALIFIED_CODEX_SCHEMA_SHA256: 'fixture-only',
-  isQualifiedCodexVersion: (value: string) => value === 'codex-cli 0.154.0', canonical: JSON.stringify,
+  canonical: JSON.stringify,
   qualifyCodex: vi.fn(async () => ({ binary: 'not-executed', providerVersion: 'codex-cli 0.154.0', protocol: {
     request() {}, notification() {}, response() {}, serverRequest() {}, serverResponse() {},
   } })), assertCodexUnchanged: vi.fn(async () => {}),
@@ -132,14 +132,17 @@ function installOpenCodeWire(start: WorkflowNativeSessionStart) {
     const body = init?.body ? object(JSON.parse(String(init.body))) : {}
     calls.push({ method: `${method} ${route}`, params: body })
     if (route === '/global/health') return json({ healthy: true, version: '1.18.31' })
-    if (route === '/doc') return json({ paths: Object.fromEntries([
+    if (route === '/doc') return json({ openapi: '3.1.0', paths: { ...Object.fromEntries([
       '/session', '/session/status', '/session/{sessionID}', '/session/{sessionID}/message', '/session/{sessionID}/message/{messageID}',
       '/session/{sessionID}/prompt_async', '/session/{sessionID}/abort', '/permission', '/permission/{requestID}/reply',
       '/question', '/question/{requestID}/reject', '/event', '/config', '/mcp',
-    ].map((path) => [path, {}])) })
+    ].map((path) => [path, {}])), ...openCodeSchema().paths } })
     if (route === '/config') return json(effective)
     if (route === '/mcp') return json(status)
-    if (route === '/provider') return json({ all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }] })
+    if (route === '/provider') return json({
+      all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }],
+      default: { 'opencode-go': 'deepseek-v4.1-flash' }, connected: ['opencode-go'],
+    })
     if (route === '/agent') return json([{ name: 'build' }])
     if (route === '/session/status') return json({})
     if (route === '/session/run-source/fork') { sessions.set('chat-child', { ...structuredClone(source), id: 'chat-child' }); return json({ id: 'chat-child' }) }

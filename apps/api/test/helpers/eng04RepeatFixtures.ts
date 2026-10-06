@@ -421,6 +421,9 @@ export function createRepeatHarness(fixture = makeSimpleRepeatFixture()): Repeat
         saved = undefined
       } else if (q.includes('from runs r join workflow_versions')) {
         rows = [{ run: state.run, version: fixture.version, stopped: state.stopped, state: state.run.executionState, now: ENG04_REPEAT_AT }]
+      } else if (q.startsWith('select ( (select count(*) from harness_executions')) {
+        rows = [{ total: String([...state.executions.values()]
+          .filter((item) => item.execution_run_id === v[0]).length) }]
       } else if (q.startsWith('select record,input_json,input_digest')) {
         const row = state.occurrences.get(v[0]!)
         if (row) rows = [row]

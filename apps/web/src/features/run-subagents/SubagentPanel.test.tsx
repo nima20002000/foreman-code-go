@@ -25,7 +25,8 @@ function mount() {
   return { client, close, ...rendered }
 }
 function qualified() {
-  const capabilities = subagentCapabilities('opencode-task', '1.18.31')
+  const capabilities = subagentCapabilities('opencode-task')
+  capabilities.sendInput = { support: 'supported', qualification: 'passed' }
   capabilities.interrupt = { support: 'supported', qualification: 'passed' }
   return { subagent: child({ provider: 'opencode', nativeMode: 'opencode-task', status: 'waiting', capabilities }),
     availableActions: { sendInput: true, interrupt: true, blockedReason: null } }
@@ -68,7 +69,7 @@ describe('Subagent panel', () => {
       return HttpResponse.json(receipt({ commandId: submitted.commandId, expectedRevision: submitted.expectedRevision,
         operation: 'run_subagent_interrupt_v1' }))
     })
-    const capabilities = subagentCapabilities(nativeMode, '0.154.0')
+    const capabilities = subagentCapabilities(nativeMode)
     capabilities.sendInput = { support: 'supported', qualification: 'passed' }
     capabilities.interrupt = { support: 'supported', qualification: 'passed' }
     const record = { subagent: child({ nativeMode, capabilities }),

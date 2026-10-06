@@ -15,14 +15,15 @@ import { readRepeatExecutionLocked } from './repeatPostgres.js'
  * admission. Public graph metadata stays on the canonical graph reader. */
 export async function withCurrentRunRead<T>(pool: pg.Pool, principal: ManagementPrincipal,
   workspaceId: string, runId: string, action: 'runs:read' | 'runs:stop',
-  work: (sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, live: ManagementPrincipal) => Promise<T>): Promise<T> {
+  work: (sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, live: ManagementPrincipal) => Promise<T>,
+  readAcceptedRun = readAcceptedRepeatRunLocked): Promise<T> {
   return withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
     const row = (await sql.query<{ workspace_id: string; workflow_id: string }>(
       'select workspace_id,workflow_id from runs where id=$1 and workspace_id=$2', [runId, workspaceId])).rows[0]
     if (!row) throw new DomainError('RUN_NOT_FOUND', 'The Run was not found in this workspace.', 404)
     const live = await readLiveManagementPrincipal(sql as unknown as Pick<pg.ClientBase, 'query'>, principal.id)
     requireAuthorization(live, action, { workspaceId: row.workspace_id, workflowId: row.workflow_id, runId })
-    const snapshot = await readAcceptedRepeatRunLocked(sql, runId)
+    const snapshot = await readAcceptedRun(sql, runId)
     if (snapshot.run.workspaceId !== workspaceId || snapshot.run.workflowId !== row.workflow_id) {
       throw new DomainError('RUN_PIN_CONFLICT', 'The Run changed its exact scope.', 409)
     }

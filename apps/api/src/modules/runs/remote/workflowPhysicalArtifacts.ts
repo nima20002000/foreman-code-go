@@ -1,3 +1,4 @@
+import { parseWorkHandoffArtifactResult } from '@foreman-code/contracts/wave25'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual as same } from 'node:util'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
@@ -5,7 +6,7 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import { VerifiedTransferReceiptSchema } from '@foreman-code/contracts/byte-transfer'
 import { SavedRunVersionSnapshotSchema, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { parseWorkflowArtifactResult,workflowArtifactDigestsByOutputKey } from '@foreman-code/contracts/workflow-artifact-result'
-import type { RemoteWorkflowPhysicalReadout } from '@foreman-code/contracts/remote-workflow-physical'
+import { remoteWorkflowPhysicalOutput, type RemoteWorkflowPhysicalReadout } from '@foreman-code/contracts/remote-workflow-physical'
 import { workflowArtifactTransferManifestDigest } from '@foreman-code/contracts/workflow-artifact-transfer-node'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { assertGraphTransaction, poisonGraphTransaction, type GraphTransactionSql } from '../../run-graph/connection.js'
@@ -43,7 +44,8 @@ export class PostgresWorkflowPhysicalArtifacts implements WorkflowPhysicalArtifa
     assertGraphTransaction(sql)
     try {
       const { receipt, output } = readout, intent = receipt.intent
-      if (output?.kind !== 'published-artifacts' || !receipt.terminal?.result || receipt.terminal.kind !== 'completed'
+      if ((output?.kind !== 'published-artifacts' && output?.kind !== 'invalid-artifacts')
+        || !receipt.terminal?.result || receipt.terminal.kind !== 'completed'
         || !same(output.result, receipt.terminal.result) || !receipt.native?.turnId || intent.mainId !== this.mainId) return unavailable()
       const row = (await sql.query<{ run: unknown; version: unknown }>(`select r.record as run,v.record as version
         from runs r join workflow_versions v on v.id=r.workflow_version_id where r.id=$1
@@ -54,10 +56,39 @@ export class PostgresWorkflowPhysicalArtifacts implements WorkflowPhysicalArtifa
       if (run.id !== intent.runId || run.workflowVersionId !== version.id || run.workspaceId !== version.workspaceId
         || run.workflowId !== version.workflowId || !node || node.kind === 'job' || !node.artifactOutputs
         || run.agentConfigurationVersionIds[node.agentId] !== version.agentConfigurationVersionIds[node.agentId]) return unavailable()
-      const declaration = (()=>{
-        try{return (node.choice ? parseWorkflowArtifactResult(output.result, node.artifactOutputs, node.choice)
-          : parseWorkflowArtifactResult(output.result, node.artifactOutputs)).artifactOutputs}
-        catch{return unavailable()}
+      if (output.kind === 'invalid-artifacts') {
+        if (adopted || !same(output.failure, receipt.terminal.artifactValidationError)
+          || (receipt.terminal.artifactDigests?.length ?? 0) !== 0) return unavailable()
+        const derived = remoteWorkflowPhysicalOutput(output.result, node.artifactOutputs)
+        if (output.failure.reason === 'invalid_result') {
+          if (derived.kind !== 'invalid-artifacts' || !same(derived.failure, output.failure)) return unavailable()
+          return
+        }
+        if (derived.kind !== 'published-artifacts') return unavailable()
+        const attempt = ArtifactAttemptSchema.parse({ workspaceId: run.workspaceId, workflowId: run.workflowId,
+          runId: run.id, nodeId: node.id, executionId: intent.executionId,
+          attemptId: intent.attemptId, placementHash: intent.bindingHash })
+        const accepted = await this.ports.authority.resolveWorkflowContext(attempt, transferContextForBinding(binding), sql)
+        const caller = await this.ports.authority.authorize(accepted, sql)
+        if (caller.context.nativeSessionId !== receipt.native.sessionId
+          || caller.context.turnId !== receipt.native.turnId) return unavailable()
+        for (const mapping of derived.artifactOutputs.outputs) {
+          const publication = await sql.query(`select record from file_tool_publications
+            where owner_principal_id=$1 and request_id=$2 and binding=$3 for share`,
+          [caller.principal.id, `fil05:remote:${digest(mapping.commandId)}`, caller.binding])
+          if (publication.rowCount === 0) return
+        }
+        return unavailable()
+      }
+      if (receipt.terminal.artifactValidationError) return unavailable()
+      const declaration = (() => {
+        try {
+          if (version.definition.handoffs) {
+            return parseWorkHandoffArtifactResult(output.result, node.artifactOutputs).artifactOutputs
+          }
+          if (node.choice) return parseWorkflowArtifactResult(output.result, node.artifactOutputs, node.choice).artifactOutputs
+          return parseWorkflowArtifactResult(output.result, node.artifactOutputs).artifactOutputs
+        } catch { return unavailable() }
       })()
       if (!same(declaration, output.artifactOutputs)) return unavailable()
       const attempt = ArtifactAttemptSchema.parse({ workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,

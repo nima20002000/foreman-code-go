@@ -30,12 +30,23 @@ interface RunRow {
  * Do not replace the central repository's old 1/2 parser with a permissive union;
  * its explicit third arm must call this after acquiring the appropriate locks. */
 export function readAcceptedRepeatRunLocked(sql: GraphTransactionSql, runId: string): Promise<AcceptedRepeatRunSnapshot> {
+  return readAcceptedRepeatRun(sql, runId, 'for share of r')
+}
+
+/** The Run, physical columns and lifecycle flags share one committed SQL cut.
+ * Remaining rows are immutable pins. This read grants no mutation authority. */
+export function readAcceptedRepeatRunSnapshot(sql: GraphTransactionSql, runId: string): Promise<AcceptedRepeatRunSnapshot> {
+  return readAcceptedRepeatRun(sql, runId, '')
+}
+
+function readAcceptedRepeatRun(sql: GraphTransactionSql, runId: string,
+  lock: '' | 'for share of r'): Promise<AcceptedRepeatRunSnapshot> {
   return timeRuntimeOperation('db', 'snapshot.read_run', async () => {
     assertGraphTransaction(sql)
     const found = await sql.query<RunRow>(`select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.execution_state,
       r.runner_id,r.working_directory,r.location_revision::text,r.record,r.stop_requested_at is not null as stopped,
       exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup_pending
-      from runs r where r.id=$1 for share of r`, [runId])
+      from runs r where r.id=$1 ${lock}`, [runId])
     const row = found.rows[0]
     if (found.rows.length !== 1 || !row) throw new DomainError('RUN_NOT_FOUND', 'The exact Run was not found.', 404)
     const run = AcceptedWorkflowRunV3Schema.parse(row.record)

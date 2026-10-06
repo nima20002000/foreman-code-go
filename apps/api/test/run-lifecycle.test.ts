@@ -119,6 +119,7 @@ function fixture() {
   const factory = {} as RepeatEngineStartContext['factory']
   const runs = {
     repeatRepositoryFactory: () => { calls.factory++; return factory },
+    get: async (runId: string) => { assert.equal(runId, run.id); return structuredClone(run) },
     acquireOwnership: async () => {
       assert.equal(calls.owners, 0, 'another resume must not overwrite the current owner')
       calls.owners++; calls.peakOwners = Math.max(calls.peakOwners, calls.owners)
@@ -139,7 +140,9 @@ function fixture() {
     reconcileReviews: async () => undefined, closeForRestart: async () => undefined, requestColdRunCleanup: async () => false,
     nativeBoundaryEvidence: async () => { throw new Error('No native evidence is fabricated in engine port tests') } }
   const interactions = { list: async () => { throw new Error('Historical pagination must never select resume IDs') } }
-  const engine = new LangGraphWorkflowEngine(runs as unknown as EngineArguments[0], {} as EngineArguments[1],
+  const engine = new LangGraphWorkflowEngine(runs as unknown as EngineArguments[0], {
+    getVersion: async (versionId: string) => { assert.equal(versionId, f.version.id); return f.version },
+  } as unknown as EngineArguments[1],
     native as unknown as EngineArguments[2], saver, '/synthetic/runtime', {} as EngineArguments[5],
     {} as EngineArguments[6], interactions as unknown as EngineArguments[7])
   const internals = engine as unknown as Internals
@@ -219,6 +222,7 @@ function runtimeFixture(names = ['entry', 'approval', 'sibling'], edges: Array<[
     ensureWorkEntry: unsupportedWork, admitWorkActivation: unsupportedWork, acceptWorkTerminal: unsupportedWork,
     admitWorkRequest: unsupportedWork, returnWork: unsupportedWork, recordWorkUnresolved: unsupportedWork,
     completeWorkRun: unsupportedWork,
+    resolveWaitingWorkJoins: unsupportedWork,
     resolveExcluded: async () => undefined, // All nodes in these fixtures are reachable.
     completeRun: async () => {
       assert.equal(f.resolutions.size, names.length)
