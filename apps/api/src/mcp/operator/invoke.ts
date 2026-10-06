@@ -23,7 +23,7 @@ export async function invokeOperatorTool(
         errorType: error instanceof Error ? error.constructor.name : typeof error,
         ...(typeof code === 'string' && /^[A-Z0-9_]{1,64}$/.test(code) ? { errorCode: code } : {}),
         ...(typeof diagnostic?.stack === 'string'
-          ? { stackFrames: diagnostic.stack.split('\n').slice(1, 9) } : {}),
+          ? { stackFrames: diagnostic.stack.split('\n').filter(line => /^\s+at\s/.test(line)).slice(0, 8) } : {}),
       }, 'Operator tool failed')
     }
     if (error instanceof DomainError && error.status === 403) {

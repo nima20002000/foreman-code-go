@@ -15,7 +15,9 @@ function context() {
 
 it('logs the failure location and code without exposing private error text or tool arguments', async () => {
   log.error.mockClear()
-  const error = Object.assign(new Error('private-provider-credential'), { code: 'CLI_CHECK_REJECTED' })
+  const error = Object.assign(new Error('private-provider-credential\nprivate-multiline-credential'), {
+    code: 'CLI_CHECK_REJECTED',
+  })
   const result = await invokeOperatorTool(context().value, 'harness_qualification_run', async () => { throw error })
   expect(result).toMatchObject({ isError: true, content: [{ type: 'text', text: JSON.stringify({
     error: { code: 'INTERNAL_ERROR', message: 'The Operator service could not complete the request.' },
@@ -27,6 +29,7 @@ it('logs the failure location and code without exposing private error text or to
   expect(diagnostic.stackFrames.length).toBeGreaterThan(0)
   expect(message).toBe('Operator tool failed')
   expect(JSON.stringify(diagnostic)).not.toContain('private-provider-credential')
+  expect(JSON.stringify(diagnostic)).not.toContain('private-multiline-credential')
 })
 
 it('retains permission-denial audit and public domain errors', async () => {
