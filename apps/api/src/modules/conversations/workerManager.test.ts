@@ -148,7 +148,7 @@ it('recovers admitted file versions before cold attachment and accepts the same 
     startTurn: () => { throw new Error('Recovery cannot submit a model input') },
     history: async () => ({ events: [], pendingInteractions: [] }),
     reconcile: async () => ({ events: [], pendingInteractions: [] }),
-    cancel: async () => false, pending: async () => undefined, respond: async () => {},
+    cancel: async () => false, pending: async () => undefined, respond: async () => {}, close: async () => {},
   }
   const start: NativeSessionStart = { kind: 'operator', configuration,
     workingDirectory: f.binding.workingDirectory, correlationId: 'original-create' }
