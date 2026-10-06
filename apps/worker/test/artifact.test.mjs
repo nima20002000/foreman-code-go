@@ -70,6 +70,19 @@ test('built worker factory accepts supplied real registration and rejects placeh
   assert.throws(() => createWorkerConnection({ pairing, bootId: randomUUID(), appVersion: '0.1.0', extensions: [{ ...registration, handle: undefined }] }), /actual domain handler/);
 });
 
+test('packaged Worker entry loads installed domains and releases an unpaired installation', { skip: !artifact }, async t => {
+  const { startConfiguredWorker } = await import(pathToFileURL(join(artifact, 'src/worker.mjs')).href);
+  const state = await mkdtemp(join(persistentFixtureRoot, 'worker-unpaired-entry-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(startConfiguredWorker({ stateDirectory: state }), { code: 'ENOENT' });
+    const status = JSON.parse(execFileSync(process.execPath,
+      [join(artifact, 'src/cli.mjs'), 'doctor', '--state', state], { encoding: 'utf8', timeout: 5000 }));
+    assert.equal(status.pairing, 'unpaired');
+    assert.equal(status.service.active, false);
+  }
+});
+
 test('packaged bytes match manifest and doctor import creates no worker authority', { skip: !artifact }, async (t) => {
   const manifest = JSON.parse(await readFile(join(artifact, 'manifest.json'), 'utf8'));
   assert.ok(manifest.files.some((file) => file.path === 'src/worker.mjs'));
