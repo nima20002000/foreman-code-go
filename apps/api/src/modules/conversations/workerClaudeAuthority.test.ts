@@ -30,6 +30,7 @@ function fixture() {
     yield { sequence: 1, type: 'session.pending', occurredAt: new Date().toISOString(), payload: {} }
   })
   const manager = { startTurn: nativeStart, startInitialTurn: nativeStart,
+    attachSession: async (session: typeof f.session) => session,
     history: async () => ({ events: [], pendingInteractions: [] }),
     reconcile: async () => ({ events: [], pendingInteractions: [] }),
     notifyPendingChanged: () => {} } as unknown as ClaudeNativeSessionManager
@@ -41,8 +42,13 @@ function fixture() {
   const identity = { ownerPrincipalId: 'original-sender', attemptId: 'original-request',
     nativeSessionId: f.session.nativeSessionId, nativeMessageId: submission.nativeMessageId,
     clientCorrelationId: correlationId, toolUseId: 'tool-use', generation: 'original-query' }
-  const stream = manager.startTurn(f.session, { prompt: source.prompt, clientCorrelationId: correlationId,
-    onMessageSubmitted: async () => {} })[Symbol.asyncIterator]()
+  const stream = (async function* () {
+    await manager.attachSession(f.session, { kind: 'agent-chat', configuration: f.configuration,
+      conversationId: f.binding.owner.conversationId, workflowId: 'workflow', workflowNodeId: 'node',
+      workingDirectory: f.binding.workingDirectory })
+    yield* manager.startTurn(f.session, { prompt: source.prompt, clientCorrelationId: correlationId,
+      onMessageSubmitted: async () => {} })
+  })()[Symbol.asyncIterator]()
   return { ...f, controls, manager, stream, request, nativeStart, submission, source, recovery, identity }
 }
 

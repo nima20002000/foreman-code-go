@@ -3,7 +3,7 @@ import { WorkerClaudeCallbackIdentitySchema, WorkerClaudeCallbackAuthoritySchema
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
 import { isDeepStrictEqual } from 'node:util'
-import type { NativeInitialTurnInput, NativeTurnInput } from '../harnesses/port.js'
+import type { NativeInitialTurnInput, NativeTurnInput, NativeSessionStart } from '../harnesses/port.js'
 import { ClaudeInteractionBridge } from '../harnesses/claudeSdk/interactions.js'
 import type { ClaudeCallbackIdentity } from '../harnesses/claudeSdk/interactions.js'
 import type { ClaudeNativeSessionManager } from '../harnesses/claudeSdk/sessionManager.js'
@@ -113,6 +113,13 @@ export function createWorkerClaudeAuthority(input: {
       admitted.request = source
     },
     bind(manager: ClaudeNativeSessionManager) {
+      let sessionStart: NativeSessionStart | undefined
+      const attach = manager.attachSession.bind(manager)
+      manager.attachSession = async (session, start, signal) => {
+        const attached = await attach(session, start, signal)
+        sessionStart = structuredClone(start)
+        return attached
+      }
       bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
       const history = manager.history.bind(manager)
       manager.history = async (session, signal) => ({ ...await history(session, signal),
@@ -122,6 +129,7 @@ export function createWorkerClaudeAuthority(input: {
         responseDeliveries: await bridge.deliveryEvidence(session) })
       const initial = manager.startInitialTurn.bind(manager)
       manager.startInitialTurn = async function* (start, message: NativeInitialTurnInput, signal) {
+        sessionStart = structuredClone(start)
         const prepared = { ...await turn(message), onSessionObserved: message.onSessionObserved }
         try { yield* initial(start, prepared, signal) }
         finally { sources.delete(message.clientCorrelationId) }
@@ -129,7 +137,9 @@ export function createWorkerClaudeAuthority(input: {
       const startTurn = manager.startTurn.bind(manager)
       manager.startTurn = async function* (session, message, signal) {
         const prepared = await turn(message)
-        try { yield* startTurn(session, prepared, signal) }
+        if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED', 'The message requires its admitted session context.', 409)
+        const attached = await manager.attachSession(session, sessionStart, signal)
+        try { yield* startTurn(attached, prepared, signal) }
         finally { sources.delete(message.clientCorrelationId) }
       }
     },
