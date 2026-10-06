@@ -1400,12 +1400,12 @@ export class ApprovalExecutionCoordinator {
       // Read the durable reference before resolving a manager: a repository
       // failure must not evict a resident session still needed by run cleanup.
       const existing = execution.nativeSessionId ? await this.interactions.getForExecution(execution.id) : undefined
-      context = await this.managerContext(execution, input.request.configuration)
       const request = HarnessExecutionRequestSchema.parse({
         ...input.request, executionId: execution.id, runId: execution.runId,
         workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
         runtimeDirectory: execution.runtimeDirectory, input: execution.input,
       })
+      context = { ...await this.managerContext(execution, input.request.configuration), workflowRequest: request }
       await this.validateContinuation?.(execution.id, signal)
       {
         await repeat.assertExecutionAdmission(execution.id)

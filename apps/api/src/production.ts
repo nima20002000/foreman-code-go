@@ -718,7 +718,8 @@ export function buildProductionApp(
           if (!owner) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The workflow native owner is unavailable.', 409)
           const execution = await runs.getExecution(context.executionId, owner), run = await runs.get(context.runId!, owner)
           if (!execution || !run || execution.attempt !== context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The persisted execution attempt changed.', 409)
-          const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
+          const request = HarnessExecutionRequestSchema.parse({ ...context.workflowRequest,
+            executionId: execution.id, runId: execution.runId,
             workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
             runtimeDirectory: execution.runtimeDirectory, configuration: context.configuration, input: execution.input })
           return execution.nativeSessionId ? { kind: 'workflow', correlationId: `execution:${execution.id}`, request }

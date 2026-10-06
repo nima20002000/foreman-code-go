@@ -232,12 +232,6 @@ export function createClaudeNativeSessionManager(options: {
     }
   }
   function canonicalStart(start: NativeSessionStart): NativeSessionStart {
-    if (start.kind !== 'operator') {
-      // Workflow notices are per-turn text, offered and bound through input.prompt after inspection.
-      const request = { ...start.request }
-      delete request.initialPrompt
-      start = { ...start, request }
-    }
     if (!start.environment) return start
     const variables = { ...start.environment.variables }
     const token = readProductEnvironment(variables, 'MCP_TOKEN')

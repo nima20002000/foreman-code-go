@@ -490,7 +490,7 @@ describe('Claude native session manager admission', () => {
     await f.manager.dispose?.()
   })
 
-  it('keeps workflow inspection identity through JSON readback and per-turn notice text', async () => {
+  it('keeps the complete accepted workflow request through JSON readback', async () => {
     const f = fixture()
     const request: HarnessExecutionRequest = { executionId: 'execution', runId: 'run', workspaceId: 'workspace',
       workflowNodeId: 'node', workingDirectory: '/work', runtimeDirectory: '/runtime',
@@ -498,16 +498,22 @@ describe('Claude native session manager admission', () => {
         prompt: {}, assignedSkills: [], contentHash: 'recorded', createdAt: '2026-10-06T00:00:00.000Z',
         harness: { harness: 'claude', model: 'recorded-model', authMode: 'subscription', configDirectory: '/profile-a',
           permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [],
-          instructions: '', mcpServers: {} } }, input: { first: 'one', second: 'two' } }
+          instructions: '', mcpServers: {} } }, initialPrompt: 'workflow notice',
+      executionContext: { parentRequest: null }, input: { first: 'one', second: 'two' } }
     const workflow = { request, correlationId: 'execution:execution' }
     const readback = { correlationId: workflow.correlationId,
-      request: { ...request, initialPrompt: 'workflow notice', input: { second: 'two', first: 'one' } } }
+      request: { ...request, input: { second: 'two', first: 'one' } } }
     const prompt = 'first\nworkflow notice'
     try {
       await f.manager.prepareInspection(workflow)
       await f.manager.prepareInspection(readback)
       await expect(f.manager.prepareInspection({ ...workflow, request: { ...request,
         input: { first: 'changed', second: 'two' } } })).rejects.toThrow('immutable inspection context')
+      await expect(f.manager.prepareInspection({ ...workflow, request: { ...request,
+        initialPrompt: 'changed' } })).rejects.toThrow('immutable inspection context')
+      await expect(f.manager.prepareInspection({ ...workflow, request: { ...request,
+        executionContext: { parentRequest: { requestId: 'foreign', requesterNodeId: 'foreign' } } } }))
+        .rejects.toThrow('immutable inspection context')
       const running = drain(f.manager.startInitialTurn(readback, { prompt,
         clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
       const input = await f.nextMessage()
