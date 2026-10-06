@@ -19,6 +19,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Cover delayed read/write responses, persisted write readback, replacement connections after SQL cancellation and bounded missing replies in the PostgreSQL deadline regression.
 - Preserve the supported OpenCode credential key when disposable test storage changes launcher identity, with unit and live native preflight coverage for legacy configuration merging.
 - Bind isolated OpenCode preflight and execution to the fixture-owned configuration file and directory, preventing a later source-directory override, restoring both settings during cleanup and preserving managed-launcher and credential checks.
+- Retain server-side failure codes and locations for unexpected Operator MCP errors without logging private error text, tool arguments or credentials.
 
 ### Changed
 

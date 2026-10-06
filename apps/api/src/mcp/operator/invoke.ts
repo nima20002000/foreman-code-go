@@ -5,6 +5,7 @@ import type { OperatorToolName } from '@foreman-code/contracts/management'
 import type { WorkflowScheduleToolName } from './tools/workflowSchedules.js'
 
 import { DomainError } from '../../modules/errors.js'
+import { componentLogger } from '../../infrastructure/logger.js'
 import { toolFailure, toolResult } from '../shared/results.js'
 import type { OperatorRequestContext } from './types.js'
 
@@ -14,6 +15,17 @@ export async function invokeOperatorTool(
   work: () => Promise<unknown>,
 ) {
   try { return toolResult(await work()) } catch (error) {
+    if (!(error instanceof DomainError)) {
+      const diagnostic = error as { code?: unknown; stack?: unknown } | null
+      const code = diagnostic?.code
+      componentLogger('engine').error({
+        tool: name,
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
+        ...(typeof code === 'string' && /^[A-Z0-9_]{1,64}$/.test(code) ? { errorCode: code } : {}),
+        ...(typeof diagnostic?.stack === 'string'
+          ? { stackFrames: diagnostic.stack.split('\n').slice(1, 9) } : {}),
+      }, 'Operator tool failed')
+    }
     if (error instanceof DomainError && error.status === 403) {
       await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
     }
