@@ -176,17 +176,8 @@ export function testEnvironment(environment, resource) {
     referenceTestAuthenticationFile(resource, environment[variable], destination)
   }
   if (environment.FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE) {
-    const source = privateTestAuthenticationFile(environment.FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE)
-    const destination = assertTestPath(resource, join(clean.CLAUDE_CONFIG_DIR, '.credentials.json'))
-    if (!existsSync(destination)) {
-      copyFileSync(source, destination)
-      chmodSync(destination, 0o600)
-    } else {
-      const stat = lstatSync(destination)
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0) {
-        throw new Error('Test Claude authentication ownership changed')
-      }
-    }
+    copyTestAuthenticationFile(resource, environment.FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE,
+      join(clean.CLAUDE_CONFIG_DIR, '.credentials.json'))
   }
   clean.COREPACK_HOME = environment.COREPACK_HOME || join(homedir(), '.cache', 'node', 'corepack')
   clean.NODE_OPTIONS = `--import=${fileURLToPath(new URL('./test-postgres-guard.mjs', import.meta.url))}`
@@ -201,6 +192,22 @@ function privateTestAuthenticationFile(filename) {
     throw new Error('Explicit test authentication must be a private file owned by the current user')
   }
   return source
+}
+
+export function copyTestAuthenticationFile(resource, filename, destination) {
+  const source = privateTestAuthenticationFile(filename)
+  const target = assertTestPath(resource, destination)
+  mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
+  if (existsSync(target)) {
+    const stat = lstatSync(target)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0) {
+      throw new Error('Test authentication copy ownership changed')
+    }
+    // Provider refreshes belong to this copy and must survive repeated fixture setup.
+    return
+  }
+  copyFileSync(source, target)
+  chmodSync(target, 0o600)
 }
 
 export function referenceTestAuthenticationFile(resource, filename, destination) {

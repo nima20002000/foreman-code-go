@@ -16,6 +16,7 @@ export function assertTestResourcesSettled(resource: TestRoot): void
 export function assertFixtureResourcesSettled(directory: string): void
 export function cleanupTestResources(resource: TestDatabase): Promise<void>
 export function testEnvironment(environment: NodeJS.ProcessEnv, resource: TestDatabase): NodeJS.ProcessEnv
+export function copyTestAuthenticationFile(resource: TestRoot, filename: string, destination: string): void
 export function referenceTestAuthenticationFile(resource: TestRoot, filename: string, destination: string): void
 export function provisionTestResources(environment?: NodeJS.ProcessEnv): Promise<{
   environment: NodeJS.ProcessEnv
