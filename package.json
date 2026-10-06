@@ -1,7 +1,11 @@
 {
   "name": "foreman-code",
   "private": true,
+<<<<<<< HEAD
   "version": "0.0.29",
+=======
+  "version": "0.0.28",
+>>>>>>> baa85a6c4 (test: configure owned MCP connections for native workflows)
   "type": "module",
   "packageManager": "pnpm@11.27.0",
   "engines": {

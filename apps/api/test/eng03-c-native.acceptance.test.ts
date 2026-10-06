@@ -18,6 +18,11 @@ import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCh
 import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
 import { runEng03NativeScenario, type Eng03NativeControl } from './helpers/eng03NativeAcceptance.js'
 import { qualifyEng03OpenCode } from './helpers/eng03OpenCodeQualification.js'
+import { configureNativeWorkflowMcp } from './helpers/nativeWorkflowMcp.js'
+import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
+import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
+import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
 
 async function startedBranches({ pool, runId, nodeIds, runs, publicationChanged }: Eng03NativeControl) {
   const deadline = Date.now() + 120_000
@@ -46,6 +51,36 @@ async function startedBranches({ pool, runId, nodeIds, runs, publicationChanged 
 
 /** Paid-provider, task-owned internal qualification. Public app acceptance is separate. */
 describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live native lifecycle', () => {
+  it('uses the fixture MCP launcher and rejects an unmanaged replacement before credential delivery', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'native-workflow-mcp-'))
+    const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? harnessBinaries(process.env).codexBinary
+    const manager = new CodexAppServerSessionManager(codexBinary)
+    let restore: (() => void) | undefined
+    try {
+      restore = await configureNativeWorkflowMcp({ projectDirectory: directory,
+        runtimeDirectory: directory, codexBinary })
+      const configured = await manager.inspectMcpConfiguration(directory)
+      expect(configured.configured.automaticEndpoint).toBe(true)
+      const detection = new McpDetectionService(codexMcpInspectorAdapter(manager), 'http://127.0.0.1:1/mcp')
+      const input = { harness: 'codex' as const, runnerId: 'fixture', workingDirectory: directory }
+      expect((await detection.preflight(input)).detection.state).toBe('status_unavailable')
+      await writeFile(join(directory, '.codex', 'config.toml'), [
+        `[mcp_servers.${configured.serverName}]`,
+        `command = ${JSON.stringify(process.execPath)}`,
+        'args = ["--version"]',
+        `env_vars = [${JSON.stringify(configured.configured.bearerTokenEnvironmentVariable)}]`,
+        '',
+      ].join('\n'), { mode: 0o600 })
+      await expect(detection.preflight(input)).rejects.toMatchObject({ code: 'APP_MCP_PREFLIGHT_FAILED' })
+    } finally {
+      try { await manager.dispose() }
+      finally {
+        restore?.()
+        await rm(directory, { recursive: true, force: true })
+      }
+    }
+  }, 90_000)
+
   it('E03-L01 stops two positively started Codex branches without starting Reviewer', async () => {
     let started: Array<{ execution_id: string; native_session_id: string }> = []
     const result = await runEng03NativeScenario('E03-L01', 'codex', 'codex', {

@@ -56,6 +56,7 @@ import type { AuthorizeWorkflowStop } from '../../src/modules/runs/repeatLifecyc
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
 import { seedAgent3 } from './wave25Agent3.js'
+import { configureNativeWorkflowMcp } from './nativeWorkflowMcp.js'
 
 const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
@@ -165,6 +166,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let activeRuntime: RuntimeInstance | undefined
   let mcpApp: ReturnType<typeof buildApp> | undefined
   let mcpRoutes: AppMcpRoutes | undefined
+  let restoreNativeMcp: (() => void) | undefined
   let runId: string | undefined
   let stopRun: (() => Promise<boolean>) | undefined
   const runtimeTimeline: RuntimeTimingRecord[] = []
@@ -274,6 +276,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       interactions: new PostgresAppInteractionService(livePool, new PostgresInteractionRepository(livePool),
         new PostgresCommandCoordinator(livePool)) } })
     const endpoint = `${await mcpApp.listen({ host: '127.0.0.1', port: 0 })}/mcp`
+    restoreNativeMcp = await configureNativeWorkflowMcp({
+      projectDirectory, runtimeDirectory, codexBinary,
+      ...(first === 'opencode' || second === 'opencode' ? { openCodeBinary } : {}),
+    })
     mcpRoutes = new AppMcpRoutes(livePool, endpoint)
     evidence.mcpEndpoint = endpoint
     const makeRuntime = (saver: BaseCheckpointSaver): RuntimeInstance => {
@@ -648,6 +654,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     await activeRuntime?.managers.dispose().catch(() => undefined)
     await mcpRoutes?.close().catch(() => undefined)
     await mcpApp?.close().catch(() => undefined)
+    restoreNativeMcp?.()
     if (runId) await checkpoints?.saver.deleteThread(runId).catch(() => undefined)
     await checkpoints?.close().catch(() => undefined)
     await pool?.end().catch(() => undefined)

@@ -17,6 +17,8 @@ import { codexQualificationSuite, opencodeQualificationSuite, withNativeQualific
   NativeProcessRegistry } from '../../src/modules/harnesses/qualification/cliEntry.js'
 import { nativeCompatibilityProbe } from '../../src/modules/harnesses/compatibility/probe.js'
 import { clearQualificationGate, installQualificationGate } from '../../src/modules/harnesses/qualification/gate.js'
+import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeServer.js'
+import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
 
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
@@ -56,7 +58,28 @@ export async function qualifyEng03OpenCode() {
     const registry = new HarnessQualificationRegistry(repository,
       { codex: codexQualificationSuite.revision, opencode: opencodeQualificationSuite.revision })
     const binaries = { codex: process.env.ENG03_A_CODEX_BINARY ?? 'codex',
-      opencode: process.env.ENG03_A_OPENCODE_BINARY ?? '/home/nima/.local/bin/opencode' }
+      opencode: process.env.ENG03_A_OPENCODE_BINARY ?? process.env.OPENCODE_BINARY ?? 'opencode' }
+    const metadata = new ManagedOpenCodeServer({ binary: binaries.opencode, workingDirectory: directory,
+      ownerAgentId: 'qualification-metadata', appMcpAccess: 'none',
+      processRecovery: processes.scope(`qualification-metadata:${randomUUID()}`) })
+    try {
+      const signal = AbortSignal.timeout(30_000)
+      await metadata.ensure(signal)
+      const response = await metadata.request('/provider', { method: 'GET' }, signal)
+      assert.ok(response.ok, 'Native provider metadata is unavailable')
+      const catalog = record(await response.json())
+      const model = process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna'
+      const [providerId, ...modelId] = model.split('/')
+      const providers = Array.isArray(catalog.all) ? catalog.all.map(record) : []
+      const provider = providers.find(item => item.id === providerId)
+      console.info('OPENCODE_ACCEPTANCE_PROVIDER', JSON.stringify({ model,
+        connected: Array.isArray(catalog.connected) && catalog.connected.includes(providerId),
+        providerAdvertised: provider !== undefined,
+        modelAdvertised: provider !== undefined && Object.hasOwn(record(provider.models), modelId.join('/')),
+      }))
+    } finally {
+      await metadata.dispose()
+    }
     const selected = await registry.inspectBinary(binaries.opencode)
     const checker = await registry.inspectBinary(process.execPath)
     const guard = (binary: string, sha256: string) => async (signal?: AbortSignal) => {
