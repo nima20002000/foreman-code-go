@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
 import { WorkerOpenCodeFilePreparationSchema, type WorkerOpenCodeFileAction } from '@foreman-code/contracts/remote-execution-rpc'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
-import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema } from '@foreman-code/contracts/files'
+import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema, FileRevisionSchema } from '@foreman-code/contracts/files'
 import { fileToolFixture } from '../../../test/support/fileTools.js'
 import { MainWorkerOpenCodeFiles } from './mainWorkerOpenCodeFiles.js'
 
@@ -56,7 +56,7 @@ it('preserves an acknowledged native version after credential revocation with cu
     if (input.status !== 'ready') throw new Error('The fixture source is unavailable.')
     const bytes = Buffer.from('# retained native edit\n')
     const identity = { transferId: randomUUID(), id: createHash('sha256').update('retained-version').digest('hex'),
-      revision: { ...input.revision, filename: 'retained-native.md', origin: 'agent_output' as const,
+      revision: { ...FileRevisionSchema.parse(input.revision), filename: 'retained-native.md', origin: 'agent_output' as const,
         byteSize: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } }
     await expect(f.call({ phase: 'preserve-begin', ...identity })).rejects.toMatchObject({ status: 403 })
     f.acknowledge()
@@ -73,7 +73,7 @@ it('preserves an acknowledged native version after credential revocation with cu
     const reader = await f.files.service.sessions.issueForAcceptedSession(f.context,
       new Date(Date.now() + 60000), 'opencode')
     const page = await f.files.service.list(reader, { scope: f.files.scope, limit: 100 })
-    const retained = page.items.filter(item => item.file.filename === identity.revision.filename)
+    const retained = page.items.filter(item => item.revision.filename === identity.revision.filename)
     expect(retained).toHaveLength(1)
     const saved = retained[0]!
     const read = await f.files.service.read(reader, { fileId: saved.file.fileId,

@@ -449,8 +449,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     await this.ready(combined)
     this.validateReference(session)
     const directory = sessionStartDirectory(start)
+    await this.options.server.importFileSession?.(session.nativeSessionId, directory, combined)
     const native = object(await this.json(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory, combined))
-    this.verifyAttachedSession(native, session.nativeSessionId, directory, this.configuration(start))
+    await this.verifyAttachedSession(native, session.nativeSessionId, directory, this.configuration(start), combined)
     return this.compactionFromHistory(session, directory, control, combined)
   }
 
