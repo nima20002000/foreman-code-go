@@ -6,7 +6,7 @@ import { CodexMcpConnections } from '../../src/modules/harnesses/codexMcpConnect
 import { qualifyCodex } from '../../src/modules/harnesses/codexProtocol.js'
 import { CodexStdioTransport } from '../../src/modules/harnesses/codexStdioTransport.js'
 import { editJsoncMcp } from '../../src/modules/harnesses/jsoncMcpEditor.js'
-import { nativeConnection } from '../../src/modules/harnesses/nativeMcpCommon.js'
+import { nativeConnection, record, type NativeMcpSnapshot } from '../../src/modules/harnesses/nativeMcpCommon.js'
 import { OpenCodeMcpConnections } from '../../src/modules/harnesses/openCodeMcpConnections.js'
 import type { NativeProcessRecovery } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { inheritedAgentEnvironment } from '../../src/modules/harnesses/secrets.js'
@@ -24,6 +24,16 @@ async function requireOwnedConfiguration(file: string) {
   const path = relative(await realpath(root), target)
   if (isAbsolute(path) || path === '..' || path.startsWith('../')) {
     throw new Error('Native fixture configuration cannot edit shared provider settings.')
+  }
+}
+
+function requireConnection(snapshot: NativeMcpSnapshot, endpoint: string) {
+  const configured = record(snapshot.user[APP_MCP_SERVER_NAME])
+  const reference = snapshot.harness === 'codex'
+    ? configured.bearer_token_env_var === APP_MCP_TOKEN
+    : record(configured.headers).Authorization === `Bearer {env:${APP_MCP_TOKEN}}`
+  if (configured.url !== endpoint || configured.enabled !== true || !reference) {
+    throw new Error('The native fixture MCP endpoint and scoped credential reference were not persisted.')
   }
 }
 
@@ -46,6 +56,7 @@ export async function prepareNativeTestMcp(input: {
     signal.throwIfAborted()
     await writeFile(snapshot.file, updated)
     await chmod(snapshot.file, 0o600)
+    requireConnection(await adapter.read(signal), input.endpoint)
     return
   }
   const adapter = new CodexMcpConnections(input.binary, input.directory, input.recovery)
@@ -67,4 +78,5 @@ export async function prepareNativeTestMcp(input: {
   } finally {
     await transport.close()
   }
+  requireConnection(await adapter.read(signal), input.endpoint)
 }
