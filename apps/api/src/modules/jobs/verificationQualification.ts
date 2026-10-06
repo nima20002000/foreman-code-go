@@ -4,6 +4,7 @@ import { mkdir, open, readFile, readlink, rm, statfs, writeFile } from 'node:fs/
 import { join } from 'node:path'
 import { release } from 'node:os'
 import { isDeepStrictEqual } from 'node:util'
+import type { z } from 'zod'
 import type { FileHandle } from 'node:fs/promises'
 import { JobTargetSchema } from '@foreman-code/contracts/jobs'
 import { JobVerificationReportSchema } from '@foreman-code/contracts/job-verification'
@@ -17,9 +18,9 @@ import { JobVerificationQualificationCandidateSchema, JobVerificationRepositoryC
 import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationConfiguration.js'
 import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile,
   type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
-import { podmanIsolationCreateArgv, ensureEmptyPodmanHooks } from './executorPodman.js'
+import { podmanIsolationCreateArgv, ensureEmptyPodmanHooks, type PodmanIsolationInput } from './executorPodman.js'
 import { assertJobRuntimeEntryContext, jobQualificationFingerprint, runQualificationCommand,
-  validateVerificationIsolationObservation, type JobQualificationAuthority }
+  validateVerificationIsolationObservation, type JobQualificationAuthority, type QualificationNativeOwner }
   from './qualification.js'
 import { prepareVerificationQualificationSource, restoreVerificationQualificationSource, resetVerificationQualificationWorkload, writeVerificationQualificationContext } from './verificationQualificationSource.js'
 import { JobProjectQuotaReadbackSchema, readVerificationQuotaPool, verifyJobQuotaOwnership,
@@ -40,6 +41,22 @@ const reportLimits = { 'summary.json': 'summaryBytes', 'junit.xml': 'junitBytes'
   'vitest.json': 'vitestBytes', 'logs.tar.gz': 'logsArchiveBytes' } as const
 const reportFiles = Object.keys(reportLimits) as Array<keyof typeof reportLimits>
 const idle = 'setInterval(()=>{},1000)'
+export async function startVerificationContainer(input: {
+  candidate: z.infer<typeof JobVerificationQualificationCandidateSchema>
+  owner: Pick<QualificationNativeOwner, 'registerContainer' | 'observeContainer' | 'enterContainer'>
+  plan: PodmanIsolationInput
+  checked(argv: string[], timeoutMs: number): Promise<string>
+}): Promise<string> {
+  const { candidate, owner, plan, checked } = input
+  await owner.registerContainer(plan.identity, jobQualificationFingerprint(candidate))
+  const timeout = candidate.profile.spec.policy.preparationTimeoutMs
+  const id = (await checked(podmanIsolationCreateArgv(plan), timeout)).trim()
+  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Original verification container identity missing.')
+  await owner.observeContainer(plan.identity, id)
+  await checked(['start', id], timeout)
+  await owner.enterContainer(plan.identity, id)
+  return id
+}
 const quotaProbe = `const fs=require('node:fs');const input=JSON.parse(process.argv[1]);
 const file='/job-scratch/quota-bytes';let byteError=null,inodeError=null,byteErrno=null,inodeErrno=null,inodeCreated=0;
 if(input.phase==='bytes'){
@@ -151,19 +168,13 @@ export async function qualifyVerificationRuntime(input: {
     let containerSequence = 0
     const createContainer = async () => {
       const identity = `graphql-ci-qualification-${candidate.qualificationId}-${++containerSequence}`
-      await owner.registerContainer(identity, jobQualificationFingerprint(candidate))
-      const id = (await checked(podmanIsolationCreateArgv({ identity, ...source,
+      return startVerificationContainer({ candidate, owner, checked, plan: { identity, ...source,
         runtimeRoot: candidate.runtimeRoot, cwd: source.sourceRoot, argv: ['node', '-e', idle], inputRoot,
         profile: { ...fingerprint.limits, imageDigest: fingerprint.imageDigest }, spoolBytes: candidate.spoolBytes,
         labels: { 'graphql.qualification.identity': identity,
           'graphql.qualification.fingerprint': jobQualificationFingerprint(candidate) },
         verification: { resources: fingerprint.resources, scratchDirectory: scratch },
-      }))).trim()
-      if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Original verification container identity missing.')
-      await owner.observeContainer(identity, id)
-      await checked(['start', id])
-      await owner.enterContainer(identity, id)
-      return id
+      } })
     }
     let containerId = await createContainer()
     const ownerSentinel = join(candidate.runtimeRoot, `qualification-${candidate.operationId}-owner-sentinel`)

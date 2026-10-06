@@ -33,16 +33,21 @@ export const QualificationReceiptSchema = z.object({
 }).strict()
 export type QualificationReceipt = z.infer<typeof QualificationReceiptSchema>
 
-export function qualificationCreationFailed(receipt: QualificationReceipt): boolean {
+export function qualificationCreationStopped(receipt: QualificationReceipt): boolean {
   const container = receipt.container
   if (!container || container.containerId || container.certificate || receipt.launches.some(value => !value.closed)) return false
   const index = receipt.launches.findLastIndex(value => value.binary === receipt.candidate.fingerprint.runtimeExecutable
     && value.argv.includes('create') && value.argv[value.argv.indexOf('--name') + 1] === container.identity)
   const create = receipt.launches[index]
-  return !!create && create.exit?.signal === null && create.exit.exitCode !== null && create.exit.exitCode !== 0
-    && receipt.launches.slice(index + 1).every(value => value.binary === receipt.candidate.fingerprint.runtimeExecutable
+  return !!create && receipt.launches.slice(index + 1).every(value => value.binary === receipt.candidate.fingerprint.runtimeExecutable
       && (isDeepStrictEqual(value.argv, ['--remote=false', 'container', 'inspect', container.identity])
         || isDeepStrictEqual(value.argv, ['--remote=false', 'container', 'exists', container.identity])))
+}
+
+export function qualificationCreationFailed(receipt: QualificationReceipt): boolean {
+  const create = receipt.launches.findLast(value => value.argv.includes('create'))
+  return qualificationCreationStopped(receipt) && create?.exit?.signal === null
+    && create.exit.exitCode !== null && create.exit.exitCode !== 0
 }
 
 export function qualificationCleanupCommandAllowed(receipt: QualificationReceipt, binary: string, argv: string[]) {
@@ -52,7 +57,7 @@ export function qualificationCleanupCommandAllowed(receipt: QualificationReceipt
     return false
   }
   const command = argv.slice(1)
-  if (!container?.containerId && qualificationCreationFailed(receipt)
+  if (!container?.containerId
     && isDeepStrictEqual(command, ['container', 'exists', target])) return true
   if (isDeepStrictEqual(command, ['container', 'inspect', target])
     || isDeepStrictEqual(command, ['stop', '--time', '1', target])

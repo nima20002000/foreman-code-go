@@ -12,7 +12,7 @@ import { nativeAgentEnvironment } from '../harnesses/secrets.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
-import { qualificationCleanupCommandAllowed, qualificationCreationFailed } from './qualificationJournal.js'
+import { qualificationCleanupCommandAllowed, qualificationCreationStopped } from './qualificationJournal.js'
 import { inspectInstalledJobRuntimeCandidate, type InstalledRuntimeHostDependencies, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 import type { OCIContainerOwnership, OCIHostCertificate } from './executorContainerOwner.js'
 import type { z } from 'zod'
@@ -240,9 +240,13 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     async confirmFailedCreation(identity) {
       await assertClosure()
       const receipt = await journal.qualificationStatus(operationId)
-      if (!receipt || receipt.container?.identity !== identity || !qualificationCreationFailed(receipt)
-        || !await registry.closeOwner(owner)) return false
-      await journal.qualificationCreationAbsent(operationId, identity)
+      if (!receipt || receipt.container?.identity !== identity || !qualificationCreationStopped(receipt)) return false
+      let closed = false
+      await journal.qualificationCreationAbsent(operationId, identity, async () => {
+        closed = await registry.closeOwner(owner)
+        return closed
+      })
+      if (!closed) return false
       return true
     },
   }

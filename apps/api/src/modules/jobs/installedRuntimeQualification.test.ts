@@ -26,6 +26,8 @@ import { DeviceExecutionAdmissionFields } from '@foreman-code/contracts/device-r
 import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 import { createVerificationProfile } from './verificationProfiles.js'
 import { jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
+import { startVerificationContainer } from './verificationQualification.js'
+import { JOB_INPUT_DIRECTORY } from '@foreman-code/contracts/job-inputs'
 
 const id = '00000000-0000-4000-8000-000000000001', digest = 'a'.repeat(64)
 const roots: string[] = [], journals: RemoteOperationJournal[] = []
@@ -95,6 +97,34 @@ async function verificationReservationFixture() {
 }
 
 describe('actual qualification reservation seams with mocked native entry only', () => {
+  it('allows cold container creation within the approved preparation budget, then starts the original ID', async () => {
+    const f = await verificationReservationFixture()
+    f.candidate.profile.spec.policy.preparationTimeoutMs = 600000
+    const root = dirname(f.path), containerId = 'd'.repeat(64)
+    const owner = { registerContainer: vi.fn(async () => {}), observeContainer: vi.fn(async () => {}), enterContainer: vi.fn(async () => {}) }
+    vi.useFakeTimers()
+    try {
+      const checked = vi.fn(async (argv: string[], timeout: number) => {
+        if (!argv.includes('create')) return ''
+        return new Promise<string>((resolve, reject) => {
+          const deadline = setTimeout(() => reject(new Error('Preparation interrupted')), timeout)
+          setTimeout(() => { clearTimeout(deadline); resolve(containerId) }, 31000)
+        })
+      })
+      const preparation = startVerificationContainer({ candidate: f.candidate, owner, checked, plan: {
+        identity: 'original-cold-container', sourceRoot: join(root, 'tree'), runtimeRoot: root,
+        cwd: join(root, 'tree'), argv: ['node', '-e', 'setInterval(()=>{},1000)'],
+        profile: { ...f.candidate.fingerprint.limits, imageDigest: f.candidate.fingerprint.imageDigest }, spoolBytes: 65536,
+        labels: {}, inputRoot: join(root, 'tree', JOB_INPUT_DIRECTORY), gitDirectory: join(root, 'repository'), schedulerDirectory: join(root, 'job-heavy-jobs'),
+      } })
+      const assertion = expect(preparation).resolves.toBe(containerId)
+      await vi.advanceTimersByTimeAsync(31000)
+      await assertion
+      expect(owner.observeContainer).toHaveBeenCalledWith('original-cold-container', containerId)
+      expect(owner.enterContainer).toHaveBeenCalledWith('original-cold-container', containerId)
+      expect(checked).toHaveBeenLastCalledWith(['start', containerId], 600000)
+    } finally { vi.useRealTimers() }
+  })
   it('does not close an active diagnostic launcher again after container cleanup closed it', async () => {
     const f = await fixture()
     const admitted = await reserveInstalledJobQualification(f.input)
@@ -144,6 +174,31 @@ describe('actual qualification reservation seams with mocked native entry only',
     await f.journal.qualificationClose(id)
     expect(await f.journal.qualificationStatus(id)).toMatchObject({ phase: 'closed', creationAbsent: true,
       container: { identity, containerId: null, certificate: null } })
+  })
+  it.each([false, true])('requires actual original-owner closure after interrupted creation (closed %s)', async closed => {
+    const f = await fixture()
+    const admitted = await reserveInstalledJobQualification(f.input)
+    const identity = `graphql-ci-qualification-${id}`
+    await f.journal.qualificationContainerIntent(id, identity, f.admission.fingerprintDigest)
+    const createId = randomUUID()
+    await f.journal.qualificationReserveProcess(id, { launchId: createId, binary: process.execPath,
+      argv: ['--remote=false', 'create', '--name', identity] })
+    await f.journal.qualificationProcessClosed(id, createId)
+    const observationId = randomUUID()
+    await f.journal.qualificationReserveCleanupProcess(id, { launchId: observationId, binary: process.execPath,
+      argv: ['--remote=false', 'container', 'exists', identity] })
+    await f.journal.qualificationProcessExit(id, observationId, { exitCode: 1, signal: null })
+    await f.journal.qualificationProcessClosed(id, observationId)
+    await expect(f.journal.qualificationCreationAbsent(id, identity)).rejects.toThrow('unconfirmed')
+    vi.mocked(f.registry.closeOwner).mockResolvedValue(closed)
+    if (closed) {
+      expect(await admitted.ownership.confirmFailedCreation!(identity)).toBe(true)
+      expect(f.registry.closeOwner).toHaveBeenCalled()
+      expect(await f.journal.qualificationStatus(id)).toMatchObject({ creationAbsent: true })
+    } else {
+      await expect(admitted.ownership.confirmFailedCreation!(identity)).rejects.toThrow('unconfirmed')
+      expect(await f.journal.qualificationStatus(id)).toMatchObject({ creationAbsent: false })
+    }
   })
   it('retains a rejected entry check as a closed non-entry result without launching a diagnostic', async () => {
     const f = await fixture()

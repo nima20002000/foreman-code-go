@@ -22,7 +22,7 @@ import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordS
   type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { JobNativeOwnerSchema, JobOCICertificateSchema, isPreparatoryVerificationOwner, jobContainerNonEntryObserved, type JobNativeOwner } from '../../jobs/executorJournal.js'
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
-import { QualificationReceiptSchema, QualificationOCICertificateSchema, qualificationCleanupCommandAllowed, qualificationCreationFailed,
+import { QualificationReceiptSchema, QualificationOCICertificateSchema, qualificationCleanupCommandAllowed, qualificationCreationFailed, qualificationCreationStopped,
   QUALIFICATION_COMMAND_LIMIT, QUALIFICATION_CLEANUP_COMMAND_LIMIT,
   type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 
@@ -451,11 +451,14 @@ export class RemoteOperationJournal {
       return receipt
     })
   }
-  qualificationCreationAbsent(operationId: string, identity: string) {
+  async qualificationCreationAbsent(operationId: string, identity: string, closeOriginalOwner?: () => Promise<boolean>) {
+    const ownerClosed = closeOriginalOwner ? await closeOriginalOwner() : false
     return this.change(data => {
       const receipt = this.qualificationReceipt(data, operationId)
       const observation = receipt.launches.at(-1)
-      if (receipt.container?.identity !== identity || !qualificationCreationFailed(receipt)
+      if (receipt.container?.identity !== identity
+        || !(!closeOriginalOwner && qualificationCreationFailed(receipt)
+          || ownerClosed && qualificationCreationStopped(receipt))
         || !observation || !same(observation.argv, ['--remote=false', 'container', 'exists', identity])
         || observation.exit?.exitCode !== 1 || observation.exit.signal !== null) {
         throw new Error('Original failed container creation is unconfirmed')
