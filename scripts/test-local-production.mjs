@@ -508,7 +508,14 @@ async function main() {
       const revoked = await Promise.allSettled(credentials.map(id => access.revoke(id)))
       for (const result of [...closed, ...revoked]) if (result.status === 'rejected') errors.push(result.reason)
     } finally {
-      try { await stopDatabaseObserver() } finally { await pool.end() }
+      try {
+        await stopDatabaseObserver()
+        if (databaseWaits.length) {
+          const diagnostic = join(process.cwd(), '.logs/production-installed', `database-waits-${randomUUID()}.json`)
+          await publish(diagnostic, JSON.stringify({ databaseWaits }, null, 2) + '\n')
+          console.log(`Installed database wait evidence: ${diagnostic}`)
+        }
+      } finally { await pool.end() }
     }
     if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'))
   }
