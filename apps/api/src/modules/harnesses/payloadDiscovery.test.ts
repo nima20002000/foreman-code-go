@@ -10,9 +10,12 @@ const require = createRequire(import.meta.url)
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'codex-launcher-payload-'))
   const launcher = join(root, 'package/bin/codex.js')
-  const payload = join(root, 'package/vendor/x86_64-unknown-linux-musl/bin/codex')
+  const platformPackage = join(root, 'package/node_modules/@openai/codex-linux-x64')
+  const payload = join(platformPackage, 'vendor/x86_64-unknown-linux-musl/bin/codex')
   await mkdir(join(root, 'package/bin'), { recursive: true })
-  await mkdir(join(root, 'package/vendor/x86_64-unknown-linux-musl/bin'), { recursive: true })
+  await mkdir(join(platformPackage, 'vendor/x86_64-unknown-linux-musl/bin'), { recursive: true })
+  await writeFile(join(platformPackage, 'package.json'), JSON.stringify({ name: '@openai/codex-linux-x64',
+    version: '0.154.0', exports: { './package.json': './package.json' } }))
   await writeFile(launcher, await readFile(require.resolve('@openai/codex/bin/codex.js')), { mode: 0o700 })
   await writeFile(payload, Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.from('inspection-only-fixture')]),
     { mode: 0o700 })
