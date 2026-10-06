@@ -157,8 +157,8 @@ describe('Claude native session manager admission', () => {
       const output = drain(f.manager.startTurn(session, { prompt: 'next task', clientCorrelationId: 'next-offer',
         sessionPreferences: SessionPreferencesSchema.parse({}) }))
       const message = await f.nextMessage()
-      f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'next-reply', user_message_uuid: message.uuid })
-      f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'next-result', user_message_uuid: message.uuid,
+      await f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'next-reply', user_message_uuid: message.uuid })
+      await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'next-result', user_message_uuid: message.uuid,
         subtype: 'success', is_error: false, result: 'done' })
       await output
       expect(f.offers).toHaveBeenCalledTimes(1)
@@ -187,8 +187,8 @@ describe('Claude native session manager admission', () => {
       sessionPreferences: SessionPreferencesSchema.parse({}) }))
     await vi.waitFor(() => expect(messages).toBeDefined())
     const message = (await messages.next()).value!
-    frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'resumed-reply', user_message_uuid: message.uuid })
-    frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'resumed-result', user_message_uuid: message.uuid,
+    await frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'resumed-reply', user_message_uuid: message.uuid })
+    await frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'resumed-result', user_message_uuid: message.uuid,
       subtype: 'success', is_error: false, result: 'done' })
     await output
     expect(f.offers).toHaveBeenCalledTimes(1)
@@ -880,7 +880,7 @@ for (const result of ['no-op', 'failed'] as const) it(`recovers a lost ${result}
   }
   f.runner.compactionHistory = async () => ({ cursor: { scope: 'scope', identity: 'identity', offset: 0 }, boundaries: [] })
   const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
-  f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId,
+  await f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId,
     cwd: '/work', claude_code_version: '2.1.284', slash_commands: ['compact'] })
   await vi.waitFor(async () => expect((await f.manager.sessionControlCapabilities!(session)).compact.supported).toBe(true))
   const abort = new AbortController()
@@ -888,7 +888,7 @@ for (const result of ['no-op', 'failed'] as const) it(`recovers a lost ${result}
   const compact = f.manager.compactSession!(session, { requestId: 'compact-request', clientCorrelationId: 'compact-correlation',
     onProgress: async value => { state = value } }, abort.signal)
   const message = await f.nextMessage()
-  f.frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+  await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
     is_error: result === 'failed', subtype: result === 'failed' ? 'error_during_execution' : 'success', result: 'Nothing to compact' })
   await vi.waitFor(async () => expect(await f.runner.compactionOutcome!({ ...localScope, nativeSessionId: session.nativeSessionId },
     localScope, message.uuid)).toMatchObject({ status: result }))
@@ -908,7 +908,7 @@ it('releases its runtime fence after a failed pre-dispatch save without offering
   const f = fixture()
   f.runner.compactionHistory = async () => ({ cursor: { scope: 'scope', identity: 'identity', offset: 0 }, boundaries: [] })
   const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
-  f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, cwd: '/work',
+  await f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, cwd: '/work',
     claude_code_version: '2.1.284', slash_commands: ['compact'] })
   await vi.waitFor(async () => expect((await f.manager.sessionControlCapabilities!(session)).compact.supported).toBe(true))
   await expect(f.manager.compactSession!(session, { requestId: 'compact-request', clientCorrelationId: 'control-request',
@@ -917,8 +917,8 @@ it('releases its runtime fence after a failed pre-dispatch save without offering
   expect(f.offers).not.toHaveBeenCalled()
   const output = drain(f.manager.startTurn(session, { prompt: 'follow-up', clientCorrelationId: 'next-task' }))
   const message = await f.nextMessage()
-  f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: message.uuid })
-  f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'next-result', user_message_uuid: message.uuid,
+  await f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: message.uuid })
+  await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'next-result', user_message_uuid: message.uuid,
     subtype: 'success', is_error: false, result: 'done' })
   await output
   await f.manager.dispose!()
