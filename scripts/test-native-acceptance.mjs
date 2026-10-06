@@ -53,12 +53,11 @@ export function nativeAcceptanceVitestArguments(files, environment) {
     ...(pattern ? ['--testNamePattern', pattern] : [])]
 }
 
-export function nativeAcceptanceCommand(files, environment) {
+export function nativeAcceptanceCommand(arguments_) {
   const cli = join(dirname(require.resolve('vitest/package.json')), 'vitest.mjs')
   return {
     executable: process.execPath,
-    arguments: [join(root, 'scripts/heavy-job.mjs'), '--', process.execPath, cli,
-      ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=12'],
+    arguments: [join(root, 'scripts/heavy-job.mjs'), '--', process.execPath, cli, ...arguments_],
     directory: join(root, 'apps/api'),
   }
 }
@@ -98,7 +97,7 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
 }
 
 async function runNativeAcceptance(environment, files) {
-  const command = nativeAcceptanceCommand(files, environment)
+  const command = nativeAcceptanceCommand([...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=12'])
   const child = spawn(command.executable, command.arguments, {
     cwd: command.directory, stdio: 'inherit', detached: true,
     env: environment,
