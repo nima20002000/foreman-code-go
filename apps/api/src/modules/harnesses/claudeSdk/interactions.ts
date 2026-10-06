@@ -1,6 +1,6 @@
 import { PendingNativeInteractionSchema, type PendingNativeInteraction, type NativeSessionReference, type ApprovalResponseOption } from '@foreman-code/contracts'
 import type { ClaudeLiveCallbackQuery, ClaudeResponseAvailability } from './callbackAvailability.js'
-import { ClaudeQuestionInputSchema, ClaudeQuestionAnswersSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import { ClaudeFullAccessConfigurationSchema, ClaudeQuestionInputSchema, ClaudeQuestionAnswersSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { isDeepStrictEqual } from 'node:util'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { NativeResponseDeliveryEvidence } from '../../interactions/delivery.js'
@@ -8,7 +8,6 @@ import type { ClaudeMcpToolManifest } from './mcpPolicy.js'
 import { HarnessExecutionError } from '../errors.js'
 import { appMcpServerName } from '../appMcpLauncher.js'
 import type { ClaudeCallbackJournal, ClaudeCallbackRecord } from './callbackJournal.js'
-import { claudeToolRespectsSandbox } from './readOnlyPolicy.js'
 
 export interface ClaudeCallbackIdentity {
   /** Current owned SDK callback lifetime, supplied by the native manager. */
@@ -69,7 +68,7 @@ export class ClaudeInteractionBridge {
   private readonly controller = new AbortController()
   private readonly listeners = new Set<(notification: ClaudePendingNotification) => void>()
   constructor(configuration: ClaudeHarnessConfiguration, private readonly authority: ClaudeInteractionAuthority) {
-    this.configuration = structuredClone(configuration)
+    this.configuration = ClaudeFullAccessConfigurationSchema.parse(configuration)
   }
   close(): void {
     this.controller.abort()
@@ -90,7 +89,6 @@ export class ClaudeInteractionBridge {
   }
   private toolAllowed(toolName: string, identity: ClaudeCallbackIdentity): boolean {
     if (!this.configuration.tools.includes(toolName)) return false
-    if (!claudeToolRespectsSandbox(this.configuration, toolName)) return false
     if (!toolName.startsWith('mcp__')) return true
     return this.mcpManifests.some(manifest => identity.mcpServer?.name === manifest.serverName
       && identity.mcpServer.source === (manifest.source.kind === 'sdk' ? 'sdk' : 'dynamic')

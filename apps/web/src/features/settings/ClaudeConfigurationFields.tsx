@@ -1,4 +1,5 @@
-import { ClaudeEffortSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import { CLAUDE_FULL_ACCESS_REQUIRED, ClaudeEffortSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import { claudeAccessOptions } from './claudeAccess'
 import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { Alert, Combobox, Select, TextField } from '../../shared/ui/nocturne'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
@@ -38,8 +39,8 @@ export function ClaudeConfigurationFields({ value, onChange, models, qualified, 
       <Select label="Authentication" value={value.authMode} error={fieldMessage(issues, 'authMode')}
         options={[{ value: 'subscription', label: 'Local Claude subscription login' }, { value: 'api-key', label: 'Explicit API key · separate billing' }]}
         onChange={(event) => onChange({ ...value, authMode: event.target.value as ClaudeHarnessConfiguration['authMode'] })} />
-      <Select label="Sandbox" value={value.sandbox} error={fieldMessage(issues, 'sandbox')}
-        options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }, { value: 'danger-full-access', label: 'Full access' }]}
+      <Select label="Sandbox" value={value.sandbox} error={fieldMessage(issues, 'sandbox') ?? (value.sandbox !== 'danger-full-access' ? CLAUDE_FULL_ACCESS_REQUIRED : undefined)}
+        options={claudeAccessOptions(value.sandbox)}
         onChange={(event) => onChange({ ...value, sandbox: event.target.value as ClaudeHarnessConfiguration['sandbox'] })} />
     </div>
     {pending ? <span className="harness-status" role="status">Checking the selected Claude configuration…</span> : null}

@@ -9,7 +9,7 @@ import { memoryClaudeCallbackJournal } from '../../../../test/support/claudeCall
 const tool = 'mcp__graphql__workspace_list'
 const configuration: ClaudeHarnessConfiguration = {
   harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: '/profile',
-  permissionMode: 'default', sandbox: 'read-only', tools: [tool], permissionRules: [], instructions: '',
+  permissionMode: 'default', sandbox: 'danger-full-access', tools: [tool], permissionRules: [], instructions: '',
   mcpServers: { graphql: { type: 'http', url: 'http://127.0.0.1/mcp' } },
 }
 const session = { harness: 'claude' as const, providerVersion: '2.1.284', nativeSessionId: 'session' }
@@ -30,12 +30,15 @@ function fixture(accepted = configuration, callbackJournal = memoryClaudeCallbac
   return { bridge, validate, persisted, callbackJournal }
 }
 
-it.each(['Write', 'Edit', 'NotebookEdit', 'UnknownMutation'])('denies %s in a read-only profile before any approval can widen it', async toolName => {
-  const accepted = { ...configuration, tools: [toolName], permissionRules: [{ tool: toolName, effect: 'allow' as const }] }
-  const f = fixture(accepted)
+it.each(['read-only', 'workspace-write'] as const)('refuses %s before tool approval is created', sandbox => {
+  expect(() => fixture({ ...configuration, sandbox })).toThrow(/Claude requires Full access/)
+})
+
+it('retains an explicit Write denial with Full access', async () => {
+  const f = fixture({ ...configuration, tools: ['Write'], permissionRules: [{ tool: 'Write', effect: 'deny' }] })
   try {
-    expect(await f.bridge.beforeToolUse(identity, toolName, { file_path: '/fixture/file' })).toMatchObject({ permissionDecision: 'deny' })
-    expect(await f.bridge.canUseTool(identity, toolName, { file_path: '/fixture/file' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
+    expect(await f.bridge.beforeToolUse(identity, 'Write', { file_path: '/fixture/file' })).toMatchObject({ permissionDecision: 'deny' })
+    expect(await f.bridge.canUseTool(identity, 'Write', { file_path: '/fixture/file' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
     expect(f.bridge.pendingInteractions(session)).toEqual([])
   } finally { f.bridge.close() }
 })

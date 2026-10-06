@@ -1,6 +1,6 @@
 import { GRAPHQL_OPERATOR_TOOLS } from '../graphqlMcpTools.js'
 import { NativeInteractionSupportSchema } from '../nativeInteractionSupport.js'
-import { ClaudeHarnessConfigurationSchema } from '../claude.js';
+import { ClaudeFullAccessConfigurationSchema, ClaudeHarnessConfigurationSchema } from '../claude.js';
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
 import { z } from "zod";
@@ -20,6 +20,7 @@ import {
   OpenCodeHarnessConfigurationSchema,
   HarnessQualificationSchema,
   HarnessConfigurationSchema,
+  SupportedHarnessConfigurationSchema,
   GetRunResponseSchema,
   ExecutionLocationSchema,
   RunActivitySchema,
@@ -542,7 +543,7 @@ export const GraphDraftRevertAppliedResultSchema = z.object({
 
 export const HarnessDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields,
-  defaults: ManagementHarnessDefaultsSchema,
+  defaults: ManagementHarnessDefaultsSchema.safeExtend({ claude: ClaudeFullAccessConfigurationSchema.optional() }),
 }).strict();
 export const HarnessConfigurationCheckInputSchema = z.object({
   configuration: HarnessConfigurationSchema,
@@ -576,7 +577,14 @@ export const ManagedWorkflowDefaultsSchema = z.object({
   value: WorkflowDefaultsSchema, revision: ExpectedRevisionSchema, versionId: IdSchema.nullable(),
 }).strict();
 export const AgentDefaultsUpdateInputSchema = z.object({
-  ...RevisionMutationFields, value: AgentDefaultsSchema,
+  ...RevisionMutationFields, value: AgentDefaultsSchema.superRefine((value, context) => {
+    for (const role of ['orchestrator', 'coder', 'operator'] as const) {
+      const result = SupportedHarnessConfigurationSchema.safeParse(value[role].harness);
+      if (!result.success) for (const issue of result.error.issues) context.addIssue({
+        ...issue, path: [role, 'harness', ...issue.path],
+      });
+    }
+  }),
 }).strict();
 export const WorkflowDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields, value: WorkflowDefaultsSchema,

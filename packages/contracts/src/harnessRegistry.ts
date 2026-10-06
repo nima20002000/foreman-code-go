@@ -1,6 +1,6 @@
 import { ClaudeQualificationProofSchema } from './claudeQualification.js'
 import { z } from 'zod'
-import { HarnessConfigurationSchema, type HarnessConfiguration } from './index.js'
+import { HarnessConfigurationSchema, SupportedHarnessConfigurationSchema, type HarnessConfiguration } from './index.js'
 import { DevicePresenceSchema } from './deviceConnection.js'
 import { DeviceSessionBindingSchema } from './deviceConnection.js'
 import { HarnessQualificationSchema } from './harnessQualification.js'
@@ -82,7 +82,7 @@ function validateHostEnvironment(configuration: HarnessConfiguration, context: z
 export const HostHarnessOverrideSaveSchema = z.object({
   commandId: z.uuid(), instanceId: z.uuid(), expectedRevision: z.number().int().nonnegative(),
   target: HostHarnessOverrideTargetSchema, presetId: Identity, enabled: z.boolean(),
-  configuration: z.lazy(() => HarnessConfigurationSchema),
+  configuration: z.lazy(() => SupportedHarnessConfigurationSchema),
 }).strict().superRefine((value, context) => validateHostEnvironment(value.configuration, context, ['configuration']))
 export type HostHarnessOverrideSave = z.infer<typeof HostHarnessOverrideSaveSchema>
 export const HostHarnessOverrideSchema = z.object({

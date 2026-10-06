@@ -7,6 +7,13 @@ import {
 } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
+import { CLAUDE_FULL_ACCESS_REQUIRED, ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
+
+export function assertClaudeFullAccess(configuration: HarnessConfiguration): void {
+  if (configuration.harness === 'claude' && !ClaudeFullAccessConfigurationSchema.safeParse(configuration).success) {
+    throw new DomainError('CLAUDE_FULL_ACCESS_REQUIRED', CLAUDE_FULL_ACCESS_REQUIRED, 400)
+  }
+}
 
 /** Approval authority is explicit; missing legacy fields never select another transport. */
 export function assertNativeWorkflowConfiguration(
@@ -14,6 +21,7 @@ export function assertNativeWorkflowConfiguration(
   approval?: WorkflowApprovalConfiguration,
   designatedOrchestrator = false,
 ): void {
+  assertClaudeFullAccess(configuration)
   if (approval && !AcceptedWorkflowApprovalConfigurationSchema.safeParse(approval).success) {
     throw new DomainError('WORKFLOW_APPROVAL_INCOMPLETE', 'Reopen and save the workflow with complete approval settings before starting it.', 409)
   }

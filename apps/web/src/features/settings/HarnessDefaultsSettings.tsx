@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { type HarnessDefaults, type AgentHarness, type ClaudeHarnessConfiguration, ClaudeHarnessConfigurationSchema, HarnessDefaultsSchema } from '@foreman-code/contracts'
-import { ManagementHarnessDefaultsSchema, type HarnessSettingsSection } from '@foreman-code/contracts/management'
+import { HarnessDefaultsUpdateInputSchema, ManagementHarnessDefaultsSchema, type HarnessSettingsSection } from '@foreman-code/contracts/management'
 import { Button, Checkbox, ErrorState, LoadingState, Select, TextField } from '../../shared/ui/nocturne'
 import { useManagedHarnessCatalogQuery, useUpdateManagedHarnessDefaultsMutation } from '../../shared/api/query'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
@@ -96,7 +96,7 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
     footer={(activeSection === 'connections' && harness !== 'claude') || activeSection === 'workspace' || activeSection === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
       onSave={() => form.save(async (input) => {
         const defaults = prepared(input.value)
-        const response = await managedSave.mutateAsync({ defaults: ManagementHarnessDefaultsSchema.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
+        const response = await managedSave.mutateAsync({ defaults: HarnessDefaultsUpdateInputSchema.shape.defaults.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
         return { value: editable(response.value.defaults, harness), revision: response.value.revision }
       }, (value) => { ManagementHarnessDefaultsSchema.parse(prepared(value)); return value })} />}>
     {section === 'workspace' && harness !== 'claude' ? <HarnessCompatibilityPanel harness={harness} /> : null}

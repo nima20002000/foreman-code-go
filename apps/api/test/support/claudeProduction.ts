@@ -39,7 +39,7 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
   const target = selection?.target ?? { hostRef: { kind: 'main' as const, mainId: '77d29f00-408e-4000-8000-000000000001' },
     applicationInstallationId: '77d29f00-408e-4000-8000-000000000001', harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload' }
   const defaultHarness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
-    configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
+    configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
     tools: ['mcp__graphql__workspace_list', 'mcp__graphql-files__files.read'], permissionRules: [], instructions: 'Pinned fixture instructions', mcpServers: { graphql: { type: 'http' as const, url: endpoint } } }
   const harness = runtime
     ? (runtime.start.kind === 'operator' ? runtime.start.configuration.harness : runtime.start.request.configuration.harness)

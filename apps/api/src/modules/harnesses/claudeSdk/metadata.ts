@@ -16,7 +16,7 @@ export async function discoverClaudeMetadata(input: {
   binary: string; profilePath: string; workingDirectory: string; recovery: NativeProcessRecovery; signal: AbortSignal
 }): Promise<Pick<HarnessOptions, 'providerVersion' | 'authenticated' | 'models' | 'nativeAgents'>> {
   const configuration: ClaudeHarnessConfiguration = { harness: 'claude', model: 'default', authMode: 'subscription',
-    configDirectory: input.profilePath, permissionMode: 'default', sandbox: 'read-only', tools: [], permissionRules: [], instructions: '', mcpServers: {} }
+    configDirectory: input.profilePath, permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: '', mcpServers: {} }
   const runner = createClaudeSdkRunner({ loadClient: () => loadOfficialClaudeSdk(input.profilePath, input.recovery, input.binary) })
   try {
     const session = await runner.open({ scope: { deviceId: 'owned-discovery', profilePath: input.profilePath,

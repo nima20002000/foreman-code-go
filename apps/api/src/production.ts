@@ -806,7 +806,11 @@ export function buildProductionApp(
         const entry = inspected.entry
         if (!entry || !isSupportedAppMcpServerName(entry.name) || entry.transport !== 'streamable-http' || entry.endpoint !== appMcpEndpoint
           || entry.enabled === false || !['connected', 'authentication_required', 'status_unavailable'].includes(entry.status ?? '')) {
-          throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The owned Claude query has no accepted Foreman Code HTTP endpoint.', 409)
+          throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The owned Claude query has no accepted Foreman Code HTTP endpoint.', 409, {
+            expectedEndpoint: appMcpEndpoint,
+            observed: entry ? { name: entry.name, transport: entry.transport, endpoint: entry.endpoint,
+              enabled: entry.enabled, status: entry.status } : null,
+          })
         }
         await credentials.revokeSupersededForExecution(input.executionId)
         input.signal?.throwIfAborted()

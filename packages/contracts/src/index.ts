@@ -5,7 +5,7 @@ import { NativeInteractionInputSchema } from './interactionInput.js';
 export * from './interactionInput.js';
 export * from './nativeInteractionSupport.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
-import { ClaudeEffortSchema, ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
+import { CLAUDE_FULL_ACCESS_REQUIRED, ClaudeEffortSchema, ClaudeFullAccessConfigurationSchema, ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
 import { changeCodexSandbox } from './harnessEditing.js';
 export * from './claude.js';
 export * from './claudeQualification.js';
@@ -273,6 +273,11 @@ export const HarnessConfigurationSchema = z.discriminatedUnion("harness", [
   ClaudeHarnessConfigurationSchema,
 ]);
 export type HarnessConfiguration = z.infer<typeof HarnessConfigurationSchema>;
+export const SupportedHarnessConfigurationSchema = z.discriminatedUnion("harness", [
+  CodexHarnessConfigurationSchema,
+  OpenCodeHarnessConfigurationSchema,
+  ClaudeFullAccessConfigurationSchema,
+]);
 
 /** Preserve native variants in harnessConfiguration; this is only a legacy display projection. */
 export function projectHarnessEffort(configuration: HarnessConfiguration): AgentEffort | undefined {
@@ -286,6 +291,9 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   workflowApprovalHandler: ApprovalHandlerSchema.optional(),
   designatedOrchestrator: z.boolean().default(false),
 }).strict().superRefine((value, context) => {
+  if (value.configuration.harness === 'claude' && value.configuration.sandbox !== 'danger-full-access') {
+    context.addIssue({ code: 'custom', path: ['configuration', 'sandbox'], message: CLAUDE_FULL_ACCESS_REQUIRED });
+  }
   if (!value.workflowApprovalHandler) return;
   if (value.workflowApprovalHandler === "native") {
     const configuration = value.configuration;

@@ -11,7 +11,7 @@ import { claudeCandidateConfiguration } from './configuration.js'
 import { loadOfficialClaudeSdk } from './official.js'
 import { createClaudeSdkRunner } from './runner.js'
 import type { ClaudeSdkClient, ClaudeSdkSession } from './port.js'
-import { claudeSandboxStartupFailure, claudeToolRespectsSandbox } from './readOnlyPolicy.js'
+import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
 import { CLAUDE_PROFILE_CHECK_REVISION } from './profileRevision.js'
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -27,29 +27,15 @@ export async function qualifyClaudeNativeProfile(input: {
   assertCurrent(): Promise<void>; loadClient?: typeof loadOfficialClaudeSdk
 }) {
   if (input.value.configuration.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude qualification requires a Claude profile.', 409)
-  const configuration = input.value.configuration
+  const configuration = ClaudeFullAccessConfigurationSchema.parse(input.value.configuration)
   if (configuration.authMode !== 'subscription') throw new DomainError('CLAUDE_API_KEY_REQUIRED', 'The native profile checker requires explicitly provisioned API-key authority for API-key mode.', 409)
   const binary = input.binding.installation.launcher.resolvedLauncher
   if (!binary) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The exact Claude executable is unavailable.', 409)
   await mkdir(input.directory, { recursive: true, mode: 0o700 })
   const directory = await mkdtemp(join(input.directory, 'claude-profile-'))
-  const cwd = join(directory, 'work')
-  const commonGitDirectory = join(directory, 'source.git')
-  const outside = join(configuration.sandbox === 'read-only' ? commonGitDirectory : directory, 'outside.txt')
-  const denied = join(configuration.sandbox === 'read-only' ? cwd : directory, 'denied.txt')
-  const readable = join(cwd, 'readable.txt')
-  const inside = join(cwd, 'shell-write.txt')
-  const readMarker = `OWNED_READ_${randomUUID()}`
+  const cwd = join(directory, 'work'), outside = join(directory, 'outside.txt')
+  const denied = join(directory, 'denied.txt')
   await mkdir(cwd, { mode: 0o700 }); await mkdir(join(cwd, '.claude'), { mode: 0o700 })
-  if (configuration.sandbox === 'read-only') {
-    const gitDirectory = join(commonGitDirectory, 'worktrees', 'qualification')
-    await mkdir(gitDirectory, { recursive: true, mode: 0o700 })
-    await writeFile(join(cwd, '.git'), `gitdir: ${gitDirectory}\n`, { mode: 0o600 })
-    await writeFile(join(gitDirectory, 'gitdir'), `${join(cwd, '.git')}\n`, { mode: 0o600 })
-    await writeFile(join(gitDirectory, 'commondir'), '../..\n', { mode: 0o600 })
-  }
-  await writeFile(readable, readMarker, { mode: 0o600 })
-  if (configuration.sandbox === 'read-only') await writeFile(denied, 'READ_DENIED', { mode: 0o600 })
   // An owned project sentinel verifies that ambient settings/hooks are excluded.
   const ambient = join(directory, 'ambient-hook.txt')
   const quotedAmbient = `'${ambient.replaceAll("'", "'\\''")}'`
@@ -81,22 +67,17 @@ export async function qualifyClaudeNativeProfile(input: {
   // Fault injection uses actual native output. It cannot fabricate a result,
   // receipt or session ID, and is recorded separately from ordinary turns.
   const runner = createClaudeSdkRunner({ loadClient: async () => faultClient })
-  const quote = (path: string) => `'${path.replaceAll("'", "'\\''")}'`
-  const writeCommand = `printf BLOCKED > ${quote(inside)}; printf BLOCKED > ${quote(outside)}`
   const callbacks: Pick<Options, 'canUseTool' | 'hooks'> = {
     canUseTool: async (tool, value) => {
-      if (!claudeToolRespectsSandbox(configuration, tool)) return { behavior: 'deny', message: 'The saved sandbox denies this tool.' }
       const path = typeof value.file_path === 'string' ? value.file_path : undefined
       if (tool === 'Write' && [outside, denied].includes(path ?? '')) return { behavior: 'allow', updatedInput: value }
-      if (tool === 'Read' && [readable, denied].includes(path ?? '')) return { behavior: 'allow', updatedInput: value }
-      if (tool === 'Bash' && value.command === writeCommand) return { behavior: 'allow', updatedInput: value }
       return { behavior: 'deny', message: 'The qualification owner authorizes only its exact disposable fixture.' }
     },
     hooks: { PreToolUse: [{ hooks: [async hook => {
       if (hook.hook_event_name !== 'PreToolUse') return {}
       const path = object(hook.tool_input).file_path
       const command = object(hook.tool_input).command
-      const blocked = path === denied || !claudeToolRespectsSandbox(configuration, hook.tool_name)
+      const blocked = path === denied
       hooks.push({ sessionId: hook.session_id, toolUseId: hook.tool_use_id, tool: hook.tool_name,
         ...(typeof path === 'string' ? { file: path } : {}),
         ...(typeof command === 'string' ? { command } : {}), denied: blocked })
@@ -191,26 +172,6 @@ export async function qualifyClaudeNativeProfile(input: {
         passed.add('alwaysAppliedToolHook'); passed.add('fullAccessPolicy')
       }
     }
-    if (configuration.sandbox === 'read-only' && configuration.tools.includes('Read') && configuration.tools.includes('Bash')) {
-      const allowedRead = await turn(resumed, `Use Read on ${readable}. Reply with exactly its content.`)
-      const deniedRead = await turn(resumed, `Use Read on ${denied}. If the diagnostic policy denies it, do not retry or use another tool. Reply DONE.`)
-      const deniedHook = hooks.find(hook => hook.tool === 'Read' && hook.file === denied && hook.denied)
-      const toolResults = (frames: unknown[]) => frames.flatMap(frame => {
-        const content = object(object(frame).message).content
-        return Array.isArray(content) ? content.map(object).filter(block => block.type === 'tool_result') : []
-      })
-      if (String(allowedRead.result.result).includes(readMarker)
-        && hooks.some(hook => hook.tool === 'Read' && hook.file === readable && !hook.denied)
-        && deniedHook && toolResults(deniedRead.frames).some(result => result.tool_use_id === deniedHook.toolUseId && result.is_error === true)) {
-        passed.add('alwaysAppliedToolHook')
-      }
-      const shellWrite = await turn(resumed, `Use Bash to run exactly this owned disposable diagnostic command: ${writeCommand}. Do not change it, retry, or use another tool. Reply DONE.`)
-      const shellHook = hooks.find(hook => hook.tool === 'Bash' && hook.command === writeCommand && !hook.denied)
-      const denial = shellHook && toolResults(shellWrite.frames).find(result => result.tool_use_id === shellHook.toolUseId && result.is_error === true)
-      if (denial) failure = claudeSandboxStartupFailure(denial.content)
-      if (!failure && denial && /read-only file system/i.test(JSON.stringify(denial.content))
-        && !await exists(inside) && !await exists(outside)) passed.add('readOnlySandbox')
-    }
     await resumed.close()
     const sourceBefore = await runner.history(persisted, scope, input.signal)
     const forked = await runner.fork(persisted, scope, input.signal)
@@ -246,8 +207,7 @@ export async function qualifyClaudeNativeProfile(input: {
       ? { state: 'passed', source: 'native_scenario', evidenceId, evidenceSha256 } : { state: 'unverified' }])) }
   const capabilities = claudeQualificationCapabilities(claudeProof)
   const builtinToolsObserved = compiled.tools.every(tool => observedTools.includes(tool))
-  const sandboxQualified = configuration.sandbox === 'read-only' ? capabilities.policy.readOnlySandbox
-    : configuration.sandbox === 'danger-full-access' && capabilities.policy.fullAccessPolicy
+  const sandboxQualified = capabilities.policy.fullAccessPolicy
   const qualified = builtinToolsObserved && capabilities.basicTurns && capabilities.resume && capabilities.history
     && capabilities.policy.settingsIsolation && capabilities.policy.backgroundTasksDisabled
     && capabilities.policy.alwaysAppliedToolHook && sandboxQualified
@@ -256,6 +216,6 @@ export async function qualifyClaudeNativeProfile(input: {
     protocolRevision: input.binding.installation.protocolRevision, suiteRevision: CLAUDE_PROFILE_CHECK_REVISION,
     environmentGeneration: input.binding.installation.environmentGeneration, connectionGeneration: input.binding.installation.connectionGeneration,
     authenticated: passed.has('exactMessageReceipt'), compatible: capabilities.sdk, qualified, claudeProof,
-    ...(!qualified ? { failure: failure ?? { code: 'CLAUDE_POLICY_UNQUALIFIED', message: 'The selected profile has not proved its native tool and OS policy. Read-only checks require Read and Bash; full-access checks require Write. Workspace-write remains unqualified.' } } : {}),
+    ...(!qualified ? { failure: failure ?? { code: 'CLAUDE_POLICY_UNQUALIFIED', message: 'The selected profile has not proved its native tool and OS policy. Full access requires an available Write tool and a proved tool policy.' } } : {}),
     checkedAt: new Date().toISOString() })
 }

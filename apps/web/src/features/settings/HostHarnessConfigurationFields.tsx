@@ -1,4 +1,6 @@
 import { useId } from 'react'
+import { CLAUDE_FULL_ACCESS_REQUIRED } from '@foreman-code/contracts/claude'
+import { claudeAccessOptions } from './claudeAccess'
 import { AgentEffortSchema, withAdvancedDefaults, type HarnessConfiguration } from '@foreman-code/contracts'
 import { Select, Switch, Textarea, TextField } from '../../shared/ui/nocturne'
 import { HarnessSectionFields } from './HarnessSectionFields'
@@ -24,8 +26,8 @@ export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
     <Select label="Authentication" value={value.authMode} error={fieldMessage(issues ?? [], 'authMode')}
       options={[{ value: 'subscription', label: 'Local Claude subscription login' }, { value: 'api-key', label: 'Explicit API key · separate billing' }]}
       onChange={event => change({ ...value, authMode: event.target.value as typeof value.authMode })} />
-    <Select label="Sandbox" value={value.sandbox} error={fieldMessage(issues ?? [], 'sandbox')}
-      options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }, { value: 'danger-full-access', label: 'Full access' }]}
+    <Select label="Sandbox" value={value.sandbox} error={fieldMessage(issues ?? [], 'sandbox') ?? (value.sandbox !== 'danger-full-access' ? CLAUDE_FULL_ACCESS_REQUIRED : undefined)}
+      options={claudeAccessOptions(value.sandbox)}
       onChange={event => change({ ...value, sandbox: event.target.value as typeof value.sandbox })} />
     <p>These are explicit configuration values. Saving does not discover models, install, sign in or qualify a harness. Use the saved profile check on this computer.</p>
     <h4>Access and approvals</h4>

@@ -17,6 +17,7 @@ import { HostHarnessInstanceProfileChecks } from '../src/modules/harnesses/insta
 import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { harnessInstanceProfileEvidenceMigration } from '../src/modules/harnesses/instanceSettings/profileMigration.js'
 import { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSettings/service.js'
+import { CLAUDE_FULL_ACCESS_REQUIRED } from '@foreman-code/contracts/claude'
 
 const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
 const schema = `harness_instances_${randomUUID().replaceAll('-', '')}`
@@ -28,6 +29,73 @@ beforeAll(async () => {
 afterAll(async () => {
   await pool.end()
   try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
+}, 60_000)
+
+it('refuses non-full Claude host profiles and persists explicit Full access through authenticated MCP', async () => {
+  const scenarioSchema = `claude_access_${randomUUID().replaceAll('-', '')}`
+  await createFixtureSchema(admin, scenarioSchema)
+  const scenarioPool = new pg.Pool({ ...admin.options, options: `-c search_path=${scenarioSchema}` })
+  const access = new PostgresAccessService(scenarioPool)
+  const commands = new PostgresCommandCoordinator(scenarioPool)
+  const repository = new HarnessInstanceSettingsRepository(scenarioPool)
+  const authority = { authorize: async (principal: import('@foreman-code/contracts/management').ManagementPrincipal,
+    action: 'harnesses:read' | 'harnesses:update', host: import('@foreman-code/contracts/device-identity').CanonicalMachineReference,
+    installation: string, client?: pg.PoolClient) => {
+    if (!client) throw new Error('Host authorization requires its settings transaction')
+    await authorizeDeviceHost(client, principal, action, host, installation)
+  } }
+  const service = new HostHarnessOverrideService(repository, commands, authority, async () => null)
+  const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+    operator: { access, services: { commands, harnessInstances: service } as unknown as OperatorServices } })
+  const clients: Client[] = []
+  const principals: string[] = []
+  try {
+    await applyApplicationMigrations(scenarioPool)
+    const mainId = (await scenarioPool.query('select id from application_installation')).rows[0].id as string
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const connect = async (actions: import('@foreman-code/contracts/management').ManagementAction[]) => {
+      const issued = await access.issue({ name: 'Claude host access test', audience: 'operator',
+        grants: [{ actions, scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+      principals.push(issued.principal.id)
+      const client = new Client({ name: 'claude-host-access-test', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => issued.token } }))
+      return client
+    }
+    const writer = await connect(['harnesses:read', 'harnesses:update'])
+    const reader = await connect(['harnesses:read'])
+    const instanceId = randomUUID()
+    const target = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+      harnessInstallationId: 'recorded-claude-sdk', installationFingerprint: 'recorded-payload' }
+    const configuration = { harness: 'claude', model: 'recorded-model', authMode: 'subscription',
+      configDirectory: '/recorded/profile', permissionMode: 'default', sandbox: 'danger-full-access',
+      tools: ['Write'], permissionRules: [], instructions: '', mcpServers: {} }
+    const args = { commandId: randomUUID(), instanceId, expectedRevision: 0, target,
+      presetId: 'recorded-full-access', enabled: true, configuration }
+    const denied = await reader.callTool({ name: 'harness_instance_save', arguments: args })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    for (const sandbox of ['read-only', 'workspace-write']) {
+      const rejected = await writer.callTool({ name: 'harness_instance_save', arguments: {
+        ...args, commandId: randomUUID(), configuration: { ...configuration, sandbox },
+      } })
+      expect(rejected.isError).toBe(true)
+      expect(JSON.stringify(rejected.content)).toContain(CLAUDE_FULL_ACCESS_REQUIRED)
+    }
+    expect((await scenarioPool.query('select instance_id from harness_instance_settings where instance_id=$1', [instanceId])).rows).toEqual([])
+    const saved = HostHarnessOverrideSaveResultSchema.parse((await writer.callTool({ name: 'harness_instance_save', arguments: args })).structuredContent)
+    expect(saved.value.configuration).toEqual(configuration)
+    const readback = HostHarnessOverrideListSchema.parse((await reader.callTool({ name: 'harness_instances_list', arguments: {
+      hostRef: target.hostRef, applicationInstallationId: mainId,
+    } })).structuredContent)
+    expect(readback.overrides.find(item => item.instanceId === instanceId)?.configuration).toEqual(configuration)
+  } finally {
+    await Promise.all(clients.map(client => client.close()))
+    await app.close()
+    for (const id of principals) await access.revoke(id)
+    await scenarioPool.end()
+    await dropFixtureSchema(admin, scenarioSchema)
+  }
 }, 60_000)
 
 it('persists host overrides through actual buildApp authenticated MCP and HTTP with denial, CAS, replay, cold readback and canonical revocation', async () => {

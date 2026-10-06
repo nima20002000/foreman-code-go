@@ -17,7 +17,7 @@ function context(): NativeManagerResolutionContext {
     workingDirectory: '/project', configuration: AgentConfigurationVersionSchema.parse({
       id: 'configuration', workspaceId: 'workspace', agentId: 'agent', productRole: 'coder', version: 1,
       harness: { harness: 'claude', model: 'recorded-model', authMode: 'subscription', configDirectory: '/profile',
-        permissionMode: 'default', sandbox: 'read-only', tools: ['Read', 'Bash'],
+        permissionMode: 'default', sandbox: 'danger-full-access', tools: ['Read', 'Bash'],
         permissionRules: [], instructions: '', mcpServers: {} },
       harnessProfileSelection: savedProfile, prompt: {}, assignedSkills: [],
       contentHash: `sha256:${'0'.repeat(64)}`, createdAt: '2026-10-06T00:00:00.000Z',

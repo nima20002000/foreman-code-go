@@ -61,12 +61,12 @@ export function registerHostHarnessOverrideTools(server: McpServer, service: Hos
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => invoke(() => service.list(principal, input, 'mcp')))
   if (hostHarnessToolAvailable(service, principal, 'harness_instance_check')) server.registerTool('harness_instance_check', {
-    description: 'Explicitly qualify one exact saved host profile through its admitted native factory/worker. Claude runs a finite subscription conversation and tool-policy scenarios on disposable files; it consumes subscription capacity. Read-only Claude checks require Read and Bash and verify native shell write denial; full-access checks require Write. Workspace-write remains unqualified. This may start owned diagnostic native processes; listing settings never does. Requires read and update grants; retains idempotent check receipts and exact-target evidence.',
+    description: 'Explicitly qualify one exact saved host profile through its admitted native factory/worker. Claude runs a finite subscription conversation and tool-policy scenarios on disposable files; it consumes subscription capacity. Claude requires Full access and an available Write tool. Other access modes are rejected at save and Start; Full access does not bypass app grants or tool approval. This may start owned diagnostic native processes; listing settings never does. Requires read and update grants; retains idempotent check receipts and exact-target evidence.',
     inputSchema: HostHarnessInstanceCheckInputSchema, outputSchema: HostHarnessInstanceCheckResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => invoke(() => service.check(principal, 'mcp', input)))
   if (hostHarnessToolAvailable(service, principal, 'harness_instance_save')) server.registerTool('harness_instance_save', {
-    description: 'Create or revision-check a host-specific harness override. Writes preserve immutable history; installed/authenticated/qualified are separate and saved configuration is unavailable until exact-target qualification.',
+    description: 'Create or revision-check a host-specific harness override. Claude requires Full access; unsupported modes return validation errors and are never upgraded. Writes preserve immutable history; installed/authenticated/qualified are separate and saved configuration is unavailable until exact-target qualification.',
     inputSchema: HostHarnessOverrideSaveSchema, outputSchema: HostHarnessOverrideSaveResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => invoke(() => service.save(principal, 'mcp', input)))

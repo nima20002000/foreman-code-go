@@ -4,6 +4,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../../access/policy.js'
 import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { DomainError } from '../../errors.js'
+import { assertClaudeFullAccess } from '../nativeWorkflowConfiguration.js'
 import type { HostHarnessOverrideAuthority } from './service.js'
 import { harnessHostKey, type HarnessInstanceSettingsRepository } from './repository.js'
 import type { NativeQualificationRetention } from '../installedCodexQualificationRetention.js'
@@ -60,6 +61,7 @@ export class HostHarnessInstanceProfileChecks {
       const value = await this.settings.latest(client, input.instanceId)
       if (!value || value.revision !== input.expectedRevision || !sameTarget(value.target, input.target)) throw new DomainError('REVISION_CONFLICT', 'The exact host instance changed before qualification.', 409)
       if (!value.enabled) throw new DomainError('HARNESS_INSTANCE_DISABLED', 'Disabled host instances cannot be qualified.', 409)
+      assertClaudeFullAccess(value.configuration)
       return value
     }
     const checkId = nativeProfileCheckId(input.target.hostRef.mainId, principal.id, input.commandId)

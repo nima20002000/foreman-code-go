@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
+import { assertClaudeFullAccess } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { HostHarnessOverrideService } from '../harnesses/instanceSettings/service.js'
 import type { HarnessCatalogService } from '../harnesses/catalog.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -57,6 +58,7 @@ export class FoundationSettingsManagementService {
       targetKey: 'agent-defaults-v1', payload: input,
       perform: async (client) => {
         const value = AgentDefaultsSchema.parse(input.value)
+        for (const role of ['orchestrator', 'coder', 'operator'] as const) assertClaudeFullAccess(value[role].harness)
         const previous = await this.settings.getAgentDefaults(client)
         if (previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
         for (const role of ['orchestrator', 'coder', 'operator'] as const) {

@@ -28,7 +28,7 @@ export function productionClaudeMetadata(input: {
     async discover(workingDirectory, signal) {
       signal.throwIfAborted()
       const configuration = (await input.defaults()).claude ?? { harness: 'claude' as const, model: 'default', authMode: 'subscription' as const,
-        configDirectory: detectedClaudeProfilePath(), permissionMode: 'default' as const, sandbox: 'read-only' as const,
+        configDirectory: detectedClaudeProfilePath(), permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
         tools: [], permissionRules: [], instructions: '', mcpServers: {} }
       if (configuration.authMode !== 'subscription') throw new DomainError('CLAUDE_API_KEY_DISCOVERY_UNAVAILABLE',
         'API-key metadata requires its explicitly provisioned host credential; a subscription login cannot authenticate this choice.', 409)

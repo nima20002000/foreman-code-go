@@ -34,6 +34,11 @@ export const ClaudeHarnessConfigurationSchema = z.object({
   });
 });
 export type ClaudeHarnessConfiguration = z.infer<typeof ClaudeHarnessConfigurationSchema>;
+export const CLAUDE_FULL_ACCESS_REQUIRED = 'Claude requires Full access. Read only and Workspace write are not supported.';
+export const ClaudeFullAccessConfigurationSchema = ClaudeHarnessConfigurationSchema.safeExtend({
+  sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access'], { error: CLAUDE_FULL_ACCESS_REQUIRED })
+    .refine((value): boolean => value === 'danger-full-access', CLAUDE_FULL_ACCESS_REQUIRED),
+});
 export const ClaudeQuestionInputSchema = z.object({ questions: z.array(z.object({
   question: z.string().min(1).max(10_000), header: z.string().min(1).max(100),
   options: z.array(z.object({ label: z.string().min(1).max(500), description: z.string().max(5000) }).strict()).min(2).max(20),

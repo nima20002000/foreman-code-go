@@ -30,7 +30,7 @@ describe('host-specific settings revisions', () => {
       http.post('/api/management/harness-instances/save', async ({ request }) => {
         const input = await request.json() as { expectedRevision: number; target: unknown; configuration: unknown }
         expect(input.expectedRevision).toBe(claude.revision); expect(input.target).toEqual(claude.target)
-        expect(input.configuration).toEqual({ ...savedClaudeConfiguration, model: 'host-claude-model', configDirectory: '/host/claude/profile', authMode: 'api-key', sandbox: 'workspace-write' })
+        expect(input.configuration).toEqual({ ...savedClaudeConfiguration, model: 'host-claude-model', configDirectory: '/host/claude/profile', authMode: 'api-key', sandbox: 'danger-full-access' })
         return HttpResponse.json({ value: { ...claude, revision: 2, instanceRevision: 'claude-r2', configuration: input.configuration }, replayed: false })
       }))
     renderHost(claude)

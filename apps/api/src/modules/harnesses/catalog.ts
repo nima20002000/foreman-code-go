@@ -1,3 +1,4 @@
+import { assertClaudeFullAccess } from './nativeWorkflowConfiguration.js'
 import { isDeepStrictEqual } from 'node:util'
 import { canonical } from './codexProtocol.js'
 import { QualificationCache } from './qualificationCache.js'
@@ -93,6 +94,7 @@ export class HarnessCatalogService {
   }) {
     requireAuthorization(principal, 'harnesses:update')
     const defaults = HarnessDefaultsSchema.parse(input.defaults)
+    if (defaults.claude) assertClaudeFullAccess(defaults.claude)
     return this.commands.execute({
       principal, source, operation: 'harness.defaults.update', commandId: input.commandId,
       targetKey: 'harness-defaults', payload: input,

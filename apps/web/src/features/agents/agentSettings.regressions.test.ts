@@ -67,7 +67,7 @@ describe('Explicit Claude agent configuration', () => {
     expect(configuredHarness(agent, 'claude', 'chosen-model', 'high', true, 'workspace-write')).toEqual({
       ...savedClaudeConfiguration, model: 'chosen-model', sandbox: 'workspace-write',
     })
-    expect(() => configuredHarness(agent, 'claude', 'chosen-model', 'high', true, 'danger-full-access')).toThrow(/sandbox/)
+    expect(() => configuredHarness(agent, 'claude', 'chosen-model', 'high', true, 'read-only')).toThrow(/Full access/)
     expect(effortOptions('claude', savedClaudeConfiguration.model)).toEqual([])
   })
   it('uses only an explicitly supplied Claude creation preset', () => {

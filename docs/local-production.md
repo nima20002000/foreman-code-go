@@ -135,114 +135,15 @@ Its Bubblewrap namespace hides the API file vault and other native owners'
 storage. The installer keeps its cache separate; accepted harness permissions
 and file-tool grants still control each operation.
 
-## Claude read-only sandbox prerequisite on Ubuntu
+## Claude access mode
 
-Claude subscription login and native sandbox availability are separate checks.
-Ubuntu's `bwrap-userns-restrict` profile can deny `CAP_SYS_ADMIN` to Claude's
-embedded seccomp helper, before the requested shell command runs. The native
-error mentions `apply-seccomp` and `/proc/self/setgroups`. Read-only qualification
-must stay blocked when this happens; do not use Full access or disable Unix-socket
-filtering to make the check pass. The installer does not install security policy.
-
-On the owner-approved PC, the helper is the installed Claude SDK executable,
-re-executed through an inherited `/proc/self/fd` descriptor with
-`ARGV0=apply-seccomp`. The provider first launches a trusted Bash bootstrap to
-start its socket proxies, then invokes the helper. A helper-path exception in the
-ordinary Bubblewrap profile is too late: the bootstrap already carries
-`unpriv_bwrap`, and no-new-privs prevents removing that denying profile later.
-
-The host-specific enforcing policy is
-`/etc/apparmor.d/foreman-code-claude-seccomp`:
-
-```text
-# Claude's trusted sandbox bootstrap only; ordinary bwrap is unchanged.
-abi <abi/5.0>,
-include <tunables/global>
-
-profile foreman_code_claude_driver "/home/nima/.local/lib/graphql-production/releases/*/apps/api/node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-linux-x64@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude" flags=(attach_disconnected,mediate_deleted) {
-  allow file rwlkm /{**,},
-  allow network,
-  allow unix,
-  allow ptrace,
-  allow signal,
-  allow mqueue,
-  allow io_uring,
-  allow userns,
-  allow mount,
-  allow umount,
-  allow pivot_root,
-  allow dbus,
-  # The SDK launches bwrap through a capability-free Bash wrapper.
-  allow ix /{usr/bin,bin}/bash,
-  # Enter the provider-specific bootstrap before bwrap sets no-new-privs.
-  priority=10 allow px /usr/bin/bwrap -> foreman_code_claude_bwrap,
-  allow pix /** -> &unpriv_bwrap,
-}
-
-profile foreman_code_claude_bwrap flags=(attach_disconnected,mediate_deleted) {
-  allow file rwlkm /{**,},
-  allow network,
-  allow unix,
-  allow ptrace,
-  allow signal,
-  allow mqueue,
-  allow io_uring,
-  allow userns,
-  allow mount,
-  allow umount,
-  allow pivot_root,
-  allow dbus,
-  # Same namespace setup permission as the distribution's bwrap profile.
-  allow capability,
-  allow ix /{usr/bin,bin}/bash,
-  priority=10 allow px "/home/nima/.local/lib/graphql-production/releases/*/apps/api/node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-linux-x64@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude" -> foreman_code_claude_bwrap//&foreman_code_claude_seccomp,
-  allow pix /** -> &unpriv_bwrap,
-}
-
-profile foreman_code_claude_seccomp flags=(attach_disconnected,mediate_deleted) {
-  allow file rwlkm /{**,},
-  allow network,
-  allow unix,
-  allow ptrace,
-  allow signal,
-  allow mqueue,
-  allow io_uring,
-  allow userns,
-  allow mount,
-  allow umount,
-  allow pivot_root,
-  allow dbus,
-  allow capability sys_admin,
-  # Shell commands after seccomp initialization lose namespace capability.
-  allow pix /** -> &unpriv_bwrap,
-}
-```
-
-The initial profile attaches only to this user's installed Linux x64 SDK path.
-It grants no capabilities to the ordinary Claude process or its outer Bash wrapper.
-Its explicit Bubblewrap transition establishes a provider-specific bootstrap boundary before Bubblewrap
-sets no-new-privs. The bootstrap has the same namespace setup permissions as the
-distribution's Bubblewrap profile; it executes only the provider's quoted bootstrap
-before the embedded helper. The helper profile narrows capability permission to
-`sys_admin`. Its executed shell receives `unpriv_bwrap`, which denies capabilities.
-The ordinary `/usr/bin/bwrap` profile and `/etc/apparmor.d/local/unpriv_bwrap`
-are unchanged; non-Claude Bubblewrap launches retain the distribution policy.
-No kernel setting or profile mode is weakened. An administrator must inspect the
-actual helper path and bootstrap on another host before applying an equivalent
-rule. The paths above are not general home-directory or executable exceptions.
-
-After an explicitly approved policy edit, reload the dedicated policy:
-
-```sh
-sudo apparmor_parser -r /etc/apparmor.d/foreman-code-claude-seccomp
-```
-
-Validate both boundaries: the installed read-only Claude profile must complete
-its native checks and reject its owned shell-write attempt; a non-Claude program
-launched by Bubblewrap must still run under `unpriv_bwrap` and fail a capability
-operation. Keep `sandbox: read-only`, `failIfUnavailable: true`, and
-`allowUnsandboxedCommands: false`. Qualification remains required for the exact
-installed executable, model, profile and configuration after an update.
+Claude runs only with Full access (`danger-full-access`). Read only, Workspace
+write and other access modes are rejected when saving a preset, host profile or
+agent and before starting a workflow. Existing saved configurations retain their
+values until the owner explicitly selects Full access; they are not upgraded.
+Tool approval rules, application grants and qualification still apply. Qualify
+an explicitly selected Full access profile before using the installed preset.
+No Claude-specific AppArmor exception is required or installed.
 
 For an environment-based provider credential, explicitly add the provider's
 variable, such as `OPENROUTER_API_KEY`, as a string in private `operator.json`,

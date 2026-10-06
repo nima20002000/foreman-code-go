@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { SupportedHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { create } from 'zustand'
 import type { HostHarnessOverride, HostHarnessOverrideListInput, HostHarnessOverrideTargetSchema } from '@foreman-code/contracts/harness-registry'
 import type { z } from 'zod'
@@ -30,7 +31,8 @@ function OverrideEditor({ value, seed, onCreated, onCancelled }: { value?: HostH
   if (!draft) return <LoadingState label="Loading instance settings…" />
   const submit = () => form.save(async input => {
     const result = await save.mutateAsync({ commandId: input.commandId, expectedRevision: input.expectedRevision,
-      instanceId, target, presetId, enabled: input.value.enabled, configuration: prepareHarnessEditor(input.value.editor) })
+      instanceId, target, presetId, enabled: input.value.enabled,
+      configuration: SupportedHarnessConfigurationSchema.parse(prepareHarnessEditor(input.value.editor)) })
     onCreated?.()
     return { value: editable(result.value), revision: result.value.revision }
   }, input => { prepareHarnessEditor(input.editor); return input })

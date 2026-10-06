@@ -112,20 +112,14 @@ background/deferred frames instead of settling their parent result as success.
 It stores the evidence file identity and SHA-256
 in the exact host/profile proof; it never supplies synthetic native results.
 
-Full-access profiles require an available Write tool to prove their tool policy.
-Read-only profiles require Read and Bash: the check observes an allowed file read,
-an always-applied hook denial and an attempted shell write rejected by the native
-OS sandbox. Read-only configurations deny mutating built-in tools even when a
-tool rule allows them, deny shell writes across the filesystem, refuse unsandboxed
-retries and fail startup when native sandbox dependencies are unavailable.
-On Linux, write denies must name the working directory and the SDK's default
-temporary/log directories, including shared Git metadata for a worktree. A deny
-on `/` alone leaves the more specific writable mounts intact. Qualification uses
-owned worktree metadata and requires writes in the working directory and shared
-Git directory to fail and both target files to remain absent.
-Workspace-write, exact cancellation and startup-prompt checks remain unverified
-and do not acquire capabilities from metadata. Changed policy requires a fresh
-`claude-profile-check-v2` check; earlier profile evidence cannot enable execution.
+Claude accepts only Full access (`danger-full-access`). Saving a preset, host
+profile or agent in another mode, or starting an existing non-full configuration,
+returns a clear validation error. Existing values are not silently upgraded.
+Native qualification requires Write and proves an allowed owned write plus an
+always-applied hook denial; application grants and approval routing still apply.
+Changed policy requires a fresh `claude-profile-check-v3` check. Earlier native
+profile evidence cannot enable execution. Unsupported sandbox checks remain
+historical evidence and do not acquire capabilities from metadata.
 The broader four-owner-path, callback race, publication and restart
 qualification below remains separate from this bounded default-chat path.
 An installed and signed-in PATH CLI does not satisfy native proof or substitute
