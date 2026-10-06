@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +11,7 @@ import { FileWithRevisionSchema } from '@foreman-code/contracts/files'
 import { ManagedWorkspaceCommandResultSchema } from '@foreman-code/contracts/management'
 import { SavedManagedWorkflowSchema } from '@foreman-code/contracts/wave25'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN } from '../src/modules/harnesses/appMcpLauncher.js'
 import type { ApiConfig } from '../src/config.js'
 import { OperatorChatService, PostgresOperatorConversationRepository,
   type NativeManagerResolver } from '../src/modules/conversations/operatorChat.js'
@@ -68,6 +69,8 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
     it.each([false, true])(`${harness}: reads an attached spec and applies live management scope (denied: %s)`, async denied => {
       if (!connectionString) throw new Error('The root acceptance runner must supply a disposable test database.')
       const home = await mkdtemp(join(homedir(), '.operator-management-native-'))
+      const environmentNames = ['CODEX_HOME', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG_CONTENT'] as const
+      const previousEnvironment = Object.fromEntries(environmentNames.map(name => [name, process.env[name]]))
       let f: Awaited<ReturnType<typeof workspaceMcpFixture>> | undefined
       const nativeEvents: NativeHarnessEvent[] = []
       const inspections: NativeMcpInspectionEvidence[] = []
@@ -81,16 +84,29 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
         const port = await availablePort()
         const endpoint = `http://127.0.0.1:${port}/mcp`
         const directory = join(home, 'runtime', 'operator')
-        await mkdir(join(directory, '.codex'), { recursive: true })
-        await writeFile(join(directory, '.codex', 'config.toml'), [
-          '[mcp_servers.graphql]', `url = ${JSON.stringify(endpoint)}`,
-          'bearer_token_env_var = "GRAPHQL_MCP_TOKEN"', '',
-        ].join('\n'))
-        // Exercise the supported installed connection name without creating a naming collision.
-        await writeFile(join(directory, 'opencode.json'), JSON.stringify({ mcp: { graphql: {
+        const codexHome = join(home, 'codex')
+        const openCodeConfigDirectory = join(home, 'opencode-config')
+        const openCodeConfig = join(directory, 'opencode.json')
+        await mkdir(directory, { recursive: true, mode: 0o700 })
+        await mkdir(codexHome, { mode: 0o700 })
+        await mkdir(openCodeConfigDirectory, { mode: 0o700 })
+        if (harness === 'codex') {
+          const sourceHome = previousEnvironment.CODEX_HOME ?? join(homedir(), '.codex')
+          await copyFile(join(sourceHome, 'auth.json'), join(codexHome, 'auth.json'))
+          await chmod(join(codexHome, 'auth.json'), 0o600)
+        }
+        await writeFile(join(codexHome, 'config.toml'), [
+          `[mcp_servers.${APP_MCP_SERVER_NAME}]`, `url = ${JSON.stringify(endpoint)}`,
+          `bearer_token_env_var = ${JSON.stringify(APP_MCP_TOKEN)}`, '',
+        ].join('\n'), { mode: 0o600 })
+        await writeFile(openCodeConfig, JSON.stringify({ mcp: { [APP_MCP_SERVER_NAME]: {
           type: 'remote', url: endpoint, enabled: true, oauth: false,
-          headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' },
-        } } }))
+          headers: { Authorization: `Bearer {env:${APP_MCP_TOKEN}}` },
+        } } }), { mode: 0o600 })
+        process.env.CODEX_HOME = codexHome
+        process.env.OPENCODE_CONFIG = openCodeConfig
+        process.env.OPENCODE_CONFIG_DIR = openCodeConfigDirectory
+        delete process.env.OPENCODE_CONFIG_CONTENT
         f = await workspaceMcpFixture({ connectionString, port, async configure({ app, pool, access, commands, parentPath, services }) {
           const fileStorageRoot = join(home, 'vault')
           const config: ApiConfig = { host: '127.0.0.1', port, readinessTimeoutMs: 2000,
@@ -110,7 +126,10 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
                 { permission: '*', pattern: '*', effect: 'deny' as const },
                 { permission: 'read', pattern: '*', effect: 'allow' as const },
                 { permission: 'graphql_*', pattern: '*', effect: 'allow' as const },
-              ], mcp: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION.mcp, serverEnabled: { graphql: true } } } }
+                { permission: 'foreman-code_*', pattern: '*', effect: 'allow' as const },
+                { permission: 'foreman_code_*', pattern: '*', effect: 'allow' as const },
+              ], mcp: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION.mcp,
+                serverEnabled: { [APP_MCP_SERVER_NAME]: true } } } }
           await operators.update(native, current.configuration.id)
           const responseJournal = new NativeResponseJournal(join(home, 'responses'))
           const factories = new NativeHarnessFactories({ ...binaries, appMcpEndpoint: endpoint, responseJournal,
@@ -145,12 +164,12 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
                 for (const injected of [false, true]) {
                   const result = await runCommand(binaries.openCodeBinary, ['debug', 'config'], directory,
                     input.signal, injected ? { expectedAgentId: owner,
-                      beforeSpawn: async () => ({ agentId: owner, variables: { GRAPHQL_MCP_TOKEN: marker } }) } : undefined)
+                      beforeSpawn: async () => ({ agentId: owner, variables: { [APP_MCP_TOKEN]: marker } }) } : undefined)
                   if (result.exitCode !== 0) {
                     configurationReadbacks.push({ injected, exitCode: result.exitCode })
                     continue
                   }
-                  const entry = JSON.parse(result.stdout).mcp?.graphql
+                  const entry = JSON.parse(result.stdout).mcp?.[APP_MCP_SERVER_NAME]
                   const authorization = Object.entries(entry?.headers ?? {})
                     .find(([name]) => name.toLowerCase() === 'authorization')?.[1]
                   configurationReadbacks.push({ injected, type: entry?.type, endpoint: entry?.url,
@@ -159,7 +178,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
                       emptyBearer: authorization === 'Bearer ', masked: authorization === '***',
                       maskedBearer: authorization === 'Bearer ***',
                       redactedBearer: authorization === 'Bearer [REDACTED]',
-                      unexpanded: authorization === 'Bearer {env:GRAPHQL_MCP_TOKEN}' } })
+                      unexpanded: authorization === `Bearer {env:${APP_MCP_TOKEN}}` } })
                 }
               }
               return inspected
@@ -221,6 +240,10 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
             { conversationId: conversation.id })
         } while (state.activeRequestId)
         expect(state.lastResult, JSON.stringify(state.lastResult)).toMatchObject({ outcome: 'succeeded' })
+        expect(inspections.length).toBeGreaterThan(0)
+        expect(inspections.every(item => item.entry?.name === APP_MCP_SERVER_NAME
+          && item.entry.transport === 'streamable-http' && item.entry.endpoint === endpoint
+          && item.entry.credentialEnvironmentVariable === APP_MCP_TOKEN)).toBe(true)
         expect(nativeEvents.some(event => nativeCallCompleted(event, harness, 'files_read'))).toBe(true)
         expect(nativeEvents.some(event => nativeCallCompleted(event, harness, 'workflow_create'))).toBe(true)
         if (!denied) expect(nativeEvents.some(event => nativeCallCompleted(event, harness, 'workflow_get'))).toBe(true)
@@ -265,7 +288,16 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           process.stdout.write(`Operator native evidence ${evidencePath}\n`)
         } finally {
           try { await f?.close() }
-          finally { await rm(home, { recursive: true, force: true }) }
+          finally {
+            try { await rm(home, { recursive: true, force: true }) }
+            finally {
+              for (const name of environmentNames) {
+                const previous = previousEnvironment[name]
+                if (previous === undefined) delete process.env[name]
+                else process.env[name] = previous
+              }
+            }
+          }
         }
       }
     }, 240000)
