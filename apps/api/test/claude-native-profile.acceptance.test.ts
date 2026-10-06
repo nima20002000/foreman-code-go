@@ -103,13 +103,18 @@ async function verifyInstalledClaude(root: string, binary: string) {
         assert.deepEqual(replacement.pin, observed.pin)
       },
     })
-    assert.equal(proof.qualified, true, JSON.stringify(proof.failure))
+    assert(proof.claudeProof)
+    const capabilities = claudeQualificationCapabilities(proof.claudeProof)
+    const checks = Object.fromEntries(Object.entries(proof.claudeProof.checks)
+      .map(([name, check]) => [name, check.state]))
+    assert.equal(proof.qualified, true, JSON.stringify({
+      failure: proof.failure, cliVersion: observed.pin.cliVersion, sdkVersion: observed.pin.sdkVersion,
+      checks, observedTools: proof.claudeProof.observedTools, capabilities,
+    }))
     qualified = true
     assert.equal(proof.authenticated, true)
     assert.equal(proof.compatible, true)
     assert.deepEqual(proof.claudeProof?.pin, observed.pin)
-    assert(proof.claudeProof)
-    const capabilities = claudeQualificationCapabilities(proof.claudeProof)
     assert.equal(capabilities.basicTurns, true)
     assert.equal(capabilities.resume, true)
     assert.equal(capabilities.fork, true)
