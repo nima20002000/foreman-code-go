@@ -23,6 +23,38 @@ function setup() {
   return { ...f, bridge, current, send, request, submitted, applied, lease, invoke }
 }
 
+it('journals a terminal callback only after its native message was acknowledged on the same admission', async () => {
+  const f = workerConversationFixture('operator', 'claude')
+  const bridge = new MainWorkerConversationBridge()
+  const current = vi.fn(async () => {})
+  const terminal = vi.fn(async () => {})
+  const correlationId = 'accepted-message'
+  const submission = { kind: 'message' as const, nativeSessionId: f.session.nativeSessionId,
+    nativeMessageId: 'native-input', clientCorrelationId: correlationId }
+  const lease = bridge.capture({ request: { method: 'conversation.start-turn', binding: f.binding,
+    session: f.session, prompt: 'Accepted input', correlationId }, current,
+    channel: { binding: f.connection, request: async () => ({ payload: {} }) },
+    callbacks: { submitted: async () => {}, terminalObserved: terminal } })
+  const observation = { submission, result: { outcome: 'succeeded' as const },
+    history: { events: [], pendingInteractions: [], correlationId, nativeSubmission: submission } }
+  const invoke = (payload: Record<string, unknown>) => bridge.handle({ ...payload, binding: f.binding,
+    admissionId: lease.admissionId }, f.connection, AbortSignal.timeout(1000))
+  try {
+    await expect(invoke({ method: 'conversation.terminal-observed', observation }))
+      .rejects.toMatchObject({ code: 'WORKER_CONVERSATION_CALLBACK_DENIED' })
+    expect(terminal).not.toHaveBeenCalled()
+    await invoke({ method: 'conversation.submitted', correlationId, identity: { nativeSubmission: submission } })
+    await expect(invoke({ method: 'conversation.terminal-observed', observation: { ...observation,
+      submission: { ...submission, nativeMessageId: 'foreign-input' } } }))
+      .rejects.toMatchObject({ code: 'WORKER_CONVERSATION_CALLBACK_DENIED' })
+    await invoke({ method: 'conversation.terminal-observed', observation })
+    expect(terminal).toHaveBeenCalledExactlyOnceWith(observation)
+    current.mockRejectedValueOnce(new Error('Sender revoked'))
+    await expect(invoke({ method: 'conversation.terminal-observed', observation })).rejects.toThrow('Sender revoked')
+    expect(terminal).toHaveBeenCalledTimes(1)
+  } finally { await lease.release(); await bridge.close() }
+})
+
 it('binds OpenCode file callbacks to their admitted chat and persisted acknowledgement on the paired channel', async () => {
   const f = workerConversationFixture('agent', 'opencode')
   const files = await fileToolFixture()

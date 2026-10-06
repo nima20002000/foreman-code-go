@@ -6,6 +6,7 @@ import type { NativeTurnInput } from '../harnesses/port.js'
 import type { ClaudeNativeSessionManager } from '../harnesses/claudeSdk/sessionManager.js'
 import { createWorkerClaudeAuthority } from './workerClaudeAuthority.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
+import { memoryClaudeCallbackJournal } from '../../../test/support/claudeCallbackJournal.js'
 
 // Only provider I/O is recorded here; this does not qualify a native installation.
 function fixture() {
@@ -23,7 +24,7 @@ function fixture() {
       : { authorized: true }
   })
   const controls = createWorkerClaudeAuthority({ configuration, version: f.session.providerVersion,
-    source: () => source, signal: AbortSignal.timeout(5000), request })
+    source: () => source, signal: AbortSignal.timeout(5000), request, callbackJournal: memoryClaudeCallbackJournal() })
   const nativeStart = vi.fn(async function* (_session: unknown, message: NativeTurnInput) {
     await message.onMessageSubmitted?.(submission)
     yield { sequence: 1, type: 'session.pending', occurredAt: new Date().toISOString(), payload: {} }

@@ -75,6 +75,7 @@
   "apps/api/src/modules/harnesses/claudeSdk/installedProfilePin.ts",
   "apps/api/src/modules/harnesses/claudeSdk/interactions.ts",
   "apps/api/src/modules/harnesses/claudeSdk/mcpInspection.ts",
+  "apps/api/src/modules/harnesses/claudeSdk/mcpPolicy.ts",
   "apps/api/src/modules/harnesses/claudeSdk/nativeCompactionCapture.ts",
   "apps/api/src/modules/harnesses/claudeSdk/nativeEvents.ts",
   "apps/api/src/modules/harnesses/claudeSdk/nativeProfileQualification.ts",

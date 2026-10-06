@@ -53,6 +53,8 @@ export interface WorkerConversationHostPorts {
     identity: Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'>,
     request: WorkerConversationRpcRequest, signal: AbortSignal): Promise<void>
   observeSettings?(request: WorkerConversationRpcRequest, correlationId: string, signal: AbortSignal): Promise<void>
+  observeTerminal?(request: WorkerConversationRpcRequest,
+    observation: import('../harnesses/port.js').NativeTerminalObservation, signal: AbortSignal): Promise<void>
 }
 interface Resident {
   binding: WorkerConversationBinding
@@ -308,6 +310,11 @@ export class WorkerConversationHost {
     { method: 'conversation.initial-turn' | 'conversation.start-turn' }>, signal: AbortSignal): NativeTurnInput {
     return {
       prompt: request.prompt, clientCorrelationId: request.correlationId,
+      onTerminal: async observation => {
+        if (observation.submission.clientCorrelationId !== request.correlationId) unavailable('Native terminal input differs from its admission.')
+        await this.authorize(request, connection, signal)
+        await this.ports.observeTerminal?.(request, observation, signal)
+      },
       ...(request.sessionMode ? { sessionMode: request.sessionMode } : {}),
       ...(request.preferences ? { sessionPreferences: request.preferences } : {}),
       onSubmitted: async nativeTurnId => {
@@ -509,6 +516,11 @@ export class WorkerConversationHost {
     const { resident, record } = await this.resident(request)
     const manager = resident.allocation.manager
     switch (request.method) {
+      case 'conversation.retire-turn': {
+        if (!record.turns.some(turn => turn.correlationId === request.correlationId)) unavailable('The native turn is not owned by this conversation.')
+        await manager.retireTurn?.(request.session, request.correlationId)
+        return { receipt: await this.ports.journal.read(request.binding) }
+      }
       case 'conversation.start-turn': {
         const reserved = await this.ports.journal.reserveTurn(request.binding, request.correlationId, commandInputHash({
           prompt: request.prompt, mode: request.sessionMode ?? 'regular', preferences: request.preferences ?? null }),

@@ -63,6 +63,18 @@ export const WorkerOpenCodeFileRootSchema = z.object({
   filesystem: RootFilesystemIdentitySchema.optional(),
 }).strict()
 export type WorkerOpenCodeFileRoot = z.infer<typeof WorkerOpenCodeFileRootSchema>
+export const WorkerClaudeCallbackIdentitySchema = z.object({
+  ownerPrincipalId: id, attemptId: id, nativeSessionId: id, nativeMessageId: id,
+  clientCorrelationId: id, generation: id, toolUseId: id,
+  mcpServer: z.object({ name: id, source: id }).strict().optional(),
+  nativeTurnId: id.optional(), nativeRequestId: id.optional(), nativeRequestType: z.literal('can_use_tool').optional(),
+}).strict()
+export const WorkerClaudeCallbackRecordSchema = z.object({
+  identity: WorkerClaudeCallbackIdentitySchema, inputHash: digest, toolName: id,
+  selectedOptionId: id.optional(), state: z.enum(['submitted', 'uncertain']),
+  acknowledged: z.boolean(), retired: z.boolean().optional(),
+}).strict()
+export type WorkerClaudeCallbackRecord = z.infer<typeof WorkerClaudeCallbackRecordSchema>
 export const WorkerConversationReceiptSchema = z.object({
   binding: WorkerConversationBindingSchema,
   connection: DeviceSessionBindingSchema,
@@ -78,6 +90,7 @@ export const WorkerConversationReceiptSchema = z.object({
   compactions: z.array(z.object({ inputHash: digest, state: CompactionStateSchema }).strict()).max(1000),
   desiredPreferences: SessionPreferencesSchema.nullable(),
   appliedPreferences: SessionPreferencesSchema.nullable(),
+  claudeCallbacks: z.record(digest, WorkerClaudeCallbackRecordSchema).optional(),
   openCodeFileRoots: z.array(WorkerOpenCodeFileRootSchema).max(1000).optional(),
   openCodeFileDirectory: z.object({ id: z.uuid(), filesystem: RootFilesystemIdentitySchema.optional() }).strict().optional(),
 }).strict()
@@ -101,6 +114,10 @@ export const WorkerConversationHistorySchema = z.object({
     harness: z.lazy(() => AgentHarnessSchema), providerVersion: id, nativeSessionId: id,
     nativeRequestId: id, nativeRequestType: id, optionId: id,
     semantic: z.lazy(() => ApprovalResponseSemanticSchema),
+    nativeIdentity: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('turn'), nativeTurnId: id }).strict(),
+      z.object({ kind: z.literal('message'), nativeMessageId: id, generation: id }).strict(),
+    ]).optional(),
     responseDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict()).optional(),
   canceledRequestIds: z.array(id).optional(),
 }).passthrough()
@@ -193,6 +210,7 @@ export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method',
   z.object({ method: z.enum(['conversation.pending', 'conversation.controls-read', 'conversation.close']),
     ...native }).strict(),
   z.object({ method: z.literal('conversation.cancel'), ...native, nativeTurnId: id.optional() }).strict(),
+  z.object({ method: z.literal('conversation.retire-turn'), ...native, correlationId: id }).strict(),
   z.object({ method: z.literal('conversation.respond'), ...native, nativeRequestId: id,
     option: z.lazy(() => ApprovalResponseOptionSchema) }).strict(),
   z.object({ method: z.literal('conversation.response-availability'), ...native,
@@ -233,11 +251,6 @@ export const WorkerConversationProfileFactsSchema = z.object({
 export type WorkerConversationProfileFacts = z.infer<typeof WorkerConversationProfileFactsSchema>
 
 const callback = { admissionId: z.uuid(), binding: WorkerConversationBindingSchema }
-export const WorkerClaudeCallbackIdentitySchema = z.object({
-  ownerPrincipalId: id, attemptId: id, nativeSessionId: id, nativeMessageId: id,
-  clientCorrelationId: id, generation: id, toolUseId: id,
-  nativeTurnId: id.optional(), nativeRequestId: id.optional(), nativeRequestType: z.literal('can_use_tool').optional(),
-}).strict()
 export const WorkerClaudeAuthorityRequestSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('admission') }).strict(),
   z.object({ phase: z.literal('file'), identity: WorkerClaudeCallbackIdentitySchema,
@@ -270,6 +283,10 @@ export const WorkerConversationCallbackSchema = z.discriminatedUnion('method', [
     identity: z.object({ nativeTurnId: id.optional(), nativeSubmission: NativeMessageSubmissionSchema.optional() }).strict()
       .refine(value => Boolean(value.nativeTurnId || value.nativeSubmission), 'A provider submission identity is required') }).strict(),
   z.object({ method: z.literal('conversation.settings-applied'), ...callback, correlationId: id }).strict(),
+  z.object({ method: z.literal('conversation.terminal-observed'), ...callback,
+    observation: z.object({ submission: NativeMessageSubmissionSchema,
+      result: z.lazy(() => ExecutionResultSchema), nativeMessageId: id.optional(),
+      history: WorkerConversationHistorySchema.optional() }).strict() }).strict(),
 ])
 export type WorkerConversationCallback = z.infer<typeof WorkerConversationCallbackSchema>
 

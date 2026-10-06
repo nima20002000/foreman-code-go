@@ -9,6 +9,8 @@ import type { WorkerConversationBinding, WorkerConversationReceipt,
 import { DomainError } from '../errors.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import { WorkerClaudeCallbackRecordSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import type { ClaudeCallbackJournal } from '../harnesses/claudeSdk/callbackJournal.js'
 
 interface ConversationStore {
   read(): Promise<WorkerConversationReceipt[]>
@@ -51,6 +53,39 @@ export class WorkerConversationJournal {
 
   async fileRecords() {
     return (await this.store.read()).filter(record => record.openCodeFileDirectory || record.openCodeFileRoots?.length)
+  }
+
+  claudeCallbackJournal(binding: WorkerConversationBinding): ClaudeCallbackJournal {
+    const records = async () => Object.values((await this.inspectBinding(binding))?.claudeCallbacks ?? {})
+    return {
+      read: async key => (await this.inspectBinding(binding))?.claudeCallbacks?.[key],
+      write: async (key, value) => {
+        const callback = WorkerClaudeCallbackRecordSchema.parse(value)
+        if (key !== commandInputHash(callback.identity)) conflict('The callback journal key differs from its native identity.')
+        await this.change(binding, record => {
+          if (binding.harness !== 'claude' || callback.identity.nativeSessionId !== record.session?.nativeSessionId) {
+            conflict('The callback belongs to another native session.')
+          }
+          const callbacks = record.claudeCallbacks ??= {}
+          const previous = callbacks[key]
+          if (previous && (!isDeepStrictEqual(previous.identity, callback.identity)
+            || previous.inputHash !== callback.inputHash || previous.toolName !== callback.toolName
+            || previous.state !== callback.state || previous.selectedOptionId !== callback.selectedOptionId)) {
+            conflict('The consumed callback has different input or response.')
+          }
+          callbacks[key] = { ...callback, acknowledged: previous?.acknowledged === true || callback.acknowledged,
+            ...(previous?.retired || callback.retired ? { retired: true } : {}) }
+        })
+      },
+      forTool: async identity => {
+        const matching = (await records()).filter(record => record.identity.nativeSessionId === identity.nativeSessionId
+          && record.identity.nativeMessageId === identity.nativeMessageId && record.identity.generation === identity.generation
+          && record.identity.toolUseId === identity.toolUseId)
+        return matching.length === 1 ? matching[0] : undefined
+      },
+      acknowledged: async sessionId => (await records()).filter(record =>
+        record.identity.nativeSessionId === sessionId && record.acknowledged && !record.retired),
+    }
   }
 
   reserveFileDirectory(binding: WorkerConversationBinding) {

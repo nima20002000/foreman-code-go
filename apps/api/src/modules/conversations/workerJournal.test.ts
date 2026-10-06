@@ -65,6 +65,35 @@ it('persists the conversation file directory and refuses an inode replacement', 
   expect(await j.chats.reserveFileDirectory(f.binding)).toEqual({ id: directory.id, filesystem })
 })
 
+it('retains Claude callback consumption across reopen and rejects changed input or another native session', async () => {
+  const f = workerConversationFixture('agent', 'claude')
+  const j = await journal()
+  await j.chats.receive(f.binding, f.connection)
+  await j.chats.reserveCreation(f.binding, 'create', commandInputHash('create'))
+  await j.chats.bindSession(f.binding, f.session, f.nativeOwner)
+  const identity = { ownerPrincipalId: 'sender', attemptId: 'request', nativeSessionId: f.session.nativeSessionId,
+    nativeMessageId: 'native-message', clientCorrelationId: 'message', generation: 'generation', toolUseId: 'tool',
+    nativeRequestId: 'permission', nativeRequestType: 'can_use_tool' as const }
+  const record = { identity, toolName: 'Read', inputHash: commandInputHash({ path: 'accepted.md' }),
+    state: 'submitted' as const, selectedOptionId: 'allow_once', acknowledged: false }
+  const key = commandInputHash(identity)
+  const callbacks = j.chats.claudeCallbackJournal(f.binding)
+  await callbacks.write(key, record)
+  await callbacks.write(key, { ...record, acknowledged: true })
+  await callbacks.write(key, record)
+  await j.store.close()
+  const reopened = await RemoteOperationJournal.open(j.path)
+  closing.push(() => reopened.close())
+  const recovered = reopened.conversations.claudeCallbackJournal(f.binding)
+  expect(await recovered.read(key)).toEqual({ ...record, acknowledged: true })
+  expect(await recovered.forTool(identity)).toEqual({ ...record, acknowledged: true })
+  expect(await recovered.acknowledged(f.session.nativeSessionId)).toHaveLength(1)
+  await expect(recovered.write(key, { ...record, inputHash: commandInputHash('different-input') }))
+    .rejects.toThrow('different input')
+  const foreign = { ...record, identity: { ...identity, nativeSessionId: 'other-session' } }
+  await expect(recovered.write(commandInputHash(foreign.identity), foreign)).rejects.toThrow('another native session')
+})
+
 it('persists the effective Plan mode with the accepted worker turn and rejects changed-mode replay', async () => {
   const f = await opened()
   const hash = commandInputHash({ prompt: 'Accepted Plan task', mode: 'plan' })

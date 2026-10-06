@@ -29,6 +29,17 @@ it('retains native input response digests and confirmed non-submission during Wo
   ] }).success).toBe(false)
 })
 
+it('retains the Claude response message and callback generation on Worker readback', () => {
+  const history = { events: [], pendingInteractions: [], responseDeliveries: [{ source: 'provider_history',
+    harness: 'claude', providerVersion: 'provider-fixture', nativeSessionId: 'session', nativeRequestId: 'permission',
+    nativeRequestType: 'can_use_tool', optionId: 'allow_once', semantic: 'approve_once',
+    nativeIdentity: { kind: 'message', nativeMessageId: 'input-message', generation: 'callback-generation' } }] }
+  expect(WorkerConversationHistorySchema.parse(history)).toEqual(history)
+  expect(WorkerConversationHistorySchema.safeParse({ ...history, responseDeliveries: [{
+    ...history.responseDeliveries[0], nativeIdentity: { kind: 'message', nativeMessageId: 'input-message' },
+  }] }).success).toBe(false)
+})
+
 it('addresses an Operator chat without a workflow dispatch or user-grant surrogate', () => {
   const target = binding()
   expect(WorkerConversationRpcRequestSchema.parse({ method: 'conversation.cancel', binding: target,

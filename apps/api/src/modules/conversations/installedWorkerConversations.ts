@@ -92,6 +92,7 @@ export async function createInstalledWorkerConversations(input: {
     const harness = binding.harness
     if (harness === 'claude') return allocateInstalledWorkerClaude({ binding, configuration, connection, purpose,
       stateDirectory: input.stateDirectory, selection: input.configuration, launcher: selected.appMcpLauncher,
+      journal: conversationJournal,
       current: input.current, source, callbacks, approvedRoots: input.approvedRoots, registry: input.registry,
       request: input.request, signal: input.signal })
     if (harness !== 'codex' && harness !== 'opencode') unavailable('The installed native selection does not support this driver.')

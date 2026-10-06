@@ -12,7 +12,7 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
-import type { NativeHistory } from '../harnesses/port.js'
+import type { NativeHistory, NativeTerminalObservation } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 import { MainWorkerFiles, type PrepareWorkerFiles } from './mainWorkerFiles.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
@@ -23,6 +23,7 @@ export interface WorkerConversationCallbacks {
   sessionObserved?(session: NativeSessionReference): Promise<void>
   submitted?(correlationId: string, identity: Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'>): Promise<void>
   settingsApplied?(): Promise<void>
+  terminalObserved?(observation: NativeTerminalObservation): Promise<void>
   files?: PrepareWorkerFiles
   openCodeFiles?: MainOpenCodeFilePorts
 }
@@ -220,6 +221,16 @@ export class MainWorkerConversationBridge {
         if (admission.session && !isDeepStrictEqual(admission.session, callback.session)) denied()
         await admission.callbacks.sessionObserved(callback.session)
         admission.session = structuredClone(callback.session)
+      } else if (callback.method === 'conversation.terminal-observed') {
+        const request = admission.request
+        const submission = callback.observation.submission
+        const original = admission.identities.get(submission.clientCorrelationId)?.nativeSubmission
+        const session = 'session' in request ? request.session : admission.session
+        if (!['conversation.start-turn', 'conversation.initial-turn'].includes(request.method)
+          || !('correlationId' in request) || request.correlationId !== submission.clientCorrelationId
+          || !session || session.harness !== 'claude' || session.nativeSessionId !== submission.nativeSessionId
+          || !isDeepStrictEqual(original, submission) || !admission.callbacks.terminalObserved) denied()
+        await admission.callbacks.terminalObserved(callback.observation)
       } else if (callback.method === 'conversation.settings-applied') {
         const request = admission.request
         if (!('correlationId' in request) || request.correlationId !== callback.correlationId

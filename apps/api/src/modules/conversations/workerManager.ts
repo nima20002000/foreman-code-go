@@ -269,6 +269,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         if (identity.nativeSubmission) await input.onMessageSubmitted?.(identity.nativeSubmission)
       },
       settingsApplied: async () => { await input.onSettingsApplied?.() },
+      terminalObserved: async observation => { await input.onTerminal?.(observation) },
     } })
     const pollSignal = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])])
     let sequence: number | undefined
@@ -317,6 +318,10 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   async history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory> {
     return this.readHistory(session, {}, signal)
+  }
+  async retireTurn(session: NativeSessionReference, correlationId: string) {
+    this.assertSession(session)
+    this.adopt(await this.request({ method: 'conversation.retire-turn', session, correlationId }))
   }
   private async readHistory(session: NativeSessionReference, fields: Record<string, unknown>, signal?: AbortSignal): Promise<NativeHistory> {
     this.assertSession(session)

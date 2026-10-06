@@ -9,6 +9,7 @@ import type { ClaudeCallbackIdentity } from '../harnesses/claudeSdk/interactions
 import type { ClaudeNativeSessionManager } from '../harnesses/claudeSdk/sessionManager.js'
 import { DomainError } from '../errors.js'
 import type { FileToolOperation } from '../files/tools/types.js'
+import type { ClaudeCallbackJournal } from '../harnesses/claudeSdk/callbackJournal.js'
 
 interface AdmittedMessage {
   request: WorkerConversationRpcRequest
@@ -22,6 +23,7 @@ export function createWorkerClaudeAuthority(input: {
   version: string
   signal: AbortSignal
   source(): WorkerConversationRpcRequest
+  callbackJournal: ClaudeCallbackJournal
   request(source: WorkerConversationRpcRequest, request: WorkerClaudeAuthorityRequest,
     signal: AbortSignal): Promise<unknown>
 }) {
@@ -34,6 +36,7 @@ export function createWorkerClaudeAuthority(input: {
   const authorize = async (source: WorkerConversationRpcRequest, request: WorkerClaudeAuthorityRequest,
     signal: AbortSignal) => WorkerClaudeAuthorizationSchema.parse(await input.request(source, request, signal))
   const bridge: ClaudeInteractionBridge = new ClaudeInteractionBridge(input.configuration, {
+    callbackJournal: input.callbackJournal,
     async validate(identity) {
       await authorize(sourceFor(identity), { phase: 'validate',
         identity: WorkerClaudeCallbackIdentitySchema.parse(identity) }, input.signal)
@@ -111,6 +114,12 @@ export function createWorkerClaudeAuthority(input: {
     },
     bind(manager: ClaudeNativeSessionManager) {
       bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
+      const history = manager.history.bind(manager)
+      manager.history = async (session, signal) => ({ ...await history(session, signal),
+        responseDeliveries: await bridge.deliveryEvidence(session) })
+      const reconcile = manager.reconcile.bind(manager)
+      manager.reconcile = async (session, correlationId, signal) => ({ ...await reconcile(session, correlationId, signal),
+        responseDeliveries: await bridge.deliveryEvidence(session) })
       const initial = manager.startInitialTurn.bind(manager)
       manager.startInitialTurn = async function* (start, message: NativeInitialTurnInput, signal) {
         const prepared = { ...await turn(message), onSessionObserved: message.onSessionObserved }
@@ -134,7 +143,7 @@ export function createWorkerClaudeAuthority(input: {
         response: { nativeRequestId: string; option: import('@foreman-code/contracts').ApprovalResponseOption }, signal?: AbortSignal) {
         const observation = await bridge.observeResponse(session, response.nativeRequestId, response.option, signal)
         return { events: [], pendingInteractions: bridge.pendingInteractions(session),
-          interactionDeliveries: [observation], responseDeliveries: [] }
+          interactionDeliveries: [observation], responseDeliveries: await bridge.deliveryEvidence(session) }
       },
       stopAutomaticResponses: () => bridge.close(),
     },

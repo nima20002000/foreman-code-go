@@ -5,6 +5,8 @@ import { createClaudeFileCallResolver } from '../files/claude/callResolver.js'
 import { createClaudeFileTools, type ClaudeFileSdk } from '../files/claude/sdkServer.js'
 import { toolFailure, toolResult } from '../../mcp/shared/results.js'
 import { DomainError } from '../errors.js'
+import { AgentFileReadResultSchema } from '@foreman-code/contracts/files'
+import { markdownReadText } from '../files/tools/markdownReadText.js'
 
 export function createWorkerClaudeFiles(input: {
   sdk: ClaudeFileSdk
@@ -25,7 +27,12 @@ export function createWorkerClaudeFiles(input: {
           throw new DomainError('CLAUDE_FILE_NATIVE_CONTEXT_REQUIRED',
           'The file call requires an observed root SDK callback.', 403)
         }
-        const result = toolResult(await input.authority.file(identity, operation, args, input.signal))
+        const value = await input.authority.file(identity, operation, args, input.signal)
+        const result = toolResult(value)
+        if (operation === 'files.read') {
+          const text = markdownReadText(AgentFileReadResultSchema.parse(value))
+          if (text) result.content.push({ type: 'text', text })
+        }
         return { content: result.content.filter(value => value.type === 'text')
           .map(value => ({ type: 'text', text: value.text })),
         ...(result.structuredContent ? { structuredContent: { ...result.structuredContent } } : {}) }

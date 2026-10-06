@@ -14,7 +14,7 @@ import { DomainError } from '../errors.js'
 export function workerConversationCallbacks(input: {
   currentBinding(): Readonly<DeviceSessionBinding>
   capture(): WorkerConversationChannel | undefined
-}): Pick<WorkerConversationHostPorts, 'authorize' | 'observeSession' | 'observeSubmission' | 'observeSettings'> & {
+}): Pick<WorkerConversationHostPorts, 'authorize' | 'observeSession' | 'observeSubmission' | 'observeSettings' | 'observeTerminal'> & {
   profile(source: WorkerConversationRpcRequest, signal: AbortSignal): Promise<WorkerConversationProfileFacts>
   claudeAuthority(source: WorkerConversationRpcRequest, request: WorkerClaudeAuthorityRequest,
     signal: AbortSignal): Promise<unknown>
@@ -71,6 +71,9 @@ export function workerConversationCallbacks(input: {
     },
     observeSettings: async (source, correlationId, signal) => {
       await request(source, { method: 'conversation.settings-applied', correlationId }, signal)
+    },
+    observeTerminal: async (source, observation, signal) => {
+      await request(source, { method: 'conversation.terminal-observed', observation }, signal)
     },
   }
 }

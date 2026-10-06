@@ -27,6 +27,8 @@ import type { workerConversationCallbacks } from './workerCallbacks.js'
 import type { WorkerConversationAllocation } from './workerHost.js'
 import { createWorkerClaudeFiles } from './workerClaudeFiles.js'
 import type { NativeSessionStart } from '../harnesses/port.js'
+import type { WorkerConversationJournal } from './workerJournal.js'
+import { acceptedClaudeAppTools } from '../harnesses/claudeSdk/mcpPolicy.js'
 
 export async function allocateInstalledWorkerClaude(input: {
   binding: WorkerConversationBinding
@@ -41,6 +43,7 @@ export async function allocateInstalledWorkerClaude(input: {
   callbacks: ReturnType<typeof workerConversationCallbacks>
   approvedRoots(): Promise<ApprovedRootAllowlist>
   registry: NativeProcessRegistry
+  journal: WorkerConversationJournal
   request(namespace: string, payload: unknown, options: { signal: AbortSignal }): Promise<DeviceApplicationResult>
   signal: AbortSignal
 }): Promise<WorkerConversationAllocation> {
@@ -78,9 +81,7 @@ export async function allocateInstalledWorkerClaude(input: {
     reserved = true
   }
   const appAccess = reader ? 'none' : binding.appMcpAccess
-  const authority = createWorkerClaudeAuthority({ configuration: compiled.configuration,
-    version: original.accepted.currentBinding.pin.cliVersion, signal: input.signal, source: input.source,
-    request: input.callbacks.claudeAuthority })
+  let authority: ReturnType<typeof createWorkerClaudeAuthority>
   let mcp: Awaited<ReturnType<typeof createUnboundWorkerMcpEndpoint>> | undefined
   let token: string | undefined
   let environment: Awaited<ReturnType<typeof prepareWorkerConversationMcp>>['environment'] | undefined
@@ -110,6 +111,11 @@ export async function allocateInstalledWorkerClaude(input: {
   if (appAccess === 'scoped' && configured?.type === 'http') {
     mcp = await createUnboundWorkerMcpEndpoint({ launcher: input.launcher, signal: input.signal })
   }
+  const callbackConfiguration = { ...compiled.configuration, mcpServers: { ...compiled.configuration.mcpServers,
+    ...(mcp && configured?.type === 'http' ? { [serverName]: { ...configured, url: mcp.endpoint } } : {}) } }
+  authority = createWorkerClaudeAuthority({ configuration: callbackConfiguration,
+    version: original.accepted.currentBinding.pin.cliVersion, signal: input.signal, source: input.source,
+    callbackJournal: input.journal.claudeCallbackJournal(binding), request: input.callbacks.claudeAuthority })
   const runner = createClaudeSdkRunner({ loadClient: async () => {
     await before(input.signal)
     reserve()
@@ -120,6 +126,7 @@ export async function allocateInstalledWorkerClaude(input: {
     sdk: fileSdk, manager: () => manager,
     authority, allowMutation: compiled.configuration.sandbox !== 'read-only', signal: input.signal,
   }) : undefined
+  authority.bridge.bindMcpTools(fileServer ? [fileServer.manifest] : [])
   const nativeServers = { ...(appAccess === 'none' ? Object.fromEntries(Object.entries(compiled.mcpServers)
     .filter(([name]) => !isSupportedAppMcpServerName(name))) : compiled.mcpServers),
   ...(mcp && configured?.type === 'http' ? { [serverName]: { ...configured, url: mcp.endpoint } } : {}),
@@ -141,8 +148,11 @@ export async function allocateInstalledWorkerClaude(input: {
       resume: compiled.qualification.resume, fork: compiled.qualification.fork, history: compiled.qualification.history,
       interactions: compiled.qualification.policy.alwaysAppliedToolHook },
     inspectionStart, expectedMcp: { serverName }, interactionPort: authority.interactionPort,
-    liveCallbacks: authority.bridge, cancelPendingRequests: () => authority.bridge.close(),
+    liveCallbacks: authority.bridge, cancelPendingRequests: () => authority.bridge.cancelPendingRequests(),
     pendingInteractions: session => authority.bridge.pendingInteractions(session),
+    responseDeliveries: session => authority.bridge.deliveryEvidence(session),
+    messageSubmitted: async correlationId => Boolean((await input.journal.read(binding))?.turns
+      .find(turn => turn.correlationId === correlationId)?.nativeSubmission),
     ownerForStart: source => ({ ownerId: binding.owner.conversationId, attemptId: source.correlationId ?? owner,
       generation: recovery.launchId ?? owner }),
   })
@@ -150,6 +160,7 @@ export async function allocateInstalledWorkerClaude(input: {
   authority.bind(manager)
   async function deliverScopedCredential(nextToken: string, signal: AbortSignal,
     startup: Parameters<WorkerConversationAllocation['start']>[0]) {
+    authority.bridge.bindMcpTools(fileServer ? [fileServer.manifest] : [])
     if (appAccess !== 'scoped' || binding.owner.kind !== 'operator' || configured?.type !== 'http' || !mcp) {
       throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This native owner has no scoped Operator HTTP MCP connection.', 403)
     }
@@ -167,6 +178,10 @@ export async function allocateInstalledWorkerClaude(input: {
     }, signal)
     if (snapshot.httpCredentialAcknowledgement?.endpoint !== mcp.endpoint) throw new DomainError(
       'CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK has not acknowledged the scoped worker credential.', 409)
+    const manifests = await acceptedClaudeAppTools({ configuration: callbackConfiguration,
+      servers: { [serverName]: { ...configured, url: mcp.endpoint, headers: { Authorization: `Bearer ${nextToken}` } } },
+      token: nextToken, signal })
+    authority.bridge.bindMcpTools([...manifests, ...(fileServer ? [fileServer.manifest] : [])])
   }
   const inspect = claudeProductionMcpInspector({ manager: () => manager, start: inspectionStart,
     workingDirectory: binding.workingDirectory, cliVersion: original.accepted.currentBinding.pin.cliVersion })
@@ -199,6 +214,7 @@ export async function allocateInstalledWorkerClaude(input: {
     },
     async close() {
       await manager.dispose?.()
+      authority.bridge.close()
       await input.registry.abandonReservedLaunch(recovery)
       if (!await input.registry.closeOwner(owner)) throw new DomainError('CLAUDE_PROCESS_CLOSURE_PENDING',
         'The native Claude chat has not stopped.', 409)
