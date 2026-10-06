@@ -329,7 +329,7 @@ export class JobPreparationService implements JobPreparationPort {
   }
   async accept(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpecRecord,identity:{executionId:string;attemptId:string;operationId:string}) {
     const ready=await this.validate(sql,principal,workspaceId,spec)
-    if(!ready.valid)throw new DomainError('JOB_NOT_READY','Current source, target or isolation authority does not match the saved job.',409,{reasons:ready.reasons})
+    if(!ready.valid){componentLogger('jobs').warn({executionId:identity.executionId,reasons:ready.reasons},'Job preparation validation failed');throw new DomainError('JOB_NOT_READY','Current source, target or isolation authority does not match the saved job.',409,{reasons:ready.reasons})}
     return PreparedJobSpecRecordSchema.parse(await this.sources.materialize(sql,principal,workspaceId,spec,identity))
   }
 }

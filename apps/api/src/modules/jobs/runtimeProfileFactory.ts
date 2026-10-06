@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { componentLogger } from '../../infrastructure/logger.js'
 import { JobRuntimeProfileSchema, JobRuntimeFingerprintSchema, InstalledJobRuntimeDescriptorSchema }
   from '@foreman-code/contracts/job-runtime'
 import { JobRuntimeApprovalRecordSchema, JobRuntimeProfileRecordSchema, JobRuntimeFingerprintRecordSchema,
@@ -146,6 +147,12 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
       if (profile.status !== 'qualified' || !measurement) return { ready: false, reasons: ['unqualified'] }
       if (Date.parse(measurement.expiresAt) <= Date.now()) return { ready: false, reasons: ['expired'] }
       const current = await input.host.currentMetadata(sql, profile)
+      if (!current || canonical(current) !== canonical(measurement.fingerprint)) {
+        componentLogger('jobs').warn({ profileId: profile.id, currentAvailable: !!current,
+          changedFields: current ? Object.keys(measurement.fingerprint).filter(key =>
+            canonical(Reflect.get(current, key)) !== canonical(Reflect.get(measurement.fingerprint, key))) : [] },
+        'Job runtime fingerprint comparison failed')
+      }
       return current && canonical(current) === canonical(measurement.fingerprint)
         ? { ready: true, reasons: [] } : { ready: false, reasons: ['context_changed'] }
     },

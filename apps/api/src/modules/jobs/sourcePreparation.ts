@@ -35,6 +35,7 @@ import { sourceSha256 } from '../sources/manifest.js'
 import { verifiedSourceWorkingTree } from '../sources/nativeStamp.js'
 import { authorizeSource } from '../sources/authority.js'
 import { DomainError } from '../errors.js'
+import { componentLogger } from '../../infrastructure/logger.js'
 import { DeviceAccessError } from '../devices/access.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import { JobPreparationService, type JobPreparationSources } from './preparation.js'
@@ -258,6 +259,7 @@ export class CanonicalJobPreparationService extends JobPreparationService {
       return { valid: true, reasons: [], sideEffects: false as const }
     } catch (error) {
       if (!(error instanceof DomainError) || error.status !== 409) throw error
+      componentLogger('jobs').warn({code:error.code,reason:error.message,details:error.details},'Canonical Job validation denied')
       return { valid: false, reasons: [error.code], sideEffects: false as const }
     }
   }
