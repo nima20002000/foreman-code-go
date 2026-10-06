@@ -143,6 +143,10 @@ test('offline seed rejects links, undeclared files, missing registry times and q
 
 test('verification context binds reviewed seed provenance to committed dependency inputs and rejects a changed lock', async t => {
   const f = await offlineSeedFixture(t);
+  const executablePath = 'pnpm-store/native-compiler-exec';
+  const executable = Buffer.from('#!/bin/sh\nprintf "native compiler runs\\n"\n');
+  await writeFile(join(f.directory, executablePath), executable, { mode: 0o700, flag: 'wx' });
+  f.receipt.files.push({ path: executablePath, bytes: executable.length, sha256: hash(executable) });
   t.mock.method(Date, 'now', () => f.options.now);
   const repository = join(f.directory, 'repository');
   await mkdir(repository);
@@ -178,6 +182,8 @@ test('verification context binds reviewed seed provenance to committed dependenc
     review: { reviewedByPrincipalId: 'owner', decisionDigest: 'b'.repeat(64), reviewedAt: '2026-10-02T01:00:00Z' } };
   const receipt = await buildCiRuntimeContext({ repository, output,
     offlineSeed: { directory: seedRoot, receiptPath, unitCodex } });
+  assert.equal(execFileSync(join(output, 'seed', executablePath), { encoding: 'utf8' }), 'native compiler runs\n');
+  assert.equal(spawnSync(join(output, 'seed/pnpm-store/index.db')).error?.code, 'EACCES');
   const observation = await import(pathToFileURL(join(output, 'verification-observation.mjs')).href);
   assert.equal(await observation.probeExecutableScratch(f.directory), 0);
   assert.ok(!(await readdir(f.directory)).some(name => name.startsWith('qualification-')));

@@ -12,6 +12,10 @@ const safePath = value => typeof value === 'string' && !value.includes('\\') && 
   && !value.startsWith('/') && value.split('/').every(part => part && part !== '.' && part !== '..');
 
 export async function readSeedFile(root, path, maximum) {
+  return (await readSeedFileEntry(root, path, maximum)).bytes;
+}
+
+export async function readSeedFileEntry(root, path, maximum) {
   if (!safePath(path)) throw new Error('Unsafe seed file path.');
   const handles = [];
   try {
@@ -39,7 +43,7 @@ export async function readSeedFile(root, path, maximum) {
       || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
       throw new Error('Seed file changed during capture.');
     }
-    return bytes;
+    return { bytes, executable: Boolean(before.mode & 0o111) };
   } finally {
     for (const handle of handles.reverse()) await handle.close();
   }

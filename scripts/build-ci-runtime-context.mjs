@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { readSeedFile, validateSeedReceipt, verifySeedFiles } from '../apps/worker/artifacts/ci-runtime/seed-policy.mjs';
+import { readSeedFile, readSeedFileEntry, validateSeedReceipt, verifySeedFiles } from '../apps/worker/artifacts/ci-runtime/seed-policy.mjs';
 
 const controlRoot = 'apps/worker/artifacts/ci-runtime';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -82,11 +82,11 @@ export async function buildCiRuntimeContext({ repository, commit = 'HEAD', outpu
   const receipt = { sourceCommit: captured, files: [...snapshots.values()].map(({ path, blob, bytes }) => ({ path, gitBlobSha1: blob, sha256: hash(bytes) })).sort((a, b) => a.path.localeCompare(b.path)) };
   if (seed) {
     for (const file of seed.files) {
-      const bytes = await readSeedFile(offlineSeed.directory, file.path, file.bytes);
+      const { bytes, executable } = await readSeedFileEntry(offlineSeed.directory, file.path, file.bytes);
       if (bytes.length !== file.bytes || hash(bytes) !== file.sha256) throw new Error('Reviewed offline seed changed during copy.');
       const destination = join(output, 'seed', file.path);
       await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-      await writeFile(destination, bytes, { mode: 0o600, flag: 'wx' });
+      await writeFile(destination, bytes, { mode: executable ? 0o700 : 0o600, flag: 'wx' });
     }
     const seedBytes = Buffer.from(`${JSON.stringify(seed)}\n`);
     await writeFile(join(output, 'seed-receipt.json'), seedBytes, { mode: 0o600, flag: 'wx' });
