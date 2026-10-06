@@ -137,9 +137,11 @@ export function createWorkerClaudeAuthority(input: {
       const startTurn = manager.startTurn.bind(manager)
       manager.startTurn = async function* (session, message, signal) {
         const prepared = await turn(message)
-        if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED', 'The message requires its admitted session context.', 409)
-        const attached = await manager.attachSession(session, sessionStart, signal)
-        try { yield* startTurn(attached, prepared, signal) }
+        try {
+          if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED', 'The message requires its admitted session context.', 409)
+          const attached = await manager.attachSession(session, sessionStart, signal)
+          yield* startTurn(attached, prepared, signal)
+        }
         finally { sources.delete(message.clientCorrelationId) }
       }
     },

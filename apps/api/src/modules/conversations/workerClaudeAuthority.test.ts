@@ -11,6 +11,8 @@ import { memoryClaudeCallbackJournal } from '../../../test/support/claudeCallbac
 // Only provider I/O is recorded here; this does not qualify a native installation.
 function fixture() {
   const f = workerConversationFixture('agent', 'claude')
+  const agent = f.configuration
+  if (!('agentId' in agent)) throw new Error('Agent fixture required')
   if (f.configuration.harness.harness !== 'claude') throw new Error('Claude fixture required')
   const configuration = { ...f.configuration.harness, tools: ['Read'] }
   const correlationId = 'original-message'
@@ -43,7 +45,7 @@ function fixture() {
     nativeSessionId: f.session.nativeSessionId, nativeMessageId: submission.nativeMessageId,
     clientCorrelationId: correlationId, toolUseId: 'tool-use', generation: 'original-query' }
   const stream = (async function* () {
-    await manager.attachSession(f.session, { kind: 'agent-chat', configuration: f.configuration,
+    await manager.attachSession(f.session, { kind: 'agent-chat', configuration: agent,
       conversationId: f.binding.owner.conversationId, workflowId: 'workflow', workflowNodeId: 'node',
       workingDirectory: f.binding.workingDirectory })
     yield* manager.startTurn(f.session, { prompt: source.prompt, clientCorrelationId: correlationId,
