@@ -34,9 +34,8 @@ export function jobContainerNonEntryObserved(owner: JobNativeOwner): boolean {
   if (!container || container.containerId || container.certificate || !owner.launches.length) return false
   const exact = (argv: string[], operation: string) => isDeepStrictEqual(argv,
     ['--remote=false', 'container', operation, container.identity])
-  const last = owner.launches.at(-1)!
   return owner.launches.every(launch => launch.closed && (exact(launch.argv, 'inspect') || exact(launch.argv, 'exists')))
-    && exact(last.argv, 'exists') && last.exit?.exitCode === 1 && last.exit.signal === null
+    && owner.launches.some(launch => exact(launch.argv, 'exists') && launch.exit?.exitCode === 1 && launch.exit.signal === null)
 }
 
 export function isPreparatoryVerificationOwner(owner: JobNativeOwner, execution: JobExecutionRecord): boolean {

@@ -10,6 +10,7 @@ import { executeJob, executeVerificationJob, jobSupervisorIdentity, type JobExec
   type JobExecutorResult, type JobSupervisor, type VerificationExecution, type VerificationJobExecutorPorts } from '../../jobs/executor.js'
 import type { PodmanJobSupervisor } from '../../jobs/executorPodman.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
+import { jobContainerNonEntryObserved } from '../../jobs/executorJournal.js'
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 type RuntimeSupervisor = JobSupervisor<JobExecutionRecord>
@@ -55,6 +56,7 @@ export class RemoteJobExecutionHost {
     for (const receipt of await this.ports.journal.jobOperations()) {
       if (!receipt.entryAttempted || receipt.terminal) continue
       this.validate(receipt.intent, receipt.execution)
+      if (await this.retainConfirmedNonEntry(receipt)) continue
       const observed = await this.reconcileSupervisor(receipt)
       if (!observed) await this.ports.journal.jobUncertain(receipt.intent.operationId, 'Original OCI supervisor absent during worker recovery')
     }
@@ -65,6 +67,7 @@ export class RemoteJobExecutionHost {
     await Promise.all(active.map(([, owned]) => owned.task))
     for (const receipt of await this.ports.journal.jobOperations()) {
       if (!receipt.entryAttempted || receipt.terminal) continue
+      if (await this.retainConfirmedNonEntry(receipt)) continue
       const supervisor = await this.supervisor(receipt.execution)
       let observed = await supervisor.reconcile(receipt.execution)
       const interrupted = observed && !observed.stopped
@@ -217,6 +220,12 @@ export class RemoteJobExecutionHost {
       return this.ports.journal.jobStatus(receipt.intent.operationId)
     }
     await this.ports.authorize(receipt.intent, receipt.execution, 'read')
+    if (await this.retainConfirmedNonEntry(receipt)) {
+      const status = await this.ports.journal.jobStatus(receipt.intent.operationId)
+      if (status.status !== 'known') throw new Error('Original non-entry receipt unavailable')
+      await this.publish(status.receipt)
+      return this.ports.journal.jobStatus(receipt.intent.operationId)
+    }
     const observed = await this.reconcileSupervisor(receipt)
     if (!observed) {
       const supervisor = await this.supervisor(receipt.execution)
@@ -236,6 +245,15 @@ export class RemoteJobExecutionHost {
       supervisorIdentity: jobSupervisorIdentity(receipt.execution), containerId: observed.containerId, recoveryRequired: false, logError: true, logsTruncated: false, outputCollectionError: false }, true)
     await this.publish(await this.ports.journal.jobTerminal(receipt.intent.operationId, evidence))
     return this.ports.journal.jobStatus(receipt.intent.operationId)
+  }
+  private async retainConfirmedNonEntry(receipt: RemoteJobOperationReceiptRecord): Promise<boolean> {
+    const retained = await this.ports.journal.jobNativeOwner(receipt.intent.operationId)
+    if (receipt.native || !retained?.nonEntryConfirmed || !jobContainerNonEntryObserved(retained)) return false
+    await this.ports.journal.jobTerminal(receipt.intent.operationId, this.terminalEvidence({
+      outcome: receipt.stopFence ? 'cancelled' : 'preparation_failed', exitCode: null, signal: null,
+      processStopped: true, recoveryRequired: false, logError: true, logsTruncated: false,
+      outputCollectionError: false }, true))
+    return true
   }
   private async control(command: RemoteJobOwnerControl) {
     const recorded = await this.ports.journal.jobControl(command)
