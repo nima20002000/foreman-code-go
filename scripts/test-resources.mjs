@@ -175,20 +175,38 @@ export function testEnvironment(environment, resource) {
     if (!environment[variable]) continue
     referenceTestAuthenticationFile(resource, environment[variable], destination)
   }
+  if (environment.FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE) {
+    const source = privateTestAuthenticationFile(environment.FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE)
+    const destination = assertTestPath(resource, join(clean.CLAUDE_CONFIG_DIR, '.credentials.json'))
+    if (!existsSync(destination)) {
+      copyFileSync(source, destination)
+      chmodSync(destination, 0o600)
+    } else {
+      const stat = lstatSync(destination)
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0) {
+        throw new Error('Test Claude authentication ownership changed')
+      }
+    }
+  }
   clean.COREPACK_HOME = environment.COREPACK_HOME || join(homedir(), '.cache', 'node', 'corepack')
   clean.NODE_OPTIONS = `--import=${fileURLToPath(new URL('./test-postgres-guard.mjs', import.meta.url))}`
   return { ...clean, FOREMAN_CODE_TEST_ROOT: resource.directory, FOREMAN_CODE_TEST_OWNER: resource.token,
     NIM2691_POSTGRES: '1' }
 }
 
-export function referenceTestAuthenticationFile(resource, filename, destination) {
-  const target = resolve(destination)
-  assertTestPath(resource, dirname(target))
+function privateTestAuthenticationFile(filename) {
   const source = realpathSync(filename)
   const sourceStat = lstatSync(source)
   if (!sourceStat.isFile() || sourceStat.uid !== process.getuid() || (sourceStat.mode & 0o077) !== 0) {
     throw new Error('Explicit test authentication must be a private file owned by the current user')
   }
+  return source
+}
+
+export function referenceTestAuthenticationFile(resource, filename, destination) {
+  const target = resolve(destination)
+  assertTestPath(resource, dirname(target))
+  const source = privateTestAuthenticationFile(filename)
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
   if (existsSync(target)) {
     const destinationStat = lstatSync(target)
@@ -237,9 +255,31 @@ export async function dropTestDatabase(admin, resource) {
 }
 
 export async function cleanupTestResources(resource) {
-  assertTestResourcesSettled(resource)
+  assertTestRoot(resource.directory, resource.token)
   const admin = await testAdminPool()
   try {
+    const directory = assertTestPath(resource, join(resource.directory, cleanupDirectory))
+    const pending = existsSync(directory) ? readdirSync(directory).map(name =>
+      JSON.parse(readFileSync(assertTestPath(resource, join(directory, name)), 'utf8'))) : []
+    if (pending.some(record => record.token !== resource.token
+      || !['fixture-database', 'native-acceptance-database'].includes(record.kind))) {
+      assertTestResourcesSettled(resource)
+    }
+    // The suite controller closes its process group before this fallback. Never force-close a database caller.
+    for (const record of pending) {
+      identifier(record.name)
+      const database = (await admin.query(`select shobj_description(oid,'pg_database') as owner,
+        (select count(*)::int from pg_stat_activity where datname=$1) as callers
+        from pg_database where datname=$1`, [record.name])).rows[0]
+      if (database) {
+        if (database.owner !== `graphql-test:${resource.token}` || database.callers !== 0) {
+          throw new Error('Fixture database cleanup ownership or closure is unconfirmed')
+        }
+        await admin.query(`drop database ${identifier(record.name)}`)
+      }
+      completeTestResourceCleanup(resource, record.id)
+    }
+    assertTestResourcesSettled(resource)
     await dropTestDatabase(admin, resource)
     removeTestRoot(resource)
   } finally { await admin.end() }

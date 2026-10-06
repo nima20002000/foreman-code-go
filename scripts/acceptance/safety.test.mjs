@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -58,6 +58,32 @@ test('acceptance resources reject app URLs and socket overrides and own their na
     assert.equal(safe.CODEX_HOME, join(resource.directory, 'home/.codex'))
     assert.equal(safe.TEST_DATABASE_URL, url.href)
   } finally { removeTestRoot(resource) }
+})
+test('explicit Claude login is copied into disposable storage and refreshes leave the host login unchanged', async () => {
+  const { createTestRoot, removeTestRoot, testAdminUrl, testEnvironment } = await import('../test-resources.mjs')
+  const sourceDirectory = await mkdtemp(join(await realpath('/tmp'), 'claude-auth-source-'))
+  const source = join(sourceDirectory, '.credentials.json')
+  const resource = createTestRoot()
+  const owned = { ...resource, databaseUrl: new URL('/graphql_test_acceptance', testAdminUrl).href }
+  try {
+    await writeFile(source, 'subscription-fixture', { mode: 0o600 })
+    const ambient = testEnvironment({ CLAUDE_CONFIG_DIR: sourceDirectory }, owned)
+    const destination = join(ambient.CLAUDE_CONFIG_DIR, '.credentials.json')
+    await assert.rejects(access(destination), { code: 'ENOENT' })
+    const isolated = testEnvironment({ FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE: source }, owned)
+    assert.equal(await readFile(destination, 'utf8'), 'subscription-fixture')
+    assert.equal((await lstat(destination)).isSymbolicLink(), false)
+    assert.equal((await lstat(destination)).mode & 0o777, 0o600)
+    await writeFile(destination, 'refreshed-fixture')
+    testEnvironment(isolated, owned)
+    assert.equal(await readFile(destination, 'utf8'), 'refreshed-fixture')
+    assert.equal(await readFile(source, 'utf8'), 'subscription-fixture')
+    await chmod(source, 0o644)
+    assert.throws(() => testEnvironment({ FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE: source }, owned), /private file/)
+  } finally {
+    removeTestRoot(resource)
+    await rm(sourceDirectory, { recursive: true, force: true })
+  }
 })
 test('occupied ports are rejected without terminating or adopting the listener', async () => {
   const server = createServer()

@@ -1,0 +1,105 @@
+import { randomUUID } from 'node:crypto'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS, HarnessExecutionSchema } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture, WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
+import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@foreman-code/contracts/worker-native-output'
+import { expect, it, vi } from 'vitest'
+import { buildApp } from '../src/app.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { readLiveManagementPrincipal } from '../src/modules/access/liveManagementPrincipal.js'
+import { requireAuthorization } from '../src/modules/access/policy.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
+import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
+import { LocalWorkflowArtifactAuthority } from '../src/modules/runs/remote/localWorkflowArtifactAuthority.js'
+import { LocalWorkflowArtifacts } from '../src/modules/runs/remote/localWorkflowArtifacts.js'
+import { LocalWorkflowNativeOutputMcp } from '../src/modules/runs/remote/localWorkflowNativeOutputMcp.js'
+import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
+import { insertProviderRun } from './helpers/wave25Br1003Runtime.js'
+import { candidateFor, seedAgent3 } from './helpers/wave25Agent3.js'
+
+it.runIf(Boolean(process.env.TEST_DATABASE_URL))(
+  'lists declared output tools before native turn admission while rejecting writes and revoked or unrelated callers', async () => {
+    const db = await currentDatabase()
+    const clients: Client[] = []
+    let app: ReturnType<typeof buildApp> | undefined
+    try {
+      const f = makeCurrentWorkflowFixture(randomUUID(), 'single')
+      f.configurations = f.configurations.map(configuration => AgentConfigurationVersionSchema.parse({
+        ...configuration, harness: { ...DEFAULT_HARNESS_DEFAULTS.opencode, nativeAgent: 'build' },
+      }))
+      f.version.definition.nodes[0]!.artifactOutputs = { version: 1, outputKeys: ['report'] }
+      await seedAgent3(db.pool, db.directory, f, { run: false })
+      const access = new PostgresAccessService(db.pool)
+      const owner = await access.issue({ name: 'Output discovery owner', audience: 'operator',
+        expiresAt: new Date(Date.now() + 300_000), grants: [{
+          actions: ['runs:start', 'workspace_locations:read', 'agent_chat:read', 'agent_chat:write'],
+          scope: { workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId] },
+        }],
+      })
+      f.run = WorkflowRunV3Schema.parse({ ...f.run, authorizationPrincipalId: owner.principal.id,
+        executionLocation: { ...f.run.executionLocation, runnerId: 'runner-local' },
+      })
+      await insertProviderRun(db.pool, f)
+      const execution = HarnessExecutionSchema.parse({ ...candidateFor(f), state: 'starting' })
+      await db.pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
+        values($1,$2,$3,$4,1,$5::jsonb)`, [execution.id, f.run.id, execution.workflowNodeId,
+        execution.agentId, JSON.stringify(execution)])
+      const credential = await new Wave25WorkerCredentialService(db.pool, access).issueForExecution(execution.id)
+      const authority = new LocalWorkflowArtifactAuthority(randomUUID(), db.pool, {
+        async revalidateRunAuthorization(principalId, workspaceId, workflowId, sql) {
+          requireAuthorization(await readLiveManagementPrincipal(sql, principalId), 'runs:start', { workspaceId, workflowId })
+        },
+      }, { assertPinsCurrent: async () => { throw new Error('The fixture has no remote placement') } })
+      const artifacts = new LocalWorkflowArtifacts(db.pool, authority,
+        () => { throw new Error('Discovery cannot open artifact storage') })
+      const nativeCall = vi.fn(async () => { throw new Error('An unadmitted turn cannot execute an output call') })
+      const commands = new PostgresCommandCoordinator(db.pool)
+      const extension = new LocalWorkflowNativeOutputMcp({ pool: db.pool, commands, artifacts: () => artifacts,
+        nativeCall, authorizeNativeCall: async () => { throw new Error('The native call is not admitted') },
+      })
+      app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+        appMcp: { access, interactions: new PostgresAppInteractionService(db.pool, {} as never, commands) },
+        workerArtifacts: () => extension,
+      })
+      const endpoint = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp`
+      const connect = async (token: string) => {
+        const client = new Client({ name: 'Output discovery regression', version: '1.0.0' })
+        clients.push(client)
+        await client.connect(new StreamableHTTPClientTransport(new URL(endpoint),
+          { authProvider: { token: async () => token } }))
+        return client
+      }
+      const worker = await connect(credential.environment.variables.GRAPHQL_MCP_TOKEN!)
+      const outputs = Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES)
+      expect((await worker.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining(outputs))
+      // Native session acknowledgement can precede the first turn's active budget.
+      await db.pool.query("update harness_executions set record=jsonb_set(record,'{state}','\"running\"') where id=$1",
+        [execution.id])
+      expect((await worker.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining(outputs))
+      const denied = await worker.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
+        arguments: { commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' } })
+      expect(denied.isError).toBe(true)
+      expect(nativeCall).not.toHaveBeenCalled()
+      expect((await db.pool.query('select * from local_workflow_native_outputs')).rows).toEqual([])
+      expect((await db.pool.query(`select source,action,outcome from management_audit where principal_id=$1
+        and action=$2 and outcome='denied'`, [credential.principalId, WORKER_NATIVE_OUTPUT_TOOL_NAMES.create])).rows)
+        .toEqual([{ source: 'mcp', action: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create, outcome: 'denied' }])
+      const unrelated = await access.issue({ name: 'Unbound read-only worker', audience: 'worker', agentId: execution.agentId,
+        expiresAt: new Date(Date.now() + 300_000), grants: [{ actions: ['interactions:read'],
+          scope: { workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId], runIds: [f.run.id] } }],
+      })
+      const reader = await connect(unrelated.token)
+      expect((await reader.listTools()).tools.filter(tool => outputs.includes(tool.name as never))).toEqual([])
+      expect((await reader.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
+        arguments: { commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' } })).isError).toBe(true)
+      await db.pool.query('update worker_credential_bindings set revoked_at=clock_timestamp() where principal_id=$1',
+        [credential.principalId])
+      expect((await worker.listTools()).tools.filter(tool => outputs.includes(tool.name as never))).toEqual([])
+      expect((await db.pool.query('select * from local_workflow_native_outputs')).rows).toEqual([])
+    } finally {
+      for (const client of clients) await client.close()
+      try { await app?.close() }
+      finally { await db.close() }
+    }
+  }, 120_000)
