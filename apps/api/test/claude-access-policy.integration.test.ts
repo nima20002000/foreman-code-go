@@ -4,6 +4,7 @@ import { CLAUDE_FULL_ACCESS_REQUIRED } from '@foreman-code/contracts/claude'
 import { AgentMutationResultSchema, ManagedAgentDetailSchema, HarnessCatalogResultSchema, HarnessCatalogEntrySchema } from '@foreman-code/contracts/management'
 import { CurrentWorkflowSaveResultSchema } from '@foreman-code/contracts/wave25'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
+import { OperatorAgentMutationService } from '../src/modules/workspaces/operatorAgents.js'
 
 const fullAccess = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
   configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
@@ -17,6 +18,9 @@ it('rejects non-full Claude saves and Start through authenticated MCP, preservin
     return result.structuredContent
   }
   try {
+    Object.assign(f.services, { extensions: {
+      agents: new OperatorAgentMutationService(f.db.pool, f.commands, f.services.harnesses),
+    } })
     const workspaceId = f.f.scope.workspaceId
     const reader = await f.access.issue({ name: 'Claude access reader', audience: 'operator',
       grants: [{ actions: ['agents:read', 'harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
