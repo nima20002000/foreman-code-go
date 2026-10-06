@@ -126,7 +126,7 @@ export function createProductionRemoteWorkflow(input: {
         connectionGeneration } = captured.binding
       const authenticated = DeviceConnectionIdentitySchema.parse({ mainId, deviceId, workerInstallationId,
         bootId, keyRevision, authorizationRevision, connectionGeneration })
-      await VerifiedRemoteEvidence.commit(status.receipt, authenticated,
+      const committed = await VerifiedRemoteEvidence.commit(status.receipt, authenticated,
         new OwnedRemoteReceiptCommit(owner, status.receipt, authenticated, {
           async assertCurrent(sql, intent, placement, connection) {
             await authority(sql, { intent, placement }, connection, 'read')
@@ -138,6 +138,8 @@ export function createProductionRemoteWorkflow(input: {
               'REMOTE_CLOSURE_INVALID', 'The original physical closure changed during publication.', 409)
           },
         }))
+      if (committed === 'rejected') throw new DomainError('REMOTE_CLOSURE_RECEIPT_REJECTED',
+        'The original closure receipt was rejected by its canonical owner.', 409)
       return true
     },
     binding(executionId: string) { return bindings.get(executionId) },
