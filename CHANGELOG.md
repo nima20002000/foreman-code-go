@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Verification
+
+- not verified: paired Worker restart case (moved to crosscomputer lane)
+
 ## [0.0.41] - 2026-10-06
 
 ### Added
