@@ -30,6 +30,16 @@ function fixture(accepted = configuration, callbackJournal = memoryClaudeCallbac
   return { bridge, validate, persisted, callbackJournal }
 }
 
+it.each(['Write', 'Edit', 'NotebookEdit', 'UnknownMutation'])('denies %s in a read-only profile before any approval can widen it', async toolName => {
+  const accepted = { ...configuration, tools: [toolName], permissionRules: [{ tool: toolName, effect: 'allow' as const }] }
+  const f = fixture(accepted)
+  try {
+    expect(await f.bridge.beforeToolUse(identity, toolName, { file_path: '/fixture/file' })).toMatchObject({ permissionDecision: 'deny' })
+    expect(await f.bridge.canUseTool(identity, toolName, { file_path: '/fixture/file' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
+    expect(f.bridge.pendingInteractions(session)).toEqual([])
+  } finally { f.bridge.close() }
+})
+
 it.each(['allow', 'ask', 'deny'] as const)('enforces the saved MCP %s effect after manifest and current authority checks', async effect => {
   const f = fixture({ ...configuration, permissionRules: [{ tool, effect }] })
   try {

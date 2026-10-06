@@ -4,6 +4,8 @@ import { isDeepStrictEqual } from 'node:util'
 import { ClaudeHarnessConfigurationSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { inheritedAgentEnvironment } from '../secrets.js'
 import { HarnessExecutionError } from '../errors.js'
+import { claudeToolRespectsSandbox } from './readOnlyPolicy.js'
+import type { SandboxSettings } from '@anthropic-ai/claude-agent-sdk'
 
 /** Only the existing HRT repository/producer supplies this exact accepted host-profile proof. */
 export interface ClaudePolicyQualification {
@@ -48,7 +50,7 @@ export interface ClaudeCompiledConfiguration {
   systemPrompt: string
   mcpServers: ClaudeHarnessConfiguration['mcpServers']
   env: NodeJS.ProcessEnv
-  sandbox: { enabled: boolean; autoAllowBashIfSandboxed: false; allowUnsandboxedCommands: false }
+  sandbox: SandboxSettings & { enabled: boolean; autoAllowBashIfSandboxed: false; allowUnsandboxedCommands: false }
 }
 
 /** Secret stripping is a delivery boundary, not host filesystem or shell isolation. */
@@ -69,7 +71,8 @@ export function claudeEnvironment(configuration: ClaudeHarnessConfiguration, sou
 export function requireClaudePolicyQualification(configuration: ClaudeHarnessConfiguration, qualification: ClaudePolicyQualification) {
   const capabilities = qualifiedClaudeCapabilities(configuration, qualification)
   const observedTools = qualification.persistedProof.claudeProof?.observedTools ?? []
-  if (configuration.tools.some((tool) => !tool.startsWith('mcp__') && !observedTools.includes(tool))) throw new HarnessExecutionError('CLAUDE_TOOLS_UNQUALIFIED', 'The accepted built-in tools were not observed by the exact root qualification.')
+  if (configuration.tools.some((tool) => !tool.startsWith('mcp__') && claudeToolRespectsSandbox(configuration, tool)
+    && !observedTools.includes(tool))) throw new HarnessExecutionError('CLAUDE_TOOLS_UNQUALIFIED', 'The accepted built-in tools were not observed by the exact root qualification.')
   if (!capabilities.sdk || !capabilities.basicTurns || !capabilities.policy.settingsIsolation || !capabilities.policy.backgroundTasksDisabled || !capabilities.policy.alwaysAppliedToolHook
     || !(configuration.sandbox === 'read-only' ? capabilities.policy.readOnlySandbox
       : configuration.sandbox === 'workspace-write' ? capabilities.policy.workspaceWriteSandbox : capabilities.policy.fullAccessPolicy)) {
@@ -94,12 +97,20 @@ export function claudeCandidateConfiguration(configuration: ClaudeHarnessConfigu
   source: NodeJS.ProcessEnv = process.env, apiKey?: string): Omit<ClaudeCompiledConfiguration, 'qualification'> {
   if (!cwd.startsWith('/') || cwd.includes('\0')) throw new HarnessExecutionError('CLAUDE_CWD_INVALID', 'An accepted absolute working directory is required.')
   // AskUserQuestion is a real available tool; allowedTools only configures approval, not availability.
-  const tools = configuration.tools.filter(tool => !tool.startsWith('mcp__'))
-  const allowedTools = configuration.permissionRules.filter((rule) => rule.effect === 'allow' && rule.tool !== 'AskUserQuestion').map((rule) => rule.tool)
-  const disallowedTools = configuration.permissionRules.filter((rule) => rule.effect === 'deny').map((rule) => rule.tool)
+  const tools = configuration.tools.filter(tool => !tool.startsWith('mcp__') && claudeToolRespectsSandbox(configuration, tool))
+  const allowedTools = configuration.permissionRules.filter((rule) => rule.effect === 'allow' && rule.tool !== 'AskUserQuestion'
+    && claudeToolRespectsSandbox(configuration, rule.tool)).map((rule) => rule.tool)
+  const disallowedTools = [...new Set([
+    ...configuration.permissionRules.filter((rule) => rule.effect === 'deny').map((rule) => rule.tool),
+    ...configuration.tools.filter(tool => !claudeToolRespectsSandbox(configuration, tool)),
+  ])]
   return { configuration: structuredClone(configuration), cwd, model: configuration.model, permissionMode: 'default',
     ...(configuration.effort ? { effort: configuration.effort } : {}),
     tools, allowedTools, disallowedTools, strictMcpConfig: true, settingSources: [], systemPrompt: configuration.instructions,
     mcpServers: structuredClone(configuration.mcpServers), env: claudeEnvironment(configuration, source, apiKey),
-    sandbox: { enabled: configuration.sandbox !== 'danger-full-access', autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false } }
+    sandbox: { enabled: configuration.sandbox !== 'danger-full-access', autoAllowBashIfSandboxed: false,
+      allowUnsandboxedCommands: false,
+      ...(configuration.sandbox !== 'danger-full-access' ? { failIfUnavailable: true } : {}),
+      ...(configuration.sandbox === 'read-only' ? { filesystem: { denyWrite: ['/'] } } : {}),
+    } }
 }

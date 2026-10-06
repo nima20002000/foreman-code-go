@@ -1,14 +1,16 @@
 import pg from 'pg'
 import { randomUUID } from 'node:crypto'
-import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, withAdvancedDefaults } from '@foreman-code/contracts'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
-import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
+import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import { expect, it, vi } from 'vitest'
 import { ProductionHarnessRegistry } from '../src/modules/harnesses/productionRegistry.js'
 import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { passiveDriverPayloads } from '../src/modules/harnesses/payloadDiscovery.js'
 import { discoverLauncher } from '../src/modules/harnesses/hostDiscovery.js'
 import { inspectInstalledCodex } from '../src/modules/harnesses/installedCodexInspection.js'
+import { commandInputHash } from '../src/modules/commands/postgres.js'
+import { CLAUDE_PROFILE_CHECK_REVISION } from '../src/modules/harnesses/claudeSdk/profileRevision.js'
 
 it('distinguishes unavailable and stale remote snapshots from a current empty installation inventory', async () => {
   const pool = new pg.Pool({ connectionString: 'postgresql://unused@127.0.0.1:1/unused' })
@@ -93,8 +95,9 @@ it('consumes the explicit passive Claude SDK declaration without default profile
     declaration: { harnessInstallationId: 'sdk-installation', requestedLauncher: '/recorded/sdk-native',
       payloadPaths: ['/recorded/sdk.mjs'], driverId: 'claude', driverRevision: '1', protocolRevision: 'claude-sdk-0.3.284' },
   }))
+  const profiles = new HostHarnessProfileEvidenceRepository(pool)
   const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex', openCodeBinary: 'opencode' },
-    async () => ({ revision: 1, defaults: DEFAULT_HARNESS_DEFAULTS }), new HostHarnessProfileEvidenceRepository(pool), () => null,
+    async () => ({ revision: 1, defaults: DEFAULT_HARNESS_DEFAULTS }), profiles, () => null,
     { PATH: '/recorded' }, { launcher, payloads: async () => ({ complete: true, paths: [] }), claude })
   try {
     await registry.initialize('d46e2a2b-130f-46de-a93b-78a2352b9c9d')
@@ -105,5 +108,24 @@ it('consumes the explicit passive Claude SDK declaration without default profile
     expect(claude).toHaveBeenCalledOnce()
     expect(vi.mocked(launcher).mock.calls.map(([requested]) => requested)).toEqual(['codex', 'codex', 'opencode', 'opencode'])
     expect(registry.instances.list().some(value => value.driverId === 'claude')).toBe(false)
+    const installed = registry.installations.list().find(value => value.driverId === 'claude')!
+    const configuration = withAdvancedDefaults({ harness: 'claude', model: 'recorded-model', authMode: 'subscription',
+      configDirectory: '/recorded/profile', permissionMode: 'default', sandbox: 'read-only',
+      tools: ['Read', 'Bash'], permissionRules: [], instructions: '', mcpServers: {} })
+    const value: HostHarnessOverride = { instanceId: randomUUID(), instanceRevision: '1', revision: 1, enabled: true,
+      driverId: 'claude', presetId: 'recorded-profile', qualification: 'unqualified', configuration,
+      configurationFingerprint: commandInputHash(configuration), target: { hostRef: installed.hostRef,
+        applicationInstallationId: installed.hostRef.mainId, harnessInstallationId: installed.harnessInstallationId,
+        installationFingerprint: installed.installationFingerprint! } }
+    const proof: HostHarnessProfileEvidence = { target: value.target, instanceRevision: value.instanceRevision,
+      configurationFingerprint: value.configurationFingerprint, driverId: installed.driverId,
+      driverRevision: installed.driverRevision, protocolRevision: installed.protocolRevision,
+      environmentGeneration: installed.environmentGeneration, connectionGeneration: installed.connectionGeneration,
+      authenticated: true, compatible: true, qualified: true, suiteRevision: 'claude-profile-check-v1',
+      checkedAt: '2026-10-01T00:00:00.000Z' }
+    vi.spyOn(profiles, 'latest').mockResolvedValue(proof)
+    expect(await registry.profileEvidence(value)).toBeNull()
+    proof.suiteRevision = CLAUDE_PROFILE_CHECK_REVISION
+    expect(await registry.profileEvidence(value)).toEqual(proof)
   } finally { registry.stop(); await pool.end() }
 })

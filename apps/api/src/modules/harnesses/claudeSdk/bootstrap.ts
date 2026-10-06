@@ -10,6 +10,7 @@ import type { ProductionHarnessRegistry } from '../productionRegistry.js'
 import type { ClaudeProfileOwner } from './production.js'
 import { DomainError } from '../../errors.js'
 import { createClaudeCurrentPinResolver, discoverInstalledClaudeSdk, type ClaudeSdkEntrypoint } from './currentPin.js'
+import { CLAUDE_PROFILE_CHECK_REVISION } from './profileRevision.js'
 
 /** Pinned SDK 0.3.284's own native package algorithm, inspected in its installed
  * source. Selection resolves package files only; no module execution or PATH CLI. */
@@ -83,7 +84,7 @@ export function createClaudeProductionDiscovery(input: {
     if (observed.launcher.fingerprint !== binding.selection.installationFingerprint) throw new DomainError('HARNESS_INSTALLATION_CHANGED',
       'The installed SDK and native payload changed after profile selection.', 409)
     input.registry().installations.assertCurrent(binding)
-    return { registry: binding, applicationInstallationId: value.target.hostRef.mainId, suiteRevision: 'claude-profile-check-v1', pin: observed.pin }
+    return { registry: binding, applicationInstallationId: value.target.hostRef.mainId, suiteRevision: CLAUDE_PROFILE_CHECK_REVISION, pin: observed.pin }
   }
   const current: AcceptedProfileAuthority<ClaudeProfileOwner>['current'] = (owner, value) => currentForConfiguration(value, owner.admissionSignal)
   return { discover, current, currentForConfiguration }

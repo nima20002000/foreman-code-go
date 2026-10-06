@@ -44,7 +44,28 @@ it('requires native full-access policy evidence and exact saved configuration id
 
 it.each(['read-only', 'workspace-write'] as const)('keeps the existing %s sandbox enforced', (sandbox) => {
   const f = fixture(sandbox)
-  expect(compileClaudeConfiguration(f.configuration, '/fixture/work', f.qualification, {}).sandbox.enabled).toBe(true)
+  expect(compileClaudeConfiguration(f.configuration, '/fixture/work', f.qualification, {}).sandbox).toMatchObject({
+    enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
+  })
+})
+
+it('denies native read-only writes even when the saved tool rule allows them', () => {
+  const f = fixture('read-only')
+  f.configuration.tools.push('Write', 'Edit', 'NotebookEdit')
+  f.configuration.permissionRules.push({ tool: 'Write', effect: 'allow' })
+  const compiled = compileClaudeConfiguration(f.configuration, '/fixture/work', f.qualification, {})
+  expect(compiled.tools).toEqual(['Read', 'Bash'])
+  expect(compiled.allowedTools).not.toContain('Write')
+  expect(compiled.disallowedTools).toEqual(['Write', 'Edit', 'NotebookEdit'])
+  expect(compiled.sandbox.filesystem).toEqual({ denyWrite: ['/'] })
+  expect(compiled.configuration).toEqual(f.configuration)
+  expect(f.configuration.permissionRules).toContainEqual({ tool: 'Write', effect: 'allow' })
+})
+
+it('rejects read-only execution when only full-access policy was proved', () => {
+  const f = fixture('read-only')
+  delete f.qualification.persistedProof.claudeProof!.checks.readOnlySandbox
+  expect(() => compileClaudeConfiguration(f.configuration, '/fixture/work', f.qualification, {})).toThrow('not proved')
 })
 
 it('qualifies built-ins separately from MCP names and preserves explicit MCP automatic approvals', () => {
