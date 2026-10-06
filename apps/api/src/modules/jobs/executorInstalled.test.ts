@@ -21,6 +21,7 @@ import { jobRuntimeMetadataFixture } from '../../../test/helpers/jobRuntimeMetad
 import { QualificationReceiptSchema } from './qualificationJournal.js'
 import { jobDigest } from './service.js'
 import * as installed from './installedRuntimeHost.js'
+import * as qualification from './qualification.js'
 import * as git from './privateGitMounts.js'
 import { podmanIsolationCreateArgv } from './executorPodman.js'
 import type { QualifiedJobProfile } from './executor.js'
@@ -110,6 +111,18 @@ async function fixture(qualifiedFilesystem?: { device?: string; mountId?: string
   return { root, execution, source, mounts, journal, qualified, inspect, verify, check, ports, host, intent, registry, inputs }
 }
 describe('installed Job original Git/scheduler propagation', () => {
+  it('admits a control command when another approved tool directory leads the captured PATH', async () => {
+    const f = await fixture()
+    const approvedPath = '/private/approved-node/bin:/usr/bin:/bin'
+    f.qualified.candidate.controllerEnvironment.PATH = approvedPath
+    vi.spyOn(qualification, 'assertJobRuntimeEntryContext').mockResolvedValue(undefined)
+    await f.journal.jobReserveEntry(f.execution.operationId)
+    if (typeof f.ports.supervisor !== 'function') throw new Error('Supervisor factory unavailable')
+    const supervisor = await f.ports.supervisor(f.execution)
+    await expect(supervisor.reconcile(f.execution)).rejects.toThrow('No OCI entry expected')
+    expect(f.registry.reserveLaunch).toHaveBeenCalledOnce()
+    expect(f.qualified.candidate.controllerEnvironment.PATH).toBe(approvedPath)
+  })
   it('retains the full original execution and independently checks both real mount directories', async () => {
     const f = await fixture(), original = structuredClone(f.execution)
     expect(await f.check()).toBe(f.source)

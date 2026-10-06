@@ -202,7 +202,8 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
     await assertLocal()
     const exact = argv[0] === '--remote=false' ? argv : ['--remote=false', ...argv]
     if (exact.some(value => value.includes('\0'))) throw new Error('Invalid Job runtime argv')
-    const binary = candidate.fingerprint.runtimeExecutable, env = candidate.controllerEnvironment
+    const binary = candidate.fingerprint.runtimeExecutable
+    const env = nativeAgentEnvironment(binary, candidate.runtimeRoot, candidate.controllerEnvironment)
     if (!same(nativeAgentEnvironment(binary, candidate.runtimeRoot, env), env)) throw new Error('Protected Job runtime environment changed')
     const processOwner = purpose === 'attachment' ? owner : `${owner}:${purpose}`
     const scope = input.registry.reserveLaunch(processOwner)
