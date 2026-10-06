@@ -227,23 +227,25 @@ test('verification installer fixes offline frozen dev installs, isolates caches 
     { minimumReleaseAgeIgnoreMissingTime: true }, { minimumReleaseAgeExclude: ['*'] }]) {
     assert.throws(() => assertEffectivePackagePolicy({ ...policy, ...change }));
   }
-  const store = { offline: true, verifyStoreIntegrity: true,
+  const store = { offline: true, verifyStoreIntegrity: true, workspaceConcurrency: 1,
     storeDir: '/job-scratch/pnpm-store', cacheDir: '/job-scratch/cache/pnpm' };
   assert.doesNotThrow(() => assertEffectiveVerificationStore(store));
   assert.throws(() => assertEffectiveVerificationStore({ ...store, offline: false }));
   assert.throws(() => assertEffectiveVerificationStore({ ...store, storeDir: '/owner/.pnpm-store' }));
+  assert.throws(() => assertEffectiveVerificationStore({ ...store, workspaceConcurrency: 9 }));
 });
 
 test('the pinned pnpm reads the enforced offline store and cache from its supported environment', async t => {
   const directory = await mkdtemp(join(persistentFixtureRoot, 'pnpm-effective-policy-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const environment = verificationEnvironment({ ...process.env, PNPM_CONFIG_STORE_DIR: '/owner/store',
-    PNPM_CONFIG_CACHE_DIR: '/owner/cache', PNPM_CONFIG_OFFLINE: 'false' });
+    PNPM_CONFIG_CACHE_DIR: '/owner/cache', PNPM_CONFIG_OFFLINE: 'false', PNPM_CONFIG_WORKSPACE_CONCURRENCY: '9' });
   const config = JSON.parse(execFileSync('corepack', ['pnpm', 'config', 'list', '--json'], {
     env: { ...environment, HOME: directory, TMPDIR: directory, COREPACK_HOME: process.env.COREPACK_HOME },
     encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024,
   }));
   assertEffectiveVerificationStore(config);
+  assert.equal(Number(config.workspaceConcurrency ?? config['workspace-concurrency']), 1);
   assertEffectivePackagePolicy(config);
 });
 

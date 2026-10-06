@@ -26,6 +26,7 @@ export function verificationEnvironment(environment) {
     PNPM_CONFIG_STORE_DIR: `${VERIFICATION_SCRATCH}/pnpm-store`,
     PNPM_CONFIG_CACHE_DIR: `${VERIFICATION_SCRATCH}/cache/pnpm`,
     PNPM_CONFIG_VERIFY_STORE_INTEGRITY: 'true',
+    PNPM_CONFIG_WORKSPACE_CONCURRENCY: '1',
     PNPM_CONFIG_USERCONFIG: '/dev/null',
     PNPM_CONFIG_GLOBALCONFIG: '/dev/null',
     CI: '1',
@@ -58,6 +59,9 @@ export function assertEffectivePackagePolicy(config) {
 
 export function assertEffectiveVerificationStore(config) {
   const value = key => config[key] ?? config[key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)];
+  if (Number(value('workspaceConcurrency')) !== 1) {
+    throw new Error('Recursive workspace commands require one package at a time within the Job reservation.');
+  }
   if (![true, 'true'].includes(value('offline')) || ![true, 'true'].includes(value('verifyStoreIntegrity'))
     || value('storeDir') !== `${VERIFICATION_SCRATCH}/pnpm-store`
     || value('cacheDir') !== `${VERIFICATION_SCRATCH}/cache/pnpm`) {
