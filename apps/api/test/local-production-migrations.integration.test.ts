@@ -1,0 +1,58 @@
+import { execFile } from 'node:child_process'
+import { setTimeout as delay } from 'node:timers/promises'
+import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
+import { expect, it } from 'vitest'
+import { loadConfig } from '../src/config.js'
+import { createDatabase } from '../src/infrastructure/database.js'
+import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
+import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+
+it.skipIf(!postgresEnabled)('migrates under DDL contention without changing the API request deadline', async () => {
+  const fixture = await currentDatabase({ beforeMigration: 2026100401 })
+  const url = new URL(process.env.TEST_DATABASE_URL!)
+  url.searchParams.set('options', `-c search_path=${fixture.schema},public`)
+  const checkpointSchema = `${fixture.schema}_checkpoints`
+  const environment = { ...process.env, DATABASE_URL: url.toString(), DATABASE_QUERY_TIMEOUT_MS: '100',
+    LANGGRAPH_CHECKPOINT_SCHEMA: checkpointSchema }
+  const options = loadConfig(environment).database
+  const runtime = createDatabase(options)
+  const checkpoints = createCheckpointStore(url.toString(), checkpointSchema)
+  const holder = await fixture.pool.connect()
+  let command: Promise<{ success: true } | { success: false; error: Error }> | undefined
+  try {
+    await holder.query('begin')
+    await holder.query('lock table application_migrations in access exclusive mode')
+    const pid = (await holder.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
+    command = promisify(execFile)(process.execPath, [fileURLToPath(new URL('../dist/cli/migrate.js', import.meta.url))], {
+      env: environment, timeout: 15_000, maxBuffer: 1024 * 1024,
+    }).then(() => ({ success: true as const }), (error: Error) => ({ success: false as const, error }))
+    const deadline = Date.now() + 5_000
+    let blocked = false
+    while (!blocked && Date.now() < deadline) {
+      blocked = (await fixture.pool.query<{ blocked: boolean }>(
+        'select exists(select 1 from pg_stat_activity where $1 = any(pg_blocking_pids(pid))) as blocked', [pid],
+      )).rows[0]!.blocked
+      if (!blocked) await delay(10)
+    }
+    expect(blocked).toBe(true)
+    await delay(300)
+    await holder.query('rollback')
+    const result = await command
+    expect(result.success, result.success ? undefined : result.error.message).toBe(true)
+    const human = await new PostgresLocalHumanAccess(fixture.pool, new PostgresAccessService(fixture.pool)).current()
+    expect(human.audience).toBe('operator')
+    await checkpoints.ping()
+    await expect(runtime.pool.query('select pg_sleep(0.5)')).rejects.toThrow(/timeout|canceling statement/i)
+  } finally {
+    await holder.query('rollback')
+    holder.release()
+    if (command) await command
+    await checkpoints.close()
+    await runtime.close()
+    await fixture.pool.query(`drop schema if exists ${checkpointSchema} cascade`)
+    await fixture.close()
+  }
+}, 30_000)

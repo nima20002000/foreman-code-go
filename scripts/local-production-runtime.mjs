@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
@@ -46,6 +46,16 @@ export async function deployProductionApi(run, destination) {
   const failures = []
   try {
     await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod', '--legacy', destination])
+    // Workspace output can be hard-linked by deployment and rewritten by later builds.
+    const temporary = await mkdtemp(join(dirname(destination), '.production-api-copy-'))
+    try {
+      const snapshot = join(temporary, 'api')
+      await cp(destination, snapshot, { recursive: true, verbatimSymlinks: true })
+      await rm(destination, { recursive: true })
+      await rename(snapshot, destination)
+    } finally {
+      await rm(temporary, { recursive: true, force: true })
+    }
   } catch (error) {
     failures.push(error)
   }
@@ -58,6 +68,17 @@ export async function deployProductionApi(run, destination) {
   }
   if (failures.length === 1) throw failures[0]
   if (failures.length) throw new AggregateError(failures, 'Production deployment and workspace restoration failed.')
+}
+
+export async function removeUninstalledRelease(release, current) {
+  let installed
+  try {
+    installed = await realpath(current)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+  if (installed === await realpath(release)) return
+  await rm(release, { recursive: true, force: true })
 }
 
 export async function publish(path, content, mode = 0o600) {

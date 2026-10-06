@@ -12,6 +12,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Observe each provider's native startup event during installed recovery verification, requiring the bound execution and session and rejecting replayed history.
 - Remove the installed test's runtime workspace after native cleanup on success and failure, while retaining production data and persisted audit history.
 - Retire the obsolete installer-owned browser-access setting during production updates, preserving native provider configuration and MCP security.
+- Give the standalone migration command a separate bounded DDL deadline while retaining API request deadlines, transactions and migration locks.
+- Remove unsuccessful release staging without deleting an activated release or production data.
+- Snapshot deployed API and workspace dependencies into independent files so later source builds cannot mutate an installed release.
 
 ### Changed
 

@@ -12,13 +12,19 @@ policy, builds, stages a standalone release, stops the API, migrates the product
 database and checkpoints, switches the installed release, restarts the API, waits
 for readiness, and opens Chrome at **http://127.0.0.1:3041/workspaces**.
 Build or packaging failures happen before the API is stopped. A migration failure
-leaves the API stopped: inspect the error, fix it, and rerun the command. Releases
+leaves the API stopped: inspect the error, fix it, and rerun the command. Failed
+unactivated staging is removed; the previously installed release is preserved.
+The standalone application/checkpoint migration command uses a bounded 60-second
+DDL deadline per query batch and one connection per migration pool, separately
+from the API's request deadline. Transactions and migration locks remain required. Releases
 are retained for recovery; database migrations are not automatically rolled back.
 
 The API serves the built web app on the same origin. There is no Vite server or TS
 loader at runtime. Each release includes its Node executable, compiled API,
 production dependencies, contracts, web assets, and the existing MCP bridge.
 Services do not depend on the source checkout remaining on disk.
+Staging copies deployed files into an independent snapshot, retaining internal
+dependency symlinks without sharing mutable build-output inodes with the source.
 Staging restores the source workspace's full frozen dependency installation after
 production deployment, including a failed deployment. Later workspace commands
 can run non-interactively without being switched to production-only dependencies.

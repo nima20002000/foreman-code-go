@@ -1,14 +1,37 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { hasNativeTurnStarted, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment, renderEnvironment,
+import { hasNativeTurnStarted, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment, removeUninstalledRelease, renderEnvironment,
   waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+
+test('failed release cleanup removes only uninstalled staging and retains the active release through aliases', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-release-cleanup-'))
+  const installed = join(directory, 'installed')
+  const failed = join(directory, 'failed')
+  const current = join(directory, 'current')
+  const alias = join(directory, 'alias')
+  try {
+    await mkdir(installed)
+    await mkdir(failed)
+    await writeFile(join(installed, 'retained'), 'installed production')
+    await writeFile(join(failed, 'partial'), 'incomplete staging')
+    await symlink(installed, current)
+    await symlink(directory, alias)
+    await removeUninstalledRelease(join(alias, 'installed'), current)
+    assert.equal(await readFile(join(installed, 'retained'), 'utf8'), 'installed production')
+    await removeUninstalledRelease(failed, current)
+    await assert.rejects(stat(failed), { code: 'ENOENT' })
+    assert.equal(await readFile(join(current, 'retained'), 'utf8'), 'installed production')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('native startup requires a live provider event on the bound execution and session', () => {
   const execution = { id: 'execution', nativeSessionId: 'session' }
