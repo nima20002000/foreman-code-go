@@ -1677,6 +1677,11 @@ export class ApprovalExecutionCoordinator {
       const restarting = input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART'
       if (restarting) throw error
       if (held) {
+        let code = 'NATIVE_EXECUTION_FAILED'
+        if (error instanceof HarnessExecutionError) code = error.result.error?.code ?? code
+        if (error instanceof DomainError) code = error.code
+        componentLogger('harness').warn({ executionId: execution.id, code, err: error },
+          'Workflow native execution failed before cleanup')
         await this.runs.requestCleanup(execution.runId, input.owner)
         if (ownedSession) {
           resolved?.markFailed?.()
