@@ -68,7 +68,9 @@ describe.skipIf(!postgresEnabled)('pending workflow approval restart', () => {
     let runtime = f.compose()
     expect(runtime.engine).not.toBe(f.engine)
     expect(runtime.native).not.toBe(f.native)
-    await runtime.engine.start(runId)
+    const restoring = runtime.engine.start(runId)
+    await runtime.engine.prepareInteraction(pending!)
+    await restoring
     expect(await runtime.repository.get(pending!.id)).toEqual(pending)
     expect(await f.saver.getTuple(f.config)).toEqual(checkpoint)
     expect(await runtime.runs.hasPendingCleanup(runId)).toBe(false)
@@ -77,7 +79,7 @@ describe.skipIf(!postgresEnabled)('pending workflow approval restart', () => {
     // Another restart must use the successor detachment and keep the same business activation.
     await runtime.engine.shutdown()
     runtime = f.compose()
-    await runtime.engine.start(runId)
+    await runtime.engine.prepareInteraction(pending!)
     expect(await readCurrentExecutions(runtime.runs, runId)).toEqual(executions)
     expect(await f.saver.getTuple(f.config)).toEqual(checkpoint)
     const denied = await new PostgresAccessService(f.db.pool).issue({ name: 'Read-only approval caller', audience: 'user',

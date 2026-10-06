@@ -11,6 +11,7 @@ export function registerApprovalCheckpointResume(interactions: InteractionServic
   const existing = registrations.get(interactions)
   if (existing === engine) return
   if (existing) throw new DomainError('APPROVAL_RESUME_ALREADY_BOUND', 'Another engine owns this interaction service.', 409)
+  interactions.useApprovalPreparation((interaction) => engine.prepareInteraction(interaction))
   interactions.useAtomicApprovalResume((claim) => engine.resumeInteraction(claim.interaction, claim))
   registrations.set(interactions, engine)
 }

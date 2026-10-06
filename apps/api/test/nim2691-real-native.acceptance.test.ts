@@ -432,7 +432,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                 ? 'Return a short greeting in latestDeliverable, use routing.kind finish, and select routing.outcome go.'
               : index === 0
                 ? 'Return a short greeting as latestDeliverable and finish.'
-                : 'Summarize only the received work in latestDeliverable and finish.' })),
+                : 'Summarize only the received work in latestDeliverable. Your routing must be exactly {"kind":"finish"}, with no outcome or requestId. Do not copy the predecessor routing.' })),
           edges: capEdges ?? fixture.version.definition.edges.map((edge) => ({ ...edge, maxWorkHandoffsPerRun: 3 })),
           handoffs: { contractVersion: 1 }, executionPolicy: { maxParallelism: scenario.form === 'parallel' && !scenario.capLoop ? 2 : 1,
             maxNodeExecutions: scenario.capLoop ? 12 : configurations.length } }

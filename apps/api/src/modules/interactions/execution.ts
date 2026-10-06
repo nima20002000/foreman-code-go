@@ -959,6 +959,15 @@ export class ApprovalExecutionCoordinator {
     await this.validateContinuation?.(interaction.executionId, signal)
   }
 
+  hasOriginalRequester(interaction: DurableInteraction): boolean {
+    const owned = this.ownedSessions.get(interaction.executionId)
+    return !!owned?.session && !owned.failed && !owned.cleanup && !owned.opening
+      && !owned.controller.signal.aborted && owned.execution.runId === interaction.runId
+      && owned.session.nativeSessionId === interaction.nativeSessionId
+      && owned.session.harness === interaction.harness
+      && owned.session.providerVersion === interaction.providerVersion
+  }
+
   async attachInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<AttachedInteractionSession> {
     const execution = await this.runs.getExecution(interaction.executionId)
     if (!execution?.workingDirectory || !execution.runtimeDirectory) throw new Error('The durable execution cannot reconstruct its native session start input.')

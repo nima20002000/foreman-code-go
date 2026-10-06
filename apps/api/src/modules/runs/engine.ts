@@ -108,6 +108,17 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   resume(runId: string): Promise<void> { return this.queueResume(runId) }
 
+  async prepareInteraction(interaction: DurableInteraction): Promise<void> {
+    if (this.closing) throw new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503)
+    if (interaction.runId !== interaction.graphThreadId) throw new DomainError(
+      'INTERACTION_RUN_MISMATCH', 'Approval preparation must name its original Run checkpoint.', 409)
+    if (this.nativeExecutions.hasOriginalRequester(interaction)) return
+    // Join the existing recovery task before recording a decision that changes its pending-source classification.
+    await this.start(interaction.runId)
+    if (!this.nativeExecutions.hasOriginalRequester(interaction)) throw new DomainError(
+      'NATIVE_SESSION_RECOVERY_REQUIRED', 'The original requester has not recovered from its saved checkpoint.', 409)
+  }
+
   resumeInteraction(interaction: DurableInteraction, claim?: GraphResumeClaim): Promise<void> {
     // Notifications select only; the real current checkpoint is re-read below.
     if (!interaction.runId || interaction.runId !== interaction.graphThreadId) return Promise.reject(new DomainError(
