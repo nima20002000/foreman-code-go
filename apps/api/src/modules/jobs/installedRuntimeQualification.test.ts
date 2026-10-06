@@ -27,6 +27,7 @@ import { verificationRuntimeFixture } from '../../../test/helpers/verificationRu
 import { createVerificationProfile } from './verificationProfiles.js'
 import { jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
 import { startVerificationContainer } from './verificationQualification.js'
+import { fingerprintQualificationPath } from './qualification.js'
 import { JOB_INPUT_DIRECTORY } from '@foreman-code/contracts/job-inputs'
 
 const id = '00000000-0000-4000-8000-000000000001', digest = 'a'.repeat(64)
@@ -97,6 +98,19 @@ async function verificationReservationFixture() {
 }
 
 describe('actual qualification reservation seams with mocked native entry only', () => {
+  it('fingerprints every executable byte across full chunks and a partial final chunk', async () => {
+    const f = await fixture()
+    const path = join(dirname(f.path), 'runtime-binary')
+    const bytes = Buffer.alloc(2 * 1048576 + 37, 0x5a)
+    bytes[bytes.length - 1] = 0x31
+    await writeFile(path, bytes, { mode: 0o700 })
+    expect((await fingerprintQualificationPath(path, true)).sha256)
+      .toBe(createHash('sha256').update(bytes).digest('hex'))
+    bytes[1048576 + 11] = 0x32
+    await writeFile(path, bytes)
+    expect((await fingerprintQualificationPath(path, true)).sha256)
+      .toBe(createHash('sha256').update(bytes).digest('hex'))
+  })
   it('allows cold container creation within the approved preparation budget, then starts the original ID', async () => {
     const f = await verificationReservationFixture()
     f.candidate.profile.spec.policy.preparationTimeoutMs = 600000
