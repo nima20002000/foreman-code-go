@@ -419,12 +419,15 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal(session.providerVersion, 'codex-cli 0.154.0')
   })
 
-  it('reports the installed version and catalog contract when successful debug output changes shape', async () => {
+  it('reports the installed version and model/list contract when discovery returns an invalid model identity', async () => {
     await json('version.json', 'codex-cli 0.160.0')
-    await json('models.json', { unsupportedCatalog: [] })
+    await json('models.json', { models: [{ slug: '', supported_reasoning_levels: [{ effort: 'medium' }] }] })
     await assert.rejects(manager.discoverModels(f.directory), error => error instanceof Error
-      && errorCode(error) === 'CODEX_CONTRACT_UNSUPPORTED' && error.message.includes('0.160.0')
-      && error.message.includes('debug models JSON catalog response contract'))
+      && errorCode(error) === 'CODEX_MODEL_CATALOG_INVALID' && error.message.includes('0.160.0')
+      && error.message.includes('model/list catalog response contract'))
+    assert.equal((await wire('model/list')).length, 1)
+    assert.equal((await wire('thread/start')).length, 0)
+    await assertMetadataProcessesClosed()
   })
 
   it('F01: refuses another Agent, workspace, run, or workflow-node owner on loaded attachment', async () => {
