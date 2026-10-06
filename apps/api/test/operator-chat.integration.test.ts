@@ -787,7 +787,10 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       status: 'completed', output: 'saved result' }))
     expect(start).toHaveBeenCalledTimes(1)
     expect(manager.disposals).toBe(1)
-    expect((await repository.terminal(conversation.id, 'reconciled-tool'))?.closureState).toBe('closed')
+    const retained = await pool.query(`select native_closure_state as "closureState",
+      terminal_history_persisted as "historyPersisted",result from operator_conversation_turns
+      where conversation_id=$1 and request_id=$2`, [conversation.id, 'reconciled-tool'])
+    expect(retained.rows).toEqual([{ closureState: 'closed', historyPersisted: true, result: state.lastResult }])
   })
 
   it('lists chats only after the first message and supports owner-scoped deletion and Undo', async () => {
