@@ -724,6 +724,23 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('thread/start')).length, 1)
   })
 
+  it('retains an incomplete fixture notification until its remaining bytes arrive', async () => {
+    const session = await manager.createSession(source)
+    const message = JSON.stringify({ method: 'thread/name/updated',
+      params: { threadId: session.nativeSessionId, threadName: 'split-notification' } }) + '\n'
+    const midpoint = Math.floor(message.length / 2)
+    const inbox = join(f.directory, 'inbox-agent-a.jsonl')
+    await appendFile(inbox, message.slice(0, midpoint))
+    await until(async () => (await calls(f.directory)).some(entry => entry.inboxBufferedLength === midpoint))
+    assert(!(await manager.history(session)).events.some(event => event.type === 'transport.disconnected'))
+    await appendFile(inbox, message.slice(midpoint))
+    await until(async () => (await manager.history(session)).events
+      .some(event => event.payload.threadName === 'split-notification'))
+    const history = await manager.history(session)
+    assert.equal(history.events.filter(event => event.payload.threadName === 'split-notification').length, 1)
+    assert(!history.events.some(event => event.type === 'native.malformed' || event.type === 'transport.disconnected'))
+  })
+
   it('retains large qualified events with bounded history and monotonic cursors', async () => {
     const session = await manager.createSession(source)
     const large = 'x'.repeat(1_100_000)

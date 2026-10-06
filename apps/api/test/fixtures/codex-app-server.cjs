@@ -175,6 +175,7 @@ process.on('exit', () => { log({ exited: process.pid }) })
 process.on('SIGTERM', () => { if (!flag('ignore-term')) process.exit(0) })
 const inbox = path.join(root, `inbox-${agent}.jsonl`)
 let offset = fs.existsSync(inbox) ? fs.readFileSync(inbox, 'utf8').length : 0
+let bufferedLength = 0
 setInterval(() => {
   for (let index = heldReplies.length - 1; index >= 0; index--) {
     const pending = heldReplies[index]
@@ -184,7 +185,13 @@ setInterval(() => {
   }
   if (!fs.existsSync(inbox)) return
   const contents = fs.readFileSync(inbox, 'utf8')
-  const batch = contents.slice(offset); offset = contents.length
+  const end = contents.lastIndexOf('\n') + 1
+  const partialLength = contents.length - Math.max(offset, end)
+  if (partialLength && partialLength !== bufferedLength) log({ inboxBufferedLength: partialLength })
+  bufferedLength = partialLength
+  if (end <= offset) return
+  const batch = contents.slice(offset, end)
+  offset = end
   for (const line of batch.split('\n').filter(Boolean)) {
     const message = JSON.parse(line)
     const owner = loadThread(message.params?.threadId)
