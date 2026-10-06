@@ -581,7 +581,12 @@ export function validateVerificationIsolationObservation(input: {
 }): void {
   const resources = JobResourceRequestSchema.parse(input.resources)
   const observed = input.observation
-  const denied = () => { throw new Error('Measured verification scratch, shm, dependency or credential isolation rejected.') }
+  const denied = (reason = 'runtime observations') => {
+    const fields = ['schemaVersion', 'node', 'pidNamespace', 'networkNamespace', 'capabilities',
+      'noNewPrivileges', 'interfaces', 'ownerSentinels']
+    const details = Object.fromEntries(fields.map(key => [key, observed[key]]))
+    throw new Error(`Measured verification isolation rejected (${reason}): ${JSON.stringify(details).slice(0, 400)}`)
+  }
   const sentinels = observed.ownerSentinels
   if (observed.schemaVersion !== 1 || observed.node !== 'v22.23.3'
     || observed.pidNamespace === input.hostPidNamespace || observed.networkNamespace === input.hostNetworkNamespace
@@ -603,14 +608,16 @@ export function validateVerificationIsolationObservation(input: {
     || input.ownerSentinelPaths.some(path => sentinels.filter(value => value?.path === path && value.result === 'ENOENT').length !== 1)) {
     denied()
   }
-  if (typeof observed.mountInfo !== 'string') denied()
+  if (typeof observed.mountInfo !== 'string') denied('mount information missing')
   const mounts = (observed.mountInfo as string).split('\n').map(line => line.split(' '))
   for (const path of ['/tmp', '/dev/shm', '/job-scratch']) {
     const matching = mounts.filter(columns => columns[4] === path)
-    if (matching.length !== 1) denied()
+    if (matching.length !== 1) denied(`mount count ${path}: ${matching.length}`)
     const options = new Set(matching[0]![5]?.split(','))
     const noexec = path !== '/job-scratch' || !resources.scratchExecutable
-    if (!['rw', 'nosuid', 'nodev'].every(option => options.has(option)) || options.has('noexec') !== noexec) denied()
+    if (!['rw', 'nosuid', 'nodev'].every(option => options.has(option)) || options.has('noexec') !== noexec) {
+      denied(`mount flags ${path}: ${matching[0]![5]}`)
+    }
   }
 }
 /** Pure exact-layout verifier, reused only after genuine original OCI inspection. */

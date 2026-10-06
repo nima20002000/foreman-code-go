@@ -54,6 +54,20 @@ it('retains bounded diagnostic stderr alongside the original native exit code', 
   expect(await runQualificationCommand(owner, '/approved/diagnostic', [], {}, new AbortController().signal))
     .toEqual({ exitCode: 7, stdout: 'observed output', stderr: 'fixture diagnostic failure' });
 })
+
+it('reports measured isolation values without copying arbitrary observation fields into errors', () => {
+  const f = verificationRuntimeFixture()
+  const input = { observation: { interfaces: [], privateToken: 'fixture-private-value' },
+    resources: f.measurement.fingerprint.resources, hostPidNamespace: 'pid:[1]',
+    hostNetworkNamespace: 'net:[1]', ownerSentinelPaths: ['/owner-sentinel'] }
+  try {
+    validateVerificationIsolationObservation(input)
+    expect.fail('Invalid observation was accepted')
+  } catch (error) {
+    expect((error as Error).message).toContain('interfaces')
+    expect((error as Error).message).not.toContain('fixture-private-value')
+  }
+})
 function candidate(): JobQualificationCandidate {
   return JobQualificationCandidateSchema.parse({ qualificationId: id, operationId: id, approvalId: id,
     fingerprint: { workspaceLayout:JOB_PRIVATE_GIT_LAYOUT,schemaVersion: 1, profileId: id, profileRevision: 1, specDigest: digest,
