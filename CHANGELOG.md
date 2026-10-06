@@ -7,7 +7,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-Claude and OpenCode workflows across two computers remain untested. The available laptop provider logins support Codex only. Installed OpenCode workers refuse declared artifact outputs. Claude Agents cannot yet be placed in workflows that use another computer.
+Claude and OpenCode workflows across two computers remain untested. The available laptop provider logins support Codex only. Installed OpenCode workers refuse declared artifact outputs. Claude Agents run on Main only; laptops run Codex.
 
 ### Added
 
@@ -15,15 +15,21 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 - Native artifact production, sealing, publication and Agent-to-Agent transfer for Main and installed Codex workers.
 - Worker build targets for Ubuntu 24.04 and 26.04 x64 with Node 22.23.2, retaining exact OS, libc and runtime checks.
 - Run CI Jobs on paired laptops: Main selects a qualified Worker, transfers the approved source and collects reports and logs.
+- Mark build computers primary or backup and set how much of each computer's CPU and memory builds may use; backups take Jobs only when no primary has room.
+- Place Claude Agents on Main in workflows that also run Agents on other computers.
 
 ### Changed
 
+- CI qualification on a paired computer no longer needs approval: capture its installed runtime and qualify it directly in the app or through Operator MCP.
+- Default new OpenCode configurations to OpenCode Go models.
 - Resolve unplaced Agents to authorized Main source, root and harness choices when a workflow has an explicit remote placement; retain every accepted node placement in the Run.
 - Match saved Agents and qualified host presets using their shared effective settings while preserving omitted Advanced fields in immutable Agent versions.
 - Page native history and large results, archive settled review payloads and rotate acknowledgment retries fairly.
 
 ### Fixed
 
+- Deliver an Agent's instructions to Claude in workflows and Agent chat.
+- Run Claude workflow turns whose MCP check, execution correlation and terminal result now match the rest of the workflow engine.
 - Replace a source transfer that expired on the Worker and wait for the Worker to reconnect, instead of retrying the expired transfer until the Job times out.
 - Read per-Job quota source trees from their quota folder when preparing the private repository on a Worker.
 - Report a missing project folder on Main or a laptop as `ROOT_DIRECTORY_MISSING` instead of an internal error.
