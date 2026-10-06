@@ -9,6 +9,7 @@ import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import { ResourceTelemetryService } from './service.js'
 import { DeviceApplicationChannel, extensionDescriptors } from '../../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../../devices/deviceWire.js'
+import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
 
 class Socket extends EventEmitter {
   bufferedAmount = 0
@@ -119,6 +120,21 @@ describe('authenticated W07 passive telemetry carrier', () => {
     await vi.advanceTimersByTimeAsync(1999); expect(s.request).toHaveBeenCalledTimes(1)
     s.lifetime.abort(); await session.close(); await s.worker.close(); await s.service.close()
     expect(s.collectors[0]!.close).toHaveBeenCalledTimes(1)
+  })
+  it('keeps collecting after a busy channel times out one sample', async () => {
+    vi.useFakeTimers(); const s = setup()
+    const delegate = s.request.getMockImplementation()!
+    s.request.mockImplementationOnce(async () => { throw new DeviceApplicationError('timeout') })
+    const session = await startRemoteTelemetrySession({ service: s.service, binding, signal: s.lifetime.signal, request: s.request })
+    let failed = false
+    void session.completion.catch(() => { failed = true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(s.request).toHaveBeenCalledTimes(1)
+    s.request.mockImplementation(delegate)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(s.request).toHaveBeenCalledTimes(2)
+    expect(failed).toBe(false)
+    s.lifetime.abort(); await session.close(); await s.worker.close(); await s.service.close()
   })
   it('denies revoked authority before sending a collection request', async () => {
     const s = setup(); s.revoke()

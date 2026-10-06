@@ -9,6 +9,7 @@ import type { DeviceExtensionRegistration, DeviceApplicationRequestOptions } fro
 import { resourceTelemetryExtension } from './ports.js'
 import { ResourceTelemetryService, TelemetryRejected } from './service.js'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
+import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
 
 /** Ready/lost hooks retain only the exact authenticated channel's passive collector. */
 export function createMainResourceTelemetryBindings(service: () => ResourceTelemetryService | undefined) {
@@ -55,12 +56,20 @@ export async function startRemoteTelemetrySession(input: {
         const issuedMono = input.service.ports.clock.monotonicMs()
         const challenge = await input.service.challenge(context, lifetime.signal)
         if (challenge) {
+          // A busy channel only misses this sample; its stale age keeps readers from using it.
           const reply = await input.request({ operation: 'collect', challenge }, { signal: lifetime.signal, timeoutMs: TELEMETRY_LIMITS.freshMs })
+            .catch(error => {
+              if (!lifetime.signal.aborted && error instanceof DeviceApplicationError
+                && (error.code === 'timeout' || error.code === 'backpressure')) return undefined
+              throw error
+            })
           lifetime.signal.throwIfAborted()
-          if (reply.bytes !== undefined) throw new TelemetryRejected('binary')
-          try { await input.service.ingest(context, JSON.stringify(reply.payload), lifetime.signal) }
-          catch (error) {
-            if (!(error instanceof TelemetryRejected) || error.reason !== 'owner-binding' && error.reason !== 'challenge') throw error
+          if (reply?.bytes !== undefined) throw new TelemetryRejected('binary')
+          if (reply) {
+            try { await input.service.ingest(context, JSON.stringify(reply.payload), lifetime.signal) }
+            catch (error) {
+              if (!(error instanceof TelemetryRejected) || error.reason !== 'owner-binding' && error.reason !== 'challenge') throw error
+            }
           }
         }
         await new Promise<void>(resolve => {
