@@ -176,8 +176,10 @@ service regression through the heavy-job queue:
 corepack pnpm test:production:installed
 ```
 
-This uses the installed compiled release, credential-free local human HTTP and
-authenticated Operator MCP with denied scoped callers. It also
+This uses the installed compiled release and scoped agent HTTP/Operator MCP with
+denied callers. Automated agent processes retain their application credentials;
+verify credential-free human creation and edits in the actual browser, where OS
+client attribution identifies the human client. It also
 checks configuration migration and updates against actual systemd environment
 values in a temporary service. It tests
 an Operator reply, Codex/OpenCode workflows, denied callers, native cancellation,

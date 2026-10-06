@@ -26,9 +26,10 @@ async function systemctl(...args) {
   return stdout.trim()
 }
 
-async function localRequest(path, { method = 'GET', body } = {}) {
+async function localRequest(path, { token, method = 'GET', body }) {
+  assert.ok(token, 'Automated agent HTTP requests require an application credential')
   const response = await fetch(new URL(path, origin), {
-    method, credentials: 'omit', headers: { origin, 'content-type': 'application/json' },
+    method, credentials: 'omit', headers: { origin, authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30_000),
   })
   const result = await response.json()
@@ -150,8 +151,6 @@ async function main() {
   const expected = await readProductionIdentity(release, environment.DATABASE_URL)
   const ready = () => waitForProductionReady({ origin, expected })
   await ready()
-  const readLocalHuman = async () => LocalHumanAccessSchema.parse(await localRequest('/api/local-human'))
-  const initialHuman = await readLocalHuman()
   const dashboard = await fetch(new URL('/workspaces', origin), { credentials: 'omit' })
   assert.equal(dashboard.status, 200)
   assert.match(dashboard.headers.get('content-type'), /text\/html/)
@@ -193,6 +192,9 @@ async function main() {
   const codexModel = process.env.ENG03_CODEX_MODEL ?? 'gpt-5.6-luna'
   try {
     writerCredential = await issue([{ actions: ManagementActionSchema.options, scope: {} }])
+    const readClientAccess = async () => LocalHumanAccessSchema.parse(await localRequest('/api/local-human',
+      { token: writerCredential.token }))
+    assert.equal((await readClientAccess()).principal.id, writerCredential.principal.id)
     const deniedCredential = await issue([{ actions: ['operator_chat:read', 'harnesses:read'], scope: {} }])
     writer = await connect(writerCredential)
     let denied = await connect(deniedCredential)
@@ -201,11 +203,18 @@ async function main() {
       name: `Production regression ${randomUUID()}`, parentPath: environment.WORKSPACE_STORAGE_ROOT })
     workspaceId = created.value.workspace.id
     const workspace = await call(writer, 'workspace_get', { workspaceId })
-    const localWorkspace = await localRequest(`/api/management/workspaces/${workspaceId}`)
+    const localWorkspace = await localRequest(`/api/management/workspaces/${workspaceId}`, { token: writerCredential.token })
     assert.equal(localWorkspace.workspace.id, workspaceId)
     const update = WorkspaceUpdateInputSchema.parse({ workspaceId, commandId: randomUUID(),
-      expectedRevision: workspace.revision, description: 'Credential-free local HTTP update' })
-    const changed = await localRequest(`/api/management/workspaces/${workspaceId}`, { method: 'PATCH', body: update })
+      expectedRevision: workspace.revision, description: 'Scoped agent HTTP update' })
+    const deniedUpdate = await fetch(new URL(`/api/management/workspaces/${workspaceId}`, origin), {
+      method: 'PATCH', headers: { origin, authorization: `Bearer ${deniedCredential.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(update), signal: AbortSignal.timeout(30_000),
+    })
+    assert.equal(deniedUpdate.status, 403)
+    assert.equal((await deniedUpdate.json()).error.code, 'ACCESS_DENIED')
+    const changed = await localRequest(`/api/management/workspaces/${workspaceId}`,
+      { token: writerCredential.token, method: 'PATCH', body: update })
     const persistedWorkspace = await call(writer, 'workspace_get', { workspaceId })
     assert.equal(persistedWorkspace.revision, changed.value.revision)
     assert.equal(persistedWorkspace.workspace.description, update.description)
@@ -293,9 +302,9 @@ async function main() {
     denied = await connect(deniedCredential)
     await assert.rejects(call(denied, 'workspace_get', { workspaceId }), /not found|ACCESS_DENIED/)
     assert.equal((await call(writer, 'workspace_get', { workspaceId })).workspace.id, workspaceId)
-    assert.equal((await readLocalHuman()).principal.id, initialHuman.principal.id)
-    assert.equal((await localRequest(`/api/management/workspaces/${workspaceId}`)).workspace.description,
-      'Credential-free local HTTP update')
+    assert.equal((await readClientAccess()).principal.id, writerCredential.principal.id)
+    assert.equal((await localRequest(`/api/management/workspaces/${workspaceId}`,
+      { token: writerCredential.token })).workspace.description, 'Scoped agent HTTP update')
     const afterStartup = await call(writer, 'run_record_get', canceled)
     assert.equal(afterStartup.run.outcome, 'canceled')
     assert.equal(afterStartup.cleanupPending, false)
@@ -413,7 +422,7 @@ async function main() {
     }
     if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'))
   }
-  console.log('Installed production passed: local human HTTP, MCP grants, native execution, cancellation, database startup/restart and crash recovery.')
+  console.log('Installed production passed: scoped HTTP/MCP grants, native execution, cancellation, database startup/restart and crash recovery.')
 }
 
 withInstallationLock(join(config, 'install.lock'), main).catch(error => {
