@@ -310,6 +310,13 @@ async function measureBackingFile(path: string, bytes: number) {
   } finally { await file.close() }
 }
 
+export function backingFileConfigurationIdentity(backing: Awaited<ReturnType<typeof measureBackingFile>>) {
+  const { allocatedBytes, ...identity } = backing
+  if (BigInt(allocatedBytes) < BigInt(backing.bytes)) throw new Error('Backing file must remain fully allocated.')
+  // Loop writes can grow extent metadata without changing the reserved volume.
+  return { ...identity, reservedBytes: backing.bytes }
+}
+
 async function measureBoundedExt4Volume(candidate: JobQualificationCandidate, mount: { filesystems?: Array<{ target: string; source: string; fstype: string; options: string; 'maj:min': string }> }) {
   const selected = mount.filesystems?.[0]
   if (mount.filesystems?.length !== 1 || !selected || selected.fstype !== 'ext4' || !/^\/dev\/loop\d+$/.test(selected.source) || !/^7:\d+$/.test(selected['maj:min'])) throw new Error('Approved dedicated loop-backed ext4 volume unavailable.')
@@ -375,7 +382,7 @@ export async function captureJobRuntimeConfiguration(runtimeRoot: string, enviro
   return { suite: CI_QUALIFICATION_SUITE,workspaceLayout:JOB_PRIVATE_GIT_LAYOUT, probeDigest: hash(QUALIFICATION_PROBE), environment,
     runtimeRoot: await fingerprintQualificationPath(runtimeRoot), hooksDirectory: join(runtimeRoot, 'ci-empty-oci-hooks'), configuration,
     diagnosticBinary: binary, backingFile: diagnostics.backingFile === null || diagnostics.backingBytes === null
-      ? null : await measureBackingFile(diagnostics.backingFile, diagnostics.backingBytes) }
+      ? null : backingFileConfigurationIdentity(await measureBackingFile(diagnostics.backingFile, diagnostics.backingBytes)) }
 
 }
 

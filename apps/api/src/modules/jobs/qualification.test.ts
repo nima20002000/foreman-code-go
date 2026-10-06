@@ -11,6 +11,7 @@ import type { JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
 import { CI_QUALIFICATION_SUITE, JobQualificationCandidateSchema, fingerprintQualificationPath, jobQualificationFingerprint,
   validateBoundedVolumeGeometry, qualificationMountId, qualifyJobRuntime, validateIsolationMeasurement, verifyJobQualification,
   validateJobQualificationMounts, prepareQualificationPrivateGit, createPhysicalJobRuntimeProducer, type JobQualificationCandidate, type JobQualificationRecord } from './qualification.js'
+import { backingFileConfigurationIdentity } from './qualification.js'
 import { validateVerificationIsolationObservation } from './qualification.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
 import { requireVerificationRuntime } from './executor.js'
@@ -22,6 +23,16 @@ import { verificationRepositoryContext } from './executorOutputs.js'
 const id = '00000000-0000-4000-8000-000000000001'
 const digest = 'a'.repeat(64)
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
+
+it('keeps the fully allocated backing reservation stable when writes grow extent metadata', () => {
+  const backing = { path: '/approved/volume.ext4', device: '1', inode: '2', bytes: '68719476736',
+    allocatedBytes: '68719611904', mode: '33056', uid: '0', links: '1' }
+  const original = backingFileConfigurationIdentity(backing)
+  expect(backingFileConfigurationIdentity({ ...backing, allocatedBytes: '68719620096' })).toEqual(original)
+  expect(original.reservedBytes).toBe(backing.bytes)
+  expect(backingFileConfigurationIdentity({ ...backing, inode: '3' })).not.toEqual(original)
+  expect(() => backingFileConfigurationIdentity({ ...backing, allocatedBytes: '1024' })).toThrow('fully allocated')
+})
 function candidate(): JobQualificationCandidate {
   return JobQualificationCandidateSchema.parse({ qualificationId: id, operationId: id, approvalId: id,
     fingerprint: { workspaceLayout:JOB_PRIVATE_GIT_LAYOUT,schemaVersion: 1, profileId: id, profileRevision: 1, specDigest: digest,
