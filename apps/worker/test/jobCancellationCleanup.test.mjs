@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, rm, chmod, symlink, link, readdir, rename } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { acquireWorkerLock } from '../src/runtime.mjs';
@@ -15,6 +15,7 @@ after(() => rm(bundleDirectory, { recursive: true, force: true }));
 const exports = [
   ['apps/worker/src/jobCancellationCleanup.mjs', ['cleanupJobBeforeEntry', 'validateRestoredJobFilesystem', 'validateRestoredQuotaFilesystem']],
   ['apps/api/src/modules/runs/remote/operationJournal.ts', ['RemoteOperationJournal']],
+  ['apps/api/src/modules/sources/quotaClaims.ts', ['sourceMaterializationClaimName']],
   ['apps/api/src/modules/sources/materialization.ts', ['PrivateSourceMaterializer', 'releaseMaterializationClaimForCancellation']],
   ['apps/api/src/modules/sources/manifest.ts', ['createSourceManifest']],
   ['apps/api/src/modules/sources/bindingHash.ts', ['sourceBindingHash', 'sourceMaterializationDigest']],
@@ -137,6 +138,7 @@ async function fixture(t, { verification = false, preparatory = false } = {}) {
     const spec = execution.acceptedSpec;
     const digest = 'a'.repeat(64);
     const context = worker.JobVerificationRepositoryContextSchema.parse({
+      requiredPortions: [{ key: 'root:test', kind: 'node', files: ['fixture.test.mjs'] }],
       identity: { commit: spec.source.commit, manifestDigest: spec.source.manifestDigest,
         definitionVersionId: spec.definitionVersionId, suite: spec.verification.suite,
         executionId: execution.id, attemptId: execution.attemptId, target: spec.target, profile: spec.profile,
@@ -169,7 +171,7 @@ async function fixture(t, { verification = false, preparatory = false } = {}) {
     signature: sign(null, Buffer.from(worker.jobCancellationGrantMessage(grant)), mainKeys.privateKey).toString('base64url') });
   const saveGrant = () => writeFile(grantPath, JSON.stringify(signedGrant()), { mode: 0o600 });
   await saveGrant();
-  const claimPath = join(namespace, `binding-${root.binding.rootId}.lock`);
+  const claimPath = join(namespace, worker.sourceMaterializationClaimName(root.binding, receipt, receipt.quota, receipt.claimScope));
   const claim = await readFile(claimPath);
   const journalChange = async change => {
     const journal = await worker.RemoteOperationJournal.open(journalPath);
@@ -255,7 +257,7 @@ for (const kind of ['signature', 'expired', 'future', 'long-life', 'installation
 
 test('a real live source-namespace process blocks release after the durable stop fence', async t => {
   const f = await fixture(t);
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: f.namespace, stdio: 'ignore' });
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: dirname(f.sourcePath), stdio: 'ignore' });
   const closed = new Promise(resolve => child.once('close', resolve));
   await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
   try {
@@ -287,7 +289,16 @@ test('CLI returns only the signed closure and keeps failures and secrets off std
   const expired = run([]);
   assert.equal(expired.status, 1);
   assert.equal(expired.stdout, '');
-  assert.equal(expired.stderr.trim(), 'job_cleanup_grant_expired');
+  assert.equal(expired.stderr.trim(), 'job_cleanup_completed_closure_changed');
+  const uncompleted = await fixture(t);
+  uncompleted.grant.expiresAt = '2000-01-01T00:00:00.000Z';
+  await uncompleted.saveGrant();
+  const uncompletedResult = spawnSync(process.execPath, [join(bundleDirectory, 'cli.mjs'),
+    'cleanup-job-before-entry', '--state', uncompleted.state, '--grant', uncompleted.grantPath],
+  { encoding: 'utf8', timeout: 15000 });
+  assert.equal(uncompletedResult.status, 1);
+  assert.equal(uncompletedResult.stdout, '');
+  assert.equal(uncompletedResult.stderr.trim(), 'job_cleanup_grant_expired');
 });
 
 function restoredVolumeObservation() {
@@ -380,7 +391,7 @@ test('the cancellation-specific archive rejects a replaced original namespace in
   await mkdir(f.namespace, { mode: 0o700 });
   await assert.rejects(worker.releaseMaterializationClaimForCancellation(f.grant.materialization.receipt,
     f.grant.root.binding.filesystem, async () => 'released'));
-  assert.deepEqual(await readFile(join(retained, `binding-${f.grant.root.binding.rootId}.lock`)), f.claim);
+  assert.deepEqual(await readFile(join(retained, basename(f.claimPath))), f.claim);
 });
 
 
@@ -403,10 +414,10 @@ for (const native of ['launch', 'container', 'entry']) {
   test(`verification preparatory metadata cannot authorize cleanup after ${native}`, async t => {
     const f = await fixture(t, { verification: true, preparatory: true });
     await f.journalChange(async journal => {
-      if (native === 'entry') await journal.jobReserveEntry(f.grant.execution.operationId);
-      else if (native === 'container') await journal.jobContainerIntent(f.grant.execution.operationId,
+      await journal.jobReserveEntry(f.grant.execution.operationId);
+      if (native === 'container') await journal.jobContainerIntent(f.grant.execution.operationId,
         worker.jobSupervisorIdentity(f.grant.execution), f.grant.execution.acceptedSpec.specDigest);
-      else await journal.jobReserveProcess(f.grant.execution.operationId,
+      else if (native === 'launch') await journal.jobReserveProcess(f.grant.execution.operationId,
         { launchId: randomUUID(), binary: '/usr/bin/true', argv: [] });
     });
     await assert.rejects(worker.cleanupJobBeforeEntry(f.state, f.grantPath));
