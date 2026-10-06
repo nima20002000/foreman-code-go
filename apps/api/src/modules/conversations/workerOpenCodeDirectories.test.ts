@@ -85,6 +85,24 @@ it('refuses a replacement directory and retains the original cleanup record', as
   expect((await f.record())?.openCodeFileRoots).toEqual([root.record])
 })
 
+it('retains displaced native versions and the whole cleanup record after confirmed process closure', async () => {
+  const f = await fixture()
+  const root = await f.create()
+  const child = join(root.path, randomUUID())
+  const versions = join(child, `.versions-${randomUUID()}`)
+  await mkdir(versions, { recursive: true, mode: 0o700 })
+  await writeFile(join(child, 'working-copy.md'), '# current\n')
+  await writeFile(join(versions, 'native'), '# displaced native\n')
+  await writeFile(join(versions, 'edited'), '# file-tool edit\n')
+  f.closed()
+  await f.reopen()
+  await expect(f.cleanup()).rejects.toMatchObject({ code: 'WORKER_FILE_VERSION_RECOVERY_REQUIRED' })
+  expect(await readFile(join(child, 'working-copy.md'), 'utf8')).toBe('# current\n')
+  expect(await readFile(join(versions, 'native'), 'utf8')).toBe('# displaced native\n')
+  expect(await readFile(join(versions, 'edited'), 'utf8')).toBe('# file-tool edit\n')
+  expect((await f.record())?.openCodeFileRoots).toEqual([root.record])
+})
+
 it('fences directory materialization from another native session or an unadmitted turn', async () => {
   const f = await fixture()
   const journal = await f.record()

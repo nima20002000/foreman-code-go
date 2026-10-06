@@ -68,6 +68,7 @@ export function createWorkerOpenCodeFiles(input: {
       const endpoint = `${await listener.listen()}/mcp/files`
       const host = new LocalOpenCodeExecutionFiles({ root: root.path, executionHostId: `worker:${randomUUID()}`,
         maxFileBytes: MAX_FILE_BYTES,
+        preserveVersion: proxy.preserveVersion,
         assertSourceIsolation: async checkSignal => {
           await input.assertCurrent(delivery.source, checkSignal)
           await input.assertSourceIsolation(input.server.nativePid ?? 0, delivery.prepared.sourceHost, checkSignal)

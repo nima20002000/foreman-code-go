@@ -26,6 +26,12 @@ interface WriteTransfer {
   length: number
   completion?: Promise<void>
 }
+interface VersionTransfer {
+  identity: Extract<WorkerOpenCodeFileAction, { phase: 'preserve-begin' }>
+  chunks: Buffer[]
+  length: number
+  completion?: Promise<void>
+}
 
 /** Main owns file authority and immutable bytes; the native worker owns filesystem copies. */
 export class MainWorkerOpenCodeFiles {
@@ -36,6 +42,7 @@ export class MainWorkerOpenCodeFiles {
   private revoked = false
   private recoveryVerified = false
   private readonly writes = new Map<string, WriteTransfer>()
+  private readonly versions = new Map<string, VersionTransfer>()
 
   constructor(private readonly ports: MainOpenCodeFilePorts) {}
 
@@ -84,6 +91,9 @@ export class MainWorkerOpenCodeFiles {
       if (!attachments.some(ref => ref.fileId === action.input.fileId && ref.revisionId === action.input.revisionId)) this.denied()
       return service.readAccepted(context, action.input)
     }
+    if (action.phase === 'authorize-accepted') {
+      return service.sessions.authorizeAccepted(context, action.tool)
+    }
     if (action.phase === 'recover') {
       if (!input.recovering || input.acknowledgedTurnId !== context.turnId
         || !isDeepStrictEqual(context, action.context) || this.issuance || this.revoked) this.denied()
@@ -107,6 +117,10 @@ export class MainWorkerOpenCodeFiles {
       return { acknowledged: true }
     }
     if (input.acknowledgedTurnId !== context.turnId) this.denied()
+    if (action.phase === 'preserve-begin' || action.phase === 'preserve-chunk' || action.phase === 'preserve-finish') {
+      await service.sessions.authorizeAccepted(context, 'files.publish_result')
+      return this.preserve(action, context, input.signal)
+    }
     if (action.phase === 'issue') {
       if (!isDeepStrictEqual(context, action.context) || this.revoked
         || input.recovering && !this.recoveryVerified) this.denied()
@@ -133,6 +147,13 @@ export class MainWorkerOpenCodeFiles {
         }
         break
       case 'artifact-get': return service.artifacts.get(caller, action.artifactId)
+      case 'artifact-read': {
+        const snapshot = await service.artifacts.readSnapshot(caller, action.artifactId, input.signal)
+        const end = Math.min(snapshot.bytes.length, action.offset + action.length)
+        if (action.offset > snapshot.bytes.length) this.denied()
+        return { revision: snapshot.revision, offset: action.offset,
+          contentBase64: snapshot.bytes.subarray(action.offset, end).toString('base64'), eof: end === snapshot.bytes.length }
+      }
       case 'artifact-begin': return { writeId: await service.artifacts.beginWrite(action.token, action.artifactId, action.baseRevisionId) }
       case 'artifact-abort':
         await service.artifacts.abortWrite(action.token, action.artifactId, action.writeId)
@@ -180,10 +201,46 @@ export class MainWorkerOpenCodeFiles {
     return { acknowledged: true }
   }
 
+  private async preserve(action: Extract<WorkerOpenCodeFileAction, {
+    phase: 'preserve-begin' | 'preserve-chunk' | 'preserve-finish';
+  }>, context: FileToolContext, signal: AbortSignal): Promise<unknown> {
+    let transfer = this.versions.get(action.transferId)
+    if (action.phase === 'preserve-begin') {
+      if (transfer && !isDeepStrictEqual(transfer.identity, action)) this.denied()
+      if (!transfer) {
+        if (this.versions.size >= 20) this.denied()
+        transfer = { identity: structuredClone(action), chunks: [], length: 0 }
+        this.versions.set(action.transferId, transfer)
+      }
+      return { acknowledged: true }
+    }
+    if (!transfer) this.denied()
+    if (action.phase === 'preserve-chunk') {
+      const bytes = Buffer.from(action.contentBase64, 'base64')
+      if (bytes.toString('base64') !== action.contentBase64 || bytes.length > 65536 || transfer.completion) this.denied()
+      if (action.offset < transfer.length) {
+        const prior = Buffer.concat(transfer.chunks)
+        if (!prior.subarray(action.offset, action.offset + bytes.length).equals(bytes)) this.denied()
+      } else {
+        if (action.offset !== transfer.length || transfer.length + bytes.length > MAX_FILE_BYTES) this.denied()
+        transfer.chunks.push(bytes)
+        transfer.length += bytes.length
+      }
+      return { acknowledged: true }
+    }
+    transfer.completion ??= this.ports.service().preserveAccepted(context, {
+      id: transfer.identity.id, revision: transfer.identity.revision, bytes: Buffer.concat(transfer.chunks),
+    }, signal)
+    await transfer.completion
+    transfer.chunks = []
+    return { acknowledged: true }
+  }
+
   async close() {
     this.revoked = true
     if (this.issuance) this.token = await this.issuance
     if (this.token) await this.ports.service().sessions.revoke(this.token)
     this.writes.clear()
+    this.versions.clear()
   }
 }

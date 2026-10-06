@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
 import { WorkerOpenCodeFilePreparationSchema, type WorkerOpenCodeFileAction } from '@foreman-code/contracts/remote-execution-rpc'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
@@ -45,6 +45,43 @@ it('reads pinned inputs before acknowledgement and issues tools only after the a
       .toMatchObject({ context: prepared.context })
     await f.proxy.close()
     await expect(f.call({ phase: 'authenticate', token: issued.token })).rejects.toMatchObject({ status: 403 })
+  } finally { await f.proxy.close() }
+})
+
+it('preserves an acknowledged native version after credential revocation with current grants and idempotent completion', async () => {
+  const f = await fixture()
+  try {
+    const prepared = WorkerOpenCodeFilePreparationSchema.parse(await f.call({ phase: 'prepare' }))
+    const input = await f.files.service.readAccepted(f.context, { ...f.ref, offset: 0, length: 65536 })
+    if (input.status !== 'ready') throw new Error('The fixture source is unavailable.')
+    const bytes = Buffer.from('# retained native edit\n')
+    const identity = { transferId: randomUUID(), id: createHash('sha256').update('retained-version').digest('hex'),
+      revision: { ...input.revision, filename: 'retained-native.md', origin: 'agent_output' as const,
+        byteSize: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } }
+    await expect(f.call({ phase: 'preserve-begin', ...identity })).rejects.toMatchObject({ status: 403 })
+    f.acknowledge()
+    const { token } = await f.call({ phase: 'issue', context: prepared.context,
+      expiresAt: prepared.expiresAt }) as { token: string }
+    await f.call({ phase: 'revoke', token })
+    await f.call({ phase: 'preserve-begin', ...identity })
+    const chunk = { phase: 'preserve-chunk' as const, transferId: identity.transferId,
+      offset: 0, contentBase64: bytes.toString('base64') }
+    await f.call(chunk)
+    await f.call(chunk)
+    await f.call({ phase: 'preserve-finish', transferId: identity.transferId })
+    await f.call({ phase: 'preserve-finish', transferId: identity.transferId })
+    const reader = await f.files.service.sessions.issueForAcceptedSession(f.context,
+      new Date(Date.now() + 60000), 'opencode')
+    const page = await f.files.service.list(reader, { scope: f.files.scope, limit: 100 })
+    const retained = page.items.filter(item => item.file.filename === identity.revision.filename)
+    expect(retained).toHaveLength(1)
+    const saved = retained[0]!
+    const read = await f.files.service.read(reader, { fileId: saved.file.fileId,
+      revisionId: saved.revision.revisionId, offset: 0, length: 65536 })
+    expect(read.status === 'ready' && read.contentBase64).toBe(bytes.toString('base64'))
+    f.files.revoke()
+    await expect(f.call({ phase: 'preserve-begin', ...identity, transferId: randomUUID() }))
+      .rejects.toMatchObject({ status: 401 })
   } finally { await f.proxy.close() }
 })
 

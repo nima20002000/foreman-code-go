@@ -29,6 +29,20 @@ async function removeContents(directory: FileHandle, signal: AbortSignal): Promi
   }
 }
 
+async function assertVersionsRecovered(directory: FileHandle, signal: AbortSignal): Promise<void> {
+  for (const name of await readdir(anchored(directory))) {
+    signal.throwIfAborted()
+    const stat = await lstat(anchored(directory, name))
+    if (!stat.isDirectory()) continue
+    if (/^\.versions-[0-9a-f-]{36}$/.test(name)) {
+      throw new DomainError('WORKER_FILE_VERSION_RECOVERY_REQUIRED',
+        'Native and file-tool edits must be preserved through their original Main admission before cleanup.', 409)
+    }
+    const child = await openChildDirectory(directory, name)
+    try { await assertVersionsRecovered(child, signal) } finally { await child.close() }
+  }
+}
+
 /** Keeps native scratch ownership in the existing worker journal, including crash cuts before materialization. */
 export class WorkerOpenCodeDirectories {
   private readonly parent: string
@@ -74,7 +88,10 @@ export class WorkerOpenCodeDirectories {
         if (root.filesystem && !isDeepStrictEqual(root.filesystem, await identity(child))) changed()
         // A reserved directory has no materialized bytes; only its empty mkdir can survive this crash cut.
         if (!root.filesystem && (await readdir(anchored(child))).length) changed()
-        if (options.closedProcess && root.filesystem) await removeContents(child, options.signal)
+        if (options.closedProcess && root.filesystem) {
+          await assertVersionsRecovered(child, options.signal)
+          await removeContents(child, options.signal)
+        }
       } finally { await child.close() }
       await rmdir(anchored(parent, root.id))
       await parent.sync()

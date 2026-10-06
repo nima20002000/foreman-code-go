@@ -48,6 +48,10 @@ export const WorkerOpenCodeArtifactSchema = z.object({
 }).strict()
 
 const artifact = { token, artifactId: z.uuid() }
+export const WorkerOpenCodeArtifactRangeSchema = z.object({
+  revision: FileRevisionSchema, offset: z.number().int().nonnegative(),
+  contentBase64: z.string().max(87384), eof: z.boolean(),
+}).strict()
 const transfer = { ...artifact, transferId: z.uuid(), writeId: z.uuid() }
 export const WorkerOpenCodeFileActionSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('prepare') }).strict(),
@@ -56,17 +60,25 @@ export const WorkerOpenCodeFileActionSchema = z.discriminatedUnion('phase', [
     offset: z.number().int().nonnegative(), length: z.number().int().min(1).max(65536) }).strict() }).strict(),
   z.object({ phase: z.literal('issue'), context: WorkerOpenCodeFileContextSchema,
     expiresAt: z.iso.datetime() }).strict(),
+  z.object({ phase: z.literal('authorize-accepted'), tool: tools.optional() }).strict(),
   z.object({ phase: z.literal('authenticate'), token: z.string().max(1024).optional(), tool: tools.optional() }).strict(),
   z.object({ phase: z.literal('revoke'), token }).strict(),
   z.object({ phase: z.literal('service'), token, operation: z.enum(['list', 'read', 'createWorkingCopy',
     'writeWorkingCopy', 'applyFormatEdit', 'publish', 'publishedForTurn']), input: z.unknown().optional() }).strict(),
   z.object({ phase: z.literal('artifact-get'), ...artifact }).strict(),
+  z.object({ phase: z.literal('artifact-read'), ...artifact,
+    offset: z.number().int().nonnegative().max(MAX_FILE_BYTES), length: z.number().int().min(1).max(65536) }).strict(),
   z.object({ phase: z.literal('artifact-begin'), ...artifact, baseRevisionId: id.optional() }).strict(),
   z.object({ phase: z.literal('artifact-abort'), ...artifact, writeId: z.uuid() }).strict(),
   z.object({ phase: z.literal('write-begin'), ...transfer }).strict(),
   z.object({ phase: z.literal('write-chunk'), ...transfer, offset: z.number().int().min(0).max(MAX_FILE_BYTES),
     contentBase64: z.string().max(87384) }).strict(),
   z.object({ phase: z.literal('write-finish'), ...transfer }).strict(),
+  z.object({ phase: z.literal('preserve-begin'), transferId: z.uuid(),
+    id: z.string().regex(/^[a-f0-9]{64}$/), revision: FileRevisionSchema }).strict(),
+  z.object({ phase: z.literal('preserve-chunk'), transferId: z.uuid(),
+    offset: z.number().int().min(0).max(MAX_FILE_BYTES), contentBase64: z.string().max(87384) }).strict(),
+  z.object({ phase: z.literal('preserve-finish'), transferId: z.uuid() }).strict(),
   z.object({ phase: z.literal('adopt'), context: WorkerOpenCodeFileContextSchema }).strict(),
   z.object({ phase: z.literal('close') }).strict(),
 ])

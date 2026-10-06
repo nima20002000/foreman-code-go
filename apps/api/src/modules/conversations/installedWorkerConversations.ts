@@ -68,7 +68,11 @@ export async function createInstalledWorkerConversations(input: {
     const closed = input.registry.snapshot().launches.filter(launch =>
       launch.owner === `conversation:${record.binding.owner.conversationId}`)
     if (closed.length && closed.every(launch => launch.lifecycle === 'closed' && launch.closureEvidence)) {
-      await openCodeDirectories.cleanupClosed(record, input.registry, input.signal)
+      try { await openCodeDirectories.cleanupClosed(record, input.registry, input.signal) }
+      catch (error) {
+        if (!(error instanceof DomainError) || error.code !== 'WORKER_FILE_VERSION_RECOVERY_REQUIRED') throw error
+        // Keep the original files and journal until an admitted Main recovery is available on the paired channel.
+      }
     }
   }
   const operations = new AsyncLocalStorage<WorkerConversationRpcRequest>()

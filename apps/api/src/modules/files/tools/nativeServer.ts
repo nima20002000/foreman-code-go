@@ -20,7 +20,7 @@ export function createNativeFileMcpServer(service: () => FileMcpService, observe
       let selected: FileMcpService
       try {
         selected = service()
-        await selected.sessions.authenticate(token)
+        await (selected.sessions.discover ?? selected.sessions.authenticate).call(selected.sessions, token)
       } catch {
         response.writeHead(401).end()
         return
