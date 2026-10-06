@@ -20,6 +20,7 @@ export async function configureNativeWorkflowMcp(input: {
   const previous = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
   const previousCodexHome = process.env.CODEX_HOME
   const previousOpenCodeConfig = process.env.OPENCODE_CONFIG
+  const previousOpenCodeConfigDirectory = process.env.OPENCODE_CONFIG_DIR
   // Codex's release build refuses helper aliases beneath TMPDIR.
   const profileDirectory = fileURLToPath(new URL('../../../../.logs/native-cli/', import.meta.url))
   await mkdir(profileDirectory, { recursive: true, mode: 0o700 })
@@ -31,6 +32,8 @@ export async function configureNativeWorkflowMcp(input: {
     else process.env.CODEX_HOME = previousCodexHome
     if (previousOpenCodeConfig === undefined) delete process.env.OPENCODE_CONFIG
     else process.env.OPENCODE_CONFIG = previousOpenCodeConfig
+    if (previousOpenCodeConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR
+    else process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDirectory
     await rm(codexHomeDirectory, { recursive: true, force: true })
     try { await rmdir(profileDirectory) }
     catch (error) {
@@ -78,8 +81,9 @@ export async function configureNativeWorkflowMcp(input: {
         type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,
         environment: { [token]: `{env:${token}}` },
       } } }), { mode: 0o600 })
-      // Pure-mode diagnostics and native launches must load the same owned entry.
+      // OpenCode loads its custom directory after the explicit file and project config.
       process.env.OPENCODE_CONFIG = configurationFile
+      process.env.OPENCODE_CONFIG_DIR = input.projectDirectory
     }
     return restore
   } catch (error) {
