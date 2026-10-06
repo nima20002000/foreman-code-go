@@ -445,7 +445,7 @@ export class RemoteOperationJournal {
       const receipt = this.qualificationReceipt(data, operationId)
       if (receipt.phase !== 'closed') {
         if (receipt.launches.some(value => !value.closed) || receipt.container && receipt.container.certificate?.lifecycle !== 'closed'
-          && !(receipt.creationAbsent && qualificationCreationFailed(receipt))) throw new Error('Original physical qualification closure unconfirmed')
+          && !(receipt.creationAbsent && qualificationCreationStopped(receipt))) throw new Error('Original physical qualification closure unconfirmed')
         receipt.phase = 'closed'; receipt.sequence++
       }
       return receipt

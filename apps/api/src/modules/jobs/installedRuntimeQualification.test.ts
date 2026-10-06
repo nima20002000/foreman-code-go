@@ -195,6 +195,8 @@ describe('actual qualification reservation seams with mocked native entry only',
       expect(await admitted.ownership.confirmFailedCreation!(identity)).toBe(true)
       expect(f.registry.closeOwner).toHaveBeenCalled()
       expect(await f.journal.qualificationStatus(id)).toMatchObject({ creationAbsent: true })
+      expect(await admitted.native.close()).toBe(true)
+      expect(await f.journal.qualificationStatus(id)).toMatchObject({ phase: 'closed' })
     } else {
       await expect(admitted.ownership.confirmFailedCreation!(identity)).rejects.toThrow('unconfirmed')
       expect(await f.journal.qualificationStatus(id)).toMatchObject({ creationAbsent: false })
