@@ -95,6 +95,28 @@ async function verificationReservationFixture() {
 }
 
 describe('actual qualification reservation seams with mocked native entry only', () => {
+  it.each([125, 0, null])('retains failed-creation non-entry only after exact absent readback (create exit %s)', async exitCode => {
+    const f = await fixture()
+    await reserveInstalledJobQualification(f.input)
+    const identity = `graphql-ci-qualification-${id}`
+    await f.journal.qualificationContainerIntent(id, identity, f.admission.fingerprintDigest)
+    const launchId = randomUUID()
+    await f.journal.qualificationReserveProcess(id, { launchId, binary: process.execPath,
+      argv: ['--remote=false', 'create', '--name', identity] })
+    await f.journal.qualificationProcessExit(id, launchId, { exitCode, signal: exitCode === null ? 'SIGKILL' : null })
+    await f.journal.qualificationProcessClosed(id, launchId)
+    await expect(f.journal.qualificationCreationAbsent(id, identity)).rejects.toThrow('unconfirmed')
+    if (exitCode !== 125) return
+    const observationId = randomUUID()
+    await f.journal.qualificationReserveCleanupProcess(id, { launchId: observationId, binary: process.execPath,
+      argv: ['--remote=false', 'container', 'exists', identity] })
+    await f.journal.qualificationProcessExit(id, observationId, { exitCode: 1, signal: null })
+    await f.journal.qualificationProcessClosed(id, observationId)
+    await f.journal.qualificationCreationAbsent(id, identity)
+    await f.journal.qualificationClose(id)
+    expect(await f.journal.qualificationStatus(id)).toMatchObject({ phase: 'closed', creationAbsent: true,
+      container: { identity, containerId: null, certificate: null } })
+  })
   it('retains a rejected entry check as a closed non-entry result without launching a diagnostic', async () => {
     const f = await fixture()
     const rejection = new Error('fixture runtime metadata changed')

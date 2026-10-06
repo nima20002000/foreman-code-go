@@ -12,7 +12,7 @@ import { nativeAgentEnvironment } from '../harnesses/secrets.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
-import { qualificationCleanupCommandAllowed } from './qualificationJournal.js'
+import { qualificationCleanupCommandAllowed, qualificationCreationFailed } from './qualificationJournal.js'
 import { inspectInstalledJobRuntimeCandidate, type InstalledRuntimeHostDependencies, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 import type { OCIContainerOwnership, OCIHostCertificate } from './executorContainerOwner.js'
 import type { z } from 'zod'
@@ -237,6 +237,14 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
       return receipt.container.certificate
     },
     async publish(certificate) { await journal.qualificationCertificate(operationId, certificate) },
+    async confirmFailedCreation(identity) {
+      await assertClosure()
+      const receipt = await journal.qualificationStatus(operationId)
+      if (!receipt || receipt.container?.identity !== identity || !qualificationCreationFailed(receipt)
+        || !await registry.closeOwner(owner)) return false
+      await journal.qualificationCreationAbsent(operationId, identity)
+      return true
+    },
   }
   async function closeLaunch(id: string) {
     const launch = launches.get(id)

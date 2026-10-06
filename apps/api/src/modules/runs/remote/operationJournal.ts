@@ -21,7 +21,7 @@ import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordS
   type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { JobNativeOwnerSchema, JobOCICertificateSchema, isPreparatoryVerificationOwner, type JobNativeOwner } from '../../jobs/executorJournal.js'
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
-import { QualificationReceiptSchema, QualificationOCICertificateSchema, qualificationCleanupCommandAllowed,
+import { QualificationReceiptSchema, QualificationOCICertificateSchema, qualificationCleanupCommandAllowed, qualificationCreationFailed,
   QUALIFICATION_COMMAND_LIMIT, QUALIFICATION_CLEANUP_COMMAND_LIMIT,
   type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 
@@ -413,7 +413,7 @@ export class RemoteOperationJournal {
         }
         receipt.closedContainers.push(receipt.container.certificate)
       }
-      receipt.container = { identity, fingerprint, containerId: null, certificate: null }; receipt.sequence++; return receipt
+      receipt.container = { identity, fingerprint, containerId: null, certificate: null }; receipt.creationAbsent = false; receipt.sequence++; return receipt
     })
   }
   qualificationBindContainer(operationId: string, identity: string, containerId: string) {
@@ -440,10 +440,23 @@ export class RemoteOperationJournal {
     return this.change(data => {
       const receipt = this.qualificationReceipt(data, operationId)
       if (receipt.phase !== 'closed') {
-        if (receipt.launches.some(value => !value.closed) || receipt.container && receipt.container.certificate?.lifecycle !== 'closed') throw new Error('Original physical qualification closure unconfirmed')
+        if (receipt.launches.some(value => !value.closed) || receipt.container && receipt.container.certificate?.lifecycle !== 'closed'
+          && !(receipt.creationAbsent && qualificationCreationFailed(receipt))) throw new Error('Original physical qualification closure unconfirmed')
         receipt.phase = 'closed'; receipt.sequence++
       }
       return receipt
+    })
+  }
+  qualificationCreationAbsent(operationId: string, identity: string) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId)
+      const observation = receipt.launches.at(-1)
+      if (receipt.container?.identity !== identity || !qualificationCreationFailed(receipt)
+        || !observation || !same(observation.argv, ['--remote=false', 'container', 'exists', identity])
+        || observation.exit?.exitCode !== 1 || observation.exit.signal !== null) {
+        throw new Error('Original failed container creation is unconfirmed')
+      }
+      receipt.creationAbsent = true; receipt.sequence++; return receipt
     })
   }
   qualificationConfirmNonEntry(operationId: string) {

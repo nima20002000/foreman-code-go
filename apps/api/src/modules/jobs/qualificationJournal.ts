@@ -29,8 +29,21 @@ export const QualificationReceiptSchema = z.object({
     closed: z.boolean() }).strict()).max(QUALIFICATION_CLEANUP_COMMAND_LIMIT),
   container: z.object({ identity: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
     containerId: z.string().regex(/^[a-f0-9]{64}$/).nullable(), certificate: QualificationOCICertificateSchema.nullable() }).strict().nullable(),
+  creationAbsent: z.boolean().default(false),
 }).strict()
 export type QualificationReceipt = z.infer<typeof QualificationReceiptSchema>
+
+export function qualificationCreationFailed(receipt: QualificationReceipt): boolean {
+  const container = receipt.container
+  if (!container || container.containerId || container.certificate || receipt.launches.some(value => !value.closed)) return false
+  const index = receipt.launches.findLastIndex(value => value.binary === receipt.candidate.fingerprint.runtimeExecutable
+    && value.argv.includes('create') && value.argv[value.argv.indexOf('--name') + 1] === container.identity)
+  const create = receipt.launches[index]
+  return !!create && create.exit?.signal === null && create.exit.exitCode !== null && create.exit.exitCode !== 0
+    && receipt.launches.slice(index + 1).every(value => value.binary === receipt.candidate.fingerprint.runtimeExecutable
+      && (isDeepStrictEqual(value.argv, ['--remote=false', 'container', 'inspect', container.identity])
+        || isDeepStrictEqual(value.argv, ['--remote=false', 'container', 'exists', container.identity])))
+}
 
 export function qualificationCleanupCommandAllowed(receipt: QualificationReceipt, binary: string, argv: string[]) {
   const container = receipt.container
@@ -39,6 +52,8 @@ export function qualificationCleanupCommandAllowed(receipt: QualificationReceipt
     return false
   }
   const command = argv.slice(1)
+  if (!container?.containerId && qualificationCreationFailed(receipt)
+    && isDeepStrictEqual(command, ['container', 'exists', target])) return true
   if (isDeepStrictEqual(command, ['container', 'inspect', target])
     || isDeepStrictEqual(command, ['stop', '--time', '1', target])
     || isDeepStrictEqual(command, ['kill', '--signal', 'KILL', target])) return true

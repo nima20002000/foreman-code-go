@@ -40,6 +40,7 @@ export interface OCIContainerOwnership {
   launchHelpers(): Promise<OCIHostCertificate['helpers']>
   closeHelpers?(): Promise<boolean>
   confirmUnreleasedClosure?(containerId: string): Promise<boolean>
+  confirmFailedCreation?(identity: string): Promise<boolean>
   readCertificate(containerId: string): Promise<OCIHostCertificate | null>
   publish(certificate: OCIHostCertificate): Promise<void>
 }
@@ -84,6 +85,7 @@ export class OwnedOCIContainer {
   private closing = false
   private containerId: string | null = null
   private certificate: OCIHostCertificate | null = null
+  private creationAbsent = false
   constructor(private readonly intent: { identity: string; labels: Record<string, string>; originalContainerId?: string | null }, private readonly commands: Pick<PodmanCommandRunner, 'run'>,
     private readonly ownership: OCIContainerOwnership) {
     if (intent.originalContainerId && !/^[a-f0-9]{64}$/.test(intent.originalContainerId)) {
@@ -146,7 +148,12 @@ export class OwnedOCIContainer {
     this.closing = true
     let row = await this.inspect(this.containerId ?? this.intent.identity)
     if (!row) {
-      if (!this.containerId) return false
+      if (!this.containerId) {
+        if (!this.ownership.confirmFailedCreation) return false
+        const exists = await this.commands.run(['container', 'exists', this.intent.identity])
+        this.creationAbsent = exists.exitCode === 1 && await this.ownership.confirmFailedCreation(this.intent.identity)
+        return this.creationAbsent
+      }
       const retained = await this.ownership.readCertificate(this.containerId)
       if (!retained || retained.lifecycle !== 'closed' || retained.containerId !== this.containerId
         || retained.process.bootId !== this.ownership.scope.bootId
@@ -180,7 +187,9 @@ export class OwnedOCIContainer {
   }
 
   async remove(): Promise<void> {
-    if (!await this.close(0) || !this.containerId) throw new Error('Original container closure is unconfirmed before cleanup.')
+    if (!await this.close(0)) throw new Error('Original container closure is unconfirmed before cleanup.')
+    if (this.creationAbsent && !this.containerId) return
+    if (!this.containerId) throw new Error('Original container closure is unconfirmed before cleanup.')
     const exists = () => this.commands.run(['container', 'exists', this.containerId!])
     const present = await exists()
     if (present.exitCode === 1) return

@@ -4,6 +4,23 @@ import { OwnedOCIContainer, parseOCIProcessStat, type OCIContainerOwnership } fr
 
 const boot = '00000000-0000-4000-8000-000000000001'
 describe('original OCI owner identity checks, no container or PID signals', () => {
+  it.each([1, 0, 125])('closes a failed unentered creation only with absent storage and the original native failure (exists %s)', async existsCode => {
+    const confirmFailedCreation = vi.fn(async () => true)
+    const ownership = { assertCurrent: vi.fn(), confirmFailedCreation } as unknown as OCIContainerOwnership
+    const commands = { run: vi.fn(async (argv: string[]) => ({ exitCode: argv[1] === 'exists' ? existsCode : 125, stdout: '' })) }
+    const owner = new OwnedOCIContainer({ identity: 'original', labels: { owner: 'original' } }, commands, ownership)
+    expect(await owner.close(1)).toBe(existsCode === 1)
+    if (existsCode === 1) {
+      await owner.remove()
+      expect(confirmFailedCreation).toHaveBeenCalledWith('original')
+      expect(commands.run.mock.calls.some(([argv]) => argv[0] === 'rm')).toBe(false)
+    } else expect(confirmFailedCreation).not.toHaveBeenCalled()
+  })
+  it('keeps absent storage uncertain when native creation failure is unconfirmed', async () => {
+    const ownership = { assertCurrent: vi.fn(), confirmFailedCreation: async () => false } as unknown as OCIContainerOwnership
+    const owner = new OwnedOCIContainer({ identity: 'original', labels: {} }, { run: async () => ({ exitCode: 1, stdout: '' }) }, ownership)
+    await expect(owner.remove()).rejects.toThrow('closure is unconfirmed')
+  })
   it.each([true, false])('removes only a confirmed closed container and recovers removal after restart (present %s)', async initiallyPresent => {
     const containerId = 'd'.repeat(64)
     const scope = { subject: { kind: 'job' as const, executionId: 'job', attemptId: 'attempt', operationId: 'operation', bindingHash: 'b'.repeat(64) },
