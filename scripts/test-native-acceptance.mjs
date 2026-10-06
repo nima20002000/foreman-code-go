@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { delimiter, dirname, join, posix, resolve } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { assertTestPath, completeTestResourceCleanup, createFixtureDatabase, createFixtureSchema,
   dropFixtureDatabase, ownedTestDatabaseUrl, ownedTestPath, registerTestResourceCleanup,
@@ -52,6 +52,47 @@ export function nativeAcceptanceVitestArguments(files, environment) {
   const pattern = environment.ENG03_A_TEST_NAME_PATTERN
   return ['run', ...files, '--no-file-parallelism',
     ...(pattern ? ['--testNamePattern', pattern] : [])]
+}
+
+export async function archiveNativeAcceptanceEvidence(invocation, evidenceRoot, archiveRoot) {
+  const source = assertTestPath(invocation, evidenceRoot)
+  if (!isAbsolute(archiveRoot)) throw new Error('Native evidence archive must be absolute')
+  const destination = resolve(archiveRoot)
+  if (destination === invocation.directory || destination.startsWith(`${invocation.directory}/`)) {
+    throw new Error('Native evidence archive must survive disposable root cleanup')
+  }
+  await mkdir(destination, { recursive: true, mode: 0o700 })
+  const archiveStat = await lstat(destination)
+  if (!archiveStat.isDirectory() || archiveStat.isSymbolicLink() || await realpath(destination) !== destination
+    || archiveStat.uid !== process.getuid() || (archiveStat.mode & 0o022) !== 0) {
+    throw new Error('Native evidence archive must be an owned directory protected from other writers')
+  }
+  const target = join(destination, basename(invocation.directory))
+  async function copyEvidence(from, to) {
+    const path = assertTestPath(invocation, from)
+    const stat = await lstat(path)
+    if (stat.uid !== process.getuid() || stat.isSymbolicLink()) {
+      throw new Error('Native evidence must contain only owned regular files and directories')
+    }
+    if (stat.isDirectory()) {
+      await mkdir(to, { mode: 0o700 })
+      for (const name of await readdir(path)) await copyEvidence(join(path, name), join(to, name))
+    } else if (stat.isFile() && stat.nlink === 1) {
+      await copyFile(path, to)
+      await chmod(to, 0o600)
+    } else {
+      throw new Error('Native evidence must contain only owned regular files and directories')
+    }
+  }
+  // Export the evidence subtree; provider authentication and runtime storage stay private.
+  await mkdir(target, { mode: 0o700 })
+  try {
+    for (const name of await readdir(source)) await copyEvidence(join(source, name), join(target, name))
+    return target
+  } catch (error) {
+    await rm(target, { recursive: true })
+    throw error
+  }
 }
 
 async function pendingCleanup(invocation, ownId) {
@@ -108,7 +149,14 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
           record.exitCode = 1
         }
       }
-      if (evidence) await writeFile(join(evidence, 'database.json'), JSON.stringify(record, null, 2), { mode: 0o600 })
+      if (evidence) {
+        await writeFile(join(evidence, 'database.json'), JSON.stringify(record, null, 2), { mode: 0o600 })
+        if (process.env.FOREMAN_CODE_TEST_EVIDENCE_ARCHIVE) {
+          const archived = await archiveNativeAcceptanceEvidence(invocation, evidenceRoot,
+            process.env.FOREMAN_CODE_TEST_EVIDENCE_ARCHIVE)
+          console.log(`[acceptance] Native evidence archived: ${archived}`)
+        }
+      }
     } finally { await admin.end() }
   }
   return record
