@@ -214,9 +214,11 @@ export async function allocateInstalledWorkerClaude(input: {
     async close() {
       await manager.dispose?.()
       authority.bridge.close()
-      if (recovery.launchId) await input.registry.abandonReservedLaunch(recovery)
-      if (!await input.registry.closeOwner(owner)) throw new DomainError('CLAUDE_PROCESS_CLOSURE_PENDING',
-        'The native Claude chat has not stopped.', 409)
+      if (reserved) {
+        await input.registry.abandonReservedLaunch(recovery)
+        if (!await input.registry.closeOwner(owner)) throw new DomainError('CLAUDE_PROCESS_CLOSURE_PENDING',
+          'The native Claude chat has not stopped.', 409)
+      }
       await mcp?.close()
       await fileServer?.close()
     },

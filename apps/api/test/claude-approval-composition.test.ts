@@ -5,6 +5,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { fileToolFixture } from './support/fileTools.js'
 import { productionClaudeFixture, managementEndpoint } from './support/claudeProduction.js'
+import { PostgresClaudeInteractionAuthority } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
 
 async function offeredTool(f: ReturnType<typeof productionClaudeFixture>, name: string, input: Record<string, unknown>,
   provenance: { name: string; source: string }) {
@@ -102,6 +103,8 @@ describe('production Claude approval composition', () => {
   it('keeps an allow-once selection uncertain when the SDK aborts before callback completion', async () => {
     const endpoint = await managementEndpoint()
     const f = productionClaudeFixture('operator', undefined, endpoint.url)
+    const validateResponse = PostgresClaudeInteractionAuthority.prototype.validateResponse
+    const validation = vi.spyOn(PostgresClaudeInteractionAuthority.prototype, 'validateResponse')
     try {
       f.start.environment = { agentId: 'operator', variables: { GRAPHQL_MCP_TOKEN: 'synthetic-scoped-token' } }
       await f.manager.inspectMcp()
@@ -112,13 +115,12 @@ describe('production Claude approval composition', () => {
       await vi.waitFor(async () => expect(await f.manager.pending(call.session)).toBeDefined())
       const pending = (await f.manager.pending(call.session))!
       f.claim(call.session, 'observed-permission', 'observed-tool')
-      const query = f.query.getMockImplementation()!
       let validations = 0
-      f.query.mockImplementation(async (sql, values) => {
-        if (sql.includes('select principal_id,result from management_command_receipts') && ++validations === 2) {
+      validation.mockImplementation(async function (identity, answer) {
+        await validateResponse.call(this, identity, answer)
+        if (++validations === 2) {
           call.controller.abort(new Error('SDK callback canceled after selection'))
         }
-        return query(sql, values)
       })
       await expect(f.manager.respond(call.session, 'observed-permission', pending.responseOptions[0]!)).rejects.toThrow('canceled')
       expect(await decision).toMatchObject({ behavior: 'deny', interrupt: true })
@@ -127,8 +129,14 @@ describe('production Claude approval composition', () => {
       expect(observed.responseDeliveries).toEqual([])
       expect(observed.interactionDeliveries).toMatchObject([{ state: 'uncertain' }])
       expect(endpoint.list).not.toHaveBeenCalled()
-      await call.finish()
-    } finally { await f.manager.dispose?.(); await endpoint.app.close() }
+      const closed = expect(call.output).rejects.toThrow('submission remains uncertain')
+      f.frames.close()
+      await closed
+    } finally {
+      validation.mockRestore()
+      await f.manager.dispose?.()
+      await endpoint.app.close()
+    }
   })
 
   it('admits a real local file MCP call and revokes its credential before the same request finishes', async () => {
