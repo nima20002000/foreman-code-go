@@ -124,15 +124,8 @@ async function runNativeAcceptance(environment, files) {
   return code
 }
 
-async function main() {
-  const files = nativeAcceptanceFiles(process.argv.slice(2))
-  const contracts = spawnSync('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'], {
-    cwd: root, stdio: 'inherit',
-  })
-  if (contracts.status !== 0) {
-    process.exitCode = contracts.status ?? 1
-    return
-  }
+export async function runNativeAcceptanceCases(arguments_) {
+  const files = nativeAcceptanceFiles(arguments_)
   const configuration = nativeAcceptanceConfiguration(process.env)
   const opencode = configuration.opencodeBinary ?? 'opencode'
   const record = await withNativeAcceptanceDatabase(configuration.databaseUrl,
@@ -151,7 +144,20 @@ async function main() {
       console.log(`[acceptance] Native evidence: ${evidence}`)
       return withNativeAcceptanceStorage(environment, nativeEnvironment => runNativeAcceptance(nativeEnvironment, files))
     })
-  process.exitCode = record.exitCode
+  return record.exitCode
+}
+
+async function main() {
+  const arguments_ = process.argv.slice(2)
+  nativeAcceptanceFiles(arguments_)
+  const contracts = spawnSync('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'], {
+    cwd: root, stdio: 'inherit',
+  })
+  if (contracts.status !== 0) {
+    process.exitCode = contracts.status ?? 1
+    return
+  }
+  process.exitCode = await runNativeAcceptanceCases(arguments_)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
