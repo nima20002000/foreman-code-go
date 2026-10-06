@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { createRequire } from 'node:module'
 import { readFile, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { sessionControlHeaders } from './session-control-client.mjs'
+import { sessionControlProduct } from './session-control-product.mjs'
 
 /** Creates chats on already provisioned, selected nodes and profiles through the public product services. */
 export async function prepareSessionControlMatrix(input, { contracts, agentChat, management, identity, tool, read }) {
@@ -109,31 +108,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const input = JSON.parse(await readFile(process.argv[2], 'utf8'))
   const root = fileURLToPath(new URL('../../', import.meta.url))
   assert.equal(input.sourceCommit, (await promisify(execFile)('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim())
-  const base = new URL(input.baseUrl)
-  assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname))
-  const require = createRequire(new URL('../../apps/api/package.json', import.meta.url))
-  const contracts = await import(new URL('../../packages/contracts/dist/index.js', import.meta.url))
-  const agentChat = await import(new URL('../../packages/contracts/dist/agentChat.js', import.meta.url))
-  const management = await import(new URL('../../packages/contracts/dist/management/index.js', import.meta.url))
-  const { Client, StreamableHTTPClientTransport } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/client')).href)
-  const headers = sessionControlHeaders(input)
-  const read = async path => {
-    const response = await fetch(new URL(path, base), { headers, credentials: 'omit',
-      signal: AbortSignal.timeout(180000) })
-    assert.ok(response.ok, `Product read failed: ${response.status}`)
-    return response.json()
-  }
-  const client = new Client({ name: 'Foreman Code native session controls preparation', version: '1' })
+  const product = await sessionControlProduct(input)
   try {
-    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', base), {
-      authProvider: { token: async () => process.env[input.mcpTokenEnv] },
-    }))
-    const matrix = await prepareSessionControlMatrix(input, { contracts, agentChat, management,
-      identity: await read('/health/identity'), read, tool: async (name, args) => {
-        const result = await client.callTool({ name, arguments: args })
-        assert.ok(!result.isError, `Product tool ${name} failed.`)
-        return result.structuredContent
-      } })
+    const matrix = await prepareSessionControlMatrix(input, product)
     await writeFile(process.argv[3], JSON.stringify(matrix, null, 2), { flag: 'wx', mode: 0o600 })
-  } finally { await client.close() }
+  } finally { await product.close() }
 }
