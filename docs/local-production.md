@@ -135,6 +135,73 @@ Its Bubblewrap namespace hides the API file vault and other native owners'
 storage. The installer keeps its cache separate; accepted harness permissions
 and file-tool grants still control each operation.
 
+## Claude read-only sandbox prerequisite on Ubuntu
+
+Claude subscription login and native sandbox availability are separate checks.
+Ubuntu's `bwrap-userns-restrict` profile can deny `CAP_SYS_ADMIN` to Claude's
+embedded seccomp helper, before the requested shell command runs. The native
+error mentions `apply-seccomp` and `/proc/self/setgroups`. Read-only qualification
+must stay blocked when this happens; do not use Full access or disable Unix-socket
+filtering to make the check pass. The installer does not install security policy.
+
+On the owner-approved PC, the helper is the installed Claude SDK executable,
+re-executed through an inherited `/proc/self/fd` descriptor with
+`ARGV0=apply-seccomp`. Its local override is
+`/etc/apparmor.d/local/bwrap-userns-restrict`:
+
+```text
+# BEGIN Foreman Code Claude seccomp helper
+priority=10 allow pix "/home/nima/.local/lib/graphql-production/releases/*/apps/api/node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-linux-x64@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude" -> &bwrap//&foreman_code_claude_seccomp,
+# END Foreman Code Claude seccomp helper
+```
+
+The named enforcing profile is
+`/etc/apparmor.d/foreman-code-claude-seccomp`:
+
+```text
+abi <abi/5.0>,
+include <tunables/global>
+
+profile foreman_code_claude_seccomp flags=(attach_disconnected,mediate_deleted) {
+  allow file rwlkm /{**,},
+  allow network,
+  allow unix,
+  allow ptrace,
+  allow signal,
+  allow mqueue,
+  allow io_uring,
+  allow userns,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+  allow dbus,
+  allow capability sys_admin,
+  allow pix /** -> &bwrap//&unpriv_bwrap,
+}
+```
+
+The override changes only the helper's execution transition from Bubblewrap.
+It permits the nested namespace bootstrap, then returns executed children to
+`unpriv_bwrap`, which still denies capabilities. Ordinary Bubblewrap children
+retain the distribution's original transition. The kernel namespace restriction,
+`unpriv_bwrap`, and other profiles stay unchanged and enforcing. Paths above are
+specific to this user's installed Linux x64 SDK; an administrator must inspect
+the actual helper path before applying an equivalent rule on another host.
+
+After an explicitly approved policy edit, reload the helper profile first:
+
+```sh
+sudo apparmor_parser -r /etc/apparmor.d/foreman-code-claude-seccomp
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+```
+
+Validate both boundaries: the installed read-only Claude profile must complete
+its native checks and reject its owned shell-write attempt; a non-Claude program
+launched by Bubblewrap must still run under `unpriv_bwrap` and fail a capability
+operation. Keep `sandbox: read-only`, `failIfUnavailable: true`, and
+`allowUnsandboxedCommands: false`. Qualification remains required for the exact
+installed executable, model, profile and configuration after an update.
+
 For an environment-based provider credential, explicitly add the provider's
 variable, such as `OPENROUTER_API_KEY`, as a string in private `operator.json`,
 then rerun `production:install`. This is an OS-owner setting, outside Operator
