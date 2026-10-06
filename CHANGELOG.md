@@ -25,6 +25,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Report malformed, unsupported and oversized MCP requests as safe client errors.
 - Preserve file declarations, original native session history and both credential lifecycles when a text-first Operator resumes with an attachment.
 - Retain split native fixture notifications through complete JSONL records and avoid saved-thread reads for stateless events, preserving burst delivery, bounded history and cursor coverage.
+- Join already active Job preparations when draining queue work, so closure failures and recovery remain observable after an automatic rescan.
 
 ### Security
 
