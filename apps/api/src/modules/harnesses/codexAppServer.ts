@@ -478,6 +478,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     await this.validateMcpPolicies(parsed.data, qualified.binary, workingDirectory, environment, signal)
     await this.dependencies.qualifyModel(parsed.data, qualified.binary, workingDirectory, environment, signal,
       undefined, { qualified, assertUnchanged: this.dependencies.assertUnchanged,
+        runCommand: this.dependencies.runCommand,
         transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
     return nativeQualification(parsed.data, qualified.providerVersion)
   }
@@ -488,6 +489,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, workingDirectory, this.dependencies.environment(), true, signal)
     await this.dependencies.assertUnchanged(qualified)
     const catalog = await readNativeCodexModelCatalog({ qualified, assertUnchanged: this.dependencies.assertUnchanged,
+      runCommand: this.dependencies.runCommand,
       transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) },
       workingDirectory, this.dependencies.environment(), signal, this.processRecovery)
     return { providerVersion: qualified.providerVersion, models: codexModelOptions(catalog) }
@@ -1752,6 +1754,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
       io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal,
       undefined, { qualified, assertUnchanged: io.assertUnchanged,
+        runCommand: io.runCommand,
         transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
     if (this.nativeOutputs) {
       if (input.kind === 'operator' || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox !== 'workspace-write') {
