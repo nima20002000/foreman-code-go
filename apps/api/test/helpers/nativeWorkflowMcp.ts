@@ -42,6 +42,10 @@ export async function configureNativeWorkflowMcp(input: {
     const reference = appLauncherTokenName('codex', entry) ?? entry.bearer_token_env_var
     const codexToken = typeof reference === 'string' && isSupportedAppMcpTokenName(reference)
       ? reference : APP_MCP_TOKEN
+    const openCode = input.openCodeBinary
+      ? await new OpenCodeMcpConnections(input.openCodeBinary, input.projectDirectory)
+        .read(AbortSignal.timeout(30_000))
+      : undefined
     // Reuse only the selected provider login; unrelated native configuration stays outside the fixture.
     await copyFile(join(previousCodexHome ?? join(homedir(), '.codex'), 'auth.json'),
       join(codexHomeDirectory, 'auth.json'))
@@ -56,9 +60,7 @@ export async function configureNativeWorkflowMcp(input: {
       `env_vars = [${JSON.stringify(codexToken)}]`,
       '',
     ].join('\n'), { mode: 0o600 })
-    if (input.openCodeBinary) {
-      const openCode = await new OpenCodeMcpConnections(input.openCodeBinary, input.projectDirectory)
-        .read(AbortSignal.timeout(30_000))
+    if (openCode) {
       const name = appMcpServerName(openCode.effective)
       const token = openCode.credentialReferences?.[name] ?? APP_MCP_TOKEN
       await writeFile(join(input.projectDirectory, 'opencode.json'), JSON.stringify({ mcp: { [name]: {
