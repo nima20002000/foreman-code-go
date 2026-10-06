@@ -82,6 +82,9 @@ it.skipIf(!postgresEnabled)('delivers completed queries after a delayed reply wh
 
         await expect(pool.query('select pg_sleep(2)')).rejects.toMatchObject({ code: '57014' })
 
+        // Pool.query discards the canceled connection. Finish the replacement
+        // handshake before withholding a query response.
+        await pool.query('select 1')
         proxy.hold()
         const silent = pool.query('select 1').catch(error => error as Error)
         await proxy.received()
