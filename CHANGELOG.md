@@ -5,6 +5,36 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.37] - 2026-10-06
+
+### Added
+
+- Support native questions, form input and standalone elicitation through shared web, HTTP and authenticated MCP responses, including remote execution.
+- Control and recover owned Codex child sessions, including prompts, interruption and their own native approval or input callbacks.
+
+### Changed
+
+- Preserve implicit local human access and the existing scoped MCP and worker credentials after browser authentication removal.
+- Qualify native acceptance per provider, allowing Codex cases to run independently of an unused OpenCode installation.
+- Correlate late session and turn acknowledgements with the original accepted request and retain startup output until admission is persisted.
+- Run selected native acceptance files with invocation-owned databases and preserve process-group cleanup and qualification diagnostics.
+- OpenCode approval isolation (E03-A01), OpenCode Agent chat fork and terminal OpenCode local-human isolation are untested on Claude/OpenCode (laptops are Codex-only): the selected OpenCode Go provider is not connected on the laptops.
+
+### Fixed
+
+- Report native model-catalog refresh failures separately from an unadvertised model, and close owned metadata inspections before session admission.
+- Preserve a confirmed prompt rejection that arrives during a native history read, keeping recovery usable for an explicit retry.
+- Recover known unsent chat requests and failed cleanup across service restarts while keeping uncertain native submissions from being replayed.
+- Preserve complete assistant output, callback ordering and child controls when native startup or persistence acknowledgements arrive late.
+- Reconcile input responses after a lost database commit without sending another native response, and preserve Operator readback and file delivery through cleanup.
+- Observe the selected Run canvas from the canonical cache without replacing its fetcher or clearing a retained Stop before both cleanup readbacks settle.
+
+### Security
+
+- Reject supplied application-global credentials before native qualification or idle diagnostics, while preserving scoped App MCP tokens.
+- Keep owner, session, generation, native request and authorization checks intact across callbacks, child controls, diagnostics and recovery.
+- Exclude both supported App MCP credential names and configured bearer credentials from idle diagnostic processes.
+
 ## [0.0.36] - 2026-10-06
 
 ### Fixed

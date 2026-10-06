@@ -172,8 +172,7 @@ describe('Run subagent overlays', () => {
     expect(layoutSubagents(runA.nodes, [child({ parentSubagentId: 'missing' }), child({ id: 'cycle', parentSubagentId: 'cycle' })])).toEqual([])
   })
   it('allows text editing in the child panel without triggering saved-graph keyboard guards', async () => {
-    const capabilities = subagentCapabilities('opencode-task', '1.18.33')
-    capabilities.sendInput = { support: 'supported', qualification: 'passed' }
+    const capabilities = subagentCapabilities('opencode-task', '1.18.31')
     server.use(http.get(`${base}/:subagentId`, () => HttpResponse.json({
       subagent: child({ provider: 'opencode', nativeMode: 'opencode-task', status: 'waiting', capabilities }),
       availableActions: { sendInput: true, interrupt: false, blockedReason: null },
