@@ -61,7 +61,8 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
   }
 }, 30_000)
 
-it('retains the native bootstrap database until registered cleanup is confirmed', async () => {
+it.each(['native-qualification', 'native-acceptance-process-group'])(
+  'retains the native bootstrap database until registered %s cleanup is confirmed', async (kind) => {
   const script = new URL('../../../scripts/test-native-acceptance.mjs', import.meta.url).href
   const { withNativeAcceptanceDatabase } = await import(script)
   const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
@@ -72,7 +73,7 @@ it('retains the native bootstrap database until registered cleanup is confirmed'
   try {
     const record = await withNativeAcceptanceDatabase(process.env.TEST_DATABASE_URL, directory,
       async () => {
-        cleanupId = registerTestResourceCleanup(invocation, { kind: 'native-qualification' })
+        cleanupId = registerTestResourceCleanup(invocation, { kind })
         return 0
       })
     databaseName = record.name

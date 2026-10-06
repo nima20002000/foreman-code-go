@@ -75,7 +75,7 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
   let cleanupId
   const record = { name: null, created: false, exitCode: null, removed: false }
   try {
-    const name = `graphql_native_${randomUUID().replaceAll('-', '')}_test`
+    const name = `foreman_code_native_${randomUUID().replaceAll('-', '')}_test`
     const parent = new Pool({ connectionString: parentUrl, max: 1 })
     try { await createFixtureDatabase(parent, name) } finally { await parent.end() }
     const database = new URL(parentUrl)
