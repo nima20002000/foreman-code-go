@@ -46,6 +46,7 @@ function fixture() {
     clientCorrelationId: correlationId, toolUseId: 'tool-use', generation: 'original-query' }
   const stream = (async function* () {
     await manager.attachSession(f.session, { kind: 'agent-chat', configuration: agent,
+      correlationId,
       conversationId: f.binding.owner.conversationId, workflowId: 'workflow', workflowNodeId: 'node',
       workingDirectory: f.binding.workingDirectory })
     yield* manager.startTurn(f.session, { prompt: source.prompt, clientCorrelationId: correlationId,
