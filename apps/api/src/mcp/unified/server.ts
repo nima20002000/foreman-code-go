@@ -1,5 +1,6 @@
 import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import { McpServer } from '@modelcontextprotocol/server'
+import { paginateToolLists } from '../toolListPagination.js'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
 
@@ -92,6 +93,7 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
 /** One server for every role. Each caller lists only its enabled tools: the existing, grant-checked implementations. */
 export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promise<McpServer> {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' }, { instructions: roleInstructions(context.role) })
+  paginateToolLists(server)
   if (context.role === 'operator') {
     if (context.operator) registerOperatorTools(server, { principal: context.principal, services: context.operator })
   } else if (context.interactions) {
