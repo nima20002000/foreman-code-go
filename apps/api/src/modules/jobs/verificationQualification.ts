@@ -1,6 +1,6 @@
 import { captureVerificationInventory } from '../../../../../scripts/verification-runner.mjs'
 import { constants } from 'node:fs'
-import { mkdir, open, readFile, readlink, rm, statfs, writeFile, lstat, readdir } from 'node:fs/promises'
+import { mkdir, open, readFile, readlink, rm, statfs, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { release } from 'node:os'
 import { isDeepStrictEqual } from 'node:util'
@@ -21,7 +21,7 @@ import { podmanIsolationCreateArgv, ensureEmptyPodmanHooks } from './executorPod
 import { assertJobRuntimeEntryContext, jobQualificationFingerprint, runQualificationCommand,
   validateVerificationIsolationObservation, type JobQualificationAuthority }
   from './qualification.js'
-import { prepareVerificationQualificationSource, restoreVerificationQualificationSource } from './verificationQualificationSource.js'
+import { prepareVerificationQualificationSource, restoreVerificationQualificationSource, resetVerificationQualificationWorkload } from './verificationQualificationSource.js'
 import { JobProjectQuotaReadbackSchema, readVerificationQuotaPool, verifyJobQuotaOwnership,
   isKernelQuotaDenial, type JobQuotaReader } from './quotaOwnership.js'
 import { JOB_GIT_ENVIRONMENT } from './privateGitMounts.js'
@@ -283,7 +283,7 @@ export async function qualifyVerificationRuntime(input: {
     }
     let failureContext: ReturnType<typeof JobVerificationRepositoryContextSchema.parse> | undefined
     for (const suite of candidate.profile.spec.suites) {
-      await resetColdWorkload(source.sourceRoot, scratch, configuration.qualificationSource.manifest.entries.map(file => file.path))
+      await resetVerificationQualificationWorkload(source.sourceRoot, scratch, configuration.qualificationSource.manifest.entries.map(file => file.path))
       if (suites.length) containerId = await createContainer()
       const verified = await restore()
       target.destination.directoryIdentityHash = jobDigest(verified.filesystem)
@@ -353,7 +353,7 @@ export async function qualifyVerificationRuntime(input: {
     if (!failureContext) throw new Error('An ordinary suite is required for qualification.')
     const failures = []
     for (const outcome of ['timed_out', 'cancelled'] as const) {
-      await resetColdWorkload(source.sourceRoot, scratch, configuration.qualificationSource.manifest.entries.map(file => file.path))
+      await resetVerificationQualificationWorkload(source.sourceRoot, scratch, configuration.qualificationSource.manifest.entries.map(file => file.path))
       const verified = await restore()
       target.destination.directoryIdentityHash = jobDigest(verified.filesystem)
       const startedAt = new Date().toISOString()
@@ -419,19 +419,4 @@ export async function qualifyVerificationRuntime(input: {
 
 async function readBoundedReport(root: string, name: string, limit: number): Promise<Buffer> {
   return readBoundedJobFile(root, `.logs/verification/${name}`, limit)
-}
-
-async function resetColdWorkload(root: string, scratch: string, paths: string[]): Promise<void> {
-  const clean = async (directory: string, prefix: string): Promise<void> => {
-    for (const name of await readdir(directory)) {
-      if (!prefix && name === JOB_INPUT_DIRECTORY) continue
-      const path = prefix ? `${prefix}/${name}` : name
-      const absolute = join(directory, name)
-      const stat = await lstat(absolute)
-      if (stat.isDirectory() && paths.some(entry => entry.startsWith(`${path}/`))) await clean(absolute, path)
-      else if (!paths.includes(path)) await rm(absolute, { recursive: true, force: true })
-    }
-  }
-  await clean(root, '')
-  for (const name of await readdir(scratch)) await rm(join(scratch, name), { recursive: true, force: true })
 }

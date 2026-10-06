@@ -1,13 +1,36 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { mkdir, open, writeFile } from 'node:fs/promises'
+import { mkdir, open, writeFile, readdir, lstat, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { JobVerificationPrivateGitSchema } from '@foreman-code/contracts/job-verification-runtime'
+import { JOB_INPUT_DIRECTORY } from '@foreman-code/contracts/job-inputs'
 import { openPrivateRoot, entryParent, anchored, identity } from '../sources/privateFilesystem.js'
 import { verifyMaterializedSourceTree } from '../sources/materialization.js'
 import { verifySourceBytes, verifySourceManifest } from '../sources/manifest.js'
+
+/** Finalization removes closed caches; each subsequent diagnostic starts private and cold. */
+export async function resetVerificationQualificationWorkload(root: string, scratch: string, paths: string[]): Promise<void> {
+  const clean = async (directory: string, prefix: string): Promise<void> => {
+    for (const name of await readdir(directory)) {
+      if (!prefix && name === JOB_INPUT_DIRECTORY) continue
+      const path = prefix ? `${prefix}/${name}` : name
+      const absolute = join(directory, name)
+      const metadata = await lstat(absolute)
+      if (metadata.isDirectory() && paths.some(entry => entry.startsWith(`${path}/`))) await clean(absolute, path)
+      else if (!paths.includes(path)) await rm(absolute, { recursive: true, force: true })
+    }
+  }
+  await clean(root, '')
+  await mkdir(scratch, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error })
+  const directory = await openPrivateRoot(scratch)
+  try {
+    for (const name of await readdir(anchored(directory))) {
+      await rm(anchored(directory, name), { recursive: true, force: true })
+    }
+  } finally { await directory.close() }
+}
 
 /** Copies only the approved snapshot and constructs its history-free Git view. */
 export async function prepareVerificationQualificationSource(input: {

@@ -1,11 +1,11 @@
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSourceManifest, sourceSha256 } from '../sources/manifest.js'
-import { prepareVerificationQualificationSource, restoreVerificationQualificationSource } from './verificationQualificationSource.js'
+import { prepareVerificationQualificationSource, restoreVerificationQualificationSource, resetVerificationQualificationWorkload } from './verificationQualificationSource.js'
 
 const roots: string[] = []
 const run = promisify(execFile)
@@ -38,6 +38,28 @@ async function fixture(objectFormat: 'sha1' | 'sha256' = 'sha1') {
 }
 
 describe('approved verification snapshot and private Git preparation', () => {
+  it('recreates a finalized cache before the next cold diagnostic and keeps only approved source', async () => {
+    const input = await fixture()
+    const source = await prepareVerificationQualificationSource(input)
+    const scratch = join(input.namespace, 'job-scratch')
+    await mkdir(scratch, { mode: 0o700 })
+    await writeFile(join(scratch, 'cache'), 'closed workload cache')
+    await rm(scratch, { recursive: true })
+    await writeFile(join(source.sourceRoot, 'untracked-result'), 'previous diagnostic')
+    const paths = input.manifest.entries.map(file => file.path)
+    await resetVerificationQualificationWorkload(source.sourceRoot, scratch, paths)
+    expect((await stat(scratch)).mode & 0o777).toBe(0o700)
+    expect(await readdir(scratch)).toEqual([])
+    expect(await readFile(join(source.sourceRoot, 'package.json'), 'utf8')).toBe('{"name":"approved"}\n')
+    await expect(readFile(join(source.sourceRoot, 'untracked-result'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await writeFile(join(scratch, 'new-cache'), 'another closed workload')
+    await resetVerificationQualificationWorkload(source.sourceRoot, scratch, paths)
+    expect(await readdir(scratch)).toEqual([])
+    await rm(scratch, { recursive: true })
+    await symlink(input.directory, scratch)
+    await expect(resetVerificationQualificationWorkload(source.sourceRoot, scratch, paths)).rejects.toThrow()
+    expect(await readFile(join(input.directory, 'package.json'), 'utf8')).toBe('{"name":"approved"}\n')
+  })
   it.each(['sha1', 'sha256'] as const)('builds a readable clean %s Git view from only the complete approved bytes', async format => {
     const input = await fixture(format)
     const result = await prepareVerificationQualificationSource(input)
