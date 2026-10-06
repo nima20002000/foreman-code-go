@@ -794,11 +794,11 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         }
         if (restartOnApproval) {
           expect(restarted).toBe(true)
-          expect(approved.size).toBe(1)
+          expect(approved.size).toBe(artifacts ? 4 : 1)
           expect((await pool.query('select id from harness_executions where run_id=$1 and workflow_node_id=$2',
             [runId, fixture.version.definition.nodes[approvalNode]!.id])).rowCount).toBe(1)
           expect((await pool.query('select activation_id from run_work_join_dispatches where run_id=$1',
-            [runId])).rowCount).toBe(1)
+            [runId])).rowCount).toBe(scenario.form === 'parallel' ? 1 : 0)
         }
         if (scenario.approval) {
           const nativeTypes = (await pool.query<{ type: string }>(`select e.record->>'type' as type
