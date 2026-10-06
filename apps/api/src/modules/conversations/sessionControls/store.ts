@@ -154,13 +154,13 @@ export class SessionControlStore {
     const context = session ? binding.manager?.contextSnapshot?.(session) : null
     if (!context && state.context && !state.context.stale) {
       state.context = { ...state.context, stale: true }
-      await this.save(state)
+      await this.saveContext(state)
     }
     if (context && session) {
       const merged = mergeContextSnapshot(state.context, context, session.nativeSessionId, state.capabilities.model)
       if (JSON.stringify(merged) !== JSON.stringify(state.context)) {
         state.context = merged
-        await this.save(state)
+        await this.saveContext(state)
       }
     }
     if (state.context && (!session || state.context.nativeSessionId !== session.nativeSessionId)) {
@@ -314,7 +314,7 @@ export class SessionControlStore {
     if (JSON.stringify(merged) === JSON.stringify(state.context)) return
     state.context = merged
     state.nativeSessionId = sessionId
-    await this.save(state)
+    await this.saveContext(state)
   }
 
   async preferences(conversationId: string) {
@@ -384,7 +384,8 @@ export class SessionControlStore {
     const revision = state.revision
     const saved = { ...state, revision: revision + 1 }
     const result = await this.pool.query(`with saved as (
-      update conversation_session_controls set record=$2::jsonb
+      update conversation_session_controls set record=jsonb_set($2::jsonb,'{context}',
+        case when record->>'profileKey'=$2::jsonb->>'profileKey' then record->'context' else $2::jsonb->'context' end)
       where conversation_id=$1 and (record->>'revision')::bigint=$3 returning conversation_id
     ) insert into conversation_session_defaults(principal_id,role,subject,profile_key,record)
       select $4,$5,$6,$7,$8::jsonb from saved where true
@@ -406,10 +407,32 @@ export class SessionControlStore {
   private async save(state: SessionControlState): Promise<void> {
     const revision = state.revision
     const saved = { ...state, revision: revision + 1 }
-    const result = await this.pool.query(`update conversation_session_controls set record=$2::jsonb
+    const result = await this.pool.query(`update conversation_session_controls set record=jsonb_set($2::jsonb,'{context}',
+      case when record->>'profileKey'=$2::jsonb->>'profileKey' then record->'context' else $2::jsonb->'context' end)
       where conversation_id=$1 and (record->>'revision')::bigint=$3`,
     [state.conversationId!, JSON.stringify(saved), revision])
     if (result.rowCount !== 1) throw new DomainError('SESSION_CONTROL_CONFLICT', 'Session settings changed. Refresh the conversation.', 409)
     state.revision = saved.revision
+  }
+
+  private async saveContext(state: SessionControlState): Promise<void> {
+    if (!state.context) return
+    const patch = { context: state.context, nativeSessionId: state.nativeSessionId,
+      nativeProviderVersion: state.nativeProviderVersion }
+    const result = await this.pool.query<{ record: unknown }>(`update conversation_session_controls
+      set record=record || $2::jsonb || jsonb_build_object('context', case
+        when record#>>'{context,nativeSessionId}'=$2::jsonb#>>'{context,nativeSessionId}'
+          and record#>>'{context,model}'=$2::jsonb#>>'{context,model}'
+          and ((record#>>'{context,generation}'=$2::jsonb#>>'{context,generation}'
+              and (record#>>'{context,sequence}')::bigint>($2::jsonb#>>'{context,sequence}')::bigint)
+            or (record#>>'{context,generation}'<>$2::jsonb#>>'{context,generation}'
+              and record#>>'{context,observedAt}'>$2::jsonb#>>'{context,observedAt}'))
+        then record->'context' else $2::jsonb->'context' end)
+      where conversation_id=$1 and record->>'profileKey'=$3 returning record`,
+    [state.conversationId, JSON.stringify(patch), state.profileKey])
+    if (result.rowCount !== 1) throw new DomainError('SESSION_CONTROL_PROFILE_CHANGED',
+      'The native profile changed. Refresh the conversation.', 409)
+    const { capabilities, busyReason, defaults } = state
+    Object.assign(state, SessionControlStateSchema.parse(result.rows[0]!.record), { capabilities, busyReason, defaults })
   }
 }

@@ -405,8 +405,13 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     let compactions = 0
     Object.assign(manager, {
       async sessionControlCapabilities() {
-        return { ...unavailableSessionControls('fixture'), compact: { supported: true, reason: null },
+        return { ...unavailableSessionControls('fixture'), model: 'fixture-model', compact: { supported: true, reason: null },
           plan: { supported: true, reason: null }, autoCompact: { supported: true, reason: null } }
+      },
+      contextSnapshot(session: NativeSessionReference): ContextSnapshot {
+        return { nativeSessionId: session.nativeSessionId, model: 'fixture-model', generation: 'fixture', sequence: 1,
+          source: 'codex', accuracy: 'native', usedTokens: 100, capacityTokens: null, lifetimeTokens: 100,
+          cost: null, observedAt: new Date().toISOString(), stale: false }
       },
       async compactSession(session: NativeSessionReference, input: { requestId: string }) {
         compactions++
@@ -432,6 +437,12 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect(accepted.isError).not.toBe(true)
       const result = SessionControlStateSchema.parse(accepted.structuredContent)
       expect(result.compaction?.status).toBe('completed')
+      expect(result.context).toMatchObject({ usedTokens: 100 })
+      const refreshed = await app.inject({ method: 'GET', url: root, headers })
+      expect(SessionControlStateSchema.parse(refreshed.json()).revision).toBe(result.revision)
+      const stale = await app.inject({ method: 'POST', url: root, headers,
+        payload: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: before.revision } })
+      expect(stale.statusCode).toBe(409)
       const replay = await app.inject({ method: 'POST', url: root, headers, payload: request })
       expect(replay.statusCode).toBe(200)
       expect(compactions).toBe(1)
