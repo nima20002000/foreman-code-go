@@ -858,7 +858,8 @@ export class OperatorChatService {
     if (!runtime.session) return
     const row = await this.repository.active(id)
     if (!row?.active_request_id || row.native_session_id !== runtime.session.nativeSessionId) return
-    if (nativeNonSubmission(row.record, row.active_request_id)) return
+    if (nativeNonSubmission(row.record, row.active_request_id)
+      || await this.repository.terminal(id, row.active_request_id)) return
     const correlationId = nativeCorrelation(id, row.active_request_id)
     const history = await runtime.manager.reconcile(runtime.session, correlationId, AbortSignal.timeout(5_000))
     const submission = history.nativeSubmission
@@ -1147,11 +1148,7 @@ export class OperatorChatService {
           if (!row.owner_principal_id) throw new Error('This legacy conversation needs an explicit owner assignment before recovery.')
           if (this.tasks.has(row.id)) return
           if (await this.repository.terminal(row.id, requestId)) {
-            const resident = this.runtimes.get(row.id)
-            if (resident?.session && !resident.disposal && !resident.disposalStarted) {
-              await this.observe(row.id, requestId, resident)
-            }
-            else await this.settleTerminal(row.id, requestId)
+            await this.settleTerminal(row.id, requestId)
             return
           }
           const nonSubmission = nativeNonSubmission(row.record, requestId)

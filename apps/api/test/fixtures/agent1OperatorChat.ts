@@ -3,7 +3,7 @@ import type {
   OperatorConversationState, PendingNativeInteraction, SendOperatorMessageRequest,
 } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import type { ConversationRow, PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
+import type { ConversationRow, OperatorTerminal, PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
 import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 
@@ -38,6 +38,7 @@ export function memoryConversation(configuration: OperatorConfigurationVersion, 
     pending_interaction: null, response_delivery: null, last_result: null, updated_at: now }
   const receipts = new Set<string>()
   const finishResults: ExecutionResult[] = []
+  const terminals = new Map<string, OperatorTerminal>()
   const change = () => { row.revision = Number(row.revision) + 1 }
   const state = (): OperatorConversationState => ({ conversation: row.record as Conversation, messages: [],
     turnState: row.turn_state, revision: Number(row.revision), activeRequestId: row.active_request_id,
@@ -83,8 +84,46 @@ export function memoryConversation(configuration: OperatorConfigurationVersion, 
       if (row.active_request_id !== requestId) return
       row.turn_state = 'uncertain'; row.last_error = message; change()
     },
+    terminal: async (_id: string, requestId: string) => row.active_request_id === requestId
+      ? structuredClone(terminals.get(requestId)) : undefined,
+    journalTerminal: async (_id: string, requestId: string, result: ExecutionResult,
+      options: Parameters<PostgresOperatorConversationRepository['journalTerminal']>[3]) => {
+      if (row.active_request_id !== requestId) return false
+      const terminal: OperatorTerminal = {
+        observation: { result, retryable: options.retryable, requiresRuntimeClosure: options.requiresRuntimeClosure,
+          nativeSessionId: row.native_session_id,
+          ...(options.nativeMessageId ? { nativeMessageId: options.nativeMessageId } : {}) },
+        closureState: 'observed', historyPersisted: false,
+        ...(options.history ? { history: options.history } : {}),
+      }
+      const prior = terminals.get(requestId)
+      if (prior && JSON.stringify(prior.observation) !== JSON.stringify(terminal.observation)) {
+        throw new Error('Terminal observation changed.')
+      }
+      if (!prior) terminals.set(requestId, structuredClone(terminal))
+      return true
+    },
+    terminalHistoryPersisted: async (_id: string, requestId: string) => {
+      const terminal = terminals.get(requestId)
+      if (row.active_request_id !== requestId || !terminal) return false
+      terminal.historyPersisted = true
+      return true
+    },
+    closurePending: async (_id: string, requestId: string) => {
+      const terminal = terminals.get(requestId)
+      if (row.active_request_id !== requestId || !terminal || terminal.closureState === 'closed') return false
+      terminal.closureState = 'pending'
+      return true
+    },
+    closureProven: async (_id: string, requestId: string) => {
+      const terminal = terminals.get(requestId)
+      if (row.active_request_id !== requestId || !terminal || terminal.closureState === 'observed') return false
+      terminal.closureState = 'closed'
+      return true
+    },
     finish: async (_id: string, requestId: string, result: ExecutionResult) => {
       if (row.active_request_id !== requestId) return false
+      if (terminals.get(requestId)?.closureState !== 'closed') throw new Error('Original runtime closure required.')
       finishResults.push(result); row.last_result = result; row.active_request_id = null; row.active_native_turn_id = null; row.active_phase = null
       row.turn_state = result.outcome === 'failed' ? 'error' : 'idle'; row.cancel_requested = false; change(); return true
     },

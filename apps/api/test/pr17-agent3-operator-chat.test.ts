@@ -224,6 +224,21 @@ describe('PR17 Agent3: durable Operator chat recovery', () => {
       const originalActive = f.repository.active.bind(f.repository), originalFinish = f.repository.finish.bind(f.repository)
       f.repository.active = async (id) => id === second.row.id ? structuredClone(second.row) : originalActive(id)
       f.repository.finish = (id, ...args) => id === second.row.id ? second.repository.finish(id, ...args) : originalFinish(id, ...args)
+      const originalTerminal = f.repository.terminal.bind(f.repository)
+      f.repository.terminal = (id, ...args) => id === second.row.id
+        ? second.repository.terminal(id, ...args) : originalTerminal(id, ...args)
+      const originalJournalTerminal = f.repository.journalTerminal.bind(f.repository)
+      f.repository.journalTerminal = (id, ...args) => id === second.row.id
+        ? second.repository.journalTerminal(id, ...args) : originalJournalTerminal(id, ...args)
+      const originalTerminalHistoryPersisted = f.repository.terminalHistoryPersisted.bind(f.repository)
+      f.repository.terminalHistoryPersisted = (id, ...args) => id === second.row.id
+        ? second.repository.terminalHistoryPersisted(id, ...args) : originalTerminalHistoryPersisted(id, ...args)
+      const originalClosurePending = f.repository.closurePending.bind(f.repository)
+      f.repository.closurePending = (id, ...args) => id === second.row.id
+        ? second.repository.closurePending(id, ...args) : originalClosurePending(id, ...args)
+      const originalClosureProven = f.repository.closureProven.bind(f.repository)
+      f.repository.closureProven = (id, ...args) => id === second.row.id
+        ? second.repository.closureProven(id, ...args) : originalClosureProven(id, ...args)
       f.repository.unfinished = async () => [structuredClone(f.row), structuredClone(second.row)]
       await f.chat.reconcileActive()
       expect(second.row.active_request_id).toBeNull()
@@ -333,7 +348,7 @@ it('mounts exact transport fences and authoritative same-status history in Opera
   try {
     await f.chat.send(f.row.id, { requestId: 'operator-activity', content: 'Use tool' }, f.owner)
     await eventually(() => f.finishResults.length === 1)
-    expect(calls.map((call) => (call[2] as { output?: string }).output)).toEqual(['first', 'second', 'history correction'])
+    expect(calls.map((call) => (call[2] as { output?: string }).output)).toEqual(['first', 'second', 'history correction', 'history correction'])
     expect(calls[0]?.[3]).toMatchObject({ nativeSessionId: 'review-native-session', nativeTurnId: 'review-turn-1',
       authoritativeReconciliation: false, connectionId: 'operator-connection', source: { transportSequence: 1 } })
     expect(calls[2]?.[3]).toMatchObject({ nativeSessionId: 'review-native-session', nativeTurnId: 'review-turn-1',
