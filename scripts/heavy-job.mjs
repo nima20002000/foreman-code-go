@@ -91,7 +91,7 @@ const usedPath = (path) => {
   return false
 }
 function cleanTemps() {
-  mkdirSync(tempRoot, { recursive: true })
+  mkdirSync(tempRoot, { recursive: true, mode: 0o700 })
   for (const entry of readdirSync(tempRoot)) {
     const path = join(tempRoot, entry)
     const marker = readJson(join(path, 'owner.json'))
@@ -328,7 +328,7 @@ async function main() {
     const freshness = buildKind ? freshBuild(buildKind) : null
     if (freshness?.fresh) { console.log(`[heavy-job] running ${ticket}`); console.log(`[heavy-job] ${buildKind} build is current in this worktree`); exitCode = 0; return }
     tempPath = join(tempRoot, randomUUID())
-    mkdirSync(tempPath)
+    mkdirSync(tempPath, { mode: 0o700 })
     writeFileSync(join(tempPath, 'owner.json'), JSON.stringify({ common, worktree: root, pid: process.pid, start: procStart(process.pid), pgid: null, phase: 'acquiring', namespace, token }))
     const environment = { ...process.env, TMPDIR: tempPath, TMP: tempPath, TEMP: tempPath, FOREMAN_CODE_HEAVY_BASE_TMPDIR: baseTmp, FOREMAN_CODE_HEAVY_JOB_COMMON: common, FOREMAN_CODE_HEAVY_JOB_TOKEN: token, GRAPHQL_HEAVY_BASE_TMPDIR: baseTmp, GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: token }
     const launch = reported

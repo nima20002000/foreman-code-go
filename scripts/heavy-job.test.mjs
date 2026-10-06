@@ -65,6 +65,17 @@ function fixture() {
   const tempRoot = join(home, `graphql-heavy-${createHash('sha256').update(common).digest('hex').slice(0, 16)}`)
   return { home, first, second, common, state, tempRoot }
 }
+test('temporary directories exclude other writers under a shared group umask', t => {
+  const f = fixture()
+  t.after(() => rmSync(f.home, { recursive: true, force: true }))
+  const command = 'const fs=require("node:fs"),path=require("node:path");console.log(JSON.stringify([process.env.TMPDIR,path.dirname(process.env.TMPDIR)].map(value=>fs.statSync(value).mode&0o777)))'
+  const entry = `process.umask(0o002);process.argv=[process.execPath,${JSON.stringify(join(f.first, 'scripts/heavy-job.mjs'))},'--',process.execPath,'-e',${JSON.stringify(command)}];await import(${JSON.stringify(pathToFileURL(join(f.first, 'scripts/heavy-job.mjs')).href)})`
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', entry],
+    { cwd: f.first, env: jobEnv(f.first), encoding: 'utf8', timeout: 10000 })
+  assert.equal(result.status, 0, result.stderr)
+  const modes = JSON.parse(result.stdout.trim().split('\n').at(-1))
+  assert.deepEqual(modes, [0o700, 0o700])
+})
 function mockProc(f, declarations) {
   // Change only the disposable script's read functions to model visibility errors.
   const path = join(f.first, 'scripts/heavy-job.mjs')
