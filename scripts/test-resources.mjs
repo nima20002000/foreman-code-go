@@ -173,23 +173,29 @@ export function testEnvironment(environment, resource) {
     ['FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE', join(clean.XDG_DATA_HOME, 'opencode', 'auth.json')],
   ]) {
     if (!environment[variable]) continue
-    const source = realpathSync(environment[variable])
-    const sourceStat = lstatSync(source)
-    if (!sourceStat.isFile() || sourceStat.uid !== process.getuid() || (sourceStat.mode & 0o077) !== 0) {
-      throw new Error('Explicit test authentication must be a private file owned by the current user')
-    }
-    mkdirSync(join(destination, '..'), { recursive: true, mode: 0o700 })
-    if (existsSync(destination)) {
-      const destinationStat = lstatSync(destination)
-      if ((destinationStat.isSymbolicLink() || source === destination) && realpathSync(destination) === source) continue
-      throw new Error('Test authentication reference changed')
-    }
-    symlinkSync(source, destination)
+    referenceTestAuthenticationFile(resource, environment[variable], destination)
   }
   clean.COREPACK_HOME = environment.COREPACK_HOME || join(homedir(), '.cache', 'node', 'corepack')
   clean.NODE_OPTIONS = `--import=${fileURLToPath(new URL('./test-postgres-guard.mjs', import.meta.url))}`
   return { ...clean, FOREMAN_CODE_TEST_ROOT: resource.directory, FOREMAN_CODE_TEST_OWNER: resource.token,
     NIM2691_POSTGRES: '1' }
+}
+
+export function referenceTestAuthenticationFile(resource, filename, destination) {
+  const target = resolve(destination)
+  assertTestPath(resource, dirname(target))
+  const source = realpathSync(filename)
+  const sourceStat = lstatSync(source)
+  if (!sourceStat.isFile() || sourceStat.uid !== process.getuid() || (sourceStat.mode & 0o077) !== 0) {
+    throw new Error('Explicit test authentication must be a private file owned by the current user')
+  }
+  mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
+  if (existsSync(target)) {
+    const destinationStat = lstatSync(target)
+    if ((destinationStat.isSymbolicLink() || source === target) && realpathSync(target) === source) return
+    throw new Error('Test authentication reference changed')
+  }
+  symlinkSync(source, target)
 }
 
 export async function testAdminPool() {
