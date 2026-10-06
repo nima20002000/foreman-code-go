@@ -95,6 +95,34 @@ async function verificationReservationFixture() {
 }
 
 describe('actual qualification reservation seams with mocked native entry only', () => {
+  it('does not close an active diagnostic launcher again after container cleanup closed it', async () => {
+    const f = await fixture()
+    const admitted = await reserveInstalledJobQualification(f.input)
+    const identity = `graphql-ci-qualification-${id}`, containerId = 'd'.repeat(64)
+    await admitted.ownership.reserveContainerIntent(identity, f.admission.fingerprintDigest)
+    await admitted.ownership.bindContainer(identity, containerId)
+    await admitted.ownership.publish({ scope: admitted.ownership.scope, containerId,
+      process: { pid: 42, startTicks: '123', bootId: f.admission.bootId },
+      boundary: { kind: 'cgroup-v2', path: `/sys/fs/cgroup/libpod-${containerId}.scope`, device: '1', inode: '2' },
+      helpers: [], lifecycle: 'closed' })
+    const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn() } }) as unknown as ReturnType<typeof processes.spawnNativeProcess>
+    vi.spyOn(processes, 'spawnNativeProcess').mockReturnValue(child)
+    const argv = ['--remote=false', 'exec', containerId, 'node', '-e', 'setInterval(()=>{},1000)']
+    const launchId = await admitted.native.reserveProcess(process.execPath, argv)
+    admitted.native.spawnProcess(launchId, process.execPath, argv,
+      { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: f.candidate.controllerEnvironment })
+    let closed = false
+    vi.mocked(f.registry.closeRegistration).mockImplementation(async () => {
+      if (closed) throw Object.assign(new Error('original launcher directory was removed'), { code: 'ENOENT' })
+      closed = true
+    })
+    const cleanup = await admitted.native.reserveCleanupProcess!(process.execPath,
+      ['--remote=false', 'container', 'inspect', containerId])
+    expect(await admitted.native.stopProcess(cleanup)).toBe(true)
+    expect(await admitted.native.close()).toBe(true)
+    expect(f.registry.closeRegistration).toHaveBeenCalledOnce()
+    expect((await f.journal.qualificationStatus(id))?.phase).toBe('closed')
+  })
   it.each([125, 0, null])('retains failed-creation non-entry only after exact absent readback (create exit %s)', async exitCode => {
     const f = await fixture()
     await reserveInstalledJobQualification(f.input)

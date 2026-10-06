@@ -274,6 +274,8 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
       for (const launch of receipt.launches.filter(value => !value.closed)) {
         await registry.closeRegistration({ ...registry.scope(owner), launchId: launch.launchId }, launch.launchId)
         await journal.qualificationProcessClosed(operationId, launch.launchId)
+        const local = launches.get(launch.launchId)
+        if (local) local.closed = true
       }
       const scope = registry.reserveLaunch(owner)
       if (!scope.launchId) throw new Error('Original cleanup process reservation unavailable.')
