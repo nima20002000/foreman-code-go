@@ -191,6 +191,26 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             throw error
           }
         })
+      const validateInteraction = ApprovalExecutionCoordinator.prototype.validateInteraction
+      const validationObserver = vi.spyOn(ApprovalExecutionCoordinator.prototype, 'validateInteraction')
+        .mockImplementation(async function (this: ApprovalExecutionCoordinator, interaction, signal) {
+          try { return await validateInteraction.call(this, interaction, signal) }
+          catch (error) {
+            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'validate_interaction',
+              executionId: interaction.executionId, error: describeNativeFailure(error, [...secrets]) })
+            throw error
+          }
+        })
+      const attachInteraction = ApprovalExecutionCoordinator.prototype.attachInteraction
+      const attachmentObserver = vi.spyOn(ApprovalExecutionCoordinator.prototype, 'attachInteraction')
+        .mockImplementation(async function (this: ApprovalExecutionCoordinator, interaction, signal) {
+          try { return await attachInteraction.call(this, interaction, signal) }
+          catch (error) {
+            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'attach_interaction',
+              executionId: interaction.executionId, error: describeNativeFailure(error, [...secrets]) })
+            throw error
+          }
+        })
       let production: ReturnType<typeof buildProductionApp> | undefined
       const mcpClients: Client[] = []
       let artifactBoundary: pg.PoolClient | undefined
@@ -398,8 +418,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                   ? 'If input.work.kind is work_request or a work_return without a notice, submit routing.kind request with outcome review_c, preserving latestDeliverable and remainingFindings. On the third work_return with input.work.notice, there is no connected alternative from B: output routing {"kind":"finish"}, preserve input.work.returned.latestDeliverable and remainingFindings without claiming approval. Never request C after the notice.'
                   : 'If input.work.kind is work_request, submit routing.kind request with outcome review_c and latestDeliverable {"revision":0}. If input.work.kind is work_return and input.work.notice exists, submit a new request with outcome review_d, preserving returned.latestDeliverable and returned.remainingFindings. Otherwise submit a new request with outcome review_c, preserving returned.latestDeliverable and returned.remainingFindings. Never finish before D returns.',
                 finalAccepted
-                  ? 'Return to the exact input.work.request.requestId. If its acceptedSourceResult.output.data.latestDeliverable.revision is less than 2, use routing.outcome needs_changes, add one to the revision and include one finding. At revision 2, return routing.outcome accepted, preserve the deliverable and set remainingFindings []. Never create a fourth review.'
-                  : 'Return to the exact input.work.request.requestId with routing.kind return and outcome needs_changes. Set latestDeliverable.revision to the prior latestDeliverable.revision plus one. Include one remaining finding. Never accept.',
+                  ? 'Return to input.work.request.requestId, copying every character verbatim. Read the prior revision from input.work.acceptedSourceResult.output.data.latestDeliverable.revision. If that prior revision is less than 2, use routing.outcome needs_changes, add one to the revision and include one finding. At prior revision 2, return routing.outcome accepted, preserve the deliverable and set remainingFindings []. Never create a fourth review.'
+                  : 'Return to input.work.request.requestId, copying every character verbatim without shortening, repeating or reconstructing it. Use routing.kind return and outcome needs_changes. Set latestDeliverable.revision to input.work.acceptedSourceResult.output.data.latestDeliverable.revision plus one. Include one remaining finding. Never accept.',
                 'Return to the exact input.work.request.requestId with routing.kind return and outcome accepted. Preserve the latest deliverable and set remainingFindings to [].',
               ][index]
               : scenario.approval && index === approvalNode
@@ -906,6 +926,12 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             )).rows : []
             const evidence = nativePersistenceRedactor([...secrets]).value({
               scenario: scenario.name, runId: observedRunId, nativeFailures, cancellations, executions,
+              run: observedRunId ? (await pool.query('select record from runs where id=$1', [observedRunId])).rows : [],
+              nativeInputsAndResults: observedRunId ? (await pool.query(
+                'select id,record from harness_executions where run_id=$1 order by id limit 16', [observedRunId])).rows : [],
+              deliveryAttempts: observedRunId ? (await pool.query(
+                `select a.interaction_id,a.state,a.error from interaction_delivery_attempts a
+                  join durable_interactions i on i.id=a.interaction_id where i.run_id=$1 limit 16`, [observedRunId])).rows : [],
               failure: describeNativeFailure(error, [...secrets]),
             })
             const path = join(directory, `native-workflow-failure-${randomUUID()}.json`)
@@ -918,6 +944,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         }
       }
       executionObserver.mockRestore()
+      validationObserver.mockRestore()
+      attachmentObserver.mockRestore()
       sessionObserver.mockRestore()
       cancellationObserver.mockRestore()
       const cleanupErrors: unknown[] = []

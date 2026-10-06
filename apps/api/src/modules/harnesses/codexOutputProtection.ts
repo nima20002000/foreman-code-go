@@ -14,6 +14,7 @@ import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeComma
   matchesCodexNativeProbeCommand, parseCodexNativeProbeOutput } from './qualification/suites/codexNativeOutputSandbox.js'
 import { DomainError } from '../errors.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
+import { CodexCommandOutput } from './codexCommandOutput.js'
 
 const unavailable = () => new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',
   'The selected native sandbox did not prove protection of its output store.', 409)
@@ -77,6 +78,7 @@ export async function qualifyCodexOutputProtection(input: {
       .filter((name) => servers.some((entry) => entry.name === name))
     const observedTurn: { id?: string } = {}
     const commands: Array<{ threadId: string; turnId: string; item: JsonObject }> = []
+    const commandOutput = new CodexCommandOutput()
     const terminals = new Map<string, string>()
     let complete!: () => void
     let fail!: (error: unknown) => void
@@ -85,6 +87,11 @@ export async function qualifyCodexOutputProtection(input: {
       qualified.protocol, async (request) => {
         await transport!.reject(request.id, -32601, 'No application tools in native output qualification.')
       }, (method, params) => {
+        if (method === 'item/commandExecution/outputDelta' && typeof params.threadId === 'string'
+          && typeof params.turnId === 'string' && typeof params.itemId === 'string' && typeof params.delta === 'string') {
+          commandOutput.append({ threadId: params.threadId, turnId: params.turnId,
+            itemId: params.itemId, delta: params.delta })
+        }
         if (method === 'item/completed') {
           const item = object(params.item)
           if (item.type === 'commandExecution' && typeof params.threadId === 'string' && typeof params.turnId === 'string') {
@@ -160,16 +167,17 @@ export async function qualifyCodexOutputProtection(input: {
               ? redact.text(item.command).slice(0, 4096) : null })),
         })
     }
-    const result = parseCodexNativeProbeOutput(observed[0]!.item.aggregatedOutput, marker)
+    const originalCommand = observed[0]!
+    const output = typeof originalCommand.item.id === 'string'
+      ? commandOutput.read({ threadId, turnId, itemId: originalCommand.item.id }, originalCommand.item.aggregatedOutput)
+      : undefined
+    const result = parseCodexNativeProbeOutput(output, marker)
     if (!result) {
       throw new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',
         'The original native sandbox command emitted no unique probe result.', 409, {
-          firstOutputWord: typeof observed[0]!.item.aggregatedOutput === 'string'
-            ? /^[A-Za-z]{1,12}/u.exec(observed[0]!.item.aggregatedOutput)?.[0] ?? null : null,
-          hasMatchingMarker: typeof observed[0]!.item.aggregatedOutput === 'string'
-            && observed[0]!.item.aggregatedOutput.includes(marker),
-          output: typeof observed[0]!.item.aggregatedOutput === 'string'
-            ? redact.text(observed[0]!.item.aggregatedOutput).slice(0, 8192) : null,
+          firstOutputWord: typeof output === 'string' ? /^[A-Za-z]{1,12}/u.exec(output)?.[0] ?? null : null,
+          hasMatchingMarker: typeof output === 'string' && output.includes(marker),
+          output: typeof output === 'string' ? redact.text(output).slice(0, 8192) : null,
         })
     }
     const witness: unknown = JSON.parse(await readFile(witnessPath, 'utf8'))
