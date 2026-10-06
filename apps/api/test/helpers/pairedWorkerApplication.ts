@@ -9,6 +9,8 @@ import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import { createInterface } from 'node:readline'
+import type { Readable } from 'node:stream'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { HarnessRegistryReadbackSchema } from '@foreman-code/contracts/harness-registry'
 import { DeviceSetupApproveResultSchema } from '@foreman-code/contracts/device-setup'
@@ -44,6 +46,28 @@ const fixtureLogger = logger.child({ component: 'http', fixture: 'native-control
     },
   },
 })
+
+function observeWorkerErrors(stream: Readable) {
+  const lines = createInterface({ input: stream })
+  lines.on('line', line => {
+    if (Buffer.byteLength(line) > 65536) return
+    let value: unknown
+    try { value = JSON.parse(line) } catch { return }
+    const parsed = z.object({ level: z.number(), err: z.object({
+      type: z.string().optional(), code: z.string().optional(), stack: z.string().optional(),
+      result: z.object({ error: z.object({ code: z.string().optional() }).optional() }).optional(),
+    }).optional() }).safeParse(value)
+    if (!parsed.success || parsed.data.level < 50 || !parsed.data.err) return
+    const error = parsed.data.err
+    const code = error.code ?? error.result?.error?.code
+    fixtureLogger.error({
+      errorType: error.type && /^[A-Za-z0-9_]{1,64}$/.test(error.type) ? error.type : 'WorkerError',
+      ...(code && /^[A-Za-z0-9_-]{1,64}$/.test(code) ? { errorCode: code } : {}),
+      stackFrames: error.stack?.split('\n').filter(frame => /^\s+at\s/.test(frame)).slice(0, 8) ?? [],
+    }, 'Installed Worker operation failed')
+  })
+  return lines
+}
 const SourceSnapshot = z.object({ commit: z.string().regex(/^[a-f0-9]{40}$/),
   files: z.array(z.object({ path: z.string().min(1), gitBlobSha1: z.string().regex(/^[a-f0-9]{40}$/),
     sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).min(1).max(10000) }).strict()
@@ -401,10 +425,15 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
         installedLockPath: fileURLToPath(new URL('../../../../pnpm-lock.yaml', import.meta.url)) } } : {}) })
     await writeFile(join(state, 'workflow-runtime.json'), JSON.stringify(selection), { mode: 0o600, flag: 'wx' })
     await installerCommand(cli, ['initialize-native-runtime', '--state', state], environment)
-    worker = spawn(process.execPath, [cli, 'run', '--state', state], { env: environment, stdio: 'ignore' })
+    worker = spawn(process.execPath, [cli, 'run', '--state', state], { env: environment, stdio: ['ignore', 'pipe', 'pipe'] })
+    const workerOutput = [observeWorkerErrors(worker.stdout!), observeWorkerErrors(worker.stderr!)]
     workerClosed = new Promise<void>((done, fail) => {
       worker!.once('error', fail)
-      worker!.once('close', code => { workerExit = code; done() })
+      worker!.once('close', code => {
+        workerOutput.forEach(output => output.close())
+        workerExit = code
+        done()
+      })
     })
     const deadline = Date.now() + 60000
     let inventory: ReturnType<typeof HarnessRegistryReadbackSchema.parse> | undefined
