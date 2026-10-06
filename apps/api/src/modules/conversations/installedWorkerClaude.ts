@@ -81,7 +81,6 @@ export async function allocateInstalledWorkerClaude(input: {
     reserved = true
   }
   const appAccess = reader ? 'none' : binding.appMcpAccess
-  let authority: ReturnType<typeof createWorkerClaudeAuthority>
   let mcp: Awaited<ReturnType<typeof createUnboundWorkerMcpEndpoint>> | undefined
   let token: string | undefined
   let environment: Awaited<ReturnType<typeof prepareWorkerConversationMcp>>['environment'] | undefined
@@ -113,7 +112,7 @@ export async function allocateInstalledWorkerClaude(input: {
   }
   const callbackConfiguration = { ...compiled.configuration, mcpServers: { ...compiled.configuration.mcpServers,
     ...(mcp && configured?.type === 'http' ? { [serverName]: { ...configured, url: mcp.endpoint } } : {}) } }
-  authority = createWorkerClaudeAuthority({ configuration: callbackConfiguration,
+  const authority = createWorkerClaudeAuthority({ configuration: callbackConfiguration,
     version: original.accepted.currentBinding.pin.cliVersion, signal: input.signal, source: input.source,
     callbackJournal: input.journal.claudeCallbackJournal(binding), request: input.callbacks.claudeAuthority })
   const runner = createClaudeSdkRunner({ loadClient: async () => {

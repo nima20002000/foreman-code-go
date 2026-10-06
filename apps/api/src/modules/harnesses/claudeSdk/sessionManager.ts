@@ -617,7 +617,7 @@ export function createClaudeNativeSessionManager(options: {
           && frame.session_id === runtime.session.nativeSessionId) {
           const metadata = frame.compact_metadata as { pre_tokens?: number; trigger?: string } | undefined
           if (runtime.context) runtime.context = { ...runtime.context, stale: true }
-          record(runtime, 'session.compaction', { nativeSessionId: runtime.session.nativeSessionId,
+          await record(runtime, 'session.compaction', { nativeSessionId: runtime.session.nativeSessionId,
             nativeOperationId: typeof frame.uuid === 'string' ? frame.uuid : null,
             trigger: metadata?.trigger ?? 'unknown', beforeTokens: metadata?.pre_tokens ?? null }, runtime.active)
           if (runtime.compaction && metadata?.trigger === 'manual') {
