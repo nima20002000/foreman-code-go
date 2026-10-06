@@ -162,7 +162,15 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
       if (j.intent.deviceId === candidate.intent.deviceId) { deviceBytes += charge; if (pending) deviceActive++ }
     }
     for (const name of names.filter(n => /^[a-f0-9-]{36}\.json$/.test(n))) {
-      if (name !== `${candidate.intent.transferId}.json`) count(await this.load(name.slice(0, -5)))
+      if (name === `${candidate.intent.transferId}.json`) continue
+      const id = name.slice(0, -5)
+      let j = await this.load(id)
+      // An expired or idle transfer can never progress; reclaim its bytes instead of charging them forever.
+      if (this.reclaimable(j)) {
+        try { await this.retire(id); j = await this.load(id) }
+        catch (error) { if (!['Transfer writer busy', 'Transfer operation capacity exceeded'].includes((error as Error).message)) throw error }
+      }
+      count(j)
     }
     count(candidate)
     if (active > POLICY.maxActiveGlobal || deviceActive > POLICY.maxActivePerDevice
@@ -426,6 +434,12 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
       await this.syncDirectory()
       if (!await this.hasReaders(id)) { j.canonicalReclaimed = true; await this.save(j) }
     })
+  }
+  /** Cancelled bytes stay charged until their owner confirms deletion through retire(). */
+  private reclaimable(j: Journal) {
+    return j.canonical !== false && !j.canonicalReclaimed && j.progress.state !== 'cancelled'
+      && (this.now() >= Date.parse(j.intent.expiresAt)
+        || (j.progress.state !== 'verified' && this.now() - Date.parse(j.progress.updatedAt) >= POLICY.maxIdleMs))
   }
   async cleanupExpired(limit = 64): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) throw new Error('Cleanup limit exceeds policy')

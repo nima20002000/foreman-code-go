@@ -169,6 +169,22 @@ describe('bounded authenticated transfer staging', () => {
     await expect(readFile(join(f.root, `${f.intent.transferId}.part`))).rejects.toThrow()
     expect(JSON.parse(await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')).payload.progress.state).toBe('cancelled')
   })
+  it('reclaims expired unfinished transfers before admitting another one for the device', async () => {
+    const f = await fixture()
+    const stale = [randomUUID(), randomUUID()]
+    for (const transferId of stale) {
+      await f.service.start({ ...f.intent, transferId }, f.context)
+      await f.service.append(transferId, f.context, f.chunk(0))
+    }
+    await expect(f.service.start({ ...f.intent, transferId: randomUUID() }, f.context)).rejects.toThrow('quota exceeded')
+    f.time(60_001)
+    const next = { ...f.intent, transferId: randomUUID(), expiresAt: new Date(Date.now() + 120_000).toISOString() }
+    await f.service.start(next, f.context)
+    for (const transferId of stale) {
+      await expect(readFile(join(f.root, `${transferId}.part`))).rejects.toThrow()
+      expect(JSON.parse(await readFile(join(f.root, `${transferId}.json`), 'utf8')).payload.progress.state).toBe('cancelled')
+    }
+  })
   it('rejects symlink ancestors and hardlinked/symlink partial files', async () => {
     const f = await fixture(); const parent = join(f.root, 'real'); await mkdir(parent, { mode: 0o700 }); await symlink(parent, join(f.root, 'alias'))
     const service = new ResumableByteTransferService(join(f.root, 'alias', 'child'), { authorize: async () => {} }); services.push(service)
