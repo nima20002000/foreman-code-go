@@ -19,6 +19,7 @@ export function activityTextEnvelope(operation: ActivityTextOperation, harness: 
       ...(source?.eventId ? { eventId: source.eventId } : {}), ...(source?.nativeSequence ? { sequence: source.nativeSequence } : {}) },
     change: { kind: operation.mode === 'append' ? 'text.append' : 'text.replace', itemId: identity.itemId,
       ...(identity.partId ? { partId: identity.partId } : {}), ...(identity.parentId ? { parentItemId: identity.parentId } : {}),
-      channel: identity.channel, text: operation.text, finality: operation.final ? 'authoritative_final' : 'provisional' },
+      channel: identity.channel, text: operation.text,
+      ...(operation.truncation ? { truncation: operation.truncation } : {}), finality: operation.final ? 'authoritative_final' : 'provisional' },
   })
 }

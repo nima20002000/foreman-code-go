@@ -14,7 +14,7 @@ import pg from 'pg'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
   AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessConfigurationSchema, HarnessExecutionSchema,
-  type AgentConfigurationVersion, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent, type NativeSessionReference,
+  type AgentConfigurationVersion, type ExecutionResult, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent, type NativeSessionReference,
 } from '@foreman-code/contracts'
 import {
   ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture,
@@ -55,6 +55,7 @@ import { continuationValidator } from '../../src/modules/runs/continuation.js'
 import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { nativePersistenceRedactor } from '../../src/modules/interactions/nativePersistence.js'
 import type { NativeHarnessSessionManager } from '../../src/modules/harnesses/port.js'
+
 import type { AuthorizeWorkflowStop } from '../../src/modules/runs/repeatLifecycle.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
@@ -716,6 +717,16 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     } catch (diagnosticError) {
       failure.error = new AggregateError([error, diagnosticError], 'Native scenario and diagnostic collection failed.')
     }
+    process.stdout.write(`ENG03 failure ${JSON.stringify({ scenario,
+      startTaskState: evidence.failureStartTaskState, startError: evidence.startError,
+      error: describeNativeFailure(error, nativeSecrets),
+      observations: evidence.nativeObservationErrors,
+      executions: Array.isArray(evidence.failureExecutions) ? evidence.failureExecutions.map(value => {
+        const execution = value as { id: string; state: string; result?: ExecutionResult }
+        return { id: execution.id, state: execution.state, outcome: execution.result?.outcome,
+          ...(execution.result?.error ? { error: nativePersistenceRedactor(nativeSecrets).value(execution.result.error) } : {}) }
+      }) : [],
+    })}\n`)
     try { await stopRun?.() }
     catch (cleanupError) { cleanupErrors.push(cleanupError) }
   } finally {

@@ -1,6 +1,7 @@
 import { withInteractionResponse, type DurableInteraction, type NativeSessionReference } from '@foreman-code/contracts'
 import { createHash } from 'node:crypto'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import type { ChatResponseIdentity } from '@foreman-code/contracts/interaction-activity'
 import type { NativeHistory } from '../harnesses/port.js'
 
 /** A lease may expire during attachment, but never authorizes another native send. */
@@ -38,6 +39,7 @@ export interface NativeResponseDeliveryEvidence {
   optionId: string
   semantic: NonNullable<DurableInteraction['selectedSemantic']>
   responseDigest?: string | undefined
+  nativeIdentity?: ChatResponseIdentity
 }
 
 export function responseValueDigest(value: unknown): string {
@@ -127,7 +129,11 @@ export function matchingDeliveryEvidence(
   const sameRequest = deliveries.filter((proof) => proof.harness === interaction.harness
     && proof.providerVersion === interaction.providerVersion
     && proof.nativeSessionId === interaction.nativeSessionId && proof.nativeRequestId === interaction.nativeRequestId)
-  if (sameRequest.some((proof) => proof.nativeRequestType !== interaction.nativeRequestType
+  const request = object(interaction.request)
+  if (sameRequest.some((proof) => proof.harness === 'claude' && (proof.nativeIdentity?.kind !== 'message'
+      || proof.nativeIdentity.nativeMessageId !== request?.nativeMessageId
+      || proof.nativeIdentity.generation !== request?.generation)
+    || proof.nativeRequestType !== interaction.nativeRequestType
     || proof.optionId !== interaction.selectedOptionId || proof.semantic !== interaction.selectedSemantic
     || proof.responseDigest !== undefined
       && proof.responseDigest !== responseValueDigest(object(interaction.nativeResponse)?.response))) return undefined
