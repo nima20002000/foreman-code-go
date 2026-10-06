@@ -10,6 +10,7 @@ import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppS
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexRpcError, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { codexNativeAcceptanceFixture } from './helpers/codexNativeAcceptanceFixture.js'
+import { deferred } from './helpers/wave25Agent3.js'
 // Workflow and live acceptance share the native session manager.
 
 const enabled = process.env.RUN_CODEX_APP_SERVER_TESTS === '1'
@@ -81,14 +82,20 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       assert((await manager.inspectConfiguration(session, false, signal)).config)
       assert(Array.isArray((await manager.inspectNativeMcp(session, signal)).data))
 
-      // Cancel while startup may still be in progress; the manager must target the new ID.
+      const started = deferred()
       const interrupt = (async () => {
         for await (const event of manager.startTurn(session, {
           prompt: 'Run this exact shell command and wait for it to finish before answering: sleep 120. Do not simulate the command.',
           clientCorrelationId: 'interrupt',
-        }, signal)) void event
+        }, signal)) {
+          if (event.type === 'turn.started' && event.payload.clientCorrelationId === 'interrupt') started.resolve()
+        }
       })()
-      void interrupt.catch(() => undefined)
+      void interrupt.then(
+        () => started.reject(new Error('The native turn ended before interruption.')),
+        error => started.reject(error),
+      )
+      await started.promise
       try {
         assert.equal(await manager.cancel(session, signal), true)
       } catch (error) {

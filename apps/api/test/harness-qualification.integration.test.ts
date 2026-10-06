@@ -15,6 +15,7 @@ import { fileReferenceAccessMigration } from '../src/infrastructure/fileReferenc
 import { harnessQualificationMigration } from '../src/infrastructure/harnessQualificationMigration.js'
 import { migrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { HarnessQualificationRepository } from '../src/modules/harnesses/qualification/repository.js'
@@ -36,7 +37,7 @@ it('registers the qualification migration after earlier blocks', () => {
   expect(new Set(migrations.map((migration) => migration.version)).size).toBe(migrations.length)
 })
 
-it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticated HTTP and MCP, denies a reader, and reads persisted trust', async () => {
+it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility as the local human and through scoped MCP, denying unauthorized retries', async () => {
   const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL })
   const schema = `harness_qualification_${randomUUID().replaceAll('-', '')}`
   await admin.query(`create schema "${schema}"`)
@@ -71,7 +72,10 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     compatibility = new HarnessCompatibilityService(compatibilityOptions)
     await compatibility.checkAll()
     const services = { commands, harnessQualifications: service, harnessCompatibility: compatibility } as unknown as OperatorServices
-    app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
+    app = buildApp({ logger: false, localHuman: new PostgresLocalHumanAccess(pool, access),
+      harnessCompatibility: compatibility,
+      readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+      operator: { access, services } })
     const writer = await access.issue({ name: 'Qualification writer', audience: 'operator', grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
     const reader = await access.issue({ name: 'Qualification reader', audience: 'operator', grants: [{ actions: ['harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -105,9 +109,19 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     expect(await registry.trusted('codex', '0.158.0', listed.qualifications[0]!.binarySha256!)).toBe(true)
     await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).resolves.toBeUndefined()
     expect(await registry.trusted('codex', '0.158.0', '0'.repeat(64))).toBe(false)
-    const http = await app.inject({ method: 'GET', url: '/api/management/harnesses/qualifications', headers: { authorization: `Bearer ${reader.token}` } })
+    const http = await app.inject({ method: 'GET', url: '/api/management/harnesses/qualifications' })
     expect(http.statusCode).toBe(200)
     expect(HarnessQualificationListSchema.parse(http.json()).qualifications).toHaveLength(1)
+    const localCompatibility = await app.inject({ method: 'GET', url: '/api/management/harnesses/compatibility' })
+    expect(localCompatibility.statusCode).toBe(200)
+    expect(HarnessCompatibilityListSchema.parse(localCompatibility.json())).toMatchObject({
+      canRetry: true, harnesses: [{ harness: 'codex', installedVersion: '0.160.0', status: 'probe-passed' },
+        { harness: 'opencode', installedVersion: '2.0.0', status: 'probe-passed' }],
+    })
+    const localRetry = await app.inject({ method: 'POST',
+      url: '/api/management/harnesses/codex/compatibility/retry', payload: {} })
+    expect(localRetry.statusCode).toBe(202)
+    await compatibility.checkAll()
     const denied = await app.inject({ method: 'POST', url: '/api/management/harnesses/codex/qualification', headers: { authorization: `Bearer ${reader.token}` } })
     expect(denied.statusCode).toBe(403)
     await writeFile(binary, '#!/bin/sh\n# another binary, same version\necho "codex-cli 0.158.0"\n')

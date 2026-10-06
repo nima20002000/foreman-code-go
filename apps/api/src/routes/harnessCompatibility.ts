@@ -6,7 +6,7 @@ import {
 import { requirePrincipal } from '../modules/access/http.js'
 import type { HarnessCompatibilityService } from '../modules/harnesses/compatibility/service.js'
 
-/** Register only after Operator authentication/CSRF hooks. No caller-selected commands or paths. */
+/** Register after the local-human and credential scope checks. */
 export function registerHarnessCompatibilityRoutes(app: FastifyInstance, service: HarnessCompatibilityService): void {
   app.get('/api/management/harnesses/compatibility', async (request, reply) => {
     reply.header('cache-control', 'no-store')
