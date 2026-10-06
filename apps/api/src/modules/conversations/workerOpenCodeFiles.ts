@@ -85,7 +85,9 @@ export function createWorkerOpenCodeFiles(input: {
       }
     } catch (error) {
       try { await cleanup() }
-      catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Native file listener cleanup failed.', { cause: error }) }
+      catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'Native file listener cleanup failed.', { cause: cleanupError })
+      }
       throw error
     }
   } }
