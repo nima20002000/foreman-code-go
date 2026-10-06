@@ -1,5 +1,8 @@
 import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 import { inflateSync } from 'node:zlib'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import type { ChildProcess } from 'node:child_process'
 import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
@@ -12,6 +15,7 @@ import { CI_QUALIFICATION_SUITE, JobQualificationCandidateSchema, fingerprintQua
   validateBoundedVolumeGeometry, qualificationMountId, qualifyJobRuntime, validateIsolationMeasurement, verifyJobQualification,
   validateJobQualificationMounts, prepareQualificationPrivateGit, createPhysicalJobRuntimeProducer, type JobQualificationCandidate, type JobQualificationRecord } from './qualification.js'
 import { backingFileConfigurationIdentity } from './qualification.js'
+import { runQualificationCommand, type QualificationNativeOwner } from './qualification.js'
 import { validateVerificationIsolationObservation } from './qualification.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
 import { requireVerificationRuntime } from './executor.js'
@@ -32,6 +36,23 @@ it('keeps the fully allocated backing reservation stable when writes grow extent
   expect(original.reservedBytes).toBe(backing.bytes)
   expect(backingFileConfigurationIdentity({ ...backing, inode: '3' })).not.toEqual(original)
   expect(() => backingFileConfigurationIdentity({ ...backing, allocatedBytes: '1024' })).toThrow('fully allocated')
+})
+
+it('retains bounded diagnostic stderr alongside the original native exit code', async () => {
+  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });
+  const owner = { reserveProcess: async () => 'reserved-command',
+    spawnProcess: () => {
+      queueMicrotask(() => {
+        child.stdout.write('observed output');
+        child.stderr.write('fixture diagnostic failure');
+        child.emit('close', 7, null);
+      });
+      return child as unknown as ChildProcess;
+    },
+    readNativeExit: async () => ({ confirmed: true, exitCode: 7 }),
+  } as unknown as QualificationNativeOwner;
+  expect(await runQualificationCommand(owner, '/approved/diagnostic', [], {}, new AbortController().signal))
+    .toEqual({ exitCode: 7, stdout: 'observed output', stderr: 'fixture diagnostic failure' });
 })
 function candidate(): JobQualificationCandidate {
   return JobQualificationCandidateSchema.parse({ qualificationId: id, operationId: id, approvalId: id,

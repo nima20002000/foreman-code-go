@@ -95,7 +95,9 @@ export async function qualifyVerificationRuntime(input: {
     argv[0] === '--remote=false' ? argv : ['--remote=false', ...argv], timeoutMs)
   const checked = async (argv: string[], timeoutMs?: number) => {
     const result = await podman(argv, timeoutMs)
-    if (result.exitCode !== 0) throw new Error('Physical verification runtime command failed.')
+    if (result.exitCode !== 0) {
+      throw new Error(`Physical verification ${argv[0]} failed with exit ${result.exitCode}: ${result.stderr.slice(0, 300)}`)
+    }
     return result.stdout
   }
   const readQuota: JobQuotaReader = async (saved, directory, signal) => {

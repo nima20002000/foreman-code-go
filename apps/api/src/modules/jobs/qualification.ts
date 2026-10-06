@@ -206,8 +206,10 @@ export async function runQualificationCommand(owner: QualificationNativeOwner, b
   const child = owner.spawnProcess(reservation, binary, argv, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: environment })
   const { stdout, stderr } = child
   if (!stdout || !stderr) throw new Error('Admitted diagnostic requires stdout/stderr pipes.')
-  const completed = new Promise<{ exitCode: number; stdout: string }>((resolve, reject) => {
-    let output = ''; let bytes = 0
+  const completed = new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve, reject) => {
+    let output = ''
+    let diagnostics = ''
+    let bytes = 0
     let interrupted = false
     const interrupt = () => {
       if (interrupted) return
@@ -220,6 +222,7 @@ export async function runQualificationCommand(owner: QualificationNativeOwner, b
       bytes += chunk.length
       if (bytes > 65536) interrupt()
       else if (stdout) output += chunk.toString('utf8')
+      else diagnostics += chunk.toString('utf8')
     }
     stdout.on('data', chunk => read(chunk, true)); stderr.on('data', chunk => read(chunk, false))
     child.once('error', reject)
@@ -227,7 +230,7 @@ export async function runQualificationCommand(owner: QualificationNativeOwner, b
       clearTimeout(timeout); signal.removeEventListener('abort', interrupt)
       if (!interrupted) void owner.readNativeExit(reservation, child, { exitCode, signal: exitSignal }).then(native => {
         if (!native.confirmed || native.exitCode === null) reject(new Error('Exact native exit receipt unavailable.'))
-        else resolve({ exitCode: native.exitCode, stdout: output })
+        else resolve({ exitCode: native.exitCode, stdout: output, stderr: diagnostics })
       }, reject)
     })
   })
