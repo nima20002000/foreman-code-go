@@ -23,7 +23,7 @@ import { assertJobRuntimeEntryContext, jobQualificationFingerprint, runQualifica
   from './qualification.js'
 import { prepareVerificationQualificationSource, restoreVerificationQualificationSource } from './verificationQualificationSource.js'
 import { JobProjectQuotaReadbackSchema, readVerificationQuotaPool, verifyJobQuotaOwnership,
-  type JobQuotaReader } from './quotaOwnership.js'
+  isKernelQuotaDenial, type JobQuotaReader } from './quotaOwnership.js'
 import { JOB_GIT_ENVIRONMENT } from './privateGitMounts.js'
 import { jobDigest } from './digest.js'
 import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
@@ -41,15 +41,15 @@ const reportLimits = { 'summary.json': 'summaryBytes', 'junit.xml': 'junitBytes'
 const reportFiles = Object.keys(reportLimits) as Array<keyof typeof reportLimits>
 const idle = 'setInterval(()=>{},1000)'
 const quotaProbe = `const fs=require('node:fs');const input=JSON.parse(process.argv[1]);
-const file='/job-scratch/quota-bytes';let byteError=null,inodeError=null,inodeCreated=0;
+const file='/job-scratch/quota-bytes';let byteError=null,inodeError=null,byteErrno=null,inodeErrno=null,inodeCreated=0;
 if(input.phase==='bytes'){
 try{const fd=fs.openSync(file,'wx',0o600);try{const bytes=Buffer.alloc(1048576,1);
-for(let n=0;n<=Math.ceil(input.bytes/bytes.length);n++){fs.writeSync(fd,bytes);fs.fsyncSync(fd)}}finally{fs.closeSync(fd)}}catch(e){byteError=e.code}
+for(let n=0;n<=Math.ceil(input.bytes/bytes.length);n++){fs.writeSync(fd,bytes);fs.fsyncSync(fd)}}finally{fs.closeSync(fd)}}catch(e){byteError=e.code;byteErrno=e.errno}
 }else{
 fs.rmSync(file,{force:true});fs.mkdirSync('/job-scratch/quota-inodes',{mode:0o700});
-try{for(let n=0;n<=input.inodes;n++){fs.closeSync(fs.openSync('/job-scratch/quota-inodes/'+n,'wx',0o600));inodeCreated++}}catch(e){inodeError=e.code}
+try{for(let n=0;n<=input.inodes;n++){fs.closeSync(fs.openSync('/job-scratch/quota-inodes/'+n,'wx',0o600));inodeCreated++}}catch(e){inodeError=e.code;inodeErrno=e.errno}
 fs.rmSync('/job-scratch/quota-inodes',{recursive:true});}
-console.log(JSON.stringify({byteError,inodeError,inodeCreated}));`
+console.log(JSON.stringify({byteError,inodeError,byteErrno,inodeErrno,inodeCreated}));`
 
 /** Every pass comes from full ordinary commands in the admitted image and original quota namespace. */
 export async function qualifyVerificationRuntime(input: {
@@ -189,7 +189,7 @@ export async function qualifyVerificationRuntime(input: {
     const quotaResult = JSON.parse(await checked(['exec', containerId, 'node', '-e', quotaProbe,
       JSON.stringify({ phase: 'bytes', bytes: pool.slots[0]!.hardLimitBytes })],
     Math.min(600000, Date.parse(approval.expiresAt) - Date.now())))
-    if (quotaResult.byteError !== 'EDQUOT') {
+    if (!isKernelQuotaDenial(quotaResult.byteErrno)) {
       throw new Error(`Per-Job byte pressure did not report quota denial: ${JSON.stringify(quotaResult)}`)
     }
     const independence = []
@@ -201,7 +201,7 @@ export async function qualifyVerificationRuntime(input: {
     const quotaInodes = JSON.parse(await checked(['exec', containerId, 'node', '-e', quotaProbe,
       JSON.stringify({ phase: 'inodes', inodes: pool.slots[0]!.hardInodes })],
     Math.min(600000, Date.parse(approval.expiresAt) - Date.now())))
-    if (quotaInodes.inodeError !== 'EDQUOT') {
+    if (!isKernelQuotaDenial(quotaInodes.inodeErrno)) {
       throw new Error(`Per-Job inode pressure did not report quota denial: ${JSON.stringify(quotaInodes)}`)
     }
     const seedBytes = await readProtectedRuntimeFile({ path: configuration.seedReceiptPath,

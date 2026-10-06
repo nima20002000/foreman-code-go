@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 // The diagnostic owns an ordinary suite and remains active under byte/inode pressure.
 export const QUALIFICATION_PRESSURE_DRIVER = `const fs=require('node:fs'),{spawn}=require('node:child_process');
+const quotaErrno=-require('node:os').constants.errno.EDQUOT;
 const context=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
 const log=context.identity.suite==='install'?'install':'root';
 const child=spawn('node',['scripts/verify-repository.mjs','--context',process.argv[1]],{stdio:'ignore'});
@@ -13,10 +14,10 @@ const poll=setInterval(()=>{
 if(!fs.existsSync('.logs/verification/parts/'+log+'.log'))return;
 clearInterval(poll);let byteError,inodeError;
 try{const fd=fs.openSync('/job-scratch/pressure-bytes','wx');const chunk=Buffer.alloc(1048576,1);
-try{for(;;){fs.writeSync(fd,chunk);fs.fsyncSync(fd)}}finally{fs.closeSync(fd)}}catch(e){byteError=e.code}
+try{for(;;){fs.writeSync(fd,chunk);fs.fsyncSync(fd)}}finally{fs.closeSync(fd)}}catch(e){byteError=e.errno}
 try{fs.mkdirSync('/job-scratch/pressure-inodes');for(let n=0;;n++)
-fs.closeSync(fs.openSync('/job-scratch/pressure-inodes/'+n,'wx'))}catch(e){inodeError=e.code}
-if(byteError!=='EDQUOT'||inodeError!=='EDQUOT')process.exit(3);
+fs.closeSync(fs.openSync('/job-scratch/pressure-inodes/'+n,'wx'))}catch(e){inodeError=e.errno}
+if(byteError!==quotaErrno||inodeError!==quotaErrno)process.exit(3);
 setInterval(()=>{},1000);
 process.stdout.write('ACTIVE_QUOTA_PRESSURE\\n');
 },100);`

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { constants } from 'node:os'
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -23,6 +24,10 @@ export const JobProjectQuotaReadbackSchema = z.object({
 export type JobProjectQuotaReadback = z.infer<typeof JobProjectQuotaReadbackSchema>
 export type JobQuotaReader = (pool: JobVerificationQuotaPool, directory: string,
   signal: AbortSignal) => Promise<JobProjectQuotaReadback>
+
+export function isKernelQuotaDenial(errno: unknown): boolean {
+  return errno === -constants.errno.EDQUOT!
+}
 
 export const readJobProjectQuota: JobQuotaReader = async (pool, directory, signal) => {
   signal.throwIfAborted()

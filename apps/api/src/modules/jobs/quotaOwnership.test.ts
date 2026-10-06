@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { join } from 'node:path'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
-import { readVerificationQuotaPool, verifyJobQuotaOwnership, type JobQuotaReader } from './quotaOwnership.js'
+import { readVerificationQuotaPool, verifyJobQuotaOwnership, isKernelQuotaDenial, type JobQuotaReader } from './quotaOwnership.js'
+import { constants } from 'node:os'
 
 const profile = verificationCapacityFixture('main')
 const pool = profile.measurement!.fingerprint.quotaPool!
@@ -15,6 +16,12 @@ function verify(read: JobQuotaReader) {
     signal: new AbortController().signal, read })
 }
 describe('observed project quota ownership', () => {
+  it('recognizes the kernel quota errno without accepting unrelated unknown or disk-full errors', () => {
+    expect(isKernelQuotaDenial(-constants.errno.EDQUOT!)).toBe(true)
+    for (const errno of [undefined, null, 'UNKNOWN', -constants.errno.ENOSPC!, 0]) {
+      expect(isKernelQuotaDenial(errno)).toBe(false)
+    }
+  })
   it('reads every slot without overlapping commands on the diagnostic owner', async () => {
     let active = 0
     let maximum = 0
