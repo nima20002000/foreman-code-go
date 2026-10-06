@@ -93,7 +93,8 @@ function fixture() {
     if (name === 'workflow_create') {
       workflows.CurrentWorkflowCreateInputSchema.parse(args)
       return { value: { workflow: { id: randomUUID(), workspaceId: args.workspaceId, name: args.name,
-        executionSemanticsVersion: 3, version: 1, nodes: [], edges: [], approval: { handler: 'user' },
+        executionSemanticsVersion: 3, version: 1, entryNodeId: null, executionCondition: { kind: 'manual' },
+        nodes: [], edges: [], approval: { handler: 'user' },
         executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 }, createdAt },
       revision: 0, currentVersionId: null, archivedAt: null }, replayed: false }
     }
