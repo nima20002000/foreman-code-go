@@ -75,7 +75,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
         runtimeDirectory: directory, codexBinary, openCodeBinary })
       const openCode = await inspectOpenCodeMcpConfiguration({ binary: openCodeBinary,
         workingDirectory: directory, serverName: APP_MCP_SERVER_NAME, pure: true })
-      expect(openCode?.automaticEndpoint).toBe(true)
+      expect(openCode?.automaticEndpoint, JSON.stringify(openCode)).toBe(true)
       expect(isSupportedAppMcpTokenName(openCode?.credentialEnvironmentVariable)).toBe(true)
       expect(openCode?.credentialEnvironmentVariable).toBe('GRAPHQL_MCP_TOKEN')
       const configured = await manager.inspectMcpConfiguration(directory)
