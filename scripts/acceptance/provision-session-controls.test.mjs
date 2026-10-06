@@ -143,12 +143,13 @@ function fixture() {
       workflows.CurrentWorkflowCreateInputSchema.parse(args)
       return { value: { workflow: { id: randomUUID(), workspaceId: args.workspaceId, name: args.name,
         executionSemanticsVersion: 3, version: 1, entryNodeId: null, executionCondition: { kind: 'manual' },
-        nodes: [], edges: [], approval: { handler: 'user' },
-        executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 }, createdAt },
+        nodes: [], edges: [], approval: { handler: 'operator' }, handoffs: { contractVersion: 1 }, createdAt },
       revision: 0, currentVersionId: null, archivedAt: null }, replayed: false }
     }
     if (name === 'workflow_edit_v3' && args.action === 'stage_edits') {
       const request = workflows.CurrentEditStageInputSchema.parse(args)
+      assert.deepEqual(request.graph.approval, { handler: 'user' })
+      assert.deepEqual(request.graph.executionPolicy, { maxParallelism: 1, maxNodeExecutions: 1 })
       nodes.set(request.workflowId, { request, versionId: randomUUID(), configurationId: randomUUID(),
         intentId: randomUUID(), advanceCommandId: randomUUID(), discardCommandId: randomUUID(), saveCommandId: randomUUID() })
       return {}

@@ -281,8 +281,10 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
       if (result.isError) {
         const content = result.content.find(value => value.type === 'text')
         const failure = content?.type === 'text'
-          ? JSON.parse(content.text) as { error?: { code?: string; message?: string } } : {}
-        throw new Error(`Product tool ${name} failed: ${failure.error?.code ?? 'UNKNOWN'}: ${failure.error?.message ?? 'No public error message.'}`)
+          ? JSON.parse(content.text) as { error?: { code?: string; message?: string; details?: { issues?: unknown[] } } } : {}
+        const issues = failure.error?.code === 'GRAPH_INVALID' ? failure.error.details?.issues : undefined
+        throw new Error(`Product tool ${name} failed: ${failure.error?.code ?? 'UNKNOWN'}: ${failure.error?.message ?? 'No public error message.'}`
+          + (issues ? ` ${JSON.stringify(issues)}` : ''))
       }
       return result.structuredContent
     }

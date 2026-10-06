@@ -135,6 +135,7 @@ async function saveNode(subject, profile, ports) {
     harnessProfileSelection: selector, prompt: { system: 'Follow the chat request. Preserve the accepted sandbox and tool policy.' },
     assignedSkills: [] })
   const graph = { ...created.workflow, entryNodeId: workflowNodeId, requiredAgentCount: 1, edges: [],
+    approval: { handler: 'user' }, executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
     nodes: [{ id: workflowNodeId, agentId, name, position: { x: 0, y: 0 }, initialPrompt: 'Follow the current chat request.',
       ...(location.placement ? { placement: location.placement } : {}) }] }
   const draftId = randomUUID()
