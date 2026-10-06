@@ -5,6 +5,35 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.32] - 2026-10-06
+
+### Added
+
+- Isolated OpenCode file delivery for Agent and Operator chat, including attachments and inherited references.
+- Follow-up input for idle native OpenCode subagents through authenticated Operator MCP, with scoped denial, idempotent commands and persisted readback.
+
+### Changed
+
+- Discover file tools before model input and bind file-operation credentials after native acknowledgement.
+- Support the full accepted image attachment count and size with bounded native media identities and recovery history.
+- Keep native acceptance histories, caches, configuration changes and MCP routes in disposable storage, and retain redacted failure codes in run logs.
+- OpenCode approval isolation (E03-A01), audited OpenCode qualification and OpenCode Agent chat fork are untested on Claude/OpenCode (laptops are Codex-only): native checks on Mana returned OPENCODE_AUTH_REQUIRED. Codex lifecycle and fork cases passed; this group adds no Claude provider case.
+
+### Fixed
+
+- Preserve child agent, model, variant and system settings on follow-up input, including explicit unnamed variants during fork and reconnect.
+- Synchronize native and file-tool working-copy edits, retain edited versions across crashes and publish their current bytes.
+- Complete queued chat turns despite retryable cleanup failures, and recover owned cleanup after API or native-process restart.
+- Give Operator file turns conversation-owned storage while retaining scoped management access and distinct file credentials.
+- Recover accepted inline media after conversation restart and fork, preserving ownership and avoiding duplicate delivery.
+- Preserve native child chronology, capability revisions and chat event subscriptions as queued turns advance.
+- Forward selected acceptance files through the root runner and configure the actual fixture MCP endpoint before native submission.
+
+### Security
+
+- Verify namespace, process generation and vault ownership before native file access, isolating API vaults and other conversations' files and media on the pinned Node runtime.
+- Separate pre-acknowledgement discovery from authenticated file operations, validate publication provenance and recheck scope, revocation and writer lifetime before commit.
+
 ## [0.0.31] - 2026-10-06
 
 ### Fixed
