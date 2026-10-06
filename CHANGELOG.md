@@ -5,6 +5,33 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.41] - 2026-10-06
+
+### Added
+
+- Publish declared artifact outputs from local and connected Codex/OpenCode workflow turns through authenticated MCP and retain their original publication records for recovery.
+- Restore checkpoint-bound OpenCode approval sessions after verified restart without creating replacement native turns.
+
+### Changed
+
+- Retain every terminal handoff activation in Run output, including results from repeated review revisions.
+- Preserve frozen activation inputs during upgrades and provide the original caller through trusted execution context.
+
+### Fixed
+
+- Bind Orchestrator approvals to the accepted requester ancestry across delegated work, review returns and handoff-limit continuations.
+- Settle permanent failures and enforce one execution budget across retries, queued activations, returns and denial continuations.
+- Resolve choice branches and exhausted connections in separate causal join rounds, with replay-safe dispatch when branches arrive concurrently.
+- Support combined handoff/artifact results, clean choice-node finishes and durable direction waits for accepted review findings or exhausted routes.
+- Check derived return and notice sizes against persisted PostgreSQL envelopes before acceptance, including large numeric payloads.
+- Preserve safely unsubmitted or settled handoff work across restart, and physically close invalid artifact turns while retaining validation failures.
+- Reconstruct activation-result publication records for authenticated canonical graph reads after review cycles.
+
+### Security
+
+- Keep native output storage outside agent write access, verify original native call ownership and sandbox policy, and enforce saved OpenCode permissions and original approvals for output operations.
+- Retain grants, scope checks, native closure records and credential revocation through output publication and approval recovery.
+
 ## [0.0.40] - 2026-10-06
 
 ### Fixed
