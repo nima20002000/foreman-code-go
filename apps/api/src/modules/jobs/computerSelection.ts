@@ -60,6 +60,7 @@ export function jobEligibilityReason(code: string): JobComputerEligibility['reas
   if (code === 'JOB_SOURCE_PIN_CONFLICT') return 'source_unavailable'
   if (code === 'JOB_RUNTIME_UNQUALIFIED') return 'runtime_unqualified'
   if (code === 'JOB_RUNTIME_CONTEXT_CHANGED') return 'runtime_unqualified'
+  if (code === 'JOB_DEPENDENCIES_CHANGED') return 'dependencies_changed'
   return 'eligibility_check_failed'
 }
 export function compatibleJobComputer(candidate: JobComputerCandidate, request: JobDefinitionSpecRecord): boolean {

@@ -23,7 +23,8 @@ import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 import { JobArtifactSchema } from './jobs.js'
 import { MAX_FILE_BYTES } from './files.js'
 import { SourceMaterializationRecordSchema } from './sourceAdmission.js'
-export { JobVerificationOfflineSeedReceiptSchema, type JobVerificationOfflineSeedReceipt } from './jobVerificationSeed.js'
+export { JobVerificationOfflineSeedReceiptSchema, type JobVerificationOfflineSeedReceipt, JobDependencyBasisSchema, type JobDependencyBasis,
+  isJobDependencyInputPath, jobDependencyInputs, sameJobDependencyInputs } from './jobVerificationSeed.js'
 
 /** W09 authenticates these private repository facts before the worker constructs the read-only context. */
 export const JobVerificationPrivateGitSchema = z.object({

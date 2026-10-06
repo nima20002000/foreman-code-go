@@ -7,6 +7,7 @@ import { acceptedJobSpecDigests, jobSpecDigests } from '@foreman-code/contracts/
 import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
 import { readJobRuntimeProfileVersion } from './runtimeProfileVersion.js'
+import { verificationDependencyBasis } from './dependencyBasis.js'
 
 export async function acceptVerificationSpec(sql: JobSql, input: {
   definition: JobDefinitionRecord
@@ -34,10 +35,10 @@ export async function acceptVerificationSpec(sql: JobSql, input: {
     throw new DomainError('JOB_COMPUTER_SELECTION_CONFLICT', 'The original verification capacity claim is missing or changed.', 409)
   }
   const measurement = profile.measurement
-  if (profile.sourceCommit !== spec.source.commit || measurement.fingerprint.sourceCommit !== spec.source.commit) {
-    throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED',
-      'A different source commit requires a new verification approval and qualification.', 409)
+  if (measurement.fingerprint.sourceCommit !== profile.sourceCommit) {
+    throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'The verification measurement belongs to another qualification commit.', 409)
   }
+  const dependencyBasis = await verificationDependencyBasis(sql, input.definition.workspaceId, profile, spec.source)
   const dispatchAt = selection.claimed_at.toISOString()
   JobVerificationDispatchValiditySchema.parse({ identity: measurement.identity, approvedAt: measurement.approvedAt,
     approvalConfig: profile.approvalConfig, dispatchAt, policy: spec.policy })
@@ -50,6 +51,7 @@ export async function acceptVerificationSpec(sql: JobSql, input: {
     lifecycle: verificationJobLifecycle(dispatchAt, spec.policy),
     resourcePolicyRevision: fingerprint.resourcePolicyRevision, resourcePolicyDigest: fingerprint.resourcePolicyDigest,
     runtimeApprovalId: fingerprint.runtimeApprovalId, runtimeApprovalRevision: fingerprint.runtimeApprovalRevision,
+    ...(dependencyBasis ? { dependencyBasis } : {}),
     ...jobSpecDigests(spec, input.workflowInput) })
   return AcceptedVerificationJobSpecSchema.parse({ ...accepted, ...acceptedJobSpecDigests(accepted) })
 }

@@ -77,7 +77,8 @@ export function requireVerificationRuntime(
     + spec.policy.cancellationGraceMs + spec.policy.publicationTimeoutMs + spec.policy.cleanupTimeoutMs
   if (remainingMs < entryBudgetMs) throw new Error('Verification approval cannot cover execution and closure.')
   if (!suite || !isDeepStrictEqual(spec.profile, measured.identity) || digest !== measured.identity.fingerprintDigest
-    || fingerprint.sourceCommit !== spec.source.commit
+    // Another commit runs only on Main's proof that its dependency files equal the qualification commit's.
+    || fingerprint.sourceCommit !== spec.source.commit && spec.dependencyBasis?.qualificationCommit !== fingerprint.sourceCommit
     || !isDeepStrictEqual(spec.target.hostRef, fingerprint.hostRef)
     || !isDeepStrictEqual(spec.target.registration, fingerprint.registration)
     || spec.target.mainInstallationId !== fingerprint.mainInstallationId

@@ -166,6 +166,16 @@ describe('offline verification launch validation with structured physical observ
         .toThrow('isolation rejected')
     }
   })
+  it('runs another commit only with Main\'s dependency basis naming the computer\'s qualification commit', () => {
+    const f = verificationRuntimeFixture(), qualified = f.measurement.fingerprint.sourceCommit!
+    const inputs = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].map(path => ({ path, sha256: '9'.repeat(64) }))
+    const other = { ...f.spec, source: { ...f.spec.source, commit: '7'.repeat(40) } }
+    expect(() => requireVerificationRuntime(other, f.measurement, f.runtime)).toThrow()
+    expect(requireVerificationRuntime({ ...other, dependencyBasis: { qualificationCommit: qualified, inputs } }, f.measurement, f.runtime))
+      .toEqual(f.measurement)
+    expect(() => requireVerificationRuntime({ ...other, dependencyBasis: { qualificationCommit: '6'.repeat(40), inputs } },
+      f.measurement, f.runtime)).toThrow()
+  })
   it('requires separate measured suite evidence and enough reviewed validity without double-subtracting capacity', () => {
     const f = verificationRuntimeFixture()
     expect(requireVerificationRuntime(f.spec, f.measurement, f.runtime)).toEqual(f.measurement)

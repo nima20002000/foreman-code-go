@@ -15,6 +15,7 @@ import {
   JOB_VERIFICATION_INITIAL_CONCURRENCY, JOB_VERIFICATION_OWNER_CONFIGURATION,
 } from './jobVerificationPolicy.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
+import { JobDependencyBasisSchema } from './jobVerificationSeed.js'
 
 export const JOB_VERIFICATION_SUITES = [
   'install', 'typecheck', 'lint', 'unit', 'build', 'integration', 'browser', 'native-acceptance', 'full-gate-local',
@@ -174,6 +175,8 @@ export const AcceptedVerificationJobSpecSchema = z.object({
   profile: JobVerificationProfileIdentitySchema,
   reservationId: z.uuid(),
   lifecycle: JobVerificationLifecycleSchema,
+  /** Present when this commit differs from the computer's qualification commit with identical dependency files. */
+  dependencyBasis: JobDependencyBasisSchema.optional(),
 }).strict().superRefine(validateHistoricalDeviceExecutionAdmission).superRefine((value, context) => {
   validateJobDefinitionPaths(value, context)
   validateVerificationPolicy(value, context)

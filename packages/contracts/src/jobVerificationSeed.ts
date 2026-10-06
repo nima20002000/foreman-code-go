@@ -47,3 +47,31 @@ export const JobVerificationOfflineSeedReceiptSchema = z.object({
   }
 })
 export type JobVerificationOfflineSeedReceipt = z.infer<typeof JobVerificationOfflineSeedReceiptSchema>
+
+/** Files whose bytes decide the offline dependency seed: the workspace manifests, lockfile and policy. */
+export function isJobDependencyInputPath(path: string): boolean {
+  return ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].includes(path)
+    || /^(?:apps|packages)\/[^/]+\/package\.json$/.test(path)
+}
+const DependencyInputSchema = z.object({ path: z.string().min(1).max(1024), sha256: DeviceDigestSchema }).strict()
+/** The dependency files of a source manifest, sorted by path. */
+export function jobDependencyInputs(entries: readonly { path: string; sha256?: string | null }[]): z.infer<typeof DependencyInputSchema>[] {
+  return entries.filter(entry => isJobDependencyInputPath(entry.path) && typeof entry.sha256 === 'string')
+    .map(entry => ({ path: entry.path, sha256: entry.sha256! }))
+    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
+}
+export function sameJobDependencyInputs(left: readonly { path: string; sha256: string }[], right: readonly { path: string; sha256: string }[]): boolean {
+  return left.length === right.length && left.every((entry, index) => entry.path === right[index]!.path && entry.sha256 === right[index]!.sha256)
+}
+/** A verification Job may run a commit other than the one its computer qualified when the dependency
+ * files are byte-identical, so the qualified offline seed installs it exactly. */
+export const JobDependencyBasisSchema = z.object({
+  qualificationCommit: z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/),
+  inputs: z.array(DependencyInputSchema).min(3).max(256),
+}).strict().superRefine((value, context) => {
+  if (value.inputs.some(input => !isJobDependencyInputPath(input.path))
+    || !sameJobDependencyInputs(value.inputs, jobDependencyInputs(value.inputs))) {
+    context.addIssue({ code: 'custom', message: 'A dependency basis lists only sorted dependency files.' })
+  }
+})
+export type JobDependencyBasis = z.infer<typeof JobDependencyBasisSchema>

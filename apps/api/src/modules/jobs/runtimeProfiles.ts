@@ -26,6 +26,7 @@ import { JobVerificationProfileSchema, JobVerificationRuntimeFingerprintSchema,
   from '@foreman-code/contracts/job-verification-runtime'
 import { createVerificationProfile, requireReviewedVerificationConfiguration } from './verificationProfiles.js'
 import type { z } from 'zod'
+import { verificationDependencyBasis } from './dependencyBasis.js'
 import { runtimeQualificationFacts, validateRuntimeQualification, qualificationTimeoutMs, qualificationDeadline }
   from './runtimeQualificationFacts.js'
 
@@ -276,10 +277,11 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     if ('verification' in spec) {
       if (profile.schemaVersion !== 2 || !profile.measurement) throw new DomainError('JOB_RUNTIME_UNQUALIFIED','A verification Job requires its measured verification profile.',409)
       requireReviewedVerificationConfiguration(profile)
-      if (profile.sourceCommit !== spec.source.commit || profile.measurement.fingerprint.sourceCommit !== spec.source.commit) {
-        throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED',
-          'The approved verification profile belongs to another source commit.', 409)
+      if (profile.measurement.fingerprint.sourceCommit !== profile.sourceCommit) {
+        throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'The verification measurement belongs to another qualification commit.', 409)
       }
+      // Any commit with the qualified dependency files runs; changed dependencies wait for a new qualification.
+      await verificationDependencyBasis(sql, root.binding.workspaceId, profile, spec.source)
       const measured = profile.measurement.suites.find(value => value.suite === spec.verification.suite)
       if (!measured || canonical(measured.resources) !== canonical(spec.verification.resources)
         || spec.verification.parameters.unitWorkers > Math.min(measured.maxUnitWorkers, JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers)
