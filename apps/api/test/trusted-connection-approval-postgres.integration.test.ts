@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -28,7 +29,7 @@ describe.skipIf(!url)('trusted connection action approval and delegated MCP appl
     const parsed = new URL(url!)
     if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
       || !parsed.pathname.includes('test')) throw new Error('Explicit owned loopback test database required.')
-    admin = new pg.Pool({ connectionString: url }); await admin.query(`create schema ${schema}`)
+    admin = new pg.Pool({ connectionString: url }); await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString: url, options: `-c search_path=${schema}` })
     await applyApplicationMigrations(pool)
     access = new PostgresAccessService(pool)
@@ -45,7 +46,7 @@ describe.skipIf(!url)('trusted connection action approval and delegated MCP appl
   }, 60_000)
   afterAll(async () => {
     await Promise.allSettled(clients.map(client => client.close())); await app?.close(); await pool?.end()
-    if (admin) { await admin.query(`drop schema ${schema} cascade`); await admin.end() }
+    if (admin) { await dropFixtureSchema(admin, schema); await admin.end() }
   })
   async function delegate(actions = grants) {
     const issued = await access.issue({ name: 'Owned test Operator', audience: 'operator', grants: actions, expiresAt: new Date(Date.now() + 3_600_000) })

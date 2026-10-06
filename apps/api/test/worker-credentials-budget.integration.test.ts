@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 
 import { HarnessExecutionSchema, WorkflowRunSchema, type HarnessExecution } from '@foreman-code/contracts'
@@ -11,7 +12,7 @@ import { WorkerCredentialService } from '../src/modules/access/workerCredentials
 import { WorkerLaunchCredentialService } from '../src/modules/harnesses/mcpDetection.js'
 import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.TEST_DATABASE_URL!
 let schema: string
 let admin: pg.Pool
 let pool: pg.Pool
@@ -23,7 +24,7 @@ let budgets: PostgresApprovalBudgetRepository
 beforeEach(async () => {
   schema = `worker_budget_${randomUUID().replaceAll('-', '')}`
   admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   await applyApplicationMigrations(pool)
   await ensureAcceptanceSeed(pool)
@@ -61,7 +62,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await pool?.end()
-  await admin?.query(`drop schema if exists "${schema}" cascade`)
+  await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve())
   await admin?.end()
 })
 

@@ -1,5 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -26,7 +27,7 @@ it('saves Claude templates through authenticated MCP while unavailable API-key d
   }
   const admin = new pg.Pool({ connectionString })
   const schema = `hrt_f14_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const root = await mkdtemp(join(tmpdir(), 'hrt-f14-'))
   const config = loadConfig({ DATABASE_URL: connectionString, HARNESS_WORKSPACE_ROOT: root })
@@ -149,8 +150,8 @@ it('saves Claude templates through authenticated MCP while unavailable API-key d
   } finally {
     await Promise.all(clients.map(client => client.close()))
     await production?.app.close(); await checkpoints.close(); await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`); await admin.end()
-    await rm(root, { recursive: true, force: true })
+    await dropFixtureSchema(admin, schema); await admin.end()
+    await removeFixtureDirectory(root)
     vi.restoreAllMocks(); vi.unstubAllEnvs()
   }
 }, 60_000)

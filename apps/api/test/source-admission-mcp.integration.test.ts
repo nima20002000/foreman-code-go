@@ -1,5 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -30,8 +31,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
   const connectionString = process.env.TEST_DATABASE_URL!
   const url = new URL(connectionString)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !url.pathname.includes('test')) throw new Error('Use an owned disposable loopback test database.')
-  const schema = `source_mcp_${randomUUID().replaceAll('-', '')}`, directory = await mkdtemp('/tmp/source-mcp-')
-  const admin = new pg.Pool({ connectionString }); await admin.query(`create schema "${schema}"`)
+  const schema = `source_mcp_${randomUUID().replaceAll('-', '')}`, directory = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/source-mcp-`)
+  const admin = new pg.Pool({ connectionString }); await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const clients: Client[] = []
   const commands = new PostgresCommandCoordinator(pool), access = new PostgresAccessService(pool)
@@ -129,6 +130,6 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     await expect(client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })).rejects.toThrow('Unauthorized')
   } finally {
     for (const client of clients) await client.close().catch(() => undefined)
-    await app?.close(); await pool.end(); await admin.query(`drop schema "${schema}" cascade`); await admin.end(); await rm(directory, { recursive: true, force: true })
+    await app?.close(); await pool.end(); await dropFixtureSchema(admin, schema); await admin.end(); await removeFixtureDirectory(directory)
   }
 }, 180_000)

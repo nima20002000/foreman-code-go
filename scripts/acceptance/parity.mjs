@@ -16,7 +16,8 @@ function stableWorkspace(item) {
 }
 /** Real network transports. Tokens exist only in this function and hashed DB rows.
  * Never returns tokens or response bodies to the launcher; revokes both in finally. */
-export async function parity({ apiUrl, workspaceId, workflowIds, runId, access, Client, StreamableHTTPClientTransport }) {
+export async function parity({ apiUrl, workspaceId, workflowIds, runId, access, Client, StreamableHTTPClientTransport,
+  ProtocolError, ProtocolErrorCode }) {
   const principals = [], clients = []
   let comparisons = 0
   const issue = async (grants) => {
@@ -31,6 +32,17 @@ export async function parity({ apiUrl, workspaceId, workflowIds, runId, access, 
     const writer = await issue([{ actions: ['workspaces:read', 'workspaces:update', 'workspace_locations:read',
       'workflows:read', 'graph:read', 'runs:read'], scope: { workspaceIds: [workspaceId] } }])
     const denied = await issue([{ actions: ['capabilities:read'], scope: {} }])
+    const deniedCall = async (name, args) => {
+      const advertised = await denied.client.listTools()
+      check(!advertised.tools.some((tool) => tool.name === name), 'MCP_DENIED_TOOL_ADVERTISED')
+      try {
+        await denied.client.callTool({ name, arguments: args })
+      } catch (error) {
+        if (!(error instanceof ProtocolError) || error.code !== ProtocolErrorCode.InvalidParams) throw error
+        return
+      }
+      check(false, 'MCP_DENIAL_FAILED')
+    }
     const http = async (path, method = 'GET', body, token = writer.token) => {
       const response = await fetch(`${apiUrl}${path}`, { method, headers: { authorization: `Bearer ${token}`,
         ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}),
@@ -57,13 +69,11 @@ export async function parity({ apiUrl, workspaceId, workflowIds, runId, access, 
     const refreshed = await http(base)
     check(refreshed.value.revision === original.value.revision + 1, 'PARITY_DUPLICATE_MUTATION')
     const refused = await http(base, 'GET', undefined, denied.token)
-    const mcpRefused = await denied.client.callTool({ name: 'workspace_get', arguments: { workspaceId } })
     check(refused.status === 403 && refused.value.error?.code === 'ACCESS_DENIED', 'HTTP_DENIAL_FAILED')
-    check(mcpRefused.isError === true && JSON.stringify(mcpRefused).includes('ACCESS_DENIED'), 'MCP_DENIAL_FAILED')
+    await deniedCall('workspace_get', { workspaceId })
     const deniedWrite = await http(base, 'PATCH', command, denied.token)
-    const mcpDeniedWrite = await denied.client.callTool({ name: 'workspace_update', arguments: command })
     check(deniedWrite.status === 403 && deniedWrite.value.error?.code === 'ACCESS_DENIED', 'HTTP_WRITE_DENIAL_FAILED')
-    check(mcpDeniedWrite.isError === true && JSON.stringify(mcpDeniedWrite).includes('ACCESS_DENIED'), 'MCP_WRITE_DENIAL_FAILED')
+    await deniedCall('workspace_update', command)
     check((await http(base)).value.revision === refreshed.value.revision, 'DENIED_MUTATION_APPLIED')
     for (const { workflowId } of workflowIds) {
       const result = await http(`${base}/workflows/${encodeURIComponent(workflowId)}/definition`)

@@ -1,3 +1,4 @@
+import { createFixtureDatabase, dropFixtureDatabase } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
@@ -28,16 +29,15 @@ function barrier() {
 // This proves PostgreSQL ordering, not application migration or native execution.
 describe.skipIf(process.env.JOB_LIFECYCLE_POSTGRES !== '1' && !process.env.TEST_DATABASE_URL)('Run/Job production lock order', () => {
   it('polling and trusted receipt ingestion complete on independent owner sessions', async () => {
-    const url = new URL(process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres')
+    const url = new URL(process.env.TEST_DATABASE_URL!)
     if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('Job lifecycle tests require loopback PostgreSQL')
-    url.pathname = '/postgres'
     const admin = new pg.Client({ connectionString: url.toString() })
     const name = `job_lifecycle_test_${randomUUID().replaceAll('-', '')}`
     let pool: pg.Pool | undefined, runOwner: RunOwnership | undefined, dispatch: PostgresJobDispatch | undefined
     let created = false
     await admin.connect()
     try {
-      await admin.query(`create database "${name}"`); created = true
+      await createFixtureDatabase(admin, name); created = true
       url.pathname = `/${name}`
       pool = new pg.Pool({ connectionString: url.toString(),
         options: '-c statement_timeout=5000 -c lock_timeout=4000' })
@@ -133,7 +133,7 @@ describe.skipIf(process.env.JOB_LIFECYCLE_POSTGRES !== '1' && !process.env.TEST_
       expect((await pool.query('select receipt_sequence::text from job_dispatch_intents where execution_id=$1', [execution.id])).rows[0].receipt_sequence).toBe('1')
     } finally {
       vi.restoreAllMocks(); await runOwner?.release(); await dispatch?.close(); await pool?.end()
-      try { if (created) await admin.query(`drop database "${name}"`) } finally { await admin.end() }
+      try { if (created) await dropFixtureDatabase(admin, name) } finally { await admin.end() }
     }
   }, 15000)
 })

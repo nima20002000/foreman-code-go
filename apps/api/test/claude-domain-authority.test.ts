@@ -4,6 +4,7 @@ import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { createPostgresClaudeInteractionBridge } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
+import { claudeCallbackDatabase } from './support/claudeCallbackDatabase.js'
 const configuration: ClaudeHarnessConfiguration = { harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: '/fixture', permissionMode: 'default', sandbox: 'read-only', tools: ['Read', 'AskUserQuestion'], permissionRules: [], instructions: '', mcpServers: {} }
 const session = { harness: 'claude' as const, nativeSessionId: 'native-session', providerVersion: 'fixture-cli' }
 const identity = { ownerPrincipalId: 'sender', attemptId: 'model-request', nativeSessionId: session.nativeSessionId, nativeMessageId: 'input-message', clientCorrelationId: 'accepted-correlation', generation: 'sdk-generation', toolUseId: 'tool-use', nativeRequestId: 'control-request', nativeRequestType: 'can_use_tool' as const }
@@ -15,11 +16,15 @@ function fixture(kind: 'operator' | 'agent' = 'operator') {
     payload: { ownerPrincipalId: 'sender', nativeSubmission: { kind: 'message', nativeSessionId: session.nativeSessionId, nativeMessageId: identity.nativeMessageId, clientCorrelationId: identity.clientCorrelationId } },
     pending_interaction: null as unknown, response_delivery: null as string | null }
   let receipts: unknown[] = []
+  const callbacks = claudeCallbackDatabase()
   const query = vi.fn(async (text: string, values: unknown[] = []) => {
+    const callbackResult = callbacks(text, values)
+    if (callbackResult) return callbackResult
     const result = (rows: unknown[], rowCount = rows.length) => ({ rows, rowCount, command: 'SELECT', oid: 0, fields: [] })
     if (text.includes('from management_principals where id=')) return result(principals.has(values[0] as string) ? [principals.get(values[0] as string)] : [])
     if (text.includes('join operator_conversation_turns t')) { expect(values[0]).toBe('conversation'); expect([null, 'model-request']).toContain(values[1]); return result([structuredClone(row)]) }
-    if (text.includes('select principal_id,result from management_command_receipts')) return result(receipts)
+    if (text.includes('select principal_id,result from management_command_receipts')
+      || text.includes('select result from management_command_receipts')) return result(receipts)
     if (text.includes('set pending_interaction=')) {
       expect(values[0]).toBe('conversation'); expect(values[1]).toBe('model-request')
       row.pending_interaction = values[2] ? JSON.parse(values[2] as string) : null
@@ -39,10 +44,10 @@ function fixture(kind: 'operator' | 'agent' = 'operator') {
   const port = createPostgresClaudeInteractionBridge({ database, configuration, manager,
     binding: kind === 'operator' ? { kind, conversationId: 'conversation', repository: operator }
       : { kind, conversationId: 'conversation', workspaceId: 'workspace', repository: agent } })
-  const claim = async (optionId = 'allow_once', generation = identity.generation) => {
-    if (kind === 'operator') expect(await operator.claimResponse('conversation', 'model-request', identity.nativeRequestId)).toBe(true)
+  const claim = async (optionId = 'allow_once', generation = identity.generation, callback = identity) => {
+    if (kind === 'operator') expect(await operator.claimResponse('conversation', 'model-request', callback.nativeRequestId)).toBe(true)
     // Existing NativeConversationControlCommands persisted reservation fixture, including actual observed generation.
-    receipts = [{ principal_id: 'responder', result: { status: 'pending', acceptedControl: { modelRequestId: 'model-request', conversationId: 'conversation', scope: { kind: kind === 'operator' ? 'operator_chat' : 'agent_chat', conversationId: 'conversation', workspaceId: 'workspace', workflowId: 'workflow' }, native: { harness: 'claude', providerVersion: session.providerVersion, sessionId: session.nativeSessionId, messageId: identity.nativeMessageId, generation, requestId: identity.nativeRequestId, requestType: identity.nativeRequestType }, choice: { optionId, semantic: optionId === 'allow_once' ? 'approve_once' : optionId === 'deny' ? 'reject' : 'cancel' } } } }]
+    receipts = [{ principal_id: 'responder', result: { status: 'pending', acceptedControl: { modelRequestId: 'model-request', conversationId: 'conversation', scope: { kind: kind === 'operator' ? 'operator_chat' : 'agent_chat', conversationId: 'conversation', workspaceId: 'workspace', workflowId: 'workflow' }, native: { harness: 'claude', providerVersion: session.providerVersion, sessionId: session.nativeSessionId, messageId: identity.nativeMessageId, generation, requestId: callback.nativeRequestId, requestType: identity.nativeRequestType }, choice: { optionId, semantic: optionId === 'allow_once' ? 'approve_once' : optionId === 'deny' ? 'reject' : 'cancel' } } } }]
   }
   return { ...port, row, principals, query, claim, manager }
 }
@@ -65,6 +70,48 @@ it.each(['operator', 'agent'] as const)('derives actual %s sender/attempt and pe
   expect(observed.responseDeliveries).toEqual([]); expect(observed.interactionDeliveries).toEqual([{ nativeRequestId: identity.nativeRequestId, state: 'submitted', selectedOptionId: 'allow_once' }])
   await expect(f.interactionPort.respond(session, identity.nativeRequestId, offer.descriptor.responseOptions[0]!)).rejects.toThrow()
 })
+it('retains compact consumed decisions without granting a second callback or resending a response', async () => {
+  const f = fixture(), offer = await offered(f)
+  await f.claim()
+  await f.interactionPort.respond(session, identity.nativeRequestId, offer.descriptor.responseOptions[0]!)
+  await offer.pending
+  expect(await f.interactionPort.pending(session)).toBeUndefined()
+  expect(f.bridge.inspectCallbackAvailability({ ...identity, nativeRequestType: identity.nativeRequestType })).toMatchObject({
+    state: 'unavailable', reason: 'request_consumed',
+  })
+  expect(await f.bridge.canUseTool(identity, 'Read', { path: 'scope-owned' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
+  await expect(f.bridge.canUseTool(identity, 'Read', { path: 'changed' }, new AbortController().signal)).rejects.toThrow('different input')
+  await f.bridge.observeToolResult(identity, 'Read', 'executed')
+  const observation = await f.interactionPort.reconcileResponse(session, { nativeRequestId: identity.nativeRequestId,
+    option: offer.descriptor.responseOptions[0]! })
+  expect(observation.responseDeliveries).toMatchObject([{ nativeIdentity: {
+    kind: 'message', nativeMessageId: identity.nativeMessageId, generation: identity.generation,
+  }, optionId: 'allow_once' }])
+  await expect(f.interactionPort.respond(session, identity.nativeRequestId, offer.descriptor.responseOptions[0]!)).rejects.toThrow()
+})
+
+it('admits later permission callbacks while retaining replay protection for earlier callbacks', async () => {
+  const f = fixture()
+  for (let index = 0; index < 300; index += 1) {
+    const callback = { ...identity, toolUseId: `tool-${index}`, nativeRequestId: `permission-${index}` }
+    const decision = f.bridge.canUseTool(callback, 'Read', { path: 'owned' }, new AbortController().signal)
+    await vi.waitFor(() => expect(f.row.pending_interaction).toMatchObject({ turn: { nativeRequestId: callback.nativeRequestId } }))
+    const pending = (await f.interactionPort.pending(session))!
+    await f.claim('allow_once', identity.generation, callback)
+    await f.interactionPort.respond(session, callback.nativeRequestId, pending.responseOptions[0]!)
+    expect(await decision).toMatchObject({ behavior: 'allow' })
+  }
+  const extra = { ...identity, toolUseId: 'overflow-tool', nativeRequestId: 'overflow-permission' }
+  const next = f.bridge.canUseTool(extra, 'Read', { path: 'owned' }, new AbortController().signal)
+  await vi.waitFor(() => expect(f.row.pending_interaction).toMatchObject({ turn: { nativeRequestId: extra.nativeRequestId } }))
+  const pending = (await f.interactionPort.pending(session))!
+  await f.claim('allow_once', identity.generation, extra)
+  await f.interactionPort.respond(session, extra.nativeRequestId, pending.responseOptions[0]!)
+  expect(await next).toMatchObject({ behavior: 'allow' })
+  const first = { ...identity, toolUseId: 'tool-0', nativeRequestId: 'permission-0' }
+  expect(await f.bridge.canUseTool(first, 'Read', { path: 'owned' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
+}, 30_000)
+
 it('does not resolve the SDK permission without an existing exact response receipt/claim', async () => {
   const f = fixture(), offer = await offered(f)
   await expect(f.interactionPort.respond(session, identity.nativeRequestId, offer.descriptor.responseOptions[0]!)).rejects.toThrow('no longer matches')
@@ -125,7 +172,10 @@ it('workflow response uses original-source readback plus active delivery lease a
   const run = WorkflowRunV3Schema.parse({ id: 'run', workspaceId: 'ws', workflowId: 'wf', workflowVersionId: version.id, executionSemanticsVersion: 3, agentConfigurationVersionIds: version.agentConfigurationVersionIds, approval, executionCondition: { kind: 'manual' }, executionState: 'waiting', outcome: 'pending', input: {}, createdAt })
   const execution = HarnessExecutionSchema.parse({ id: 'exec', runId: run.id, workflowNodeId: 'node', agentId: 'agent', agentConfigurationVersionId: cfg.id, attempt: 2, nativeSessionId: session.nativeSessionId, state: 'waiting', input: {}, createdAt })
   const persisted: { interaction?: unknown } = {}; let claimed = false
-  const query = vi.fn(async (sql: string) => {
+  const callbacks = claudeCallbackDatabase()
+  const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+    const callbackResult = callbacks(sql, values)
+    if (callbackResult) return callbackResult
     const rows = sql.includes('e.record as execution') ? [{ run, version, execution, configuration: cfg, attempt: 2, stopped: false, execution_closed: false, native_reference: session, finalized: false, generation: '1', native_owner: 'agent', budget_active: true }]
       : sql.includes("record->>'authorizationPrincipalId'") ? [{ principal_id: 'sender' }]
       : sql.includes('from management_principals where id=') ? [{ id: 'sender', name: 'Synthetic sender', audience: 'operator', grants: [{ actions: ['runs:start'], scope: {} }], expires_at: new Date('2099-01-01'), revoked_at: null, delegated_from: null }]

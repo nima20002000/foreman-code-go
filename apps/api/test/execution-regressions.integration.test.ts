@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
-import { mkdir, rename, rm } from 'node:fs/promises'
+import { mkdir, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { makeCurrentWorkflowFixture, ExecutableWorkflowV3Schema } from '@foreman-code/contracts/wave25'
@@ -85,7 +86,7 @@ describe.skipIf(!postgresEnabled)('current execution snapshots and authoring reg
         .rejects.toMatchObject({ code: 'WORKSPACE_LOCATION_CHANGED' })
       expect((await db.pool.query('select id from harness_executions where run_id=$1', [f.f.run.id])).rows).toEqual([])
     } finally {
-      await rm(db.directory, { recursive: true, force: true }); await rename(original, db.directory)
+      await removeFixtureDirectory(db.directory); await rename(original, db.directory)
       await db.close()
     }
   })

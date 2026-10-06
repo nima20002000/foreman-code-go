@@ -1,3 +1,4 @@
+import { ownedTestPath, removeFixtureDirectory } from './helpers/testResources.js'
 /**
  * SKL-05/06/07 real-harness qualification. Not part of CI: it spends real model turns.
  * Run: RUN_SKILLS_NATIVE=1 npx vitest run --config vitest.config.mjs test/skills-native.acceptance.test.ts
@@ -5,7 +6,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -44,14 +45,14 @@ async function turn(manager: NativeHarnessSessionManager, session: NativeSession
   return output
 }
 function log(entry: Record<string, unknown>) {
-  if (process.env.SKILLS_EVIDENCE_FILE) appendFileSync(process.env.SKILLS_EVIDENCE_FILE, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
+  if (process.env.SKILLS_EVIDENCE_FILE) appendFileSync(ownedTestPath(process.env.SKILLS_EVIDENCE_FILE), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
 }
 
 type Factory = (directory: string) => NativeHarnessSessionManager
 const binaries = harnessBinaries(process.env)
 const harnesses: [string, HarnessConfiguration, Factory][] = [
   ['codex', { ...DEFAULT_HARNESS_DEFAULTS.codex, model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
-    reasoningEffort: 'medium' }, () => new CodexAppServerSessionManager(binaries.codexBinary)],
+    reasoningEffort: 'medium' }, () => new CodexAppServerSessionManager(binaries.codexBinary, undefined, undefined, undefined, 'none')],
   ['opencode', DEFAULT_HARNESS_DEFAULTS.opencode, (directory) => new OpenCodeNativeSessionManager({ ownerAgentId: 'agent-q',
     server: new ManagedOpenCodeServer({ binary: binaries.openCodeBinary, workingDirectory: directory, ownerAgentId: 'agent-q',
       ...(DEFAULT_HARNESS_DEFAULTS.opencode.harness === 'opencode' && DEFAULT_HARNESS_DEFAULTS.opencode.advanced ? { advancedConfiguration: DEFAULT_HARNESS_DEFAULTS.opencode.advanced } : {}) }) })],
@@ -91,7 +92,7 @@ describe.skipIf(!enabled)('Skills native delivery qualification', () => {
         expect(three).toContain(HEAD); expect(three).toContain(TAIL)
       } finally {
         await Promise.allSettled(managers.map((manager) => manager.dispose?.()))
-        await rm(directory, { recursive: true, force: true }); await rm(controlDirectory, { recursive: true, force: true })
+        await removeFixtureDirectory(directory); await removeFixtureDirectory(controlDirectory)
       }
     }, 600_000)
   }
@@ -115,7 +116,7 @@ describe.skipIf(!enabled)('Skills native delivery qualification', () => {
         expect(output).toContain(HEAD); expect(output).toContain(TAIL)
       } finally {
         await manager.dispose?.()
-        await rm(directory, { recursive: true, force: true })
+        await removeFixtureDirectory(directory)
       }
     }, 300_000)
   }

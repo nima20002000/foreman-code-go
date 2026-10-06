@@ -1,5 +1,8 @@
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { workflowPresentationMigration } from './workflowPresentationMigration.js'
+import { operatorTerminalMigration } from './operatorTerminalMigration.js'
+import { operatorTerminalHistoryMigration } from './operatorTerminalHistoryMigration.js'
+import { claudeCallbackMigration } from './claudeCallbackMigration.js'
 import { runSubagentsMigration } from './runSubagentsMigration.js'
 import { deviceIdentityMigration } from '../modules/devices/migration.js'
 import { activitySnapshotMigration } from './activitySnapshotMigration.js'
@@ -823,6 +826,9 @@ export const migrations = [
   runPresentationMigration,
   workflowPresentationMigration,
   workspaceProvisioningMigration,
+  operatorTerminalMigration,
+  operatorTerminalHistoryMigration,
+  claudeCallbackMigration,
   localHumanMigration,
 ] as const
 

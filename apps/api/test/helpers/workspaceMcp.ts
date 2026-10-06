@@ -1,5 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -57,13 +58,13 @@ export async function workspaceMcpFixture(options: {
       ...clients.map(client => () => client.close()),
       () => app.close(),
       () => pool.end(),
-      () => admin.query(`drop schema if exists "${schema}" cascade`),
+      () => dropFixtureSchema(admin, schema),
       () => admin.end(),
-      () => rm(parentPath, { recursive: true, force: true }),
+      () => removeFixtureDirectory(parentPath),
     ])
   }
   try {
-    await admin.query(`create schema "${schema}"`)
+    await createFixtureSchema(admin, schema)
     await applyApplicationMigrations(pool)
     await options.configure?.({ app, pool, access, commands, parentPath, services })
     const address = await app.listen({ host: '127.0.0.1', port: options.port ?? 0 })

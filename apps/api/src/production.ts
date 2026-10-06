@@ -95,6 +95,7 @@ import { WorkflowArtifactResultAdoption } from './modules/runs/remote/workflowAr
 import { createWorkflowArtifactOutputsGate } from './modules/runs/remote/workflowArtifactAcceptance.js'
 import { PostgresWorkflowPhysicalArtifacts } from './modules/runs/remote/workflowPhysicalArtifacts.js'
 import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
+import { readTestResourcesIdentity } from './infrastructure/testRuntimeResources.js'
 import { fileURLToPath } from 'node:url'
 import { AppMcpRoutes } from './modules/harnesses/appMcpRoutes.js'
 import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
@@ -1079,7 +1080,12 @@ export function buildProductionApp(
     jobRuntimeProfiles?: import('./modules/jobs/runtimeProfiles.js').JobRuntimeProfiles } = { ...operatorServices, extensions: operatorExtensions, harnessSettings }
   const localHuman = new PostgresLocalHumanAccess(database.pool, access)
   const app = buildApp({
-    runtimeIdentity: () => readRuntimeIdentity(database.pool, fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString),
+    runtimeIdentity: async () => {
+      const identity = await readRuntimeIdentity(database.pool,
+        fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString)
+      const testResourcesId = readTestResourcesIdentity(config)
+      return { ...identity, ...(testResourcesId ? { testResourcesId } : {}) }
+    },
     localHuman,
     ...(config.browserOrigin ? { browserOrigin: config.browserOrigin } : {}),
     readiness: { database, checkpoints },

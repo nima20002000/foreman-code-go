@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, options, parseVitestCases, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
+import { createTestRoot, removeTestRoot, testAdminUrl } from './test-resources.mjs'
+import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, options, parseVitestCases, partitionIntegrationFiles, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -82,6 +83,19 @@ test('failed-log selection includes only discovered failures once', () => {
   assert.deepEqual(failedFilesFromLog(log, files), ['apps/api/test/b.integration.test.ts'])
   assert.throws(() => failedFilesFromLog('[integration] FAIL apps/api/test/unknown.integration.test.ts (slot 1, exit 1)\n', files), /Unknown failed/)
   assert.throws(() => failedFilesFromLog('no failures', files), /no failed files/)
+})
+
+test('isolates bounded resource checks and retains every requested file exactly once', () => {
+  const files = ['apps/api/test/ordinary.integration.test.ts',
+    'apps/api/test/operator-chat.integration.test.ts',
+    'apps/api/test/entrypoints-source-approval-profile.integration.test.ts',
+    'apps/api/test/production-lifecycle.integration.test.ts',
+    'apps/api/test/dev-startup.integration.test.ts']
+  const partition = partitionIntegrationFiles(files)
+  assert.deepEqual(partition.parallel, [files[0]])
+  assert.deepEqual(partition.exclusive, [files[4], files[2], files[1], files[3]])
+  assert.deepEqual([...partition.exclusive, ...partition.parallel].sort(), [...files].sort())
+  assert.deepEqual(partitionIntegrationFiles([files[0]]), { exclusive: [], parallel: [files[0]] })
 })
 
 test('exact-file selection runs only requested discovered files once', () => {
@@ -254,32 +268,34 @@ test('lists failing case names from a Vitest log', () => {
   assert.deepEqual(failedCasesFromLog(log), ['suite > breaks'])
 })
 
-test('TEST_DATABASE_URL selects the server; slots get their own databases there', () => {
-  assert.equal(adminDatabaseUrl(undefined), 'postgresql://graphql:graphql@127.0.0.1:5432/postgres')
-  assert.equal(adminDatabaseUrl('postgresql://u:p@127.0.0.1:5433/my_test'), 'postgresql://u:p@127.0.0.1:5433/postgres')
+test('database gates and storage paths use the current owned slot, overriding inherited destinations', () => {
+  const resource = createTestRoot()
+  const databaseUrl = new URL('/graphql_test_owned', testAdminUrl).toString()
+  const slot = { ...resource, databaseUrl }
+  const inherited = { TEST_DATABASE_URL: 'postgresql://remote/live', DATABASE_URL: 'postgresql://remote/live',
+    JOB_DISPATCH_DATABASE_URL: 'postgresql://remote/live', SUBAGENT_CORE_ADMIN_DATABASE_URL: 'postgresql://remote/live',
+    HRT_F03_DATABASE_URL: 'postgresql://remote/live', ENG03_A_TEST_DATABASE_URL: 'postgresql://remote/live',
+    NIM2691_ADMIN_DATABASE_URL: 'postgresql://remote/live', HRT_F14_ADMIN_DATABASE_URL: 'postgresql://remote/live',
+    HOME: '/real/home', CODEX_HOME: '/real/codex', TMPDIR: '/inherited' }
+  try {
+    const environment = integrationEnvironment(inherited, slot)
+    for (const name of Object.keys(inherited).filter(key => key.endsWith('DATABASE_URL'))) {
+      assert.equal(environment[name], slot.databaseUrl)
+    }
+    assert.equal(environment.NIM2691_POSTGRES, '1')
+    assert.equal(environment.TMPDIR, join(slot.directory, 'tmp'))
+    assert.ok(environment.HOME.startsWith(slot.directory + '/'))
+    assert.ok(environment.CODEX_HOME.startsWith(slot.directory + '/'))
+    assert.equal(inherited.HRT_F14_ADMIN_DATABASE_URL, 'postgresql://remote/live')
+    const retest = integrationEnvironment(environment, { ...slot, databaseUrl: databaseUrl + '_retest' })
+    assert.equal(retest.HRT_F14_ADMIN_DATABASE_URL, databaseUrl + '_retest')
+    for (const url of ['postgresql://graphql:graphql@127.0.0.1:5432/graphql',
+      'postgresql://graphql_test_admin:graphql_test_disposable_only@remote:55439/test', databaseUrl + '?options=unsafe']) {
+      assert.throws(() => integrationEnvironment(inherited, { ...slot, databaseUrl: url }), /dedicated disposable/)
+    }
+    assert.throws(() => integrationEnvironment(inherited, { ...slot, token: 'another-owner' }), /ownership/)
+  } finally { removeTestRoot(resource) }
 })
-
-test('dedicated database gates use the current owned slot, overriding inherited destinations', () => {
-  const slot = { databaseUrl: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_test_owned', directory: '/tmp/slot-1' }
-  const inherited = { TEST_DATABASE_URL: 'postgresql://remote/live',
-    JOB_DISPATCH_DATABASE_URL: 'postgresql://remote/live',
-    NIM2691_ADMIN_DATABASE_URL: 'postgresql://remote/live', HRT_F14_ADMIN_DATABASE_URL: 'postgresql://remote/live', TMPDIR: '/inherited' }
-  const environment = integrationEnvironment(inherited, slot)
-  for (const name of ['TEST_DATABASE_URL', 'JOB_DISPATCH_DATABASE_URL', 'NIM2691_ADMIN_DATABASE_URL', 'HRT_F14_ADMIN_DATABASE_URL']) {
-    assert.equal(environment[name], slot.databaseUrl)
-  }
-  assert.equal(environment.NIM2691_POSTGRES, '1')
-  assert.equal(environment.TMPDIR, slot.directory)
-  assert.equal(inherited.HRT_F14_ADMIN_DATABASE_URL, 'postgresql://remote/live')
-  const retest = integrationEnvironment(environment, { ...slot, databaseUrl: slot.databaseUrl + '_retest' })
-  assert.equal(retest.HRT_F14_ADMIN_DATABASE_URL, slot.databaseUrl + '_retest')
-  assert.equal(retest.JOB_DISPATCH_DATABASE_URL, slot.databaseUrl + '_retest')
-  for (const databaseUrl of ['postgresql://graphql:graphql@remote/graphql_test_owned',
-    'postgresql://graphql:graphql@127.0.0.1/live', slot.databaseUrl + '?options=unsafe']) {
-    assert.throws(() => integrationEnvironment(inherited, { ...slot, databaseUrl }), /loopback PostgreSQL database explicitly named for tests/)
-  }
-})
-
 
 test('admission recognizes legacy and secondary slots and rejects forged, stale and foreign records', () => {
   const common = mkdtempSync(join(tmpdir(), 'integration-admission-'))

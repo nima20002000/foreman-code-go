@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID, createHash } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -22,7 +23,7 @@ describe.skipIf(!databaseUrl)('original native artifact output receipt SQL guard
     if (!['postgres:', 'postgresql:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
       || !/test/i.test(url.pathname)) throw new Error('Owned loopback TEST_DATABASE_URL required.')
     admin = new pg.Pool({ connectionString: databaseUrl })
-    await admin.query(`create schema ${schema}`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}` })
     await applyApplicationMigrations(pool)
     await applyApplicationMigrations(pool)
@@ -32,7 +33,7 @@ describe.skipIf(!databaseUrl)('original native artifact output receipt SQL guard
   })
   afterAll(async () => {
     await pool?.end()
-    if (admin) { try { await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() } }
+    if (admin) { try { await dropFixtureSchema(admin, schema) } finally { await admin.end() } }
   })
   const insert = (principal: string, command: string, target: string, result: unknown, op = operation) => pool.query(`
     insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)

@@ -76,7 +76,8 @@ async function fingerprint(path: string, signal: AbortSignal): Promise<string> {
   signal.throwIfAborted()
   const before = await stat(path)
   if (!before.isFile()) throw unavailable()
-  const metadata = (value: typeof before) => [value.dev, value.ino, value.size, value.mtimeMs, value.ctimeMs]
+  // Package-store hardlinks change ctime; content and launch-relevant metadata define this installation.
+  const metadata = (value: typeof before) => [value.dev, value.ino, value.size, value.mode, value.mtimeMs]
   const hash = createHash('sha256')
   // Streaming keeps large native executables out of memory and observes cancellation.
   for await (const chunk of createReadStream(path, { signal })) hash.update(chunk as Buffer)

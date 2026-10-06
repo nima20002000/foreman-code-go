@@ -13,6 +13,10 @@ import { preserveOperatorConfiguration, publish, readEnvironment, readProduction
   renderEnvironment, waitForProductionReady,
   withInstallationLock } from './local-production-runtime.mjs'
 
+if (readProductEnvironment(process.env, 'TEST_ROOT') || readProductEnvironment(process.env, 'TEST_OWNER')) {
+  throw new Error('Installed production verification cannot run inside disposable test resources')
+}
+
 const execute = promisify(execFile)
 const home = homedir()
 const app = join(home, '.local/lib/graphql-production')

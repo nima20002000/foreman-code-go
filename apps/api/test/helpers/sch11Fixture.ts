@@ -88,7 +88,7 @@ export function sch11Pool(database: Sch11Database) {
   const name = `sch11_${randomUUID().replaceAll('-', '')}`
   const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, max: 1,
     application_name: name,
-    options: `-c search_path=${database.schema},public -c statement_timeout=15000 -c lock_timeout=10000` })
+    options: `-c search_path=${database.schema} -c statement_timeout=15000 -c lock_timeout=10000` })
   return { pool, name }
 }
 

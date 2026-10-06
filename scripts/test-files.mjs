@@ -1,34 +1,55 @@
-import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { join, posix, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { spawn } from 'node:child_process'
+import { lstatSync } from 'node:fs'
+import { posix } from 'node:path'
+import { nativeAcceptanceEnvironment } from './test-native-acceptance.mjs'
 
-const root = fileURLToPath(new URL('..', import.meta.url))
+const modes = ['scripts', 'unit', 'integration', 'acceptance']
+const arguments_ = process.argv.slice(2)
+if (arguments_[0] === '--') arguments_.shift()
+const explicitMode = modes.includes(arguments_[0]) ? arguments_.shift() : undefined
+if (!arguments_.length) throw new Error('Pass explicit repository-relative test files.')
 const projects = ['apps/api', 'apps/web', 'packages/contracts', 'scripts']
-const files = process.argv.slice(2).filter((argument, index) => index !== 0 || argument !== '--')
-if (!files.length) throw new Error('Pass the repository-relative test files to run.')
-
 const selections = new Map()
-for (const file of files) {
-  const project = projects.find((folder) => file.startsWith(`${folder}/`))
-  if (!project || posix.normalize(file) !== file || file.includes('..')
-    || !/\.test\.(?:ts|tsx|mjs)$/.test(file) || !existsSync(resolve(root, file))) {
+for (const file of arguments_) {
+  const project = projects.find(folder => file.startsWith(`${folder}/`))
+  if (!project || posix.normalize(file) !== file || file.split('/').includes('..')
+    || !/\.test\.(?:ts|tsx|mjs)$/.test(file) || !lstatSync(file).isFile()) {
     throw new Error(`Invalid test file: ${file}`)
   }
-  const selected = selections.get(project) ?? new Set()
-  selected.add(file.slice(project.length + 1))
-  selections.set(project, selected)
+  let mode = project === 'scripts' ? 'scripts' : 'unit'
+  if (project === 'apps/api' && file.endsWith('.integration.test.ts')) mode = 'integration'
+  if (project === 'apps/api' && file.endsWith('.acceptance.test.ts')) mode = 'acceptance'
+  if (explicitMode && explicitMode !== mode) throw new Error(`Test file requires ${mode} mode: ${file}`)
+  const key = `${project}:${mode}`
+  const selected = selections.get(key) ?? { project, mode, files: new Set() }
+  selected.files.add(file)
+  selections.set(key, selected)
 }
 
-for (const [project, selected] of selections) {
-  const nodeTests = project === 'scripts'
-  const command = nodeTests ? process.execPath : 'corepack'
-  const arguments_ = nodeTests
-    ? ['--test', '--test-concurrency=12', ...[...selected].map(file => join(project, file))]
-    : ['pnpm', 'exec', 'vitest', 'run', '--maxWorkers=12', ...selected]
-  const result = spawnSync(command, arguments_, {
-    cwd: nodeTests ? root : resolve(root, project), stdio: 'inherit',
+async function run(command, args, environment = process.env) {
+  const child = spawn(command, args, { stdio: 'inherit', env: environment })
+  const code = await new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', (value, signal) => resolve(value ?? (signal === 'SIGINT' ? 130 : 143)))
   })
-  if (result.error) throw result.error
-  if (result.status !== 0) process.exitCode = 1
+  if (code !== 0) process.exitCode = code
+  return code
+}
+
+const built = await run('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'])
+if (built !== 0) throw new Error('Selected tests require the contracts build.')
+for (const { project, mode, files } of selections.values()) {
+  const selected = [...files]
+  if (mode === 'scripts') {
+    await run(process.execPath, ['--test', '--test-concurrency=12', ...selected])
+  } else if (mode === 'integration') {
+    await run(process.execPath, ['scripts/test-integration.mjs', '--files', ...selected])
+  } else {
+    const environment = mode === 'acceptance' ? nativeAcceptanceEnvironment(process.env) : process.env
+    const workerOptions = mode === 'unit'
+      ? ['--maxWorkers=12']
+      : ['--no-file-parallelism', '--maxWorkers=1']
+    await run('corepack', ['pnpm', '--dir', project, 'exec', 'vitest', 'run',
+      ...selected.map(file => file.slice(project.length + 1)), ...workerOptions], environment)
+  }
 }

@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -11,14 +12,14 @@ import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.
 import { applyMcpEdits, fingerprint, mcpEdits, type NativeMcpAdapter, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres'
+const connectionString = process.env.TEST_DATABASE_URL!
 const clients: Client[] = []
 afterEach(async () => { for (const client of clients.splice(0)) await client.close() })
 
 it('requests exact Foreman Code and Linear presets through authenticated MCP, then applies and reads back both harnesses', async () => {
   const admin = new pg.Pool({ connectionString })
   const schema = `managed_mcp_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const endpoint = 'http://127.0.0.1:3000/mcp'
   const snapshots = Object.fromEntries((['codex', 'opencode'] as const).map((harness) => [harness,
@@ -135,6 +136,6 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     }
   } finally {
     await mcp.shutdown(); await app.close(); await pool.end()
-    await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end()
+    await dropFixtureSchema(admin, schema); await admin.end()
   }
 }, 30_000)

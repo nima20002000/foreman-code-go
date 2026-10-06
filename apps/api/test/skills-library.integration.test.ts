@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, InMemoryTransport, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -86,7 +87,7 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
     await Promise.allSettled(clients.map((client) => client.close()))
     await app?.close()
     await database?.close()
-    for (const directory of directories) await rm(directory, { recursive: true, force: true })
+    for (const directory of directories) await removeFixtureDirectory(directory)
   })
 
   it('backfills one head per existing skill without rewriting accepted versions', async () => {

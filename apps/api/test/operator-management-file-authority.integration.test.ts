@@ -1,8 +1,9 @@
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
-import { homedir } from 'node:os'
 import { createServer } from 'node:net'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
@@ -268,8 +269,8 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     managementEndpoint = new URL('/mcp', address).toString()
     f = await fileRuntimeFixture()
     // Outside /tmp: Codex workspace-write treats /tmp as writable, so the file host must not live there.
-    vault = await mkdtemp(join(homedir(), '.af02-vault-'))
-    runtimeHome = await mkdtemp(join(homedir(), '.af02-runtime-'))
+    vault = await privateFixtureDirectory('.af02-vault-')
+    runtimeHome = await privateFixtureDirectory('.af02-runtime-')
     await writeFile(join(f.directory, 'file-turn'), '')
     await writeFile(join(f.directory, 'mcp.json'), JSON.stringify({ name: 'graphql', enabled: true, required: true,
       transport: { type: 'streamable_http', url: managementEndpoint, bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' } }))
@@ -349,9 +350,9 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
         async () => chat?.shutdown(),
         async () => app?.close(),
         async () => workflowRuntime?.close(),
-        async () => { if (f) await rm(f.directory, { recursive: true, force: true }) },
-        async () => { if (vault) await rm(vault, { recursive: true, force: true }) },
-        async () => { if (runtimeHome) await rm(runtimeHome, { recursive: true, force: true }) },
+        async () => { if (f) await removeFixtureDirectory(f.directory) },
+        async () => { if (vault) await removeFixtureDirectory(vault) },
+        async () => { if (runtimeHome) await removeFixtureDirectory(runtimeHome) },
       ])
     } finally {
       workflowRuntime = undefined

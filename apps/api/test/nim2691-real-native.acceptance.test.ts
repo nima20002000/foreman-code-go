@@ -1,12 +1,13 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, realpath, stat } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   ListInteractionsResponseSchema, WorkspaceSchema } from '@foreman-code/contracts'
-import { ManagementActionSchema, RunEventsPageSchema } from '@foreman-code/contracts/management'
+import { RunEventsPageSchema } from '@foreman-code/contracts/management'
 import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
   RunActivitiesPageSchema, RunHandoffsReadSchema, SavedManagedWorkflowCommandResultSchema,
   makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
@@ -14,15 +15,8 @@ import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
 import { buildProductionApp } from '../src/production.js'
-import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { APP_MCP_TOKEN, appLauncherPath, appLauncherTokenName, appMcpServerName,
-  installAppLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
-import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
-import { CodexMcpConnections } from '../src/modules/harnesses/codexMcpConnections.js'
-import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
 import { DomainError } from '../src/modules/errors.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
-import { record } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
@@ -30,6 +24,8 @@ import { detectedClaudeProfilePath } from '../src/modules/harnesses/claudeSdk/pr
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
+import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
+import { configureNativeAcceptanceMcp } from './helpers/nativeAcceptanceMcp.js'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
 
@@ -75,32 +71,6 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const runtimeRoot = join(directory, 'runtime')
       await mkdir(projectPath, { mode: 0o700 })
       await mkdir(runtimeRoot, { mode: 0o700 })
-      await installAppLauncher()
-      const binaries = harnessBinaries(process.env)
-      const codexConnections = await new CodexMcpConnections(binaries.codexBinary, projectPath)
-        .read(AbortSignal.timeout(30_000))
-      const codexServerName = appMcpServerName(codexConnections.effective)
-      const codexTokenName = appLauncherTokenName('codex', record(codexConnections.effective[codexServerName]))
-        ?? APP_MCP_TOKEN
-      await mkdir(join(projectPath, '.codex'))
-      await writeFile(join(projectPath, '.codex', 'config.toml'), [
-        `[mcp_servers.${codexServerName}]`,
-        `command = ${JSON.stringify(process.execPath)}`,
-        `args = [${JSON.stringify(appLauncherPath())}]`,
-        `env_vars = [${JSON.stringify(codexTokenName)}]`,
-        '',
-      ].join('\n'), { mode: 0o600 })
-      if (scenario.providers.some((provider) => provider === 'opencode')) {
-        const openCodeConnections = await new OpenCodeMcpConnections(binaries.openCodeBinary, projectPath)
-          .read(AbortSignal.timeout(30_000))
-        const openCodeServerName = appMcpServerName(openCodeConnections.effective)
-        // OpenCode merges environment maps across layers; reuse the installed credential reference.
-        const openCodeTokenName = openCodeConnections.credentialReferences?.[openCodeServerName] ?? APP_MCP_TOKEN
-        await writeFile(join(projectPath, 'opencode.json'), JSON.stringify({ mcp: { [openCodeServerName]: {
-          type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,
-          environment: { [openCodeTokenName]: `{env:${openCodeTokenName}}` },
-        } } }), { mode: 0o600 })
-      }
       const port = await taskPort()
       const config = { ...loadConfig({ ...process.env, HOST: '127.0.0.1', PORT: String(port),
         DATABASE_URL: suppliedUrl.replace(/^postgres:/, 'postgresql:'),
@@ -113,8 +83,21 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const secrets = new Set(Object.entries(process.env)
         .filter(([name, value]) => /TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL/.test(name) && value)
         .map(([, value]) => value!))
-      const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail }> = []
+      const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail;
+        elapsedMs?: number; signalAborted?: boolean }> = []
       const cancellations: Array<{ nativeSessionId: string; caller: string[]; reason?: NativeFailureDetail }> = []
+      const inspectMcp = CodexAppServerSessionManager.prototype.inspectMcpConfiguration
+      const inspectionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'inspectMcpConfiguration')
+        .mockImplementation(async function (this: CodexAppServerSessionManager, cwd, signal) {
+          const started = performance.now()
+          try { return await inspectMcp.call(this, cwd, signal) }
+          catch (error) {
+            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'inspect_mcp_configuration',
+              elapsedMs: Math.round(performance.now() - started), signalAborted: Boolean(signal?.aborted),
+              error: describeNativeFailure(error, [...secrets]) })
+            throw error
+          }
+        })
       const createSession = CodexAppServerSessionManager.prototype.createSession
       const sessionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
         .mockImplementation(async function (this: CodexAppServerSessionManager, source, signal) {
@@ -160,6 +143,10 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           configDirectory: detectedClaudeProfilePath(), permissionMode: 'default', sandbox: 'read-only',
           tools: [], permissionRules: [], instructions: '', mcpServers: {},
         } })
+        await configureNativeAcceptanceMcp(database.pool, runtimeRoot, {
+          codex: config.harnesses.codexBinary,
+          opencode: config.harnesses.openCodeBinary,
+        }, `http://127.0.0.1:${port}/mcp`, scenario.providers)
         const production = buildProductionApp(config, database, checkpoints, false)
         const startupErrors: Array<{ code: string; detail?: string }> = []
         const start = production.engine.start.bind(production.engine)
@@ -191,7 +178,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               nativeAgent: 'build', thinking: false, autoApprove: false,
               ...(scenario.approval && index === 0 ? { advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
                 permissionRules: [{ permission: 'shell', pattern: 'pwd', effect: 'ask' }] } } : {}) }
-            : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? 'gpt-5.6-luna',
+            : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
               reasoningEffort: process.env.NIM2691_CODEX_REASONING_EFFORT ?? 'medium',
               sandbox: 'read-only', serviceTier: 'standard' },
           prompt: { system: scenario.capLoop
@@ -227,14 +214,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           await pool.query('update agents set current_configuration_version_id=$2 where id=$1',
             [agent.id, configuration.id])
         }
-        const access = new PostgresAccessService(pool)
-        const writer = await access.issue({ name: 'NIM-2691 native test owner', audience: 'operator',
-          expiresAt: new Date(Date.now() + 10 * 60_000), grants: [
-            { actions: ['capabilities:read'], scope: {} },
-            { actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'),
-              scope: { workspaceIds: [workspace.id] } },
-          ] })
-        const headers = { host: 'localhost', authorization: `Bearer ${writer.token}` }
+        const headers = { host: 'localhost' }
         const created = await app.inject({ method: 'POST',
           url: `/api/management/workspaces/${workspace.id}/workflows`, headers,
           payload: { workspaceId: workspace.id, commandId: randomUUID(), name: 'NIM-2691 single native turn' } })
@@ -366,6 +346,16 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           url: `/api/management/workspaces/${workspace.id}/runs/${runId}/events?limit=500` })
         expect(publicEvents.statusCode, publicEvents.body).toBe(200)
         const publicPage = RunEventsPageSchema.parse(publicEvents.json())
+        if (outcome !== (noRoute ? 'pending' : 'succeeded')) {
+          const records = (await pool.query<{ record: unknown }>(
+            'select record from harness_executions where run_id=$1 order by id', [runId])).rows
+          const nativeEvents = (await pool.query<{ record: unknown }>(
+            `select e.record from harness_native_events e join harness_executions x on x.id=e.execution_id
+             where x.run_id=$1 order by e.sequence`, [runId])).rows
+          await writeNativeAcceptanceEvidence(`handoff-failure-${randomUUID()}.json`,
+            nativePersistenceRedactor([]).value({ scenario: scenario.name, runId, state, outcome,
+              runError, records, nativeEvents, activityKinds, startupErrors }))
+        }
         expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors }))
           .toEqual({ state: noRoute ? 'waiting' : 'completed', outcome: noRoute ? 'pending' : 'succeeded' })
         if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted')).toBe(true)
@@ -570,16 +560,21 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         if (directory) {
           try {
             const executions = observedRunId ? (await pool.query(
-              "select id,record->>'state' as state,record#>'{result,error}' as error from harness_executions where run_id=$1 order by id limit 16",
+              'select id,record from harness_executions where run_id=$1 order by id limit 16',
               [observedRunId],
             )).rows : []
+            const handoffs = observedRunId ? {
+              requests: (await pool.query('select * from run_work_requests where run_id=$1', [observedRunId])).rows,
+              returns: (await pool.query('select * from run_work_returns where run_id=$1', [observedRunId])).rows,
+              results: (await pool.query('select * from run_work_results where run_id=$1', [observedRunId])).rows,
+            } : undefined
             const evidence = nativePersistenceRedactor([...secrets]).value({
-              scenario: scenario.name, runId: observedRunId, nativeFailures, cancellations, executions,
+              scenario: scenario.name, runId: observedRunId, nativeFailures, cancellations, executions, handoffs,
               failure: describeNativeFailure(error, [...secrets]),
             })
-            const path = join(directory, `native-workflow-failure-${randomUUID()}.json`)
-            await writeFile(path, JSON.stringify(evidence, null, 2), { flag: 'wx', mode: 0o600 })
-            console.info('Private native workflow failure evidence:', path)
+            const filename = `native-workflow-failure-${randomUUID()}.json`
+            await writeNativeAcceptanceEvidence(filename, evidence)
+            console.info('Private native workflow failure evidence:', join(directory, filename))
           } catch (evidenceError) {
             throw new AggregateError([error, evidenceError], 'Native failure evidence could not be retained.', {
               cause: evidenceError,
@@ -589,11 +584,12 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         throw error
       } finally {
         executionObserver.mockRestore()
+        inspectionObserver.mockRestore()
         sessionObserver.mockRestore()
         cancellationObserver.mockRestore()
         await app?.close().catch(() => undefined)
         await Promise.allSettled([checkpoints.close(), database.close()])
-        await rm(projectPath, { recursive: true, force: true })
+        await removeFixtureDirectory(projectPath)
       }
     })
   }, 600000)

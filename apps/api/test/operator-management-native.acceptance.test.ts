@@ -1,8 +1,10 @@
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
+import { referenceTestAuthenticationFile } from '../../../scripts/test-resources.mjs'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, CreateOperatorConversationResponseSchema,
@@ -68,7 +70,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
   for (const harness of ['codex', 'opencode'] as const) {
     it.each([false, true])(`${harness}: reads an attached spec and applies live management scope (denied: %s)`, async denied => {
       if (!connectionString) throw new Error('The root acceptance runner must supply a disposable test database.')
-      const home = await mkdtemp(join(homedir(), '.operator-management-native-'))
+      const home = await privateFixtureDirectory('operator-management-native-')
       const environmentNames = ['CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG',
         'OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG_CONTENT'] as const
       const previousEnvironment = Object.fromEntries(environmentNames.map(name => [name, process.env[name]]))
@@ -93,9 +95,10 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
         await mkdir(codexHome, { mode: 0o700 })
         await mkdir(openCodeConfigDirectory, { recursive: true, mode: 0o700 })
         if (harness === 'codex') {
-          const sourceHome = previousEnvironment.CODEX_HOME ?? join(homedir(), '.codex')
-          await copyFile(join(sourceHome, 'auth.json'), join(codexHome, 'auth.json'))
-          await chmod(join(codexHome, 'auth.json'), 0o600)
+          if (!previousEnvironment.CODEX_HOME) throw new Error('The native runner must supply an owned Codex home.')
+          referenceTestAuthenticationFile({ directory: process.env.FOREMAN_CODE_TEST_ROOT!,
+            token: process.env.FOREMAN_CODE_TEST_OWNER! }, join(previousEnvironment.CODEX_HOME, 'auth.json'),
+          join(codexHome, 'auth.json'))
         }
         await writeFile(join(codexHome, 'config.toml'), [
           `[mcp_servers.${APP_MCP_SERVER_NAME}]`, `url = ${JSON.stringify(endpoint)}`,
@@ -303,7 +306,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
         } finally {
           try { await f?.close() }
           finally {
-            try { await rm(home, { recursive: true, force: true }) }
+            try { await removeFixtureDirectory(home) }
             finally {
               for (const name of environmentNames) {
                 const previous = previousEnvironment[name]

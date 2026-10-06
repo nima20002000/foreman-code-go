@@ -1,7 +1,7 @@
+import { createFixtureSchema, dropFixtureSchema, ownedTestDatabaseUrl, removeFixtureDirectory } from './testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -16,63 +16,68 @@ import { HarnessQualificationService } from '../../src/modules/harnesses/qualifi
 import { codexQualificationSuite, opencodeQualificationSuite, withNativeQualificationOwnership,
   NativeProcessRegistry } from '../../src/modules/harnesses/qualification/cliEntry.js'
 import { nativeCompatibilityProbe } from '../../src/modules/harnesses/compatibility/probe.js'
+import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
+import { HarnessCatalogService } from '../../src/modules/harnesses/catalog.js'
+import { NativeHarnessConfigurationQualifier } from '../../src/modules/harnesses/nativeConfigurationQualifier.js'
+import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
 import { clearQualificationGate, installQualificationGate } from '../../src/modules/harnesses/qualification/gate.js'
 import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeServer.js'
 import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
 import { OpenCodeHarnessConfigurationSchema } from '@foreman-code/contracts'
-import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
+import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
+import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
+import { inheritedAgentEnvironment } from '../../src/modules/harnesses/secrets.js'
 
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
 export async function qualifyEng03OpenCode() {
-  const configured = process.env.ENG03_A_TEST_DATABASE_URL
+  const configured = ownedTestDatabaseUrl('ENG03_A_TEST_DATABASE_URL')
   assert.ok(configured)
   const url = new URL(configured)
   assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname.includes('test'))
   const schema = `native_qualification_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString: configured, max: 1 })
-  await admin.query(`create schema ${schema}`)
-  url.searchParams.set('options', `-c search_path=${schema},public`)
+  await createFixtureSchema(admin, schema)
+  url.searchParams.set('options', `-c search_path=${schema}`)
   const pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
   const directory = await mkdtemp(join(tmpdir(), 'eng03-qualification-'))
-  const processes = new NativeProcessRegistry(join(directory, 'native-process-registry'))
+  const registryDirectory = join(directory, 'native-process-registry')
+  const processes = new NativeProcessRegistry(registryDirectory)
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
+  const cleanupId = registerTestResourceCleanup(invocation, {
+    kind: 'native-qualification', registryDirectory, schema, databaseUrl: configured,
+  })
   const secrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
     .map(([, value]) => value).filter((value): value is string => Boolean(value))
   let factories: NativeHarnessFactories | undefined
   let service: HarnessQualificationService | undefined
+  let catalog: HarnessCatalogService | undefined
   const close = async () => {
     clearQualificationGate()
+    await catalog?.shutdownChecks()
     factories?.stopAuxiliaries()
-    const errors: unknown[] = []
-    const phases = [
-      [() => service?.shutdown(), () => factories?.disposeAuxiliaries()],
-      [() => pool.end()],
-      [() => admin.query(`drop schema if exists ${schema} cascade`)],
-      [() => admin.end(), () => rm(directory, { recursive: true, force: true })],
-    ]
-    for (const phase of phases) {
-      const results = await Promise.allSettled(phase.map(close => Promise.resolve().then(async () => { await close() })))
-      for (const result of results) if (result.status === 'rejected') errors.push(result.reason)
+    await factories?.disposeAuxiliaries()
+    await service?.shutdown()
+    for (const owner of new Set(processes.snapshot().launches.map(launch => launch.owner))) {
+      if (!await processes.closeOwner(owner)) throw new Error('Native qualification closure is unconfirmed.')
     }
-    if (errors.length) throw new AggregateError(errors, 'Native qualification cleanup failed.')
+    await pool.end()
+    await dropFixtureSchema(admin, schema)
+    await admin.end()
+    await removeFixtureDirectory(directory)
+    completeTestResourceCleanup(invocation, cleanupId)
   }
   try {
     await applyApplicationMigrations(pool)
-    const settings = new PostgresSettingsRepository(pool)
-    const defaults = await settings.getHarnessDefaults()
-    await settings.saveHarnessDefaults({
-      ...defaults,
-      opencode: {
-        ...defaults.opencode,
-        model: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna',
-      },
-    })
     const repository = new HarnessQualificationRepository(pool)
     const registry = new HarnessQualificationRegistry(repository,
       { codex: codexQualificationSuite.revision, opencode: opencodeQualificationSuite.revision })
-    const binaries = { codex: process.env.ENG03_A_CODEX_BINARY ?? 'codex',
-      opencode: process.env.ENG03_A_OPENCODE_BINARY ?? process.env.OPENCODE_BINARY ?? 'opencode' }
+    const configuredBinaries = harnessBinaries({
+      CODEX_BINARY: process.env.ENG03_A_CODEX_BINARY ?? process.env.CODEX_BINARY,
+      OPENCODE_BINARY: process.env.ENG03_A_OPENCODE_BINARY ?? process.env.OPENCODE_BINARY,
+    })
+    const binaries = { codex: configuredBinaries.codexBinary, opencode: configuredBinaries.openCodeBinary }
     const metadata = new ManagedOpenCodeServer({ binary: binaries.opencode, workingDirectory: directory,
       ownerAgentId: 'qualification-metadata', appMcpAccess: 'none',
       processRecovery: processes.scope(`qualification-metadata:${randomUUID()}`) })
@@ -94,6 +99,9 @@ export async function qualifyEng03OpenCode() {
     } finally {
       await metadata.dispose()
     }
+    const commands = new PostgresCommandCoordinator(pool)
+    const settings = new PostgresSettingsRepository(pool)
+    const defaults = await settings.getHarnessDefaults()
     const selected = await registry.inspectBinary(binaries.opencode)
     const checker = await registry.inspectBinary(process.execPath)
     const guard = (binary: string, sha256: string) => async (signal?: AbortSignal) => {
@@ -144,9 +152,9 @@ export async function qualifyEng03OpenCode() {
     opencode: withNativeQualificationOwnership(diagnosticSuite, processes,
       (input) => guard(input.binary, input.binarySha256)) }
     service = new HarnessQualificationService(repository, registry, suites, binaries,
-      new PostgresCommandCoordinator(pool), settings, undefined, undefined,
+      commands, settings, undefined, undefined,
       (_harness, binary, timeoutMs) => nativeCompatibilityProbe({ codex: binary, opencode: binary }, directory,
-        process.env, timeoutMs, { recovery: processes.scope(`qualification-probe:${randomUUID()}`),
+        inheritedAgentEnvironment(), timeoutMs, { recovery: processes.scope(`qualification-probe:${randomUUID()}`),
           beforeCommand: async (current, signal) => {
             const original = current === process.execPath ? checker : selected
             assert.equal((await registry.inspectBinary(current)).binary, original.binary)
@@ -154,6 +162,16 @@ export async function qualifyEng03OpenCode() {
           } }))
     const authority = await new PostgresAccessService(pool).issue({ name: 'ENG03 owned qualification', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }] })
+    catalog = new HarnessCatalogService(
+      new NativeHarnessConfigurationQualifier(binaries.codex, binaries.opencode, factories),
+      settings, commands, directory,
+    )
+    const saved = await settings.getManagedHarnessDefaults()
+    await catalog.updateDefaults(authority.principal, 'http', {
+      commandId: randomUUID(), expectedRevision: saved.revision,
+      defaults: { ...saved.defaults, opencode: { ...saved.defaults.opencode,
+        model: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna', variant: 'low' } },
+    })
     const submitted = (await service.run(authority.principal, 'http', 'opencode')).qualification
     assert.ok(submitted.binarySha256)
     let qualification = submitted
@@ -163,14 +181,13 @@ export async function qualifyEng03OpenCode() {
       qualification = await repository.find('opencode', submitted.version, submitted.binarySha256,
         submitted.suiteRevision) ?? submitted
     }
-    const evidenceDirectory = process.env.ENG03_A_EVIDENCE_DIR
-      ?? fileURLToPath(new URL('../../../../.logs/eng03-a-evidence/', import.meta.url))
-    const records = (await pool.query(`select harness,version,binary_sha256,suite_revision,status,checks,evidence,
-      failure_reason,started_at,checked_at from harness_qualifications order by started_at`)).rows
-    await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 })
-    const artifact = join(evidenceDirectory, `opencode-qualification-${randomUUID()}.json`)
-    await writeFile(artifact, JSON.stringify(records, null, 2), { flag: 'wx', mode: 0o600 })
-    console.info(`OpenCode qualification evidence ${artifact}`)
+    const result = await pool.query<{ evidence: Record<string, unknown> }>(
+      `select evidence from harness_qualifications
+        where harness=$1 and version=$2 and binary_sha256=$3 and suite_revision=$4`,
+      ['opencode', submitted.version, submitted.binarySha256, submitted.suiteRevision],
+    )
+    const filename = `opencode-qualification-${randomUUID()}.json`
+    await writeNativeAcceptanceEvidence(filename, { qualification, evidence: result.rows[0]?.evidence ?? null })
     assert.equal(qualification.status, 'qualified', JSON.stringify(qualification))
     assert.ok(qualification.binarySha256)
     assert.equal(await registry.trustedExact('opencode', qualification.version, qualification.binarySha256), true)

@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { AppMcpRoutes } from '../src/modules/harnesses/appMcpRoutes.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFile, mkdtemp, rm, readFile, readdir } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/client'
@@ -18,7 +19,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 const cleanup: Array<() => Promise<unknown>> = []
 afterEach(async () => { while (cleanup.length) await cleanup.pop()!() })
 it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for simultaneous instances and changed ports through authenticated MCP, preserving grants and durable writes', async (tokenVariable) => {
-  const database = createDatabase({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql',
+  const database = createDatabase({ connectionString: process.env.TEST_DATABASE_URL!,
     maxConnections: 4, connectionTimeoutMs: 5000, queryTimeoutMs: 5000 })
   cleanup.push(() => database.close())
   await database.migrate()
@@ -27,7 +28,7 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   const settings = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(database.pool), commands)
   const services = { settings, commands } as OperatorServices
   const directory = await mkdtemp(join(tmpdir(), 'operator-routing-'))
-  cleanup.push(() => rm(directory, { recursive: true, force: true }))
+  cleanup.push(() => removeFixtureDirectory(directory))
   const launcher = join(directory, 'launcher.mjs')
   await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
   const issue = async (writable: boolean) => access.issue({ name: 'launcher-test', audience: 'operator',
@@ -107,7 +108,7 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
 
 it('refuses conflicting launcher token aliases without exposing either credential', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'launcher-conflict-'))
-  cleanup.push(() => rm(directory, { recursive: true, force: true }))
+  cleanup.push(() => removeFixtureDirectory(directory))
   const launcher = join(directory, 'launcher.mjs')
   await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
   const client = new Client({ name: 'launcher-conflict', version: '1' })

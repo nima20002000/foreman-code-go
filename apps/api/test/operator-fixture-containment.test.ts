@@ -1,12 +1,13 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { FileByteStorage } from '../src/modules/files/storage.js'
 import { IsolatedOpenCodeFixture } from './support/isolatedOpenCodeFixture.js'
 
 it.each(['dispose', 'observation'] as const)('keeps the protocol fixture in real vault isolation through %s', async ending => {
-  const directory = await mkdtemp(join(homedir(), '.operator-fixture-containment-'))
+  const directory = await privateFixtureDirectory('.operator-fixture-containment-')
   const workspace = join(directory, 'workspace')
   const vault = join(directory, 'vault')
   const server = new IsolatedOpenCodeFixture({ binary: 'protocol-fixture', workingDirectory: workspace,
@@ -26,6 +27,6 @@ it.each(['dispose', 'observation'] as const)('keeps the protocol fixture in real
     expect(server.nativePid).toBeUndefined()
   } finally {
     try { await server.dispose() }
-    finally { await rm(directory, { recursive: true, force: true }) }
+    finally { await removeFixtureDirectory(directory) }
   }
 }, 30_000)

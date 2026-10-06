@@ -1,8 +1,9 @@
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
-import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
@@ -128,7 +129,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests.')
     schema = `af02_${randomUUID().replaceAll('-', '')}`
     admin = new pg.Pool({ connectionString })
-    await admin.query(`create schema "${schema}"`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString, max: 4, options: `-c search_path=${schema}` })
     await applyApplicationMigrations(pool)
     f = await fileRuntimeFixture()
@@ -139,8 +140,8 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     nativeFixture = await nativeConfigurationFixture({ files: true, respond: async () => 'done',
       beforeFinish: async () => { await nativeFinished.promise } })
     // Outside /tmp: Codex workspace-write treats /tmp as writable, so the file host must not live there.
-    vault = await mkdtemp(join(homedir(), '.af02-vault-'))
-    runtimeHome = await mkdtemp(join(homedir(), '.af02-runtime-'))
+    vault = await privateFixtureDirectory('.af02-vault-')
+    runtimeHome = await privateFixtureDirectory('.af02-runtime-')
     await writeFile(join(f.directory, 'file-turn'), '')
     // Audit key presence only, not credential values. The fixture's worker
     // default is absent because the actual Operator service supplies its input.
@@ -231,11 +232,11 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     try {
       await closeTestResources([
         async () => chat?.shutdown(), async () => app?.close(), async () => pool?.end(),
-        async () => { if (schema) await admin?.query(`drop schema if exists "${schema}" cascade`) },
+        async () => { if (schema) await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve()) },
         async () => admin?.end(), async () => nativeFixture?.close(),
-        async () => { if (f) await rm(f.directory, { recursive: true, force: true }) },
-        async () => { if (vault) await rm(vault, { recursive: true, force: true }) },
-        async () => { if (runtimeHome) await rm(runtimeHome, { recursive: true, force: true }) },
+        async () => { if (f) await removeFixtureDirectory(f.directory) },
+        async () => { if (vault) await removeFixtureDirectory(vault) },
+        async () => { if (runtimeHome) await removeFixtureDirectory(runtimeHome) },
       ])
     } finally {
       managers.clear(); servers.length = 0; serverOptions.length = 0; issued.length = 0
