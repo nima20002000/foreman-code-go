@@ -22,7 +22,7 @@ const recoveryLogger = componentLogger('harness')
 function readSubagent(record: unknown) {
   const child = RunSubagentSchema.parse(record)
   if (child.provider !== 'codex') return child
-  const controls = subagentCapabilities(child.nativeMode, child.profile.providerVersion)
+  const controls = subagentCapabilities(child.nativeMode)
   return { ...child, capabilities: { ...child.capabilities,
     sendInput: controls.sendInput, interrupt: controls.interrupt,
     executionResume: controls.executionResume, inputTiming: controls.inputTiming,

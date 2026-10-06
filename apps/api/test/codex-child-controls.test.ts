@@ -57,11 +57,24 @@ describe('Codex child controls through the pinned protocol', () => {
     })
     expect(f.calls.some(call => call.params.threadId === 'root')).toBe(false)
   })
-  it('qualifies each operation independently instead of blocking the whole provider', () => {
+  it('controls a saved child through newer compatible contracts without changing its profile', async () => {
+    const profile = { ...childControlRecord().profile, schemaIdentity: 'saved-schema' }
+    const child = childControlRecord({ profile })
+    const f = codexChildControlFixture(child)
+    f.host.qualified = { ...f.host.qualified, providerVersion: 'codex-cli 0.160.0',
+      schemaManifestSha256: 'observed-schema' }
+    const lease = f.lease()
+    expect(lease.capabilities?.sendInput).toEqual({ support: 'supported', qualification: 'passed' })
+    await lease.sendInput!(childControlReceipt(child), 'Follow up')
+    expect(f.calls.find(call => call.method === 'turn/steer')?.params.threadId).toBe('native-child')
+    expect(child.profile).toEqual(profile)
+  })
+  it.each(['CODEX_METHOD_UNQUALIFIED', 'CODEX_CONTRACT_UNSUPPORTED'])(
+    'qualifies each operation independently when a native contract fails with %s', code => {
     const f = codexChildControlFixture()
     const protocol = f.host.qualified.protocol
     f.host.qualified.protocol = { ...protocol, request: request => {
-      if (request.method === 'turn/steer') throw new HarnessExecutionError('CODEX_METHOD_UNQUALIFIED', 'Method absent')
+      if (request.method === 'turn/steer') throw new HarnessExecutionError(code, 'Method contract absent')
       protocol.request(request)
     } }
     const lease = f.lease()

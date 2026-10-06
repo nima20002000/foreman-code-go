@@ -69,7 +69,7 @@ describe('Subagent panel', () => {
       return HttpResponse.json(receipt({ commandId: submitted.commandId, expectedRevision: submitted.expectedRevision,
         operation: 'run_subagent_interrupt_v1' }))
     })
-    const capabilities = subagentCapabilities(nativeMode, '0.154.0')
+    const capabilities = subagentCapabilities(nativeMode)
     capabilities.sendInput = { support: 'supported', qualification: 'passed' }
     capabilities.interrupt = { support: 'supported', qualification: 'passed' }
     const record = { subagent: child({ nativeMode, capabilities }),

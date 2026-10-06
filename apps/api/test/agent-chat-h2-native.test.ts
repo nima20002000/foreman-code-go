@@ -22,8 +22,7 @@ vi.mock('../src/modules/harnesses/process.js', () => ({ PROCESS_SHUTDOWN_GRACE_M
 vi.mock('../src/modules/harnesses/recovery/processRegistry.js', () => ({ spawnNativeProcess: vi.fn() }))
 vi.mock('../src/modules/harnesses/codexQualification.js', () => ({ qualifyNativeCodexModel: vi.fn(async () => {}) }))
 vi.mock('../src/modules/harnesses/codexProtocol.js', () => ({
-  RECORDED_CODEX_VERSION: 'codex-cli 0.154.0', QUALIFIED_CODEX_SCHEMA_SHA256: 'fixture-only',
-  isQualifiedCodexVersion: (value: string) => value === 'codex-cli 0.154.0', canonical: JSON.stringify,
+  canonical: JSON.stringify,
   qualifyCodex: vi.fn(async () => ({ binary: 'not-executed', providerVersion: 'codex-cli 0.154.0', protocol: {
     request() {}, notification() {}, response() {}, serverRequest() {}, serverResponse() {},
   } })), assertCodexUnchanged: vi.fn(async () => {}),

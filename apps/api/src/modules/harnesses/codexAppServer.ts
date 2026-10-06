@@ -578,9 +578,6 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const prepared = await this.prepareInput(input, signal)
       if (creation.source) {
         this.assertSessionVersion(creation.source)
-        if (prepared.qualified.providerVersion !== creation.source.providerVersion) {
-          throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The source session belongs to another Codex release.')
-        }
       }
       candidate = await this.transport(prepared, 0, signal)
       creation.transport = candidate.transport
