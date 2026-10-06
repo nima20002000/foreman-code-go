@@ -130,7 +130,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         `env_vars = [${JSON.stringify(codexTokenName)}]`,
         '',
       ].join('\n'), { mode: 0o600 })
-      let openCodeServerName = appServerName
+      let openCodeServerName: string = appServerName
       if (scenario.providers.some((provider) => provider === 'opencode')) {
         const openCodeConnections = await new OpenCodeMcpConnections(binaries.openCodeBinary, projectPath)
           .read(AbortSignal.timeout(30_000))
