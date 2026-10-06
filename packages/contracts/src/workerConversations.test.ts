@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { WorkerConversationBindingSchema, WorkerConversationRpcRequestSchema } from './workerConversations.js'
+import { WorkerConversationBindingSchema, WorkerConversationRpcRequestSchema,
+  WorkerConversationHistorySchema } from './workerConversations.js'
 
 function binding(kind: 'operator' | 'agent' = 'operator') {
   const common = { conversationId: randomUUID(), configurationVersionId: 'saved-configuration',
@@ -13,6 +14,20 @@ function binding(kind: 'operator' | 'agent' = 'operator') {
       applicationInstallationId: randomUUID(), harnessInstallationId: 'installed-driver', installationFingerprint: 'installation',
     } } }
 }
+
+it('retains native input response digests and confirmed non-submission during Worker history readback', () => {
+  const history = { events: [], pendingInteractions: [],
+    nonSubmission: { nativeSessionId: 'original-session', clientCorrelationId: 'original-message',
+      result: { outcome: 'failed', error: { code: 'CODEX_TURN_START_REJECTED',
+        message: 'The native message was not accepted.', retryable: true } } },
+    responseDeliveries: [{ source: 'provider_history', harness: 'codex', providerVersion: '0.154.0',
+      nativeSessionId: 'original-session', nativeRequestId: 'original-form', nativeRequestType: 'mcpServer/elicitation/request',
+      optionId: 'offered-choice', semantic: 'approve_once', responseDigest: 'a'.repeat(64) }] }
+  expect(WorkerConversationHistorySchema.parse(history)).toEqual(history)
+  expect(WorkerConversationHistorySchema.safeParse({ ...history, responseDeliveries: [
+    { ...history.responseDeliveries[0], responseDigest: 'not-a-digest' },
+  ] }).success).toBe(false)
+})
 
 it('addresses an Operator chat without a workflow dispatch or user-grant surrogate', () => {
   const target = binding()

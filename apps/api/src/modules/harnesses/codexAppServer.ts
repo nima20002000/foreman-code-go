@@ -570,7 +570,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private creationIdentity(input: NativeSessionStart, source?: NativeSessionReference): string {
     return canonical({ binding: binding(input), configuration: accepted(input),
-      environment: input.environment ?? null, source: source ?? null })
+      environment: input.environment ?? null, source: source ?? null,
+      sessionPreferences: input.sessionPreferences ?? this.startupPreferences ?? null })
   }
 
   private async rejectCreation(creation: Creation): Promise<never> {
@@ -1411,7 +1412,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   subagentControl(child: RunSubagent, assertOwner: () => void): SubagentControlLease | undefined {
     const runtime = [...this.runtimes.values()].find((candidate) => {
       const input = candidate.input
-      return input.kind !== 'operator' && input.request.executionId === child.parentExecutionId
+      return input.kind !== 'operator' && input.kind !== 'agent-chat' && input.request.executionId === child.parentExecutionId
         && input.request.runId === child.runId && input.request.workspaceId === child.workspaceId
         && input.request.configuration.agentId === child.parentAgentId
     })
@@ -1489,6 +1490,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       fileRequests: new Map(), interactions: new Map(), resolvedRequests: new Map(), callbackOwners: parent.callbackOwners,
       responseDecisions: new Map(), responseDeliveries: new Map(), rejectedStarts: new Map(), seenNotifications: new Set(),
       events: [], eventSizes: [], eventBytes: 0, sequence: 0, wake: new Set(), cancellation: undefined }
+    delete runtime.context
+    delete runtime.compaction
+    delete runtime.compactionPreviousTurns
     this.childRuntimes.set(thread.id, { runtime, child, assertCurrent })
   }
 

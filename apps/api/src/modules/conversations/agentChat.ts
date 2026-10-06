@@ -9,6 +9,7 @@ import { parseSessionCommand, sessionTaskContent } from '@foreman-code/contracts
 import { SessionControlStore } from './sessionControls/store.js'
 import { acceptedResponseControl } from './acceptedResponseControl.js'
 import { nativeNonSubmission } from './nativeNonSubmission.js'
+import { sessionStartConfiguration } from '../harnesses/sessionStart.js'
 import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
 import { qualifyChatActivity } from './qualifiedActivity.js'
 import { reconcileKnownActivities } from './reconcileKnownActivities.js'
@@ -1372,7 +1373,7 @@ export class AgentChatService {
     if (!requestId || row.record.sessionCreation?.requestId !== requestId || !runtime || !input
       || runtime.retiring || runtime.disposal) return false
     if (input.kind === 'operator' || input.correlationId !== agentChatCorrelation(row.id, requestId)
-      || input.request.configuration.id !== row.agent_configuration_version_id) return false
+      || sessionStartConfiguration(input).id !== row.agent_configuration_version_id) return false
     const source = row.record.origin.kind === 'run_execution'
       ? { harness: row.harness, providerVersion: await this.sourceProviderVersion(row.record.origin, runtime),
           nativeSessionId: row.record.origin.sourceNativeSessionId }

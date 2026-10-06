@@ -329,6 +329,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     this.context = value.context
     const history = value.history
     return { events: history.events, pendingInteractions: history.pendingInteractions,
+      ...(history.nonSubmission ? { nonSubmission: history.nonSubmission } : {}),
       ...(history.correlationId !== undefined ? { correlationId: history.correlationId } : {}),
       ...(history.nativeTurnId !== undefined ? { nativeTurnId: history.nativeTurnId } : {}),
       ...(history.nativeMessageId !== undefined ? { nativeMessageId: history.nativeMessageId } : {}),

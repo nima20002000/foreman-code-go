@@ -84,6 +84,8 @@ export type WorkerConversationReceipt = z.infer<typeof WorkerConversationReceipt
 export const WorkerConversationHistorySchema = z.object({
   correlationId: id.optional(), nativeTurnId: id.optional(), nativeMessageId: id.optional(),
   nativeSubmission: NativeMessageSubmissionSchema.optional(),
+  nonSubmission: z.object({ nativeSessionId: id, clientCorrelationId: id,
+    result: z.lazy(() => ExecutionResultSchema) }).strict().optional(),
   nextCursor: id.optional(), firstRetainedSequence: z.number().int().nonnegative().optional(),
   nextSequence: z.number().int().nonnegative().optional(),
   events: z.array(z.lazy(() => NativeHarnessEventSchema)),
@@ -96,7 +98,8 @@ export const WorkerConversationHistorySchema = z.object({
   responseDeliveries: z.array(z.object({ source: z.enum(['provider_acknowledgement', 'provider_history']),
     harness: z.lazy(() => AgentHarnessSchema), providerVersion: id, nativeSessionId: id,
     nativeRequestId: id, nativeRequestType: id, optionId: id,
-    semantic: z.lazy(() => ApprovalResponseSemanticSchema) }).strict()).optional(),
+    semantic: z.lazy(() => ApprovalResponseSemanticSchema),
+    responseDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict()).optional(),
   canceledRequestIds: z.array(id).optional(),
 }).passthrough()
 
