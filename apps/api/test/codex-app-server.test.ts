@@ -552,6 +552,17 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await manager.history(session)).terminalResult, undefined)
   })
 
+  it('reads the original CLI-labelled session under a canonical version pin and rejects altered references', async () => {
+    const pinned = new CodexAppServerSessionManager(f.binary, '0.154.0')
+    managers.push(pinned)
+    const session = await pinned.createSession(source)
+    assert.equal(session.providerVersion, 'codex-cli 0.154.0')
+    assert.equal((await pinned.history(session)).terminalResult, undefined)
+    assert.equal((await pinned.sessionControlCapabilities(session)).compact.supported, true)
+    await assertCode(pinned.history({ ...session, providerVersion: '0.154.0' }), 'CODEX_SESSION_VERSION_MISMATCH')
+    await assertCode(pinned.history({ ...session, providerVersion: 'codex-cli 0.156.1' }), 'CODEX_SESSION_VERSION_MISMATCH')
+  })
+
   it('F02: refuses every accepted configuration change, not just model/effort/cwd', async () => {
     codex().sandbox = 'danger-full-access'
     const session = await manager.createSession(source)

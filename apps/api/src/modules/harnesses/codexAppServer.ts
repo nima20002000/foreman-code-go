@@ -50,7 +50,7 @@ import type { RunSubagent } from '@foreman-code/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
 import { normalizeCodexNotification } from './codexNormalization.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
-import { harnessProfile } from './qualification/profiles.js'
+import { harnessProfile, normalizeHarnessVersion } from './qualification/profiles.js'
 import { CodexRpcError, CodexStdioTransport, isObject, object, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
 
 /** Structural client boundary shared by native production and recorded replay. */
@@ -1804,7 +1804,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private assertSessionVersion(session: NativeSessionReference): void {
     if (session.harness !== 'codex' || harnessProfile('codex', session.providerVersion) === null
-      || (this.expectedVersion !== undefined && session.providerVersion !== this.expectedVersion)) {
+      || (this.expectedVersion !== undefined
+        && normalizeHarnessVersion('codex', session.providerVersion) !== normalizeHarnessVersion('codex', this.expectedVersion))) {
       throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The session does not match this qualified Codex provider.')
     }
   }

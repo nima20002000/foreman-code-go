@@ -11,6 +11,7 @@ import type { MessagePhase, Thread, ThreadItem } from '../../src/modules/harness
 import { isObject, type JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'
 import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 import { runCommand } from '../../src/modules/harnesses/process.js'
+import { normalizeHarnessVersion } from '../../src/modules/harnesses/qualification/profiles.js'
 
 export interface Fixture { directory: string; binary: string }
 export async function fixture(): Promise<Fixture> {
@@ -108,7 +109,8 @@ export async function fixtureQualification(
 ): Promise<QualifiedCodex> {
   const version = await runCommand(binary, ['--version'], cwd, signal, environment)
   const installed = version.stdout.trim()
-  if (version.exitCode !== 0 || (expectedVersion === undefined ? !isQualifiedCodexVersion(installed) : installed !== expectedVersion)) {
+  if (version.exitCode !== 0 || (expectedVersion === undefined ? !isQualifiedCodexVersion(installed)
+    : normalizeHarnessVersion('codex', installed) !== normalizeHarnessVersion('codex', expectedVersion))) {
     throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', 'Fixture version rejected.')
   }
   if (requireAuthentication) {
