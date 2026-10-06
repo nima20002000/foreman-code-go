@@ -286,6 +286,36 @@ export class NativeHarnessFactories {
       this.auxiliaries.set(result.manager, { recovery, admitted: false })
       const inspector = result.inspector
       result.inspector = { inspect: (request) => { this.admitAuxiliary(result.manager); return inspector.inspect(request) } }
+    } else if (this.infrastructure.mode === 'native') {
+      const inspector = result.inspector
+      result.inspector = { inspect: async request => {
+        if (request.phase !== 'configuration') return inspector.inspect(request)
+        await input.revalidateSelection?.(request.signal)
+        const diagnosticRecovery = this.config.auxiliaryRecovery?.('diagnostics')
+        if (recovery && (!diagnosticRecovery || diagnosticRecovery.owner === recovery.owner
+          || !this.config.admitRecovery || !this.config.abandonRecovery || !this.config.closeRecovery)) {
+          throw new DomainError('HARNESS_DIAGNOSTIC_OWNER_REQUIRED',
+            'Configuration inspection requires a separate owned process lifetime.', 503)
+        }
+        const diagnostic = this.allocate({
+          harness: input.harness,
+          role: 'diagnostics',
+          workingDirectory: input.workingDirectory,
+          ownerAgentId: input.ownerAgentId,
+          appMcpAccess: 'none',
+          ...(diagnosticRecovery ? { processRecovery: diagnosticRecovery } : {}),
+          ...(input.selection ? { selection: input.selection } : {}),
+          ...(input.configured ? { configured: input.configured } : {}),
+          ...(input.revalidateSelection ? { revalidateSelection: input.revalidateSelection } : {}),
+          ...(input.harness === 'opencode' && input.advancedConfiguration
+            ? { advancedConfiguration: input.advancedConfiguration } : {}),
+        })
+        try {
+          return await diagnostic.inspector.inspect(request)
+        } finally {
+          await this.disposeAuxiliary(diagnostic.manager)
+        }
+      } }
     }
     this.inspectors.set(result.manager, result.inspector)
     return result
