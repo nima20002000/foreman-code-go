@@ -6,16 +6,19 @@ import { promisify } from 'node:util'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { sessionControlProduct } from './session-control-product.mjs'
 import { assertSessionControlDefaults } from './session-control-client.mjs'
+import { sessionControlHarnesses } from './session-control-harnesses.mjs'
 
 /** Creates chats on already provisioned, selected nodes and profiles through the public product services. */
 export async function prepareSessionControlMatrix(input, { contracts, agentChat, management, identity, tool, read }) {
   assert.deepEqual(identity, input.expectedIdentity, 'The reviewed fixture app identity changed.')
-  assert.equal(input.subjects.length, 6, 'Provide one provisioned subject per harness and host.')
+  const harnesses = sessionControlHarnesses(input, contracts)
+  assert.equal(input.subjects.length, harnesses.length * 2, 'Provide each selected harness on Main and Worker.')
   const keys = new Set(input.subjects.map(subject => `${subject.harness}:${subject.hostKind}`))
-  for (const harness of ['codex', 'claude', 'opencode']) for (const host of ['main', 'device']) {
+  for (const harness of harnesses) for (const host of ['main', 'device']) {
     assert.ok(keys.has(`${harness}:${host}`), `Missing provisioned ${harness}:${host} subject.`)
   }
   for (const subject of input.subjects) {
+    assert.ok(harnesses.includes(subject.harness), 'The subject uses an unselected harness.')
     const operator = contracts.AgentDefaultsSchema.shape.operator.parse(subject.operatorDefaults)
     assert.equal(operator.harness.harness, subject.harness)
     assert.equal(operator.harness.model, subject.model)
@@ -106,8 +109,9 @@ export async function prepareSessionControlMatrix(input, { contracts, agentChat,
     }
   }
   if (failure) throw failure
-  assert.equal(new Set(rows.map(row => row.conversationId)).size, 12)
+  assert.equal(new Set(rows.map(row => row.conversationId)).size, harnesses.length * 4)
   return { baseUrl: input.baseUrl, sourceCommit: input.sourceCommit, restart: input.restart,
+    harnesses,
     mcpTokenEnv: input.mcpTokenEnv, expectedIdentity: input.expectedIdentity,
     ...(input.browserOrigin ? { browserOrigin: input.browserOrigin } : {}), rows }
 }

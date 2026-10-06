@@ -15,7 +15,7 @@ import { DeviceSetupApproveResultSchema } from '@foreman-code/contracts/device-s
 import { loadWorkerPairing } from '@foreman-code/contracts/device-identity-node'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
-import { RuntimeIdentitySchema } from '@foreman-code/contracts'
+import { AgentHarnessSchema, RuntimeIdentitySchema, type AgentHarness } from '@foreman-code/contracts'
 import { loadConfig } from '../../src/config.js'
 import { createDatabase } from '../../src/infrastructure/database.js'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.js'
@@ -135,7 +135,10 @@ async function installerCommand(file: string, args: string[], environment: NodeJ
 }
 
 /** Real production composition and an installed Worker; no execution domains or SDK outputs are substituted. */
-export async function pairedWorkerApplication() {
+export async function pairedWorkerApplication(options: { harnesses?: readonly AgentHarness[] } = {}) {
+  const harnesses = AgentHarnessSchema.array().min(1).max(3)
+    .parse(options.harnesses ?? ['codex', 'opencode', 'claude'])
+  assert.equal(new Set(harnesses).size, harnesses.length)
   const databaseUrl = process.env.ENG03_A_TEST_DATABASE_URL
   assert.ok(databaseUrl, 'Run through the disposable native acceptance database driver.')
   const url = new URL(databaseUrl)
@@ -329,24 +332,28 @@ export async function pairedWorkerApplication() {
       assert.ok(value?.launcher.resolvedLauncher, `The selected ${driver} installation is unavailable.`)
       return value.launcher.resolvedLauncher
     }
-    const mcpInput = { databaseUrl, endpoint: `${baseUrl}/mcp`, directory: project,
-      codexBinary: installedHarness('codex'), openCodeBinary: installedHarness('opencode') }
-    const mainMcpInput = join(root, 'main-mcp-install.json')
-    await writeFile(mainMcpInput, JSON.stringify({ ...mcpInput, directory: config.harnesses.workspaceRoot,
-      recoveryRoot: join(root, 'main-mcp-processes') }), { mode: 0o600, flag: 'wx' })
-    await installFixtureMcp(mainMcpInput)
-    const workerMcpInput = join(root, 'worker-mcp-install.json')
-    await writeFile(workerMcpInput, JSON.stringify({ ...mcpInput,
-      recoveryRoot: join(root, 'worker-mcp-processes') }), { mode: 0o600, flag: 'wx' })
-    await installerCommand(fileURLToPath(new URL('./installFixtureMcp.ts', import.meta.url)), [workerMcpInput],
-      environment, { nodeArgs: ['--import', 'tsx'] })
+    const mcpHarnesses = harnesses.filter(harness => harness === 'codex' || harness === 'opencode')
+    if (mcpHarnesses.length) {
+      const mcpInput = { databaseUrl, endpoint: `${baseUrl}/mcp`, directory: project, harnesses: mcpHarnesses,
+        codexBinary: harnesses.includes('codex') ? installedHarness('codex') : config.harnesses.codexBinary,
+        openCodeBinary: harnesses.includes('opencode') ? installedHarness('opencode') : config.harnesses.openCodeBinary }
+      const mainMcpInput = join(root, 'main-mcp-install.json')
+      await writeFile(mainMcpInput, JSON.stringify({ ...mcpInput, directory: config.harnesses.workspaceRoot,
+        recoveryRoot: join(root, 'main-mcp-processes') }), { mode: 0o600, flag: 'wx' })
+      await installFixtureMcp(mainMcpInput)
+      const workerMcpInput = join(root, 'worker-mcp-install.json')
+      await writeFile(workerMcpInput, JSON.stringify({ ...mcpInput,
+        recoveryRoot: join(root, 'worker-mcp-processes') }), { mode: 0o600, flag: 'wx' })
+      await installerCommand(fileURLToPath(new URL('./installFixtureMcp.ts', import.meta.url)), [workerMcpInput],
+        environment, { nodeArgs: ['--import', 'tsx'] })
+    }
     const selection = InstalledWorkflowConfigurationSchema.parse({ schemaVersion: 1,
       codexBinary: installedHarness('codex'), expectedVersion: '0.154.0', payloadPaths: [],
       appMcpLauncher: join(home, '.local/share/graphql/mcp/launcher.mjs'),
-      opencode: { binary: installedHarness('opencode'), expectedVersion: '1.18.31', payloadPaths: [] },
-      claude: { binary: installedHarness('claude'),
+      ...(harnesses.includes('opencode') ? { opencode: { binary: installedHarness('opencode'), expectedVersion: '1.18.31', payloadPaths: [] } } : {}),
+      ...(harnesses.includes('claude') ? { claude: { binary: installedHarness('claude'),
         sdkEntrypoint: createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk'),
-        installedLockPath: fileURLToPath(new URL('../../../../pnpm-lock.yaml', import.meta.url)) } })
+        installedLockPath: fileURLToPath(new URL('../../../../pnpm-lock.yaml', import.meta.url)) } } : {}) })
     await writeFile(join(state, 'workflow-runtime.json'), JSON.stringify(selection), { mode: 0o600, flag: 'wx' })
     await installerCommand(cli, ['initialize-native-runtime', '--state', state], environment)
     worker = spawn(process.execPath, [cli, 'run', '--state', state], { env: environment, stdio: 'ignore' })

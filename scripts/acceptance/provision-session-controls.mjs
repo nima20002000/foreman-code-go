@@ -7,13 +7,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { prepareSessionControlMatrix } from './prepare-session-controls.mjs'
 import { sessionControlProduct } from './session-control-product.mjs'
 import { assertSessionControlDefaults } from './session-control-client.mjs'
+import { sessionControlHarnesses } from './session-control-harnesses.mjs'
 
 function validateSubjects(input, contracts, profiles, roots, identity) {
   assert.deepEqual(identity, input.expectedIdentity, 'The reviewed fixture app identity changed.')
-  assert.equal(input.subjects.length, 6, 'Provide one installation selection per harness and host.')
+  const harnesses = sessionControlHarnesses(input, contracts)
+  assert.equal(input.subjects.length, harnesses.length * 2, 'Provide each selected harness on Main and Worker.')
   const keys = new Set()
   const subjects = input.subjects.map(subject => {
     const configuration = contracts.HarnessConfigurationSchema.parse(subject.configuration)
+    assert.ok(harnesses.includes(configuration.harness), 'The subject uses an unselected harness.')
     const hostRef = profiles.HarnessHostReferenceSchema.parse(subject.hostRef)
     assert.equal(hostRef.mainId, identity.installationId, 'The installation belongs to another Main.')
     if (configuration.harness === 'claude') {
@@ -31,7 +34,7 @@ function validateSubjects(input, contracts, profiles, roots, identity) {
     keys.add(`${configuration.harness}:${hostRef.kind}`)
     return { ...subject, configuration, hostRef, rootSelection }
   })
-  assert.equal(keys.size, 6, 'Installation selections must cover all six harness/host pairs.')
+  assert.equal(keys.size, harnesses.length * 2, 'Installation selections must cover each selected harness/host pair.')
   const devices = new Set(subjects.filter(subject => subject.hostRef.kind === 'device').map(subject => subject.hostRef.deviceId))
   assert.equal(devices.size, 1, 'Use one exact paired Worker for all three harnesses.')
   return subjects

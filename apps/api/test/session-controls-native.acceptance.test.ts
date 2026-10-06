@@ -12,12 +12,14 @@ import * as workflows from '@foreman-code/contracts/wave25'
 import * as roots from '@foreman-code/contracts/workspace-root-policies'
 import * as boundLocations from '@foreman-code/contracts/workspace-bound-location'
 import { pairedWorkerApplication } from './helpers/pairedWorkerApplication.js'
+import { selectedNativeHarnesses } from './helpers/selectedNativeHarnesses.js'
 
 type Row = { harness: 'codex' | 'opencode' | 'claude'; role: 'operator' | 'agent'; hostKind: 'main' | 'device';
   conversationId: string; workspaceId?: string; readPath?: string; sendPath: string;
   sendRequest: Record<string, unknown>; nativeProfile: string; profileCheckRequest: Record<string, unknown> }
 
-const combinations = (['codex', 'opencode', 'claude'] as const).flatMap(harness =>
+const harnesses = selectedNativeHarnesses()
+const combinations = harnesses.flatMap(harness =>
   (['operator', 'agent'] as const).flatMap(role =>
     (['main', 'device'] as const).map(hostKind => ({ harness, role, hostKind }))))
 let fixture: Awaited<ReturnType<typeof pairedWorkerApplication>> | undefined
@@ -33,8 +35,10 @@ async function saveEvidence(cleanupConfirmed: boolean) {
   await mkdir(directory, { recursive: true, mode: 0o700 })
   const path = join(directory, `session-controls-${randomUUID()}.json`)
   await writeFile(path, JSON.stringify({ sourceCommit: fixture?.sourceCommit,
-    nativeControlChecksCompleted: cleanupConfirmed && completed.size === 12 && settingsResults.length === 4
-      && recoveredConversations.size === 12,
+    harnesses, expectedConversations: combinations.length,
+    nativeControlChecksCompleted: cleanupConfirmed && completed.size === combinations.length
+      && settingsResults.length === (harnesses.includes('claude') ? 4 : 0)
+      && recoveredConversations.size === combinations.length,
     unsettledDispatchRecovery: false, browserAcceptance: false, hcAcceptanceComplete: false,
     cleanupConfirmed, nativeResults, settingsResults, recoveredConversations: [...recoveredConversations],
   }, null, 2), { flag: 'wx', mode: 0o600 })
@@ -169,10 +173,10 @@ async function verifyNativeControls(row: Row) {
 
 describe('native session controls through the production Main and installed Worker', () => {
   beforeAll(async () => {
-    fixture = await pairedWorkerApplication()
+    fixture = await pairedWorkerApplication({ harnesses })
     const f = fixture
     const module = await import(new URL('../../../scripts/acceptance/provision-session-controls.mjs', import.meta.url).href)
-    const subjects = (['codex', 'opencode', 'claude'] as const).flatMap(harness =>
+    const subjects = harnesses.flatMap(harness =>
       (['main', 'device'] as const).map(hostKind => {
         const hostRef = hostKind === 'main' ? { kind: 'main' as const, mainId: f.identity.installationId } : f.hostRef
         const configuration = harness === 'claude' ? { harness, model: 'claude-haiku-4-5-20251001',
@@ -191,15 +195,15 @@ describe('native session controls through the production Main and installed Work
           ...(hostKind === 'device' ? { rootSelection: { hostRef, allowedBaseId: f.roots.bases[0]!.baseId,
             configurationRevision: f.roots.configurationRevision, relativePath: '', accessMode: 'read-only' } } : {}) }
       }))
-    const prepared: unknown = await module.provisionSessionControlMatrix({ subjects, expectedIdentity: f.identity,
+    const prepared: unknown = await module.provisionSessionControlMatrix({ subjects, harnesses, expectedIdentity: f.identity,
       baseUrl: f.baseUrl, browserOrigin: f.browserOrigin, sourceCommit: f.sourceCommit }, {
       contracts, agentChat, management, profiles, placements, workflows, roots, boundLocations,
       identity: f.identity, tool: f.tool, read: f.request,
     })
     const matrix = prepared as { rows: Row[] }
-    expect(matrix.rows).toHaveLength(12)
+    expect(matrix.rows).toHaveLength(combinations.length)
     rows = matrix.rows
-    expect(new Set(rows.map(row => row.conversationId)).size).toBe(12)
+    expect(new Set(rows.map(row => row.conversationId)).size).toBe(combinations.length)
   }, 1800000)
 
   afterAll(async () => {
@@ -273,11 +277,11 @@ describe('native session controls through the production Main and installed Work
           .map(activity => activity.id), defaultPreferences: defaults.applied })
     }, 1800000)
 
-  it('restores the twelve native chats and compact receipts after Main closes and starts again', async () => {
+  it('restores the selected native chats and compact receipts after Main closes and starts again', async () => {
     for (const row of rows) {
       if (!completed.has(row.conversationId)) await verifyNativeControls(row)
     }
-    expect(completed.size).toBe(12)
+    expect(completed.size).toBe(combinations.length)
     const snapshots = new Map<string, { state: contracts.SessionControlState; messages: Awaited<ReturnType<typeof transcript>> }>()
     for (const row of rows) {
       snapshots.set(row.conversationId, { state: await idle(row), messages: await transcript(row) })

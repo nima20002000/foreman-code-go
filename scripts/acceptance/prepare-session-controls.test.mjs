@@ -128,6 +128,20 @@ test('refuses a changed fixture identity before any product write', async () => 
   assert.equal(f.calls.length, 0)
 })
 
+test('prepares four Codex chats or eight Claude/OpenCode chats without selecting another provider', async () => {
+  for (const harnesses of [['codex'], ['opencode', 'claude']]) {
+    const f = fixture()
+    f.input.harnesses = harnesses
+    f.input.subjects = f.input.subjects.filter(subject => harnesses.includes(subject.harness))
+    const matrix = await prepareSessionControlMatrix(f.input, f.ports)
+    assert.equal(matrix.rows.length, harnesses.length * 4)
+    assert.deepEqual(matrix.harnesses, harnesses)
+    assert.deepEqual(new Set(matrix.rows.map(row => row.harness)), new Set(harnesses))
+    assert.equal(new Set(matrix.rows.map(row => row.conversationId)).size, harnesses.length * 4)
+    assert.deepEqual(f.defaults().value, f.original.value)
+  }
+})
+
 test('refuses non-Haiku fixture defaults before any write or native qualification', async () => {
   const f = fixture()
   const claude = f.input.subjects.find(subject => subject.harness === 'claude').operatorDefaults.harness

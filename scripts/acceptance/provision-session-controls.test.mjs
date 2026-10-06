@@ -248,6 +248,28 @@ test('rejects changed Main identity and forbidden native models before product w
   assert.equal(f.calls.length, 0)
 })
 
+test('provisions only the selected providers on Main and the paired Worker', async () => {
+  for (const harnesses of [['codex'], ['opencode', 'claude']]) {
+    const f = fixture()
+    f.input.harnesses = harnesses
+    f.input.subjects = f.input.subjects.filter(subject => harnesses.includes(subject.configuration.harness))
+    const subjects = await provisionSessionControlSubjects(f.input, f.ports)
+    assert.equal(subjects.length, harnesses.length * 2)
+    assert.deepEqual(new Set(subjects.map(subject => subject.harness)), new Set(harnesses))
+    assert.equal(f.calls.filter(call => call.name === 'harness_instance_check').length, harnesses.length * 2)
+    assert.equal(f.calls.some(call => call.name.includes('chat_send') || call.name === 'run_start'), false)
+  }
+})
+
+test('rejects duplicate selections and subjects outside the selected providers before writes', async () => {
+  for (const harnesses of [['codex', 'codex', 'claude'], ['codex']]) {
+    const f = fixture()
+    f.input.harnesses = harnesses
+    await assert.rejects(provisionSessionControlSubjects(f.input, f.ports))
+    assert.equal(f.calls.length, 0)
+  }
+})
+
 test('rejects failed qualification or changed persisted proof before creating any workspace', async () => {
   for (const failure of ['failQualification', 'changeReadback']) {
     const f = fixture()
