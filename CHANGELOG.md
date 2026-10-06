@@ -5,6 +5,28 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.49] - 2026-10-06
+
+### Changed
+
+- Require explicit Full access for Claude profiles, presets and Agents at Save and Start through the UI and Operator MCP. Existing unsupported values remain readable until explicitly corrected; they are never upgraded silently.
+- Retire Claude read-only and workspace-write execution policy and the custom AppArmor prerequisite. Application grants, permission rules and native qualification still apply to Full access.
+
+### Fixed
+
+- Retain the saved Claude host profile for local workflow execution and the complete accepted request during native inspection, including its execution context and correlation. Compare JSON values independently of object key order.
+- Deliver the scoped application bearer credential to the inspected Claude HTTP connection before requiring connected health, while retaining endpoint validation and the SDK credential acknowledgement.
+- Deliver pinned Agent instructions and verified skills through the Claude SDK instruction channel.
+- Persist Claude native correlations through an upgrade migration and validate workflow completion against the original SDK result and native message receipt.
+- Preserve sanitized native failure diagnostics before cleanup and keep detached desktop browser files outside temporary build directories.
+
+### Verified
+
+- Passed typecheck, lint, build and the affected contract, API, UI, authenticated MCP and PostgreSQL regressions, including denied callers, persisted Full access readback, invalid-mode Start refusal and database upgrade behavior.
+- Installed and qualified Claude Haiku (`claude-haiku-4-5-20251001`) with Full access on the local PC; completed a saved-profile workflow with a real native session and accepted result.
+- Confirmed Claude, Codex and OpenCode saved presets are eligible, installed services are active, the production database is separate, and the dashboard and desktop icons resolve.
+- The approval-case timeout passed its single unchanged rerun. The installed service also recovered an initial database response deadline on its unchanged automatic startup retry; final installed verification passed.
+
 ## [0.0.48] - 2026-10-06
 
 ### Fixed
