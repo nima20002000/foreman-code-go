@@ -10,6 +10,7 @@ import { buildComputerFixture } from '../../../test/helpers/buildComputerFixture
 import { jobRuntimeMetadataFixture } from '../../../test/helpers/jobRuntimeMetadataFixture.js'
 import { JOB_RUNTIME_INSPECTION_RETRY_MS, JobRuntimeMetadataRecovery } from './runtimeMetadataRecovery.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
+import { DomainError } from '../errors.js'
 
 function profiles(): JobRuntimeProfileRecord[] {
   const f = verificationRuntimeFixture()
@@ -68,6 +69,21 @@ describe('mixed runtime metadata recovery', () => {
     await scan()
     await scan()
     expect(capture).toHaveBeenCalledTimes(3)
+    await recovery.close()
+  })
+  it('retries an inspection that only waited for the worker connection', async () => {
+    const saved = profiles()[0]!
+    const capture = vi.fn(async () => {
+      throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'The original installed qualification connection is unavailable or changed.', 409)
+    })
+    const host = { currentMetadata: async () => null, capture } as unknown as InstalledJobRuntimeHost
+    const pool = { query: async () => ({ rows: [{ record: saved }] }) } as unknown as pg.Pool
+    const recovery = new JobRuntimeMetadataRecovery(pool, host, vi.fn(), () => 1_000_000)
+    const scan = async () => { recovery.request(); await new Promise(resolve => setTimeout(resolve, 10)) }
+    await scan()
+    capture.mockImplementationOnce(async () => saved.measurement!.fingerprint)
+    await scan()
+    expect(capture).toHaveBeenCalledTimes(2)
     await recovery.close()
   })
 })

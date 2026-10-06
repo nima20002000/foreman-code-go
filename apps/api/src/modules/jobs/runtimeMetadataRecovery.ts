@@ -2,6 +2,7 @@ import type pg from 'pg'
 import { JobRuntimeProfileRecordSchema, type JobRuntimeProfileRecord }
   from '@foreman-code/contracts/job-verification-runtime'
 import { componentLogger } from '../../infrastructure/logger.js'
+import { DomainError } from '../errors.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
 
 /** A failed inspection is retried only after this delay; every queue wake would otherwise re-measure it. */
@@ -43,7 +44,8 @@ export class JobRuntimeMetadataRecovery {
             this.failedAt.delete(key)
             if (refreshed && !this.closing) this.changed()
           }).catch(error => {
-            this.failedAt.set(key, this.now())
+            // A connection that is not bound yet resolves on reconnect; only rejected inspections wait.
+            if (!(error instanceof DomainError && error.code === 'JOB_RUNTIME_CONNECTION_CHANGED')) this.failedAt.set(key, this.now())
             componentLogger('jobs').warn({ err: error, profileId: profile.id }, 'Job runtime inspection unavailable')
           }).finally(() => { this.captures.delete(key) })
           this.captures.set(key, capture)
