@@ -11,11 +11,30 @@ import { CodexMcpConnections } from '../../src/modules/harnesses/codexMcpConnect
 import { OpenCodeMcpConnections } from '../../src/modules/harnesses/openCodeMcpConnections.js'
 import { HarnessMcpSettingsService } from '../../src/modules/harnesses/mcpSettings.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
+import type { NativeMcpAdapter } from '../../src/modules/harnesses/nativeMcpCommon.js'
 import { randomUUID } from 'node:crypto'
 
 const Input = z.object({ databaseUrl: z.string().url(), endpoint: z.string().url(),
   directory: z.string().startsWith('/'), recoveryRoot: z.string().startsWith('/'),
   codexBinary: z.string().startsWith('/'), openCodeBinary: z.string().startsWith('/') }).strict()
+
+function diagnosticAdapter(harness: string, adapter: NativeMcpAdapter): NativeMcpAdapter {
+  const recordFailure = (error: unknown) => {
+    const codes: string[] = []
+    let cause = error
+    while (cause instanceof Error && codes.length < 5) {
+      const code = (cause as NodeJS.ErrnoException).code
+      codes.push(code && /^[A-Z0-9_]+$/.test(code) ? code : cause.name)
+      cause = cause.cause
+    }
+    console.info(`Managed App MCP ${harness} failure codes: ${codes.join(' / ')}`)
+    throw error
+  }
+  return {
+    read: signal => adapter.read(signal).catch(recordFailure),
+    apply: (snapshot, change, signal, managed) => adapter.apply(snapshot, change, signal, managed).catch(recordFailure),
+  }
+}
 
 /** Executes the normal human-managed installer in the fixture's private process environment. */
 export async function installFixtureMcp(file: string) {
@@ -36,8 +55,8 @@ export async function installFixtureMcp(file: string) {
     }
   }
   const settings = new HarnessMcpSettingsService(pool, new PostgresCommandCoordinator(pool), {
-    codex: new CodexMcpConnections(input.codexBinary, input.directory, registry.scope(owner)),
-    opencode: new OpenCodeMcpConnections(input.openCodeBinary, input.directory, registry.scope(owner)),
+    codex: diagnosticAdapter('codex', new CodexMcpConnections(input.codexBinary, input.directory, registry.scope(owner))),
+    opencode: diagnosticAdapter('opencode', new OpenCodeMcpConnections(input.openCodeBinary, input.directory, registry.scope(owner))),
   }, () => {}, closeProcesses, input.endpoint)
   try {
     const principal = await new PostgresLocalHumanAccess(pool, new PostgresAccessService(pool)).current()
@@ -45,7 +64,7 @@ export async function installFixtureMcp(file: string) {
       const before = await settings.list(principal, harness)
       const installed = await settings.applyManaged(principal, { harness, preset: 'graphql', installed: true,
         expectedRevision: before.revision, commandId: randomUUID() })
-      assert.equal(installed.status, 'applied', 'The normal managed App MCP install did not settle.')
+      assert.equal(installed.status, 'applied', installed.error ?? 'The normal managed App MCP install did not settle.')
       const current = await settings.list(principal, harness)
       if (current.presets?.graphql === 'disabled') {
         const enabled = await settings.applyManaged(principal, { harness, preset: 'graphql', enabled: true,
