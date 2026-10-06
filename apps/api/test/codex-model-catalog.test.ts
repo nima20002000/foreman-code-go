@@ -100,6 +100,18 @@ function recordedInspection(request: () => Promise<unknown>, close: () => Promis
     transportFactory: () => ({ start: async () => undefined, reject: async () => undefined, request, close }) }
 }
 
+it.each([null, { model: 'test-model' }])(
+  'reports a missing native model capability with its observed version and confirms cleanup: %j', async model => {
+    let closed = false
+    const inspection = recordedInspection(async () => ({ data: [model], nextCursor: null }),
+      async () => { closed = true })
+    inspection.qualified.providerVersion = 'codex-cli 0.160.0'
+    await expect(readNativeCodexModelCatalog(inspection, '/recorded-workspace', {}))
+      .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_CATALOG_INVALID',
+        message: expect.stringContaining(inspection.qualified.providerVersion) } } })
+    expect(closed).toBe(true)
+  })
+
 it('rejects empty continuation pages and confirms cleanup without unbounded metadata reads', async () => {
   let reads = 0
   let closed = false

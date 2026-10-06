@@ -46,6 +46,9 @@ export async function readNativeCodexModelCatalog(
       if (refreshFailed) throw new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE',
         'Codex could not refresh the native model catalog. Retry when native discovery is available.', true)
       for (const model of page.data) {
+        if (!isObject(model) || typeof model.model !== 'string' || !Array.isArray(model.supportedReasoningEfforts)
+          || !model.supportedReasoningEfforts.every(level => isObject(level)
+            && typeof level.reasoningEffort === 'string')) invalid()
         models.push({ slug: model.model, display_name: model.displayName,
           visibility: model.hidden ? 'hide' : 'list', priority: models.length,
           supported_reasoning_levels: model.supportedReasoningEfforts.map(level => ({ effort: level.reasoningEffort })),
