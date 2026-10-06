@@ -489,6 +489,25 @@ describe('Claude native session manager admission', () => {
     await f.manager.dispose?.()
   })
 
+  it('starts the inspected workflow query with its original execution correlation', async () => {
+    const f = fixture()
+    const workflow = { request: { executionId: 'execution', workingDirectory: '/work' },
+      correlationId: 'execution:execution' } as NativeSessionStart
+    try {
+      await f.manager.prepareInspection(workflow)
+      const running = drain(f.manager.startInitialTurn(workflow, { prompt: 'first',
+        clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
+      const input = await f.nextMessage()
+      void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
+      void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid,
+        subtype: 'success', is_error: false, result: 'done' })
+      await running
+      expect(f.queries).toHaveBeenCalledTimes(1)
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
+
   it('retains the original attributed result in terminal history for workflow validation', async () => {
     const f = fixture(() => raw => {
       const frame = raw as Record<string, unknown>

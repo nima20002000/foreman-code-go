@@ -721,7 +721,8 @@ export function buildProductionApp(
           const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
             workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
             runtimeDirectory: execution.runtimeDirectory, configuration: context.configuration, input: execution.input })
-          return execution.nativeSessionId ? { kind: 'workflow', correlationId: `execution:${execution.id}`, request } : { request }
+          return execution.nativeSessionId ? { kind: 'workflow', correlationId: `execution:${execution.id}`, request }
+            : { request, correlationId: `execution:${execution.id}` }
         },
       })
       claudeLaunches.set(claude.manager, claude)
