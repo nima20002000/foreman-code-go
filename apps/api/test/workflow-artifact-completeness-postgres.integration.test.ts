@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID, createHash } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -106,14 +107,14 @@ describe.skipIf(!databaseUrl)('durable artifact completeness gate on real Postgr
     if (!['postgres:', 'postgresql:'].includes(url.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
       || !/test/.test(url.pathname)) throw new Error('Owned loopback test database required')
     admin = new pg.Pool({ connectionString: databaseUrl })
-    await admin.query(`create schema ${schema}`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}` })
     await applyApplicationMigrations(pool)
     await pool.query('create table fixture_gate_commits(execution_id text primary key, visits integer not null)')
   })
   afterAll(async () => {
     await pool?.end()
-    if (admin) { try { await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() } }
+    if (admin) { try { await dropFixtureSchema(admin, schema) } finally { await admin.end() } }
   })
   async function seed(bindKeys = ['z', 'a'], handoff = false) {
     const x = facts(handoff), { run, node, execution, placement, intent, proof, context } = x

@@ -1,5 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -17,13 +18,13 @@ import type { NativeMcpAdapter } from '../src/modules/harnesses/nativeMcpCommon.
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const clean of cleanups.splice(0).reverse()) await clean() })
 async function fixture(initiallyInstalled = false) {
-  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
   const schema = `plugin_recovery_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
-  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres', options: `-c search_path=${schema}` })
+  await createFixtureSchema(admin, schema)
+  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, options: `-c search_path=${schema}` })
   const root = await mkdtemp(join(tmpdir(), 'plugin-recovery-'))
   const file = join(root, 'config.toml'); await writeFile(file, '')
-  cleanups.push(async () => { await pool.end(); await admin.query(`drop schema "${schema}" cascade`); await admin.end(); await rm(root, { recursive: true, force: true }) })
+  cleanups.push(async () => { await pool.end(); await dropFixtureSchema(admin, schema); await admin.end(); await removeFixtureDirectory(root) })
   await applyApplicationMigrations(pool)
   const owner = (await new PostgresAccessService(pool).issue({ name: 'Owner', audience: 'operator',
     grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })).principal

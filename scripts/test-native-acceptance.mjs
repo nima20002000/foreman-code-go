@@ -1,12 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { adminDatabaseUrl, requireLoopbackTestDatabase } from './test-integration.mjs'
-import { withNativeAcceptanceStorage } from './native-acceptance-storage.mjs'
+import { assertTestPath, completeTestResourceCleanup, createFixtureDatabase, createFixtureSchema,
+  dropFixtureDatabase, ownedTestDatabaseUrl, ownedTestPath, registerTestResourceCleanup,
+  testAdminPool, testEnvironment } from './test-resources.mjs'
 import { stopGroup } from './integration-process.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -53,43 +54,73 @@ export function nativeAcceptanceVitestArguments(files, environment) {
     ...(pattern ? ['--testNamePattern', pattern] : [])]
 }
 
+async function pendingCleanup(invocation, ownId) {
+  const folder = assertTestPath(invocation, join(invocation.directory, '.graphql-test-cleanup'))
+  for (const name of await readdir(folder)) {
+    const record = JSON.parse(await readFile(assertTestPath(invocation, join(folder, name)), 'utf8'))
+    if (record.token !== invocation.token) throw new Error('Native acceptance cleanup ownership mismatch')
+    if (record.id !== ownId && record.kind !== 'suite-process-group') return true
+  }
+  return false
+}
+
 export async function withNativeAcceptanceDatabase(configured, evidenceRoot, execute) {
-  if (configured) requireLoopbackTestDatabase(configured)
-  const server = adminDatabaseUrl(configured)
-  const admin = new Pool({ connectionString: server, max: 1 })
-  const name = `foreman_code_native_${randomUUID().replaceAll('-', '')}_test`
-  const evidence = join(evidenceRoot, name)
-  const record = { name, created: false, exitCode: null, removed: false }
-  await mkdir(evidence, { recursive: true, mode: 0o700 })
+  const parentUrl = ownedTestDatabaseUrl()
+  if (configured !== undefined && configured !== parentUrl) throw new Error('Native acceptance requires its owned test database')
+  ownedTestPath(evidenceRoot)
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER }
+  const admin = await testAdminPool()
+  let resource
+  let evidence
+  let cleanupId
+  const record = { name: null, created: false, exitCode: null, removed: false }
   try {
-    await admin.query(`create database "${name}"`)
-    record.created = true
-    const database = new URL(server)
+    const name = `foreman_code_native_${randomUUID().replaceAll('-', '')}_test`
+    const parent = new Pool({ connectionString: parentUrl, max: 1 })
+    try { await createFixtureDatabase(parent, name) } finally { await parent.end() }
+    const database = new URL(parentUrl)
     database.pathname = `/${name}`
-    record.exitCode = await execute({ databaseUrl: database.toString(), evidence })
+    resource = { ...invocation, name, databaseUrl: database.toString() }
+    record.name = resource.name
+    record.created = true
+    cleanupId = registerTestResourceCleanup(invocation,
+      { kind: 'native-acceptance-database', databaseUrl: resource.databaseUrl, name: resource.name })
+    evidence = join(evidenceRoot, resource.name)
+    await mkdir(evidence, { recursive: true, mode: 0o700 })
+    const setup = new Pool({ connectionString: resource.databaseUrl, max: 1 })
+    try {
+      await createFixtureSchema(setup, 'native_acceptance')
+      await setup.query(`alter database "${resource.name}" set search_path to native_acceptance`)
+    } finally { await setup.end() }
+    const environment = testEnvironment(process.env, resource)
+    record.exitCode = await execute({ databaseUrl: resource.databaseUrl, evidence, environment })
   } finally {
     try {
-      if (record.created) {
-        const callers = await admin.query('select count(*)::int as count from pg_stat_activity where datname=$1', [name])
-        if (callers.rows[0].count !== 0) {
-          console.error('Task-owned acceptance database still had active callers during teardown.')
+      if (resource) {
+        const callers = await admin.query('select count(*)::int as count from pg_stat_activity where datname=$1', [resource.name])
+        if (callers.rows[0].count === 0 && !await pendingCleanup(invocation, cleanupId)) {
+          const parent = new Pool({ connectionString: parentUrl, max: 1 })
+          try { await dropFixtureDatabase(parent, resource.name) } finally { await parent.end() }
+          completeTestResourceCleanup(invocation, cleanupId)
+          record.removed = true
+        } else {
+          console.error('Owned acceptance database and recovery state retained because cleanup is unconfirmed.')
           record.exitCode = 1
         }
-        await admin.query(`drop database "${name}" with (force)`)
-        record.removed = true
       }
-      await writeFile(join(evidence, 'database.json'), JSON.stringify(record, null, 2))
-    } finally {
-      await admin.end()
-    }
+      if (evidence) await writeFile(join(evidence, 'database.json'), JSON.stringify(record, null, 2), { mode: 0o600 })
+    } finally { await admin.end() }
   }
   return record
 }
 
 async function runNativeAcceptance(environment, files) {
+  const invocation = { directory: environment.FOREMAN_CODE_TEST_ROOT, token: environment.FOREMAN_CODE_TEST_OWNER }
+  const cleanupId = registerTestResourceCleanup(invocation,
+    { kind: 'native-acceptance-process-group', wrapperPid: process.pid, databaseUrl: environment.TEST_DATABASE_URL })
   const child = spawn(process.execPath, [
     'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
-    'vitest', ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=12',
+    'vitest', ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=1',
   ], {
     cwd: root, stdio: 'inherit', detached: true,
     env: environment,
@@ -116,6 +147,7 @@ async function runNativeAcceptance(environment, files) {
     process.off('SIGTERM', terminate)
     await stopping
     await stopGroup(child.pid)
+    completeTestResourceCleanup(invocation, cleanupId)
   }
   if (cleanupError) throw cleanupError
   if (interrupted === 'SIGINT') return 130
@@ -133,22 +165,14 @@ async function main() {
     return
   }
   const configuration = nativeAcceptanceConfiguration(process.env)
-  const opencode = configuration.opencodeBinary ?? 'opencode'
+  const opencode = configuration.opencodeBinary ?? process.env.OPENCODE_BINARY ?? 'opencode'
   const record = await withNativeAcceptanceDatabase(configuration.databaseUrl,
-    configuration.evidenceRoot, async ({ databaseUrl, evidence }) => {
-      const environment = { ...nativeAcceptanceEnvironment(process.env),
-        RUN_ENG03_C_NATIVE_TESTS: '1',
-        RUN_REAL_HARNESS_TESTS: '1',
-        ENG03_A_TEST_DATABASE_URL: databaseUrl,
-        ENG03_A_OPENCODE_BINARY: opencode,
-        ENG03_A_EVIDENCE_DIR: evidence,
-        NIM2691_REAL_NATIVE: '1',
-        NIM2691_POSTGRES: '1',
-        NIM2691_ADMIN_DATABASE_URL: databaseUrl,
-      }
-      delete environment.TEST_DATABASE_URL
+    configuration.evidenceRoot, async ({ environment: isolated, evidence }) => {
+      const environment = nativeAcceptanceEnvironment(isolated)
       console.log(`[acceptance] Native evidence: ${evidence}`)
-      return withNativeAcceptanceStorage(environment, nativeEnvironment => runNativeAcceptance(nativeEnvironment, files))
+      return runNativeAcceptance({ ...environment, RUN_ENG03_C_NATIVE_TESTS: '1',
+        RUN_REAL_HARNESS_TESTS: '1', NIM2691_REAL_NATIVE: '1', NIM2691_POSTGRES: '1',
+        ENG03_A_OPENCODE_BINARY: opencode }, files)
     })
   process.exitCode = record.exitCode
 }

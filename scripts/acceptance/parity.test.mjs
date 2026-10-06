@@ -19,12 +19,18 @@ async function fixture(work, { mismatch = false, revokeFails = false } = {}) {
     async revoke(id) { revoked.push(id); return !revokeFails },
   }
   class Transport { constructor(url, options) { this.url = url; this.options = options } }
+  const ProtocolErrorCode = { InvalidParams: -32602 }
+  class ProtocolError extends Error {
+    constructor(code) { super('MCP protocol rejection'); this.code = code }
+  }
   class Client {
     async connect(transport) { this.token = await transport.options.authProvider.token(); transports.push(transport.url.pathname) }
     async close() {}
+    async listTools() { return { tools: this.token.endsWith('principal-1') ? []
+      : ['workspace_get', 'workspace_update', 'workflow_saved_get_v3'].map((name) => ({ name })) } }
     async callTool(request) {
       commands.push(request)
-      if (this.token.endsWith('principal-1')) return { isError: true, structuredContent: denial, content: [{ type: 'text', text: 'ACCESS_DENIED' }] }
+      if (this.token.endsWith('principal-1')) throw new ProtocolError(ProtocolErrorCode.InvalidParams)
       if (request.name === 'workspace_get') return { structuredContent: { ...workspace,
         locationValidation: { status: 'ready', checkedAt: 'mcp-time' } } }
       if (request.name === 'workspace_update') return { structuredContent: { value: { ...structuredClone(receipt),
@@ -46,8 +52,8 @@ async function fixture(work, { mismatch = false, revokeFails = false } = {}) {
     return new Response(JSON.stringify(result), { status: 200 })
   }
   try { await work({ args: { apiUrl: 'http://127.0.0.1:3307', workspaceId: 'ws-demo',
-    workflowIds: [{ workflowId: 'wf-demo' }], access, Client, StreamableHTTPClientTransport: Transport },
-    revoked, issued, commands, transports, workspace }) }
+    workflowIds: [{ workflowId: 'wf-demo' }], access, Client, StreamableHTTPClientTransport: Transport,
+    ProtocolError, ProtocolErrorCode }, revoked, issued, commands, transports, workspace }) }
   finally { globalThis.fetch = originalFetch }
 }
 test('parity uses the same scoped principal, checks read/write denials and revokes all ephemeral credentials', async () => {
@@ -58,6 +64,7 @@ test('parity uses the same scoped principal, checks read/write denials and revok
     assert.deepEqual(revoked, ['principal-0', 'principal-1'])
     assert.deepEqual(transports, ['/mcp', '/mcp'])
     assert.deepEqual(issued[0].input.grants[0].scope, { workspaceIds: ['ws-demo'] })
+    assert.deepEqual(issued[1].input.grants, [{ actions: ['capabilities:read'], scope: {} }])
     assert.equal(issued[0].input.grants[0].actions.includes('runs:start'), false)
     assert.equal(commands.some((command) => command.name === 'run_start'), false)
     assert.equal(JSON.stringify(result).includes('test-only-'), false)

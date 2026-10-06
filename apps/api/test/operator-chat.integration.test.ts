@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
@@ -132,7 +133,7 @@ beforeEach(async () => {
     || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   schema = `chat_${randomUUID().replaceAll('-', '')}`
   admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   // A one-slot pool catches accidental post-commit nested checkouts.
   pool = new pg.Pool({ connectionString, max: 1, connectionTimeoutMillis: 2_000, options: `-c search_path=${schema}` })
   await applyApplicationMigrations(pool)
@@ -154,7 +155,7 @@ afterEach(async () => {
   finally {
     try { await pool?.end() }
     finally {
-      try { await admin?.query(`drop schema if exists "${schema}" cascade`) }
+      try { await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve()) }
       finally {
         try { await admin?.end() }
         finally { await rm(runtimeDirectory, { recursive: true, force: true }) }

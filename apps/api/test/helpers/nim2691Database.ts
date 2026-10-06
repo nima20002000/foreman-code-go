@@ -1,3 +1,4 @@
+import { createFixtureDatabase, dropFixtureDatabase } from './testResources.js'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -20,7 +21,7 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   try {
     await admin.connect()
     assert.equal((await admin.query<{ server_version_num: string }>('show server_version_num')).rows[0]?.server_version_num.startsWith('17'), true)
-    await admin.query(`create database "${name}" template template0 encoding 'UTF8'`)
+    await createFixtureDatabase(admin, name, "template template0 encoding 'UTF8'")
     created = true
     url.pathname = `/${name}`
     pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
@@ -52,7 +53,7 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
       }
     }
   } catch (error) { cleanupErrors.push(error) }
-  try { if (created) await admin.query(`drop database "${name}" with (force)`) }
+  try { if (created) await dropFixtureDatabase(admin, name) }
   catch (error) { cleanupErrors.push(error) }
   try { await admin.end() }
   catch (error) { cleanupErrors.push(error) }

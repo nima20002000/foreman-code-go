@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import Fastify, { type FastifyInstance } from 'fastify'
@@ -51,7 +52,7 @@ describe.skipIf(!postgresEnabled)('FIL-03 upload IDs are not Operator chat actio
   }, 30_000)
   afterAll(async () => {
     await app?.close()
-    if (root) await rm(root, { recursive: true, force: true })
+    if (root) await removeFixtureDirectory(root)
     await database?.close()
   })
   async function owner() {

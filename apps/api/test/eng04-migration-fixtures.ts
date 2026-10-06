@@ -1,3 +1,4 @@
+import { createFixtureDatabase, dropFixtureDatabase } from './helpers/testResources.js'
 import { createHash, randomBytes } from 'node:crypto'
 import assert from 'node:assert/strict'
 import pg from 'pg'
@@ -38,7 +39,7 @@ export async function disposableDatabase<T>(work: (pool: pg.Pool) => Promise<T>)
     const version = await admin.query<{ server_version_num: string }>('show server_version_num')
     const number = Number(version.rows[0]?.server_version_num)
     assert.ok(number >= 170000 && number < 180000, 'Run this qualification on the pinned PostgreSQL 17 major')
-    await admin.query(`create database "${database}" template template0 encoding 'UTF8'`)
+    await createFixtureDatabase(admin, database, "template template0 encoding 'UTF8'")
     created = true
     url.pathname = `/${database}`
     pool = new pg.Pool({ connectionString: url.toString(), max: 4, connectionTimeoutMillis: 10_000 })
@@ -50,7 +51,7 @@ export async function disposableDatabase<T>(work: (pool: pg.Pool) => Promise<T>)
       if (pool) await pool.end()
       // No FORCE: a leaked connection is a test failure, not permission to kill
       // sessions. The generated name is the only database this helper can drop.
-      if (created) await admin.query(`drop database "${database}"`)
+      if (created) await dropFixtureDatabase(admin, database)
     } finally { await admin.end() }
   }
 }

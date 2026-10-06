@@ -1,25 +1,50 @@
 import assert from 'node:assert/strict'
-import { appendFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, link, realpath, stat, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, it } from 'vitest'
 
-import { assertCodexUnchanged, canonical, qualifyCodex, QUALIFIED_CODEX_VERSION, type QualifiedCodex } from '../src/modules/harnesses/codexProtocol.js'
+import { assertCodexUnchanged, canonical, codexExecutableIdentity, qualifyCodex,
+  QUALIFIED_CODEX_VERSION, type QualifiedCodex } from '../src/modules/harnesses/codexProtocol.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { nativeCompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
+import { CompatibilityCheckError } from '../src/modules/harnesses/compatibility/errors.js'
 import { calls, errorCode, fixture, fixtureProtocol, type Fixture } from './fixtures/codex-test-helpers.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
+import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../scripts/test-resources.mjs'
 
 let f: Fixture
+let closeFixture: (() => Promise<void>) | undefined
 
 describe.skipIf(process.platform === 'win32')('Codex installation qualification (unmocked)', () => {
-  beforeEach(async () => { f = await fixture() })
-  afterEach(async () => { await rm(f.directory, { recursive: true, force: true }) })
+  beforeEach(async () => {
+    closeFixture = undefined
+    f = await fixture()
+  })
+  afterEach(async () => {
+    await closeFixture?.()
+    await removeFixtureDirectory(f.directory)
+  })
 
   it.skipIf(process.platform !== 'linux')('attributes model-free qualification commands to the existing recovery owner', async () => {
     const registry = new NativeProcessRegistry(join(f.directory, 'qualification-recovery'))
     const owner = 'codex-qualification-owner'
     const scope = registry.scope(owner)
     assert.equal(await registry.closeOwner(owner), false)
-    await assert.rejects(qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory, { ...process.env }, true, undefined, scope),
+    const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
+    const cleanupId = registerTestResourceCleanup(invocation,
+      { kind: 'native-owner', owner, registryDirectory: join(f.directory, 'qualification-recovery') })
+    const controller = new AbortController()
+    const qualification = qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory,
+      { ...process.env, NODE_OPTIONS: '--import=data:text/javascript,throw%20new%20Error(%22controller%20bootstrap%22)' },
+      true, controller.signal, scope)
+    closeFixture = async () => {
+      controller.abort(new Error('Qualification fixture is closing.'))
+      await qualification.catch(() => {})
+      assert.equal(await registry.closeOwner(owner), true)
+      completeTestResourceCleanup(invocation, cleanupId)
+    }
+    await assert.rejects(qualification,
       (error: unknown) => errorCode(error) === 'CODEX_SCHEMA_UNQUALIFIED')
     assert.equal(await registry.closeOwner(owner), true)
   })
@@ -61,12 +86,37 @@ describe.skipIf(process.platform === 'win32')('Codex installation qualification 
     const path = await realpath(f.binary)
     const info = await stat(path)
     const qualified: QualifiedCodex = {
-      binary: path, identity: canonical([path, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs]), protocol: fixtureProtocol,
+      binary: path, identity: await codexExecutableIdentity(path), protocol: fixtureProtocol,
       providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'test-only', stableSchemaGitBlob: 'test-only', referenceSchemaManifestSha256: 'test-only',
     }
     await assertCodexUnchanged(qualified)
     await appendFile(path, '\n// executable replacement\n')
+    await utimes(path, info.atime, info.mtime)
     await assert.rejects(assertCodexUnchanged(qualified), (error: unknown) => errorCode(error) === 'CODEX_EXECUTABLE_CHANGED')
+  })
+
+  it('keeps executable qualification when another worktree creates a hardlink', async () => {
+    const path = await realpath(f.binary)
+    const qualified: QualifiedCodex = {
+      binary: path, identity: await codexExecutableIdentity(path), protocol: fixtureProtocol,
+      providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'test-only',
+      stableSchemaGitBlob: 'test-only', referenceSchemaManifestSha256: 'test-only',
+    }
+    await link(path, join(f.directory, 'worktree-installation'))
+    await assertCodexUnchanged(qualified)
+  })
+
+  it('keeps diagnostic identity across hardlinks and rejects changed executable content', async () => {
+    const probe = nativeCompatibilityProbe({ codex: f.binary, opencode: f.binary }, f.directory, process.env)
+    const signal = AbortSignal.timeout(5000)
+    try {
+      const installed = await probe.inspect('codex', signal)
+      await link(f.binary, join(f.directory, 'diagnostic-installation'))
+      await probe.assertUnchanged(installed, signal)
+      await appendFile(f.binary, '\n// executable replacement\n')
+      await assert.rejects(probe.assertUnchanged(installed, signal), (error: unknown) =>
+        error instanceof CompatibilityCheckError && error.code === 'CLI_CHANGED')
+    } finally { await probe.close?.() }
   })
 })
 

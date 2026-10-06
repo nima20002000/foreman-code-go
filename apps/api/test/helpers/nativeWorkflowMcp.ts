@@ -1,7 +1,5 @@
-import { chmod, copyFile, mkdir, mkdtemp, rm, rmdir, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import {
   APP_MCP_TOKEN, appLauncherPath, appLauncherTokenName, appMcpServerName, installAppLauncher,
   isSupportedAppMcpTokenName,
@@ -9,6 +7,9 @@ import {
 import { CodexMcpConnections } from '../../src/modules/harnesses/codexMcpConnections.js'
 import { OpenCodeMcpConnections } from '../../src/modules/harnesses/openCodeMcpConnections.js'
 import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
+import { privateFixtureDirectory } from './privateFixtureDirectory.js'
+import { ownedTestDatabaseUrl, ownedTestPath, removeFixtureDirectory } from './testResources.js'
+import { referenceTestAuthenticationFile } from '../../../../scripts/test-resources.mjs'
 
 /** Use fixture-owned CLI configuration and routes while retaining the provider login. */
 export async function configureNativeWorkflowMcp(input: {
@@ -18,22 +19,22 @@ export async function configureNativeWorkflowMcp(input: {
   openCodeBinary?: string
   appServerName?: string
 }): Promise<() => Promise<void>> {
+  ownedTestDatabaseUrl()
+  ownedTestPath(input.projectDirectory)
+  ownedTestPath(input.runtimeDirectory)
+  const authentication = process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
+  if (!authentication) throw new Error('Native workflow fixtures require explicit test Codex authentication')
+  const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
   const previous = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
   const previousCodexHome = process.env.CODEX_HOME
   // Codex's release build refuses helper aliases beneath TMPDIR.
-  const profileDirectory = fileURLToPath(new URL('../../../../.logs/native-cli/', import.meta.url))
-  await mkdir(profileDirectory, { recursive: true, mode: 0o700 })
-  const codexHomeDirectory = await mkdtemp(join(profileDirectory, 'codex-'))
+  const codexHomeDirectory = await privateFixtureDirectory('native-cli-codex-')
   const restore = async () => {
     if (previous === undefined) delete process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
     else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previous
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME
     else process.env.CODEX_HOME = previousCodexHome
-    await rm(codexHomeDirectory, { recursive: true, force: true })
-    try { await rmdir(profileDirectory) }
-    catch (error) {
-      if (!['ENOENT', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
-    }
+    await removeFixtureDirectory(codexHomeDirectory)
   }
   try {
     // Inspect copied configuration against its original managed-launcher location.
@@ -51,11 +52,9 @@ export async function configureNativeWorkflowMcp(input: {
         .read(AbortSignal.timeout(30_000))
       : undefined
     // Reuse only the selected provider login; unrelated native configuration stays outside the fixture.
-    await copyFile(join(previousCodexHome ?? join(homedir(), '.codex'), 'auth.json'),
-      join(codexHomeDirectory, 'auth.json'))
-    await chmod(join(codexHomeDirectory, 'auth.json'), 0o600)
+    referenceTestAuthenticationFile(invocation, authentication, join(codexHomeDirectory, 'auth.json'))
     process.env.CODEX_HOME = codexHomeDirectory
-    process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(input.runtimeDirectory, 'mcp')
+    process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = ownedTestPath(join(input.runtimeDirectory, 'mcp'))
     await installAppLauncher()
     await writeFile(join(codexHomeDirectory, 'config.toml'), [
       `[mcp_servers.${codexName}]`,

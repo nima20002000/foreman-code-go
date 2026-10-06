@@ -1,10 +1,17 @@
-import { timeRuntimeOperation } from '../src/infrastructure/runtimeTiming.js'
+import { waitForStartedBranches } from './helpers/nativeAcceptanceState.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { existsSync } from 'node:fs'
+import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import pg from 'pg'
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema, HarnessExecutionSchema,
   type NativeSessionReference } from '@foreman-code/contracts'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -23,27 +30,13 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
+import { provisionTestResources } from '../../../scripts/test-resources.mjs'
+import { stopGroup } from '../../../scripts/integration-process.mjs'
 
-async function startedBranches({ pool, runId, nodeIds, runs, publicationChanged }: Eng03NativeControl) {
-  const deadline = Date.now() + 120_000
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const expired = new Promise<void>((resolve) => { timer = setTimeout(resolve, 120_000) })
-  let started: Array<{ execution_id: string; native_session_id: string }> = []
-  try {
-    while (Date.now() < deadline) {
-      const changed = publicationChanged()
-      started = (await pool.query<{ execution_id: string; native_session_id: string }>(
-        `select distinct he.id as execution_id,he.record->>'nativeSessionId' as native_session_id
-         from harness_executions he join harness_native_events ne on ne.execution_id=he.id
-         where he.run_id=$1 and he.workflow_node_id=any($2::text[])
-           and ne.record->>'type'='turn.started' and he.record->>'nativeSessionId' is not null`,
-        [runId, [nodeIds[1], nodeIds[2]]],
-      )).rows
-      if (started.length === 2 || (await runs.get(runId))?.executionState === 'completed') break
-      await timeRuntimeOperation('engine', 'acceptance.publication_wait', () => Promise.race([changed, expired]),
-        { runId })
-    }
-  } finally { clearTimeout(timer) }
+const require = createRequire(import.meta.url)
+
+async function startedBranches(context: Eng03NativeControl) {
+  const started = await waitForStartedBranches(context)
   expect(started).toHaveLength(2)
   expect(new Set(started.map((item) => item.native_session_id)).size).toBe(2)
   return started
@@ -76,10 +69,85 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       try { await manager.dispose() }
       finally {
         try { await restore?.() }
-        finally { await rm(directory, { recursive: true, force: true }) }
+        finally { await removeFixtureDirectory(directory) }
       }
     }
   }, 90_000)
+  it.each(['unset', 'enabled'])(
+    'retains the acceptance helper database and runtime after uncertain closure with keep-runtime %s', async keep => {
+      const input = { ...process.env }
+      delete input.FOREMAN_CODE_TEST_ROOT
+      delete input.FOREMAN_CODE_TEST_OWNER
+      const resources = await provisionTestResources(input)
+      const environment = { ...resources.environment }
+      if (keep === 'enabled') environment.ENG03_A_KEEP_RUNTIME = '1'
+      else delete environment.ENG03_A_KEEP_RUNTIME
+      const observation = join(environment.FOREMAN_CODE_TEST_ROOT!, 'acceptance-retention.json')
+      const probe = fileURLToPath(new URL('./helpers/nativeAcceptanceRetentionProbe.ts', import.meta.url))
+      const child = spawn(process.execPath, ['--import', require.resolve('tsx'), probe, observation], {
+        env: environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      child.stdout?.resume()
+      child.stderr?.resume()
+      const errors: unknown[] = []
+      try {
+        const [code] = await once(child, 'exit', { signal: AbortSignal.timeout(200_000) })
+        expect(code).toBe(0)
+        const reported = JSON.parse(await readFile(observation, 'utf8')) as {
+          runId: string; artifactPath: string; branchCount: number
+        }
+        expect(reported.branchCount).toBe(2)
+        const artifact = JSON.parse(await readFile(reported.artifactPath, 'utf8')) as {
+          resources: { invocation: { directory: string; token: string }; cleanupId: string;
+            root: string; schema: string; registryDirectory: string }
+          resourcesRetained: boolean
+        }
+        expect(artifact.resourcesRetained).toBe(true)
+        expect(existsSync(artifact.resources.registryDirectory)).toBe(true)
+        await expect(resources.close()).rejects.toThrow('cleanup remains unconfirmed')
+        const pool = new pg.Pool({ connectionString: resources.environment.TEST_DATABASE_URL,
+          options: `-c search_path=${artifact.resources.schema}`, max: 1 })
+        try {
+          expect((await pool.query('select id from runs where id=$1', [reported.runId])).rows)
+            .toEqual([{ id: reported.runId }])
+        } finally { await pool.end() }
+        const registryModule = new URL('../src/modules/harnesses/recovery/processRegistry.ts', import.meta.url).href
+        const resourcesModule = new URL('../../../scripts/test-resources.mjs', import.meta.url).href
+        const recovery = spawn(process.execPath, ['--import', require.resolve('tsx'), '--input-type=module', '-e', `
+          import pg from ${JSON.stringify(pathToFileURL(require.resolve('pg')).href)};
+          import { NativeProcessRegistry } from ${JSON.stringify(registryModule)};
+          import { completeTestResourceCleanup, dropFixtureSchema, ownedTestDatabaseUrl, removeFixtureDirectory }
+            from ${JSON.stringify(resourcesModule)};
+          const saved = ${JSON.stringify(artifact.resources)};
+          const registry = new NativeProcessRegistry(saved.registryDirectory);
+          for (const owner of new Set(registry.snapshot().launches.map(launch => launch.owner))) {
+            if (!await registry.closeOwner(owner)) throw new Error('Native closure remains unconfirmed');
+          }
+          const pool = new pg.Pool({ connectionString: ownedTestDatabaseUrl(), max: 1 });
+          try { await dropFixtureSchema(pool, saved.schema); } finally { await pool.end(); }
+          await removeFixtureDirectory(saved.root);
+          completeTestResourceCleanup(saved.invocation, saved.cleanupId);
+        `], { env: resources.environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+        recovery.stdout?.resume()
+        recovery.stderr?.resume()
+        try {
+          const [code] = await once(recovery, 'exit')
+          expect(code).toBe(0)
+        } finally { await stopGroup(recovery.pid) }
+        expect(existsSync(artifact.resources.root)).toBe(false)
+        await resources.close()
+        expect(existsSync(resources.environment.FOREMAN_CODE_TEST_ROOT!)).toBe(false)
+      } catch (error) { errors.push(error) }
+      finally {
+        try { await stopGroup(child.pid) }
+        catch (error) { errors.push(error) }
+        if (existsSync(resources.environment.FOREMAN_CODE_TEST_ROOT!)) {
+          try { await resources.close() }
+          catch (error) { errors.push(error) }
+        }
+      }
+      if (errors.length) throw new AggregateError(errors, 'Acceptance retention probe failed')
+    }, 240_000)
 
   it('E03-L01 stops two positively started Codex branches without starting Reviewer', async () => {
     let started: Array<{ execution_id: string; native_session_id: string }> = []
@@ -437,7 +505,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             predecessors: input.predecessors.map((item) => ({ relationshipId: item.relationshipId,
               senderExecutionId: item.execution.executionId, acceptedResultDigest: repeatDigest(item.acceptedResult) })) },
         }, null, 2))
-      } finally { await rm(outside, { recursive: true, force: true }) }
+      } finally { await removeFixtureDirectory(outside) }
     }, 180_000)
   })
 

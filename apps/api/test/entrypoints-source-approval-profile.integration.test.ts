@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { performance } from 'node:perf_hooks'
@@ -59,7 +60,7 @@ vi.mock('node:child_process', async importOriginal => {
 
 it.skipIf(!postgresEnabled)('profiles complete repository approval through real HTTP/MCP with constant SQL publication and persisted readback', async () => {
   const db = await currentDatabase(), clients: Client[] = []
-  const directory = await mkdtemp('/var/tmp/entrypoints-source-profile-')
+  const directory = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/entrypoints-source-profile-`)
   const storage = join(directory, 'state', 'runtime', 'main', 'canonical', 'source-snapshots')
   await mkdir(storage, { recursive: true, mode: 0o700 })
   const root = await realpath(fileURLToPath(new URL('../../../', import.meta.url)))
@@ -139,5 +140,5 @@ it.skipIf(!postgresEnabled)('profiles complete repository approval through real 
         expect(replay.isError).toBe(true); expect(JSON.parse((replay.content[0] as { text: string }).text)).toMatchObject({ error: { code: 'SOURCE_CAPTURE_FAILED' } })
       } finally { fault.mockRestore(); timeout.mockRestore() }
     }
-  } finally { metrics.active = false; await Promise.allSettled(clients.map(client => client.close())); await app.close(); vi.restoreAllMocks(); await db.close(); await rm(directory, { recursive: true, force: true }) }
+  } finally { metrics.active = false; await Promise.allSettled(clients.map(client => client.close())); await app.close(); vi.restoreAllMocks(); await db.close(); await removeFixtureDirectory(directory) }
 }, 60_000)

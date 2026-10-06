@@ -1,5 +1,5 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -72,17 +72,18 @@ async function freePort() {
 async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write'; form?: CurrentFixtureForm; handoffs?: boolean } = {}) {
   const db = await agent3Database(); closes.push(db.close)
   const directory = await privateFixtureDirectory('activity-replay-workspace-')
-  closes.push(() => rm(directory, { recursive: true, force: true }))
+  closes.push(() => removeFixtureDirectory(directory))
   const workspace = await createActivityReplayWorkspace(directory)
   const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, HARNESS_WORKSPACE_ROOT: workspace.harnessWorkspaceRoot,
     PORT: String(await freePort()), CODEX_BINARY: '/recorded-no-native-codex', OPENCODE_BINARY: '/recorded-no-native-opencode' })
   config.workspaceStorageRoot = workspace.workspaceStorageRoot
   config.fileStorageRoot = await createActivityReplayFileStorage()
-  closes.push(() => rm(config.fileStorageRoot!, { recursive: true, force: true }))
+  closes.push(() => removeFixtureDirectory(config.fileStorageRoot!))
   const cpSchema = `${db.schema}_cp`
+  await createFixtureSchema(db.pool, cpSchema)
   const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, cpSchema, config.database)
   await checkpoints.setup()
-  closes.push(async () => { await checkpoints.close(); await db.pool.query(`drop schema "${cpSchema}" cascade`) })
+  closes.push(async () => { await checkpoints.close(); await dropFixtureSchema(db.pool, cpSchema) })
   const seed = makeCurrentWorkflowFixture(randomUUID(), options.form ?? 'single')
   if (options.handoffs) seed.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...seed.version,
     definition: { ...seed.version.definition, handoffs: { contractVersion: 1 } } }))

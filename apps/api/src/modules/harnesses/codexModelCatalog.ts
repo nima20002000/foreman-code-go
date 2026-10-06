@@ -2,6 +2,9 @@ import { HarnessExecutionError } from './errors.js'
 import { CodexStdioTransport, isObject, type JsonObject } from './codexStdioTransport.js'
 import { assertCodexUnchanged, codexRequest, type QualifiedCodex } from './codexProtocol.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
+import { inheritedAgentEnvironment } from './secrets.js'
+import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
+import { runCommand } from './process.js'
 
 const MAX_MODELS = 10_000
 const REFRESH_FAILURE = 'failed to refresh available models:'
@@ -9,6 +12,7 @@ const REFRESH_FAILURE = 'failed to refresh available models:'
 export interface CodexModelInspection {
   qualified: QualifiedCodex
   assertUnchanged?: typeof assertCodexUnchanged
+  runCommand?: typeof runCommand
   transportFactory?: (...args: ConstructorParameters<typeof CodexStdioTransport>) =>
     Pick<CodexStdioTransport, 'start' | 'request' | 'close' | 'reject'>
 }
@@ -23,14 +27,30 @@ export async function readNativeCodexModelCatalog(
 ): Promise<JsonObject & { models: JsonObject[] }> {
   const assertUnchanged = inspection.assertUnchanged ?? assertCodexUnchanged
   await assertUnchanged(inspection.qualified)
+  const metadataEnvironment = inheritedAgentEnvironment(environment)
+  const listed = await (inspection.runCommand ?? runCommand)(inspection.qualified.binary,
+    ['mcp', 'list', '--json'], workingDirectory, signal, metadataEnvironment,
+    recovery ? { recovery } : {})
+  let entries: unknown
+  try { entries = JSON.parse(listed.stdout) }
+  catch { entries = undefined }
+  if (listed.exitCode !== 0 || !Array.isArray(entries) || entries.length > 500
+    || !entries.every(entry => isObject(entry) && typeof entry.name === 'string')) {
+    throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED',
+      'Codex MCP configuration inspection failed; absence was not established.')
+  }
+  const configuredNames = new Set(entries.map((entry: JsonObject) => entry.name))
+  const disabledMcpNames = chatExcludedAppMcpServerNames(APP_MCP_SERVER_NAME)
+    .filter(name => configuredNames.has(name))
   let refreshFailed = false
   const factory: NonNullable<CodexModelInspection['transportFactory']> =
     inspection.transportFactory ?? ((...args) => new CodexStdioTransport(...args))
   const transport: ReturnType<typeof factory> = factory(inspection.qualified.binary, workingDirectory,
-    { ...environment, RUST_LOG: 'codex_models_manager=error,codex_core::models_manager=error' },
+    { ...metadataEnvironment, RUST_LOG: 'codex_models_manager=error,codex_core::models_manager=error' },
     inspection.qualified.protocol,
     async request => { await transport.reject(request.id, -32601, 'Model inspection cannot answer native requests.') },
-    () => undefined, () => undefined, undefined, recovery, [], () => { refreshFailed = true })
+    () => undefined, () => undefined, undefined, recovery,
+    disabledMcpNames, () => { refreshFailed = true })
   let catalog: ReturnType<typeof parseCodexModelCatalog> | undefined
   let failed = false
   let failure: unknown

@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, expect, it } from 'vitest'
@@ -6,17 +7,17 @@ import { NativeSessionLaneSchema } from '@foreman-code/contracts'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.TEST_DATABASE_URL!
 const schema = `lanes_${randomUUID().replaceAll('-', '')}`
 const admin = new pg.Pool({ connectionString })
 const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
 beforeAll(async () => {
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   await applyApplicationMigrations(pool)
 }, 60_000)
 afterAll(async () => {
   await pool.end()
-  try { await admin.query(`drop schema if exists "${schema}" cascade`) } finally { await admin.end() }
+  try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
 }, 60_000)
 
 it('round-trips claimed and renewed lane leases through PostgreSQL and the shared contract', async () => {

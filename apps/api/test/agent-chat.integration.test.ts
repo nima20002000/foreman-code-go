@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { removeFixtureDirectory } from './helpers/testResources.js'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -26,7 +27,7 @@ import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { seedAgent3 } from './helpers/wave25Agent3.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_agent_chat_test'
+const connectionString = process.env.TEST_DATABASE_URL!
 
 /** Only provider I/O is fake. Migrations, SQL, receipts, authorization, HTTP and MCP are real. */
 class FakeNative implements NativeHarnessSessionManager {
@@ -177,7 +178,7 @@ beforeAll(async () => {
 })
 afterAll(async () => {
   await pool?.end()
-  if (root) await rm(root, { recursive: true, force: true })
+  if (root) await removeFixtureDirectory(root)
 })
 beforeEach(async () => {
   await pool.query(`delete from operator_conversations where kind='agent' and workspace_id=$1`, [fixture.scope.workspaceId])

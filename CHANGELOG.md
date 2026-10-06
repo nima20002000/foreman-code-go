@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.42] - 2026-10-06
+## [0.0.43] - 2026-10-06
 
 ### Added
 
@@ -51,6 +51,31 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Run sandbox qualification from an immutable program in protected storage, retaining the original actor and descendant write-denial checks and verified cleanup.
 - Keep native output storage outside agent write access, verify original native call ownership and sandbox policy, and enforce saved OpenCode permissions and original approvals for output operations.
 - Retain grants, scope checks, native closure records and credential revocation through output publication and approval recovery.
+
+## [0.0.42] - 2026-10-06
+
+### Added
+
+- Dedicated test PostgreSQL, owned disposable databases, and private homes, storage, MCP routes and runtime directories for each test invocation.
+- Ownership and cleanup recovery checks for database-backed tests and native acceptance.
+
+### Changed
+
+- Root and API test commands, including selected-file runs, provision isolated resources and preserve current Foreman Code local-human and scoped MCP behavior.
+- Installed production verification uses the separate `production:verify` command and refuses disposable test contexts.
+
+### Fixed
+
+- Keep source capture and qualification fixtures inside owned storage, join pending work on teardown, and keep controller Node startup options out of native commands.
+- Local smoke shutdown drains pending web requests before closing its dev server; settled resources are removed after failed assertions too.
+- Native acceptance uses explicit private provider profiles and managed MCP configuration, with retained diagnostics when physical cleanup cannot be confirmed.
+- Bounded MCP readback fills its response budget while preserving JSON characters, identity, choices and continuation integrity.
+
+### Security
+
+- Tests reject application and production database connections, ambient database fallbacks, and cleanup outside owned database or filesystem roots.
+- Native agents receive scoped provider and MCP settings without inheriting test-controller credentials, database selectors or the ambient user home.
+- Codex model diagnostics strip App and controller credentials and disable only configured App MCP entries, preserving provider sign-in and native startup with empty MCP configuration.
 
 ## [0.0.41] - 2026-10-06
 

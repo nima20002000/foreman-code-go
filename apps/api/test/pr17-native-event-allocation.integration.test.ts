@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { HarnessExecutionSchema, HarnessNativeEventSchema, WorkflowRunSchema, type HarnessNativeEvent } from '@foreman-code/contracts'
@@ -9,13 +10,13 @@ import { nativeEventSequenceMigration } from '../src/infrastructure/nativeEventS
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { appendNativeEvent } from '../src/modules/runs/nativeEvents.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.TEST_DATABASE_URL!
 const timestamp = '2026-09-17T00:00:00.000Z'
 
 async function createDatabase(existingPR17 = false) {
   const schema = `event_allocation_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}`, max: 8 })
   try {
     if (existingPR17) {
@@ -48,7 +49,7 @@ async function createDatabase(existingPR17 = false) {
   }
   async function close() {
     await pool.end()
-    try { await admin.query(`drop schema "${schema}" cascade`) } finally { await admin.end() }
+    try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
   }
 }
 

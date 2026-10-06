@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, realpath, stat } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -38,6 +39,8 @@ import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import { configureNativeWorkflowMcp } from './helpers/nativeWorkflowMcp.js'
+import { configureNativeAcceptanceMcp } from './helpers/nativeAcceptanceMcp.js'
+import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
 import { LocalNativeArtifactOutputSchema } from '../src/modules/runs/remote/nativeArtifactOutputs.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { nativeOpenCodeMcpToolName } from '../src/modules/harnesses/openCodePermissionPolicy.js'
@@ -134,7 +137,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const secrets = new Set(Object.entries(process.env)
         .filter(([name, value]) => /TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL/.test(name) && value)
         .map(([, value]) => value!))
-      const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail }> = []
+      const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail;
+        elapsedMs?: number; signalAborted?: boolean }> = []
       const nativeHistories: unknown[] = []
       const reconcile = OpenCodeNativeSessionManager.prototype.reconcile
       const historyObserver = vi.spyOn(OpenCodeNativeSessionManager.prototype, 'reconcile')
@@ -156,6 +160,18 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         return toolFailure(error, message)
       })
       const cancellations: Array<{ nativeSessionId: string; caller: string[]; reason?: NativeFailureDetail }> = []
+      const inspectMcp = CodexAppServerSessionManager.prototype.inspectMcpConfiguration
+      const inspectionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'inspectMcpConfiguration')
+        .mockImplementation(async function (this: CodexAppServerSessionManager, cwd, signal) {
+          const started = performance.now()
+          try { return await inspectMcp.call(this, cwd, signal) }
+          catch (error) {
+            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'inspect_mcp_configuration',
+              elapsedMs: Math.round(performance.now() - started), signalAborted: Boolean(signal?.aborted),
+              error: describeNativeFailure(error, [...secrets]) })
+            throw error
+          }
+        })
       const createSession = CodexAppServerSessionManager.prototype.createSession
       const sessionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
         .mockImplementation(async function (this: CodexAppServerSessionManager, source, signal) {
@@ -220,6 +236,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         await database.migrate()
         await checkpoints.setup()
         const usesOpenCode = scenario.providers.some(provider => provider === 'opencode')
+        await configureNativeAcceptanceMcp(database.pool, runtimeRoot, {
+          codex: config.harnesses.codexBinary, opencode: config.harnesses.openCodeBinary,
+        }, `http://127.0.0.1:${port}/mcp`, scenario.providers)
         restoreNativeMcp = await configureNativeWorkflowMcp({ projectDirectory: projectPath,
           runtimeDirectory: runtimeRoot, codexBinary: binaries.codexBinary, appServerName,
           ...(usesOpenCode ? { openCodeBinary: binaries.openCodeBinary } : {}) })
@@ -288,7 +307,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               nativeAgent: 'build', thinking: false, autoApprove: false,
               ...(scenario.approval && index === approvalNode ? { advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
                 permissionRules: [{ permission: 'shell', pattern: 'pwd', effect: 'ask' }] } } : {}) }
-            : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? 'gpt-5.6-luna',
+            : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
               reasoningEffort: process.env.NIM2691_CODEX_REASONING_EFFORT ?? 'medium',
               sandbox: 'read-only', serviceTier: 'standard' },
           prompt: { system: scenario.capLoop
@@ -695,6 +714,11 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           url: `/api/management/workspaces/${workspace.id}/runs/${runId}/events?limit=500` })
         expect(publicEvents.statusCode, publicEvents.body).toBe(200)
         const publicPage = RunEventsPageSchema.parse(publicEvents.json())
+        if (outcome !== (noRoute ? 'pending' : 'succeeded')) {
+          await writeNativeAcceptanceEvidence(`handoff-failure-${randomUUID()}.json`,
+            nativePersistenceRedactor([...secrets]).value({ scenario: scenario.name, runId, state, outcome,
+              runError, executions, activityKinds, startupErrors, nativeFailures, nativeHistories }))
+        }
         if (artifactPolicy === 'deny_publish') {
           expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors }))
             .toEqual({ state: 'completed', outcome: 'failed' })
@@ -962,9 +986,14 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         if (directory) {
           try {
             const executions = observedRunId ? (await pool.query(
-              "select id,record->>'state' as state,record#>'{result,error}' as error from harness_executions where run_id=$1 order by id limit 16",
+              'select id,record from harness_executions where run_id=$1 order by id limit 16',
               [observedRunId],
             )).rows : []
+            const handoffs = observedRunId ? {
+              requests: (await pool.query('select * from run_work_requests where run_id=$1', [observedRunId])).rows,
+              returns: (await pool.query('select * from run_work_returns where run_id=$1', [observedRunId])).rows,
+              results: (await pool.query('select * from run_work_results where run_id=$1', [observedRunId])).rows,
+            } : undefined
             const evidence = nativePersistenceRedactor([...secrets]).value({
               scenario: scenario.name, runId: observedRunId, nativeFailures, nativeHistories, cancellations, executions,
               run: observedRunId ? (await pool.query('select record from runs where id=$1', [observedRunId])).rows : [],
@@ -979,9 +1008,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                   join durable_interactions i on i.id=a.interaction_id where i.run_id=$1 limit 16`, [observedRunId])).rows : [],
               failure: describeNativeFailure(error, [...secrets]),
             })
-            const path = join(directory, `native-workflow-failure-${randomUUID()}.json`)
-            await writeFile(path, JSON.stringify(evidence, null, 2), { flag: 'wx', mode: 0o600 })
-            console.info('Private native workflow failure evidence:', path)
+            const filename = `native-workflow-failure-${randomUUID()}.json`
+            await writeNativeAcceptanceEvidence(filename, evidence)
+            console.info('Private native workflow failure evidence:', join(directory, filename))
           } catch (evidenceError) {
             failure = { error: new AggregateError([error, evidenceError],
               'Native failure evidence could not be retained.', { cause: error }) }
@@ -1029,7 +1058,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         throw new AggregateError(cleanupErrors, 'Native workflow verification or cleanup failed.',
           { cause: failure?.error ?? cleanupErrors[0] })
       }
-      await rm(directory, { recursive: true, force: true })
+      await removeFixtureDirectory(directory)
       if (failure) throw failure.error
     })
   }, 600000)
