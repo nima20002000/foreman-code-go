@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
+import { randomUUID } from 'node:crypto'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import {
   WorkerConversationRpcRequestSchema, type WorkerConversationBinding, type WorkerConversationConfiguration,
@@ -198,6 +199,8 @@ export class WorkerConversationHost {
   ) {
     validateConfiguration(request.binding, request.configuration)
     if (!this.ports.prepare) unavailable('Separate native configuration inspection is unavailable.')
+    const record = await this.ports.journal.inspectBinding(request.binding)
+    if (record?.closing || record?.closed) unavailable('The original chat is not available for inspection.')
     const key = `inspection:${randomUUID()}`
     const opening = this.ports.prepare(request.binding, request.configuration, connection, signal).then(async allocation => {
       try {
@@ -214,7 +217,9 @@ export class WorkerConversationHost {
     try {
       allocation = (await opening).allocation
       if (!allocation.inspector) unavailable('Native configuration inspection is unavailable.')
-      return await allocation.inspector.inspect({ ...request.inspection, signal })
+      const result = await allocation.inspector.inspect({ ...request.inspection, phase: 'configuration', signal })
+      this.current(request.binding, connection, signal)
+      return result
     } finally {
       this.allocating.delete(key)
       if (allocation) {

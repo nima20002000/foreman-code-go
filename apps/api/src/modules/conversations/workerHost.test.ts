@@ -224,6 +224,12 @@ it.each(['codex', 'opencode'] as const)('inspects %s configuration without borro
   expect(closeWriter).not.toHaveBeenCalled()
   expect(await f.journal.conversations.read(f.binding)).toEqual(before)
   expect(f.manager.creates).toBe(1)
+  await f.request({ method: 'conversation.close', session: f.session })
+  const preparedCount = vi.mocked(f.ports.prepare!).mock.calls.length
+  await expect(f.request({ method: 'conversation.inspect-entry', configuration: f.configuration,
+    inspection: { harness, runnerId: `device:${f.connection.deviceId}`, workingDirectory: f.binding.workingDirectory,
+      serverName: 'foreman-code', phase: 'configuration' } })).rejects.toThrow('not available for inspection')
+  expect(f.ports.prepare).toHaveBeenCalledTimes(preparedCount)
 })
 
 it('inspects a cold saved chat on a separate preparation and rechecks its scoped credential before attachment', async () => {
