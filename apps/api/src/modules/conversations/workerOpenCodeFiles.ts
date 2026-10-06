@@ -40,12 +40,11 @@ export function createWorkerOpenCodeFiles(input: {
     const source = input.source()
     await input.assertCurrent(source, signal)
     checkFileCondition(!deliveries.has(key(identity)), 'FILE_TURN_CONFLICT', 'The native file turn is already retained.')
-    let delivery: Delivery | undefined
-    const proxy = createWorkerOpenCodeFileService({ ...input, source: () => delivery?.source ?? source, identity })
-    const raw = await proxy.call({ phase: 'prepare' }, signal)
+    const raw = await input.callbacks.openCodeFiles(source, identity, { phase: 'prepare' }, signal)
     if (raw === null) return undefined
     const prepared = WorkerOpenCodeFilePreparationSchema.parse(raw)
-    delivery = { source, identity: structuredClone(identity), prepared }
+    const delivery: Delivery = { source, identity: structuredClone(identity), prepared }
+    const proxy = createWorkerOpenCodeFileService({ ...input, source: () => delivery.source, identity })
     const parent = join(input.stateDirectory, 'opencode-chat-files')
     await mkdir(parent, { recursive: true, mode: 0o700 })
     const stat = await lstat(parent)
@@ -74,8 +73,8 @@ export function createWorkerOpenCodeFiles(input: {
       const host = new LocalOpenCodeExecutionFiles({ root, executionHostId: `worker:${randomUUID()}`,
         maxFileBytes: MAX_FILE_BYTES,
         assertSourceIsolation: async checkSignal => {
-          await input.assertCurrent(delivery!.source, checkSignal)
-          await input.assertSourceIsolation(input.server.nativePid ?? 0, delivery!.prepared.sourceHost, checkSignal)
+          await input.assertCurrent(delivery.source, checkSignal)
+          await input.assertSourceIsolation(input.server.nativePid ?? 0, delivery.prepared.sourceHost, checkSignal)
         } })
       deliveries.set(key(identity), delivery)
       return {
