@@ -15,9 +15,11 @@ import { JobExecutionRecordSchema, type JobExecutionRecord, VerificationJobExecu
   JobVerificationReportSchema } from '@foreman-code/contracts/job-verification'
 import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
 import { verificationFixture } from './helpers/jobVerificationFixture.js'
+import { verificationRuntimeFixture } from './helpers/verificationRuntimeFixture.js'
 import { fileStorageMigration } from '../src/infrastructure/fileStorageMigration.js'
 import { fileToolsMigration } from '../src/modules/files/tools/migration.js'
 import { jobArtifactStorageMigration } from '../src/infrastructure/jobArtifactStorageMigration.js'
+import { jobArtifactXmlMigration } from '../src/infrastructure/jobArtifactXmlMigration.js'
 import { JobPublicationAuthority } from '../src/modules/jobs/authority.js'
 import { JobService } from '../src/modules/jobs/service.js'
 import { createCanonicalJobArtifactPort } from '../src/modules/files/jobs/factory.js'
@@ -54,6 +56,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       create table job_fixture_owner(grant_id text primary key,epoch text,revoked boolean,root_valid boolean);
       insert into job_fixture_owner values('grant-fixture','1',false,true);`)
     await pool.query(fileStorageMigration.sql);await pool.query(fileToolsMigration.sql);await pool.query(jobArtifactStorageMigration.sql)
+    await pool.query(jobArtifactXmlMigration.sql)
     for(const [id,token,actions] of [['owner',ownerToken,['jobs:start','job_artifacts:read']],['denied',deniedToken,['jobs:read']]] as const){
       await pool.query("insert into management_principals values($1,$1,'operator',null,$2,$3::jsonb,'2099-01-01',null,null)",[id,digest(token),JSON.stringify([{actions,scope:{workspaceIds:[execution.workspaceId]}}])])
     }
@@ -62,8 +65,13 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       outputs: [{path:outputPath,required:true,mediaType:'application/json'}] } })
     if (placementMode === 'verification') {
       const facts = verificationFixture()
+      const runtime = verificationRuntimeFixture()
       execution = VerificationJobExecutionSchema.parse({ ...execution, schemaVersion: 2,
         acceptedSpec: { ...execution.acceptedSpec, schemaVersion: 2, policy: facts.spec.policy,
+          resourcePolicyRevision: runtime.spec.resourcePolicyRevision,
+          resourcePolicyDigest: runtime.spec.resourcePolicyDigest,
+          runtimeApprovalId: runtime.spec.runtimeApprovalId,
+          runtimeApprovalRevision: runtime.spec.runtimeApprovalRevision,
           verification: facts.spec.verification, profile: facts.profile, reservationId: randomUUID(),
           lifecycle: verificationJobLifecycle(new Date().toISOString(), facts.spec.policy), outputs: [{ path: outputPath, required: true,
             mediaType: 'application/json', kind: 'suite-summary', maxBytes: 4096 }] } })
@@ -180,6 +188,42 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     } finally { data = original }
   })
   if (placementMode === 'verification') {
+  it('publishes JUnit XML and reads the retained bytes through authenticated MCP', async () => {
+    await pool.query('update job_fixture_owner set revoked=false')
+    const path = '.logs/verification/junit.xml'
+    const output = { path, required: true, mediaType: 'application/xml' as const, kind: 'junit' as const, maxBytes: 4096 }
+    const job = VerificationJobExecutionSchema.parse({ ...execution, id: randomUUID(), attemptId: randomUUID(),
+      acceptedSpec: { ...execution.acceptedSpec,
+        policy: { ...execution.acceptedSpec.policy, maxOutputBytes: 8192 },
+        outputs: [...execution.acceptedSpec.outputs, output] } })
+    await pool.query('insert into job_executions values($1,$2,$3::jsonb,$4::jsonb,$5)',
+      [job.id, job.workspaceId, JSON.stringify(job), JSON.stringify(job.acceptedSpec), 'owner'])
+    const original = data
+    data = Buffer.from('<?xml version="1.0"?><testsuites tests="1" failures="0"/>')
+    try {
+      const published = await artifacts.publishAccepted({ workspaceId: job.workspaceId, executionId: job.id,
+        attemptId: job.attemptId, owner: job.owner, commandId: randomUUID(), path,
+        mediaType: 'application/xml', sha256: digest(data), byteSize: data.length })
+      const client = new Client({ name: 'XML artifact reader', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { authProvider: { token: async () => ownerToken } }))
+      const read = await client.callTool({ name: 'job_artifact_read', arguments: {
+        workspaceId: job.workspaceId, executionId: job.id, fileId: published.artifact.fileId,
+        revisionId: published.artifact.revisionId,
+      } })
+      expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
+      expect(Buffer.from((read.structuredContent as { content: string }).content, 'base64')).toEqual(data)
+      const denied = new Client({ name: 'denied XML artifact reader', version: '1' })
+      clients.push(denied)
+      await denied.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { authProvider: { token: async () => deniedToken } }))
+      expect((await denied.callTool({ name: 'job_artifact_read', arguments: {
+        workspaceId: job.workspaceId, executionId: job.id, fileId: published.artifact.fileId,
+        revisionId: published.artifact.revisionId,
+      } })).isError).toBe(true)
+    } finally { data = original }
+  })
   it.each(['commit', 'attempt', 'failed', 'skipped', 'partial', 'oversized'] as const)(
     'rejects persisted verification %s reports despite exit zero', async change => {
       await pool.query('update job_fixture_owner set revoked=false')
