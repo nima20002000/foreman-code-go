@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.40] - 2026-10-06
+
+### Fixed
+
+- Stabilize the Job queue HTTP/MCP parity regression by joining replay-triggered queue scans before reading cancellation revisions. Preserve denied access, revision conflicts, persisted readback and idempotent cancellation across both transports.
+
 ## [0.0.39] - 2026-10-06
 
 ### Fixed
