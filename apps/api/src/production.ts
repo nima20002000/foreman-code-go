@@ -48,6 +48,7 @@ import { readFile } from 'node:fs/promises'
 import { RESOURCE_TELEMETRY_CAPABILITY, type TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
 import { createResourceTelemetryRuntime, type ResourceTelemetryRuntime } from './modules/resource-telemetry/runtime.js'
 import { createPassiveTelemetryAuthorities } from './modules/resource-telemetry/productionAuthority.js'
+import { createMainResourceTelemetryBindings } from './modules/resource-telemetry/ingestion/carrier.js'
 import { registerResourceTelemetryRoutes } from './routes/resourceTelemetry.js'
 import { registerResourceTelemetrySelectorRoutes } from './routes/resourceTelemetrySelector.js'
 import { WorkspaceBoundLocationService } from './modules/workspace-roots/service.js'
@@ -317,8 +318,10 @@ export function buildProductionApp(
   }}:undefined
   const rsync: ReturnType<typeof createInstalledRsyncComposition> = createInstalledRsyncComposition({ side: 'main', providers: rsyncProviders,
     current: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding })
+  const remoteTelemetry = createMainResourceTelemetryBindings(() => telemetry?.service)
   const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
     extensions: [
+      remoteTelemetry.extension,
       ...rsync.extensions.map(extension => ({ ...extension, role: 'duplex' as const, async handle(raw: unknown, context: import('./modules/devices/deviceApplicationChannel.js').DeviceExtensionContext) {
         context.signal.throwIfAborted()
         if (context.bytes !== undefined) throw new DomainError('RSYNC_TRANSFER_DENIED', 'Transfer authorization accepts metadata only.', 403)
@@ -370,14 +373,26 @@ export function buildProductionApp(
           if (!handler) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual Job input authority is unavailable.', 503)
           return handler(payload, context)
         } },
-      ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', JOB_INPUT_NAMESPACE, BYTE_TRANSFER_NAMESPACE].includes(value.namespace)) ?? []),
+      ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', JOB_INPUT_NAMESPACE, BYTE_TRANSFER_NAMESPACE,
+        remoteTelemetry.extension.namespace].includes(value.namespace)) ?? []),
     ],
     async bindingLost(binding) {
       const tasks: Promise<unknown>[] = []
+      tasks.push(remoteTelemetry.lost(binding))
       try { if (rsync.kind === 'configured') tasks.push(rsync.rsyncWriters.bindingLost(binding)) } catch (error) { tasks.push(Promise.reject(error)) }
       try { const task = infrastructure?.deviceDomains?.bindingLost?.(binding); if (task) tasks.push(task) } catch (error) { tasks.push(Promise.reject(error)) }
       const results = await Promise.allSettled(tasks), failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
       if (failures.length) throw new AggregateError(failures, 'Original device domain binding cleanup remains incomplete')
+    },
+    async bindingReady(binding, signal, endpoint) {
+      try {
+        const session = await remoteTelemetry.ready(binding, signal, endpoint)
+        if (session) void session.completion.catch(error => {
+          if (!signal.aborted) app.log.error({ err: error, deviceId: binding.deviceId }, 'Remote resource telemetry collector failed')
+        })
+      } catch (error) {
+        if (!signal.aborted) app.log.error({ err: error, deviceId: binding.deviceId }, 'Remote resource telemetry collector did not start')
+      }
     },
     async reconcile(binding, signal, endpoint) {
       if (endpoint.capabilities(binding.deviceId).some((item) => item.namespace === 'harness-discovery-v1' && item.mainCanRequest)) {

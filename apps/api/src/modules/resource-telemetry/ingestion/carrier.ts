@@ -8,6 +8,30 @@ import {
 import type { DeviceExtensionRegistration, DeviceApplicationRequestOptions } from '../../devices/deviceApplicationChannel.js'
 import { resourceTelemetryExtension } from './ports.js'
 import { ResourceTelemetryService, TelemetryRejected } from './service.js'
+import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
+
+/** Ready/lost hooks retain only the exact authenticated channel's passive collector. */
+export function createMainResourceTelemetryBindings(service: () => ResourceTelemetryService | undefined) {
+  const sessions = new Map<string, Awaited<ReturnType<typeof startRemoteTelemetrySession>>>()
+  const key = (binding: Readonly<DeviceSessionBinding>) => `${binding.deviceId}:${binding.connectionEpoch}`
+  return {
+    extension: mainResourceTelemetryExtension,
+    async ready(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal, endpoint: DeviceEndpoint) {
+      const reader = service(), captured = endpoint.captureRequest(binding.deviceId, resourceTelemetryExtension.namespace)
+      if (!reader || !captured || telemetryCanonical(captured.binding) !== telemetryCanonical(binding)) return
+      const session = await startRemoteTelemetrySession({ service: reader, binding, signal,
+        request: (payload, options) => captured.request(payload, options) })
+      if (signal.aborted) { await session.close(); signal.throwIfAborted() }
+      sessions.set(key(binding), session)
+      return session
+    },
+    async lost(binding: Readonly<DeviceSessionBinding>) {
+      const id = key(binding), session = sessions.get(id)
+      sessions.delete(id)
+      await session?.close()
+    },
+  }
+}
 
 export const mainResourceTelemetryExtension: DeviceExtensionRegistration = { ...resourceTelemetryExtension, role: 'client' }
 export const remoteTelemetryContext = (binding: Readonly<DeviceSessionBinding>): Extract<TrustedTelemetryContext, { kind: 'remote' }> =>
