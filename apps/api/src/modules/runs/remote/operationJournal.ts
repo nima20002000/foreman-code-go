@@ -19,7 +19,7 @@ import { RemoteJobOperationReceiptRecordSchema, RemoteJobDispatchIntentSchema, R
 
 import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordSchema, JobRuntimeQualificationResultRecordSchema,
   type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
-import { JobNativeOwnerSchema, JobOCICertificateSchema, isPreparatoryVerificationOwner, type JobNativeOwner } from '../../jobs/executorJournal.js'
+import { JobNativeOwnerSchema, JobOCICertificateSchema, isPreparatoryVerificationOwner, jobContainerNonEntryObserved, type JobNativeOwner } from '../../jobs/executorJournal.js'
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, qualificationCleanupCommandAllowed, qualificationCreationFailed,
   QUALIFICATION_COMMAND_LIMIT, QUALIFICATION_CLEANUP_COMMAND_LIMIT,
@@ -630,8 +630,22 @@ export class RemoteOperationJournal {
     return this.change(data => {
       const receipt = this.jobReceipt(data, operationId), evidence = RemoteJobTerminalEvidenceSchema.parse(raw)
       if (receipt.terminal) { if (!same(receipt.terminal, evidence)) throw new Error('Job terminal evidence conflict'); return receipt }
-      if (receipt.entryAttempted && !receipt.native) throw new Error('Attempted OCI entry requires original container reconciliation')
+      const owner = data.jobOwners.find(value => value.operationId === operationId)
+      if (receipt.entryAttempted && !receipt.native && !(owner?.nonEntryConfirmed && jobContainerNonEntryObserved(owner))) {
+        throw new Error('Attempted OCI entry requires original container reconciliation')
+      }
       receipt.terminal = evidence; receipt.phase = 'confirmed_terminal'; receipt.sequence++; receipt.observedAt = new Date().toISOString(); return receipt
+    })
+  }
+  jobConfirmContainerNonEntry(operationId: string, runtimeExecutable: string) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId)
+      const owner = data.jobOwners.find(value => value.operationId === operationId)
+      if (receipt.native || !owner || !same(owner.connection, receipt.connection)
+        || !jobContainerNonEntryObserved(owner) || owner.launches.some(launch => launch.binary !== runtimeExecutable)) {
+        throw new Error('Original Job container non-entry is unconfirmed')
+      }
+      owner.nonEntryConfirmed = true; receipt.sequence++; return owner
     })
   }
   jobPublication(operationId: string, phase: RemoteJobOperationReceiptRecord['publication']) {
@@ -698,7 +712,7 @@ export class RemoteOperationJournal {
     if (!receipt.entryAttempted) throw new Error('Original Job native reservation required')
     let owner = data.jobOwners.find(value => value.operationId === operationId)
     if (!owner) {
-      owner = { operationId, qualificationOperationId: null, timedOut: false, connection: receipt.connection, launches: [], container: null }
+      owner = { operationId, qualificationOperationId: null, timedOut: false, nonEntryConfirmed: false, connection: receipt.connection, launches: [], container: null }
       data.jobOwners.push(owner)
     }
     if (!same(owner.connection, receipt.connection)) throw new Error('Original Job host changed')

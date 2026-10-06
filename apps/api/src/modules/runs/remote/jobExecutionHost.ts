@@ -173,7 +173,8 @@ export class RemoteJobExecutionHost {
       receipt = await this.ports.journal.jobPublication(receipt.intent.operationId, 'process_recorded')
       await this.ports.observeReceipt(receipt)
     }
-    if (receipt.entryAttempted && receipt.native) {
+    const owner = receipt.execution.schemaVersion === 2 ? await this.ports.journal.jobNativeOwner(receipt.intent.operationId) : null
+    if (receipt.entryAttempted && (receipt.native || owner?.nonEntryConfirmed && owner.verification)) {
       try { await this.ports.authorize(receipt.intent, receipt.execution, 'publish') }
       catch { await this.ports.observeReceipt(await this.ports.journal.jobPublication(receipt.intent.operationId, 'failed')); return }
       if (receipt.publication !== 'collecting') receipt = await this.ports.journal.jobPublication(receipt.intent.operationId, 'collecting')
@@ -217,7 +218,17 @@ export class RemoteJobExecutionHost {
     }
     await this.ports.authorize(receipt.intent, receipt.execution, 'read')
     const observed = await this.reconcileSupervisor(receipt)
-    if (!observed) { await this.ports.journal.jobUncertain(receipt.intent.operationId, 'Original OCI supervisor absent: nonexecution not proven'); return this.ports.journal.jobStatus(receipt.intent.operationId) }
+    if (!observed) {
+      const supervisor = await this.supervisor(receipt.execution)
+      if (!receipt.native && await supervisor.stopExecution(receipt.execution, 0)
+        && (await this.ports.journal.jobNativeOwner(receipt.intent.operationId))?.nonEntryConfirmed) {
+        const evidence = this.terminalEvidence({ outcome: receipt.stopFence ? 'cancelled' : 'preparation_failed',
+          exitCode: null, signal: null, processStopped: true, recoveryRequired: false,
+          logError: true, logsTruncated: false, outputCollectionError: false }, true)
+        await this.publish(await this.ports.journal.jobTerminal(receipt.intent.operationId, evidence))
+      } else await this.ports.journal.jobUncertain(receipt.intent.operationId, 'Original OCI supervisor absent: nonexecution not proven')
+      return this.ports.journal.jobStatus(receipt.intent.operationId)
+    }
     if (!receipt.native) await this.ports.journal.jobAcknowledgeLaunch(receipt.intent.operationId, { containerId: observed.containerId, supervisorIdentity: jobSupervisorIdentity(receipt.execution), processIdentityDigest: digest({ executionId: receipt.execution.id, attemptId: receipt.execution.attemptId, operationId: receipt.execution.operationId, containerId: observed.containerId, supervisorIdentity: jobSupervisorIdentity(receipt.execution) }) })
     // Recovered absence of logs is explicit; stopped without exact exit outcome remains uncertain.
     if (!observed.stopped || observed.exitCode === null) return this.ports.journal.jobStatus(receipt.intent.operationId)

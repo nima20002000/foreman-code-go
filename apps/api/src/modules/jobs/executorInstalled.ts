@@ -18,6 +18,7 @@ import { verificationContextPin } from '../files/jobInputs/manifest.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
 import { nativeAgentEnvironment } from '../harnesses/secrets.js'
+import { jobContainerNonEntryObserved } from './executorJournal.js'
 import { RemoteJobExecutionHost, type RemoteJobExecutionHostPorts } from '../runs/remote/jobExecutionHost.js'
 import { inspectInstalledJobRuntimeCandidate, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 import { PodmanJobSupervisor, type PodmanCommandRunner } from './executorPodman.js'
@@ -330,6 +331,14 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
         const argv = launch.argv[0] === '--remote=false' ? launch.argv.slice(1) : launch.argv
         return argv[0] === 'exec'
       })
+    },
+    async confirmFailedCreation(identity) {
+      const retained = await input.journal.jobNativeOwner(execution.operationId)
+      if (!retained || retained.container?.identity !== identity || !jobContainerNonEntryObserved(retained)
+        || retained.launches.some(launch => launch.binary !== candidate.fingerprint.runtimeExecutable)) return false
+      if (!(await Promise.all(processOwners.map(processOwner => input.registry.closeOwner(processOwner)))).every(Boolean)) return false
+      await input.journal.jobConfirmContainerNonEntry(execution.operationId, candidate.fingerprint.runtimeExecutable)
+      return true
     },
     async readCertificate(containerId) {
       const native = await input.journal.jobNativeOwner(execution.operationId)

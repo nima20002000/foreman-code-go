@@ -36,6 +36,40 @@ async function fixture() {
   return { root, path, journal, execution, intent, connection, certificate, gitMounts }
 }
 describe('original Job native journal, no live isolation claim', () => {
+  it.each([false, true])('confirms absent container non-entry only when no create was attempted (create %s)', async attemptedCreate => {
+    const f = await fixture(), operationId = f.execution.operationId, binary = '/usr/bin/podman'
+    await f.journal.jobReserveEntry(operationId)
+    const name = jobSupervisorIdentity(f.execution)
+    await f.journal.jobContainerIntent(operationId, name, f.execution.acceptedSpec.specDigest)
+    await expect(f.journal.jobConfirmContainerNonEntry(operationId, binary)).rejects.toThrow('unconfirmed')
+    if (attemptedCreate) {
+      const id = randomUUID()
+      await f.journal.jobReserveProcess(operationId, { launchId: id, binary, argv: ['--remote=false', 'create', '--name', name] })
+      await f.journal.jobProcessClosed(operationId, id, { exitCode: 125, signal: null })
+    }
+    for (const [operation, exitCode] of [['inspect', 125], ['exists', 1]] as const) {
+      const id = randomUUID()
+      await f.journal.jobReserveProcess(operationId, { launchId: id, binary,
+        argv: ['--remote=false', 'container', operation, name] })
+      await f.journal.jobProcessClosed(operationId, id, { exitCode, signal: null })
+    }
+    if (attemptedCreate) {
+      await expect(f.journal.jobConfirmContainerNonEntry(operationId, binary)).rejects.toThrow('unconfirmed')
+      return
+    }
+    await f.journal.jobConfirmContainerNonEntry(operationId, binary)
+    await f.journal.jobTerminal(operationId, { outcome: 'preparation_failed', exitCode: null, signal: null,
+      processStopped: true, finishedAt: new Date().toISOString(), closureEvidenceDigest: 'a'.repeat(64),
+      resultDigest: 'b'.repeat(64), logGapPossible: false, logsTruncated: false,
+      outputCollectionError: false, artifactDigests: [] })
+    await f.journal.close()
+    const reopened = await RemoteOperationJournal.open(f.path); journals.push(reopened)
+    expect(await reopened.jobStatus(operationId)).toMatchObject({ status: 'known', receipt: {
+      entryAttempted: true, terminal: { outcome: 'preparation_failed', processStopped: true } } })
+    const status = await reopened.jobStatus(operationId)
+    expect(status.status === 'known' && status.receipt.native).toBeUndefined()
+    expect((await reopened.jobReserveEntry(operationId)).reserved).toBe(false)
+  })
   it('requires the admitted entry before launcher/container reservations', async () => {
     const f = await fixture()
     await expect(f.journal.jobContainerIntent(f.execution.operationId, jobSupervisorIdentity(f.execution), f.execution.acceptedSpec.specDigest)).rejects.toThrow('reservation required')
@@ -245,7 +279,7 @@ describe('installed actual Job factory with native/process doubles', () => {
     vi.spyOn(OwnedOCIContainer.prototype, 'entered').mockResolvedValue(undefined as never)
     vi.spyOn(OwnedOCIContainer.prototype, 'close').mockResolvedValue(true)
     const children = new Map<object, number>(), spawned: string[][] = [], cid = 'c'.repeat(64)
-    let started=false,released=false;const waiting:Array<()=>void>=[]
+    let started=false,released=false,removed=false;const waiting:Array<()=>void>=[]
     const activeOwners = new Map<string, string>()
     const reserveLaunch = vi.fn((owner: string) => {
       if (activeOwners.has(owner)) throw new Error('An earlier native process is still active for this owner')
@@ -268,7 +302,10 @@ describe('installed actual Job factory with native/process doubles', () => {
       spawned.push([...argv])
       const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn() }, stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null as number | null })
       setImmediate(() => {
-        const finish=(output:string)=>{children.set(child,0);child.exitCode=0;child.stdout.end(output);child.stderr.end();child.emit('close',0,null)}
+        const finish=(output:string,exitCode=0)=>{children.set(child,exitCode);child.exitCode=exitCode;child.stdout.end(output);child.stderr.end();child.emit('close',exitCode,null)}
+        if (argv.includes('exists')) { finish('', removed ? 1 : 0); return }
+        if (argv.includes('rm')) { removed = true; finish(cid); return }
+        if (removed) { finish('', 125); return }
         if(argv.includes('start')){started=true;waiting.push(()=>finish('build failed exit7'));return}
         if(argv.includes('wait')){if(released)finish('7');else waiting.push(()=>finish('7'));return}
         if(argv.includes('exec')){released=true;for(const end of waiting.splice(0))end();finish('');return}
