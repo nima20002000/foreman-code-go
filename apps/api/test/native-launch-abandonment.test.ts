@@ -25,14 +25,14 @@ describe('original-parent no-dispatch retirement', () => {
       assert.equal(await f.registry.abandonReservedLaunch(f.scope), true)
       assert.equal(await f.registry.abandonReservedLaunch(f.scope), true)
       assert.equal(await f.registry.closeOwner(f.scope.owner), true)
-      assert.deepEqual(readdirSync(f.ownerDirectory), ['retired.json'])
+      assert.deepEqual(readdirSync(f.ownerDirectory), [`closed-${f.scope.launchId}.json`, 'retired.json'])
       assert.throws(() => spawnNativeProcess(process.execPath, ['-e', 'throw new Error("must never launch")'], {
         cwd: f.root, env: {}, recovery: f.scope,
       }))
       assert.throws(() => spawnNativeProcess(process.execPath, ['-e', 'throw new Error("must never launch")'], {
         cwd: f.root, env: {}, recovery: { ...f.scope },
       }))
-      assert.deepEqual(readdirSync(f.ownerDirectory), ['retired.json'])
+      assert.deepEqual(readdirSync(f.ownerDirectory), [`closed-${f.scope.launchId}.json`, 'retired.json'])
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
 

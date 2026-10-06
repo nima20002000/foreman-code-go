@@ -34,8 +34,9 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
           const owner = `retired-owner-${index}`, row = seed(root, owner, true)
           retirements.push(registry.closeOwner(owner))
           const path = join(row.ownerDirectory, 'retired.json')
-          receipts.push({ path, value: JSON.stringify({ format: 2, owner, id: row.id }) })
-          expect(readdirSync(row.ownerDirectory)).toEqual(['retired.json'])
+          receipts.push({ path, value: JSON.stringify({ format: 2, owner, id: row.id, observation: { owner, launchId: row.id,
+            bootId: row.intent.boot, lifecycle: 'closed', closureEvidence: 'native_not_started' } }) })
+          expect(readdirSync(row.ownerDirectory)).toEqual([`closed-${row.id}.json`, 'retired.json'])
         }
       })
       expect((await Promise.all(retirements)).every(Boolean)).toBe(true)
@@ -49,7 +50,10 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
       const restarted = await execute(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, root], {
         cwd: new URL('../', import.meta.url), timeout: 20_000,
       })
-      expect(JSON.parse(restarted.stdout)).toEqual([{ owner: 'unresolved-owner', launchId: unresolved.id,
+      const restored = JSON.parse(restarted.stdout) as { lifecycle: string; closureEvidence?: string }[]
+      expect(restored).toHaveLength(10_000)
+      expect(restored.filter(row => row.lifecycle === 'closed').every(row => row.closureEvidence === 'native_not_started')).toBe(true)
+      expect(restored.filter(row => row.lifecycle !== 'closed')).toEqual([{ owner: 'unresolved-owner', launchId: unresolved.id,
         bootId: unresolved.intent.boot, lifecycle: 'closure-unconfirmed' }])
       for (const receipt of receipts) expect(readFileSync(receipt.path, 'utf8')).toBe(receipt.value)
       expect(readdirSync(unresolved.path)).toEqual(['intent.json'])
