@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.0.45] - 2026-10-06
 
 ### Added
 
@@ -19,7 +19,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
-- Make newer compatible Codex installations usable with their own model catalogs, including Codex 0.160.0 and gpt-6-luna at medium effort.
+- Make newer compatible Codex installations usable with their own model catalogs, including Codex 0.160.0/0.160.1 and gpt-6-luna at medium effort.
 - Resume saved native sessions across compatible harness releases without rewriting their historical version facts.
 - Report the observed harness version and missing protocol contract when compatibility verification fails.
 - Keep dedicated Codex and Claude native verification storage disposable, including cleanup after failed scenarios.
