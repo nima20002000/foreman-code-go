@@ -46,11 +46,21 @@ export async function readClaudeCompactionHistory(session: ClaudePersistedSessio
       }
       const boundaries: Record<string, unknown>[] = []
       const start = cursor?.offset ?? 0
-      const tailSize = Math.min(info.size, 65536)
-      const tail = Buffer.alloc(tailSize)
-      await file.read(tail, 0, tailSize, info.size - tailSize)
-      const newline = tail.lastIndexOf(10)
-      const completeSize = newline < 0 ? start : info.size - tailSize + newline + 1
+      let completeSize = start
+      let position = info.size
+      while (position > start) {
+        signal?.throwIfAborted()
+        const chunkStart = Math.max(start, position - 65536)
+        const chunk = Buffer.alloc(position - chunkStart)
+        const { bytesRead } = await file.read(chunk, 0, chunk.length, chunkStart)
+        if (bytesRead !== chunk.length) throw new Error('The native transcript changed while reading compaction')
+        const newline = chunk.lastIndexOf(10)
+        if (newline >= 0) {
+          completeSize = chunkStart + newline + 1
+          break
+        }
+        position = chunkStart
+      }
       if (completeSize > start) {
         const stream = file.createReadStream({ autoClose: false, start, end: completeSize - 1,
           ...(signal ? { signal } : {}) })

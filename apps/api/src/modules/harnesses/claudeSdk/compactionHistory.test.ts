@@ -40,6 +40,41 @@ it('recovers only the new manual boundary from the same persisted session and sc
   } finally { await rm(profilePath, { recursive: true, force: true }) }
 })
 
+it('recovers a completed boundary before a large unfinished native record without consuming its tail', async () => {
+  const profilePath = await mkdtemp(join(tmpdir(), 'claude-partial-boundary-'))
+  const nativeSessionId = randomUUID()
+  const cwd = '/owned-project'
+  const directory = join(profilePath, 'projects', '-owned-project')
+  const path = join(directory, `${nativeSessionId}.jsonl`)
+  const session = { nativeSessionId, profilePath, cwd, configRevision: 'configuration', deviceId: 'host' }
+  const boundary = { type: 'system', subtype: 'compact_boundary', uuid: randomUUID(),
+    cwd, sessionId: nativeSessionId, compactMetadata: { trigger: 'manual', preTokens: 123000 },
+    timestamp: new Date().toISOString() }
+  const trailingRecord = JSON.stringify({ type: 'assistant', cwd, sessionId: nativeSessionId,
+    message: { content: 'x'.repeat(150000) } })
+  try {
+    await mkdir(directory, { recursive: true })
+    await writeFile(path, `${JSON.stringify({ type: 'system', sessionId: nativeSessionId, cwd })}\n`)
+    const before = await readClaudeCompactionHistory(session)
+    await appendFile(path, `${JSON.stringify(boundary)}\n${trailingRecord.slice(0, -2)}`)
+    const recovered = await readClaudeCompactionHistory(session, before.cursor)
+    expect(recovered.boundaries).toEqual([boundary])
+    expect(recoveredClaudeCompaction({ requestId: randomUUID(), nativeSessionId, nativeOperationId: null,
+      status: 'uncertain', message: '', beforeTokens: null, observedAt: new Date().toISOString() },
+    recovered.boundaries)).toMatchObject({ status: 'completed', nativeOperationId: boundary.uuid })
+
+    expect((await readClaudeCompactionHistory(session, recovered.cursor)).boundaries).toEqual([])
+    await appendFile(path, `${trailingRecord.slice(-2)}\n`)
+    const finished = await readClaudeCompactionHistory(session, recovered.cursor)
+    expect(finished.boundaries).toEqual([])
+    const nextBoundary = { ...boundary, uuid: randomUUID() }
+    await appendFile(path, `${JSON.stringify(nextBoundary)}\n`)
+    expect((await readClaudeCompactionHistory(session, finished.cursor)).boundaries).toEqual([nextBoundary])
+  } finally {
+    await rm(profilePath, { recursive: true, force: true })
+  }
+})
+
 for (const outcome of ['no-op', 'failed'] as const) it(`reads a cold ${outcome} receipt without SDK startup`, async () => {
   const profilePath = await mkdtemp(join(tmpdir(), 'claude-control-recovery-'))
   const scope = { profilePath, cwd: '/owned-project', configRevision: 'configuration', deviceId: 'main' }
