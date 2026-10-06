@@ -19,6 +19,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Changed
 
 - Verify compiled production hosting and scoped agent HTTP/MCP readback with denied callers after the noauth upgrade; verify credential-free human creation/edits in the actual browser without altering OS client attribution.
+- Retain redacted private Operator failure events and attempt independent test resource cleanup when another cleanup step fails.
 
 ## [0.0.40] - 2026-10-06
 
