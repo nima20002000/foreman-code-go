@@ -336,7 +336,12 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
       const retained = await input.journal.jobNativeOwner(execution.operationId)
       if (!retained || retained.container?.identity !== identity || !jobContainerNonEntryObserved(retained)
         || retained.launches.some(launch => launch.binary !== candidate.fingerprint.runtimeExecutable)) return false
-      if (!(await Promise.all(processOwners.map(processOwner => input.registry.closeOwner(processOwner)))).every(Boolean)) return false
+      const active = input.registry.snapshot().launches.filter(launch => processOwners.includes(launch.owner)
+        && launch.lifecycle !== 'closed')
+      if (active.some(launch => !retained.launches.some(recorded => recorded.launchId === launch.launchId
+        && (recorded.processOwner ?? owner) === launch.owner))) return false
+      const recordedOwners = new Set(retained.launches.map(launch => launch.processOwner ?? owner))
+      if (!(await Promise.all([...recordedOwners].map(processOwner => input.registry.closeOwner(processOwner)))).every(Boolean)) return false
       await input.journal.jobConfirmContainerNonEntry(execution.operationId, candidate.fingerprint.runtimeExecutable)
       return true
     },

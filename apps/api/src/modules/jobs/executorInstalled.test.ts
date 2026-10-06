@@ -22,6 +22,10 @@ import { QualificationReceiptSchema } from './qualificationJournal.js'
 import { jobDigest } from './service.js'
 import * as installed from './installedRuntimeHost.js'
 import * as qualification from './qualification.js'
+import * as processes from '../harnesses/recovery/processRegistry.js'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import { jobSupervisorIdentity } from './executor.js'
 import * as git from './privateGitMounts.js'
 import { podmanIsolationCreateArgv } from './executorPodman.js'
 import type { QualifiedJobProfile } from './executor.js'
@@ -111,6 +115,32 @@ async function fixture(qualifiedFilesystem?: { device?: string; mountId?: string
   return { root, execution, source, mounts, journal, qualified, inspect, verify, check, ports, host, intent, registry, inputs }
 }
 describe('installed Job original Git/scheduler propagation', () => {
+  it.each([false, true])('closes only recorded controller roles for an absent unentered container (unrecorded active %s)', async unknownActive => {
+    const f = await fixture(), owner = `job:${f.execution.operationId}:${f.execution.owner.grantId}:${f.execution.owner.epoch}`
+    const control = `${owner}:control`, exits = new Map<object, number>()
+    vi.spyOn(qualification, 'assertJobRuntimeEntryContext').mockResolvedValue(undefined)
+    Object.assign(f.registry, {
+      reserveLaunch: vi.fn(() => ({ root: f.root, owner: control, launchId: randomUUID() })),
+      closeRegistration: vi.fn(),
+      closeOwner: vi.fn(async (value: string) => value === control),
+      snapshot: () => ({ launches: unknownActive ? [{ owner: control, lifecycle: 'active', launchId: randomUUID() }] : [] }),
+    })
+    vi.spyOn(processes, 'nativeProcessExit').mockImplementation(child => ({ exitCode: exits.get(child) ?? null, exitSignal: null }))
+    vi.spyOn(processes, 'spawnNativeProcess').mockImplementation((_binary, argv) => {
+      const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn() }, stdout: new PassThrough(), stderr: new PassThrough() })
+      setImmediate(() => {
+        const exitCode = argv.includes('exists') ? 1 : 125
+        exits.set(child, exitCode); child.stdout.end(); child.stderr.end(); child.emit('close', exitCode, null)
+      })
+      return child as unknown as ReturnType<typeof processes.spawnNativeProcess>
+    })
+    await f.journal.jobReserveEntry(f.execution.operationId)
+    await f.journal.jobContainerIntent(f.execution.operationId, jobSupervisorIdentity(f.execution), f.execution.acceptedSpec.specDigest)
+    if (typeof f.ports.supervisor !== 'function') throw new Error('Supervisor factory unavailable')
+    const supervisor = await f.ports.supervisor(f.execution)
+    expect(await supervisor.stopExecution(f.execution, 0)).toBe(!unknownActive)
+    expect((await f.journal.jobNativeOwner(f.execution.operationId))?.nonEntryConfirmed).toBe(!unknownActive)
+  })
   it('admits a control command when another approved tool directory leads the captured PATH', async () => {
     const f = await fixture()
     const approvedPath = '/private/approved-node/bin:/usr/bin:/bin'
