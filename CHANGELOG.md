@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.28] - 2026-10-06
+
+### Fixed
+
+- Recover finalized Claude file publications in Operator message attachments after credentials are revoked or publication adoption is interrupted.
+- Verify authenticated MCP publication and replay, then persisted message readback after credential revocation; cover unauthorized requests and conversation isolation.
+
 ## [0.0.27] - 2026-10-06
 
 ### Fixed
