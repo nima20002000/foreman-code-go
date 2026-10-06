@@ -33,8 +33,9 @@ async function saveEvidence(cleanupConfirmed: boolean) {
   await mkdir(directory, { recursive: true, mode: 0o700 })
   const path = join(directory, `session-controls-${randomUUID()}.json`)
   await writeFile(path, JSON.stringify({ sourceCommit: fixture?.sourceCommit,
-    nativeQualification: cleanupConfirmed && completed.size === 12 && settingsResults.length === 4
+    nativeControlChecksCompleted: cleanupConfirmed && completed.size === 12 && settingsResults.length === 4
       && recoveredConversations.size === 12,
+    unsettledDispatchRecovery: false, browserAcceptance: false, hcAcceptanceComplete: false,
     cleanupConfirmed, nativeResults, settingsResults, recoveredConversations: [...recoveredConversations],
   }, null, 2), { flag: 'wx', mode: 0o600 })
   console.info(`Native session controls evidence: ${path}`)
@@ -110,7 +111,60 @@ async function applyPreferences(row: Row, preferences: contracts.SessionPreferen
 }
 
 function contextInput() {
-  return `Retain these notes in the conversation. Do not repeat them; reply only ACK.\n${randomBytes(13000).toString('hex')}`
+  return `The following are disposable reference notes. Preserve the earlier session marker. Do not repeat the notes; reply only ACK.\n${randomBytes(13000).toString('hex')}`
+}
+
+async function verifyNativeControls(row: Row) {
+  const before = await controls(row)
+  const plan = await change(row, { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: before.revision })
+  expect(plan.desiredMode).toBe('plan')
+  expect(await transcript(row)).toEqual([])
+  await change(row, { kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: plan.revision })
+  if (row.harness === 'claude') {
+    const state = await controls(row)
+    await change(row, { kind: 'preferences', requestId: randomUUID(), expectedRevision: state.revision,
+      preferences: { ...state.desired, autoCompact: 'off', autoCompactTokens: 100000 } })
+  }
+  const marker = randomUUID()
+  const context = Array.from({ length: 950 }, (_, index) => `context-${index} selected-${index % 97}`).join(' ')
+  const normal = await send(row, `Remember marker ${marker}. Read this context and reply only with the marker.\n${context}`)
+  const sessionId = normal.state.nativeSessionId
+  expect(sessionId).toBeTruthy()
+  expect(normal.state.capabilities.compact.supported).toBe(true)
+  const beforeMessages = await transcript(row)
+  const request = { kind: 'compact' as const, requestId: randomUUID(), expectedRevision: normal.state.revision }
+  await change(row, request)
+  const deadline = Date.now() + 180000
+  let compacted = await controls(row)
+  while (Date.now() < deadline && compacted.compaction && ['accepted', 'running', 'uncertain'].includes(compacted.compaction.status)) {
+    await delay(250)
+    compacted = await controls(row)
+  }
+  if (compacted.compaction && ['accepted', 'running', 'uncertain'].includes(compacted.compaction.status)) {
+    throw new Error('Timed out waiting for real native compaction to settle.')
+  }
+  expect(compacted.compaction?.status).toBe('completed')
+  expect(compacted.nativeSessionId).toBe(sessionId)
+  expect(await transcript(row)).toEqual(beforeMessages)
+  expect((await change(row, request)).compaction?.requestId).toBe(request.requestId)
+  const task = await send(row, 'Describe a read-only inspection plan in one sentence. Do not modify files.', 'plan')
+  expect(task.state.appliedMode).toBe('plan')
+  expect(task.state.nativeSessionId).toBe(sessionId)
+  const denied = await active().deniedTool(`${row.role}_chat_controls_update`, {
+    conversationId: row.conversationId, ...(row.workspaceId ? { workspaceId: row.workspaceId } : {}),
+    request: { kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: task.state.revision } })
+  expect(denied.isError).toBe(true)
+  expect((await controls(row)).desiredMode).toBe('plan')
+  await change(row, { kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: task.state.revision })
+  const followup = await send(row, 'Reply only with the remembered marker.')
+  expect(followup.state.appliedMode).toBe('regular')
+  expect(followup.state.nativeSessionId).toBe(sessionId)
+  expect((await transcript(row)).filter(message => message.role === 'assistant').at(-1)?.content).toContain(marker)
+  completed.set(row.conversationId, { marker, compactRequest: request })
+  nativeResults.push({ harness: row.harness, role: row.role, hostKind: row.hostKind, conversationId: row.conversationId, profile: row.nativeProfile,
+    nativeSessionId: sessionId, compaction: compacted.compaction,
+    contextBefore: normal.state.context, contextAfter: followup.state.context,
+    appliedMode: followup.state.appliedMode, appliedPreferences: followup.state.applied })
 }
 
 describe('native session controls through the production Main and installed Worker', () => {
@@ -152,7 +206,7 @@ describe('native session controls through the production Main and installed Work
     try { await fixture?.close() }
     catch (cleanupError) {
       try { await saveEvidence(false) }
-      catch (reportError) { throw new AggregateError([cleanupError, reportError], 'Native cleanup and evidence saving failed.') }
+      catch (reportError) { throw new AggregateError([cleanupError, reportError], 'Native cleanup and evidence saving failed.', { cause: reportError }) }
       throw cleanupError
     }
     await saveEvidence(fixture !== undefined)
@@ -161,61 +215,13 @@ describe('native session controls through the production Main and installed Work
   it.each(combinations)('$harness $role on $hostKind compacts its existing native session and plans one task', async key => {
     const row = rows.find(value => value.harness === key.harness && value.role === key.role && value.hostKind === key.hostKind)
     if (!row) throw new Error('The native matrix row is missing.')
-    const before = await controls(row)
-    const plan = await change(row, { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: before.revision })
-    expect(plan.desiredMode).toBe('plan')
-    expect(await transcript(row)).toEqual([])
-    await change(row, { kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: plan.revision })
-    if (row.harness === 'claude') {
-      const state = await controls(row)
-      await change(row, { kind: 'preferences', requestId: randomUUID(), expectedRevision: state.revision,
-        preferences: { ...state.desired, autoCompact: 'off', autoCompactTokens: 100000 } })
-    }
-    const marker = randomUUID()
-    const context = Array.from({ length: 950 }, (_, index) => `context-${index} selected-${index % 97}`).join(' ')
-    const normal = await send(row, `Remember marker ${marker}. Read this context and reply only with the marker.\n${context}`)
-    const sessionId = normal.state.nativeSessionId
-    expect(sessionId).toBeTruthy()
-    expect(normal.state.capabilities.compact.supported).toBe(true)
-    const beforeMessages = await transcript(row)
-    const request = { kind: 'compact' as const, requestId: randomUUID(), expectedRevision: normal.state.revision }
-    await change(row, request)
-    const deadline = Date.now() + 180000
-    let compacted = await controls(row)
-    while (Date.now() < deadline && compacted.compaction && ['accepted', 'running', 'uncertain'].includes(compacted.compaction.status)) {
-      await delay(250)
-      compacted = await controls(row)
-    }
-    if (compacted.compaction && ['accepted', 'running', 'uncertain'].includes(compacted.compaction.status)) {
-      throw new Error('Timed out waiting for real native compaction to settle.')
-    }
-    expect(compacted.compaction?.status).toBe('completed')
-    expect(compacted.nativeSessionId).toBe(sessionId)
-    expect(await transcript(row)).toEqual(beforeMessages)
-    expect((await change(row, request)).compaction?.requestId).toBe(request.requestId)
-    const task = await send(row, 'Describe a read-only inspection plan in one sentence. Do not modify files.', 'plan')
-    expect(task.state.appliedMode).toBe('plan')
-    expect(task.state.nativeSessionId).toBe(sessionId)
-    const denied = await active().deniedTool(`${row.role}_chat_controls_update`, {
-      conversationId: row.conversationId, ...(row.workspaceId ? { workspaceId: row.workspaceId } : {}),
-      request: { kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: task.state.revision } })
-    expect(denied.isError).toBe(true)
-    expect((await controls(row)).desiredMode).toBe('plan')
-    await change(row, { kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: task.state.revision })
-    const followup = await send(row, 'Reply only with the remembered marker.')
-    expect(followup.state.appliedMode).toBe('regular')
-    expect(followup.state.nativeSessionId).toBe(sessionId)
-    expect((await transcript(row)).filter(message => message.role === 'assistant').at(-1)?.content).toContain(marker)
-    completed.set(row.conversationId, { marker, compactRequest: request })
-    nativeResults.push({ ...key, conversationId: row.conversationId, profile: row.nativeProfile,
-      nativeSessionId: sessionId, compaction: compacted.compaction,
-      contextBefore: normal.state.context, contextAfter: followup.state.context,
-      appliedMode: followup.state.appliedMode, appliedPreferences: followup.state.applied })
+    await verifyNativeControls(row)
   }, 600000)
 
   it.each(combinations.filter(key => key.harness === 'claude'))(
     'claude $role on $hostKind applies context settings and automatically compacts at its accepted budget', async key => {
       const row = rows.find(value => value.harness === key.harness && value.role === key.role && value.hostKind === key.hostKind)!
+      if (!completed.has(row.conversationId)) await verifyNativeControls(row)
       const before = await idle(row)
       expect(before.capabilities.autoCompact.supported).toBe(true)
       expect(before.capabilities.autoCompactBudget.supported).toBe(true)
@@ -268,6 +274,9 @@ describe('native session controls through the production Main and installed Work
     }, 1800000)
 
   it('restores the twelve native chats and compact receipts after Main closes and starts again', async () => {
+    for (const row of rows) {
+      if (!completed.has(row.conversationId)) await verifyNativeControls(row)
+    }
     expect(completed.size).toBe(12)
     const snapshots = new Map<string, { state: contracts.SessionControlState; messages: Awaited<ReturnType<typeof transcript>> }>()
     for (const row of rows) {
