@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.48] - 2026-10-06
+
+### Fixed
+
+- Route managed MCP requests from native PID namespaces through the authenticated owning endpoint, preserving scope checks and revocation.
+- Preserve the original active OpenCode turn generation during recovery, and recapture the same running output call when an approval observer releases its writer lease.
+- Open the scoped Run graph publication before adopting artifacts with retained native approval receipts, preserving original approvals and publication results across restart.
+- Register native fixture databases and recover only idle owned databases after process closure, retaining active or foreign resources for confirmed cleanup.
+- Share private credential copying between the native runner and Haiku qualification fixture, preserving refreshed test credentials and the original host login.
+- Apply the artifact restart fixture's exact four-approval and zero-join expectations to its single-entry scenario.
+
+### Verified
+
+- Completed all 20 previously untested single-computer OpenCode cases locally: artifacts, mixed-provider handoffs, review returns, joins, approvals, handoff limits, audited qualification, Agent chat fork and terminal human-access isolation.
+- Qualified Claude Haiku (`claude-haiku-4-5-20251001`) through real native lifecycle and tool-policy checks. In-app Codex subjects used `gpt-5.6-luna` at medium reasoning; OpenCode used the pinned 1.18.31 binary.
+- Passed focused unit, authenticated MCP and PostgreSQL regressions, plus typecheck, lint and build. Two timing-only failures passed their single unchanged-case reruns under the owner rule; assertions and deadlines remain unchanged.
+
 ## [0.0.47] - 2026-10-06
 
 ### Fixed
@@ -106,8 +123,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Retain every terminal handoff activation in Run output, including results from repeated review revisions.
 - Preserve frozen activation inputs during upgrades and provide the original caller through trusted execution context.
-- Sixteen real-native workflow cases covering OpenCode artifacts, mixed Codex/OpenCode handoffs, review returns, joins, approvals and handoff limits are untested on Claude/OpenCode (laptops are Codex-only): selected OpenCode provider qualification reports missing authentication before workflow launch. All three Codex-only cases passed.
-- The OpenCode approval-wait lifecycle case is also untested on Claude/OpenCode (laptops are Codex-only): its qualification reports the same missing provider authentication.
+- Sixteen real-native workflow cases covering OpenCode artifacts, mixed Codex/OpenCode handoffs, review returns, joins, approvals and handoff limits were verified locally in v0.0.48. All three Codex-only cases passed in the original gate.
+- The OpenCode approval-wait lifecycle case was verified locally in v0.0.48.
 
 ### Fixed
 
@@ -228,7 +245,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Qualify native acceptance per provider, allowing Codex cases to run independently of an unused OpenCode installation.
 - Correlate late session and turn acknowledgements with the original accepted request and retain startup output until admission is persisted.
 - Run selected native acceptance files with invocation-owned databases and preserve process-group cleanup and qualification diagnostics.
-- OpenCode approval isolation (E03-A01), OpenCode Agent chat fork and terminal OpenCode local-human isolation are untested on Claude/OpenCode (laptops are Codex-only): the selected OpenCode Go provider is not connected on the laptops.
+- OpenCode approval isolation (E03-A01), OpenCode Agent chat fork and terminal OpenCode local-human isolation were verified locally in v0.0.48.
 
 ### Fixed
 
@@ -266,7 +283,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Pass the owned fixture directory explicitly to terminal OpenCode requests, preventing inherited PWD from creating the native session in the surrounding checkout.
 - Verify native MCP startup reads the fixture's unique placement marker while preserving every local HTTP denial, scoped MCP permission and cleanup assertion.
 - Check the selected native OpenCode model and provider through the shared qualification service before terminal launch, keeping unsupported models separate from missing provider credentials and closing the diagnostic process before the unregistered isolation client starts.
-- Terminal OpenCode local-human isolation remains untested on Claude/OpenCode (laptops are Codex-only). Its native model lookup failed before the MCP probe; native preflight now reports missing provider credentials explicitly. Both Codex isolation cases passed on Mana.
+- Terminal OpenCode local-human isolation was verified locally in v0.0.48. Native preflight reports missing provider credentials explicitly. Both Codex isolation cases passed on Mana in the original gate.
 
 ## [0.0.33] - 2026-10-06
 
@@ -286,7 +303,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Discover file tools before model input and bind file-operation credentials after native acknowledgement.
 - Support the full accepted image attachment count and size with bounded native media identities and recovery history.
 - Keep native acceptance histories, caches, configuration changes and MCP routes in disposable storage, and retain redacted failure codes in run logs.
-- OpenCode approval isolation (E03-A01), audited OpenCode qualification and OpenCode Agent chat fork are untested on Claude/OpenCode (laptops are Codex-only): native checks on Mana returned OPENCODE_AUTH_REQUIRED. Codex lifecycle and fork cases passed; this group adds no Claude provider case.
+- OpenCode approval isolation (E03-A01), audited OpenCode qualification and OpenCode Agent chat fork were verified locally in v0.0.48. Codex lifecycle and fork cases passed in the original gate; this group adds no Claude provider case.
 
 ### Fixed
 
@@ -316,7 +333,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Give native workflow acceptance invocation-owned CLI configuration and a temporary managed launcher, routing scoped credentials to the fixture API instead of an ambient installation's fixed endpoint.
 - Preserve installed MCP names and credential references, reject unmanaged connections through native preflight, and remove invocation-owned launcher resources during fixture cleanup.
 - Keep the selected Codex login in the private fixture CLI home, with private file permissions and cleanup after native processes close; leave the original native configuration untouched.
-- E03-A01 approval isolation: untested on Claude/OpenCode (laptops are Codex-only). The selected OpenCode Go provider and model were advertised, but that provider was not connected on the laptop.
+- E03-A01 approval isolation was verified locally with the connected OpenCode Go provider in v0.0.48.
 
 ## [0.0.29] - 2026-10-06
 
@@ -372,7 +389,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Open local development and production dashboards without account setup, login, passkeys, browser tokens or cookies.
 - Preserve the former browser owner's conversations, attachments, permissions and command retries across upgrade and restart.
-- Auth native verification: untested on Claude/OpenCode (laptops are Codex-only); credentialed local results are retained separately.
+- Native human-access isolation and credentialed OpenCode qualification were verified locally in v0.0.48; Claude Haiku lifecycle and tool-policy qualification also passed.
 
 ### Removed
 
@@ -414,7 +431,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Scope OpenCode live qualification to its approval case so Codex-only cases can run independently, retaining each provider's qualification and original assertions and deadlines.
 - Use explicit verification subject models without changing user defaults: interim Codex gpt-5.6-luna with medium reasoning and Claude Haiku when selected.
-- Native laptop gate: untested on Claude/OpenCode (laptops are Codex-only). Desktop production installation and native recovery verification remain required separately.
+- Single-computer OpenCode lifecycle, qualification, fork and isolation cases were verified locally in v0.0.48, along with Claude Haiku qualification. Desktop production installation and native recovery verification are recorded separately.
 
 ## [0.0.20] - 2026-10-05
 
