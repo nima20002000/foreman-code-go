@@ -145,7 +145,7 @@ it('recovers admitted file versions before cold attachment and accepts the same 
     inspectMcp: async () => { throw new Error('Unused MCP inspection') },
     createSession: async () => { throw new Error('Recovery cannot create a session') },
     attachSession: async () => f.session,
-    async *startTurn() { throw new Error('Recovery cannot submit a model input') },
+    startTurn: () => { throw new Error('Recovery cannot submit a model input') },
     history: async () => ({ events: [], pendingInteractions: [] }),
     reconcile: async () => ({ events: [], pendingInteractions: [] }),
     cancel: async () => false, pending: async () => undefined, respond: async () => {},
