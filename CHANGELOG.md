@@ -7,13 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-Claude and OpenCode workflows across two computers remain untested. The available laptop provider logins support Codex only. Installed OpenCode workers refuse declared artifact outputs.
+Claude and OpenCode workflows across two computers remain untested. The available laptop provider logins support Codex only. Installed OpenCode workers refuse declared artifact outputs. Claude Agents cannot yet be placed in workflows that use another computer.
 
 ### Added
 
 - Remote Orchestrator review turns on the original native session, with authenticated assignment and decision readback.
 - Native artifact production, sealing, publication and Agent-to-Agent transfer for Main and installed Codex workers.
 - Worker build targets for Ubuntu 24.04 and 26.04 x64 with Node 22.23.2, retaining exact OS, libc and runtime checks.
+- Run CI Jobs on paired laptops: Main selects a qualified Worker, transfers the approved source and collects reports and logs.
 
 ### Changed
 
@@ -23,6 +24,12 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 
 ### Fixed
 
+- Replace a source transfer that expired on the Worker and wait for the Worker to reconnect, instead of retrying the expired transfer until the Job times out.
+- Read per-Job quota source trees from their quota folder when preparing the private repository on a Worker.
+- Report a missing project folder on Main or a laptop as `ROOT_DIRECTORY_MISSING` instead of an internal error.
+- Wait 30 seconds before re-inspecting a Job runtime the Worker rejected, and retry immediately when only the Worker connection was pending.
+- Reclaim expired Worker transfers before counting staging capacity for a new Job.
+- Keep collecting Worker telemetry after one busy sample times out.
 - Keep each computer's native qualification independent when multiple hosts check the same installed binary.
 - Deliver approvals on the initial native connection and retain response history after the provider process closes.
 - Finish source cleanup after the original native finalizer and use cleanup read authority without renewing model-tool access.
