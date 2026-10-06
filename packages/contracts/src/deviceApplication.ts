@@ -70,23 +70,6 @@ export const DeviceHistoryPageSchema = z.object({
 }).strict()
 export type DeviceHistoryPage = z.infer<typeof DeviceHistoryPageSchema>
 
-/** Leaves room for the original receipt and physical readout in the same carrier. */
-export const DEVICE_HISTORY_PAGE_BYTES = 262_144
-export const DeviceHistoryRequestFields = {
-  afterSequence: z.number().int().safe().min(-1).optional(),
-}
-export const DeviceHistoryGapSchema = z.object({
-  fromSequence: z.number().int().safe().nonnegative(),
-  toSequence: z.number().int().safe().nonnegative(),
-  reason: z.enum(['retention', 'event_too_large']),
-}).strict().refine(value => value.toSequence >= value.fromSequence)
-export type DeviceHistoryGap = z.infer<typeof DeviceHistoryGapSchema>
-export const DeviceHistoryPageSchema = z.object({
-  nextAfterSequence: z.number().int().safe().min(-1),
-  hasMore: z.boolean(),
-}).strict()
-export type DeviceHistoryPage = z.infer<typeof DeviceHistoryPageSchema>
-
 export function parseExtensionDescriptors(value: unknown): DeviceExtensionDescriptor[] {
   if (!Array.isArray(value) || value.length > 16) throw new Error('Invalid device extensions')
   const seen = new Set<string>()
