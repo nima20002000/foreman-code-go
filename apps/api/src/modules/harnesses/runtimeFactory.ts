@@ -440,9 +440,11 @@ export class NativeHarnessFactories {
       this.codexDiagnostics.dispose(),
       Promise.allSettled([...this.versionDiagnostics].flatMap(owned => owned.task ? [owned.task] : [])),
     ])
-    const results = await Promise.allSettled([...this.auxiliaries.keys()].map((manager) => this.disposeAuxiliary(manager)))
-    results.push(...diagnosticResults)
-    results.push(...await Promise.allSettled([...this.versionDiagnostics].map(owned => this.closeVersionDiagnostic(owned))))
+    const results = [
+      ...diagnosticResults,
+      ...await Promise.allSettled([...this.auxiliaries.keys()].map(manager => this.disposeAuxiliary(manager))),
+      ...await Promise.allSettled([...this.versionDiagnostics].map(owned => this.closeVersionDiagnostic(owned))),
+    ]
     const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
     if (errors.length) throw new AggregateError(errors, 'Native diagnostic/qualification cleanup was incomplete.')
   }
