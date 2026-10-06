@@ -52,7 +52,7 @@ export class SessionControlStore {
   }
 
   async read(binding: SessionControlBinding): Promise<SessionControlState> {
-    const { conversationId, manager, session } = binding
+    const { conversationId, session } = binding
     if (this.compacting.size) {
       const row = await this.pool.query<{ record: unknown }>(
         'select record from conversation_session_controls where conversation_id=$1', [conversationId])
@@ -63,6 +63,7 @@ export class SessionControlStore {
         }
       }
     }
+    const manager = binding.manager
     const capabilities = manager?.sessionControlCapabilities && session
       ? await manager.sessionControlCapabilities(session) : binding.pendingCapabilities ?? unavailableSessionControls(binding.profileKey)
     const defaultsRow = await this.pool.query<{ record: unknown }>(`select record from conversation_session_defaults
@@ -103,11 +104,12 @@ export class SessionControlStore {
         message: 'Compaction stopped before native dispatch. You can try again.', observedAt: new Date().toISOString() }
       await this.save(state)
     }
-    if (state.compaction && compactionBlocksSend(state.compaction) && session && manager?.reconcileCompaction) {
+    const reconciliationManager = binding.manager
+    if (state.compaction && compactionBlocksSend(state.compaction) && session && reconciliationManager?.reconcileCompaction) {
       if (state.compaction.nativeSessionId !== session.nativeSessionId) {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The compaction belongs to a different native session.', 409)
       }
-      const reconciled = CompactionStateSchema.parse(await manager.reconcileCompaction(session, state.compaction))
+      const reconciled = CompactionStateSchema.parse(await reconciliationManager.reconcileCompaction(session, state.compaction))
       if (reconciled.requestId !== state.compaction.requestId || reconciled.nativeSessionId !== session.nativeSessionId) {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The native compaction result belongs to a different request or session.', 409)
       }
@@ -116,7 +118,7 @@ export class SessionControlStore {
         await this.save(state)
       }
     }
-    if (state.compaction && compactionBlocksSend(state.compaction) && !manager && binding.recoverCompaction) {
+    if (state.compaction && compactionBlocksSend(state.compaction) && !binding.manager && binding.recoverCompaction) {
       const recovered = CompactionStateSchema.parse(await binding.recoverCompaction(state.compaction))
       if (recovered.requestId !== state.compaction.requestId || recovered.nativeSessionId !== state.compaction.nativeSessionId) {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The recovered compaction belongs to another session.', 409)
@@ -126,7 +128,7 @@ export class SessionControlStore {
         await this.save(state)
       }
     }
-    if (state.compaction && compactionBlocksSend(state.compaction) && !manager
+    if (state.compaction && compactionBlocksSend(state.compaction) && !binding.manager
       && session?.harness === 'claude' && state.compaction.nativeSessionId === session.nativeSessionId) {
       const recovered = await recoverPersistedClaudeCompaction(state.compaction)
       if (JSON.stringify(recovered) !== JSON.stringify(state.compaction)) {
@@ -134,7 +136,7 @@ export class SessionControlStore {
         await this.save(state)
       }
     }
-    const applied = session ? manager?.appliedSessionPreferences?.(session) : null
+    const applied = session ? binding.manager?.appliedSessionPreferences?.(session) : null
     if (applied && JSON.stringify(applied) !== JSON.stringify(state.applied)) {
       state.applied = applied
       if (state.appliedMode === state.desiredMode && JSON.stringify(applied) === JSON.stringify(state.desired)) {
@@ -149,7 +151,7 @@ export class SessionControlStore {
     [conversationId, this.role === 'operator' ? 'operator_chat_control' : 'agent_chat_control'])
     state.compactions = rows.rows.map(row => SessionControlStateSchema.shape.compaction.parse(row.compaction))
       .filter((entry): entry is NonNullable<SessionControlState['compaction']> => entry !== null).reverse()
-    const context = session ? manager?.contextSnapshot?.(session) : null
+    const context = session ? binding.manager?.contextSnapshot?.(session) : null
     if (!context && state.context && !state.context.stale) {
       state.context = { ...state.context, stale: true }
       await this.save(state)

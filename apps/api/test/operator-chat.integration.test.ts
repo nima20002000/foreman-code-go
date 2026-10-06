@@ -10,7 +10,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
 import {
   applyOperatorChatSettings, operatorChatSettings, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema,
-  type ExecutionResult, type NativeSessionReference, type OperatorConversationState,
+  type ExecutionResult, type NativeSessionReference, type OperatorConversationState, type ContextSnapshot,
 } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import pg from 'pg'
@@ -170,6 +170,46 @@ afterEach(async () => {
 })
 
 describe.skipIf(!connectionString)('Operator chat persistence and native binding with stubbed authority', () => {
+  it('reads stored controls while terminal cleanup still owns the native manager', async () => {
+    const conversation = await chat.create(owner)
+    const requestId = randomUUID()
+    let disposalStarted = false
+    let releaseCleanup!: () => void
+    const cleanup = new Promise<void>(resolve => { releaseCleanup = resolve })
+    const context = (session: NativeSessionReference): ContextSnapshot => {
+      if (disposalStarted) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The native manager is closing.', 409)
+      return { nativeSessionId: session.nativeSessionId, model: 'fixture-model', generation: 'fixture', sequence: 1,
+        source: 'codex', accuracy: 'native', usedTokens: 42, capacityTokens: null, lifetimeTokens: 42,
+        cost: null, observedAt: new Date().toISOString(), stale: false }
+    }
+    manager.autoFinish = false
+    Object.assign(manager, {
+      sessionControlCapabilities: async () => {
+        if (disposalStarted) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The native manager is closing.', 409)
+        return { ...unavailableSessionControls('profile'), model: 'fixture-model',
+          compact: { supported: true, reason: null } }
+      },
+      contextSnapshot: context,
+      dispose: async () => { disposalStarted = true; await cleanup },
+    })
+    try {
+      await chat.send(conversation.id, { requestId, content: 'Seed this session' }, owner)
+      await waitFor(async () => !!(await chat.get(conversation.id, owner)).nativeSessionId)
+      const before = await chat.readSessionControls(conversation.id, owner)
+      expect(before.context).toMatchObject({ usedTokens: 42, stale: false })
+      manager.finish(nativeCorrelation(conversation.id, requestId))
+      await waitFor(async () => disposalStarted)
+      const closing = await chat.readSessionControls(conversation.id, owner)
+      expect(closing.nativeSessionId).toBe(before.nativeSessionId)
+      expect(closing.context).toMatchObject({ usedTokens: 42, stale: true })
+      expect(closing.busyReason).not.toBeNull()
+      expect(manager.sessions).toBe(1)
+    } finally {
+      releaseCleanup()
+    }
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+  }, 30000)
+
   it('releases definite preflight failures and crash-left reservations without native dispatch', async () => {
     const conversation = await chat.create(owner)
     await chat.send(conversation.id, { requestId: randomUUID(), content: 'Seed this session' }, owner)

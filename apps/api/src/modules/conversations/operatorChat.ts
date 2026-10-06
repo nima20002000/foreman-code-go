@@ -339,7 +339,10 @@ export class OperatorChatService {
     } : undefined)
     return { conversationId: id, principalId: principal.id, defaultSubject: 'application-operator', profileKey: configuration.contentHash,
       busyReason: row.active_request_id || row.pending_interaction ? 'Wait for the active turn and its approvals to finish.' : null,
-      session, manager: runtime?.manager,
+      session,
+      get manager() {
+        return runtime && !runtime.disposal && !runtime.disposalStarted ? runtime.manager : undefined
+      },
       ...(session && this.managers.recoverCompaction ? { recoverCompaction: (state: import('@foreman-code/contracts').CompactionState) =>
         this.managers.recoverCompaction!(configuration, id, session, { kind: 'operator',
           correlationId: `session-control:${id}`, configuration, workingDirectory: this.workingDirectory },
