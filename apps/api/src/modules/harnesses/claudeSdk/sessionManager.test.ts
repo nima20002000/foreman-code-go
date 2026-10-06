@@ -499,6 +499,34 @@ describe('Claude native session manager admission', () => {
     await f.manager.dispose?.()
   })
 
+  it('refreshes a token-free failed HTTP connection on the same query before offering input', async () => {
+    const endpoint = 'http://127.0.0.1:3000/mcp/app'
+    const servers = { graphql: { type: 'http', url: endpoint } }
+    const f = fixture(undefined, { sdkOptions: { mcpServers: servers }, appMcpAccess: 'management',
+      expectedMcp: { serverName: 'graphql', url: endpoint } })
+    f.statuses.mockResolvedValueOnce([{ name: 'graphql', status: 'failed', source: 'dynamic',
+      config: { type: 'http', url: endpoint, headers: { Authorization: '' } }, tools: [] }])
+    try {
+      const tokenFree = { ...start, environment: { agentId: 'operator', variables: {} } }
+      const inspection = await f.manager.prepareInspection(tokenFree)
+      expect(inspection.servers[0]?.status).toBe('failed')
+      expect(inspection.httpCredentialAcknowledgement).toBeUndefined()
+      expect(f.offers).not.toHaveBeenCalled()
+      const credentialed = { ...start, environment: { agentId: 'operator', variables: {
+        FOREMAN_CODE_MCP_TOKEN: 'scoped-token',
+      } } }
+      await f.manager.refreshInspectionCredentials(credentialed, {
+        graphql: { ...servers.graphql, headers: { Authorization: 'Bearer scoped-token' } },
+      })
+      expect(await f.manager.inspectMcp()).toMatchObject({ state: 'connected',
+        credentialArrangement: { kind: 'scoped_http_header' } })
+      expect(f.queries).toHaveBeenCalledTimes(1)
+      expect(f.offers).not.toHaveBeenCalled()
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
+
   it.each([
     ['GRAPHQL_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN'],
     ['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN'],

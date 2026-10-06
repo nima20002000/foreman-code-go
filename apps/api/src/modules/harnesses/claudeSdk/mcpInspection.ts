@@ -1,7 +1,23 @@
 import { basename } from 'node:path'
 import type { McpDetection, AgentHarness } from '@foreman-code/contracts'
-import type { NativeMcpHttpCredentialAcknowledgement } from '../mcpDetection.js'
-import { appMcpServerName, isSupportedAppMcpTokenName } from '../appMcpLauncher.js'
+import type { NativeMcpEntryEvidence, NativeMcpHttpCredentialAcknowledgement } from '../mcpDetection.js'
+import { appMcpServerName, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from '../appMcpLauncher.js'
+import { DomainError } from '../../errors.js'
+
+export function assertClaudeCredentialEndpoint(entry: NativeMcpEntryEvidence | undefined, endpoint: string): void {
+  // Before bearer delivery, Claude's OAuth registration can fail on this bearer-only endpoint.
+  // Connection health and the SDK credential acknowledgement are checked after delivery.
+  if (!entry || !isSupportedAppMcpServerName(entry.name) || entry.transport !== 'streamable-http'
+    || entry.endpoint !== endpoint || entry.enabled === false
+    || !['connected', 'authentication_required', 'status_unavailable', 'broken'].includes(entry.status ?? '')) {
+    throw new DomainError('APP_MCP_PREFLIGHT_FAILED',
+      'The owned Claude query has no accepted Foreman Code HTTP endpoint.', 409, {
+        expectedEndpoint: endpoint,
+        observed: entry ? { name: entry.name, transport: entry.transport, endpoint: entry.endpoint,
+          enabled: entry.enabled, status: entry.status } : null,
+      })
+  }
+}
 
 export interface ClaudeMcpControlServer {
   name: string

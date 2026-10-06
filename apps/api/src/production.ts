@@ -68,6 +68,7 @@ import { passiveDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
 import { runCommand } from './modules/harnesses/process.js'
 import { productionClaudeManager, type ClaudeProfileOwner } from './modules/harnesses/claudeSdk/production.js'
 import { requireClaudeProductionCredentialDelivery } from './modules/harnesses/claudeSdk/productionCredentials.js'
+import { assertClaudeCredentialEndpoint } from './modules/harnesses/claudeSdk/mcpInspection.js'
 import { PostgresClaudeInteractionAuthority } from './modules/harnesses/claudeSdk/domainAuthority.js'
 import { productionSelectedProfileManager } from './modules/harnesses/selectedProfileProduction.js'
 import { credentialAuthority } from './modules/interactions/wave25/credentialAuthority.js'
@@ -808,15 +809,7 @@ export function buildProductionApp(
         if (!claude || configuration.harness.harness !== 'claude') throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The exact Claude launch is unavailable.', 409)
         const inspected = await nativeFactories.inspector(manager).inspect({ harness: 'claude', runnerId: run.executionLocation.runnerId,
           workingDirectory: input.workingDirectory, serverName: PRODUCT_SLUG, phase: 'configuration', ...(input.signal ? { signal: input.signal } : {}) })
-        const entry = inspected.entry
-        if (!entry || !isSupportedAppMcpServerName(entry.name) || entry.transport !== 'streamable-http' || entry.endpoint !== appMcpEndpoint
-          || entry.enabled === false || !['connected', 'authentication_required', 'status_unavailable'].includes(entry.status ?? '')) {
-          throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The owned Claude query has no accepted Foreman Code HTTP endpoint.', 409, {
-            expectedEndpoint: appMcpEndpoint,
-            observed: entry ? { name: entry.name, transport: entry.transport, endpoint: entry.endpoint,
-              enabled: entry.enabled, status: entry.status } : null,
-          })
-        }
+        assertClaudeCredentialEndpoint(inspected.entry, appMcpEndpoint)
         await credentials.revokeSupersededForExecution(input.executionId)
         input.signal?.throwIfAborted()
         const credential = await (input.purpose === 'reviewer' ? credentials.issueForReviewer(input.executionId) : credentials.issueForExecution(input.executionId))
