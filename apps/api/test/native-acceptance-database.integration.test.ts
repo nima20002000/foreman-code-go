@@ -1,8 +1,10 @@
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
 import { expect, it } from 'vitest'
+import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
 it('acceptance bootstrap supplies an isolated database and removes it after success and failure', async () => {
   const script = new URL('../../../scripts/test-native-acceptance.mjs', import.meta.url).href
@@ -53,6 +55,45 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
   } finally {
     await admin.end()
     await rm(directory, { recursive: true, force: true })
+  }
+}, 30_000)
+
+it.each([false, true])('reports leaked workflow callers and removes owned resources (work failed: %s)', async failed => {
+  const configured = process.env.NIM2691_ADMIN_DATABASE_URL
+  if (!configured) throw new Error('NIM2691_ADMIN_DATABASE_URL is required')
+  const admin = new pg.Pool({ connectionString: configured, max: 1 })
+  const failure = new Error('Workflow verification failed')
+  const directories: string[] = []
+  const disconnects: unknown[] = []
+  let client: pg.Client | undefined
+  let ownedName = ''
+  try {
+    const work = nim2691TaskDatabase(async (_pool, directory, databaseUrl) => {
+      directories.push(directory, await privateFixtureDirectory('native-cleanup-'))
+      ownedName = decodeURIComponent(new URL(databaseUrl).pathname.slice(1))
+      client = new pg.Client({ connectionString: databaseUrl })
+      client.on('error', error => { disconnects.push(error) })
+      await client.connect()
+      await client.query('select 1')
+      if (failed) throw failure
+      return 'completed'
+    })
+    await expect(work).rejects.toMatchObject({
+      name: 'AggregateError', errors: expect.arrayContaining([
+        expect.objectContaining({ message: 'Native fixture database still had active callers during teardown.' }),
+        ...(failed ? [failure] : []),
+      ]), ...(failed ? { cause: failure } : {}),
+    })
+    expect((await admin.query('select 1 from pg_database where datname=$1', [ownedName])).rowCount).toBe(0)
+    await expect(client!.query('select 1')).rejects.toThrow()
+    expect(disconnects.length).toBeGreaterThan(0)
+    expect(directories).toHaveLength(2)
+    for (const directory of directories) await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect((await admin.query('select 1 from pg_database where datname=$1',
+      [decodeURIComponent(new URL(configured).pathname.slice(1))])).rowCount).toBe(1)
+  } finally {
+    await client?.end()
+    await admin.end()
   }
 }, 30_000)
 

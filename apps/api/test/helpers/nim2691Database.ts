@@ -35,6 +35,15 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   const cleanupErrors: unknown[] = []
   try { await pool?.end() }
   catch (error) { cleanupErrors.push(error) }
+  try {
+    if (created) {
+      const callers = await admin.query<{ count: number }>(
+        'select count(*)::int as count from pg_stat_activity where datname=$1', [name])
+      if (callers.rows[0]?.count !== 0) {
+        cleanupErrors.push(new Error('Native fixture database still had active callers during teardown.'))
+      }
+    }
+  } catch (error) { cleanupErrors.push(error) }
   try { if (created) await admin.query(`drop database "${name}" with (force)`) }
   catch (error) { cleanupErrors.push(error) }
   try { await admin.end() }
