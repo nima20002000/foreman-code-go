@@ -105,5 +105,5 @@ test('the root acceptance command forwards file selection and rejects invalid pa
   })
   assert.ifError(result.error)
   assert.notEqual(result.status, 0)
-  assert.match(result.stdout + result.stderr, /Use --files followed by explicit API acceptance test paths/)
+  assert.match(result.stdout + result.stderr, /Invalid acceptance test file:/)
 })
