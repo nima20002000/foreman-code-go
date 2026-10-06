@@ -254,6 +254,20 @@ test('the pinned pnpm reads the enforced offline store and cache from its suppor
   assertEffectivePackagePolicy(config);
 });
 
+test('compiler heap scales with the reserved memory while keeping space for other processes', () => {
+  for (const memoryGiB of [2, 4]) {
+    const memoryBytes = memoryGiB * 2**30;
+    const environment = verificationEnvironment({ NODE_OPTIONS: '--require /unreviewed/preload.mjs' }, memoryBytes);
+    const heapBytes = Number(execFileSync(process.execPath, ['-e',
+      'process.stdout.write(String(require("node:v8").getHeapStatistics().heap_size_limit))'],
+    { env: environment, encoding: 'utf8', timeout: 5000 }));
+    assert.ok(heapBytes >= memoryBytes * 0.75 && heapBytes < memoryBytes * 0.9);
+  }
+  for (const memoryBytes of [0, NaN, Infinity, 'max']) {
+    assert.throws(() => verificationEnvironment({}, memoryBytes), /finite kernel memory reservation/);
+  }
+});
+
 async function fixture(t) {
   // Capture requires persistent storage with private ancestors, including HOME.
   const directory = await mkdtemp(join(persistentFixtureRoot, 'job-runtime-cli-'));

@@ -8,7 +8,11 @@ const imageRoot = '/opt/graphql-ci';
 export const VERIFICATION_SCRATCH = '/job-scratch';
 const corepack = '/usr/local/lib/node_modules/corepack/dist/corepack.js';
 
-export function verificationEnvironment(environment) {
+export function verificationEnvironment(environment, memoryBytes = 2 * 2**30) {
+  if (!Number.isSafeInteger(memoryBytes) || memoryBytes < 64 * 2**20) {
+    throw new Error('Verification requires a finite kernel memory reservation.');
+  }
+  const heapMiB = Math.floor(memoryBytes / 2**20 * 0.75);
   const clean = Object.fromEntries(Object.entries(environment).filter(([key]) =>
     !/^(?:npm_config_|pnpm_|corepack_|node_options$|node_path$)/i.test(key)));
   return {
@@ -22,7 +26,7 @@ export function verificationEnvironment(environment) {
     COREPACK_ENABLE_NETWORK: '0',
     COREPACK_DEFAULT_TO_LATEST: '0',
     COREPACK_ENABLE_AUTO_PIN: '0',
-    NODE_OPTIONS: '--max-old-space-size=1536',
+    NODE_OPTIONS: `--max-old-space-size=${heapMiB}`,
     PNPM_CONFIG_OFFLINE: 'true',
     PNPM_CONFIG_STORE_DIR: `${VERIFICATION_SCRATCH}/pnpm-store`,
     PNPM_CONFIG_CACHE_DIR: `${VERIFICATION_SCRATCH}/cache/pnpm`,
@@ -122,7 +126,8 @@ export async function prepareVerificationWorkspace(args, seedDirectory, scratchD
 /** Every invocation uses image-controlled pnpm and configuration; workloads never share a writable installer store. */
 export async function prepareVerificationPnpm(argv, environment = process.env) {
   if (argv[0] !== 'pnpm') throw new Error('The verification runtime uses its pinned pnpm only.');
-  const env = verificationEnvironment(environment);
+  const memoryBytes = Number((await readFile('/sys/fs/cgroup/memory.max', 'utf8')).trim());
+  const env = verificationEnvironment(environment, memoryBytes);
   if (argv.length === 2 && ['--version', '-v'].includes(argv[1])) return { argv, env };
   const receiptBytes = await readFile(`${imageRoot}/seed-receipt.json`);
   const receipt = JSON.parse(receiptBytes.toString('utf8'));
