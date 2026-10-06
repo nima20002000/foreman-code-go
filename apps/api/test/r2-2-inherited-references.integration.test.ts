@@ -138,10 +138,16 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
     await add({ kind: 'workflow_reference', workspaceId: seeded.scope.workspaceId, workflowId: otherWorkflow }, '# Foreign workflow secret\n'),
   ]
   let server: RecordedOpenCodeServer | undefined
+  let promptAccepted = deferred()
+  let credentialsBeforePrompt = 0
   const nativeFactories = new NativeHarnessFactories({ ...config.harnesses,
     openCodeFileStorageRoot: files.bytes.root,
   }, { mode: 'native', openCodeServer: options => {
     server = new RecordedOpenCodeServer({ ...options, pure: true })
+    server.onPromptAccepted = () => {
+      expect(issued).toHaveLength(credentialsBeforePrompt)
+      promptAccepted.resolve()
+    }
     return server
   } })
   const nativeServer = () => {
@@ -192,7 +198,10 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
   const node = seeded.version.definition.nodes[0]!
   const context = { workflowId: seeded.scope.workflowId, workflowNodeId: node.id, agentId: node.agentId }
   async function send(conversationId: string | null) {
-    const requestId = randomUUID(), previous = issued.length
+    const requestId = randomUUID()
+    const previous = issued.length
+    promptAccepted = deferred()
+    credentialsBeforePrompt = previous
     const result = await chat.current!.send(owner.principal, seeded.scope.workspaceId, {
       requestId, context, content: 'List and read the inherited workspace and workflow references.', intent: 'next_turn',
       expectedConversationId: conversationId,
@@ -201,6 +210,8 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
     })
     const id = result.state.conversation!.id
     try {
+      // Credential activation starts after the native acknowledgement, not while its process is starting.
+      if (harness === 'opencode') await promptAccepted.promise
       await until(async () => issued.length === previous + 1, 10000)
     } catch (error) {
       const state = await chat.current!.readConversation(owner.principal, seeded.scope.workspaceId, id)
