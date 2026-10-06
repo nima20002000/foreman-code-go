@@ -13,6 +13,9 @@ import { OpenCodeFileError } from '../harnesses/opencodeFiles/types.js'
 import { MainWorkerOpenCodeFiles } from './mainWorkerOpenCodeFiles.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
 import { createWorkerOpenCodeFiles } from './workerOpenCodeFiles.js'
+import { WorkerOpenCodeDirectories } from './workerOpenCodeDirectories.js'
+import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 
 async function fixture(readOnly = false) {
   const root = await mkdtemp(join(tmpdir(), 'foreman-worker-opencode-files-'))
@@ -27,6 +30,14 @@ async function fixture(readOnly = false) {
   const source: WorkerConversationRpcRequest = { method: 'conversation.start-turn', binding: request.binding,
     admissionId: randomUUID(), session: { ...request.session, nativeSessionId: context.nativeSessionId }, prompt: 'Read the accepted file',
     correlationId: identity.clientCorrelationId }
+  const journal = await RemoteOperationJournal.open(join(root, 'operations.json'), { initializeNewInstallation: true })
+  onTestFinished(() => journal.close())
+  await journal.conversations.receive(source.binding, request.connection)
+  await journal.conversations.reserveCreation(source.binding, 'initial-create', commandInputHash('initial-create'))
+  await journal.conversations.bindSession(source.binding, source.session,
+    { ...request.nativeOwner, sessionId: source.session.nativeSessionId })
+  await journal.conversations.reserveTurn(source.binding, source.correlationId, commandInputHash('accepted-file-turn'))
+  const directories = new WorkerOpenCodeDirectories(root, journal.conversations)
   let acknowledgedTurnId: string | undefined
   let token: string | undefined
   let endpoint: string | undefined
@@ -50,7 +61,7 @@ async function fixture(readOnly = false) {
   }
   // Only native transport/OS isolation and persistence are recorded; no installed qualification is claimed.
   const isolation = vi.fn(async () => {})
-  const worker = createWorkerOpenCodeFiles({ stateDirectory: root, source: () => source, server,
+  const worker = createWorkerOpenCodeFiles({ directories, source: () => source, server,
     signal: AbortSignal.timeout(10000), assertCurrent: async () => {}, assertSourceIsolation: isolation,
     callbacks: { openCodeFiles: async (original, received, action, signal) => {
       expect(original.binding).toEqual(source.binding)
@@ -88,7 +99,7 @@ async function fixture(readOnly = false) {
       const errors: unknown[] = []
       for (const close of [() => client.close(),
         async () => { await managed?.nativeProcessClosed(AbortSignal.timeout(10000)) },
-        () => worker.close(), () => main.close(), () => rm(root, { recursive: true, force: true })]) {
+        () => worker.close(), () => main.close(), () => journal.close(), () => rm(root, { recursive: true, force: true })]) {
         try { await close() }
         catch (error) { errors.push(error) }
       }

@@ -32,6 +32,7 @@
   "apps/api/src/modules/conversations/workerJournal.ts",
   "apps/api/src/modules/conversations/workerMcpAccess.ts",
   "apps/api/src/modules/conversations/workerNativeOwner.ts",
+  "apps/api/src/modules/conversations/workerOpenCodeDirectories.ts",
   "apps/api/src/modules/conversations/workerOpenCodeFileHost.ts",
   "apps/api/src/modules/conversations/workerOpenCodeFileService.ts",
   "apps/api/src/modules/conversations/workerOpenCodeFiles.ts",

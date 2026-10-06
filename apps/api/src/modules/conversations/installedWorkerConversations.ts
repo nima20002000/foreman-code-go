@@ -41,6 +41,7 @@ import { recoverWorkerConversation } from './recoverWorkerConversation.js'
 import { join } from 'node:path'
 import { createWorkerOpenCodeFiles } from './workerOpenCodeFiles.js'
 import { assertWorkerOpenCodeFileHost } from './workerOpenCodeFileHost.js'
+import { WorkerOpenCodeDirectories } from './workerOpenCodeDirectories.js'
 
 function unavailable(message: string): never {
   throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE', message, 409)
@@ -61,6 +62,15 @@ export async function createInstalledWorkerConversations(input: {
 }) {
   const selected = await readInstalledWorkflowConfiguration(input.configuration)
   if (!selected) return null
+  const conversationJournal = (await input.journal()).conversations
+  const openCodeDirectories = new WorkerOpenCodeDirectories(input.stateDirectory, conversationJournal)
+  for (const record of await conversationJournal.fileRecords()) {
+    const closed = input.registry.snapshot().launches.filter(launch =>
+      launch.owner === `conversation:${record.binding.owner.conversationId}`)
+    if (closed.length && closed.every(launch => launch.lifecycle === 'closed' && launch.closureEvidence)) {
+      await openCodeDirectories.cleanupClosed(record, input.registry, input.signal)
+    }
+  }
   const operations = new AsyncLocalStorage<WorkerConversationRpcRequest>()
   const source = () => {
     input.signal.throwIfAborted()
@@ -153,7 +163,7 @@ export async function createInstalledWorkerConversations(input: {
       const ensure = server.ensure.bind(server)
       server.ensure = signal => runWithReadOnlyQualification(registry, () => ensure(signal))
       if (purpose === 'chat' && appMcpAccess === 'none') {
-        openCodeFiles = createWorkerOpenCodeFiles({ stateDirectory: input.stateDirectory,
+        openCodeFiles = createWorkerOpenCodeFiles({ directories: openCodeDirectories,
           source, callbacks, server,
           assertCurrent: (request, signal) => operations.run(request, () => before(signal)),
           assertSourceIsolation: assertWorkerOpenCodeFileHost, signal: input.signal })
@@ -205,14 +215,22 @@ export async function createInstalledWorkerConversations(input: {
         recoverFiles: (request, nativeTurnId, signal) => nativeFiles.recover(request, nativeTurnId, signal),
       } satisfies Pick<WorkerConversationAllocation, 'recoverFiles'> : {}),
       async close() {
-        await manager.dispose?.()
+        const errors: unknown[] = []
+        try { await manager.dispose?.() } catch (error) { errors.push(error) }
         if (!await input.registry.closeOwner(scope.owner)) unavailable('Native chat closure is unconfirmed.')
-        await openCodeFiles?.close()
-        if (purpose === 'chat') await files.closeConversation(binding.owner.conversationId)
-        await mcp?.close()
+        if (purpose === 'chat') {
+          try {
+            await openCodeFiles?.releaseClosedHandles()
+            const record = await conversationJournal.read(binding)
+            if (record) await openCodeDirectories.cleanupClosed(record, input.registry, AbortSignal.timeout(10000))
+            await openCodeFiles?.close()
+            await files.closeConversation(binding.owner.conversationId)
+          } catch (error) { errors.push(error) }
+        }
+        try { await mcp?.close() } catch (error) { errors.push(error) }
+        if (errors.length) throw new AggregateError(errors, 'Native chat resources need cleanup retry.')
       } }
   }
-  const conversationJournal = (await input.journal()).conversations
   const host = new WorkerConversationHost({ ...callbacks, currentBinding: input.current,
     journal: conversationJournal,
     allocate: (binding, configuration, connection) => allocate(binding, configuration, connection, 'chat'),
@@ -222,6 +240,7 @@ export async function createInstalledWorkerConversations(input: {
       allocate: () => allocate(request.method === 'conversation.open' && request.previousBinding
         ? request.binding : record.binding, configuration, connection, 'chat'),
       assertCurrent: () => callbacks.authorize(request, connection, signal),
+      cleanupFiles: (record, cleanupSignal) => openCodeDirectories.cleanupClosed(record, input.registry, cleanupSignal),
     }),
     readCompaction: async (request, _record, connection, signal) => {
       const observer = await allocate(request.binding, request.configuration, connection, 'compaction-read')

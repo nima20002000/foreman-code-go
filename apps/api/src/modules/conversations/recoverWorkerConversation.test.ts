@@ -63,15 +63,32 @@ async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agen
   const allocate = vi.fn(async () => allocation)
   const closeOwner = vi.fn(async () => true)
   const assertCurrent = vi.fn(async () => {})
+  const cleanupFiles = vi.fn(async () => {})
   const recover = (request: WorkerConversationRpcRequest = { method: 'conversation.open', binding: f.binding,
     configuration: f.configuration, operationId: 'original-create', mode: 'attach', source: f.session }) =>
     recoverWorkerConversation({ record, configuration: f.configuration, connection, request,
     registry: { snapshot: () => ({ revision: 'recorded-registry', launches: [launch] }), closeOwner },
-    journal: journal.conversations, allocate, assertCurrent, signal: AbortSignal.timeout(1000) })
+    journal: journal.conversations, allocate, assertCurrent, cleanupFiles, signal: AbortSignal.timeout(1000) })
   return { ...f, record, connection, launch, owner, nextOwner, observed, result,
-    attach, reconcile, start, close, allocate, closeOwner, assertCurrent, recover, allocation, journal,
+    attach, reconcile, start, close, allocate, closeOwner, assertCurrent, cleanupFiles, recover, allocation, journal,
     async cleanup() { await journal.close(); await rm(directory, { recursive: true, force: true }) } }
 }
+
+it('cleans file copies after positive old-owner closure even when an unacknowledged input cannot be recovered', async () => {
+  const f = await fixture('opencode')
+  try {
+    Object.assign(f.record.turns[0]!, { status: 'uncertain', nativeTurnId: null })
+    await expect(f.recover()).rejects.toMatchObject({ status: 409 })
+    expect(f.cleanupFiles).toHaveBeenCalledOnce()
+    expect(f.allocate).not.toHaveBeenCalled()
+    expect(f.closeOwner).not.toHaveBeenCalled()
+    expect((await f.journal.conversations.read(f.binding))?.nativeOwner).toEqual(f.owner)
+    f.cleanupFiles.mockClear()
+    Object.assign(f.launch, { lifecycle: 'active', closureEvidence: undefined })
+    await expect(f.recover()).rejects.toMatchObject({ status: 409 })
+    expect(f.cleanupFiles).not.toHaveBeenCalled()
+  } finally { await f.cleanup() }
+})
 
 for (const harness of ['codex', 'opencode', 'claude'] as const) {
   it.each(['none', 'scoped'] as const)(`${harness}: changes Operator App MCP access from %s on the same native session`, async previous => {

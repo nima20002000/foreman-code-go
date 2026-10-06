@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { lstat, mkdir, mkdtemp, realpath, rmdir } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
 import { z } from 'zod'
 import { AgentFileReadResultSchema, MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS } from '@foreman-code/contracts/files'
 import { WorkerOpenCodeFilePreparationSchema, type WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
@@ -14,6 +12,7 @@ import type { OpenCodeServerController } from '../harnesses/opencodeTransport.js
 import type { workerConversationCallbacks } from './workerCallbacks.js'
 import { createWorkerOpenCodeFileService } from './workerOpenCodeFileService.js'
 import type { assertWorkerOpenCodeFileHost } from './workerOpenCodeFileHost.js'
+import type { WorkerOpenCodeDirectories } from './workerOpenCodeDirectories.js'
 
 const acknowledged = z.object({ acknowledged: z.literal(true) }).strict()
 interface Delivery {
@@ -21,11 +20,12 @@ interface Delivery {
   identity: OpenCodeChatFileIdentity
   prepared: z.infer<typeof WorkerOpenCodeFilePreparationSchema>
   turn?: OpenCodeManagedFileTurn
+  host?: LocalOpenCodeExecutionFiles
 }
 
 /** The installed native manager owns each listener and filesystem copy until settlement. */
 export function createWorkerOpenCodeFiles(input: {
-  stateDirectory: string
+  directories: Pick<WorkerOpenCodeDirectories, 'create' | 'release'>
   source(): WorkerConversationRpcRequest
   callbacks: Pick<ReturnType<typeof workerConversationCallbacks>, 'openCodeFiles'>
   server: OpenCodeServerController
@@ -45,13 +45,7 @@ export function createWorkerOpenCodeFiles(input: {
     const prepared = WorkerOpenCodeFilePreparationSchema.parse(raw)
     const delivery: Delivery = { source, identity: structuredClone(identity), prepared }
     const proxy = createWorkerOpenCodeFileService({ ...input, source: () => delivery.source, identity })
-    const parent = join(input.stateDirectory, 'opencode-chat-files')
-    await mkdir(parent, { recursive: true, mode: 0o700 })
-    const stat = await lstat(parent)
-    checkFileCondition(stat.isDirectory() && !stat.isSymbolicLink() && !(stat.mode & 0o077)
-      && stat.uid === process.getuid?.() && await realpath(parent) === resolve(parent),
-    'FILE_HOST_INVALID', 'The native file directory must be private and canonical.')
-    const root = await mkdtemp(join(parent, 'turn-'))
+    const root = await input.directories.create(source.binding, identity.clientCorrelationId, identity.nativeSessionId)
     let facade: FileMcpService | undefined
     const listener = createNativeFileMcpServer(() => {
       checkFileCondition(facade, 'FILE_TURN_CLOSED', 'The native file listener is not mounted.')
@@ -62,7 +56,9 @@ export function createWorkerOpenCodeFiles(input: {
       if (closed) return
       facade = undefined
       await listener.close()
-      await rmdir(root)
+      await input.directories.release(source.binding, root.record, {
+        closedProcess: false, signal: AbortSignal.timeout(10000),
+      })
       closed = true
       cleanups.delete(cleanup)
       deliveries.delete(key(identity))
@@ -70,12 +66,13 @@ export function createWorkerOpenCodeFiles(input: {
     cleanups.add(cleanup)
     try {
       const endpoint = `${await listener.listen()}/mcp/files`
-      const host = new LocalOpenCodeExecutionFiles({ root, executionHostId: `worker:${randomUUID()}`,
+      const host = new LocalOpenCodeExecutionFiles({ root: root.path, executionHostId: `worker:${randomUUID()}`,
         maxFileBytes: MAX_FILE_BYTES,
         assertSourceIsolation: async checkSignal => {
           await input.assertCurrent(delivery.source, checkSignal)
           await input.assertSourceIsolation(input.server.nativePid ?? 0, delivery.prepared.sourceHost, checkSignal)
         } })
+      delivery.host = host
       deliveries.set(key(identity), delivery)
       return {
         admission: { context: prepared.context, attachments: prepared.attachments,
@@ -136,5 +133,8 @@ export function createWorkerOpenCodeFiles(input: {
       }, signal)
     },
     async close() { await Promise.all([...cleanups].map(cleanup => cleanup())) },
+    async releaseClosedHandles() {
+      await Promise.all([...deliveries.values()].map(delivery => delivery.host?.close()))
+    },
   }
 }

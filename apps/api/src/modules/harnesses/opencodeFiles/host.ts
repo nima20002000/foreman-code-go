@@ -348,6 +348,16 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
       if (!this.entries.size && this.root) { await this.root.close(); this.root = undefined }
     })
   }
+
+  /** Called only after native process closure; directory ownership remains in the worker journal. */
+  close(): Promise<void> {
+    return this.exclusive(async () => {
+      for (const entry of this.entries.values()) await entry.directory.close()
+      this.entries.clear()
+      await this.root?.close()
+      this.root = undefined
+    })
+  }
 }
 
 /** Verify exact immutable source paths AND their parents. Call from the native host/OS identity.

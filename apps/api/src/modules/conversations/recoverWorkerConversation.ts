@@ -25,6 +25,7 @@ export async function recoverWorkerConversation(input: {
   journal: WorkerConversationJournal
   allocate(): Promise<WorkerConversationAllocation>
   assertCurrent(): Promise<void>
+  cleanupFiles?(record: WorkerConversationReceipt, signal: AbortSignal): Promise<void>
   signal: AbortSignal
 }): Promise<WorkerConversationAllocation> {
   const { record, signal } = input
@@ -50,11 +51,6 @@ export async function recoverWorkerConversation(input: {
   for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) {
     if (record.connection[field] !== input.connection[field]) unavailable('The original paired worker authority changed.')
   }
-  if (record.turns.some(turn => turn.status !== 'completed' && !turn.nativeTurnId && !turn.nativeSubmission)
-    || record.compactions.some(control => !['completed', 'failed', 'no-op'].includes(control.state.status)
-      && control.state.dispatchPhase !== 'dispatched')) {
-    unavailable('The outstanding native input has no persisted dispatch identity; it will not be replayed.')
-  }
   const scopeOwner = `conversation:${record.binding.owner.conversationId}`
   const snapshot = input.registry.snapshot()
   const launches = snapshot.launches.filter(launch => launch.owner === scopeOwner)
@@ -64,10 +60,16 @@ export async function recoverWorkerConversation(input: {
     || launches.some(launch => launch.lifecycle !== 'closed' || !launch.closureEvidence)) {
     unavailable('The original native process has not been positively closed.')
   }
+  await input.assertCurrent()
+  await input.cleanupFiles?.(record, signal)
+  if (record.turns.some(turn => turn.status !== 'completed' && !turn.nativeTurnId && !turn.nativeSubmission)
+    || record.compactions.some(control => !['completed', 'failed', 'no-op'].includes(control.state.status)
+      && control.state.dispatchPhase !== 'dispatched')) {
+    unavailable('The outstanding native input has no persisted dispatch identity; it will not be replayed.')
+  }
   if (!await input.registry.closeOwner(scopeOwner, signal)) {
     unavailable('The original native chat process is still closing.')
   }
-  await input.assertCurrent()
   const allocation = await input.allocate()
   try {
     const requestedPreferences = 'preferences' in input.request ? input.request.preferences : undefined

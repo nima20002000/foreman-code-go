@@ -15,6 +15,7 @@ import { PairedMcpEndpointSchema } from './mcpDetection.js'
 import { AgentChatDirectoryBindingSchema } from './agentChat.js'
 import { FileMediaTypeSchema, MAX_FILE_BYTES, MessageAttachmentRefsSchema } from './files.js'
 import { WorkerOpenCodeFileIdentitySchema, WorkerOpenCodeFileActionSchema } from './workerOpenCodeFiles.js'
+import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
 
 const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -56,6 +57,11 @@ export const WorkerConversationTurnSchema = z.object({
   sessionMode: SessionModeSchema.optional(),
   result: z.lazy(() => ExecutionResultSchema).optional(),
 }).strict()
+export const WorkerOpenCodeFileRootSchema = z.object({
+  id: z.uuid(), correlationId: id, nativeSessionId: id,
+  filesystem: RootFilesystemIdentitySchema.optional(),
+}).strict()
+export type WorkerOpenCodeFileRoot = z.infer<typeof WorkerOpenCodeFileRootSchema>
 export const WorkerConversationReceiptSchema = z.object({
   binding: WorkerConversationBindingSchema,
   connection: DeviceSessionBindingSchema,
@@ -71,6 +77,7 @@ export const WorkerConversationReceiptSchema = z.object({
   compactions: z.array(z.object({ inputHash: digest, state: CompactionStateSchema }).strict()).max(1000),
   desiredPreferences: SessionPreferencesSchema.nullable(),
   appliedPreferences: SessionPreferencesSchema.nullable(),
+  openCodeFileRoots: z.array(WorkerOpenCodeFileRootSchema).max(1000).optional(),
 }).strict()
 export type WorkerConversationReceipt = z.infer<typeof WorkerConversationReceiptSchema>
 

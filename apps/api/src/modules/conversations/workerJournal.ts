@@ -1,9 +1,11 @@
 import { isDeepStrictEqual } from 'node:util'
+import { randomUUID } from 'node:crypto'
 import type { CompactionState, ExecutionResult, NativeSessionReference, SessionPreferences, SessionMode } from '@foreman-code/contracts'
 import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
-import type { WorkerConversationBinding, WorkerConversationReceipt } from '@foreman-code/contracts/remote-execution-rpc'
+import type { WorkerConversationBinding, WorkerConversationReceipt,
+  WorkerOpenCodeFileRoot } from '@foreman-code/contracts/remote-execution-rpc'
 import { DomainError } from '../errors.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -45,6 +47,48 @@ export class WorkerConversationJournal {
     if (record && !isDeepStrictEqual(record.binding, binding)
       && !sameConversationForAppAccess(record.binding, binding)) conflict('The original conversation binding changed.')
     return record
+  }
+
+  async fileRecords() {
+    return (await this.store.read()).filter(record => record.openCodeFileRoots?.length)
+  }
+
+  reserveFileRoot(binding: WorkerConversationBinding, correlationId: string, nativeSessionId: string) {
+    return this.change(binding, record => {
+      writable(record)
+      if (binding.harness !== 'opencode' || record.session?.nativeSessionId !== nativeSessionId
+        || !record.turns.some(turn => turn.correlationId === correlationId && turn.status !== 'completed')) {
+        conflict('The file directory requires its admitted native conversation turn.')
+      }
+      const roots = record.openCodeFileRoots ??= []
+      const original = roots.find(root => root.correlationId === correlationId)
+      if (original) {
+        if (original.nativeSessionId !== nativeSessionId) conflict('The file directory native session changed.')
+        return original
+      }
+      if (roots.length >= 1000) conflict('The conversation file directory journal is full.')
+      const root = { id: randomUUID(), correlationId, nativeSessionId }
+      roots.push(root)
+      return root
+    })
+  }
+
+  fileRootCreated(binding: WorkerConversationBinding, id: string,
+    filesystem: NonNullable<WorkerOpenCodeFileRoot['filesystem']>) {
+    return this.change(binding, record => {
+      const root = record.openCodeFileRoots?.find(root => root.id === id)
+      if (!root || root.filesystem && !isDeepStrictEqual(root.filesystem, filesystem)) {
+        conflict('The reserved file directory was replaced.')
+      }
+      root.filesystem = filesystem
+      return root
+    })
+  }
+
+  fileRootRemoved(binding: WorkerConversationBinding, id: string) {
+    return this.change(binding, record => {
+      record.openCodeFileRoots = record.openCodeFileRoots?.filter(root => root.id !== id) ?? []
+    })
   }
 
   reserveApplicationAccess(previous: WorkerConversationBinding, next: WorkerConversationBinding, operationId: string,
