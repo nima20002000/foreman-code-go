@@ -483,7 +483,6 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
         const parts = turns[0]!.params!.input as Array<{ type: string; text?: string; path?: string }>
         prompt = parts[0]!.text!
         deliveredImage = parts.find((part) => part.type === 'localImage')?.path
-        const audit = await calls(f.directory)
         await expectCodexCredentialIsolation(f.directory)
         const thread = wire.find((entry) => entry?.method === 'thread/start')!
         expect(thread.params!.dynamicTools).toBeInstanceOf(Array)
