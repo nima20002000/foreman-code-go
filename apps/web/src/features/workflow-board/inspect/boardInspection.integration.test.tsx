@@ -265,7 +265,8 @@ describe('Run inspection inside the one mounted Board', () => {
     await waitFor(() => expect(cache.getQueryState<typeof current>(currentRunKey(scope))).toMatchObject({
       status: 'success', fetchStatus: 'idle', data: { state: { run: { cleanupPending: true } } },
     }))
-    expect(screen.getByText('Settled according to authenticated Run readback')).toBeVisible()
+    const stop = await screen.findByRole('region', { name: 'Stop and cleanup' })
+    await waitFor(() => expect(within(stop).getByRole('button', { name: 'Verify cleanup settlement' })).toBeEnabled())
     expect(readBoardStop(scope)).toEqual(journal)
     await act(async () => {
       current.state.run.cleanupPending = false
