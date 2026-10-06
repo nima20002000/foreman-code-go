@@ -8,7 +8,7 @@ import { jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verific
 import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 import { buildComputerFixture } from '../../../test/helpers/buildComputerFixture.js'
 import { jobRuntimeMetadataFixture } from '../../../test/helpers/jobRuntimeMetadataFixture.js'
-import { JobRuntimeMetadataRecovery } from './runtimeMetadataRecovery.js'
+import { JOB_RUNTIME_INSPECTION_RETRY_MS, JobRuntimeMetadataRecovery } from './runtimeMetadataRecovery.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
 
 function profiles(): JobRuntimeProfileRecord[] {
@@ -51,5 +51,23 @@ describe('mixed runtime metadata recovery', () => {
     await recovery.refreshExecution('retained-execution')
     await recovery.close()
     expect(capture).toHaveBeenCalledWith(saved)
+  })
+  it('waits before re-inspecting a profile the installed worker rejected', async () => {
+    const saved = profiles()[0]!
+    let now = 1_000_000
+    const capture = vi.fn(async () => { throw new Error('Protected verification installation differs from this profile.') })
+    const host = { currentMetadata: async () => null, capture } as unknown as InstalledJobRuntimeHost
+    const pool = { query: async () => ({ rows: [{ record: saved }] }) } as unknown as pg.Pool
+    const recovery = new JobRuntimeMetadataRecovery(pool, host, vi.fn(), () => now)
+    const scan = async () => { recovery.request(); await new Promise(resolve => setTimeout(resolve, 10)) }
+    await scan()
+    await scan()
+    expect(capture).toHaveBeenCalledTimes(1)
+    now += JOB_RUNTIME_INSPECTION_RETRY_MS
+    capture.mockImplementationOnce(async () => saved.measurement!.fingerprint)
+    await scan()
+    await scan()
+    expect(capture).toHaveBeenCalledTimes(3)
+    await recovery.close()
   })
 })

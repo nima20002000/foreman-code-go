@@ -4,14 +4,18 @@ import { JobRuntimeProfileRecordSchema, type JobRuntimeProfileRecord }
 import { componentLogger } from '../../infrastructure/logger.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
 
+/** A failed inspection is retried only after this delay; every queue wake would otherwise re-measure it. */
+export const JOB_RUNTIME_INSPECTION_RETRY_MS = 30_000
+
 /** Restores inspected metadata without creating or extending qualification. */
 export class JobRuntimeMetadataRecovery {
   private readonly captures = new Map<string, Promise<void>>()
+  private readonly failedAt = new Map<string, number>()
   private scan: Promise<void> | undefined
   private closing = false
 
   constructor(private readonly pool: pg.Pool, private readonly host: InstalledJobRuntimeHost,
-    private readonly changed: () => void) {}
+    private readonly changed: () => void, private readonly now: () => number = Date.now) {}
 
   request(): void {
     if (this.closing || this.scan) return
@@ -33,9 +37,13 @@ export class JobRuntimeMetadataRecovery {
           if (!profile.measurement || Date.parse(profile.measurement.expiresAt) <= Date.now()) continue
           const key = `${profile.id}:${profile.revision}`
           if (this.captures.has(key)) continue
+          const failed = this.failedAt.get(key)
+          if (failed !== undefined && this.now() - failed < JOB_RUNTIME_INSPECTION_RETRY_MS) continue
           const capture = this.refresh(profile).then(refreshed => {
+            this.failedAt.delete(key)
             if (refreshed && !this.closing) this.changed()
           }).catch(error => {
+            this.failedAt.set(key, this.now())
             componentLogger('jobs').warn({ err: error, profileId: profile.id }, 'Job runtime inspection unavailable')
           }).finally(() => { this.captures.delete(key) })
           this.captures.set(key, capture)
