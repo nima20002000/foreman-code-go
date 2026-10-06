@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -75,14 +75,34 @@ it('loads the compiled API using only its deployed production dependencies', asy
   const script = new URL('../../../scripts/local-production-runtime.mjs', import.meta.url).href
   const { deployProductionApi } = await import(script)
   const execute = promisify(execFile)
-  const source = fileURLToPath(new URL('../../../', import.meta.url))
+  const repository = fileURLToPath(new URL('../../../', import.meta.url))
   const directory = await mkdtemp(join(tmpdir(), 'production-runtime-dependencies-'))
-  const destination = join(directory, 'api')
+  const source = join(directory, 'workspace')
+  const release = join(directory, 'release')
+  const destination = join(release, 'apps/api')
   const run = (command: string, args: string[]) => execute(command, args, {
     cwd: source, env: process.env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
   })
   try {
+    await mkdir(join(source, 'scripts'), { recursive: true })
+    for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc']) {
+      await cp(join(repository, name), join(source, name))
+    }
+    await cp(join(repository, 'scripts/require-pnpm.mjs'), join(source, 'scripts/require-pnpm.mjs'))
+    for (const project of ['apps/api', 'packages/contracts']) {
+      await mkdir(join(source, project), { recursive: true })
+      await cp(join(repository, project, 'package.json'), join(source, project, 'package.json'))
+      await cp(join(repository, project, 'dist'), join(source, project, 'dist'), { recursive: true })
+    }
+    await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
     await deployProductionApi(run, destination)
+    await mkdir(join(release, 'apps/worker/src'), { recursive: true })
+    for (const name of ['service.mjs', 'diagnostics.mjs', 'harnessPath.mjs']) {
+      await cp(join(repository, 'apps/worker/src', name), join(release, 'apps/worker/src', name))
+    }
+    await mkdir(join(release, 'packages/contracts/src'), { recursive: true })
+    await cp(join(repository, 'packages/contracts/src/productEnvironment.mjs'),
+      join(release, 'packages/contracts/src/productEnvironment.mjs'))
     const { stdout } = await execute(process.execPath, ['--input-type=module', '-e',
       'const api = await import(process.argv[1]); console.log(typeof api.buildProductionApp);',
       pathToFileURL(join(destination, 'dist/production.js')).href], {
