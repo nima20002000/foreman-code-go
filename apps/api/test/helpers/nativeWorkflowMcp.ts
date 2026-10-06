@@ -35,6 +35,9 @@ export async function configureNativeWorkflowMcp(input: {
     }
   }
   try {
+    // Inspect copied configuration against its original managed-launcher location.
+    const sourceLauncher = process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
+    if (sourceLauncher !== undefined) process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = sourceLauncher
     const codex = await new CodexMcpConnections(input.codexBinary, input.projectDirectory)
       .read(AbortSignal.timeout(30_000))
     const codexName = appMcpServerName(codex.effective)

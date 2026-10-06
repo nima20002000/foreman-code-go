@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { withNativeAcceptanceStorage } from './native-acceptance-storage.mjs'
+import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
 async function fixture(execute) {
   const root = await mkdtemp(join(tmpdir(), 'foreman-code-storage-test-'))
@@ -37,6 +38,8 @@ test('native subprocesses keep configuration and credentials but write disposabl
     let owned
     const result = await withNativeAcceptanceStorage(source, async environment => {
       owned = environment
+      assert.equal(environment.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY,
+        join(source.HOME, '.local', 'share', 'graphql', 'mcp'))
       assert.equal(await readFile(join(environment.CODEX_HOME, 'auth.json'), 'utf8'), 'codex-fixture-credential')
       assert.equal(await readFile(join(environment.CODEX_HOME, 'config.toml'), 'utf8'), 'model = "fixture-model"')
       assert.equal(await readFile(join(environment.OPENCODE_CONFIG_DIR, 'opencode.json'), 'utf8'), '{"model":"fixture/model"}')
@@ -66,6 +69,25 @@ test('native subprocesses keep configuration and credentials but write disposabl
     assert.equal(await readFile(source.OPENCODE_DB, 'utf8'), 'original-database')
   })
 })
+
+for (const name of ['FOREMAN_CODE_APP_MCP_DIRECTORY', 'GRAPHQL_APP_MCP_DIRECTORY']) {
+  test(`preserves ${name} provenance while native route writes use owned storage`, async () => {
+    await fixture(async source => {
+      const original = join(source.HOME, 'source-mcp')
+      source[name] = original
+      let owned
+      await withNativeAcceptanceStorage(source, async environment => {
+        owned = environment.FOREMAN_CODE_NATIVE_TEST_ROOT
+        assert.equal(environment.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY, original)
+        assert.equal(readProductEnvironment(environment, 'APP_MCP_DIRECTORY'), join(owned, 'app-mcp'))
+        assert.equal(environment.GRAPHQL_APP_MCP_DIRECTORY, undefined)
+        assert.equal(source[name], original)
+      })
+      await assert.rejects(access(owned), { code: 'ENOENT' })
+      await assert.rejects(access(original), { code: 'ENOENT' })
+    })
+  })
+}
 
 test('failed native operations remove their storage and preserve the original failure', async () => {
   await fixture(async source => {

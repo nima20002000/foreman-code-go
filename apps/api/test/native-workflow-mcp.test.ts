@@ -30,13 +30,16 @@ vi.mock('../src/modules/harnesses/openCodeMcpConnections.js', () => ({
   },
 }))
 
-it.each([
+const storageFixtures = [
   { name: 'graphql', token: 'GRAPHQL_MCP_TOKEN' },
   { name: 'foreman-code', token: 'FOREMAN_CODE_MCP_TOKEN' },
-])('keeps the verified $token reference when configuring an owned workflow launcher', async (identity) => {
+].flatMap(identity => ['direct', 'isolated'].map(storage => ({ ...identity, storage })))
+
+it.each(storageFixtures)('keeps the verified $token reference in $storage native storage', async (identity) => {
   const directory = await mkdtemp(join(tmpdir(), 'native-workflow-source-'))
   const previousHome = process.env.CODEX_HOME
   const previousLauncherDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
+  const previousSourceLauncher = process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
   let restore: (() => Promise<void>) | undefined
   try {
     const home = join(directory, 'source-home')
@@ -49,6 +52,13 @@ it.each([
     source.name = identity.name
     source.token = identity.token
     source.command = [process.execPath, appLauncherPath()]
+    if (identity.storage === 'isolated') {
+      process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
+      process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'outer-storage-mcp')
+    } else {
+      delete process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
+    }
+    const restoredLauncherDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
 
     restore = await configureNativeWorkflowMcp({ projectDirectory,
       runtimeDirectory: join(directory, 'runtime'), codexBinary: 'recorded', openCodeBinary: 'recorded' })
@@ -65,7 +75,7 @@ it.each([
     await restore()
     restore = undefined
     expect(process.env.CODEX_HOME).toBe(home)
-    expect(process.env.FOREMAN_CODE_APP_MCP_DIRECTORY).toBe(join(directory, 'source-launcher'))
+    expect(process.env.FOREMAN_CODE_APP_MCP_DIRECTORY).toBe(restoredLauncherDirectory)
     await expect(access(ownedHome)).rejects.toMatchObject({ code: 'ENOENT' })
   } finally {
     try { await restore?.() }
@@ -74,6 +84,8 @@ it.each([
       else process.env.CODEX_HOME = previousHome
       if (previousLauncherDirectory === undefined) delete process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
       else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previousLauncherDirectory
+      if (previousSourceLauncher === undefined) delete process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
+      else process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY = previousSourceLauncher
       await rm(directory, { recursive: true, force: true })
     }
   }
