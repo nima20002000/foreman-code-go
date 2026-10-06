@@ -200,12 +200,15 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
       ...(conversationId ? { attachments: [] } : {}),
     })
     const id = result.state.conversation!.id
-    await until(async () => {
+    try {
+      await until(async () => issued.length === previous + 1, 10000)
+    } catch (error) {
       const state = await chat.current!.readConversation(owner.principal, seeded.scope.workspaceId, id)
-      expect(state.sessionState, state.turns.find(turn => turn.requestId === requestId)?.error?.message
-        ?? state.availability.message).not.toBe('error')
-      return issued.length === previous + 1
-    }, 10000)
+      const turn = state.turns.find(turn => turn.requestId === requestId)
+      const details = { sessionState: state.sessionState, availability: state.availability,
+        delivery: turn?.delivery, error: turn?.error }
+      throw new Error(`Inherited-file credential delivery failed: ${JSON.stringify(details)}`, { cause: error })
+    }
     const active = issued.at(-1)!
     if (harness === 'opencode') {
       const native = nativeServer()
