@@ -278,7 +278,12 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
     await connectClients()
     const tool = async (name: string, args: Record<string, unknown>) => {
       const result = await client!.callTool({ name, arguments: args }, { timeout: 180000 })
-      assert.ok(!result.isError, `Product tool ${name} failed.`)
+      if (result.isError) {
+        const content = result.content.find(value => value.type === 'text')
+        const failure = content?.type === 'text'
+          ? JSON.parse(content.text) as { error?: { code?: string; message?: string } } : {}
+        throw new Error(`Product tool ${name} failed: ${failure.error?.code ?? 'UNKNOWN'}: ${failure.error?.message ?? 'No public error message.'}`)
+      }
       return result.structuredContent
     }
     const deniedTool = (name: string, args: Record<string, unknown>) =>

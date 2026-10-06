@@ -14,7 +14,7 @@ export async function sessionControlsWeb(input: { root: string; baseUrl: string;
     '../../../../scripts/acceptance/session-control-web.mjs', import.meta.url)), input.root], {
     env: environment, stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
   })
-  child.stderr.pipe(process.stderr)
+  child.stderr?.pipe(process.stderr)
   let exit: number | null | undefined
   const closed = new Promise<void>((done, fail) => {
     child.once('error', fail)
