@@ -148,7 +148,6 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   get ownerAgentId(): string { return this.options.ownerAgentId }
-  get nativePid(): number | undefined { return this.child?.pid }
   get ownedSessionRoot(): string | undefined { return this.conversationStorage?.owned }
   bindFileConversation(conversationId: string): void {
     if (this.conversationId === conversationId) return
