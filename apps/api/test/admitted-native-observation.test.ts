@@ -21,12 +21,18 @@ it('forwards observation attachment and retains history/cancel access without ne
   expect(attach).toHaveBeenCalledWith(session, start, undefined)
   expect(await manager.history(session)).toEqual({ events: [], pendingInteractions: [] })
   expect(await manager.cancel(session)).toBe(true)
-  await expect(manager.createSession(start)).rejects.toMatchObject({ code: 'HARNESS_OBSERVATION_ONLY' })
+  await expect(manager.createSession(start)).rejects.toMatchObject({
+    operation: 'session_creation', delivery: 'not_sent',
+    result: { outcome: 'failed', error: { code: 'HARNESS_OBSERVATION_ONLY' } },
+  })
   await expect(manager.attachSession(session, start)).rejects.toMatchObject({ code: 'HARNESS_OBSERVATION_ONLY' })
   await expect(manager.respond(session, 'approval', OPENCODE_APPROVAL_OPTIONS_FIXTURE[0]!))
     .rejects.toMatchObject({ code: 'HARNESS_OBSERVATION_ONLY' })
   const turn = manager.startTurn(session, { prompt: 'More work', clientCorrelationId: 'new-request' })
-  await expect(turn[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'HARNESS_OBSERVATION_ONLY' })
+  await expect(turn[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+    operation: 'turn_submission', delivery: 'not_sent',
+    result: { outcome: 'failed', error: { code: 'HARNESS_OBSERVATION_ONLY' } },
+  })
   expect(create).not.toHaveBeenCalled()
   expect(respond).not.toHaveBeenCalled()
   await manager.dispose?.()
