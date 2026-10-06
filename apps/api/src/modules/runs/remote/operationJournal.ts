@@ -20,6 +20,7 @@ import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordS
 import { JobNativeOwnerSchema, JobOCICertificateSchema, isPreparatoryVerificationOwner, type JobNativeOwner } from '../../jobs/executorJournal.js'
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, qualificationCleanupCommandAllowed,
+  QUALIFICATION_COMMAND_LIMIT, QUALIFICATION_CLEANUP_COMMAND_LIMIT,
   type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 
 const JournalSchema = z.object({ schemaVersion: z.literal(1), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptRecordSchema])),
@@ -313,7 +314,9 @@ export class RemoteOperationJournal {
       const permitted = qualificationCleanupCommandAllowed(receipt, input.binary, input.argv)
       if (!permitted || !['native_entry_attempted', 'uncertain'].includes(receipt.phase)
         || receipt.launches.some(value => !value.closed || value.launchId === input.launchId)
-        || receipt.launches.length >= 512) throw new Error('Original qualification cleanup reservation unavailable')
+        || receipt.launches.length >= QUALIFICATION_CLEANUP_COMMAND_LIMIT) {
+        throw new Error('Original qualification cleanup reservation unavailable')
+      }
       receipt.launches.push({ ...input, exit: null, closed: false })
       receipt.sequence++
       return receipt
@@ -323,7 +326,9 @@ export class RemoteOperationJournal {
     return this.change(data => {
       const receipt = this.qualificationReceipt(data, operationId)
       if (receipt.phase !== 'native_entry_attempted' || receipt.launches.some(value => value.launchId === input.launchId) ||
-        receipt.launches.some(value => !value.closed) || receipt.launches.length >= 512) throw new Error('Original qualification process reservation unavailable')
+        receipt.launches.some(value => !value.closed) || receipt.launches.length >= QUALIFICATION_COMMAND_LIMIT) {
+        throw new Error('Original qualification process reservation unavailable')
+      }
       receipt.launches.push({ ...input, exit: null, closed: false }); receipt.sequence++; return receipt
     })
   }

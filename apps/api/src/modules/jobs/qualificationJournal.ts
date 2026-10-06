@@ -3,6 +3,9 @@ import { isDeepStrictEqual } from 'node:util'
 import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordSchema, JobRuntimeQualificationResultRecordSchema }
   from '@foreman-code/contracts/job-verification-runtime'
 
+export const QUALIFICATION_COMMAND_LIMIT = 512
+export const QUALIFICATION_CLEANUP_COMMAND_LIMIT = QUALIFICATION_COMMAND_LIMIT + 16
+
 const process = z.object({ pid: z.number().int().positive(), startTicks: z.string().regex(/^\d+$/), bootId: z.uuid() }).strict()
 const boundary = z.object({ kind: z.literal('cgroup-v2'), path: z.string().startsWith('/sys/fs/cgroup/'),
   device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/) }).strict()
@@ -23,7 +26,7 @@ export const QualificationReceiptSchema = z.object({
   closedContainers: z.array(QualificationOCICertificateSchema).max(16).default([]),
   launches: z.array(z.object({ launchId: z.uuid(), binary: z.string().startsWith('/'), argv: z.array(z.string()).max(256),
     exit: z.object({ exitCode: z.number().int().min(0).max(255).nullable(), signal: z.string().nullable() }).strict().nullable(),
-    closed: z.boolean() }).strict()).max(512),
+    closed: z.boolean() }).strict()).max(QUALIFICATION_CLEANUP_COMMAND_LIMIT),
   container: z.object({ identity: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
     containerId: z.string().regex(/^[a-f0-9]{64}$/).nullable(), certificate: QualificationOCICertificateSchema.nullable() }).strict().nullable(),
 }).strict()

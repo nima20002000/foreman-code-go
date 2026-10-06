@@ -303,6 +303,37 @@ describe('actual qualification reservation seams with mocked native entry only',
     }
     expect(await admitted.native.close()).toBe(true)
   })
+  it('retains cleanup capacity after the diagnostic command budget is exhausted', async () => {
+    const f = await fixture()
+    const admitted = await reserveInstalledJobQualification(f.input)
+    const containerId = 'b'.repeat(64)
+    const identity = `graphql-ci-qualification-${id}`
+    await admitted.ownership.reserveContainerIntent(identity, f.admission.fingerprintDigest)
+    await admitted.ownership.bindContainer(identity, containerId)
+    await admitted.ownership.publish({ scope: admitted.ownership.scope, containerId,
+      process: { pid: 42, startTicks: '123', bootId: f.admission.bootId },
+      boundary: { kind: 'cgroup-v2', path: `/sys/fs/cgroup/libpod-${containerId}.scope`, device: '1', inode: '2' },
+      helpers: [], lifecycle: 'closed' })
+    await f.journal.close()
+    const persisted = JSON.parse(await readFile(f.path, 'utf8'))
+    const launches = Array.from({ length: 512 }, () => ({ launchId: randomUUID(), binary: process.execPath,
+      argv: ['--remote=false', 'container', 'inspect', containerId], exit: { exitCode: 0, signal: null }, closed: true }))
+    persisted.qualificationReceipts[0].launches = launches
+    await writeFile(f.path, JSON.stringify(persisted))
+    const journal = await RemoteOperationJournal.open(f.path)
+    journals.push(journal)
+    await expect(journal.qualificationReserveProcess(id, { launchId: randomUUID(), binary: process.execPath,
+      argv: ['--remote=false', 'info'] })).rejects.toThrow('reservation unavailable')
+    const recovered = await reserveInstalledJobQualification({ ...f.input, journal, entry: 'reconcile' })
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const launchId = await recovered.native.reserveCleanupProcess!(process.execPath,
+        ['--remote=false', 'container', 'exists', containerId])
+      expect(await recovered.native.stopProcess(launchId)).toBe(true)
+    }
+    await expect(recovered.native.reserveCleanupProcess!(process.execPath,
+      ['--remote=false', 'container', 'exists', containerId])).rejects.toThrow('reservation unavailable')
+    expect((await journal.qualificationStatus(id))?.launches.slice(0, 512)).toEqual(launches)
+  })
   it('container identity/certificate and positive closure persist on the same journal', async () => {
     const f = await fixture(), admitted = await reserveInstalledJobQualification(f.input), ownership = admitted.ownership
     const identity = `graphql-ci-qualification-${id}`, containerId = 'b'.repeat(64)
