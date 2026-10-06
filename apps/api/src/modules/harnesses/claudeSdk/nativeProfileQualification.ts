@@ -33,12 +33,21 @@ export async function qualifyClaudeNativeProfile(input: {
   if (!binary) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The exact Claude executable is unavailable.', 409)
   await mkdir(input.directory, { recursive: true, mode: 0o700 })
   const directory = await mkdtemp(join(input.directory, 'claude-profile-'))
-  const cwd = join(directory, 'work'), outside = join(directory, 'outside.txt')
+  const cwd = join(directory, 'work')
+  const commonGitDirectory = join(directory, 'source.git')
+  const outside = join(configuration.sandbox === 'read-only' ? commonGitDirectory : directory, 'outside.txt')
   const denied = join(configuration.sandbox === 'read-only' ? cwd : directory, 'denied.txt')
   const readable = join(cwd, 'readable.txt')
   const inside = join(cwd, 'shell-write.txt')
   const readMarker = `OWNED_READ_${randomUUID()}`
   await mkdir(cwd, { mode: 0o700 }); await mkdir(join(cwd, '.claude'), { mode: 0o700 })
+  if (configuration.sandbox === 'read-only') {
+    const gitDirectory = join(commonGitDirectory, 'worktrees', 'qualification')
+    await mkdir(gitDirectory, { recursive: true, mode: 0o700 })
+    await writeFile(join(cwd, '.git'), `gitdir: ${gitDirectory}\n`, { mode: 0o600 })
+    await writeFile(join(gitDirectory, 'gitdir'), `${join(cwd, '.git')}\n`, { mode: 0o600 })
+    await writeFile(join(gitDirectory, 'commondir'), '../..\n', { mode: 0o600 })
+  }
   await writeFile(readable, readMarker, { mode: 0o600 })
   if (configuration.sandbox === 'read-only') await writeFile(denied, 'READ_DENIED', { mode: 0o600 })
   // An owned project sentinel verifies that ambient settings/hooks are excluded.

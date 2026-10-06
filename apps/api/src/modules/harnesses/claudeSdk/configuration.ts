@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { ClaudeHarnessConfigurationSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { inheritedAgentEnvironment } from '../secrets.js'
 import { HarnessExecutionError } from '../errors.js'
-import { claudeToolRespectsSandbox } from './readOnlyPolicy.js'
+import { claudeReadOnlyWritePaths, claudeToolRespectsSandbox } from './readOnlyPolicy.js'
 import type { SandboxSettings } from '@anthropic-ai/claude-agent-sdk'
 
 /** Only the existing HRT repository/producer supplies this exact accepted host-profile proof. */
@@ -91,7 +91,7 @@ export function compileClaudeConfiguration(raw: unknown, cwd: string, qualificat
   return { ...claudeCandidateConfiguration(configuration, cwd, source, apiKey), qualification: capabilities }
 }
 
-/** Pure policy translation shared by owned qualification and admitted runtime.
+/** Policy translation shared by owned qualification and admitted runtime.
  * This does not allocate a manager or grant production admission. */
 export function claudeCandidateConfiguration(configuration: ClaudeHarnessConfiguration, cwd: string,
   source: NodeJS.ProcessEnv = process.env, apiKey?: string): Omit<ClaudeCompiledConfiguration, 'qualification'> {
@@ -104,13 +104,14 @@ export function claudeCandidateConfiguration(configuration: ClaudeHarnessConfigu
     ...configuration.permissionRules.filter((rule) => rule.effect === 'deny').map((rule) => rule.tool),
     ...configuration.tools.filter(tool => !claudeToolRespectsSandbox(configuration, tool)),
   ])]
+  const env = claudeEnvironment(configuration, source, apiKey)
   return { configuration: structuredClone(configuration), cwd, model: configuration.model, permissionMode: 'default',
     ...(configuration.effort ? { effort: configuration.effort } : {}),
     tools, allowedTools, disallowedTools, strictMcpConfig: true, settingSources: [], systemPrompt: configuration.instructions,
-    mcpServers: structuredClone(configuration.mcpServers), env: claudeEnvironment(configuration, source, apiKey),
+    mcpServers: structuredClone(configuration.mcpServers), env,
     sandbox: { enabled: configuration.sandbox !== 'danger-full-access', autoAllowBashIfSandboxed: false,
       allowUnsandboxedCommands: false,
       ...(configuration.sandbox !== 'danger-full-access' ? { failIfUnavailable: true } : {}),
-      ...(configuration.sandbox === 'read-only' ? { filesystem: { denyWrite: ['/'] } } : {}),
+      ...(configuration.sandbox === 'read-only' ? { filesystem: { denyWrite: claudeReadOnlyWritePaths(cwd, env) } } : {}),
     } }
 }

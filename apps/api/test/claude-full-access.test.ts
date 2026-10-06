@@ -1,4 +1,7 @@
 import { expect, it } from 'vitest'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { CLAUDE_QUALIFICATION_CHECKS } from '@foreman-code/contracts/claude-qualification'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { compileClaudeConfiguration, type ClaudePolicyQualification } from '../src/modules/harnesses/claudeSdk/configuration.js'
@@ -57,9 +60,44 @@ it('denies native read-only writes even when the saved tool rule allows them', (
   expect(compiled.tools).toEqual(['Read', 'Bash'])
   expect(compiled.allowedTools).not.toContain('Write')
   expect(compiled.disallowedTools).toEqual(['Write', 'Edit', 'NotebookEdit'])
-  expect(compiled.sandbox.filesystem).toEqual({ denyWrite: ['/'] })
+  const userTemporaryDirectory = `claude-${process.getuid?.() ?? 0}`
+  expect(compiled.sandbox.filesystem?.denyWrite).toEqual([...new Set([
+    '/fixture/work', '~/.npm/_logs', '~/.claude/debug', '/tmp/claude', '/private/tmp/claude',
+    join('/tmp', userTemporaryDirectory), join('/private/tmp', userTemporaryDirectory),
+    join(tmpdir(), userTemporaryDirectory),
+  ])])
   expect(compiled.configuration).toEqual(f.configuration)
   expect(f.configuration.permissionRules).toContainEqual({ tool: 'Write', effect: 'allow' })
+})
+
+it('keeps a relocated native temporary directory read-only without allowing additional writes', () => {
+  const f = fixture('read-only')
+  const compiled = compileClaudeConfiguration(f.configuration, '/fixture/work', f.qualification,
+    { TMPDIR: '/fixture/temporary' })
+  expect(compiled.sandbox.filesystem?.denyWrite).toContain(
+    `/fixture/temporary/claude-${process.getuid?.() ?? 0}`,
+  )
+  expect(compiled.sandbox.filesystem?.allowWrite).toBeUndefined()
+  expect(compiled.sandbox.allowUnsandboxedCommands).toBe(false)
+})
+
+it('denies the shared repository write mount when executing in a Git worktree', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'claude-read-only-'))
+  try {
+    const cwd = join(directory, 'work')
+    const commonDirectory = join(directory, 'source.git')
+    const gitDirectory = join(commonDirectory, 'worktrees', 'agent')
+    await mkdir(cwd)
+    await mkdir(gitDirectory, { recursive: true })
+    await writeFile(join(cwd, '.git'), 'gitdir: ../source.git/worktrees/agent\n')
+    const f = fixture('read-only')
+    const compiled = compileClaudeConfiguration(f.configuration, cwd, f.qualification, {})
+    expect(compiled.sandbox.filesystem?.denyWrite).toContain(commonDirectory)
+    expect(compiled.sandbox.filesystem?.denyWrite).toContain(cwd)
+    expect(compiled.sandbox.filesystem?.allowWrite).toBeUndefined()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 it('rejects read-only execution when only full-access policy was proved', () => {
