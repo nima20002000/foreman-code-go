@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.38] - 2026-10-06
+
+### Fixed
+
+- Restore interrupted heavy-job slot records from their acquired queue tickets, preserving capacity for unresolved native work while allowing later jobs to use free slots.
+- Keep existing process and token ownership checks intact. Cover a lost coordinator with a live child process and mixed scheduler versions, with owned process and filesystem cleanup.
+
 ## [0.0.37] - 2026-10-06
 
 ### Added
