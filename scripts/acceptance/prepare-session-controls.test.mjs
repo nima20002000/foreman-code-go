@@ -34,7 +34,7 @@ function fixture() {
       profileCheckRequest: {}, compactionInputs: ['Context-building input'], restartRecovery: [] })
   }
   const input = { expectedIdentity: identity, baseUrl: 'http://127.0.0.1:4100', sourceCommit: 'c'.repeat(40),
-    tokenEnv: 'OWNER_TOKEN', deniedTokenEnv: 'READER_TOKEN', subjects,
+    mcpTokenEnv: 'WRITER_MCP_TOKEN', deniedMcpTokenEnv: 'READER_MCP_TOKEN', subjects,
     restart: { command: '/owned/fixture/restart', args: [] } }
   const original = { value: structuredClone(contracts.DEFAULT_AGENT_DEFAULTS), revision: 0, versionId: null }
   let defaults = structuredClone(original)
@@ -108,6 +108,8 @@ test('creates twelve distinct empty chats through the product tools and restores
   const matrix = await prepareSessionControlMatrix(f.input, f.ports)
   assert.equal(matrix.rows.length, 12)
   assert.equal(new Set(matrix.rows.map(row => row.conversationId)).size, 12)
+  assert.ok(matrix.rows.every(row => !Object.hasOwn(row, 'httpTokenEnv')))
+  assert.ok(matrix.rows.every(row => row.mcpTokenEnv === f.input.mcpTokenEnv))
   assert.equal(f.calls.filter(call => call.name === 'operator_chat_create').length, 6)
   assert.equal(f.calls.filter(call => call.name === 'agent_chat_controls_update').length, 12)
   assert.equal(f.calls.some(call => call.name.endsWith('_send') || call.name === 'run_start'), false)

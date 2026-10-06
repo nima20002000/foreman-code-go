@@ -40,16 +40,15 @@ function endpoint(row, suffix) {
     : `/api/workspaces/${encodeURIComponent(row.workspaceId)}/agent-chat/conversations/${encodeURIComponent(row.conversationId)}`
   return new URL(`${path}${suffix}`, base)
 }
-function headers(row) {
-  return sessionControlHeaders(matrix, row)
-}
-async function request(url, row, body) {
-  const response = await fetch(url, { headers: headers(row), ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
+const httpHeaders = sessionControlHeaders(matrix)
+async function request(url, body) {
+  const response = await fetch(url, { headers: httpHeaders, credentials: 'omit',
+    ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
     signal: AbortSignal.timeout(180000) })
   assert.ok(response.ok, `Application request failed: ${response.status}`)
   return response.json()
 }
-const read = row => request(endpoint(row, '/session-controls'), row)
+const read = row => request(endpoint(row, '/session-controls'))
 async function idle(row) {
   const deadline = Date.now() + 180000
   while (Date.now() < deadline) {
@@ -60,14 +59,14 @@ async function idle(row) {
   throw new Error('The native conversation did not become idle.')
 }
 async function transcript(row) {
-  if (row.role === 'operator') return request(endpoint(row, ''), row)
-  return request(new URL(row.readPath, base), row)
+  if (row.role === 'operator') return request(endpoint(row, ''))
+  return request(new URL(row.readPath, base))
 }
 function messages(value) { return value.state?.messages ?? value.messages }
 async function send(row, content, sessionMode) {
   const input = { ...row.sendRequest, requestId: randomUUID(), content,
     ...(sessionMode ? { sessionMode } : {}) }
-  const accepted = await request(new URL(row.sendPath, base), row, input)
+  const accepted = await request(new URL(row.sendPath, base), input)
   await idle(row)
   return { input, accepted }
 }
@@ -82,7 +81,7 @@ async function settled(row, requestId) {
 }
 async function update(row, input) {
   const state = await read(row)
-  return request(endpoint(row, '/session-controls'), row, { ...input,
+  return request(endpoint(row, '/session-controls'), { ...input,
     requestId: randomUUID(), expectedRevision: state.revision })
 }
 async function restart(row) {
@@ -116,7 +115,7 @@ async function restartUnsettled(row, scenario) {
   // It reads the native request journal; it does not substitute provider responses or SDK methods.
   await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'arm')
   const lost = new AbortController()
-  const submission = fetch(endpoint(row, '/session-controls'), { method: 'POST', headers: headers(row),
+  const submission = fetch(endpoint(row, '/session-controls'), { method: 'POST', headers: httpHeaders, credentials: 'omit',
     body: JSON.stringify(input), signal: lost.signal }).catch(error => {
     if (!lost.signal.aborted) throw error
   })
@@ -142,7 +141,7 @@ async function restartUnsettled(row, scenario) {
   const observed = await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'settled')
   assert.equal(observed.dispatchCount, 1, 'Read-only recovery dispatched compaction again.')
   assert.equal(observed.terminalStatus, scenario.expectedStatus)
-  const replay = await request(endpoint(row, '/session-controls'), row, input)
+  const replay = await request(endpoint(row, '/session-controls'), input)
   assert.equal(replay.compaction.requestId, input.requestId)
   assert.equal(replay.compactions.filter(compaction => compaction.requestId === input.requestId).length, 1)
   const afterReplay = await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'settled')
@@ -164,7 +163,7 @@ async function preferences(row, desired) {
 }
 async function checkedProfile(row) {
   assert.ok(row.profileCheckRequest, 'Supply an explicitly authorized qualification request for this actual profile.')
-  const checked = await request(new URL('/api/management/harness-instances/check', base), row,
+  const checked = await request(new URL('/api/management/harness-instances/check', base),
     { ...row.profileCheckRequest, commandId: randomUUID() })
   assert.equal(checked.value.instanceId, row.nativeProfile)
   assert.equal(checked.value.target.hostRef.kind, row.hostKind)
@@ -185,7 +184,7 @@ async function freshControls(row) {
   assert.deepEqual(configured.desired, desired, 'Fresh preference admission did not persist.')
   assert.deepEqual(messages(await transcript(row)), [], 'Preference admission submitted a model message.')
   const command = { kind: 'compact', requestId: randomUUID(), expectedRevision: configured.revision }
-  const admitted = await request(endpoint(row, '/session-controls'), row, command)
+  const admitted = await request(endpoint(row, '/session-controls'), command)
   assert.equal(admitted.compaction?.requestId, command.requestId, 'Fresh compact was not durably admitted.')
   const compacted = await settled(row, command.requestId)
   // An empty provider session may report nothing to compact or a native refusal.
@@ -211,7 +210,7 @@ for (const row of matrix.rows) {
   const fresh = await freshControls(row)
   assert.ok(Array.isArray(row.compactionInputs) && row.compactionInputs.length, 'Supply native context-building messages.')
   const marker = randomUUID()
-  const beforeRun = row.runReadPath ? await request(new URL(row.runReadPath, base), row) : null
+  const beforeRun = row.runReadPath ? await request(new URL(row.runReadPath, base)) : null
   const normal = await send(row, `Remember this session marker and repeat it exactly once: ${marker}`)
   if (fresh.compacted.nativeSessionId) {
     assert.equal((await read(row)).nativeSessionId, fresh.compacted.nativeSessionId,
@@ -226,7 +225,7 @@ for (const row of matrix.rows) {
   assert.equal(before.capabilities.plan.supported, true)
   const beforeTranscript = messages(await transcript(row))
   const command = { kind: 'compact', requestId: randomUUID(), expectedRevision: before.revision }
-  let compacted = await request(endpoint(row, '/session-controls'), row, command)
+  let compacted = await request(endpoint(row, '/session-controls'), command)
   if (['accepted', 'running', 'uncertain'].includes(compacted.compaction?.status)) {
     const deadline = Date.now() + 180000
     do {
@@ -238,29 +237,29 @@ for (const row of matrix.rows) {
   assert.equal(compacted.compaction?.status, 'completed', 'The native session must produce a manual compaction boundary.')
   assert.equal(compacted.compaction.requestId, command.requestId)
   assert.equal(compacted.nativeSessionId, before.nativeSessionId)
-  const replay = await request(endpoint(row, '/session-controls'), row, command)
+  const replay = await request(endpoint(row, '/session-controls'), command)
   assert.equal(replay.compaction.requestId, command.requestId)
   assert.deepEqual(messages(await transcript(row)), beforeTranscript, 'Compaction changed application message history.')
   const turnCount = messages(await transcript(row)).length
-  const planned = await request(endpoint(row, '/session-controls'), row, {
+  const planned = await request(endpoint(row, '/session-controls'), {
     kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: replay.revision,
   })
   assert.equal(planned.desiredMode, 'plan')
   assert.equal(messages(await transcript(row)).length, turnCount, 'Bare Plan created a model message.')
   const task = await send(row, '/plan Describe a short read-only inspection plan. Do not modify files.', 'plan')
-  const duplicate = await request(new URL(row.sendPath, base), row, task.input)
+  const duplicate = await request(new URL(row.sendPath, base), task.input)
   assert.equal(duplicate.replayed, true)
   const afterPlan = await idle(row)
   assert.equal(afterPlan.appliedMode, 'plan', 'The native Plan control was not acknowledged before the task.')
   assert.equal(messages(await transcript(row)).filter(message => message.requestId === task.input.requestId && message.role === 'user').length, 1)
-  const exited = await request(endpoint(row, '/session-controls'), row, {
+  const exited = await request(endpoint(row, '/session-controls'), {
     kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: afterPlan.revision,
   })
   assert.equal(exited.desiredMode, 'regular')
   await send(row, 'Reply with only the session marker from the earlier message.')
   const reply = messages(await transcript(row)).filter(message => message.role === 'assistant').at(-1)
   assert.ok(reply?.content.includes(marker), 'The follow-up did not retain the prior session context.')
-  if (beforeRun) assert.deepEqual(await request(new URL(row.runReadPath, base), row), beforeRun, 'Chat controls changed the selected Run.')
+  if (beforeRun) assert.deepEqual(await request(new URL(row.runReadPath, base)), beforeRun, 'Chat controls changed the selected Run.')
   let desired = (await idle(row)).desired
   if (row.harness === 'codex') {
     const controls = await read(row)
@@ -294,7 +293,7 @@ for (const row of matrix.rows) {
   }
   await update(row, { kind: 'save-default', preferences: desired })
   assert.ok(row.futureDefaultsReadPath, 'Supply an uninitialized future-chat defaults read path in this scope.')
-  assert.deepEqual((await request(new URL(row.futureDefaultsReadPath, base), row)).desired, desired)
+  assert.deepEqual((await request(new URL(row.futureDefaultsReadPath, base))).desired, desired)
   const restartBefore = await idle(row)
   await restart(row)
   assert.deepEqual((await read(row)).desired, restartBefore.desired)

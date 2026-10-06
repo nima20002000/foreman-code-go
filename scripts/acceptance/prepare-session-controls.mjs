@@ -76,8 +76,8 @@ export async function prepareSessionControlMatrix(input, { contracts, agentChat,
       assert.deepEqual(saved.version.harnessProfileSelection, subject.operatorDefaults.harnessProfileSelection)
       const { agent: selectedNode, ...details } = subject
       delete details.operatorDefaults
-      const common = { ...details, httpTokenEnv: input.tokenEnv, mcpTokenEnv: input.tokenEnv,
-        deniedMcpTokenEnv: input.deniedTokenEnv }
+      const common = { ...details, mcpTokenEnv: input.mcpTokenEnv,
+        deniedMcpTokenEnv: input.deniedMcpTokenEnv }
       rows.push({ ...common, role: 'operator', conversationId: created.id,
         sendPath: `/api/operator/conversations/${encodeURIComponent(created.id)}/messages`,
         sendRequest: { configurationVersionId: created.operatorConfigurationVersionId } })
@@ -116,16 +116,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const agentChat = await import(new URL('../../packages/contracts/dist/agentChat.js', import.meta.url))
   const management = await import(new URL('../../packages/contracts/dist/management/index.js', import.meta.url))
   const { Client, StreamableHTTPClientTransport } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/client')).href)
-  const headers = sessionControlHeaders(input, { httpTokenEnv: input.tokenEnv })
+  const headers = sessionControlHeaders(input)
   const read = async path => {
-    const response = await fetch(new URL(path, base), { headers, signal: AbortSignal.timeout(180000) })
+    const response = await fetch(new URL(path, base), { headers, credentials: 'omit',
+      signal: AbortSignal.timeout(180000) })
     assert.ok(response.ok, `Product read failed: ${response.status}`)
     return response.json()
   }
   const client = new Client({ name: 'Foreman Code native session controls preparation', version: '1' })
   try {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', base), {
-      authProvider: { token: async () => process.env[input.tokenEnv] },
+      authProvider: { token: async () => process.env[input.mcpTokenEnv] },
     }))
     const matrix = await prepareSessionControlMatrix(input, { contracts, agentChat, management,
       identity: await read('/health/identity'), read, tool: async (name, args) => {

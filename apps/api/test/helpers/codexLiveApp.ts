@@ -7,6 +7,7 @@ import { DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
 import { buildApp } from '../../src/app.js'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
+import { PostgresLocalHumanAccess } from '../../src/modules/access/localHuman.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { OperatorChatService } from '../../src/modules/conversations/operatorChat.js'
 import { PostgresOperatorChatAuthority } from '../../src/modules/conversations/operatorChatAuthority.js'
@@ -77,13 +78,8 @@ export async function createCodexLiveApplication(binary: string, directory: stri
     }
     process.env.CODEX_HOME = profile
     const access = new PostgresAccessService(pool)
-    const owner = await access.issue({ name: 'Native lifecycle acceptance owner', audience: 'operator',
-      grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel',
-        'operator_chat:respond', 'harnesses:read'], scope: {} }],
-      expiresAt: new Date(Date.now() + 600_000) })
-    const installer = await access.issue({ name: 'Native acceptance MCP installer', audience: 'operator',
-      grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }],
-      expiresAt: new Date(Date.now() + 600_000) })
+    const localHuman = new PostgresLocalHumanAccess(pool, access)
+    const owner = await localHuman.current()
     const operators = new PostgresOperatorRepository(pool)
     const initial = await operators.ensure()
     const configured = await operators.update({ harness: 'codex', model: process.env.CODEX_MODEL ?? 'gpt-5.6-luna',
@@ -93,23 +89,23 @@ export async function createCodexLiveApplication(binary: string, directory: stri
     app = buildApp({ readiness: {
       database: { ping: async () => { await pool.query('select 1') } },
       checkpoints: { ping: async () => undefined },
-    }, operator: { access, services } })
+    }, localHuman, operator: { access, services } })
     const endpoint = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp`
     settings = new HarnessMcpSettingsService(pool, services.commands, {
       codex: new CodexMcpConnections(binary, directory),
       opencode: new OpenCodeMcpConnections(process.env.OPENCODE_BINARY ?? 'opencode', directory),
     }, () => {}, async () => {}, endpoint)
-    const before = await settings.list(installer.principal, 'codex')
-    const installed = await settings.applyManaged(installer.principal, { harness: 'codex', preset: 'graphql',
+    const before = await settings.list(owner, 'codex')
+    const installed = await settings.applyManaged(owner, { harness: 'codex', preset: 'graphql',
       installed: true, expectedRevision: before.revision, commandId: randomUUID() })
     if (installed.status !== 'applied') throw new Error(installed.error ?? 'Native App MCP installation did not settle.')
-    const configuredMcp = await settings.list(installer.principal, 'codex')
+    const configuredMcp = await settings.list(owner, 'codex')
     if (configuredMcp.presets?.graphql === 'disabled') {
-      const enabled = await settings.applyManaged(installer.principal, { harness: 'codex', preset: 'graphql',
+      const enabled = await settings.applyManaged(owner, { harness: 'codex', preset: 'graphql',
         enabled: true, expectedRevision: configuredMcp.revision, commandId: randomUUID() })
       if (enabled.status !== 'applied') throw new Error(enabled.error ?? 'Native App MCP enabling did not settle.')
     }
-    if ((await settings.list(installer.principal, 'codex')).presets?.graphql !== 'installed') {
+    if ((await settings.list(owner, 'codex')).presets?.graphql !== 'installed') {
       throw new Error('The managed native App MCP connection is not installed and enabled.')
     }
     const manager = new CodexAppServerSessionManager(binary)
@@ -121,10 +117,10 @@ export async function createCodexLiveApplication(binary: string, directory: stri
     chat = new OperatorChatService(new PostgresOperatorConversationRepository(pool), operators,
       () => manager, directory, authority)
     services.operatorChat = chat
-    const conversation = await chat.create(owner.principal)
+    const conversation = await chat.create(owner)
     conversationId = conversation.id
     const environment = await authority.prepare(manager, configured.configuration, conversation.id,
-      owner.principal.id, signal)
+      owner.id, signal)
     const input: OperatorNativeSessionStart = { kind: 'operator',
       configuration: configured.configuration, workingDirectory: directory,
       correlationId: `operator:${conversation.id}:native-lifecycle`, environment }

@@ -23,9 +23,10 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
     const scratch = await mkdtemp(join(tmpdir(), 'graphql-hap02-live-'))
     const marker = join(scratch, 'approved-command.txt')
     const signal = AbortSignal.timeout(230_000)
-    const application = await createCodexLiveApplication(binary, directory, signal)
-    const { manager, restored, input } = application
+    let application: Awaited<ReturnType<typeof createCodexLiveApplication>> | undefined
     try {
+      application = await createCodexLiveApplication(binary, directory, signal)
+      const { manager, restored, input } = application
       const evidence = await manager.qualificationEvidence(signal)
       assert.match(evidence.schemaManifestSha256, /^[a-f0-9]{64}$/)
       assert.match(evidence.referenceSchemaManifestSha256, /^[a-f0-9]{64}$/)
@@ -97,7 +98,7 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
 
       // Continued/reattached turns above cover the sole execution transport.
     } finally {
-      try { await application.close() }
+      try { await application?.close() }
       finally { await rm(scratch, { recursive: true, force: true }) }
     }
   }, 240_000)
