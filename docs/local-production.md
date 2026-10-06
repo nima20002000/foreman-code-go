@@ -172,6 +172,8 @@ profile foreman_code_claude_driver "/home/nima/.local/lib/graphql-production/rel
   allow umount,
   allow pivot_root,
   allow dbus,
+  # The SDK launches bwrap through a capability-free Bash wrapper.
+  allow ix /{usr/bin,bin}/bash,
   # Enter the provider-specific bootstrap before bwrap sets no-new-privs.
   priority=10 allow px /usr/bin/bwrap -> foreman_code_claude_bwrap,
   allow pix /** -> &unpriv_bwrap,
@@ -217,8 +219,8 @@ profile foreman_code_claude_seccomp flags=(attach_disconnected,mediate_deleted) 
 ```
 
 The initial profile attaches only to this user's installed Linux x64 SDK path.
-It grants no capabilities to the ordinary Claude process. Its explicit Bubblewrap
-transition establishes a provider-specific bootstrap boundary before Bubblewrap
+It grants no capabilities to the ordinary Claude process or its outer Bash wrapper.
+Its explicit Bubblewrap transition establishes a provider-specific bootstrap boundary before Bubblewrap
 sets no-new-privs. The bootstrap has the same namespace setup permissions as the
 distribution's Bubblewrap profile; it executes only the provider's quoted bootstrap
 before the embedded helper. The helper profile narrows capability permission to
