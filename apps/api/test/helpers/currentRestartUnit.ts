@@ -169,6 +169,8 @@ export function currentRestartUnit(reviewer = false) {
       assert.deepEqual(values, [execution.id, JSON.stringify(session)])
       state.finalized = true; state.finalizationWrites++; return result([{ execution_id: execution.id }])
     }
+    // Main-local executions have no device dispatch intent or native placement.
+    if (/from execution_dispatch_intents where execution_id=\$1/.test(q) || q.startsWith('select record from execution_native_placements where execution_id=$1')) return result([])
     throw new Error(`Unexpected current restart SQL: ${q}`)
   }
   const pool = { query, connect: async () => ({ query, release() {} }) } as unknown as pg.Pool

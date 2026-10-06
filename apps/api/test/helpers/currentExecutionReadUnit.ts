@@ -66,12 +66,24 @@ export function currentExecutionReadUnit(f: CurrentUnitSnapshot = currentUnitSna
     if (q.startsWith('select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.execution_state,')) {
       assert.deepEqual(values, [f.run.id]); return result([currentUnitRunRow(f)])
     }
+    if (q.startsWith('with pinned_version as materialized')) {
+      assert.deepEqual(values, [f.version.id, f.run.workspaceId, f.run.workflowId, Object.values(f.run.agentConfigurationVersionIds)])
+      return result([{ versions: [currentUnitVersionRow(f)], configurations: currentUnitConfigurationRows(f) }])
+    }
     if (q.startsWith('select id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record from workflow_versions')) {
       assert.deepEqual(values, [f.version.id, f.run.workspaceId, f.run.workflowId]); return result([currentUnitVersionRow(f)])
     }
     if (q.startsWith('select id,workspace_id,agent_id,version,record from agent_configuration_versions')) {
       assert.deepEqual(values, [f.run.workspaceId, Object.values(f.run.agentConfigurationVersionIds)])
       return result(currentUnitConfigurationRows(f))
+    }
+    if (q.startsWith('with pinned_head as materialized')) {
+      assert.deepEqual(values, [candidate.id, f.run.id])
+      const heads = state.head ? [{ protocol_version: 1 }] : []
+      const executions = heads.length ? [{ ...state.physical, record: state.execution, accepted: state.accepted,
+        input_json: canonicalGraphJson(bound.input), input_digest: bound.digest }] : []
+      const digest = state.effects.get('input.bind')
+      return result([{ heads, executions, effects: executions.length && digest ? [{ payload_digest: digest }] : [] }])
     }
     if (q === 'select protocol_version from run_graph_heads where run_id=$1 for share') {
       assert.deepEqual(values, [f.run.id]); return result(state.head ? [{ protocol_version: 1 }] : [])
@@ -103,6 +115,8 @@ export function currentExecutionReadUnit(f: CurrentUnitSnapshot = currentUnitSna
     if (q === 'select record from run_repeat_resolutions where run_id=$1 and occurrence_key=$2 and workflow_node_id=$3') {
       assert.deepEqual(values, [f.run.id, '', node.id]); return result(state.resolution ? [{ record: state.resolution }] : [])
     }
+    // Main-local executions have no device dispatch intent or native placement.
+    if (/from execution_dispatch_intents where execution_id=\$1/.test(q) || q.startsWith('select record from execution_native_placements where execution_id=$1')) return result([])
     throw new Error(`Unscripted current execution read SQL: ${q}`)
   }
   const connection = new ExclusiveGraphConnection({ query } as unknown as pg.ClientBase, () => undefined)

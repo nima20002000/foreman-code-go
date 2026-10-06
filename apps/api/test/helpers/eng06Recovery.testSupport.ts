@@ -51,6 +51,8 @@ export function recoveryDatabase(options: { bound?: boolean; detached?: boolean;
       if (text === 'commit') { state.active = false; state.commits++; return rows([]) }
       if (text === 'rollback') { state.active = false; state.rollbacks++; state.proof = savedProof; return rows([]) }
       if (text.startsWith('select phase from workflow_native_entries')) return rows([{ phase: state.entryPhase }])
+      // Main-local executions have no device dispatch intent or native placement.
+      if (/from execution_dispatch_intents where execution_id=\$1/.test(text) || text.startsWith('select record from execution_native_placements where execution_id=$1')) return rows([])
       if (text.includes('as semantics') && text.includes('as fenced')) return rows([{ semantics: state.semantics, fenced: state.fenced }])
       if (text.startsWith('select record from harness_executions')) {
         const record = values[0] === state.execution.id ? state.execution : state.others.get(String(values[0]))

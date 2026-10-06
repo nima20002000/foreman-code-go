@@ -575,6 +575,8 @@ export function createRepeatHarness(fixture = makeSimpleRepeatFixture()): Repeat
       } else if (q.startsWith('select record from run_repeat_decisions') || q.startsWith('select 1 from run_repeat_decisions')) {
         const record = state.decisions.get(v[0]!)
         if (record) rows = [{ record }]
+      } else if (/from execution_dispatch_intents where execution_id=\$1/.test(q) || q.startsWith('select record from execution_native_placements where execution_id=$1')) {
+        // Main-local executions have no device dispatch intent or native placement.
       } else {
         throw new Error(`Unscripted ENG04-D SQL: ${q}`)
       }

@@ -137,6 +137,7 @@ export function startSqlFixture() {
         return answer()
       }
       if (sql.startsWith('insert into management_audit')) { if (sql.includes("'succeeded'")) db.succeededAudit = true; return answer() }
+      if (/^\s*with pinned_version as materialized/.test(sql)) return answer([{ versions: [f.versionRow], configurations: f.configurations }])
       if (sql.includes('from workflow_versions where')) return answer([f.versionRow])
       if (sql.includes('from agent_configuration_versions where') || sql.includes('from agents a')) return answer(f.configurations)
       if (sql.includes('from workspaces where')) return answer([f.locationRow])

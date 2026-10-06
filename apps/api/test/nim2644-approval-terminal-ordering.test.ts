@@ -76,7 +76,7 @@ describe('NIM-2644 current native terminal / approval settlement ordering', () =
     const f = gateFixture()
     await f.check(); await f.check()
     expect(publication.currentRunGraphPublication).toHaveBeenCalled()
-    expect(f.model.calls.every(({ q }) => /^(select|begin|commit)\b/.test(q))).toBe(true)
+    expect(f.model.calls.every(({ q }) => /^(select|with|begin|commit)\b/.test(q) && !/\b(insert into|update \w+ set|delete from)\b/.test(q))).toBe(true)
     expect(f.model.calls.filter(({ q }) => q === 'commit')).toHaveLength(2)
     expect(f.model.calls.some(({ q }) => q.includes('from workflow_native_proofs'))).toBe(true)
     expect(f.model.calls.some(({ q }) => q.includes('join run_graph_sources s'))).toBe(true)

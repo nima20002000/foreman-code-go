@@ -75,6 +75,8 @@ export function nativeProofModel() {
       state.finalized = true; state.finalizedWrites += 1
       return result([{ execution_id: execution.id }])
     }
+    // Main-local executions have no device dispatch intent or native placement.
+    if (/from execution_dispatch_intents where execution_id=\$1/.test(text) || text.startsWith('select record from execution_native_placements where execution_id=$1')) return result([])
     throw new Error(`Unexpected model SQL: ${text}`)
   } }
   const connection = new ExclusiveGraphConnection(raw as unknown as pg.ClientBase, () => {
