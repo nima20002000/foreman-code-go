@@ -4,6 +4,7 @@ import { readProductEnvironment } from '@foreman-code/contracts/product-environm
 import { appMcpServerName } from '../appMcpLauncher.js'
 import { appMcpTokenEnvironment, isDatabaseCredentialVariable } from '../secrets.js'
 import { createClaudeEventNormalizer } from './normalization.js'
+import { agentInstructionBundle } from '../../skills/instructions.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../../subagents/nativeReadback.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -166,7 +167,15 @@ export function createClaudeNativeSessionManager(options: {
       throw new HarnessExecutionError('CLAUDE_ENVIRONMENT_INVALID',
         'The Claude environment cannot contain database credentials.')
     }
-    return { ...options.sdkOptions, env: appMcpTokenEnvironment(environment) }
+    const instructions = agentInstructionBundle(start.kind === 'operator' ? start.configuration : start.request.configuration)
+    if (!instructions) return { ...options.sdkOptions, env: appMcpTokenEnvironment(environment) }
+    const base = options.sdkOptions.systemPrompt
+    if (base !== undefined && typeof base !== 'string') {
+      throw new HarnessExecutionError('CLAUDE_SYSTEM_PROMPT_UNSUPPORTED',
+        'Persistent Agent instructions require a string SDK system prompt.')
+    }
+    return { ...options.sdkOptions, env: appMcpTokenEnvironment(environment),
+      systemPrompt: [base, instructions.text].filter(Boolean).join('\n\n') }
   }
   function qualified(capability: 'basicTurns' | 'resume' | 'fork' | 'history') {
     if (!options.qualification[capability]) throw new HarnessExecutionError('CLAUDE_CAPABILITY_UNQUALIFIED', `Claude ${capability} has not been qualified on the selected installation.`)

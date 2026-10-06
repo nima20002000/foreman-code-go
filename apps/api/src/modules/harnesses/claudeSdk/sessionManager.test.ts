@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import type { NativeSessionStart } from '../port.js'
 import type { HarnessExecutionRequest } from '@foreman-code/contracts'
 import { ClaudeBoundedQueue } from './queue.js'
@@ -43,6 +44,18 @@ function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionMana
     return value!
   } }
 }
+
+function workflowRequest(): HarnessExecutionRequest {
+  return { executionId: 'execution', runId: 'run', workspaceId: 'workspace',
+    workflowNodeId: 'node', workingDirectory: '/work', runtimeDirectory: '/runtime',
+    configuration: { id: 'config', workspaceId: 'workspace', agentId: 'agent', version: 1,
+      prompt: {}, assignedSkills: [], contentHash: 'recorded', createdAt: '2026-10-06T00:00:00.000Z',
+      harness: { harness: 'claude', model: 'recorded-model', authMode: 'subscription', configDirectory: '/profile-a',
+        permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [],
+        instructions: '', mcpServers: {} } }, initialPrompt: 'workflow notice',
+    executionContext: { parentRequest: null }, input: { first: 'one', second: 'two' } }
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason: unknown) => void
@@ -492,14 +505,7 @@ describe('Claude native session manager admission', () => {
 
   it('keeps the complete accepted workflow request through JSON readback', async () => {
     const f = fixture()
-    const request: HarnessExecutionRequest = { executionId: 'execution', runId: 'run', workspaceId: 'workspace',
-      workflowNodeId: 'node', workingDirectory: '/work', runtimeDirectory: '/runtime',
-      configuration: { id: 'config', workspaceId: 'workspace', agentId: 'agent', version: 1,
-        prompt: {}, assignedSkills: [], contentHash: 'recorded', createdAt: '2026-10-06T00:00:00.000Z',
-        harness: { harness: 'claude', model: 'recorded-model', authMode: 'subscription', configDirectory: '/profile-a',
-          permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [],
-          instructions: '', mcpServers: {} } }, initialPrompt: 'workflow notice',
-      executionContext: { parentRequest: null }, input: { first: 'one', second: 'two' } }
+    const request = workflowRequest()
     const workflow = { request, correlationId: 'execution:execution' }
     const readback = { correlationId: workflow.correlationId,
       request: { ...request, input: { second: 'two', first: 'one' } } }
@@ -528,6 +534,29 @@ describe('Claude native session manager admission', () => {
         .toThrow('another accepted scope')
       expect(f.queries).toHaveBeenCalledTimes(1)
       expect(f.offers).toHaveBeenCalledTimes(1)
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
+
+  it.each(['native-v1', 'legacy'] as const)('delivers pinned Agent instructions through the %s channel', async delivery => {
+    const f = fixture(undefined, { sdkOptions: { systemPrompt: 'Harness policy' } })
+    const request = workflowRequest()
+    const text = 'Follow the saved output format.'
+    request.configuration.prompt.system = 'Return one raw JSON object.'
+    request.configuration.assignedSkills = [{ skillId: 'format', version: '1' }]
+    request.configuration.resolvedSkills = [{ skillId: 'format', version: '1', name: 'Format', instructions: text,
+      contentHash: `sha256:${createHash('sha256').update(text).digest('hex')}` }]
+    if (delivery === 'native-v1') request.configuration.instructionDelivery = 'native-v1'
+    try {
+      await f.manager.prepareInspection({ request, correlationId: 'execution:execution' })
+      const options = f.queries.mock.calls[0]![0].options
+      if (delivery === 'native-v1') {
+        expect(options.systemPrompt).toBe('Harness policy\n\nReturn one raw JSON object.\n\n# Skill: Format (format@1)\n\n' + text)
+      } else {
+        expect(options.systemPrompt).toBe('Harness policy')
+      }
+      expect(f.offers).not.toHaveBeenCalled()
     } finally {
       await f.manager.dispose?.()
     }
