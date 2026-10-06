@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.35] - 2026-10-06
+
+### Fixed
+
+- Reclaim a heavy-job slot after its coordinator exits or its PID is reused and the published process group is empty, even when unrelated process environments cannot be read.
+- Retain slots with live detached token-bearing workers and preserve conservative handling of foreign, malformed, unreadable or incomplete ownership records.
+
 ## [0.0.34] - 2026-10-06
 
 ### Fixed
