@@ -1274,10 +1274,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (state.turn && !state.turn.terminalResult) {
         throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'A different owned turn is still active; recovery cannot replace it.')
       }
+      const active = statusBefore !== 'idle' || pendingInteractions.length > 0
       turn = {
         correlationId, messageID, promptHash: undefined, submitted: true, observing: false,
-        // A recovered idle prompt without a final answer is interrupted, not a new submission.
-        generation: this.generation - 1, submittedAt: 0, idleObserved: false,
+        // Active native work belongs to the verified resident; an idle unfinished prompt remains interrupted.
+        generation: active ? generation : generation - 1, submittedAt: 0, idleObserved: false,
         scopedError: undefined, terminalResult: undefined,
       }
       state.turn = turn
