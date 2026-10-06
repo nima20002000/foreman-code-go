@@ -165,7 +165,8 @@ export async function pairedWorkerApplication() {
         await waitForWorkerExit(workerClosed!, 10000)
         const processes = new NativeProcessRegistry(join(root, 'worker-home/.local/state/graphql-worker/workflow-native-processes'))
         for (const owner of new Set(processes.snapshot().launches.map(launch => launch.owner))) {
-          if (!await processes.closeOwner(owner)) throw new Error('The original Worker native processes remain unconfirmed.')
+          if (!await processes.closeOwner(owner)) throw new Error(
+            'The original Worker native processes remain unconfirmed.', { cause: error })
         }
         throw error
       }
@@ -291,7 +292,7 @@ export async function pairedWorkerApplication() {
       workerProfile: claudeProfile }
   } catch (error) {
     try { await close() } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], 'Paired native fixture setup and cleanup failed.', { cause: error })
+      throw new AggregateError([error, cleanupError], 'Paired native fixture setup and cleanup failed.', { cause: cleanupError })
     }
     throw error
   }
