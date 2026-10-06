@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSourceManifest, sourceSha256 } from '../sources/manifest.js'
-import { prepareVerificationQualificationSource, restoreVerificationQualificationSource, resetVerificationQualificationWorkload } from './verificationQualificationSource.js'
+import { prepareVerificationQualificationSource, restoreVerificationQualificationSource, resetVerificationQualificationWorkload, writeVerificationQualificationContext } from './verificationQualificationSource.js'
 
 const roots: string[] = []
 const run = promisify(execFile)
@@ -38,6 +38,24 @@ async function fixture(objectFormat: 'sha1' | 'sha256' = 'sha1') {
 }
 
 describe('approved verification snapshot and private Git preparation', () => {
+  it('atomically replaces a previous read-only context and refuses a substituted symlink', async () => {
+    const input = await fixture()
+    const directory = join(input.namespace, 'inputs')
+    await mkdir(directory, { mode: 0o700 })
+    const path = join(directory, 'qualification-context.json')
+    await writeVerificationQualificationContext(directory, '{"attempt":"install"}')
+    const first = await stat(path)
+    expect(first.mode & 0o777).toBe(0o444)
+    await writeVerificationQualificationContext(directory, '{"attempt":"timed_out"}')
+    expect(await readFile(path, 'utf8')).toBe('{"attempt":"timed_out"}')
+    expect((await stat(path)).mode & 0o777).toBe(0o444)
+    expect((await stat(path)).ino).not.toBe(first.ino)
+    expect(await readdir(directory)).toEqual(['qualification-context.json'])
+    await rm(path)
+    await symlink(join(input.directory, 'package.json'), path)
+    await expect(writeVerificationQualificationContext(directory, 'changed')).rejects.toThrow('private regular file')
+    expect(await readFile(join(input.directory, 'package.json'), 'utf8')).toBe('{"name":"approved"}\n')
+  })
   it('recreates a finalized cache before the next cold diagnostic and keeps only approved source', async () => {
     const input = await fixture()
     const source = await prepareVerificationQualificationSource(input)

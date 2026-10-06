@@ -21,7 +21,7 @@ import { podmanIsolationCreateArgv, ensureEmptyPodmanHooks } from './executorPod
 import { assertJobRuntimeEntryContext, jobQualificationFingerprint, runQualificationCommand,
   validateVerificationIsolationObservation, type JobQualificationAuthority }
   from './qualification.js'
-import { prepareVerificationQualificationSource, restoreVerificationQualificationSource, resetVerificationQualificationWorkload } from './verificationQualificationSource.js'
+import { prepareVerificationQualificationSource, restoreVerificationQualificationSource, resetVerificationQualificationWorkload, writeVerificationQualificationContext } from './verificationQualificationSource.js'
 import { JobProjectQuotaReadbackSchema, readVerificationQuotaPool, verifyJobQuotaOwnership,
   isKernelQuotaDenial, type JobQuotaReader } from './quotaOwnership.js'
 import { JOB_GIT_ENVIRONMENT } from './privateGitMounts.js'
@@ -316,9 +316,8 @@ export async function qualifyVerificationRuntime(input: {
       const materialization = materialize(context, verified)
       const reserve = await reserveVerificationReportSpace(qualificationExecution(candidate,
         { context, startedAt, materialization, terminal: { outcome: 'build_failed', exitCode: null, signal: null, finishedAt: startedAt } }))
-      const contextPath = join(inputRoot, 'qualification-context.json')
-      await writeFile(contextPath, JSON.stringify({ ...context,
-        measurement: { mutableDirectory: '/job-scratch', cgroupDirectory: '/sys/fs/cgroup' } }), { mode: 0o444 })
+      await writeVerificationQualificationContext(inputRoot, JSON.stringify({ ...context,
+        measurement: { mutableDirectory: '/job-scratch', cgroupDirectory: '/sys/fs/cgroup' } }))
       const execution = await podman(['exec', containerId, 'node', 'scripts/verify-repository.mjs',
         '--context', `/workspace/${JOB_INPUT_DIRECTORY}/qualification-context.json`],
       context.executionTimeoutMs + context.cancellationTimeoutMs + candidate.profile.spec.policy.publicationTimeoutMs)
@@ -364,8 +363,8 @@ export async function qualifyVerificationRuntime(input: {
       const materialization = materialize(context, verified)
       const reserve = await reserveVerificationReportSpace(qualificationExecution(candidate,
         { context, startedAt, materialization, terminal: { outcome: 'build_failed', exitCode: null, signal: null, finishedAt: startedAt } }))
-      await writeFile(join(inputRoot, 'qualification-context.json'), JSON.stringify({ ...context,
-        measurement: { mutableDirectory: '/job-scratch', cgroupDirectory: '/sys/fs/cgroup' } }), { mode: 0o444 })
+      await writeVerificationQualificationContext(inputRoot, JSON.stringify({ ...context,
+        measurement: { mutableDirectory: '/job-scratch', cgroupDirectory: '/sys/fs/cgroup' } }))
       containerId = await createContainer()
       await input.authority.assertCurrent(candidate)
       const terminal = await interruptActiveQualification({ owner, candidate, containerId,

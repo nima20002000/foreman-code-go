@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { mkdir, open, writeFile, readdir, lstat, rm } from 'node:fs/promises'
+import { mkdir, open, writeFile, readdir, lstat, rm, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
@@ -9,6 +9,25 @@ import { JOB_INPUT_DIRECTORY } from '@foreman-code/contracts/job-inputs'
 import { openPrivateRoot, entryParent, anchored, identity } from '../sources/privateFilesystem.js'
 import { verifyMaterializedSourceTree } from '../sources/materialization.js'
 import { verifySourceBytes, verifySourceManifest } from '../sources/manifest.js'
+
+/** Replaces the previous closed diagnostic's sealed input without making it writable. */
+export async function writeVerificationQualificationContext(inputRoot: string, contents: string): Promise<void> {
+  const directory = await openPrivateRoot(inputRoot)
+  const temporary = anchored(directory, `.qualification-context-${randomUUID()}`)
+  try {
+    const destination = anchored(directory, 'qualification-context.json')
+    const previous = await lstat(destination).catch(error => { if (error.code === 'ENOENT') return null; throw error })
+    if (previous && (!previous.isFile() || previous.uid !== process.getuid() || previous.nlink !== 1)) {
+      throw new Error('Previous qualification context is not a private regular file.')
+    }
+    const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o444)
+    try { await file.writeFile(contents); await file.sync() } finally { await file.close() }
+    await rename(temporary, destination)
+    await directory.sync()
+  } finally {
+    try { await rm(temporary, { force: true }) } finally { await directory.close() }
+  }
+}
 
 /** Finalization removes closed caches; each subsequent diagnostic starts private and cold. */
 export async function resetVerificationQualificationWorkload(root: string, scratch: string, paths: string[]): Promise<void> {
