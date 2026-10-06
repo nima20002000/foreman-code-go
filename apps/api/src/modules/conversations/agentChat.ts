@@ -537,6 +537,7 @@ export class AgentChatService {
   }
   private async sessionControlBinding(principal: ManagementPrincipal, workspaceId: string, id: string, write = false) {
     const row = await this.conversation(workspaceId, id, principal, write ? 'agent_chat:write' : 'agent_chat:read')
+    this.runtimes.get(id)?.manager.setSessionControlPrincipal?.(principal.id)
     const state = await this.readConversation(principal, workspaceId, id)
     const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
     const runtime = write && !row.active_request_id && row.native_session_id && configuration

@@ -221,10 +221,11 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       ...(this.options.processRecovery ? { processRecovery: this.options.processRecovery } : {}),
       ...(this.options.assertInstallation ? { assertInstallation: this.options.assertInstallation } : {}),
       credentialEnvironmentVariable: this.options.credentialEnvironmentVariable ?? APP_CREDENTIAL_ENV,
+      onVersion: version => { if (!this.child) this.expectedVersion = version },
       pure: this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true,
       ...(signal ? { signal } : {}),
     })
-    return evidence && (this.disabledAppMcpServerName === serverName || this.advancedConfiguration?.mcp.serverEnabled[serverName] === false)
+    return evidence && this.advancedConfiguration?.mcp.serverEnabled[serverName] === false
       ? { ...evidence, enabled: false, status: 'disabled' } : evidence
   }
 

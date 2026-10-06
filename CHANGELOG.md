@@ -10,6 +10,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Verification
 
 - not verified: paired Worker restart case (moved to crosscomputer lane)
+- not verified / follow-up: Codex Agent/device first-turn callback timeout; remaining OpenCode Operator and device control journeys; Claude read-only qualification and context-setting live coverage.
+- not verified / follow-up: browser acceptance and interrupted compaction dispatch recovery. The full session-control acceptance matrix is incomplete; no complete native or browser acceptance is claimed.
+- not verified / follow-up: final caller-context and saved OpenCode inspection adjustments received typecheck/lint only under the owner release order; native reruns were stopped.
 
 ## [0.0.41] - 2026-10-06
 
