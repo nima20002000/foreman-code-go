@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, realpath, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, it, vi } from 'vitest'
 import { captureGitSource, qualifiedGit } from '../src/modules/sources/capture.js'
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 
 it('captures this complete committed repository into real private storage within the existing source budget', async () => {
   const root = await realpath(fileURLToPath(new URL('../../../', import.meta.url)))
   const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
   const approvedPaths = (await qualifiedGit(root, ['ls-tree', '-r', '--name-only', '-z', commit])).toString().split('\0').filter(Boolean)
-  const directory = await mkdtemp('/var/tmp/entrypoints-source-capture-')
+  const directory = await privateFixtureDirectory('entrypoints-source-capture-')
   try {
     const store = new PrivateSourceSnapshotStore(directory)
     const manifest = await captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths, executablePolicy: 'strip', sink: store })
@@ -19,11 +21,11 @@ it('captures this complete committed repository into real private storage within
     expect(manifest.entries.length).toBeGreaterThan(2000)
     const entry = manifest.entries.find(value => value.path === 'AGENTS.md')!
     expect(Buffer.from(await store.read(manifest, entry, AbortSignal.timeout(1000))).toString()).toContain('Repository instructions')
-  } finally { await rm(directory, { recursive: true, force: true }) }
+  } finally { await removeFixtureDirectory(directory) }
 }, 60_000)
 
 it('joins the actual Git child after cancellation with unread batch output', async () => {
-  const directory = await mkdtemp('/var/tmp/entrypoints-source-abort-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
+  const directory = await privateFixtureDirectory('entrypoints-source-abort-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
   await mkdir(root, { mode: 0o700 }); await mkdir(storage, { mode: 0o700 })
   const store = new PrivateSourceSnapshotStore(storage), abort = vi.spyOn(store, 'abort'), commitSink = vi.spyOn(store, 'commit')
   try {
@@ -39,23 +41,24 @@ it('joins the actual Git child after cancellation with unread batch output', asy
           commit: store.commit.bind(store), abort: store.abort.bind(store) } })).rejects.toThrow('Capture stopped in sink.')
       expect(abort).toHaveBeenCalledOnce(); expect(commitSink).not.toHaveBeenCalled()
     } finally { timeout.mockRestore() }
-  } finally { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }) }
+  } finally { vi.restoreAllMocks(); await removeFixtureDirectory(directory) }
 })
 
 it('quiesces every bounded pending private write before quarantining a failed capture', async () => {
-  const directory = await mkdtemp('/var/tmp/entrypoints-source-pipeline-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
+  const directory = await privateFixtureDirectory('entrypoints-source-pipeline-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
   await mkdir(root, { mode: 0o700 }); await mkdir(storage, { mode: 0o700 })
   let release!: () => void, entered!: () => void
   const held = new Promise<void>(resolve => { release = resolve }), allEntered = new Promise<void>(resolve => { entered = resolve })
   let active = 0, peak = 0, count = 0
   const store = new PrivateSourceSnapshotStore(storage), abort = vi.spyOn(store, 'abort'), publish = vi.spyOn(store, 'commit')
+  let captured: ReturnType<typeof captureGitSource> | undefined
   try {
     await qualifiedGit(root, ['init', '-q'])
     const paths = Array.from({ length: 12 }, (_, index) => `entry-${index}.txt`)
     for (const path of paths) await writeFile(join(root, path), 'Original bounded source bytes.\n')
     await qualifiedGit(root, ['add', '.']); await qualifiedGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@local', 'commit', '-qm', 'Fixture'])
     const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
-    const captured = captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths: paths, executablePolicy: 'strip', sink: {
+    captured = captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths: paths, executablePolicy: 'strip', sink: {
       write: async (...args) => {
         active++; peak = Math.max(peak, active)
         try { if (++count === 4) { entered(); throw new Error('Private source writer failed.') } await held; await store.write(...args) }
@@ -67,11 +70,16 @@ it('quiesces every bounded pending private write before quarantining a failed ca
     expect(peak).toBe(4); expect(abort).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled()
     release(); await expect(captured).rejects.toThrow('Private source writer failed.')
     expect(active).toBe(0); expect(abort).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled()
-  } finally { release?.(); vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }) }
+  } finally {
+    release?.()
+    await captured?.catch(() => {})
+    vi.restoreAllMocks()
+    await removeFixtureDirectory(directory)
+  }
 })
 
 it('maps its expired preparation budget to a typed retryable failure after private-write quiescence', async () => {
-  const directory = await mkdtemp('/var/tmp/entrypoints-source-timeout-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
+  const directory = await privateFixtureDirectory('entrypoints-source-timeout-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
   await mkdir(root, { mode: 0o700 }); await mkdir(storage, { mode: 0o700 })
   const store = new PrivateSourceSnapshotStore(storage), controller = new AbortController(), abort = vi.spyOn(store, 'abort'), publish = vi.spyOn(store, 'commit')
   try {
@@ -85,5 +93,5 @@ it('maps its expired preparation budget to a typed retryable failure after priva
       } })).rejects.toMatchObject({ code: 'SOURCE_CAPTURE_TIMEOUT', status: 503, details: { retryable: true, newCommandRequired: true } })
       expect(timeout).toHaveBeenCalledWith(300_000); expect(abort).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled()
     } finally { timeout.mockRestore() }
-  } finally { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }) }
+  } finally { vi.restoreAllMocks(); await removeFixtureDirectory(directory) }
 })
