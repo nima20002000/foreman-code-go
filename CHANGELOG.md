@@ -15,11 +15,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Give the standalone migration command a separate bounded DDL deadline while retaining API request deadlines, transactions and migration locks.
 - Remove unsuccessful release staging without deleting an activated release or production data.
 - Snapshot deployed API and workspace dependencies into independent files so later source builds cannot mutate an installed release.
+- Report database read deadlines, cancellation, lock timeouts and deadlocks in Run inspection HTTP/MCP errors without exposing private database text.
 
 ### Changed
 
 - Verify compiled production hosting and scoped agent HTTP/MCP readback with denied callers after the noauth upgrade; verify credential-free human creation/edits in the actual browser without altering OS client attribution.
 - Retain redacted private Operator failure events and attempt independent test resource cleanup when another cleanup step fails.
+- Retain bounded database wait and blocker diagnostics during installed recovery verification.
 
 ## [0.0.40] - 2026-10-06
 
