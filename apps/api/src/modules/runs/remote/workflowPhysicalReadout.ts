@@ -269,10 +269,20 @@ export class InstalledWorkflowPhysicalReadouts {
     if(events.size)this.events.set(receipt.intent.operationId,events)
   }
   async read(input: { intent: DispatchIntent; placement: AcceptedNodePlacement; receiptSequence: number; sourceDigest: string }): Promise<RemoteWorkflowPhysicalReadout> {
-    this.purgeExpired()
     const key=this.key(input.receiptSequence,input.sourceDigest)
+    const previous = this.originals.get(input.intent.operationId)?.get(key)
+      ?? this.events.get(input.intent.operationId)?.get(key)?.retained
+    this.purgeExpired()
     const retained = this.originals.get(input.intent.operationId)?.get(key)??this.events.get(input.intent.operationId)?.get(key)?.retained
-    if (!retained || !isDeepStrictEqual(retained.receipt.intent, input.intent) || !isDeepStrictEqual(retained.placement, input.placement)) return unavailable()
+    if (!retained) throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE',
+      'The original physical reply is no longer retained.', 409,
+      { reason: previous && previous.expiresAt <= Date.now() ? 'expired_reply' : 'not_retained',
+        operationId: input.intent.operationId,
+        receiptSequence: input.receiptSequence, sourceDigest: input.sourceDigest })
+    if (!isDeepStrictEqual(retained.receipt.intent, input.intent)
+      || !isDeepStrictEqual(retained.placement, input.placement)) throw new DomainError(
+      'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original physical reply selector changed.', 409,
+      { reason: 'selector_changed', operationId: input.intent.operationId, receiptSequence: input.receiptSequence })
     try { await retained.assertCurrent() } catch (error) { this.purge(input.intent.operationId); throw error }
     const observation = retained.observe()
     const closure = retained.closure()
