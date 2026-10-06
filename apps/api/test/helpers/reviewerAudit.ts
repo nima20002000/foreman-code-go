@@ -216,6 +216,12 @@ export async function reviewerFixture(options: {
       saved.jobs.push(structuredClone(job))
       return structuredClone(job)
     },
+    async appendReviewNativeHistory(current: ReviewJob, events: readonly NativeHarnessEvent[],
+      projection: Parameters<Wave25InteractionCoordinationRepository['appendReviewNativeHistory']>[2]) {
+      if (!projection?.nativeCapture) throw new Error('Original review history capture required.')
+      captures.verify.read(projection.nativeCapture)
+      for (const native of events) await coordination.appendReviewNativeEvent(current, native, projection)
+    },
     async appendReviewNativeEvent(_job: ReviewJob, native: NativeHarnessEvent) {
       hooks.eventCount += 1
       if (!hooks.countOnly) saved.events.push(structuredClone(native))
