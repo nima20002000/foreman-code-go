@@ -1,8 +1,10 @@
 import { open, readFile, rename, mkdir, unlink, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
+import { constants, openSync, closeSync, fstatSync, lstatSync, readFileSync, unlinkSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
+import { bootIdentity, identityAlive, processIdentity } from '../../harnesses/recovery/linuxIdentity.js'
 import { z } from 'zod'
 import { DispatchIntentSchema, type DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { JobLogChunkSchema, type JobLogChunk } from '@foreman-code/contracts/jobs'
@@ -26,6 +28,31 @@ import { QualificationReceiptSchema, QualificationOCICertificateSchema, qualific
 const JournalSchema = z.object({ schemaVersion: z.literal(1), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptRecordSchema])),
   reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobOutputs: z.array(z.object({ operationId: z.string(), commandId: z.uuid(), path: z.string(), mediaType: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().nonnegative() }).strict()).default([]), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
 const same = isDeepStrictEqual
+const JournalOwnerSchema = z.object({ schemaVersion: z.literal(1), token: z.uuid(),
+  pid: z.number().int().positive(), startTicks: z.string().regex(/^\d+$/), bootId: z.uuid() }).strict()
+
+function recoverJournalOwnerLock(path: string, assertExclusiveOwner: () => void, conflict: unknown) {
+  assertExclusiveOwner()
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  try {
+    const file = fstatSync(descriptor)
+    if (!file.isFile() || file.nlink !== 1 || file.mode & 0o077 || file.uid !== process.getuid!()
+      || file.size < 1 || file.size > 4096) throw new Error('Journal owner lock is not private.')
+    const contents = readFileSync(descriptor, 'utf8')
+    let owner: unknown
+    try { owner = JSON.parse(contents) } catch { owner = undefined }
+    const recorded = JournalOwnerSchema.safeParse(owner)
+    if (recorded.success) {
+      if (recorded.data.bootId === bootIdentity() && identityAlive(recorded.data)) throw conflict
+    } else if (!z.uuid().safeParse(contents).success) throw new Error('Journal owner lock requires recovery.')
+    assertExclusiveOwner()
+    const named = lstatSync(path)
+    if (named.dev !== file.dev || named.ino !== file.ino || named.ctimeMs !== file.ctimeMs) {
+      throw new Error('Journal owner lock changed during recovery.')
+    }
+    unlinkSync(path)
+  } finally { closeSync(descriptor) }
+}
 
 /** Single worker owner; the caller must hold the worker installation's exclusive service lock.
  * Every mutating method fsyncs before returning authority to the native adapter.
@@ -36,14 +63,25 @@ export class RemoteOperationJournal {
   private faulted = false
   private tail: Promise<unknown> = Promise.resolve()
   private constructor(private readonly path: string, private data: z.infer<typeof JournalSchema>, private readonly capacity: number, private readonly lock: FileHandle) {}
-  static async open(path: string, options: { initializeNewInstallation?: boolean; capacity?: number } = {}) {
+  static async open(path: string, options: { initializeNewInstallation?: boolean; capacity?: number;
+    assertExclusiveOwner?: () => void } = {}) {
     const capacity = options.capacity ?? 1000
     if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('Invalid journal capacity')
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    // A crashed owner leaves a fence. W11/operator reconciliation must establish safe lock disposition.
-    const lock = await open(`${path}.owner-lock`, 'wx', 0o600)
+    const lockPath = `${path}.owner-lock`
+    let lock: FileHandle
+    try { lock = await open(lockPath, 'wx', 0o600) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || !options.assertExclusiveOwner) throw error
+      recoverJournalOwnerLock(lockPath, options.assertExclusiveOwner, error)
+      lock = await open(lockPath, 'wx', 0o600)
+    }
     try {
-      await lock.writeFile(randomUUID()); await lock.sync()
+      const identity = process.platform === 'linux' ? processIdentity(process.pid) : undefined
+      const owner = identity ? { schemaVersion: 1, token: randomUUID(), pid: identity.pid,
+        startTicks: identity.startTicks, bootId: bootIdentity() } : randomUUID()
+      await lock.writeFile(typeof owner === 'string' ? owner : JSON.stringify(owner))
+      await lock.sync()
       let data: z.infer<typeof JournalSchema>
       try {
         if ((await stat(path)).size > 4 * 1024 * 1024) throw new Error('Journal byte limit reached')

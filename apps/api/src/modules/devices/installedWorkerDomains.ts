@@ -47,6 +47,8 @@ import { DomainError } from '../errors.js'
  * sole Main authority. No database, Run scheduler, generated grant or ready flag. */
 export async function createInstalledWorkerDomains(input: {
   stateDirectory: string; pairing: WorkerPairingConfiguration; bootId: string
+  /** The packaged Worker's existing exclusive state socket remains held during journal recovery. */
+  assertStateOwnership?: () => void
   configuration: InstalledWorkflowConfigurationLocation | null
   nativeOutputs?: InstalledWorkflowHostOptions['nativeOutputs']
   jobConfiguration?: InstalledRuntimeConfigurationLocation | null
@@ -61,10 +63,13 @@ export async function createInstalledWorkerDomains(input: {
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
   const jobRegistry = new NativeProcessRegistry(join(input.stateDirectory, 'job-runtime-native-processes'))
   let jobJournalOpening: Promise<RemoteOperationJournal> | undefined
-  const jobJournal = () => jobJournalOpening ??= RemoteOperationJournal.open(join(input.stateDirectory, 'job-runtime-operations.json'))
+  const ownership = input.assertStateOwnership ? { assertExclusiveOwner: input.assertStateOwnership } : undefined
+  const jobJournal = () => jobJournalOpening ??= RemoteOperationJournal.open(
+    join(input.stateDirectory, 'job-runtime-operations.json'), ownership)
   const systemInput = createVerificationSystemInput({ configuration: input.jobConfiguration ?? null, journal: jobJournal })
   let journalOpening: Promise<RemoteOperationJournal> | undefined
-  const journal = () => journalOpening ??= RemoteOperationJournal.open(join(input.stateDirectory, 'workflow-operations.json'))
+  const journal = () => journalOpening ??= RemoteOperationJournal.open(
+    join(input.stateDirectory, 'workflow-operations.json'), ownership)
   const current = () => {
     lifetime.signal.throwIfAborted()
     const binding = input.connection()?.currentBinding()

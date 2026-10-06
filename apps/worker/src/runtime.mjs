@@ -32,7 +32,11 @@ export async function acquireWorkerLock(stateDirectory, status = () => ({ active
     socket.once('error', (error) => reject(error.code === 'EADDRINUSE' ? new WorkerError('worker_already_running') : error));
     socket.listen(name, accept);
   });
-  return () => new Promise((accept, reject) => socket.close((error) => error ? reject(error) : accept()));
+  const unlock = () => new Promise((accept, reject) => socket.close((error) => error ? reject(error) : accept()));
+  unlock.assertOwned = () => {
+    if (!socket.listening || socket.address() !== name) throw new WorkerError('worker_ownership_lost');
+  };
+  return unlock;
 }
 
 // This composition has no control-plane imports. Identity and connection implementations
@@ -44,7 +48,8 @@ export async function startWorker({ stateDirectory, loadIdentity, createConnecti
     const identity = await loadIdentity(stateDirectory);
     const bootId = await readBootId();
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(bootId)) throw new WorkerError('boot_identity_unavailable');
-    connection = await createConnection({ identity, bootId, capabilities: { dispatch: false, transfer: false } });
+    connection = await createConnection({ identity, bootId, capabilities: { dispatch: false, transfer: false },
+      assertStateOwnership: unlock.assertOwned });
     await connection.start();
     let stopping;
     return { identity, bootId, connection, stop() {
