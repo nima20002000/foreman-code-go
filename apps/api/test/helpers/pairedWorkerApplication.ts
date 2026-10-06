@@ -245,27 +245,34 @@ export async function pairedWorkerApplication() {
     await database.migrate()
     await checkpoints.setup()
     const tls = await certificates(root)
-    production = buildProductionApp(config, database, checkpoints, false, undefined, undefined,
-      { codex: codexQualificationSuite, opencode: opencodeQualificationSuite },
-      { mode: 'native', deviceListener: { host: '127.0.0.1', port: devicePort, advertisedEndpoint: endpoint, ...tls } })
-    production.app.addHook('onClose', () => production!.drainShutdown())
-    production.registerFileStorage()
-    await production.initialize()
-    await production.app.listen({ host: '127.0.0.1', port })
-    await production.startDeviceListener()
+    const startMain = async () => {
+      const main = buildProductionApp(config, database!, checkpoints!, false, undefined, undefined,
+        { codex: codexQualificationSuite, opencode: opencodeQualificationSuite },
+        { mode: 'native', deviceListener: { host: '127.0.0.1', port: devicePort, advertisedEndpoint: endpoint, ...tls } })
+      production = main
+      main.registerFileStorage()
+      await main.initialize()
+      await main.app.listen({ host: '127.0.0.1', port })
+      await main.startDeviceListener()
+      return main
+    }
+    await startMain()
     const access = new PostgresAccessService(database.pool)
     const writer = await access.issue({ name: 'Native controls fixture', audience: 'operator',
       grants: [{ actions, scope: {} }], expiresAt: new Date(Date.now() + 6 * 60 * 60_000) })
-    client = new Client({ name: 'Paired native controls fixture', version: '1' })
-    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', baseUrl), {
-      authProvider: { token: async () => writer.token },
-    }))
     const denied = await access.issue({ name: 'Native controls reader', audience: 'operator',
       grants: [{ actions: ['capabilities:read'], scope: {} }], expiresAt: new Date(Date.now() + 6 * 60 * 60_000) })
-    deniedClient = new Client({ name: 'Native controls denied caller', version: '1' })
-    await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', baseUrl), {
-      authProvider: { token: async () => denied.token },
-    }))
+    const connectClients = async () => {
+      client = new Client({ name: 'Paired native controls fixture', version: '1' })
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', baseUrl), {
+        authProvider: { token: async () => writer.token },
+      }))
+      deniedClient = new Client({ name: 'Native controls denied caller', version: '1' })
+      await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', baseUrl), {
+        authProvider: { token: async () => denied.token },
+      }))
+    }
+    await connectClients()
     const tool = async (name: string, args: Record<string, unknown>) => {
       const result = await client!.callTool({ name, arguments: args }, { timeout: 180000 })
       assert.ok(!result.isError, `Product tool ${name} failed.`)
@@ -356,7 +363,30 @@ export async function pairedWorkerApplication() {
     }
     assert.equal(inventory?.hostMetadata?.connection?.phase, 'ready', 'The installed Worker did not connect.')
     assert.equal(inventory.hostMetadata.applicationInstallationId, pairing.workerInstallationId)
-    return { root, baseUrl, browserOrigin, identity, hostRef, roots, inventory, tool, deniedTool, request, close,
+    const restartMain = async () => {
+      await client!.close()
+      await deniedClient!.close()
+      await production!.app.close()
+      production = undefined
+      const restarted = await startMain()
+      await connectClients()
+      const recoveryFailures: unknown[] = []
+      await restarted.reconcile(error => { recoveryFailures.push(error) })
+      if (recoveryFailures.length) throw new AggregateError(recoveryFailures, 'Main recovery failed after restart.')
+      assert.deepEqual(RuntimeIdentitySchema.parse(await fetch(new URL('/health/identity', baseUrl))
+        .then(response => response.json())), identity)
+      const deadline = Date.now() + 60000
+      while (Date.now() < deadline && workerExit === undefined) {
+        const connected = HarnessRegistryReadbackSchema.parse(await tool('harness_registry_get', hostRef))
+        if (connected.hostMetadata?.connection?.phase === 'ready') {
+          assert.equal(connected.hostMetadata.connection.binding.workerInstallationId, pairing.workerInstallationId)
+          return
+        }
+        await delay(250)
+      }
+      throw new Error('The installed Worker did not reconnect after Main restarted.')
+    }
+    return { root, baseUrl, browserOrigin, identity, hostRef, roots, inventory, tool, deniedTool, request, close, restartMain,
       sourceCommit, mainProfile: mainClaudeProfile, workerProfile: claudeProfile,
       mainProjects: config.workspaceStorageRoot! }
   } catch (error) {

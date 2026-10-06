@@ -13,13 +13,14 @@ import { pairedWorkerApplication } from './helpers/pairedWorkerApplication.js'
 
 type Row = { harness: 'codex' | 'opencode' | 'claude'; role: 'operator' | 'agent'; hostKind: 'main' | 'device';
   conversationId: string; workspaceId?: string; readPath?: string; sendPath: string;
-  sendRequest: Record<string, unknown> }
+  sendRequest: Record<string, unknown>; nativeProfile: string; profileCheckRequest: Record<string, unknown> }
 
 const combinations = (['codex', 'opencode', 'claude'] as const).flatMap(harness =>
   (['operator', 'agent'] as const).flatMap(role =>
     (['main', 'device'] as const).map(hostKind => ({ harness, role, hostKind }))))
 let fixture: Awaited<ReturnType<typeof pairedWorkerApplication>> | undefined
 let rows: Row[] = []
+const completed = new Map<string, { marker: string; compactRequest: contracts.SessionControlRequest }>()
 
 function active() {
   if (!fixture) throw new Error('The production fixture has not started.')
@@ -155,5 +156,42 @@ describe('native session controls through the production Main and installed Work
     expect(followup.state.appliedMode).toBe('regular')
     expect(followup.state.nativeSessionId).toBe(sessionId)
     expect((await transcript(row)).filter(message => message.role === 'assistant').at(-1)?.content).toContain(marker)
+    completed.set(row.conversationId, { marker, compactRequest: request })
   }, 600000)
+
+  it('restores the twelve native chats and compact receipts after Main closes and starts again', async () => {
+    expect(completed.size).toBe(12)
+    const snapshots = new Map<string, { state: contracts.SessionControlState; messages: Awaited<ReturnType<typeof transcript>> }>()
+    for (const row of rows) {
+      snapshots.set(row.conversationId, { state: await idle(row), messages: await transcript(row) })
+    }
+    await active().restartMain()
+    const checkedProfiles = new Set<string>()
+    for (const row of rows) {
+      if (!checkedProfiles.has(row.nativeProfile)) {
+        const checked = profiles.HostHarnessInstanceCheckResultSchema.parse(await active().tool('harness_instance_check', {
+          ...row.profileCheckRequest, commandId: randomUUID(),
+        }))
+        expect(checked.value.instanceId).toBe(row.nativeProfile)
+        expect(checked.proof.qualified).toBe(true)
+        checkedProfiles.add(row.nativeProfile)
+      }
+      const before = snapshots.get(row.conversationId)!
+      const recovered = await controls(row)
+      expect(recovered.nativeSessionId).toBe(before.state.nativeSessionId)
+      expect(recovered.desired).toEqual(before.state.desired)
+      expect(recovered.desiredMode).toBe('regular')
+      expect(recovered.compactions).toEqual(before.state.compactions)
+      expect(await transcript(row)).toEqual(before.messages)
+      const accepted = completed.get(row.conversationId)!
+      const replay = await change(row, accepted.compactRequest)
+      expect(replay.compactions).toEqual(before.state.compactions)
+      const followup = await send(row, 'Reply only with the remembered marker.')
+      expect(followup.state.nativeSessionId).toBe(before.state.nativeSessionId)
+      expect(followup.state.appliedMode).toBe('regular')
+      expect(followup.state.applied).toEqual(before.state.desired)
+      expect((await transcript(row)).filter(message => message.role === 'assistant').at(-1)?.content)
+        .toContain(accepted.marker)
+    }
+  }, 1800000)
 })
