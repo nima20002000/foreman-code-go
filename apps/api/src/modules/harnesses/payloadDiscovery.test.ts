@@ -37,7 +37,7 @@ it('rejects modified and arbitrary script launchers without treating their filen
   try {
     const original = await readFile(f.launcher)
     const modified = Buffer.from(original)
-    modified[modified.length - 2] ^= 1
+    modified[modified.length - 2] = modified[modified.length - 2]! ^ 1
     await writeFile(f.launcher, modified)
     expect(await passiveDriverPayloads('codex', f.launcher, 'linux', 'x64'))
       .toEqual({ complete: false, paths: [] })
