@@ -83,6 +83,7 @@
   "apps/api/src/modules/harnesses/claudeSdk/normalization.ts",
   "apps/api/src/modules/harnesses/claudeSdk/official.ts",
   "apps/api/src/modules/harnesses/claudeSdk/ownedOperation.ts",
+  "apps/api/src/modules/harnesses/claudeSdk/port.ts",
   "apps/api/src/modules/harnesses/claudeSdk/productionMcpInspector.ts",
   "apps/api/src/modules/harnesses/claudeSdk/queue.ts",
   "apps/api/src/modules/harnesses/claudeSdk/recoverCompaction.ts",
