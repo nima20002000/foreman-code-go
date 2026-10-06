@@ -24,6 +24,7 @@ vi.mock('../src/modules/harnesses/openCodeMcpConnections.js', () => ({
       const entry = { type: 'local', command: source.command, environment: { [source.token]: '' } }
       return {
         effective: { [source.name]: entry },
+        user: { [source.name]: { ...entry, environment: { [source.token]: `{env:${source.token}}` } } },
         credentialReferences: isAppLauncher('opencode', entry) ? { [source.name]: source.token } : {},
       }
     }
@@ -33,9 +34,10 @@ vi.mock('../src/modules/harnesses/openCodeMcpConnections.js', () => ({
 const storageFixtures = [
   { name: 'graphql', token: 'GRAPHQL_MCP_TOKEN' },
   { name: 'foreman-code', token: 'FOREMAN_CODE_MCP_TOKEN' },
-].flatMap(identity => ['direct', 'isolated'].map(storage => ({ ...identity, storage })))
+].flatMap(identity => ['direct', 'isolated', 'copied'].map(storage => ({ ...identity, storage })))
 
 it.each(storageFixtures)('keeps the verified $token reference in $storage native storage', async (identity) => {
+
   const directory = await mkdtemp(join(tmpdir(), 'native-workflow-source-'))
   const previousHome = process.env.CODEX_HOME
   const previousLauncherDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
@@ -57,8 +59,12 @@ it.each(storageFixtures)('keeps the verified $token reference in $storage native
       process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'outer-storage-mcp')
     } else {
       delete process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
+      if (identity.storage === 'copied') {
+        process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'copied-launcher')
+      }
     }
     const restoredLauncherDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
+
 
     restore = await configureNativeWorkflowMcp({ projectDirectory,
       runtimeDirectory: join(directory, 'runtime'), codexBinary: 'recorded', openCodeBinary: 'recorded' })
@@ -76,6 +82,7 @@ it.each(storageFixtures)('keeps the verified $token reference in $storage native
     restore = undefined
     expect(process.env.CODEX_HOME).toBe(home)
     expect(process.env.FOREMAN_CODE_APP_MCP_DIRECTORY).toBe(restoredLauncherDirectory)
+
     await expect(access(ownedHome)).rejects.toMatchObject({ code: 'ENOENT' })
   } finally {
     try { await restore?.() }
