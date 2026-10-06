@@ -19,7 +19,7 @@ async function fixture() {
   const file = join(state, 'operations.json')
   journal = await RemoteOperationJournal.open(file, { initializeNewInstallation: true })
   const f = workerConversationFixture('agent', 'opencode')
-  const launch: NativeLaunchObservation = { owner: `conversation:${f.binding.owner.conversationId}`,
+  let launch: NativeLaunchObservation = { owner: `conversation:${f.binding.owner.conversationId}`,
     launchId: randomUUID(), bootId: f.connection.bootId, lifecycle: 'active',
     guardian: { pid: 11111, startTicks: '10' }, provider: { pid: 11112, startTicks: '11' },
     boundary: { kind: 'cgroup-v2', path: '/recorded/native-boundary', device: '1', inode: '2' } }
@@ -30,7 +30,7 @@ async function fixture() {
   await journal.conversations.reserveTurn(f.binding, 'accepted-input', commandInputHash('input'))
   let directories = new WorkerOpenCodeDirectories(state, journal.conversations)
   return { ...f, state, launch, owner,
-    create: (correlationId = 'accepted-input', nativeSessionId = f.session.nativeSessionId) =>
+    create: (correlationId = 'accepted-input', nativeSessionId: string = f.session.nativeSessionId) =>
       directories.create(f.binding, correlationId, nativeSessionId),
     record: () => journal!.conversations.read(f.binding),
     async reopen() {
@@ -43,7 +43,7 @@ async function fixture() {
       await directories.cleanupClosed(record, { snapshot: () => ({ revision: 'recorded', launches: [launch] }) },
         AbortSignal.timeout(5000))
     },
-    closed() { launch.lifecycle = 'closed'; launch.closureEvidence = 'cgroup_v2_empty' },
+    closed() { launch = { ...launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' } },
   }
 }
 
