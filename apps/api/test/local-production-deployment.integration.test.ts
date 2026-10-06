@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { expect, it } from 'vitest'
 import { removeFixtureDirectory } from './helpers/testResources.js'
@@ -42,30 +42,22 @@ it('keeps source development commands usable after successful and failed product
     ].join('\n') + '\n')
     await writeFile(join(api, 'package.json'), JSON.stringify({
       name: '@foreman-code/api', private: true, version: '1.0.0', type: 'module',
-      main: 'dist/index.js', files: ['dist'], dependencies: {
-        '@foreman-code/contracts': 'workspace:*', '@modelcontextprotocol/client': '2.0.0',
-      },
+      main: 'dist/index.js', files: ['dist'], dependencies: { '@foreman-code/contracts': 'workspace:*' },
     }))
     await writeFile(join(contracts, 'package.json'), JSON.stringify({ name: '@foreman-code/contracts',
       private: true, version: '1.0.0', type: 'module', main: 'dist/index.js', files: ['dist'] }))
     await writeFile(join(contracts, 'dist/index.js'), 'export const contractValue = () => "production API available"\n')
     await writeFile(join(api, 'dist/index.js'),
-      'import { Client } from "@modelcontextprotocol/client";\n'
-      + 'import { contractValue } from "@foreman-code/contracts";\n'
-      + 'export async function deployed() {\n'
-      + '  const client = new Client({ name: "production-deployment-fixture", version: "1.0.0" });\n'
-      + '  await client.close();\n'
-      + '  return contractValue();\n'
-      + '}\n')
+      'import { contractValue } from "@foreman-code/contracts"; export const deployed = () => contractValue()\n')
     await run('corepack', ['pnpm', 'install'])
     await verifyDevelopment()
     await deployProductionApi(run, destination)
     const deployed = await import(pathToFileURL(join(destination, 'dist/index.js')).href)
-    expect(await deployed.deployed()).toBe('production API available')
+    expect(deployed.deployed()).toBe('production API available')
     await writeFile(join(contracts, 'dist/index.js'), 'export const contractValue = () => "rebuilt contracts"\n')
     await writeFile(join(api, 'dist/index.js'), 'export const deployed = () => "rebuilt source API"\n')
     const { stdout } = await execute(process.execPath, ['--input-type=module', '-e',
-      'const module = await import(process.argv[1]); console.log(await module.deployed());',
+      'const module = await import(process.argv[1]); console.log(module.deployed());',
       pathToFileURL(join(destination, 'dist/index.js')).href])
     expect(stdout.trim()).toBe('production API available')
     await verifyDevelopment()
@@ -73,6 +65,29 @@ it('keeps source development commands usable after successful and failed product
     await writeFile(blockedDestination, 'occupied')
     await expect(deployProductionApi(run, blockedDestination)).rejects.toThrow()
     await verifyDevelopment()
+  } finally {
+    await removeFixtureDirectory(directory)
+  }
+}, 180_000)
+
+
+it('loads the compiled API using only its deployed production dependencies', async () => {
+  const { deployProductionApi } = await import('../../../scripts/local-production-runtime.mjs')
+  const execute = promisify(execFile)
+  const source = fileURLToPath(new URL('../../../', import.meta.url))
+  const directory = await mkdtemp(join(tmpdir(), 'production-runtime-dependencies-'))
+  const destination = join(directory, 'api')
+  const run = (command: string, args: string[]) => execute(command, args, {
+    cwd: source, env: process.env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
+  })
+  try {
+    await deployProductionApi(run, destination)
+    const { stdout } = await execute(process.execPath, ['--input-type=module', '-e',
+      'const api = await import(process.argv[1]); console.log(typeof api.buildProductionApp);',
+      pathToFileURL(join(destination, 'dist/production.js')).href], {
+      cwd: destination, env: process.env, timeout: 30_000, maxBuffer: 1024 * 1024,
+    })
+    expect(stdout.trim()).toBe('function')
   } finally {
     await removeFixtureDirectory(directory)
   }
