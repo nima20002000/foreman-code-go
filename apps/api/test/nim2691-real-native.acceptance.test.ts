@@ -25,6 +25,7 @@ import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, isSupportedAppMcpToke
 import { record } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
+import { inspectOpenCodeMcpConfiguration } from '../src/modules/harnesses/opencodeMcpConfiguration.js'
 import { DomainError } from '../src/modules/errors.js'
 import * as mcpResults from '../src/mcp/shared/results.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
@@ -212,7 +213,13 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             .read(AbortSignal.timeout(30_000))
           openCodeServerName = appMcpServerName(connections.effective, appServerName)
           expect(isAppLauncher('opencode', record(connections.effective[openCodeServerName]))).toBe(true)
-          expect(isSupportedAppMcpTokenName(connections.credentialReferences?.[openCodeServerName])).toBe(true)
+          const native = await inspectOpenCodeMcpConfiguration({ binary: binaries.openCodeBinary,
+            workingDirectory: projectPath, serverName: openCodeServerName, exactServerName: true,
+            signal: AbortSignal.timeout(30_000) })
+          expect(native?.name).toBe(openCodeServerName)
+          expect(native?.automaticEndpoint).toBe(true)
+          expect(native?.enabled).toBe(true)
+          expect(isSupportedAppMcpTokenName(native?.credentialEnvironmentVariable)).toBe(true)
         }
         const settings = new PostgresSettingsRepository(pool)
         const defaults = await settings.getHarnessDefaults()
