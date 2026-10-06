@@ -90,12 +90,21 @@ describe('Codex idle lifecycle with a populated recovery owner', () => {
         { agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a', FOREMAN_CODE_MCP_TOKEN: 'replacement-fixture-token' } })
       const launches = (await calls(f.directory)).filter(entry =>
         Array.isArray(entry.cli) && entry.cli[0] === 'app-server')
-      assert.equal(launches.length, 2)
       for (const launch of launches) {
         assert.deepEqual(launch.controllerVariables, [])
+      }
+      const executionProcesses = await processesForRequests(f.directory, 'thread/start', 'thread/resume')
+      assert.equal(executionProcesses.length, 2)
+      const executionPids = new Set(executionProcesses.map(entry => entry.pid))
+      const executionLaunches = launches.filter(entry => executionPids.has(entry.processPid))
+      assert.equal(executionLaunches.length, 2)
+      for (const launch of executionLaunches) {
         assert.equal(launch.hasAppToken, true)
       }
-      assert.equal(launches[1]!.refreshedToken, true)
+      for (const launch of launches.filter(entry => !executionPids.has(entry.processPid))) {
+        assert.equal(launch.hasAppToken, false)
+      }
+      assert.equal(executionLaunches[1]!.refreshedToken, true)
       assert.equal((await state(f.directory, session.nativeSessionId)).id, session.nativeSessionId)
     } finally {
       vi.unstubAllEnvs()
