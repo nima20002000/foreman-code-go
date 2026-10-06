@@ -42,7 +42,7 @@ describe('host-specific settings revisions', () => {
     const profile = screen.getByRole('textbox', { name: 'Local Claude profile directory' })
     await user.clear(profile); await user.type(profile, '/host/claude/profile')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Authentication' }), 'api-key')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'danger-full-access')
     await user.click(screen.getByRole('button', { name: 'Save host override' }))
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
     expect(catalogRequests).toBe(0)
