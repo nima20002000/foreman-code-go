@@ -194,7 +194,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     })
     try {
       await chat.send(conversation.id, { requestId, content: 'Seed this session' }, owner)
-      await waitFor(async () => !!(await chat.get(conversation.id, owner)).nativeSessionId)
+      await waitFor(async () => !!(await chat.readSessionControls(conversation.id, owner)).nativeSessionId)
       const before = await chat.readSessionControls(conversation.id, owner)
       expect(before.context).toMatchObject({ usedTokens: 42, stale: false })
       manager.finish(nativeCorrelation(conversation.id, requestId))
