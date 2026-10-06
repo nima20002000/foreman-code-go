@@ -7,7 +7,7 @@ import { JOB_RUNTIME_TOOLS, unavailableJobRuntimeToolCall } from '../src/mcp/ope
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { createGraphqlMcpServer, roleDeniedToolCall } from '../src/mcp/unified/server.js'
 
-const actions:ManagementAction[]=['job_definitions:read','job_definitions:write','jobs:start','jobs:read','jobs:cancel','job_logs:read','job_artifacts:read']
+const actions:ManagementAction[]=['job_definitions:read','job_definitions:write','jobs:start','jobs:read','jobs:cancel','job_logs:read','job_artifacts:read','sources:read','source_roots:read']
 const readerActions=actions.filter(action=>action.endsWith(':read'))
 function principal(jobActions=actions):ManagementPrincipal {
   return {id:'job-discovery',name:'Job discovery',audience:'operator',expiresAt:'2099-01-01T00:00:00.000Z',revokedAt:null,
@@ -55,6 +55,8 @@ describe('Job capability summary matches mounted Operator tools',()=>{
         expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name, actions: ['jobs:cancel'],
           detail: expect.stringContaining('MCP cannot approve itself') }))
       }
+      expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name: 'job_runtime_profile_save',
+        actions: ['job_definitions:write', 'sources:read', 'source_roots:read'] }))
       const limit=capabilities.runtimeLimits!.find(limit=>limit.feature==='ci_jobs')
       expect(limit).toMatchObject({state:'limited'})
       expect(limit!.detail).toContain('current host-bound CI qualification')
@@ -121,6 +123,12 @@ describe('Job capability summary matches mounted Operator tools',()=>{
       } else expect(runtimeNames(listed)).toEqual([...JOB_RUNTIME_TOOLS].sort())
       expect(f.choices).not.toHaveBeenCalled();expect(f.listProfiles).not.toHaveBeenCalled()
     }
+  })
+  it('withholds runtime profile Save without source and root read grants',async()=>{
+    const f=await fixture(principal(actions.filter(action=>action!=='sources:read'&&action!=='source_roots:read')))
+    const listed=runtimeNames((await f.client.listTools()).tools.map(tool=>tool.name))
+    expect(listed).not.toContain('job_runtime_profile_save')
+    expect(listed).toContain('job_runtime_qualification_request')
   })
   it.each(['coder','orchestrator'] as const)('keeps %s workflow Agents outside Job-start authority',async role=>{
     const f=await fixture(),worker={...principal(),audience:'worker' as const,agentId:'agent-fixture'}
