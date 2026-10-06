@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.41] - 2026-10-06
+
+### Added
+
+- Read and retry dynamic harness compatibility checks through Operator MCP with the same contracts, grants and audit service as the local app.
+
+### Changed
+
+- Accept compatible Codex, Claude Code and OpenCode installations by checking their observed runtime contracts rather than exact release versions or recorded schema hashes.
+- Prefer the computer's installed native Codex, with the bundled package as a fallback, and read model catalogs and supported settings from the selected harness.
+- Recheck compatibility when launcher or native payload identity changes, while preserving recorded Run, WorkflowVersion and native-session provenance.
+
+### Fixed
+
+- Make newer compatible Codex installations usable with their own model catalogs, including Codex 0.160.0 and gpt-6-luna at medium effort.
+- Resume saved native sessions across compatible harness releases without rewriting their historical version facts.
+- Report the observed harness version and missing protocol contract when compatibility verification fails.
+- Keep dedicated Codex and Claude native verification storage disposable, including cleanup after failed scenarios.
+
+### Security
+
+- Preserve launcher integrity and path trust, credential isolation, read-only enforcement, sandbox settings, approval policy and authenticated host-bound qualification.
+- Keep MCP and Worker credentials scoped and separate from the implicit local human; compatible-version checks grant no execution or write authority.
+
 ## [0.0.40] - 2026-10-06
 
 ### Fixed
