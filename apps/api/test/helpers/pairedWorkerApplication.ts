@@ -15,7 +15,8 @@ import { DeviceSetupApproveResultSchema } from '@foreman-code/contracts/device-s
 import { loadWorkerPairing } from '@foreman-code/contracts/device-identity-node'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
-import { AgentHarnessSchema, RuntimeIdentitySchema, type AgentHarness } from '@foreman-code/contracts'
+import { AgentHarnessSchema, ApiErrorResponseSchema, RuntimeIdentitySchema, type AgentHarness } from '@foreman-code/contracts'
+import { logger } from '../../src/infrastructure/logger.js'
 import { loadConfig } from '../../src/config.js'
 import { createDatabase } from '../../src/infrastructure/database.js'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.js'
@@ -31,6 +32,18 @@ import { installFixtureMcp } from './installFixtureMcp.js'
 import { z } from 'zod'
 
 const execute = promisify(execFile)
+const fixtureLogger = logger.child({ component: 'http', fixture: 'native-controls' }, {
+  serializers: {
+    err: (error: unknown) => {
+      const diagnostic = error as { code?: unknown; stack?: unknown } | null
+      return { errorType: error instanceof Error ? error.constructor.name : typeof error,
+        ...(typeof diagnostic?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(diagnostic.code)
+          ? { errorCode: diagnostic.code } : {}),
+        ...(typeof diagnostic?.stack === 'string'
+          ? { stackFrames: diagnostic.stack.split('\n').filter(line => /^\s+at\s/.test(line)).slice(0, 8) } : {}) }
+    },
+  },
+})
 const SourceSnapshot = z.object({ commit: z.string().regex(/^[a-f0-9]{40}$/),
   files: z.array(z.object({ path: z.string().min(1), gitBlobSha1: z.string().regex(/^[a-f0-9]{40}$/),
     sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).min(1).max(10000) }).strict()
@@ -271,7 +284,7 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
     await checkpoints.setup()
     const tls = await certificates(root)
     const startMain = async () => {
-      const main = buildProductionApp(config, database!, checkpoints!, false, undefined, undefined,
+      const main = buildProductionApp(config, database!, checkpoints!, fixtureLogger, undefined, undefined,
         { codex: codexQualificationSuite, opencode: opencodeQualificationSuite },
         { mode: 'native', deviceListener: { host: '127.0.0.1', port: devicePort, advertisedEndpoint: endpoint, ...tls } })
       production = main
@@ -317,7 +330,10 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
         headers: { origin: browserOrigin, 'content-type': 'application/json' },
         credentials: 'omit', signal: AbortSignal.timeout(180000),
         ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }) })
-      assert.ok(response.ok, `Fixture product request failed: ${response.status}`)
+      if (!response.ok) {
+        const failure = ApiErrorResponseSchema.parse(await response.json())
+        throw new Error(`Fixture product request failed: ${response.status}: ${failure.error.code}: ${failure.error.message}`)
+      }
       return response.json() as Promise<unknown>
     }
     const identity = RuntimeIdentitySchema.parse(await fetch(new URL('/health/identity', baseUrl))
