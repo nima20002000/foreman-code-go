@@ -1233,7 +1233,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       const input = { requestId: 'mcp-terminal-request', content: 'Run once.' }
       const send = { name: 'operator_chat_send', arguments: { conversationId, request: input } }
       expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('operator_chat_send')
-      await expect(denied.callTool(send)).rejects.toThrow('not found')
+      await expectMcpAccessDenied(denied.callTool(send))
       expect(claude.prompts).toHaveLength(0)
       expect((await allowed.callTool(send)).isError).not.toBe(true)
       await waitFor(async () => Boolean(await repository.submittedMessageId(conversationId, input.requestId)))
