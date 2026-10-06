@@ -35,6 +35,12 @@ vi.mock('../../worker/src/runtime.mjs', () => ({
   },
 }))
 
+// Complete module loading before creating test state and starting the behavior deadline.
+const diagnosticsPath = new URL('../../worker/src/diagnostics.mjs', import.meta.url).href
+const { hostFacts } = await import(diagnosticsPath)
+const factoryPath = new URL('../../worker/src/workerFactory.mjs', import.meta.url).href
+const { startConfiguredWorker } = await import(factoryPath)
+
 function fixture(suiteRevision = 'codex-live-4', binding: DeviceSessionBinding = {
   mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
   keyRevision: 2, authorizationRevision: 3, connectionGeneration: 4, connectionEpoch: randomUUID(),
@@ -99,15 +105,11 @@ describe('actual Main and installed Codex qualification read capability', () => 
   it('accepts producer-shaped identity-qualified proof through the shipped worker mount and keeps exact revision checks', async () => {
     const stateDirectory = await mkdtemp('/var/tmp/graphql-codex-revision-')
     try {
-      const diagnosticsPath = new URL('../../worker/src/diagnostics.mjs', import.meta.url).href
-      const { hostFacts } = await import(diagnosticsPath)
       const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory])
       mount.manifest = { format: 1, version: '0.1.0', commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64),
         protocolVersion: 1, identityFormat: 1, packageManager: 'pnpm@11.27.0',
         target: { os: facts.os, osRelease: facts.osRelease, arch: facts.arch, libc: facts.libc, node: facts.node },
         files: [{ path: 'src/cli.mjs', sha256: 'c'.repeat(64), size: 0 }] }
-      const factoryPath = new URL('../../worker/src/workerFactory.mjs', import.meta.url).href
-      const { startConfiguredWorker } = await import(factoryPath)
       const identity = await loadOrCreateWorkerIdentity(stateDirectory)
       const original = { ...fixture().binding, workerInstallationId: identity.workerInstallationId, keyRevision: identity.keyRevision }
       await persistWorkerPairing(stateDirectory, { formatVersion: 1, mainId: original.mainId, deviceId: original.deviceId,
