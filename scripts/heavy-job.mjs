@@ -145,12 +145,17 @@ if (process.argv[2] === '__schedule') {
       else rmSync(active, { recursive: true, force: true })
     }
   } else {
-    const records = slotRecords()
+    let records = slotRecords()
     const held = readJson(join(active, 'owner.json'))
     const legacy = existsSync(active) && !isGate(held) && !records.some((record) => record?.token && record.token === held?.token)
     const tickets = readdirSync(queue).sort().map(name => ({ name, record: readJson(join(queue, name)) }))
     const retained = retainedHeavyJobTokens(tickets.map(ticket => ticket.record), records, held)
-    const occupied = records.length + Number(legacy) + retained.size
+    // Repair the original reservation so older coordinators also retain its capacity and skip its FIFO ticket.
+    for (const ticket of tickets) {
+      if (retained.has(ticket.record?.token)) writeFileSync(join(running, ticket.name), JSON.stringify(ticket.record))
+    }
+    records = slotRecords()
+    const occupied = records.length + Number(legacy)
     // Running tickets stay in queue to fence old callers after their active
     // directory disappears. Only skip those tickets when admitting new code.
     const first = tickets.find(({ record }) => !(record?.token && (retained.has(record.token)
