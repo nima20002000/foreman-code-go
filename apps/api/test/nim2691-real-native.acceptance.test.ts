@@ -83,8 +83,21 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const secrets = new Set(Object.entries(process.env)
         .filter(([name, value]) => /TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL/.test(name) && value)
         .map(([, value]) => value!))
-      const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail }> = []
+      const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail;
+        elapsedMs?: number; signalAborted?: boolean }> = []
       const cancellations: Array<{ nativeSessionId: string; caller: string[]; reason?: NativeFailureDetail }> = []
+      const inspectMcp = CodexAppServerSessionManager.prototype.inspectMcpConfiguration
+      const inspectionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'inspectMcpConfiguration')
+        .mockImplementation(async function (this: CodexAppServerSessionManager, cwd, signal) {
+          const started = performance.now()
+          try { return await inspectMcp.call(this, cwd, signal) }
+          catch (error) {
+            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'inspect_mcp_configuration',
+              elapsedMs: Math.round(performance.now() - started), signalAborted: Boolean(signal?.aborted),
+              error: describeNativeFailure(error, [...secrets]) })
+            throw error
+          }
+        })
       const createSession = CodexAppServerSessionManager.prototype.createSession
       const sessionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
         .mockImplementation(async function (this: CodexAppServerSessionManager, source, signal) {
@@ -571,6 +584,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         throw error
       } finally {
         executionObserver.mockRestore()
+        inspectionObserver.mockRestore()
         sessionObserver.mockRestore()
         cancellationObserver.mockRestore()
         await app?.close().catch(() => undefined)
