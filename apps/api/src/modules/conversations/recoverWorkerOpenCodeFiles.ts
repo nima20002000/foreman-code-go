@@ -21,7 +21,7 @@ export function workerOpenCodeVersionRecovery(input: {
   return async (root: WorkerOpenCodeFileRoot, directory: FileHandle, signal: AbortSignal) => {
     const { record, request, configuration } = input
     const turn = record.turns.find(value => value.correlationId === root.correlationId)
-    if (request.method !== 'conversation.reconcile' || !request.admissionId
+    if ((request.method !== 'conversation.reconcile' && request.method !== 'conversation.recover-files') || !request.admissionId
       || request.correlationId !== root.correlationId || !turn?.nativeTurnId
       || root.nativeSessionId !== record.session?.nativeSessionId
       || request.session.nativeSessionId !== root.nativeSessionId || configuration.harness.harness !== 'opencode') {

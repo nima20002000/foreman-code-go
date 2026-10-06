@@ -87,7 +87,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     const lease = this.capture(this.frame(input))
     try { return await lease.request(signal) } finally { await this.release(lease) }
   }
-  private adopt(raw: unknown) {
+  private adopt(raw: unknown, attachment?: NativeSessionReference) {
     const value = z.object({ receipt: WorkerConversationReceiptSchema.optional() }).passthrough().parse(raw)
     const receipt = value.receipt
     if (!receipt) return undefined
@@ -97,7 +97,9 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     }
     if (this.receipt && (receipt.revision < this.receipt.revision
       || this.receipt.session && !isDeepStrictEqual(receipt.session, this.receipt.session)
-      || this.receipt.nativeOwner && !isDeepStrictEqual(receipt.nativeOwner, this.receipt.nativeOwner))) {
+      || this.receipt.nativeOwner && !isDeepStrictEqual(receipt.nativeOwner, this.receipt.nativeOwner)
+        && (!attachment || !isDeepStrictEqual(this.receipt.session, attachment)
+          || !isDeepStrictEqual(receipt.session, attachment)))) {
       conflict('The original worker native owner changed.')
     }
     this.receipt = receipt
@@ -151,7 +153,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
       await this.releaseCredential()
     } } })
     try {
-      const receipt = this.adopt(await lease.request(signal))
+      const receipt = this.adopt(await lease.request(signal), mode === 'attach' ? source : undefined)
       if (!receipt?.session) conflict('Native creation is unresolved; a replacement session will not be created.')
       if (mode === 'attach' && !isDeepStrictEqual(receipt.session, source)) conflict('The worker attached a different session.')
       if (this.options.previousBinding) {
@@ -163,6 +165,20 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   async createSession(start: NativeSessionStart, signal?: AbortSignal) { return this.open(start, 'create', undefined, signal) }
   async attachSession(session: NativeSessionReference, start: NativeSessionStart, signal?: AbortSignal) {
+    if (this.harness === 'opencode' && this.options.openCodeFiles && !this.options.previousBinding) {
+      this.startFields(start)
+      const record = this.adopt(await this.request({ method: 'conversation.status' }, signal))
+      if (!record?.session || !isDeepStrictEqual(record.session, session)) conflict('The persisted worker session changed.')
+      for (const root of record.openCodeFileRoots ?? []) {
+        const turn = record.turns.find(value => value.correlationId === root.correlationId)
+        if (!turn?.nativeTurnId) conflict('The file turn has no persisted native acknowledgement.')
+        const frame = this.frame({ method: 'conversation.recover-files', session,
+          configuration: this.options.configuration, correlationId: root.correlationId,
+          ...(turn.sessionMode ? { sessionMode: turn.sessionMode } : {}) })
+        const lease = this.capture(frame, { recoveredTurnId: turn.nativeTurnId })
+        try { this.adopt(await lease.request(signal)) } finally { await this.release(lease) }
+      }
+    }
     return this.open(start, 'attach', session, signal)
   }
   async forkSession(source: NativeSessionReference, start: NativeSessionStart, signal?: AbortSignal) {

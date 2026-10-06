@@ -68,7 +68,8 @@ export class MainWorkerConversationBridge {
     if (input.recoveredTurnId) {
       const files = request.binding.harness === 'codex' && admission.callbacks.files
         || request.binding.harness === 'opencode' && admission.callbacks.openCodeFiles
-      if (request.method !== 'conversation.reconcile' || !request.correlationId || !files) denied()
+      if (!['conversation.reconcile', 'conversation.recover-files'].includes(request.method)
+        || !('correlationId' in request) || !request.correlationId || !files) denied()
       admission.identities.set(request.correlationId, { nativeTurnId: input.recoveredTurnId })
     }
     this.admissions.set(admissionId, admission)
@@ -166,7 +167,8 @@ export class MainWorkerConversationBridge {
       const request = admission.request
       const session = 'session' in request ? request.session : admission.session
       const identity = callback.identity
-      const recovering = request.method === 'conversation.reconcile' && request.correlationId !== undefined
+      const recovering = (request.method === 'conversation.reconcile' || request.method === 'conversation.recover-files')
+        && request.correlationId !== undefined
         && admission.identities.get(request.correlationId)?.nativeTurnId === identity.nativeTurnId
       if (!admission.openCodeFiles || callback.binding.harness !== 'opencode'
         || callback.binding.appMcpAccess !== 'none'

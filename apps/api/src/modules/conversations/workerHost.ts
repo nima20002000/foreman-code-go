@@ -44,6 +44,8 @@ export interface WorkerConversationHostPorts {
     request: WorkerConversationRpcRequest): Promise<WorkerConversationAllocation>
   readCompaction?(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.compact-read' }>,
     record: WorkerConversationReceipt, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<CompactionState>
+  recoverFileVersions?(record: WorkerConversationReceipt,
+    request: Extract<WorkerConversationRpcRequest, { method: 'conversation.recover-files' }>, signal: AbortSignal): Promise<void>
   /** Native callbacks stay behind Main's persisted identity acknowledgement. */
   observeSession(binding: WorkerConversationBinding, session: NativeSessionReference,
     request: WorkerConversationRpcRequest, signal: AbortSignal): Promise<void>
@@ -443,6 +445,23 @@ export class WorkerConversationHost {
         ...(request.inspection.phase ? { phase: request.inspection.phase } : {}), signal })
     }
     if (request.method === 'conversation.open') return this.open(request, connection, signal)
+    if (request.method === 'conversation.recover-files') {
+      validateConfiguration(request.binding, request.configuration)
+      const record = await this.ports.journal.read(request.binding)
+      if (!record || !isDeepStrictEqual(record.session, request.session) || request.binding.harness !== 'opencode') {
+        unavailable('File recovery requires the original OpenCode conversation.')
+      }
+      const turn = record.turns.find(value => value.correlationId === request.correlationId)
+      if (!turn?.nativeTurnId || (turn.sessionMode ?? 'regular') !== (request.sessionMode ?? 'regular')) {
+        unavailable('The original file turn or its mode changed.')
+      }
+      if (!this.residents.has(request.binding.owner.conversationId)) {
+        if (!this.ports.recoverFileVersions) unavailable('The native file versions require recovery before attachment.')
+        await this.ports.recoverFileVersions(record, request, signal)
+        await this.authorize(request, connection, signal)
+      }
+      return { receipt: await this.ports.journal.read(request.binding) }
+    }
     if (request.method === 'conversation.refresh-mcp') {
       const resident = await this.prepare(request, connection, signal)
       if (!resident.allocation.deliverClaudeCredential || request.binding.harness !== 'claude') {

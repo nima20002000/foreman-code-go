@@ -240,6 +240,10 @@ export async function createInstalledWorkerConversations(input: {
     journal: conversationJournal,
     allocate: (binding, configuration, connection) => allocate(binding, configuration, connection, 'chat'),
     prepare: (binding, configuration, connection) => allocate(binding, configuration, connection, 'preparation'),
+    recoverFileVersions: (record, request, signal) => openCodeDirectories.cleanupClosed({ ...record,
+      openCodeFileRoots: record.openCodeFileRoots?.filter(root => root.correlationId === request.correlationId) ?? [],
+    }, input.registry, signal, workerOpenCodeVersionRecovery({ record, request,
+      configuration: request.configuration, callbacks })),
     recover: (record, configuration, connection, signal, request) => recoverWorkerConversation({
       record, configuration, connection, signal, request, registry: input.registry, journal: conversationJournal,
       allocate: () => allocate(request.method === 'conversation.open' && request.previousBinding
