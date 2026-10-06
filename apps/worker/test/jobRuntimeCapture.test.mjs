@@ -75,6 +75,24 @@ test('read-only package policy queries do not copy dependencies but install stil
   assert.equal(await readFile(join(scratch, 'seed-receipt.sha256'), 'utf8'), hash(receipt));
 });
 
+test('offline seeding accepts runner-created empty private directories and refuses populated or linked destinations', async t => {
+  const f = await offlineSeedFixture(t);
+  const receipt = Buffer.from(JSON.stringify(f.receipt));
+  const scratch = join(f.directory, 'runner-scratch');
+  for (const name of ['pnpm-store', 'cache/pnpm']) await mkdir(join(scratch, name), { recursive: true, mode: 0o700 });
+  await copyVerificationSeed(f.directory, scratch, receipt);
+  assert.equal(await readFile(join(scratch, 'pnpm-store/index.db'), 'utf8'), 'closed store');
+  const occupied = join(f.directory, 'occupied-scratch');
+  await mkdir(join(occupied, 'pnpm-store'), { recursive: true, mode: 0o700 });
+  await writeFile(join(occupied, 'pnpm-store/original'), 'retained original');
+  await assert.rejects(copyVerificationSeed(f.directory, occupied, receipt));
+  assert.equal(await readFile(join(occupied, 'pnpm-store/original'), 'utf8'), 'retained original');
+  const linked = join(f.directory, 'linked-scratch');
+  await mkdir(linked, { mode: 0o700 });
+  await symlink(join(scratch, 'pnpm-store'), join(linked, 'pnpm-store'));
+  await assert.rejects(copyVerificationSeed(f.directory, linked, receipt));
+});
+
 test('offline seed validates every locked release at the strict 48-hour boundary and verifies captured bytes', async t => {
   const f = await offlineSeedFixture(t);
   assert.equal(validateSeedReceipt(f.receipt, f.options), f.receipt);

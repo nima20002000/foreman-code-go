@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { cp, mkdir, readFile, writeFile, lstat, readdir } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PACKAGE_MANAGER, RELEASE_AGE_MINUTES, sha256 } from './seed-policy.mjs';
 
@@ -78,6 +78,20 @@ async function createVerificationDirectories(scratchDirectory) {
   }
 }
 
+async function copySeedDirectory(source, destination) {
+  const existing = await lstat(destination).catch(error => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  const options = { recursive: true, force: false, errorOnExist: true };
+  if (!existing) return cp(source, destination, options);
+  if (!existing.isDirectory() || existing.uid !== process.getuid() || existing.mode & 0o077
+    || (await readdir(destination)).length) {
+    throw new Error('Seed destination must be a fresh private directory.');
+  }
+  for (const name of await readdir(source)) await cp(join(source, name), join(destination, name), options);
+}
+
 export async function copyVerificationSeed(seedDirectory, scratchDirectory, receiptBytes) {
   await createVerificationDirectories(scratchDirectory);
   const marker = `${scratchDirectory}/seed-receipt.sha256`;
@@ -86,8 +100,8 @@ export async function copyVerificationSeed(seedDirectory, scratchDirectory, rece
     throw error;
   });
   if (existing === null) {
-    await cp(`${seedDirectory}/pnpm-store`, `${scratchDirectory}/pnpm-store`, { recursive: true, force: false, errorOnExist: true });
-    await cp(`${seedDirectory}/registry-cache`, `${scratchDirectory}/cache/pnpm`, { recursive: true, force: false, errorOnExist: true });
+    await copySeedDirectory(`${seedDirectory}/pnpm-store`, `${scratchDirectory}/pnpm-store`);
+    await copySeedDirectory(`${seedDirectory}/registry-cache`, `${scratchDirectory}/cache/pnpm`);
     await writeFile(marker, sha256(receiptBytes), { flag: 'wx', mode: 0o600 });
   } else if (existing !== sha256(receiptBytes)) throw new Error('Job-local store belongs to another approved seed.');
 }
