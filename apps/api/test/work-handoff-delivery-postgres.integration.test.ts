@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import type pg from 'pg'
+import pg from 'pg'
+import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
 import { ExecutionResultSchema, HarnessExecutionSchema, type HarnessExecution, type ExecutionResult } from '@foreman-code/contracts'
 import {
@@ -165,6 +166,48 @@ function returnPreview(t: Awaited<ReturnType<typeof acceptedReview>>, output: Wo
 
 const postgresDescribe = describe.skipIf(process.env.NIM2691_POSTGRES !== '1')
 postgresDescribe('handoff delivery after terminal acceptance', () => {
+  it.each([false, true])('waits for a closing caller after accepted-review recovery (work failed: %s)', async failed => {
+    let caller: pg.Client | undefined
+    let closing = Promise.resolve()
+    let closed = false
+    let closeError: unknown
+    const failure = new Error('Delivery verification failed')
+    try {
+      const work = taskDatabase(async (pool, _directory, connectionString) => {
+        await applyApplicationMigrations(pool)
+        const t = await acceptedReview(pool, {
+          routing: { kind: 'return', requestId: 'review-request', outcome: 'accepted' },
+          data: { latestDeliverable: { revision: 1 }, remainingFindings: [] },
+        })
+        let owner = await acquireOwner(pool, t.run.id)
+        await owner.release()
+        owner = await acquireOwner(pool, t.run.id)
+        try {
+          const store = new RepeatRunRepository(owner, t.host, t.version)
+          expect((await store.returnWork('review-execution')).value).toMatchObject({
+            requestId: 'review-request', outcome: 'accepted', latestDeliverable: { revision: 1 },
+          })
+        } finally { await owner.release() }
+        caller = new pg.Client({ connectionString })
+        await caller.connect()
+        await caller.query('select 1')
+        const connected = caller
+        closing = delay(200).then(() => connected.end()).then(
+          () => { closed = true },
+          error => { closeError = error },
+        )
+        if (failed) throw failure
+        return 'delivery verified'
+      })
+      if (failed) await expect(work).rejects.toBe(failure)
+      else await expect(work).resolves.toBe('delivery verified')
+      expect(closed).toBe(true)
+      expect(closeError).toBeUndefined()
+    } finally {
+      await closing
+      await caller?.end()
+    }
+  }, 30_000)
   it.each([false, true])('preserves accepted review findings without a revision activation (restart=%s)', async (restart) => {
     await taskDatabase(async (pool) => {
       await applyApplicationMigrations(pool)

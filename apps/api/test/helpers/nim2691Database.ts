@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 import pg from 'pg'
 import { privateFixtureDirectory, withPrivateFixtureDirectories } from './privateFixtureDirectory.js'
 
@@ -37,8 +38,15 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   catch (error) { cleanupErrors.push(error) }
   try {
     if (created) {
-      const callers = await admin.query<{ count: number }>(
+      const deadline = Date.now() + 2000
+      let callers = await admin.query<{ count: number }>(
         'select count(*)::int as count from pg_stat_activity where datname=$1', [name])
+      // Local socket closure can finish before PostgreSQL removes its backend.
+      while (callers.rows[0]?.count !== 0 && Date.now() < deadline) {
+        await delay(20)
+        callers = await admin.query<{ count: number }>(
+          'select count(*)::int as count from pg_stat_activity where datname=$1', [name])
+      }
       if (callers.rows[0]?.count !== 0) {
         cleanupErrors.push(new Error('Native fixture database still had active callers during teardown.'))
       }
