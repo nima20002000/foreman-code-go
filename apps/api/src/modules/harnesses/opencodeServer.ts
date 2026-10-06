@@ -404,7 +404,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       const combined = this.signal(signal)
       await this.ready(combined)
       if (state.admissionPending || state.turn && !state.turn.terminalResult
-        || await this.ownedStatus(session, state, combined) !== 'idle' || await this.pending(session, combined)) {
+        || await this.ownedStatus(session, state, combined) !== 'idle'
+        || (await this.pendingReady(session, combined)).length > 0) {
         throw new OpenCodeNativeDeliveryError('OPENCODE_SESSION_BUSY', 'Wait for native work and approvals to finish.', 'definite')
       }
       const page = await this.messagePage(session.nativeSessionId, state.directory, undefined, combined)
