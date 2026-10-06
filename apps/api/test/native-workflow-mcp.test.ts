@@ -41,6 +41,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
   const previousHome = process.env.CODEX_HOME
   const previousLauncherDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
   const previousSourceLauncher = process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
+  const previousOpenCodeConfig = process.env.OPENCODE_CONFIG
   let restore: (() => Promise<void>) | undefined
   try {
     const home = join(directory, 'source-home')
@@ -67,7 +68,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
     restore = await configureNativeWorkflowMcp({ projectDirectory,
       runtimeDirectory: join(directory, 'runtime'), codexBinary: 'recorded', openCodeBinary: 'recorded' })
     const ownedHome = process.env.CODEX_HOME!
-    const configured = JSON.parse(await readFile(join(projectDirectory, 'opencode.json'), 'utf8')) as {
+    const configured = JSON.parse(await readFile(process.env.OPENCODE_CONFIG!, 'utf8')) as {
       mcp: Record<string, { type: string; command: string[]; environment: Record<string, string> }>
     }
     const entry = configured.mcp[identity.name]!
@@ -80,6 +81,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
     restore = undefined
     expect(process.env.CODEX_HOME).toBe(home)
     expect(process.env.FOREMAN_CODE_APP_MCP_DIRECTORY).toBe(restoredLauncherDirectory)
+    expect(process.env.OPENCODE_CONFIG).toBe(previousOpenCodeConfig)
     await expect(access(ownedHome)).rejects.toMatchObject({ code: 'ENOENT' })
   } finally {
     try { await restore?.() }
@@ -90,6 +92,8 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
       else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previousLauncherDirectory
       if (previousSourceLauncher === undefined) delete process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
       else process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY = previousSourceLauncher
+      if (previousOpenCodeConfig === undefined) delete process.env.OPENCODE_CONFIG
+      else process.env.OPENCODE_CONFIG = previousOpenCodeConfig
       await rm(directory, { recursive: true, force: true })
     }
   }
