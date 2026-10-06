@@ -28,8 +28,30 @@ import { opencodeQualificationSuite } from '../../src/modules/harnesses/qualific
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { installFixtureMcp } from './installFixtureMcp.js'
+import { z } from 'zod'
 
 const execute = promisify(execFile)
+const SourceSnapshot = z.object({ commit: z.string().regex(/^[a-f0-9]{40}$/),
+  files: z.array(z.object({ path: z.string().min(1), gitBlobSha1: z.string().regex(/^[a-f0-9]{40}$/),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).min(1).max(10000) }).strict()
+
+async function verifyWorkerSource(manifest: Record<string, unknown>, commit: string) {
+  const snapshot = SourceSnapshot.parse(manifest.sourceSnapshot)
+  assert.equal(snapshot.commit, manifest.commit)
+  const paths = snapshot.files.map(file => file.path)
+  assert.equal(new Set(paths).size, paths.length)
+  for (const path of paths) {
+    assert.ok(!path.startsWith('/') && !/[\x00-\x1f]/.test(path)
+      && path.split('/').every(part => part && part !== '.' && part !== '..'))
+  }
+  const required = ['scripts/build-worker-artifact.mjs', 'scripts/worker-api-allowlist.json', 'pnpm-lock.yaml',
+    'apps/worker/src/workerFactory.mjs', 'apps/worker/src/cli.mjs']
+  assert.ok(required.every(path => paths.includes(path)))
+  const hashes = (await execute('git', ['rev-parse', ...paths.map(path => `${commit}:${path}`)],
+    { maxBuffer: 2 * 1024 * 1024 })).stdout.trim().split('\n')
+  assert.deepEqual(hashes, snapshot.files.map(file => file.gitBlobSha1),
+    'The Worker build inputs differ from this committed checkout.')
+}
 const actions: ManagementAction[] = ['settings:read', 'settings:update', 'harnesses:read', 'harnesses:update',
   'devices:read', 'capabilities:read', 'operator_chat:read', 'operator_chat:write', 'agent_chat:read', 'agent_chat:write',
   'workspaces:read', 'workspaces:create', 'workspace_locations:read', 'workspace_locations:provision',
@@ -310,7 +332,7 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
     const manifest: unknown = JSON.parse(manifestBytes.toString('utf8'))
     assert.ok(manifest && typeof manifest === 'object' && 'commit' in manifest)
     const sourceCommit = (await execute('git', ['rev-parse', 'HEAD'])).stdout.trim()
-    assert.equal(manifest.commit, sourceCommit, 'The installed Worker must contain this committed source.')
+    await verifyWorkerSource(manifest as Record<string, unknown>, sourceCommit)
     await installerCommand(join(artifact, 'src/install-cli.mjs'), ['setup', '--artifact', resolve(artifact),
       '--manifest-sha256', createHash('sha256').update(manifestBytes).digest('hex')], environment)
     const state = join(home, '.local/state/graphql-worker')
