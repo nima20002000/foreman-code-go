@@ -45,7 +45,7 @@ export async function inspectOpenCodeMcpSources(directory: string, configDirecto
   for (const file of [...candidates].sort()) {
     signal.throwIfAborted()
     if (resolve(file) === resolve(selectedFile)) continue
-    inspect(file, await readNativeUserFile(file, true))
+    inspect(file, await readNativeUserFile(file, { whenMissing: '{}\n' }))
   }
   if (process.env.OPENCODE_CONFIG_CONTENT) inspect('OPENCODE_CONFIG_CONTENT', process.env.OPENCODE_CONFIG_CONTENT)
   return { ownership, revision: fingerprint(evidence) }

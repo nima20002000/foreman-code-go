@@ -69,7 +69,7 @@ export class CodexMcpConnections implements NativeMcpAdapter {
       await this.control(async (transport, binary, environment) => {
         const current = await this.inspect(transport, binary, environment, signal)
         if (current.revision !== snapshot.revision) throw new DomainError('REVISION_CONFLICT', 'Native MCP configuration changed. Refresh and review a new change.', 409)
-        const source = await readNativeUserFile(current.file)
+        const source = await readNativeUserFile(current.file, { whenMissing: '', requireDirectory: true })
         await backupNativeUserFile(current.file, source)
         signal.throwIfAborted()
         // Exactly one irreversible native operation. A later error is uncertain.
