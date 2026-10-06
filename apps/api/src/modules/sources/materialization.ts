@@ -316,8 +316,11 @@ export async function archiveMaterializationClaim(receipt: MaterializationReceip
     await withClaimLock(root, async () => {
       if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution ownership is not reconciled.')
       signal?.throwIfAborted()
-      const name = sourceMaterializationClaimName(binding, { ...receipt }, receipt.quota), releasedName = 'released-claim.json'
+      const name = sourceMaterializationClaimName(binding, { ...receipt }, receipt.quota)
+      const releasedName = receipt.quota ? `released-binding-${receipt.materializationId}.json` : 'released-claim.json'
       const directory = await materializationDirectory(root, receipt)
+      // Controller claims stay in their original project; ext4 forbids cross-project rename.
+      const releaseDirectory = receipt.quota ? root : directory
       const validateClaim = async (lock: FileHandle): Promise<void> => {
         signal?.throwIfAborted()
         const stat = await lock.stat()
@@ -361,7 +364,7 @@ export async function archiveMaterializationClaim(receipt: MaterializationReceip
           }
         } finally { await record.close() }
         signal?.throwIfAborted()
-        const released = await open(anchored(directory, releasedName), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
+        const released = await open(anchored(releaseDirectory, releasedName), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
           if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
           throw error
         })
@@ -394,7 +397,7 @@ export async function archiveMaterializationClaim(receipt: MaterializationReceip
           // Absence alone is never accepted as evidence that release completed.
           if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution ownership is not reconciled.')
           signal?.throwIfAborted()
-          await rename(anchored(root, name), anchored(directory, releasedName))
+          await rename(anchored(root, name), anchored(releaseDirectory, releasedName))
           signal?.throwIfAborted()
           await lock.sync()
           signal?.throwIfAborted()

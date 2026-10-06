@@ -3,8 +3,8 @@ import { sourceMaterializationClaimName } from './quotaClaims.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, open, readdir, readFile, rm, writeFile, symlink } from 'node:fs/promises'
-import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { join, dirname } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
 import { sourceMaterializationParent, type RootBinding } from '@foreman-code/contracts/source-materialization'
 import type { JobQuotaReader } from '../jobs/quotaOwnership.js'
@@ -13,7 +13,17 @@ import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+const projectDirectories = vi.hoisted(() => [] as string[])
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return { ...actual, rename: async (from: string, to: string) => {
+    const source = await actual.realpath(dirname(from)), destination = await actual.realpath(dirname(to))
+    const project = (path: string) => projectDirectories.find(directory => path === directory || path.startsWith(`${directory}/`)) ?? 'controller'
+    if (project(source) !== project(destination)) throw Object.assign(new Error('cross-project rename'), { code: 'EXDEV' })
+    return actual.rename(from, to)
+  } }
+})
+afterEach(async () => { projectDirectories.length = 0; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function fixture(slotCount = 2) {
   const root = await privateFixtureDirectory('job-source-quota-')
   roots.push(root)
@@ -67,6 +77,20 @@ async function fixture(slotCount = 2) {
 }
 
 describe('per-Job source quota ownership', () => {
+  it('releases and reuses a quota slot when the filesystem rejects cross-project renames', async () => {
+    const f = await fixture(1)
+    projectDirectories.push(...f.quota.pool.slots.map(slot => join(f.root, slot.namespace)))
+    const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    await releaseMaterializationClaim(receipt, async () => 'released', f.quota)
+    await releaseMaterializationClaim(receipt, async () => 'released', f.quota)
+    const successor = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    expect(successor.materializationId).not.toBe(receipt.materializationId)
+    expect(successor.quota).toEqual(receipt.quota)
+    await releaseMaterializationClaim(receipt, async () => 'released', f.quota)
+    await expect(f.materializer().verify(successor, { binding: f.binding, attempt: {
+      placementHash: successor.placementHash, executionId: successor.executionId, attemptId: successor.attemptId,
+      keyRevision: successor.keyRevision, authorizationRevision: successor.authorizationRevision } })).resolves.toBeUndefined()
+  })
   it.each([4, 2])('prepares %i concurrent Jobs from one root and recovers their independent quotas after restart', async count => {
     const f = await fixture(count)
     const attempts = Array.from({ length: count }, () => f.attempt())
