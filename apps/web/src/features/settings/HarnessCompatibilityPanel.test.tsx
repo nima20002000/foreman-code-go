@@ -162,11 +162,11 @@ describe('Harness Settings compatibility feedback', () => {
     expect(screen.getAllByText('Codex local check passed')).toHaveLength(1)
     expect(attempts).toBe(1)
   })
-  it('provides an actionable permission error toast without changing the report', async () => {
+  it.each([401, 403])('explains unavailable local API access (%i) without changing the report', async status => {
     mount(both())
-    server.use(http.post('*/api/management/harnesses/codex/compatibility/retry', () => HttpResponse.json({ error: { code: 'ACCESS_DENIED', message: 'Forbidden.' } }, { status: 403 })))
+    server.use(http.post('*/api/management/harnesses/codex/compatibility/retry', () => HttpResponse.json({ error: { code: 'ACCESS_DENIED', message: 'Forbidden.' } }, { status })))
     fireEvent.click(await screen.findByRole('button', { name: 'Retry Codex check' }))
-    expect(await screen.findByText(/Your account cannot retry harness checks/)).toBeInTheDocument()
+    expect(await screen.findByText(/Access is unavailable\. Check the local API connection, then try again\./)).toBeInTheDocument()
     expect(screen.getByText('Check failed')).toBeInTheDocument()
   })
 })
