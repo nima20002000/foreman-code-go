@@ -135,7 +135,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           const operators = new PostgresOperatorRepository(pool)
           const current = await operators.ensure()
           const native = harness === 'codex'
-            ? { harness: 'codex' as const, model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
+            ? { harness: 'codex' as const, model: process.env.CODEX_TEST_MODEL ?? 'gpt-6-luna',
               reasoningEffort: 'medium' as const, sandbox: 'read-only' as const, serviceTier: 'standard' as const }
             : { harness: 'opencode' as const, model: process.env.OPENCODE_TEST_MODEL ?? 'opencode-go/gpt-5.6-luna',
               variant: 'low', nativeAgent: 'plan', thinking: false, autoApprove: false,
