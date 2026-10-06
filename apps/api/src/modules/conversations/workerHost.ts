@@ -85,6 +85,7 @@ function validateConfiguration(binding: WorkerConversationBinding, configuration
 export class WorkerConversationHost {
   private readonly residents = new Map<string, Resident>()
   private readonly preparations = new Map<string, Resident>()
+  private readonly inspections = new Set<WorkerConversationAllocation>()
   private readonly allocating = new Map<string, Promise<Resident>>()
   private readonly tasks = new Set<Promise<void>>()
   private readonly running = new Map<string, Promise<void>>()
@@ -189,6 +190,38 @@ export class WorkerConversationHost {
     })()
     this.allocating.set(id, task)
     try { return await task } finally { if (this.allocating.get(id) === task) this.allocating.delete(id) }
+  }
+
+  private async inspectConfiguration(
+    request: Extract<WorkerConversationRpcRequest, { method: 'conversation.inspect-entry' }>,
+    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal,
+  ) {
+    validateConfiguration(request.binding, request.configuration)
+    if (!this.ports.prepare) unavailable('Separate native configuration inspection is unavailable.')
+    const key = `inspection:${randomUUID()}`
+    const opening = this.ports.prepare(request.binding, request.configuration, connection, signal).then(async allocation => {
+      try {
+        this.current(request.binding, connection, signal)
+        this.inspections.add(allocation)
+        return { binding: request.binding, configuration: request.configuration, allocation }
+      } catch (error) {
+        await allocation.close()
+        throw error
+      }
+    })
+    this.allocating.set(key, opening)
+    let allocation: WorkerConversationAllocation | undefined
+    try {
+      allocation = (await opening).allocation
+      if (!allocation.inspector) unavailable('Native configuration inspection is unavailable.')
+      return await allocation.inspector.inspect({ ...request.inspection, signal })
+    } finally {
+      this.allocating.delete(key)
+      if (allocation) {
+        await allocation.close()
+        this.inspections.delete(allocation)
+      }
+    }
   }
 
   private recover(record: WorkerConversationReceipt, configuration: WorkerConversationConfiguration,
@@ -443,6 +476,11 @@ export class WorkerConversationHost {
     }
     if (request.method === 'conversation.compact-read') return this.readCompaction(request, connection, signal)
     if (request.method === 'conversation.inspect-entry') {
+      if (request.inspection.harness !== request.binding.harness
+        || request.inspection.workingDirectory !== request.binding.workingDirectory) {
+        unavailable('The native MCP inspector does not address this selected worker profile.')
+      }
+      if (request.inspection.phase === 'configuration') return this.inspectConfiguration(request, connection, signal)
       const resident = await this.prepare(request, connection, signal)
       if (request.inspection.harness !== request.binding.harness
         || request.inspection.workingDirectory !== request.binding.workingDirectory || !resident.allocation.inspector) {
@@ -614,10 +652,11 @@ export class WorkerConversationHost {
     this.lifetime.abort(new DomainError('ENGINE_RESTART', 'The worker native owner is shutting down.', 503))
     await Promise.allSettled([...this.tasks, ...this.allocating.values()])
     const results = await Promise.allSettled([...this.residents.values(), ...this.preparations.values()]
-      .map(resident => resident.allocation.close()))
+      .map(resident => resident.allocation.close()).concat([...this.inspections].map(allocation => allocation.close())))
     const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
     if (failures.length) throw new AggregateError(failures, 'Worker conversation cleanup is incomplete.')
     this.residents.clear()
     this.preparations.clear()
+    this.inspections.clear()
   }
 }

@@ -202,6 +202,30 @@ it('keeps fresh inspection separate from the first admitted Claude message owner
   expect(f.manager.creates).toBe(1)
 })
 
+it.each(['codex', 'opencode'] as const)('inspects %s configuration without borrowing or closing the active conversation owner', async harness => {
+  const f = await setup(harness)
+  const allocation = await f.ports.allocate(f.binding, f.configuration, f.connection, AbortSignal.timeout(1000))
+  const closeWriter = vi.fn(async () => {})
+  f.ports.allocate = async () => ({ ...allocation, close: closeWriter })
+  await f.request(f.open)
+  const before = await f.journal.conversations.read(f.binding)
+  const closeInspection = vi.fn(async () => {})
+  const inspect = vi.fn(async () => ({
+    harness, providerVersion: f.session.providerVersion, runnerId: `device:${f.connection.deviceId}`,
+    workingDirectory: f.binding.workingDirectory, inspectedAt: '2026-10-05T00:00:00.000Z',
+    entry: { name: 'foreman-code', transport: 'stdio' as const, enabled: true },
+  }))
+  f.ports.prepare = vi.fn(async () => ({ ...allocation, inspector: { inspect }, close: closeInspection }))
+  const result = await f.request({ method: 'conversation.inspect-entry', configuration: f.configuration,
+    inspection: { harness, runnerId: `device:${f.connection.deviceId}`, workingDirectory: f.binding.workingDirectory,
+      serverName: 'foreman-code', phase: 'configuration' } })
+  expect(result).toMatchObject({ entry: { name: 'foreman-code', enabled: true } })
+  expect(closeInspection).toHaveBeenCalledOnce()
+  expect(closeWriter).not.toHaveBeenCalled()
+  expect(await f.journal.conversations.read(f.binding)).toEqual(before)
+  expect(f.manager.creates).toBe(1)
+})
+
 it('inspects a cold saved chat on a separate preparation and rechecks its scoped credential before attachment', async () => {
   const f = await setup('claude')
   f.binding.appMcpAccess = 'scoped'
