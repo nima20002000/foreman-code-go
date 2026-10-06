@@ -627,7 +627,9 @@ it('[F23] keeps an unsupported-question turn fenced until its owned busy child i
 
 it('[F26] requires evidence for every named variant and represents no selection with an empty string', async () => {
   const server = new FixtureServer()
-  server.providers = { all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: {} } } }] }
+  server.providers = { ...object(server.providers),
+    all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: {} } } }],
+  }
   await assert.rejects(sessionFor(manager(server)), errorCode('OPENCODE_MODEL_UNAVAILABLE'))
   const noVariant = configuration(); noVariant.variant = ''
   const native = manager(server)
@@ -793,6 +795,6 @@ it('preserves the installed version and catalog response contract on malformed p
   const native = manager(server)
   try {
     await assert.rejects(native.discoverOptions('/workspace/project'), error => error instanceof Error
-      && error.message.includes('OpenCode 2.0.0') && error.message.includes('model catalog response contract'))
+      && error.message.includes('OpenCode 2.0.0') && error.message.includes('GET /provider response.all'))
   } finally { await native.dispose() }
 })

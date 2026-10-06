@@ -140,7 +140,10 @@ function installOpenCodeWire(start: WorkflowNativeSessionStart) {
     ].map((path) => [path, {}])), ...openCodeSchema().paths } })
     if (route === '/config') return json(effective)
     if (route === '/mcp') return json(status)
-    if (route === '/provider') return json({ all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }] })
+    if (route === '/provider') return json({
+      all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }],
+      default: { 'opencode-go': 'deepseek-v4.1-flash' }, connected: ['opencode-go'],
+    })
     if (route === '/agent') return json([{ name: 'build' }])
     if (route === '/session/status') return json({})
     if (route === '/session/run-source/fork') { sessions.set('chat-child', { ...structuredClone(source), id: 'chat-child' }); return json({ id: 'chat-child' }) }
