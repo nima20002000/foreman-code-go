@@ -19,6 +19,8 @@ export async function configureNativeWorkflowMcp(input: {
 }): Promise<() => Promise<void>> {
   const previous = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
   const previousCodexHome = process.env.CODEX_HOME
+  const previousOpenCodeConfig = process.env.OPENCODE_CONFIG
+  const previousOpenCodeConfigDirectory = process.env.OPENCODE_CONFIG_DIR
   // Codex's release build refuses helper aliases beneath TMPDIR.
   const profileDirectory = fileURLToPath(new URL('../../../../.logs/native-cli/', import.meta.url))
   await mkdir(profileDirectory, { recursive: true, mode: 0o700 })
@@ -28,6 +30,10 @@ export async function configureNativeWorkflowMcp(input: {
     else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previous
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME
     else process.env.CODEX_HOME = previousCodexHome
+    if (previousOpenCodeConfig === undefined) delete process.env.OPENCODE_CONFIG
+    else process.env.OPENCODE_CONFIG = previousOpenCodeConfig
+    if (previousOpenCodeConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR
+    else process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDirectory
     await rm(codexHomeDirectory, { recursive: true, force: true })
     try { await rmdir(profileDirectory) }
     catch (error) {
@@ -65,11 +71,19 @@ export async function configureNativeWorkflowMcp(input: {
     ].join('\n'), { mode: 0o600 })
     if (openCode) {
       const name = appMcpServerName(openCode.effective)
-      const token = openCode.credentialReferences?.[name] ?? APP_MCP_TOKEN
-      await writeFile(join(input.projectDirectory, 'opencode.json'), JSON.stringify({ mcp: { [name]: {
+      // Disposable storage can change launcher identity before this inspection.
+      // Keep the user entry's supported key when constructing the fixture entry;
+      // the resulting connection still requires native credential preflight.
+      const token = openCode.credentialReferences?.[name]
+        ?? appLauncherTokenName('opencode', record(openCode.user[name])) ?? APP_MCP_TOKEN
+      const configurationFile = join(input.projectDirectory, 'opencode.json')
+      await writeFile(configurationFile, JSON.stringify({ mcp: { [name]: {
         type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,
         environment: { [token]: `{env:${token}}` },
       } } }), { mode: 0o600 })
+      // OpenCode loads its custom directory after the explicit file and project config.
+      process.env.OPENCODE_CONFIG = configurationFile
+      process.env.OPENCODE_CONFIG_DIR = input.projectDirectory
     }
     return restore
   } catch (error) {

@@ -9,6 +9,7 @@ import { describe, it } from 'vitest'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexRpcError, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
+import { runCommand } from '../src/modules/harnesses/process.js'
 import { codexNativeAcceptanceFixture } from './helpers/codexNativeAcceptanceFixture.js'
 import { deferred } from './helpers/wave25Agent3.js'
 import { withCodexNativeHome } from './helpers/codexNativeHome.js'
@@ -41,8 +42,10 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
     const fixture = await codexNativeAcceptanceFixture()
     const signal = AbortSignal.timeout(120_000)
     try {
+      const installedVersion = await runCommand(binary, ['--version'], fixture.workingDirectory, signal)
+      assert.equal(installedVersion.exitCode, 0)
       const options = await manager.discoverModels(fixture.workingDirectory, signal)
-      assert.equal(options.providerVersion, process.env.CODEX_EXPECTED_LIVE_VERSION ?? 'codex-cli 0.160.0')
+      assert.equal(options.providerVersion, process.env.CODEX_EXPECTED_LIVE_VERSION ?? installedVersion.stdout.trim())
       const model = options.models.find(row => row.id === (process.env.CODEX_MODEL ?? 'gpt-6-luna'))
       assert(model)
       assert(model.reasoningEfforts.includes('medium'))
