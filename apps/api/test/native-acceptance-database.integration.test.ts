@@ -55,3 +55,45 @@ it('acceptance bootstrap supplies an isolated database and removes it after succ
     await rm(directory, { recursive: true, force: true })
   }
 }, 30_000)
+
+it('disposes only its owned database with leaked callers while retaining work failure', async () => {
+  const script = new URL('../../../scripts/test-native-acceptance.mjs', import.meta.url).href
+  const { withNativeAcceptanceDatabase } = await import(script)
+  const configured = process.env.TEST_DATABASE_URL
+  if (!configured) throw new Error('TEST_DATABASE_URL is required')
+  const server = new URL(configured)
+  server.pathname = '/postgres'
+  const admin = new pg.Pool({ connectionString: server.toString(), max: 1 })
+  const directory = await mkdtemp(join(tmpdir(), 'native-bootstrap-cleanup-'))
+  try {
+    for (const failed of [false, true]) {
+      let ownedName = ''
+      let client: pg.Client | undefined
+      const disconnects: unknown[] = []
+      const failure = new Error('Native verification failed')
+      const work = withNativeAcceptanceDatabase(configured, directory,
+        async ({ databaseUrl }: { databaseUrl: string }) => {
+          ownedName = decodeURIComponent(new URL(databaseUrl).pathname.slice(1))
+          client = new pg.Client({ connectionString: databaseUrl })
+          client.on('error', error => { disconnects.push(error) })
+          await client.connect()
+          await client.query('select 1')
+          if (failed) throw failure
+          return 0
+        })
+      try {
+        if (failed) await expect(work).rejects.toBe(failure)
+        else await expect(work).resolves.toMatchObject({ removed: true, exitCode: 1 })
+        expect(ownedName).not.toBe(decodeURIComponent(new URL(configured).pathname.slice(1)))
+        expect((await admin.query('select 1 from pg_database where datname=$1', [ownedName])).rowCount).toBe(0)
+        await expect(client!.query('select 1')).rejects.toThrow()
+        expect(disconnects.length).toBeGreaterThan(0)
+      } finally { await client?.end() }
+    }
+    expect((await admin.query('select 1 from pg_database where datname=$1',
+      [decodeURIComponent(new URL(configured).pathname.slice(1))])).rowCount).toBe(1)
+  } finally {
+    await admin.end()
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 30_000)

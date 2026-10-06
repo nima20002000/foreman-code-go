@@ -20,6 +20,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Close fixture-owned native processes and remove isolated databases and private directories after successful or failed acceptance runs, retaining cleanup and verification failures.
 - Accept the original first Codex transport generation for local and installed artifact storage, and recover its budget records without changing native identity.
 - Preserve original approval checkpoints when restart begins before the active graph invocation releases its Run owner.
 - Drain graph finalization writes along with activation tasks before Stop or restart releases ownership.

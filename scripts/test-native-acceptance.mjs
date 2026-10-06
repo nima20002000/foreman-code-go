@@ -71,13 +71,12 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
     try {
       if (record.created) {
         const callers = await admin.query('select count(*)::int as count from pg_stat_activity where datname=$1', [name])
-        if (callers.rows[0].count === 0) {
-          await admin.query(`drop database "${name}"`)
-          record.removed = true
-        } else {
-          console.error('Task-owned acceptance database retained because callers remain active.')
+        if (callers.rows[0].count !== 0) {
+          console.error('Task-owned acceptance database still had active callers during teardown.')
           record.exitCode = 1
         }
+        await admin.query(`drop database "${name}" with (force)`)
+        record.removed = true
       }
       await writeFile(join(evidence, 'database.json'), JSON.stringify(record, null, 2))
     } finally {

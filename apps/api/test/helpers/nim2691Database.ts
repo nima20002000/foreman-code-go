@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { rm } from 'node:fs/promises'
 import pg from 'pg'
-import { privateFixtureDirectory } from './privateFixtureDirectory.js'
+import { privateFixtureDirectory, withPrivateFixtureDirectories } from './privateFixtureDirectory.js'
 
 /** A fresh database and directory for this workstream only. Neither the admin
  * database nor an existing application database is migrated or cleaned. */
@@ -15,7 +14,6 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   const name = `nim2691_${randomBytes(12).toString('hex')}`
   const admin = new pg.Client({ connectionString: configured, connectionTimeoutMillis: 10000 })
   let pool: pg.Pool | undefined
-  let directory: string | undefined
   let created = false
   let outcome: { value: T } | { error: unknown }
   try {
@@ -25,20 +23,21 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
     created = true
     url.pathname = `/${name}`
     pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
-    directory = await privateFixtureDirectory('workflow-native-')
     assert.equal((await pool.query<{ name: string }>('select current_database() as name')).rows[0]?.name, name)
-    outcome = { value: await work(pool, directory, url.toString()) }
+    const ownedPool = pool
+    outcome = { value: await withPrivateFixtureDirectories(async () => {
+      const directory = await privateFixtureDirectory('workflow-native-')
+      return work(ownedPool, directory, url.toString())
+    }) }
   } catch (error) {
     outcome = { error }
   }
   const cleanupErrors: unknown[] = []
   try { await pool?.end() }
   catch (error) { cleanupErrors.push(error) }
-  try { if (created) await admin.query(`drop database "${name}"`) }
+  try { if (created) await admin.query(`drop database "${name}" with (force)`) }
   catch (error) { cleanupErrors.push(error) }
   try { await admin.end() }
-  catch (error) { cleanupErrors.push(error) }
-  try { if (directory) await rm(directory, { recursive: true, force: true }) }
   catch (error) { cleanupErrors.push(error) }
   if (cleanupErrors.length) {
     if ('error' in outcome) cleanupErrors.unshift(outcome.error)
