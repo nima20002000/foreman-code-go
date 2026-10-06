@@ -77,6 +77,19 @@ async function fixture(slotCount = 2) {
 }
 
 describe('per-Job source quota ownership', () => {
+  it('reclaims sealed input directories only after execution ownership is released', async () => {
+    const f = await fixture(1)
+    const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    const inputs = join(sourceMaterializationParent(receipt), 'tree/sealed-inputs')
+    await mkdir(inputs, { mode: 0o700 })
+    await writeFile(join(inputs, 'manifest.json'), '{}', { mode: 0o400 })
+    await chmod(inputs, 0o500)
+    await expect(releaseMaterializationClaim(receipt, async () => 'owned', f.quota)).rejects.toThrow()
+    expect(await readFile(join(inputs, 'manifest.json'), 'utf8')).toBe('{}')
+    await releaseMaterializationClaim(receipt, async () => 'released', f.quota)
+    const successor = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    expect(successor.quota).toEqual(receipt.quota)
+  })
   it('reclaims normal readable dependency directories beneath the private owned namespace', async () => {
     const f = await fixture(1)
     const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })

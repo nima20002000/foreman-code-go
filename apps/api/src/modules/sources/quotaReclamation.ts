@@ -62,7 +62,8 @@ async function removeDirectory(parent: FileHandle, name: string,
   }
   try {
     signal.throwIfAborted()
-    if ((await directory.stat()).uid !== process.getuid()) {
+    const metadata = await directory.stat()
+    if (metadata.uid !== process.getuid()) {
       throw new SourceError('SOURCE_DIRECTORY_NOT_PRIVATE', 'Quota workload directories must remain worker-owned.')
     }
     const filesystem = await identity(directory)
@@ -71,6 +72,9 @@ async function removeDirectory(parent: FileHandle, name: string,
       || filesystem.mountId !== receipt.quota!.filesystem.mountId) {
       throw new SourceError('SOURCE_MOUNT_CHANGED', 'Quota cleanup cannot cross a filesystem boundary.')
     }
+    // Closure is already confirmed; release sealed input directories through the owned handle.
+    if ((metadata.mode & 0o700) !== 0o700) await directory.chmod((metadata.mode & 0o777) | 0o700)
+    signal.throwIfAborted()
     const entries = await readdir(anchored(directory), { withFileTypes: true })
     signal.throwIfAborted()
     for (const entry of entries) {
