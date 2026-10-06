@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -11,6 +11,7 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexRpcError, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { codexNativeAcceptanceFixture } from './helpers/codexNativeAcceptanceFixture.js'
 import { deferred } from './helpers/wave25Agent3.js'
+import { withCodexNativeHome } from './helpers/codexNativeHome.js'
 // Workflow and live acceptance share the native session manager.
 
 const enabled = process.env.RUN_CODEX_APP_SERVER_TESTS === '1'
@@ -19,7 +20,23 @@ function outputText(output: unknown): string { return isObject(output) && typeof
 
 // The approval scenario uses POSIX shell syntax. It is not Windows acceptance.
 describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualified Codex app-server acceptance', () => {
-  it('selects and runs the installed Codex model at medium effort', async () => {
+  it.each(['success', 'failure'] as const)('cleans native storage after scenario %s', async outcome => {
+    const previous = process.env.CODEX_HOME
+    let home: string | undefined
+    const failure = new Error('Scenario failed.')
+    const operation = withCodexNativeHome(async directory => {
+      home = directory
+      await writeFile(join(directory, 'test-session'), 'owned test data')
+      if (outcome === 'failure') throw failure
+    })
+    if (outcome === 'failure') await assert.rejects(operation, error => error === failure)
+    else await operation
+    assert(home)
+    assert.equal(process.env.CODEX_HOME, previous)
+    await assert.rejects(stat(home), { code: 'ENOENT' })
+  })
+
+  it('selects and runs the installed Codex model at medium effort', () => withCodexNativeHome(async () => {
     const manager = new CodexAppServerSessionManager(binary)
     const fixture = await codexNativeAcceptanceFixture()
     const signal = AbortSignal.timeout(120_000)
@@ -40,9 +57,9 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       try { await manager.dispose() }
       finally { await fixture.close() }
     }
-  }, 120_000)
+  }), 120_000)
 
-  it('measures installed schemas, approves, continues, cancels and reattaches the same native session', async () => {
+  it('measures installed schemas, approves, continues, cancels and reattaches the same native session', () => withCodexNativeHome(async () => {
     const fixture = await codexNativeAcceptanceFixture()
     const marker = join(fixture.directory, 'approved-command.txt')
     const manager = new CodexAppServerSessionManager(binary)
@@ -122,7 +139,7 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       try { await Promise.all([manager.shutdown(), restored.shutdown()]) }
       finally { await fixture.close() }
     }
-  }, 240_000)
+  }), 240_000)
 })
 
 describe.skipIf(process.env.RUN_CODEX_LOGIN_BOOTSTRAP_TESTS !== '1')('fresh unauthenticated Codex control transport', () => {
