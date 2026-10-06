@@ -70,7 +70,11 @@ export async function configureNativeWorkflowMcp(input: {
     ].join('\n'), { mode: 0o600 })
     if (openCode) {
       const name = appMcpServerName(openCode.effective)
-      const token = openCode.credentialReferences?.[name] ?? APP_MCP_TOKEN
+      // Disposable storage can change launcher identity before this inspection.
+      // Keep the user entry's supported key when constructing the fixture entry;
+      // the resulting connection still requires native credential preflight.
+      const token = openCode.credentialReferences?.[name]
+        ?? appLauncherTokenName('opencode', record(openCode.user[name])) ?? APP_MCP_TOKEN
       await writeFile(join(input.projectDirectory, 'opencode.json'), JSON.stringify({ mcp: { [name]: {
         type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,
         environment: { [token]: `{env:${token}}` },

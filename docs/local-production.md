@@ -1,7 +1,8 @@
 # Local production on Linux
 
-From a desktop session, with Node 22+, the pinned Corepack/pnpm runtime, Docker
-Compose, user systemd, `/usr/bin/ss`, and `/usr/bin/google-chrome` installed:
+From a desktop session, with Node 22.23.2, the pinned Corepack/pnpm runtime,
+Docker Compose, user systemd, `/usr/bin/ss`, and `/usr/bin/google-chrome` installed.
+OpenCode execution also requires `/usr/bin/bwrap` with user namespace support:
 
 ```sh
 corepack pnpm production:install
@@ -61,6 +62,7 @@ Production storage is independent of development and tests:
 | Operator settings | `~/.config/graphql-production/operator.json` (0600) |
 | Workspaces/uploads | `~/.local/share/graphql-production/{workspaces,files}` |
 | Runs/cache | `~/.local/state/graphql-production/{runs,cache}` |
+| Owned OpenCode sessions and file materializations | `~/.local/state/graphql-production/runs/{opencode-sessions,chat-files}` |
 | Managed MCP launcher/routes | `~/.local/share/graphql/mcp/` (shared launcher; credential-scoped routes) |
 | Releases | `~/.local/lib/graphql-production/releases/`, selected by `current` |
 | API logs | `~/.local/state/graphql-production/logs/` (rotating, bounded) |
@@ -125,10 +127,13 @@ activation and readiness. Readiness verifies the database installation identity
 and selected compiled release before opening Chrome.
 
 Native harnesses use the desktop user's existing login files. The service keeps
-that user's `HOME`; without explicit XDG overrides, OpenCode reads its normal
-`~/.local/share/opencode/auth.json` and `~/.config/opencode` configuration. The
-installer keeps its cache separate and does not copy login files or change
-harness sandbox permissions.
+that user's `HOME`; without explicit XDG overrides, OpenCode loads the provider
+login from `~/.local/share/opencode/auth.json` and configuration from
+`~/.config/opencode`. The runtime copies that login into private, owner-specific
+OpenCode storage and isolates native history, media and file materializations.
+Its Bubblewrap namespace hides the API file vault and other native owners'
+storage. The installer keeps its cache separate; accepted harness permissions
+and file-tool grants still control each operation.
 
 For an environment-based provider credential, explicitly add the provider's
 variable, such as `OPENROUTER_API_KEY`, as a string in private `operator.json`,

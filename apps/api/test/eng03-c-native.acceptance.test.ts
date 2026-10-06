@@ -1,7 +1,7 @@
 import { timeRuntimeOperation } from '../src/infrastructure/runtimeTiming.js'
 import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -58,14 +58,26 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? harnessBinaries(process.env).codexBinary
     const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? harnessBinaries(process.env).openCodeBinary
     const manager = new CodexAppServerSessionManager(codexBinary)
+    const previousConfigHome = process.env.XDG_CONFIG_HOME
+    const previousConfigDirectory = process.env.OPENCODE_CONFIG_DIR
     let restore: (() => Promise<void>) | undefined
     try {
+      const configHome = join(directory, 'native-config')
+      const configDirectory = join(configHome, 'opencode')
+      await mkdir(configDirectory, { recursive: true, mode: 0o700 })
+      process.env.XDG_CONFIG_HOME = configHome
+      process.env.OPENCODE_CONFIG_DIR = configDirectory
+      await writeFile(join(configDirectory, 'opencode.json'), JSON.stringify({ mcp: { graphql: {
+        type: 'local', command: [process.execPath, '--version'], enabled: false,
+        environment: { GRAPHQL_MCP_TOKEN: '{env:GRAPHQL_MCP_TOKEN}' },
+      } } }), { mode: 0o600 })
       restore = await configureNativeWorkflowMcp({ projectDirectory: directory,
         runtimeDirectory: directory, codexBinary, openCodeBinary })
       const openCode = await inspectOpenCodeMcpConfiguration({ binary: openCodeBinary,
         workingDirectory: directory, serverName: APP_MCP_SERVER_NAME, pure: true })
       expect(openCode?.automaticEndpoint).toBe(true)
       expect(isSupportedAppMcpTokenName(openCode?.credentialEnvironmentVariable)).toBe(true)
+      expect(openCode?.credentialEnvironmentVariable).toBe('GRAPHQL_MCP_TOKEN')
       const configured = await manager.inspectMcpConfiguration(directory)
       expect(configured.configured.automaticEndpoint).toBe(true)
       const detection = new McpDetectionService(codexMcpInspectorAdapter(manager), 'http://127.0.0.1:1/mcp')
@@ -83,7 +95,13 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       try { await manager.dispose() }
       finally {
         try { await restore?.() }
-        finally { await rm(directory, { recursive: true, force: true }) }
+        finally {
+          if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+          else process.env.XDG_CONFIG_HOME = previousConfigHome
+          if (previousConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR
+          else process.env.OPENCODE_CONFIG_DIR = previousConfigDirectory
+          await rm(directory, { recursive: true, force: true })
+        }
       }
     }
   }, 90_000)
