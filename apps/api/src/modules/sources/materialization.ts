@@ -302,7 +302,9 @@ async function archiveMaterializationClaim(receipt: MaterializationReceipt,
  * exposing argv or accepting PID/path assertions from the caller. */
 export async function preparationChildrenClosed(namespace: string): Promise<boolean> {
   const entries = await readdir('/proc')
-  if (entries.length > 32768) return false
+  if (entries.length > 32768) {
+    throw new SourceError('source-reconciliation-unconfirmed', 'Process inspection exceeded its process limit.')
+  }
   const inside = (path: string) => path === namespace || path.startsWith(namespace + '/')
   for (const pid of entries.filter(value => /^\d+$/.test(value) && Number(value) !== process.pid)) {
     const directory = `/proc/${pid}`
@@ -313,17 +315,33 @@ export async function preparationChildrenClosed(namespace: string): Promise<bool
       // children; requiring ptrace access to them would invent host authority.
       const comm = (await readFile(`${directory}/comm`, 'utf8')).trim()
       if (!['git', 'flock', 'node', 'rsync', 'podman', 'crun'].includes(comm)) continue
-      if (inside(await readlink(`${directory}/cwd`))) return false
+      if (inside(await readlink(`${directory}/cwd`))) {
+        throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} still uses the source directory.`)
+      }
       const args = await open(`${directory}/cmdline`, constants.O_RDONLY)
       try {
         const bytes = Buffer.alloc(65536), result = await args.read(bytes, 0, bytes.length, 0)
-        if (result.bytesRead === bytes.length || bytes.subarray(0, result.bytesRead).toString().split('\0').some(inside)) return false
+        if (result.bytesRead === bytes.length) {
+          throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} exceeded the argument inspection limit.`)
+        }
+        if (bytes.subarray(0, result.bytesRead).toString().split('\0').some(inside)) {
+          throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} still references the source directory.`)
+        }
       } finally { await args.close() }
       const descriptors = await readdir(`${directory}/fd`)
-      if (descriptors.length > 8192) return false
-      for (const fd of descriptors) if (inside(await readlink(`${directory}/fd/${fd}`))) return false
+      if (descriptors.length > 8192) {
+        throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} exceeded the descriptor inspection limit.`)
+      }
+      for (const fd of descriptors) {
+        if (inside(await readlink(`${directory}/fd/${fd}`))) {
+          throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} still holds a source descriptor.`)
+        }
+      }
     } catch (error) {
-      if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return false
+      if (error instanceof SourceError) throw error
+      if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} could not be inspected.`, { cause: error })
+      }
     }
   }
   return true
@@ -362,8 +380,10 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
           || !equal(proof.filesystem, binding.filesystem)) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Closure proof belongs to another original preparation.')
         await reauthorize(); return proof
       }
-      if (!await nativeClosed() || !await preparationChildrenClosed(binding.canonicalPath))
-        throw new SourceError('source-reconciliation-unconfirmed', 'A native owner or source process is live or uncertain.')
+      if (!await nativeClosed()) {
+        throw new SourceError('source-reconciliation-unconfirmed', 'The native owner has not confirmed closure.')
+      }
+      await preparationChildrenClosed(binding.canonicalPath)
       await reauthorize()
       const lockName = `binding-${binding.rootId}.lock`, archive = await optionalRecord(archiveName), current = archive ?? await optionalRecord(lockName)
       let materializationId = owner.record?.receipt.materializationId ?? null
