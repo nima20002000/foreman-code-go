@@ -131,8 +131,17 @@ export async function runInstalledJobRuntimeQualification(input: InstalledJobQua
     return prior.result
   }
   if (prior && prior.phase !== 'received') return reconcileInstalledJobRuntimeQualification(input)
-  await input.assertAdmission(JobRuntimeNativeAdmissionRecordSchema.parse(input.admission))
-  await inspectInstalledJobRuntimeCandidate({ ...input, candidate })
+  await input.journal.qualificationAccept(input.admission, candidate)
+  try {
+    await input.assertAdmission(JobRuntimeNativeAdmissionRecordSchema.parse(input.admission))
+    await inspectInstalledJobRuntimeCandidate({ ...input, candidate })
+  } catch (error) {
+    await input.journal.qualificationConfirmNonEntry(input.admission.operationId)
+    const reason = error instanceof Error ? error.message : 'Qualification entry validation failed.'
+    const result = { outcome: 'denied' as const, closure: 'confirmed' as const, reasons: [reason.slice(0, 500)] }
+    await input.journal.qualificationResult(input.admission.operationId, result)
+    return result
+  }
   const authority: JobQualificationAuthority = { ...input.authority, async reserve(original, signal) {
     if (!same(original, candidate)) throw new Error('Original diagnostic candidate changed.')
     const reserved = await reserveInstalledJobQualification({ ...input, candidate, authority: input.authority, signal })
@@ -386,6 +395,13 @@ export async function reconcileInstalledJobRuntimeQualification(input: Installed
   const prior = await input.journal.qualificationStatus(input.admission.operationId)
   if (!prior || !same(prior.admission, input.admission) || !same(prior.candidate, input.candidate)) {
     throw new Error('Original qualification reconciliation receipt required.')
+  }
+  if (prior.phase === 'received') {
+    await input.journal.qualificationConfirmNonEntry(input.admission.operationId)
+    const result = { outcome: 'denied' as const, closure: 'confirmed' as const,
+      reasons: ['Qualification was interrupted before native entry.'] }
+    await input.journal.qualificationResult(input.admission.operationId, result)
+    return result
   }
   if (prior.result && prior.phase === 'closed') {
     await releaseQualificationQuotaClaims(input.journal, input.admission.operationId)

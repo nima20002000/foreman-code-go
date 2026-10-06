@@ -432,6 +432,17 @@ export class RemoteOperationJournal {
       return receipt
     })
   }
+  qualificationConfirmNonEntry(operationId: string) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId)
+      if (receipt.phase !== 'received' || receipt.launches.length || receipt.container || receipt.quotaClaims.length) {
+        throw new Error('Qualification native non-entry is unconfirmed')
+      }
+      receipt.phase = 'closed'
+      receipt.sequence++
+      return receipt
+    })
+  }
   qualificationResult(operationId: string, raw: unknown) {
     return this.change(data => {
       const receipt = this.qualificationReceipt(data, operationId), result = JobRuntimeQualificationResultRecordSchema.parse(raw)

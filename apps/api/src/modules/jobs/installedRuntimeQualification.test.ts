@@ -95,6 +95,26 @@ async function verificationReservationFixture() {
 }
 
 describe('actual qualification reservation seams with mocked native entry only', () => {
+  it('retains a rejected entry check as a closed non-entry result without launching a diagnostic', async () => {
+    const f = await fixture()
+    const rejection = new Error('fixture runtime metadata changed')
+    vi.spyOn(installedHost, 'inspectInstalledJobRuntimeCandidate').mockRejectedValue(rejection)
+    const result = await runInstalledJobRuntimeQualification({ ...f.input, configuration: null })
+    expect(result).toEqual({ outcome: 'denied', closure: 'confirmed', reasons: [rejection.message] })
+    expect((await f.journal.qualificationStatus(id))?.phase).toBe('closed')
+    expect((await f.journal.qualificationStatus(id))?.launches).toEqual([])
+    expect(f.registry.reserveLaunch).not.toHaveBeenCalled()
+  })
+  it('reconciles a received diagnostic using its persisted non-entry fence', async () => {
+    const f = await fixture()
+    await f.journal.qualificationAccept(f.admission, f.candidate)
+    expect(await reconcileInstalledJobRuntimeQualification(f.input)).toMatchObject({
+      outcome: 'denied', closure: 'confirmed',
+    })
+    expect((await f.journal.qualificationStatus(id))?.phase).toBe('closed')
+    expect(f.registry.closeOwner).not.toHaveBeenCalled()
+    expect(f.registry.reserveLaunch).not.toHaveBeenCalled()
+  })
   it('reopens a closed verification diagnostic and returns its original result without another reservation', async () => {
     const f = await verificationReservationFixture()
     const { input, candidate } = f
