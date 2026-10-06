@@ -9,6 +9,7 @@ import { PrivateSourceMaterializer, reconcileSourcePreparation } from './materia
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { sourceBindingHash } from './bindingHash.js'
+import { sourceMaterializationClaimName } from './quotaClaims.js'
 import { InstalledSourceExecutionHosts, type SourceAttemptAuthority, type RemoteSourceMaterializationHost } from './executionHosts.js'
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))) })
@@ -34,20 +35,22 @@ async function fixture(copy = true) {
     await mkdir(join(directory, receipt.materializationId, 'repository'), { mode: 0o700 })
     await writeFile(join(directory, receipt.materializationId, 'repository', 'partial-object'), 'original incomplete Git evidence', { mode: 0o600 })
   }
-  return { directory, owner, bytes, reconciliationId: randomUUID(), nativeClosed: vi.fn(async () => true), reauthorize: vi.fn(async () => {}) }
+  const claimName = sourceMaterializationClaimName(root.binding, attempt,
+    owner.record?.receipt.quota, owner.record?.receipt.claimScope ?? 'execution')
+  return { directory, owner, bytes, claimName, reconciliationId: randomUUID(), nativeClosed: vi.fn(async () => true), reauthorize: vi.fn(async () => {}) }
 }
 it('archives a closed claim, retains every source/private-repository byte and replays closure without touching a successor', async () => {
   const f = await fixture(), id = f.owner.record!.receipt.materializationId
-  const claim = await readFile(join(f.directory, `binding-${f.owner.root.binding.rootId}.lock`))
+  const claim = await readFile(join(f.directory, f.claimName))
   const proof = await vi.waitFor(() => reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize))
   expect(proof).toMatchObject({ materializationId: id, admissionClosed: true, childrenClosed: true, claimReleased: true, evidencePreserved: true })
   expect(await readFile(join(f.directory, `closed-preparation-${f.reconciliationId}.claim.json`))).toEqual(claim)
   expect(await readFile(join(f.directory, id, 'tree/source.txt'))).toEqual(f.bytes)
   expect(await readFile(join(f.directory, id, 'repository/partial-object'), 'utf8')).toBe('original incomplete Git evidence')
   const successor = Buffer.from('successor claim must remain exact')
-  await writeFile(join(f.directory, `binding-${f.owner.root.binding.rootId}.lock`), successor, { mode: 0o600 })
+  await writeFile(join(f.directory, f.claimName), successor, { mode: 0o600 })
   expect(await reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)).toEqual(proof)
-  expect(await readFile(join(f.directory, `binding-${f.owner.root.binding.rootId}.lock`))).toEqual(successor)
+  expect(await readFile(join(f.directory, f.claimName))).toEqual(successor)
 })
 it('retains a pre-activation failure with no Main materialization record or local claim', async () => {
   const f = await fixture(false)
@@ -66,7 +69,7 @@ it('routes Main workflow cleanup through original authorization and positive clo
     async () => { throw new Error('Cleanup must not allocate a native session') }, { authorize, closed })
   await expect(hosts.reconcilePreparation(f.reconciliationId, f.owner))
     .rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
-  expect(await readdir(f.directory)).toContain(`binding-${f.owner.root.binding.rootId}.lock`)
+  expect(await readdir(f.directory)).toContain(f.claimName)
   closed.mockResolvedValue(true)
   const closure = await vi.waitFor(() => hosts.reconcilePreparation(f.reconciliationId, f.owner))
   expect(closure).toMatchObject({ deviceId: null, workerInstallationId: null, claimReleased: true })
@@ -74,12 +77,12 @@ it('routes Main workflow cleanup through original authorization and positive clo
   expect(await readFile(join(f.directory, f.owner.record!.receipt.materializationId, 'tree/source.txt'))).toEqual(f.bytes)
 })
 it('does not accept an empty task set while an original namespace child is still live', async () => {
-  const f = await fixture(), child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: f.directory, stdio: 'ignore' })
+  const f = await fixture(), child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: join(f.directory, f.owner.record!.receipt.materializationId), stdio: 'ignore' })
   const closed = new Promise<void>(resolve => child.once('close', () => resolve()))
   await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
   try {
     await expect(reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)).rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
-    expect(await readdir(f.directory)).toContain(`binding-${f.owner.root.binding.rootId}.lock`)
+    expect(await readdir(f.directory)).toContain(f.claimName)
   } finally { child.kill('SIGKILL'); await closed }
   await vi.waitFor(async () => {
     const closure = await reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)
