@@ -66,10 +66,6 @@ export async function codexWorkflowRuntime(kind: 'questions' | 'form') {
       ] })
     f.run = WorkflowRunV3Schema.parse({ ...f.run, authorizationPrincipalId: authority.principal.id })
     await insertProviderRun(db.pool, f)
-    const user = await access.issue({ name: 'Codex workflow approver', audience: 'user', expiresAt: new Date(Date.now() + 600000),
-      grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: {
-        workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId], runIds: [f.run.id],
-      } }] })
     const managers = new ExecutionScopedNativeSessionManagerResolver(() =>
       provider.makeManager(undefined, {}, { appMcpAccess: 'scoped', responseJournal: journal }))
     const saver = new ApprovalPostgresSaver(db.pool, undefined, { schema: db.schema })
@@ -101,7 +97,7 @@ export async function codexWorkflowRuntime(kind: 'questions' | 'form') {
     const config = { configurable: { thread_id: f.run.id } }
     return { db, f, engine, native, runs, repository, service, saver, config, provider, journal, credentials, access,
       nativeCapture, nativeVerification: workflowCapture.verify,
-      principal: user.principal, authorizationPrincipalId: authority.principal.id,
+      authorizationPrincipalId: authority.principal.id,
       stop: () => stopProviderRun(runs, f, authority.principal.id),
       async pending() { return repository.list({ runId: f.run.id, limit: 100 }) },
       async receipts() { return (await db.pool.query(`select entity_id,effect_digest,first_sequence::text

@@ -23,7 +23,7 @@ export async function lockPrincipal(sql: GraphTransactionSql, snapshot: Manageme
       requireAuthorization(principal, 'interactions:respond', interaction)
       return principal
     }
-    // The local browser owner is an operator principal that the user-interaction
+    // The implicit local human is an operator principal that the user-interaction
     // route projects as a User with interaction grants. Re-apply that same
     // projection to the freshly locked (live, unrevoked) row.
     const effective = principal.audience === 'operator' && snapshot.audience === 'user'
