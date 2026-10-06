@@ -6,6 +6,15 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
+export function hasNativeTurnStarted(harness, execution, event) {
+  const session = execution.nativeSessionId
+  if (!session || event.executionId !== execution.id || event.connectionId?.startsWith('history-')) return false
+  if (harness === 'codex') return event.type === 'turn.started' && event.payload.threadId === session
+  if (harness === 'opencode') return event.type === 'message.updated'
+    && event.payload.info?.role === 'assistant' && event.payload.info.sessionID === session
+  return false
+}
+
 export function localProductionEnvironment(desktopHome, password) {
   const current = join(desktopHome, '.local/lib/graphql-production/current')
   const state = join(desktopHome, '.local/state/graphql-production')
@@ -28,7 +37,6 @@ export function localProductionEnvironment(desktopHome, password) {
     LOG_DIR: join(state, 'logs'),
     XDG_CACHE_HOME: join(state, 'cache'),
     LANGGRAPH_CHECKPOINT_SCHEMA: 'langgraph',
-    FOREMAN_CODE_DEV_BROWSER_ACCESS: '0',
     NODE_OPTIONS: '',
     NODE_PATH: '',
   }
@@ -152,18 +160,21 @@ export async function readEnvironment(path) {
 
 export async function preserveOperatorConfiguration(path, previous, owned, validate) {
   const canonicalName = key => key.replace(/^GRAPHQL_/, 'FOREMAN_CODE_')
+  const keepSetting = ([key]) => canonicalName(key) !== 'FOREMAN_CODE_DEV_BROWSER_ACCESS'
   const managed = new Set(Object.keys(owned).map(canonicalName))
-  resolveProductEnvironment(previous ?? {})
+  const previousSettings = Object.fromEntries(Object.entries(previous ?? {}).filter(keepSetting))
+  resolveProductEnvironment(previousSettings)
   let configuration
   try {
     configuration = JSON.parse(await readFile(path, 'utf8'))
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
-    configuration = Object.fromEntries(Object.entries(previous ?? {}).filter(([key]) => !managed.has(canonicalName(key))))
+    configuration = Object.fromEntries(Object.entries(previousSettings).filter(([key]) => !managed.has(canonicalName(key))))
   }
   if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) {
     throw new Error('Operator configuration must be an object of environment settings.')
   }
+  configuration = Object.fromEntries(Object.entries(configuration).filter(keepSetting))
   for (const [key, value] of Object.entries(configuration)) {
     if (managed.has(canonicalName(key))) {
       throw new Error(`${key} is managed by the installer; remove it from operator.json.`)

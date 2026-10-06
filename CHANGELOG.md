@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Observe each provider's native startup event during installed recovery verification, requiring the bound execution and session and rejecting replayed history.
+- Remove the installed test's runtime workspace after native cleanup on success and failure, while retaining production data and persisted audit history.
+- Retire the obsolete installer-owned browser-access setting during production updates, preserving native provider configuration and MCP security.
+
+### Changed
+
+- Verify compiled production hosting and credential-free local human reads/edits alongside authenticated MCP readback and denied scoped callers after the noauth upgrade.
+
 ## [0.0.40] - 2026-10-06
 
 ### Fixed

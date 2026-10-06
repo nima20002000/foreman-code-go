@@ -6,9 +6,48 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { preserveOperatorConfiguration, publish, readEnvironment, renderEnvironment,
+import { hasNativeTurnStarted, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment, renderEnvironment,
   waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+
+test('native startup requires a live provider event on the bound execution and session', () => {
+  const execution = { id: 'execution', nativeSessionId: 'session' }
+  const codex = { executionId: execution.id, type: 'turn.started', payload: { threadId: 'session' } }
+  const opencode = { executionId: execution.id, type: 'message.updated',
+    payload: { info: { role: 'assistant', sessionID: 'session' } } }
+  assert.equal(hasNativeTurnStarted('codex', execution, codex), true)
+  assert.equal(hasNativeTurnStarted('opencode', execution, opencode), true)
+  for (const [harness, event] of [['codex', codex], ['opencode', opencode]]) {
+    assert.equal(hasNativeTurnStarted(harness, { id: execution.id }, event), false)
+    assert.equal(hasNativeTurnStarted(harness, execution, { ...event, executionId: 'other' }), false)
+    assert.equal(hasNativeTurnStarted(harness, { ...execution, nativeSessionId: 'other' }, event), false)
+    assert.equal(hasNativeTurnStarted(harness, execution, { ...event, connectionId: 'history-replay' }), false)
+  }
+  assert.equal(hasNativeTurnStarted('opencode', execution,
+    { ...opencode, payload: { info: { role: 'user', sessionID: 'session' } } }), false)
+  assert.equal(hasNativeTurnStarted('opencode', execution,
+    { ...opencode, payload: { sessionID: 'session' }, type: 'session.idle' }), false)
+})
+
+test('production updates retire the browser-access setting while retaining native settings', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-retired-settings-'))
+  const path = join(directory, 'operator.json')
+  const owned = localProductionEnvironment('/owner/home', 'a'.repeat(64))
+  const native = { OPENCODE_BINARY: '/opt/owner/opencode' }
+  const retired = { FOREMAN_CODE_DEV_BROWSER_ACCESS: '0', GRAPHQL_DEV_BROWSER_ACCESS: '1' }
+  try {
+    assert.equal(Object.hasOwn(owned, 'FOREMAN_CODE_DEV_BROWSER_ACCESS'), false)
+    const first = await preserveOperatorConfiguration(path, { ...owned, ...native, ...retired }, owned, () => {})
+    assert.deepEqual(first, { ...native, ...owned })
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), native)
+    await writeFile(path, JSON.stringify({ ...native, ...retired }))
+    const updated = await preserveOperatorConfiguration(path, first, owned, () => {})
+    assert.deepEqual(updated, first)
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), native)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('renamed installer settings retain operator values and the existing database credential', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'production-renamed-settings-'))

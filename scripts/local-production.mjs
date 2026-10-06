@@ -189,6 +189,7 @@ async function install() {
   service('@NODE@ @APP@ @STATE@ @HOME@ @PATH@')
   await access('/usr/bin/docker', constants.X_OK)
   await access('/usr/bin/google-chrome', constants.X_OK)
+  await access('/usr/bin/ss', constants.X_OK)
   await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
   await run('corepack', ['pnpm', 'build'])
   const environment = await configureEnvironment()

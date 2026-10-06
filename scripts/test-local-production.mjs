@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { setTimeout as delay } from 'node:timers/promises'
-import { preserveOperatorConfiguration, publish, readEnvironment, readProductionIdentity,
+import { hasNativeTurnStarted, preserveOperatorConfiguration, publish, readEnvironment, readProductionIdentity,
   renderEnvironment, waitForProductionReady,
   withInstallationLock } from './local-production-runtime.mjs'
 
@@ -24,6 +24,16 @@ const origin = 'http://127.0.0.1:3041'
 async function systemctl(...args) {
   const { stdout } = await execute('/usr/bin/systemctl', ['--user', ...args], { timeout: 120_000 })
   return stdout.trim()
+}
+
+async function localRequest(path, { method = 'GET', body } = {}) {
+  const response = await fetch(new URL(path, origin), {
+    method, credentials: 'omit', headers: { origin, 'content-type': 'application/json' },
+    ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30_000),
+  })
+  const result = await response.json()
+  assert.equal(response.status, 200, JSON.stringify(result))
+  return result
 }
 
 async function waitUntil(read, accept, label, timeoutMs = 180_000) {
@@ -129,7 +139,8 @@ async function main() {
   const { Client } = await import(require.resolve('@modelcontextprotocol/sdk/client/index.js'))
   const { StreamableHTTPClientTransport } = await import(require.resolve('@modelcontextprotocol/sdk/client/streamableHttp.js'))
   const contracts = join(release, 'apps/api/node_modules/@foreman-code/contracts/dist')
-  const { ManagementActionSchema } = await import(pathToFileURL(join(contracts, 'management/index.js')))
+  const { ManagementActionSchema, LocalHumanAccessSchema, WorkspaceUpdateInputSchema } =
+    await import(pathToFileURL(join(contracts, 'management/index.js')))
   const { makeCurrentWorkflowFixture } = await import(pathToFileURL(join(contracts, 'wave25/index.js')))
   const { PostgresAccessService } = await import(pathToFileURL(join(release, 'apps/api/dist/modules/access/postgres.js')))
   const recoveryModules = join(release, 'apps/api/dist/modules/harnesses/recovery')
@@ -139,6 +150,12 @@ async function main() {
   const expected = await readProductionIdentity(release, environment.DATABASE_URL)
   const ready = () => waitForProductionReady({ origin, expected })
   await ready()
+  const readLocalHuman = async () => LocalHumanAccessSchema.parse(await localRequest('/api/local-human'))
+  const initialHuman = await readLocalHuman()
+  const dashboard = await fetch(new URL('/workspaces', origin), { credentials: 'omit' })
+  assert.equal(dashboard.status, 200)
+  assert.match(dashboard.headers.get('content-type'), /text\/html/)
+  assert.match(await dashboard.text(), /\/assets\//)
   await qualifyEnvironmentMigration(release)
   assert.equal(await systemctl('show', '--property=Delegate', '--value', unit), 'yes')
   assert.equal(await systemctl('show', '--property=Restart', '--value', unit), 'always')
@@ -184,6 +201,14 @@ async function main() {
       name: `Production regression ${randomUUID()}`, parentPath: environment.WORKSPACE_STORAGE_ROOT })
     workspaceId = created.value.workspace.id
     const workspace = await call(writer, 'workspace_get', { workspaceId })
+    const localWorkspace = await localRequest(`/api/management/workspaces/${workspaceId}`)
+    assert.equal(localWorkspace.workspace.id, workspaceId)
+    const update = WorkspaceUpdateInputSchema.parse({ workspaceId, commandId: randomUUID(),
+      expectedRevision: workspace.revision, description: 'Credential-free local HTTP update' })
+    const changed = await localRequest(`/api/management/workspaces/${workspaceId}`, { method: 'PATCH', body: update })
+    const persistedWorkspace = await call(writer, 'workspace_get', { workspaceId })
+    assert.equal(persistedWorkspace.revision, changed.value.revision)
+    assert.equal(persistedWorkspace.workspace.description, update.description)
     const conversation = await call(writer, 'operator_chat_create', { title: 'Production regression' })
     conversationId = conversation.conversation.id
     const beforeChat = await call(writer, 'operator_chat_get', { conversationId: conversation.conversation.id })
@@ -242,10 +267,11 @@ async function main() {
     const nativeSessions = async scope => (await pool.query(
       `select id,record->>'nativeSessionId' as session from harness_executions
        where run_id=$1 and record->>'nativeSessionId' is not null order by id`, [scope.runId])).rows
-    const positivelyStarted = scope => waitUntil(async () => (await pool.query(
-      `select 1 from harness_native_events ne join harness_executions he on he.id=ne.execution_id
-       where he.run_id=$1 and ne.record->>'type'='turn.started'`, [scope.runId])).rowCount,
-    count => count > 0, 'native turn.started')
+    const positivelyStarted = (scope, harness) => waitUntil(async () => (await pool.query(
+      `select he.record as execution, ne.record as event
+       from harness_native_events ne join harness_executions he on he.id=ne.execution_id
+       where he.run_id=$1`, [scope.runId])).rows.some(({ execution, event }) =>
+      hasNativeTurnStarted(harness, execution, event)), started => started, `${harness} native startup`)
     for (const harness of ['codex', 'opencode']) {
       const scope = await startWorkflow(harness,
         'Finish with routing.kind finish, latestDeliverable {"marker":"LOCAL_PRODUCTION_WORKFLOW"}, remainingFindings [].')
@@ -256,7 +282,7 @@ async function main() {
     const longTask = 'Write every integer from 1 to 10000 and its square in latestDeliverable.rows. '
       + 'Compute it yourself without tools. Follow the work-handoff output contract.'
     const canceled = await startWorkflow('codex', longTask)
-    await positivelyStarted(canceled)
+    await positivelyStarted(canceled, 'codex')
     await call(writer, 'run_stop', { ...canceled, commandId: randomUUID() })
     assert.equal((await settled(canceled)).run.outcome, 'canceled')
 
@@ -267,6 +293,9 @@ async function main() {
     denied = await connect(deniedCredential)
     await assert.rejects(call(denied, 'workspace_get', { workspaceId }), /not found|ACCESS_DENIED/)
     assert.equal((await call(writer, 'workspace_get', { workspaceId })).workspace.id, workspaceId)
+    assert.equal((await readLocalHuman()).principal.id, initialHuman.principal.id)
+    assert.equal((await localRequest(`/api/management/workspaces/${workspaceId}`)).workspace.description,
+      'Credential-free local HTTP update')
     const afterStartup = await call(writer, 'run_record_get', canceled)
     assert.equal(afterStartup.run.outcome, 'canceled')
     assert.equal(afterStartup.cleanupPending, false)
@@ -289,7 +318,7 @@ async function main() {
     assert.ok(persistedChat.messages.some(message => message.content.includes('LOCAL_PRODUCTION_OPERATOR')))
 
     const recovering = await startWorkflow('opencode', longTask)
-    await positivelyStarted(recovering)
+    await positivelyStarted(recovering, 'opencode')
     const sessions = await nativeSessions(recovering)
     const beforeCrash = await systemctl('show', '--property=MainPID', '--value', unit)
     await systemctl('kill', '--kill-whom=main', '--signal=KILL', unit)
@@ -305,7 +334,7 @@ async function main() {
     for (const harness of ['codex', 'opencode']) {
       denied = await connect(deniedCredential)
       const killed = await startWorkflow(harness, longTask)
-      await positivelyStarted(killed)
+      await positivelyStarted(killed, harness)
       const bindings = await nativeSessions(killed)
       const owners = new Set(bindings.map(binding => `execution:${binding.id}`))
       const launches = registry.snapshot().launches
@@ -367,6 +396,9 @@ async function main() {
           const workspace = await call(cleanupClient, 'workspace_get', { workspaceId })
           await call(cleanupClient, 'workspace_archive', { workspaceId, commandId: randomUUID(),
             expectedRevision: workspace.revision })
+          const runtime = join(environment.HARNESS_WORKSPACE_ROOT, workspaceId)
+          await rm(runtime, { recursive: true, force: true })
+          await assert.rejects(stat(runtime), { code: 'ENOENT' }, 'Test-owned runtime storage must be removed')
         }
       }
     } catch (error) {
@@ -381,7 +413,7 @@ async function main() {
     }
     if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'))
   }
-  console.log('Installed production passed: native execution, grants, cancellation, database startup/restart and crash recovery.')
+  console.log('Installed production passed: local human HTTP, MCP grants, native execution, cancellation, database startup/restart and crash recovery.')
 }
 
 withInstallationLock(join(config, 'install.lock'), main).catch(error => {
