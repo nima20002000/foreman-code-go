@@ -7,6 +7,7 @@ import { GRAPHQL_AGENT_TOOLS } from '@foreman-code/contracts'
 import { DomainError } from '../../modules/errors.js'
 import type { AppInteractionService } from '../../modules/interactions/app.js'
 import { registerAppTools } from '../app/server.js'
+import { registerCiTools } from '../shared/ciTools.js'
 import { registerOperatorTools } from '../operator/server.js'
 import type { OperatorServices } from '../operator/types.js'
 import { toolFailure } from '../shared/results.js'
@@ -108,6 +109,7 @@ export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promis
     } }) : server
     await registerAppTools(enabled, { principal: context.principal, interactions: context.interactions,
       ...(context.signal ? { signal: context.signal } : {}) })
+    if (context.operator) registerCiTools(enabled, { principal: context.principal, services: context.operator })
   }
   return server
 }

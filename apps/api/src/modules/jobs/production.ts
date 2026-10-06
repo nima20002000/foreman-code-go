@@ -1,3 +1,5 @@
+import { CiService } from './ci.js'
+import { RunCiAuthority } from './ciAuthority.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { createMainJobExecutionHost } from './mainExecution.js'
@@ -362,7 +364,8 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     }
   }
   if (queue) jobs.startQueueRecovery()
-  return { ...source, jobs, buildComputers, profiles, dispatch, artifacts, outputs, inputs, application, workflow, host, qualificationExtension: qualification.extension,
+  return { ...source, jobs, ci: new CiService(input.pool, input.commands, new RunCiAuthority(input.pool), source.sources, jobs),
+    buildComputers, profiles, dispatch, artifacts, outputs, inputs, application, workflow, host, qualificationExtension: qualification.extension,
     queueConfiguration: reviewedQueue,
     requestQueueWake,
     async close() {

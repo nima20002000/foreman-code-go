@@ -13,7 +13,7 @@ import { commandInputHash, type PostgresCommandCoordinator } from '../commands/p
 import { DomainError } from '../errors.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { RunExecutionLocation } from '@foreman-code/contracts'
-import { captureGitSource } from './capture.js'
+import { captureGitSource, qualifiedGit } from './capture.js'
 import { SOURCE_LIMITS, sourceSha256, verifySourceManifest } from './manifest.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
 import { authorizeSource } from './authority.js'
@@ -185,6 +185,41 @@ export class PostgresSourceService implements SourceAdmissionPort {
           origin = { ...origin, state: 'approved' }; return row
         })
       } })
+  }
+  async approveProject(principal: ManagementPrincipal, input: {
+    workspaceId: string; commandId: string; commit?: string
+  }): Promise<ApprovedSource> {
+    const captured = await this.commands.execute({ principal, source: 'mcp',
+      operation: 'source.project.capture', commandId: input.commandId, targetKey: input.workspaceId,
+      payload: input, dedicatedConnection: true,
+      authorize: async sql => {
+        await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
+        await authorizeSource(sql, principal, 'sources:read', input.workspaceId)
+        requireAuthorization(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
+        await this.host(sql)
+      },
+      perform: async () => {
+        const location = await this.transaction(async sql => {
+          await this.workspace(sql, input.workspaceId)
+          const row = (await sql.query<{ location_revision: string }>(
+            'select location_revision from workspaces where id=$1 for share', [input.workspaceId])).rows[0]!
+          return this.locations.snapshot(sql, input.workspaceId, Number(row.location_revision), 'read-only')
+        })
+        const commit = input.commit ?? (await qualifiedGit(location.rootPath,
+          ['rev-parse', '--verify', 'HEAD^{commit}'])).toString('utf8').trim()
+        const names = await qualifiedGit(location.rootPath,
+          ['ls-tree', '-rz', '--name-only', '--full-tree', commit], 8 * 1024 * 1024)
+        const approvedPaths = names.toString('utf8').split('\0').filter(Boolean)
+        if (!Buffer.from(names.toString('utf8')).equals(names) || approvedPaths.length > SOURCE_LIMITS.entries) {
+          throw new DomainError('SOURCE_CAPACITY', 'Tracked source inventory exceeds the supported source limits.', 413)
+        }
+        await this.locations.revalidateSnapshot(input.workspaceId, location, 'read-only')
+        return SourceApproveInputSchema.parse({ workspaceId: input.workspaceId, commandId: input.commandId,
+          expectedLocationRevision: location.locationRevision, commit, approvedPaths,
+          executablePolicy: 'preserve-approved' })
+      },
+    })
+    return (await this.approve(principal, 'mcp', captured.value)).value
   }
   async resolveRootBinding(sql: Sql, principal: ManagementPrincipal,
     input: { workspaceId: string; rootId: string; bindingRevision: number; source: ApprovedSourcePin }): Promise<SourceRootRecord> {

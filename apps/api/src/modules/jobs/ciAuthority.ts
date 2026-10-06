@@ -1,0 +1,61 @@
+import type pg from 'pg'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
+import { currentOperatorAuthority } from '../access/runAuthority.js'
+import { intersectGrants } from '../access/operatorDelegation.js'
+import { requireAuthorization } from '../access/policy.js'
+import { workerScopesForAction } from '../access/appPolicy.js'
+import { assertWave25WorkerBinding } from '../interactions/wave25/credentialAuthority.js'
+import { DomainError } from '../errors.js'
+
+export const CI_RUN_ACTIONS: ManagementAction[] = [
+  'sources:approve', 'sources:read', 'source_roots:read', 'source_roots:bind', 'workspace_locations:read',
+  'job_definitions:read', 'job_definitions:write', 'jobs:start',
+]
+export const CI_GET_ACTIONS: ManagementAction[] = ['jobs:read', 'job_logs:read', 'job_artifacts:read']
+export interface CiAuthority {
+  resolve(caller: ManagementPrincipal, workspaceId: string | undefined, actions: ManagementAction[]):
+    Promise<{ principal: ManagementPrincipal; workspaceId: string }>
+}
+
+export class RunCiAuthority implements CiAuthority {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async resolve(caller: ManagementPrincipal, requestedWorkspace: string | undefined, actions: ManagementAction[]) {
+    const sql = await this.pool.connect()
+    try {
+      await sql.query('begin')
+      let principalId = caller.id
+      let workspaceId = requestedWorkspace
+      if (caller.audience === 'worker') {
+        await assertWave25WorkerBinding(sql, caller.id)
+        const binding = (await sql.query<{ workspace_id: string; workflow_id: string; run_id: string;
+          authorization_principal_id: string }>(`select b.workspace_id,b.workflow_id,b.run_id,
+            r.record->>'authorizationPrincipalId' as authorization_principal_id
+          from worker_credential_bindings b join runs r on r.id=b.run_id and r.workspace_id=b.workspace_id
+          join run_authority_principals a on a.run_id=r.id and a.principal_id=r.record->>'authorizationPrincipalId'
+          where b.principal_id=$1 and b.agent_id=$2 and b.purpose='workflow' and b.revoked_at is null for share of b,r,a`,
+        [caller.id, caller.agentId])).rows[0]
+        const scoped = binding && workerScopesForAction(caller, 'interactions:read').some(scope =>
+          scope.workspaceIds?.includes(binding.workspace_id) && scope.workflowIds?.includes(binding.workflow_id)
+          && scope.runIds?.includes(binding.run_id))
+        if (!binding || !scoped || workspaceId && workspaceId !== binding.workspace_id) {
+          throw new DomainError('ACCESS_DENIED', 'CI is limited to this Agent’s active Run workspace.', 403)
+        }
+        workspaceId = binding.workspace_id
+        principalId = binding.authorization_principal_id
+      }
+      if (!workspaceId) throw new DomainError('INVALID_REQUEST', 'Operator CI requires workspaceId.', 400)
+      const accepted = (await currentOperatorAuthority(sql, principalId)).principal
+      const grants = caller.audience === 'operator' ? intersectGrants(caller.grants, accepted.grants) : accepted.grants
+      const principal = { ...accepted, grants: intersectGrants(grants, [{
+        actions, scope: { workspaceIds: [workspaceId] },
+      }]) }
+      for (const action of actions) requireAuthorization(principal, action, { workspaceId })
+      await sql.query('commit')
+      return { principal, workspaceId }
+    } catch (error) {
+      await sql.query('rollback')
+      throw error
+    } finally { sql.release() }
+  }
+}

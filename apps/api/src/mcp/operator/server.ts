@@ -7,6 +7,7 @@ import { registerHostHarnessOverrideTools } from '../../modules/harnesses/instan
 import { registerResourceTelemetryTools } from './resourceTelemetry.js'
 import { registerResourceTelemetrySelectorTools } from './resourceTelemetrySelector.js'
 import { registerJobTools } from './tools/jobs.js'
+import { registerCiTools } from '../shared/ciTools.js'
 import { registerJobRuntimeTools } from './tools/jobRuntimeProfiles.js'
 import { registerTrustedConnectionTools } from '../../modules/devices/trustedConnectionManagement.js'
 import { registerBuildComputerTools } from './tools/buildComputers.js'
@@ -52,6 +53,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   if (context.services.harnessInstances) registerHostHarnessOverrideTools(server, context.services.harnessInstances, context.principal)
   registerSourceTools(server, context)
   registerJobTools(server, context)
+  registerCiTools(server, context)
   registerJobRuntimeTools(server, context)
   registerBuildComputerTools(server, context)
   registerDeviceOperatorTools(server, context)

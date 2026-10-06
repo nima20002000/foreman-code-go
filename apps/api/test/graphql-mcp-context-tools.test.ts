@@ -30,7 +30,7 @@ it('advertises only declared OpenCode output tools permitted by the pinned setti
     override: null, harness: DEFAULT_HARNESS_DEFAULTS.opencode, artifact_outputs: null, purpose: 'workflow' }] }))
   const service = new PostgresAppInteractionService({ query } as unknown as pg.Pool, {} as never, {} as never)
   expect((await service.context(worker) as { tools: string[] }).tools)
-    .toEqual(['context_get', 'interaction_list', 'interaction_get'])
+    .toEqual(['context_get', 'interaction_list', 'interaction_get', 'ci_run', 'ci_get'])
   const row = { role: 'coder', defaults: null, override: null, purpose: 'workflow', local_outputs: true,
     artifact_outputs: { version: 1, outputKeys: ['report'] },
     harness: { ...DEFAULT_HARNESS_DEFAULTS.opencode, nativeAgent: 'build', advanced: {
@@ -42,10 +42,10 @@ it('advertises only declared OpenCode output tools permitted by the pinned setti
     } } }
   query.mockResolvedValueOnce({ rows: [row] })
   expect((await service.context(worker) as { tools: string[] }).tools)
-    .toEqual(['context_get', 'interaction_list', 'interaction_get', ...outputs.slice(0, 3)])
+    .toEqual(['context_get', 'interaction_list', 'interaction_get', ...outputs.slice(0, 3), 'ci_run', 'ci_get'])
   query.mockResolvedValueOnce({ rows: [{ ...row, override: { add: [], remove: [outputs[0]] } }] })
   expect((await service.context(worker) as { tools: string[] }).tools)
-    .toEqual(['context_get', 'interaction_list', 'interaction_get', ...outputs.slice(1, 3)])
+    .toEqual(['context_get', 'interaction_list', 'interaction_get', ...outputs.slice(1, 3), 'ci_run', 'ci_get'])
   for (const changed of [{ ...row, harness: { ...row.harness, nativeAgent: 'plan' } },
     { ...row, harness: DEFAULT_HARNESS_DEFAULTS.codex }, { ...row, purpose: 'reviewer' },
     { ...row, local_outputs: false },

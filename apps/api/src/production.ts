@@ -1607,6 +1607,7 @@ export function buildProductionApp(
       runtimeServices.buildComputers = jobRuntime.buildComputers
       registerBuildComputerRoutes(app, jobRuntime.buildComputers)
       runtimeServices.jobs = jobRuntime.jobs
+      runtimeServices.ci = jobRuntime.ci
       runtimeServices.jobRuntimeProfiles = jobRuntime.profiles
       registerSourceRoutes(app, jobRuntime.sources)
       registerJobRoutes(app, jobRuntime.jobs)

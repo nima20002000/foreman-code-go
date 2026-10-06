@@ -107,9 +107,15 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
   async candidates(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
     spec: JobDefinitionSpecRecord, placement?: JobPlacementIntent): Promise<JobComputerDiscovery> {
     const { source } = await this.validateAuto(sql, principal, workspaceId, spec)
-    const roots = (await sql.query<{ record: unknown }>(`select b.record from source_root_catalog c
-      join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
-      where c.workspace_id=$1 order by c.root_id limit 100`, [workspaceId])).rows.map(row => SourceRootRecordSchema.parse(row.record))
+    const roots = (await sql.query<{ record: unknown }>('verification' in spec
+      // Verification Jobs keep their exact binding while later CI commits rebind the same root.
+      ? `select distinct on (b.root_id) b.record from source_root_bindings b where b.workspace_id=$1 and b.snapshot_id=$2
+          order by b.root_id,b.binding_revision desc limit 100`
+      : `select b.record from source_root_catalog c join source_root_bindings b
+          on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
+          where c.workspace_id=$1 order by c.root_id limit 100`,
+    'verification' in spec ? [workspaceId, spec.source.snapshotId] : [workspaceId]))
+      .rows.map(row => SourceRootRecordSchema.parse(row.record))
     const profiles = isAutoJobSpecRecord(spec) ? (await sql.query<{ record: unknown }>(
       'select record from job_runtime_profiles where workspace_id=$1 order by id limit 100', [workspaceId],
     )).rows.map(row => JobRuntimeProfileRecordSchema.parse(row.record))
@@ -202,7 +208,11 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
         directoryIdentityHash:sourceSha256(Buffer.from(JSON.stringify(root.binding.filesystem))),rootPolicyId:root.selection.rootPolicyId,rootPolicyRevision:root.selection.rootPolicyRevision,locationRevision:root.selection.locationRevision,attestationId:root.attestationId,attestationHash:root.attestationDigest}})
   }
   private async root(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpecRecord) {
-    const row=(await sql.query<{record:unknown}>(`select b.record from source_root_catalog c join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision where c.workspace_id=$1 and b.record->>'attestationId'=$2 for share of b,c`,[workspaceId,spec.target.destination.attestationId])).rows
+    const row=(await sql.query<{record:unknown}>('verification' in spec
+      ? `select b.record from source_root_bindings b where b.workspace_id=$1 and b.record->>'attestationId'=$2 for share of b`
+      : `select b.record from source_root_catalog c join source_root_bindings b
+          on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
+          where c.workspace_id=$1 and b.record->>'attestationId'=$2 for share of b,c`,[workspaceId,spec.target.destination.attestationId])).rows
     if(row.length!==1)throw new DomainError('JOB_ROOT_PIN_CONFLICT','The exact current job root attestation is unavailable.',409)
     const root=SourceRootRecordSchema.parse(row[0]!.record)
     if(root.binding.accessMode!=='exclusive-write'||canonical(await this.target(sql,principal,root))!==canonical(spec.target))throw new DomainError('JOB_ROOT_PIN_CONFLICT','The saved target is not the current exclusive job source root.',409)

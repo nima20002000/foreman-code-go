@@ -150,6 +150,16 @@ export class JobService {
   getDefinition(principal:ManagementPrincipal,workspaceId:string,id:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'job_definitions:read',sql=>this.repository.definition(sql,workspaceId,id),source)
   }
+  readLogTail(principal: ManagementPrincipal, workspaceId: string, executionId: string) {
+    return this.read(principal, workspaceId, 'job_logs:read', async sql => {
+      await this.repository.execution(sql, workspaceId, executionId)
+      const rows = (await sql.query<{ text: string }>(`select text from job_log_chunks
+        where execution_id=$1 order by sequence desc limit 33`, [executionId])).rows
+      const bytes = Buffer.from(rows.slice(0, 32).reverse().map(row => row.text).join(''), 'utf8')
+      return { text: bytes.subarray(Math.max(0, bytes.length - 32768)).toString('utf8'),
+        truncated: rows.length > 32 || bytes.length > 32768 }
+    }, 'mcp')
+  }
   getDefinitionVersion(principal:ManagementPrincipal,workspaceId:string,definitionId:string,versionId:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'job_definitions:read',sql=>this.repository.version(sql,workspaceId,versionId,definitionId),source)
   }

@@ -31,6 +31,8 @@ export const GRAPHQL_AGENT_TOOLS = {
     label: "Publish workflow output", description: "Publish this turn's sealed output under its saved permissions.",
     roles: ["orchestrator", "coder"],
   },
+  ci_run: { label: "Run CI", description: "Queue install, typecheck, lint, unit or build on Auto build capacity for this Run's workspace and approved commit. Defaults to Main project HEAD; retries reuse commandId. Requires the Run's accepted source and Job grants.", roles: ["operator", "orchestrator", "coder"] },
+  ci_get: { label: "Read CI result", description: "Read a workspace CI ticket, waiting reasons, selected computer, process outcome, publication, summary and bounded log tail.", roles: ["operator", "orchestrator", "coder"] },
 } as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[] }>;
 
 /** Explicit Operator catalog. Listing a tool never supplies a grant or native qualification. */
