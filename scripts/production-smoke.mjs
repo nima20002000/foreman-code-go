@@ -32,9 +32,6 @@ assert.equal(runtime, 'node')
 assert.deepEqual(args, ['dist/server.js'], 'Production must run compiled JavaScript without a TS loader')
 const state = await mkdtemp(join(homedir(), '.foreman-code-production-smoke-'))
 const environment = resolveProductEnvironment(process.env)
-if (environment.FOREMAN_CODE_DEV_BROWSER_ORIGIN !== undefined) {
-  environment.FOREMAN_CODE_DEV_BROWSER_ORIGIN = origin
-}
 const child = spawn(process.execPath, args, {
   cwd: apiDirectory,
   env: {

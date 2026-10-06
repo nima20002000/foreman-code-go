@@ -3,46 +3,53 @@ import { lstatSync } from 'node:fs'
 import { posix } from 'node:path'
 import { nativeAcceptanceEnvironment } from './test-native-acceptance.mjs'
 
-const [mode, ...files] = process.argv.slice(2)
 const modes = ['scripts', 'unit', 'integration', 'acceptance']
-if (!modes.includes(mode) || !files.length) {
-  throw new Error('Usage: test-files.mjs scripts|unit|integration|acceptance <test files...>')
-}
-const environment = mode === 'acceptance' ? nativeAcceptanceEnvironment(process.env) : process.env
-const suffixes = { scripts: '.test.mjs', unit: '.test.ts',
-  integration: '.integration.test.ts', acceptance: '.acceptance.test.ts' }
-for (const file of files) {
-  const prefix = mode === 'scripts' ? 'scripts/' : 'apps/api/'
-  if (!file.startsWith(prefix) || !file.endsWith(suffixes[mode]) || posix.normalize(file) !== file
-    || file.split('/').some(part => part === '..') || !lstatSync(file).isFile()) {
-    throw new Error(`Invalid ${mode} test file: ${file}`)
+const arguments_ = process.argv.slice(2)
+if (arguments_[0] === '--') arguments_.shift()
+const explicitMode = modes.includes(arguments_[0]) ? arguments_.shift() : undefined
+if (!arguments_.length) throw new Error('Pass explicit repository-relative test files.')
+const projects = ['apps/api', 'apps/web', 'packages/contracts', 'scripts']
+const selections = new Map()
+for (const file of arguments_) {
+  const project = projects.find(folder => file.startsWith(`${folder}/`))
+  if (!project || posix.normalize(file) !== file || file.split('/').includes('..')
+    || !/\.test\.(?:ts|tsx|mjs)$/.test(file) || !lstatSync(file).isFile()) {
+    throw new Error(`Invalid test file: ${file}`)
   }
-  if (mode === 'unit' && /\.(integration|acceptance)\.test\.ts$/.test(file)) {
-    throw new Error('Integration and acceptance files require their own test mode')
-  }
+  let mode = project === 'scripts' ? 'scripts' : 'unit'
+  if (project === 'apps/api' && file.endsWith('.integration.test.ts')) mode = 'integration'
+  if (project === 'apps/api' && file.endsWith('.acceptance.test.ts')) mode = 'acceptance'
+  if (explicitMode && explicitMode !== mode) throw new Error(`Test file requires ${mode} mode: ${file}`)
+  const key = `${project}:${mode}`
+  const selected = selections.get(key) ?? { project, mode, files: new Set() }
+  selected.files.add(file)
+  selections.set(key, selected)
 }
 
-async function run(command, args) {
+async function run(command, args, environment = process.env) {
   const child = spawn(command, args, { stdio: 'inherit', env: environment })
   const code = await new Promise((resolve, reject) => {
     child.once('error', reject)
     child.once('exit', (value, signal) => resolve(value ?? (signal === 'SIGINT' ? 130 : 143)))
   })
-  if (code !== 0) {
-    process.exitCode = code
-    throw new Error(`Selected ${mode} tests failed with exit ${code}`)
-  }
+  if (code !== 0) process.exitCode = code
+  return code
 }
 
-await run('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'])
-if (mode === 'scripts') {
-  await run(process.execPath, ['--test', ...files])
-} else if (mode === 'integration') {
-  await run(process.execPath, ['scripts/test-integration.mjs', '--files', ...files])
-} else {
-  const workerOptions = mode === 'unit'
-    ? ['--maxWorkers=12']
-    : ['--no-file-parallelism', '--maxWorkers=1']
-  await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'vitest', 'run',
-    ...files.map(file => file.slice('apps/api/'.length)), ...workerOptions])
+const built = await run('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'])
+if (built !== 0) throw new Error('Selected tests require the contracts build.')
+for (const { project, mode, files } of selections.values()) {
+  const selected = [...files]
+  if (mode === 'scripts') {
+    await run(process.execPath, ['--test', '--test-concurrency=12', ...selected])
+  } else if (mode === 'integration') {
+    await run(process.execPath, ['scripts/test-integration.mjs', '--files', ...selected])
+  } else {
+    const environment = mode === 'acceptance' ? nativeAcceptanceEnvironment(process.env) : process.env
+    const workerOptions = mode === 'unit'
+      ? ['--maxWorkers=12']
+      : ['--no-file-parallelism', '--maxWorkers=1']
+    await run('corepack', ['pnpm', '--dir', project, 'exec', 'vitest', 'run',
+      ...selected.map(file => file.slice(project.length + 1)), ...workerOptions], environment)
+  }
 }

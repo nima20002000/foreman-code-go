@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   ListInteractionsResponseSchema, WorkspaceSchema } from '@foreman-code/contracts'
-import { ManagementActionSchema, RunEventsPageSchema } from '@foreman-code/contracts/management'
+import { RunEventsPageSchema } from '@foreman-code/contracts/management'
 import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
   RunActivitiesPageSchema, RunHandoffsReadSchema, SavedManagedWorkflowCommandResultSchema,
   makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
@@ -15,7 +15,6 @@ import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
 import { buildProductionApp } from '../src/production.js'
-import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
@@ -202,14 +201,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           await pool.query('update agents set current_configuration_version_id=$2 where id=$1',
             [agent.id, configuration.id])
         }
-        const access = new PostgresAccessService(pool)
-        const writer = await access.issue({ name: 'NIM-2691 native test owner', audience: 'operator',
-          expiresAt: new Date(Date.now() + 10 * 60_000), grants: [
-            { actions: ['capabilities:read'], scope: {} },
-            { actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'),
-              scope: { workspaceIds: [workspace.id] } },
-          ] })
-        const headers = { host: 'localhost', authorization: `Bearer ${writer.token}` }
+        const headers = { host: 'localhost' }
         const created = await app.inject({ method: 'POST',
           url: `/api/management/workspaces/${workspace.id}/workflows`, headers,
           payload: { workspaceId: workspace.id, commandId: randomUUID(), name: 'NIM-2691 single native turn' } })
@@ -555,16 +547,21 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         if (directory) {
           try {
             const executions = observedRunId ? (await pool.query(
-              "select id,record->>'state' as state,record#>'{result,error}' as error from harness_executions where run_id=$1 order by id limit 16",
+              'select id,record from harness_executions where run_id=$1 order by id limit 16',
               [observedRunId],
             )).rows : []
+            const handoffs = observedRunId ? {
+              requests: (await pool.query('select * from run_work_requests where run_id=$1', [observedRunId])).rows,
+              returns: (await pool.query('select * from run_work_returns where run_id=$1', [observedRunId])).rows,
+              results: (await pool.query('select * from run_work_results where run_id=$1', [observedRunId])).rows,
+            } : undefined
             const evidence = nativePersistenceRedactor([...secrets]).value({
-              scenario: scenario.name, runId: observedRunId, nativeFailures, cancellations, executions,
+              scenario: scenario.name, runId: observedRunId, nativeFailures, cancellations, executions, handoffs,
               failure: describeNativeFailure(error, [...secrets]),
             })
-            const path = join(directory, `native-workflow-failure-${randomUUID()}.json`)
-            await writeFile(path, JSON.stringify(evidence, null, 2), { flag: 'wx', mode: 0o600 })
-            console.info('Private native workflow failure evidence:', path)
+            const filename = `native-workflow-failure-${randomUUID()}.json`
+            await writeNativeAcceptanceEvidence(filename, evidence)
+            console.info('Private native workflow failure evidence:', join(directory, filename))
           } catch (evidenceError) {
             throw new AggregateError([error, evidenceError], 'Native failure evidence could not be retained.', {
               cause: evidenceError,
