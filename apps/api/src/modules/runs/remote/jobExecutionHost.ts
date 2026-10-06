@@ -202,7 +202,7 @@ export class RemoteJobExecutionHost {
   }
   private terminalEvidence(result: JobExecutorResult, logGapPossible: boolean): RemoteJobTerminalEvidence {
     if (!result.outcome || !result.processStopped || result.recoveryRequired) throw new Error('Positive OCI closure required')
-    return { finishedAt: new Date().toISOString(), closureEvidenceDigest: digest({ containerId: result.containerId, supervisorIdentity: result.supervisorIdentity,
+    return { finishedAt: new Date().toISOString(), closureEvidenceDigest: digest({ containerId: result.containerId ?? null, supervisorIdentity: result.supervisorIdentity ?? null,
       processStopped: result.processStopped, exitCode: result.exitCode, signal: result.signal }), outcome: result.outcome, exitCode: result.exitCode, signal: result.signal,
       processStopped: true, resultDigest: digest(result), logGapPossible, logsTruncated: result.logsTruncated, outputCollectionError: result.outputCollectionError, artifactDigests: [] }
   }

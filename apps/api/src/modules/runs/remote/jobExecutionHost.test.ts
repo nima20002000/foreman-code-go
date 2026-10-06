@@ -160,6 +160,27 @@ describe('actual OCI job adapter with command doubles, no installed runtime clai
     await f.host.recover()
     expect(reconcile).toHaveBeenCalledWith(f.execution);expect(f.state.creates).toBe(0);expect(f.state.collected).toBe(0)
   })
+  it('recovers a confirmed unentered container without hashing absent identifiers or launching it', async () => {
+    const f = await fixture(), operationId = f.intent.operationId
+    await f.journal.jobAccept(f.intent, f.execution, { kind: 'main', mainId: f.intent.mainId,
+      mainInstallationId: f.execution.acceptedSpec.target.mainInstallationId, bootId: randomUUID() }, randomUUID())
+    await f.journal.jobReserveEntry(operationId)
+    const identity = jobSupervisorIdentity(f.execution), binary = '/usr/bin/podman'
+    await f.journal.jobContainerIntent(operationId, identity, f.execution.acceptedSpec.specDigest)
+    for (const [operation, exitCode] of [['inspect', 125], ['exists', 1]] as const) {
+      const launchId = randomUUID()
+      await f.journal.jobReserveProcess(operationId, { launchId, binary,
+        argv: ['--remote=false', 'container', operation, identity] })
+      await f.journal.jobProcessClosed(operationId, launchId, { exitCode, signal: null })
+    }
+    await f.journal.jobConfirmContainerNonEntry(operationId, binary)
+    vi.spyOn(f.supervisor, 'reconcile').mockResolvedValue(null)
+    vi.spyOn(f.supervisor, 'stopExecution').mockResolvedValue(true)
+    await f.host.deliver(f.intent, f.execution)
+    expect(await f.journal.jobStatus(operationId)).toMatchObject({ status: 'known', receipt: {
+      entryAttempted: true, terminal: { outcome: 'preparation_failed', processStopped: true }, publication: 'complete' } })
+    expect(f.state.creates).toBe(0)
+  })
   it('worker journal negative fence and restart retain original job identity',async()=>{const f=await fixture();await f.journal.jobAccept(f.intent,f.execution,{kind:'main',mainId:f.intent.mainId,mainInstallationId:f.execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},randomUUID());await f.journal.jobControl({schemaVersion:1,protocolVersion:1,commandId:'stop',operationId:f.intent.operationId,attemptId:f.intent.attemptId,executionId:f.intent.executionId,bindingHash:f.intent.bindingHash,subject:f.intent.subject,owner:f.intent.owner,action:{kind:'stop'}});await f.journal.close();const recovered=await RemoteOperationJournal.open(join(f.root,'journal'));journals.push(recovered);expect((await recovered.jobReserveEntry(f.intent.operationId)).reserved).toBe(false);expect((await recovered.jobStatus(f.intent.operationId)).status).toBe('known');expect(f.state.creates).toBe(0)})
   it('spools exact log sequences in the same durable operation journal before main acknowledgment',async()=>{const f=await fixture();await f.journal.jobAccept(f.intent,f.execution,{kind:'main',mainId:f.intent.mainId,mainInstallationId:f.execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},randomUUID());const chunk={executionId:f.execution.id,attemptId:f.execution.attemptId,sequence:1,stream:'stdout' as const,text:'a',byteSize:1,createdAt:new Date().toISOString()};await f.journal.jobAppendLog(f.intent.operationId,chunk);expect(await f.journal.jobPendingLogs(f.intent.operationId)).toEqual([chunk]);await f.journal.jobAcknowledgeLog(f.intent.operationId,1);expect(await f.journal.jobPendingLogs(f.intent.operationId)).toEqual([]);await expect(f.journal.jobAppendLog(f.intent.operationId,{...chunk,text:'different',byteSize:9})).rejects.toThrow('conflict')})
 })
