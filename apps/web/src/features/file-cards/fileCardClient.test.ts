@@ -32,7 +32,7 @@ describe('file card HTTP boundary', () => {
       return new HttpResponse(fixtureBytes('text/markdown').buffer, { headers: { 'Content-Type': 'text/markdown; charset=utf-8' } })
     }))
     await client.download(file, options())
-    expect(seen).toEqual([['file-a', 'revision-old', 'text/markdown', 'same-origin', 'no-store', 'error']])
+    expect(seen).toEqual([['file-a', 'revision-old', 'text/markdown', 'omit', 'no-store', 'error']])
   })
 
   it('requests the agent conversation content route', async () => {

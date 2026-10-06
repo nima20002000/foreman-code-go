@@ -13,7 +13,7 @@ describe('Runs HTTP client boundary', () => {
     server.use(http.get(listRoute, ({ request }) => { observed = request; return HttpResponse.json(page([runA])) }))
     const result = await runsSelectorApi.list({ ...scope, cursor: 'opaque:/+?=&', limit: 25 })
     expect(result.items).toEqual([runA])
-    expect(observed?.credentials).toBe('same-origin')
+    expect(observed?.credentials).toBe('omit')
     const url = new URL(observed!.url)
     expect(url.pathname).toBe(`/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs/summaries`)
     expect(url.searchParams.get('limit')).toBe('25')

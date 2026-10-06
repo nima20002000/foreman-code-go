@@ -10,7 +10,7 @@ it('reads scoped placement through the authenticated HTTP boundary', async () =>
   let request: Request | undefined
   server.use(http.get(route, ({ request: observed }) => { request = observed; return HttpResponse.json(response) }))
   expect((await readNodePlacement(scope)).readback.evidence).toBe('accepted')
-  expect(request?.credentials).toBe('same-origin')
+  expect(request?.credentials).toBe('omit')
 })
 it.each(['workspaceId', 'workflowId', 'runId', 'nodeId'] as const)('rejects a response for a different %s', async (field) => {
   server.use(http.get(route, () => HttpResponse.json({ ...response, [field]: 'other' })))
