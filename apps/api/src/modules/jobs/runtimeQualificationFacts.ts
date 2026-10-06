@@ -1,6 +1,6 @@
 import type { JobRuntimeMeasurementRecord, JobRuntimeProfileRecord, JobRuntimeApprovalRecord }
   from '@foreman-code/contracts/job-verification-runtime'
-import { jobRuntimeProfileLimits } from '@foreman-code/contracts/job-verification-runtime'
+import { jobRuntimeProfileLimits, jobRuntimeQualificationAnchorAt } from '@foreman-code/contracts/job-verification-runtime'
 import { DomainError } from '../errors.js'
 import { canonical } from './repository.js'
 import { jobDigest } from './service.js'
@@ -33,12 +33,12 @@ export function validateRuntimeQualification(approval: JobRuntimeApprovalRecord,
     || Date.parse(measurement.expiresAt) > Date.parse(approval.expiresAt)
     || Date.parse(measurement.expiresAt) <= Date.now()) {
     throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT',
-      'Measured evidence changed the approved installed context or lifetime.', 409)
+      'Measured evidence changed the captured installed context or lifetime.', 409)
   }
   if (measurement.schemaVersion === 2) {
     if (approval.schemaVersion !== 2 || measurement.identity.approvalExpiresAt !== approval.expiresAt
-      || measurement.approvedAt !== approval.approvedAt) {
-      throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT', 'Verification changed its original approval.', 409)
+      || measurement.approvedAt !== jobRuntimeQualificationAnchorAt(approval)) {
+      throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT', 'Verification changed its original captured candidate.', 409)
     }
     return
   }

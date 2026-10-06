@@ -314,12 +314,16 @@ export const JobVerificationRuntimeApprovalSchema = z.object({
   if (value.profileId !== fingerprint.profileId || value.profileRevision !== fingerprint.profileRevision
     || value.workspaceId !== fingerprint.root.binding.workspaceId || !fingerprint.approvalConfig.review
     || Date.parse(value.expiresAt) - Date.parse(value.requestedAt) !== fingerprint.approvalConfig.approvalLifetimeMs
-    || (value.approvedAt !== null && Date.parse(value.approvedAt) < Date.parse(value.requestedAt))) {
-    context.addIssue({ code: 'custom', message: 'Verification approval retains its reviewed configuration and fingerprint.' })
+    || (value.approvedAt != null && Date.parse(value.approvedAt) < Date.parse(value.requestedAt))) {
+    context.addIssue({ code: 'custom', message: 'Verification qualification retains its reviewed configuration and fingerprint.' })
   }
 })
 export const JobRuntimeApprovalRecordSchema = z.union([JobRuntimeApprovalSchema, JobVerificationRuntimeApprovalSchema])
 export type JobRuntimeApprovalRecord = z.infer<typeof JobRuntimeApprovalRecordSchema>
+/** The validity anchor of a captured qualification: its capture time (legacy rows: their recorded approval). */
+export function jobRuntimeQualificationAnchorAt(record: JobRuntimeApprovalRecord): string | null {
+  return record.approvedAt ?? ('requestedAt' in record ? record.requestedAt : null)
+}
 
 export const JobVerificationQualificationCandidateSchema = z.object({
   ...ProvisionedJobQualificationCandidateSchema.shape,

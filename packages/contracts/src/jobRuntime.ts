@@ -82,16 +82,20 @@ export const JobRuntimeFingerprintSchema=z.object({...HistoricalProvisionedRunti
     ctx.addIssue({ code: 'custom', message: 'Quota-v3 fingerprints require their own complete version 2 shape.' })
 })
 export const CurrentJobRuntimeFingerprintSchema=JobRuntimeFingerprintSchema.safeExtend({workspaceLayout:z.literal(JOB_RUNTIME_WORKSPACE_LAYOUT)}).strict()
+/** The exact captured candidate a CI qualification runs against. A paired, authorized computer is a build
+ * machine: capture is followed directly by qualification, with no approval step. Rows written before approval
+ * was removed may still carry 'awaiting-approval'/'approved' and approver fields; they read as captured. */
 export const JobRuntimeApprovalSchema=z.object({schemaVersion:z.literal(1),id:z.uuid(),qualificationId:z.uuid(),workspaceId:IdSchema,profileId:IdSchema,profileRevision:z.number().int().positive(),
   fingerprint:JobRuntimeFingerprintSchema,fingerprintDigest:Digest,requestedByPrincipalId:IdSchema,
-  status:z.enum(['awaiting-approval','approved','qualifying','complete','failed','cancelled','recovery-required']),approvedByPrincipalId:IdSchema.nullable(),approvedAt:TimestampSchema.nullable(),expiresAt:TimestampSchema,
+  status:z.enum(['captured','awaiting-approval','approved','qualifying','complete','failed','cancelled','recovery-required']),
+  approvedByPrincipalId:IdSchema.nullable().optional(),approvedAt:TimestampSchema.nullable().optional(),expiresAt:TimestampSchema,
 }).strict()
-/** Trusted admission retained on the original human-approved qualification row.
+/** Trusted admission retained on the original captured qualification row.
  * A diagnostic is its own subject; it never borrows a workflow grant or Job ID.
  * Public profile/request inputs do not accept this internal authority. */
 const JobRuntimeNativeAdmissionFieldsSchema=z.object({...HistoricalDeviceExecutionAdmissionFields,schemaVersion:z.union([z.literal(1),z.literal(2)]),kind:z.literal('job-runtime-qualification'),
   approvalId:z.uuid(),qualificationId:z.uuid(),operationId:z.uuid(),workspaceId:IdSchema,profileId:IdSchema,profileRevision:z.number().int().positive(),
-  fingerprintDigest:Digest,leaseId:z.uuid(),runCommandId:IdSchema,runPrincipalId:IdSchema,approvedByPrincipalId:IdSchema,
+  fingerprintDigest:Digest,leaseId:z.uuid(),runCommandId:IdSchema,runPrincipalId:IdSchema,approvedByPrincipalId:IdSchema.optional(),
   hostRef:JobTargetSchema.shape.hostRef,registration:JobTargetSchema.shape.registration,mainInstallationId:IdSchema,bootId:z.uuid(),
   connection:DeviceSessionBindingSchema.nullable(),admittedAt:TimestampSchema,expiresAt:TimestampSchema,
 }).strict()
@@ -139,7 +143,7 @@ export const CurrentJobRuntimeMeasurementSchema=JobRuntimeMeasurementSchema.safe
 })
 export const JobRuntimeProfileSchema=z.object({schemaVersion:z.literal(1),id:IdSchema,workspaceId:IdSchema,revision:z.number().int().positive(),name:z.string().trim().min(1).max(200),
   root:SourceRootRecordSchema,policy:JobPolicySchema,limits:JobRuntimeLimitsSchema,specDigest:Digest,
-  status:z.enum(['unqualified','awaiting-approval','qualifying','qualified','failed','revoked','recovery-required']),
+  status:z.enum(['unqualified','captured','awaiting-approval','qualifying','qualified','failed','revoked','recovery-required']),
   measurement:JobRuntimeMeasurementSchema.nullable(),createdAt:TimestampSchema,updatedAt:TimestampSchema,
 }).strict()
 /** Scoped metadata read; listing pending approvals performs no qualification or repair. */

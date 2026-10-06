@@ -6,7 +6,7 @@ import { JobRuntimeApprovalRecordSchema, JobRuntimeProfileRecordSchema, JobRunti
   JobQualificationCandidateRecordSchema, JobVerificationInstalledRuntimeDescriptorSchema,
   type JobRuntimeProfileRecord, type JobRuntimeFingerprintRecord, type JobRuntimeApprovalRecord,
   type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord, InstalledJobRuntimeDescriptorRecordSchema,
-  jobRuntimeProfilePolicy, jobRuntimeProfileLimits } from '@foreman-code/contracts/job-verification-runtime'
+  jobRuntimeProfilePolicy, jobRuntimeProfileLimits, jobRuntimeQualificationAnchorAt } from '@foreman-code/contracts/job-verification-runtime'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresSourceService } from '../sources/service.js'
@@ -15,7 +15,6 @@ import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { canonical,type JobSql } from './repository.js'
 import { JobRuntimeProfiles } from './runtimeProfiles.js'
-import { PostgresJobRuntimeHumanAuthority } from './runtimeHumanAuthority.js'
 import type { JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
 import { createPhysicalJobRuntimeProducer,type QualificationNativeOwner } from './qualification.js'
 import { admitInstalledJobQualification,assertInstalledJobQualification,assertInstalledJobQualificationRead } from './runtimeQualificationAdmission.js'
@@ -30,7 +29,6 @@ export interface InstalledJobRuntimeHost {
   reserveQualification(input:{approval:JobRuntimeApprovalRecord;profile:JobRuntimeProfileRecord;candidate:JobQualificationCandidateRecord;nativeAdmission:JobRuntimeNativeAdmissionRecord;assertAdmission():Promise<void>;operationId:string;signal:AbortSignal;intent?:'execute'|'reconcile'}):Promise<QualificationNativeOwner>
 }
 export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:PostgresCommandCoordinator;sources:PostgresSourceService;host:InstalledJobRuntimeHost;changed?: () => void}) {
-  const human=new PostgresJobRuntimeHumanAuthority()
   async function transaction<T>(work:(sql:pg.PoolClient)=>Promise<T>) {
     const sql=await input.pool.connect()
     try{await sql.query('begin');const value=await work(sql);await sql.query('commit');return value}
@@ -40,9 +38,8 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
     const row=(await sql.query<{record:unknown;run_command_id:string|null;run_principal_id:string|null}>(`select record,run_command_id,run_principal_id from job_runtime_qualification_approvals where id=$1 and workspace_id=$2 for share`,[approval.id,approval.workspaceId])).rows[0]
     if(!row)throw new DomainError('JOB_RUNTIME_APPROVAL_NOT_FOUND','The original physical qualification authority is missing.',403)
     const current=JobRuntimeApprovalRecordSchema.parse(row.record)
-    if(current.status!=='qualifying'||current.fingerprintDigest!==approval.fingerprintDigest||canonical(current.fingerprint)!==canonical(approval.fingerprint)||current.qualificationId!==approval.qualificationId||!current.approvedByPrincipalId||!row.run_command_id||!row.run_principal_id||Date.parse(current.expiresAt)<=Date.now())throw new DomainError('JOB_RUNTIME_HUMAN_APPROVAL_REQUIRED','The original qualification owner or exact approval is no longer active.',403)
+    if(current.status!=='qualifying'||current.fingerprintDigest!==approval.fingerprintDigest||canonical(current.fingerprint)!==canonical(approval.fingerprint)||current.qualificationId!==approval.qualificationId||!row.run_command_id||!row.run_principal_id||Date.parse(current.expiresAt)<=Date.now())throw new DomainError('JOB_RUNTIME_QUALIFICATION_OWNER_CHANGED','The original qualification owner or exact captured candidate is no longer active.',403)
     requireAuthorization(await readLiveManagementPrincipal(sql,row.run_principal_id),'job_definitions:write',{workspaceId:approval.workspaceId})
-    await human.require(sql,await readLiveManagementPrincipal(sql,current.approvedByPrincipalId),current)
     return current
   }
   async function immutableProfile(approval:JobRuntimeApprovalRecord) {
@@ -116,7 +113,7 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
     if (fingerprint.schemaVersion === 3) {
       const installed = JobVerificationInstalledRuntimeDescriptorSchema.parse(descriptor)
       backingBytes = installed.backingFile === null ? null : installed.volumeCapacityBytes
-      verification = { volumeCapacityBytes: installed.volumeCapacityBytes, profile, approvedAt: approval.approvedAt }
+      verification = { volumeCapacityBytes: installed.volumeCapacityBytes, profile, approvedAt: jobRuntimeQualificationAnchorAt(approval) }
     }
     const candidate = JobQualificationCandidateRecordSchema.parse({
       approvalId: approval.id, qualificationId: approval.qualificationId, operationId: approval.qualificationId,
@@ -157,5 +154,5 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
         ? { ready: true, reasons: [] } : { ready: false, reasons: ['context_changed'] }
     },
   }
-  return new JobRuntimeProfiles(input.pool,input.commands,input.sources,producer,human,input.changed)
+  return new JobRuntimeProfiles(input.pool,input.commands,input.sources,producer,input.changed)
 }

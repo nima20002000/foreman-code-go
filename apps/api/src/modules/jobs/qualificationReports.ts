@@ -109,7 +109,7 @@ export function createQualificationReportPublisher(input: { pool: pg.Pool; stora
       if (!row || approval.status !== 'qualifying'
         || approval.fingerprintDigest !== report.closure.scope.subject.fingerprint
         || Date.parse(approval.expiresAt) <= Date.now()) {
-        throw new DomainError('JOB_RUNTIME_HUMAN_APPROVAL_REQUIRED', 'Original diagnostic approval is inactive.', 403)
+        throw new DomainError('JOB_RUNTIME_QUALIFICATION_OWNER_CHANGED', 'The original qualification is no longer active.', 403)
       }
       const principal = await readLiveManagementPrincipal(sql, row.run_principal_id)
       requireAuthorization(principal, 'job_definitions:write', { workspaceId: execution.workspaceId })

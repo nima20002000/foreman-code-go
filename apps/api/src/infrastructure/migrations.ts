@@ -31,6 +31,7 @@ import { remoteNativeArtifactOutputMigration } from './remoteNativeArtifactOutpu
 import { remoteNativeArtifactContextMigration } from './remoteNativeArtifactContextMigration.js'
 import { remoteOwnerControlAdmissionMigration } from './remoteOwnerControlAdmissionMigration.js'
 import { sourceCleanupLeaseMigration } from './sourceCleanupLeaseMigration.js'
+import { jobRuntimeCaptureWithoutApprovalMigration } from './jobRuntimeCaptureWithoutApprovalMigration.js'
 import { hostHarnessMeasurementsMigration } from './hostHarnessMeasurementsMigration.js'
 import { remoteControlGenerationMigration } from './remoteControlGenerationMigration.js'
 import { jobPreparationDeadlineMigration } from './jobPreparationDeadlineMigration.js'
@@ -856,6 +857,7 @@ export const migrations = [
   localHumanMigration,
   claudeCallbackMigration,
   jobArtifactXmlMigration,
+  jobRuntimeCaptureWithoutApprovalMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

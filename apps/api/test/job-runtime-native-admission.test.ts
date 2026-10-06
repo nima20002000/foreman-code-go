@@ -51,7 +51,7 @@ describe('Main persisted qualification admission (no native IO)',()=>{
     await expect(admitInstalledJobQualification(f.sql,f.input,{ access: 'launch', requireExisting: true })).rejects.toMatchObject({code:'JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT'})
     expect(f.state.nativeAdmission).toBeNull()
   })
-  it.each(['owner','expired','revoked','profile','root','host','receipt'] as const)('denies changed %s before minting',async change=>{
+  it.each(['owner','expired','revoked','profile','root','host','candidate'] as const)('denies changed %s before minting',async change=>{
     const f=setup()
     if(change==='owner')f.state.runCommandId='different-command'
     if(change==='expired')f.state.expired=true
@@ -59,7 +59,7 @@ describe('Main persisted qualification admission (no native IO)',()=>{
     if(change==='profile')f.state.profile.revision++
     if(change==='root')f.input.resolveRoot.mockResolvedValue({...root,binding:{...root.binding,workspaceId:'other-workspace'}})
     if(change==='host')f.input.readCurrent.mockResolvedValue({fingerprint:{...fingerprint,bootId:'22222222-2222-4222-8222-222222222222'},connection:null})
-    if(change==='receipt')f.state.receipt={...f.state.receipt,qualificationId:'22222222-2222-4222-8222-222222222222'}
+    if(change==='candidate')f.state.approval={...f.state.approval,fingerprintDigest:'2'.repeat(64)}
     await expect(admitInstalledJobQualification(f.sql,f.input)).rejects.toThrow()
     expect(f.state.nativeAdmission).toBeNull()
   })

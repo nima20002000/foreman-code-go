@@ -182,13 +182,10 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       expect(pending.isError, JSON.stringify(pending.content)).not.toBe(true)
       const approval = (pending.structuredContent as { approval: { id: string } }).approval
       expect(f.producer.capture).toHaveBeenCalledWith(saved)
-      const browser = await f.browser()
-      expect((await client.callTool({ name: 'job_runtime_qualification_run', arguments: {
-        workspaceId: f.workspaceId, approvalId: approval.id, commandId: randomUUID() } })).isError).toBe(true)
-      expect(f.producer.run).not.toHaveBeenCalled()
-      const approved = await f.app.inject({ method: 'POST', url: `${f.base}/runtime-qualifications/${approval.id}/approve`,
-        headers: browser, payload: { commandId: randomUUID() } })
-      expect(approved.statusCode, approved.body).toBe(200)
+      // A paired, authorized computer qualifies its captured candidate directly; there is no approval route.
+      const approve = await f.app.inject({ method: 'POST', url: `${f.base}/runtime-qualifications/${approval.id}/approve`,
+        headers: await f.browser(), payload: { commandId: randomUUID() } })
+      expect(approve.statusCode).toBe(404)
       const runCommandId = randomUUID()
       const run = await client.callTool({ name: 'job_runtime_qualification_run', arguments: {
         workspaceId: f.workspaceId, approvalId: approval.id, commandId: runCommandId } })
@@ -305,10 +302,7 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
   it.each(['http', 'mcp'] as const)('settles a thrown %s qualification in recovery-required with a sanitized reason and retained ownership', async transport => {
     const f = await fixture()
     try {
-      const browser = await f.browser(), commandId = randomUUID(), client = await f.connect()
-      const approved = await f.app.inject({ method: 'POST', url: `${f.base}/runtime-qualifications/${f.approval.id}/approve`, headers: browser,
-        payload: { commandId: randomUUID() } })
-      expect(approved.statusCode, approved.body).toBe(200)
+      const commandId = randomUUID(), client = await f.connect()
       if (transport === 'http') {
         const response = await f.app.inject({ method: 'POST', url: `${f.base}/runtime-qualifications/${f.approval.id}/run`, headers: f.auth, payload: { commandId } })
         expect(response.statusCode).toBe(500); expect(response.body).not.toContain('/secret/path')

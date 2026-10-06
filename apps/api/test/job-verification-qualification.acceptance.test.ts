@@ -150,11 +150,7 @@ describe('installed ordinary verification qualification through authenticated MC
       const pending = await operator.callTool({ name: 'job_runtime_qualification_request', arguments: request })
       expect(pending.isError, JSON.stringify(pending.content)).not.toBe(true)
       const approvalId = (pending.structuredContent as { approval: { id: string } }).approval.id
-      // The physical runtime approval is the local human's app action, not an MCP grant.
-      const approval = await app.inject({ method: 'POST',
-        url: `/api/management/workspaces/${workspaceId}/jobs/runtime-qualifications/${approvalId}/approve`,
-        headers: { origin }, payload: { commandId: randomUUID() } })
-      expect(approval.statusCode, approval.body).toBe(200)
+      // The paired computer qualifies its captured candidate directly through MCP; no human step.
       const run = { workspaceId, approvalId, commandId: randomUUID() }
       expect((await readonly.callTool({ name: 'job_runtime_qualification_run', arguments: run })).isError).toBe(true)
       const qualified = await operator.callTool({ name: 'job_runtime_qualification_run', arguments: run },
