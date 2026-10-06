@@ -1,5 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -10,9 +11,9 @@ import { resolveImmutableApprovalRoute } from '../src/modules/workflows/approval
 import { seedAgent3 } from './helpers/wave25Agent3.js'
 
 it('saves and reads exact approval routes for two nodes sharing a Worker Agent', async () => {
-  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
   const schema = `auth_mcp_reuse_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ ...admin.options, options: `-c search_path=${schema}` })
   const directory = await mkdtemp(join(tmpdir(), 'auth-mcp-reuse-'))
   try {
@@ -35,7 +36,7 @@ it('saves and reads exact approval routes for two nodes sharing a Worker Agent',
       expect(resolveImmutableApprovalRoute(version, nodeId, 'mismatched-agent')).toBeUndefined()
     }
   } finally {
-    await pool.end(); await admin.query(`drop schema "${schema}" cascade`); await admin.end()
-    await rm(directory, { recursive: true, force: true })
+    await pool.end(); await dropFixtureSchema(admin, schema); await admin.end()
+    await removeFixtureDirectory(directory)
   }
 }, 30_000)

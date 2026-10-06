@@ -1,5 +1,7 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -57,7 +59,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
   const queueServices: JobService[] = []
   const dispatches: PostgresJobDispatch[] = []
   beforeAll(async () => {
-    database = await agent3Database(); directory = await mkdtemp('/tmp/jobprep-reconcile-sql-')
+    database = await agent3Database(); directory = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/jobprep-reconcile-sql-`)
     const runtime = join(directory, 'runtime'), project = join(directory, 'project'), policyId = randomUUID()
     await mkdir(runtime, { mode: 0o700 }); await mkdir(project, { mode: 0o700 }); await mkdir(join(runtime, 'source-materializations'), { mode: 0o700 })
     const namespace = join(runtime, 'source-materializations', policyId); await mkdir(namespace, { mode: 0o700 })
@@ -160,7 +162,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
   afterAll(async()=>{
     await Promise.allSettled(queueServices.map(service => service.closeQueue()))
     await Promise.allSettled(dispatches.map(dispatch => dispatch.close()))
-    await Promise.allSettled(clients.map(client=>client.close()));await app?.close();await journal?.close();await database?.close();if(directory)await rm(directory,{recursive:true,force:true})
+    await Promise.allSettled(clients.map(client=>client.close()));await app?.close();await journal?.close();await database?.close();if(directory)await removeFixtureDirectory(directory)
   })
   const sourceUrl=()=>`/api/management/workspaces/${workspaceId}/source-preparations`
   const start=(commandId:string)=>app.inject({method:'POST',url:`/api/management/workspaces/${workspaceId}/jobs/executions`,headers:{authorization:`Bearer ${writer.token}`},payload:{commandId,definitionId,expectedRevision:1}})
@@ -206,7 +208,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     const revoked=await access.issue({name:'Later revoked reader',audience:'operator',expiresAt:new Date(Date.now()+60000),grants:[{actions:['sources:read','source_roots:read'],scope:{workspaceIds:[workspaceId]}}]})
     const deniedClient=await client(reader.token)
     expect((await deniedClient.listTools()).tools.some(tool=>tool.name==='source_preparation_reconcile')).toBe(false)
-    await expect(deniedClient.callTool({name:'source_preparation_reconcile',arguments:{workspaceId,operationId:rows[0]!.operation_id,commandId:randomUUID()}})).rejects.toThrow('not found')
+    await expectMcpAccessDenied(deniedClient.callTool({name:'source_preparation_reconcile',arguments:{workspaceId,operationId:rows[0]!.operation_id,commandId:randomUUID()}}))
     const foreign=await operator.callTool({name:'source_preparation_get',arguments:{workspaceId:'foreign',operationId:rows[0]!.operation_id}});expect(foreign.isError).toBe(true)
     await database.pool.query('update management_principals set revoked_at=now() where id=$1',[revoked.principal.id])
     await expect(sources.preparationGet(revoked.principal,'mcp',{workspaceId,operationId:rows[0]!.operation_id})).rejects.toMatchObject({code:'AUTH_REVOKED'})

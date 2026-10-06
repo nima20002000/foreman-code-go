@@ -9,6 +9,7 @@ import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
+import { readTestResourcesIdentity } from './infrastructure/testRuntimeResources.js'
 import { buildProductionApp } from './production.js'
 import { registerBuiltWeb } from './builtWeb.js'
 import { readDeviceListenerConfig } from './modules/devices/productionConfig.js'
@@ -30,6 +31,9 @@ async function main() {
     if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) {
       throw error
     }
+  }
+  if (readProductEnvironment(process.env, 'TEST_ROOT') || readProductEnvironment(process.env, 'TEST_OWNER')) {
+    readTestResourcesIdentity(loadConfig(process.env))
   }
   await enableFileLogging(process.env)
   lifecycle.info({ node: process.version }, 'api starting')

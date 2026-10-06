@@ -13,6 +13,7 @@ import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-re
 import type { HarnessConfiguration } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
+import { assertClaudeFullAccess } from '../harnesses/nativeWorkflowConfiguration.js'
 import { resolveAssignedSkills } from '../skills/catalog.js'
 import { composeInstructionText, instructionsTooLarge } from '../skills/instructions.js'
 
@@ -157,6 +158,7 @@ export async function saveAgentConfiguration(
     throw new DomainError('AGENT_CONFIGURATION_UNAVAILABLE', 'This agent has no persisted configuration to edit.', 409)
   }
   const nextConfiguration = configurationInput(workspaceId, parsed, current)
+  assertClaudeFullAccess(nextConfiguration.harness)
   if (nextConfiguration.harnessProfileSelection) {
     if (!validateProfileSelection) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE', 'Selected host profile validation is not composed.', 503)
     await validateProfileSelection(nextConfiguration.harnessProfileSelection, nextConfiguration.harness, client)

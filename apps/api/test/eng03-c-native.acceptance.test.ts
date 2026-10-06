@@ -1,10 +1,17 @@
-import { timeRuntimeOperation } from '../src/infrastructure/runtimeTiming.js'
+import { waitForStartedBranches } from './helpers/nativeAcceptanceState.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import pg from 'pg'
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema, HarnessExecutionSchema,
   type NativeSessionReference } from '@foreman-code/contracts'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -23,27 +30,23 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
+import { inspectOpenCodeMcpConfiguration } from '../src/modules/harnesses/opencodeMcpConfiguration.js'
+import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
+import { managedStatus } from '../src/modules/harnesses/nativeMcpCommon.js'
+import { APP_MCP_SERVER_NAME, isSupportedAppMcpTokenName } from '../src/modules/harnesses/appMcpLauncher.js'
+import { provisionTestResources } from '../../../scripts/test-resources.mjs'
+import { stopGroup } from '../../../scripts/integration-process.mjs'
 
-async function startedBranches({ pool, runId, nodeIds, runs, publicationChanged }: Eng03NativeControl) {
-  const deadline = Date.now() + 120_000
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const expired = new Promise<void>((resolve) => { timer = setTimeout(resolve, 120_000) })
-  let started: Array<{ execution_id: string; native_session_id: string }> = []
-  try {
-    while (Date.now() < deadline) {
-      const changed = publicationChanged()
-      started = (await pool.query<{ execution_id: string; native_session_id: string }>(
-        `select distinct he.id as execution_id,he.record->>'nativeSessionId' as native_session_id
-         from harness_executions he join harness_native_events ne on ne.execution_id=he.id
-         where he.run_id=$1 and he.workflow_node_id=any($2::text[])
-           and ne.record->>'type'='turn.started' and he.record->>'nativeSessionId' is not null`,
-        [runId, [nodeIds[1], nodeIds[2]]],
-      )).rows
-      if (started.length === 2 || (await runs.get(runId))?.executionState === 'completed') break
-      await timeRuntimeOperation('engine', 'acceptance.publication_wait', () => Promise.race([changed, expired]),
-        { runId })
-    }
-  } finally { clearTimeout(timer) }
+function waitForOwnerBeforeWork(release: string, work: string): string {
+  return `Before the following work, use the native shell tool once to run exactly: while [ ! -f '${release}' ]; do sleep 0.1; done. `
+    + `This reads an owner-controlled fixture; do not create or modify it, and do not finish before the command returns. `
+    + `If the tool returns a running command session, poll that same native session until it finishes; do not start another command. Then ${work}`
+}
+
+const require = createRequire(import.meta.url)
+
+async function startedBranches(context: Eng03NativeControl) {
+  const started = await waitForStartedBranches(context)
   expect(started).toHaveLength(2)
   expect(new Set(started.map((item) => item.native_session_id)).size).toBe(2)
   return started
@@ -54,11 +57,30 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
   it('uses the fixture MCP launcher and rejects an unmanaged replacement before credential delivery', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'native-workflow-mcp-'))
     const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? harnessBinaries(process.env).codexBinary
+    const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? harnessBinaries(process.env).openCodeBinary
     const manager = new CodexAppServerSessionManager(codexBinary)
+    const previousConfigHome = process.env.XDG_CONFIG_HOME
+    const previousConfigDirectory = process.env.OPENCODE_CONFIG_DIR
     let restore: (() => Promise<void>) | undefined
     try {
+      const configHome = join(directory, 'native-config')
+      const configDirectory = join(configHome, 'opencode')
+      await mkdir(configDirectory, { recursive: true, mode: 0o700 })
+      process.env.XDG_CONFIG_HOME = configHome
+      process.env.OPENCODE_CONFIG_DIR = configDirectory
+      await writeFile(join(configDirectory, 'opencode.json'), JSON.stringify({ mcp: { graphql: {
+        type: 'local', command: [process.execPath, '--version'], enabled: false,
+        environment: { GRAPHQL_MCP_TOKEN: '{env:GRAPHQL_MCP_TOKEN}' },
+      } } }), { mode: 0o600 })
       restore = await configureNativeWorkflowMcp({ projectDirectory: directory,
-        runtimeDirectory: directory, codexBinary })
+        runtimeDirectory: directory, codexBinary, openCodeBinary })
+      const openCode = await inspectOpenCodeMcpConfiguration({ binary: openCodeBinary,
+        workingDirectory: directory, serverName: APP_MCP_SERVER_NAME, pure: true })
+      expect(openCode?.automaticEndpoint, JSON.stringify(openCode)).toBe(true)
+      expect(isSupportedAppMcpTokenName(openCode?.credentialEnvironmentVariable)).toBe(true)
+      expect(openCode?.credentialEnvironmentVariable).toBe('GRAPHQL_MCP_TOKEN')
+      const settings = await new OpenCodeMcpConnections(openCodeBinary, directory).read(AbortSignal.timeout(30_000))
+      expect(managedStatus(settings, 'graphql')).toBe('installed')
       const configured = await manager.inspectMcpConfiguration(directory)
       expect(configured.configured.automaticEndpoint).toBe(true)
       const detection = new McpDetectionService(codexMcpInspectorAdapter(manager), 'http://127.0.0.1:1/mcp')
@@ -76,10 +98,91 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       try { await manager.dispose() }
       finally {
         try { await restore?.() }
-        finally { await rm(directory, { recursive: true, force: true }) }
+        finally {
+          if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+          else process.env.XDG_CONFIG_HOME = previousConfigHome
+          if (previousConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR
+          else process.env.OPENCODE_CONFIG_DIR = previousConfigDirectory
+          await removeFixtureDirectory(directory)
+        }
       }
     }
   }, 90_000)
+  it.each(['unset', 'enabled'])(
+    'retains the acceptance helper database and runtime after uncertain closure with keep-runtime %s', async keep => {
+      const input = { ...process.env }
+      delete input.FOREMAN_CODE_TEST_ROOT
+      delete input.FOREMAN_CODE_TEST_OWNER
+      const resources = await provisionTestResources(input)
+      const environment = { ...resources.environment }
+      if (keep === 'enabled') environment.ENG03_A_KEEP_RUNTIME = '1'
+      else delete environment.ENG03_A_KEEP_RUNTIME
+      const observation = join(environment.FOREMAN_CODE_TEST_ROOT!, 'acceptance-retention.json')
+      const probe = fileURLToPath(new URL('./helpers/nativeAcceptanceRetentionProbe.ts', import.meta.url))
+      const child = spawn(process.execPath, ['--import', require.resolve('tsx'), probe, observation], {
+        env: environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      child.stdout?.resume()
+      child.stderr?.resume()
+      const errors: unknown[] = []
+      try {
+        const [code] = await once(child, 'exit', { signal: AbortSignal.timeout(200_000) })
+        expect(code).toBe(0)
+        const reported = JSON.parse(await readFile(observation, 'utf8')) as {
+          runId: string; artifactPath: string; branchCount: number
+        }
+        expect(reported.branchCount).toBe(2)
+        const artifact = JSON.parse(await readFile(reported.artifactPath, 'utf8')) as {
+          resources: { invocation: { directory: string; token: string }; cleanupId: string;
+            root: string; schema: string; registryDirectory: string }
+          resourcesRetained: boolean
+        }
+        expect(artifact.resourcesRetained).toBe(true)
+        expect(existsSync(artifact.resources.registryDirectory)).toBe(true)
+        await expect(resources.close()).rejects.toThrow('cleanup remains unconfirmed')
+        const pool = new pg.Pool({ connectionString: resources.environment.TEST_DATABASE_URL,
+          options: `-c search_path=${artifact.resources.schema}`, max: 1 })
+        try {
+          expect((await pool.query('select id from runs where id=$1', [reported.runId])).rows)
+            .toEqual([{ id: reported.runId }])
+        } finally { await pool.end() }
+        const registryModule = new URL('../src/modules/harnesses/recovery/processRegistry.ts', import.meta.url).href
+        const resourcesModule = new URL('../../../scripts/test-resources.mjs', import.meta.url).href
+        const recovery = spawn(process.execPath, ['--import', require.resolve('tsx'), '--input-type=module', '-e', `
+          import pg from ${JSON.stringify(pathToFileURL(require.resolve('pg')).href)};
+          import { NativeProcessRegistry } from ${JSON.stringify(registryModule)};
+          import { completeTestResourceCleanup, dropFixtureSchema, ownedTestDatabaseUrl, removeFixtureDirectory }
+            from ${JSON.stringify(resourcesModule)};
+          const saved = ${JSON.stringify(artifact.resources)};
+          const registry = new NativeProcessRegistry(saved.registryDirectory);
+          for (const owner of new Set(registry.snapshot().launches.map(launch => launch.owner))) {
+            if (!await registry.closeOwner(owner)) throw new Error('Native closure remains unconfirmed');
+          }
+          const pool = new pg.Pool({ connectionString: ownedTestDatabaseUrl(), max: 1 });
+          try { await dropFixtureSchema(pool, saved.schema); } finally { await pool.end(); }
+          await removeFixtureDirectory(saved.root);
+          completeTestResourceCleanup(saved.invocation, saved.cleanupId);
+        `], { env: resources.environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+        recovery.stdout?.resume()
+        recovery.stderr?.resume()
+        try {
+          const [code] = await once(recovery, 'exit')
+          expect(code).toBe(0)
+        } finally { await stopGroup(recovery.pid) }
+        expect(existsSync(artifact.resources.root)).toBe(false)
+        await resources.close()
+        expect(existsSync(resources.environment.FOREMAN_CODE_TEST_ROOT!)).toBe(false)
+      } catch (error) { errors.push(error) }
+      finally {
+        try { await stopGroup(child.pid) }
+        catch (error) { errors.push(error) }
+        if (existsSync(resources.environment.FOREMAN_CODE_TEST_ROOT!)) {
+          try { await resources.close() }
+          catch (error) { errors.push(error) }
+        }
+      }
+      if (errors.length) throw new AggregateError(errors, 'Acceptance retention probe failed')
+    }, 240_000)
 
   it('E03-L01 stops two positively started Codex branches without starting Reviewer', async () => {
     let started: Array<{ execution_id: string; native_session_id: string }> = []
@@ -106,16 +209,22 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     let interruptedExecutionId = ''
     let originalBranches: Array<{ execution_id: string; native_session_id: string }> = []
     const result = await runEng03NativeScenario('E03-L02', 'codex', 'codex', {
+      prompts: {
+        A: waitForOwnerBeforeWork('release-native-fault', 'read the accepted Entry result. Without more tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. Finish with A-FAULT. Keep the response under 3000 characters.'),
+        B: waitForOwnerBeforeWork('release-native-fault', 'read the accepted Entry result. Without more tools or files, list n and n cubed modulo 101 for n=1 through 120, one row per n. Finish with B-FAULT. Keep the response under 3000 characters.'),
+      },
       control: async (context) => {
-        const { pool, runId, nodeIds, registry, runs, startTask } = context
+        const { pool, runId, nodeIds, projectDirectory, registry, runs, startTask } = context
         const started = await startedBranches(context)
         originalBranches = started
         interruptedExecutionId = started[0]!.execution_id
-        await registry.closeOwner(`execution:${interruptedExecutionId}`)
-        await startTask.catch(() => undefined)
-        expect((await runs.get(runId))?.outcome).toBe('failed')
-        expect((await pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2',
-          [runId, nodeIds[3]])).rowCount).toBe(0)
+        try {
+          await registry.closeOwner(`execution:${interruptedExecutionId}`)
+          await startTask.catch(() => undefined)
+          expect((await runs.get(runId))?.outcome).toBe('failed')
+          expect((await pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2',
+            [runId, nodeIds[3]])).rowCount).toBe(0)
+        } finally { await writeFile(join(projectDirectory, 'release-native-fault'), 'release') }
       },
     })
     const artifact = JSON.parse(await readFile(result.artifactPath, 'utf8')) as {
@@ -296,8 +405,8 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             'This is a task-owned output path outside your project.',
             'Wait for the User approval, finish the command, and end with A-APPROVED.',
           ].join(' '),
-            B: 'Read the accepted Entry result. Without tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. End with B-PROGRESSED.' },
-          control: async ({ pool, runId, nodeIds, runs, approvals, interactions, budgets, engine, startTask }) => {
+            B: waitForOwnerBeforeWork('release-approval-sibling', 'read the accepted Entry result. Without more tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. End with B-PROGRESSED.') },
+          control: async ({ pool, runId, nodeIds, projectDirectory, runs, approvals, interactions, budgets, engine, startTask }) => {
             const controlStarted = Date.now()
             const progress = (stage: string) => process.stdout.write(`ENG03 A01 progress ${JSON.stringify({
               runId, stage, elapsedMs: Date.now() - controlStarted,
@@ -320,7 +429,10 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
                 const sibling = (await readCurrentExecutions(runs, runId)).find((item) => item.workflowNodeId === nodeIds[2])
                 const nativeStarted = (await pool.query(`select 1 from harness_native_events where execution_id=$1
                   and record->>'type'='turn.started' limit 1`, [sibling?.id ?? ''])).rowCount === 1
-                if (nativeStarted && sibling?.state !== 'completed') siblingActiveAtWait = true
+                if (pending.graphInterruptId && nativeStarted && sibling?.state !== 'completed' && !siblingActiveAtWait) {
+                  siblingActiveAtWait = true
+                  await writeFile(join(projectDirectory, 'release-approval-sibling'), 'release')
+                }
                 if (pending.graphInterruptId && (await runs.get(runId))?.executionState === 'waiting'
                   && sibling?.result?.outcome === 'succeeded') break
               }
@@ -437,7 +549,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             predecessors: input.predecessors.map((item) => ({ relationshipId: item.relationshipId,
               senderExecutionId: item.execution.executionId, acceptedResultDigest: repeatDigest(item.acceptedResult) })) },
         }, null, 2))
-      } finally { await rm(outside, { recursive: true, force: true }) }
+      } finally { await removeFixtureDirectory(outside) }
     }, 180_000)
   })
 

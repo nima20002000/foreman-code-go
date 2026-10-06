@@ -1,7 +1,8 @@
 # Local production on Linux
 
-From a desktop session, with Node 22+, the pinned Corepack/pnpm runtime, Docker
-Compose, user systemd, `/usr/bin/ss`, and `/usr/bin/google-chrome` installed:
+From a desktop session, with Node 22.23.2, the pinned Corepack/pnpm runtime,
+Docker Compose, user systemd, `/usr/bin/ss`, and `/usr/bin/google-chrome` installed.
+OpenCode execution also requires `/usr/bin/bwrap` with user namespace support:
 
 ```sh
 corepack pnpm production:install
@@ -12,13 +13,19 @@ policy, builds, stages a standalone release, stops the API, migrates the product
 database and checkpoints, switches the installed release, restarts the API, waits
 for readiness, and opens Chrome at **http://127.0.0.1:3041/workspaces**.
 Build or packaging failures happen before the API is stopped. A migration failure
-leaves the API stopped: inspect the error, fix it, and rerun the command. Releases
+leaves the API stopped: inspect the error, fix it, and rerun the command. Failed
+unactivated staging is removed; the previously installed release is preserved.
+The standalone application/checkpoint migration command uses a bounded 60-second
+DDL deadline per query batch and one connection per migration pool, separately
+from the API's request deadline. Transactions and migration locks remain required. Releases
 are retained for recovery; database migrations are not automatically rolled back.
 
 The API serves the built web app on the same origin. There is no Vite server or TS
 loader at runtime. Each release includes its Node executable, compiled API,
 production dependencies, contracts, web assets, and the existing MCP bridge.
 Services do not depend on the source checkout remaining on disk.
+Staging copies deployed files into an independent snapshot, retaining internal
+dependency symlinks without sharing mutable build-output inodes with the source.
 Staging restores the source workspace's full frozen dependency installation after
 production deployment, including a failed deployment. Later workspace commands
 can run non-interactively without being switched to production-only dependencies.
@@ -55,6 +62,7 @@ Production storage is independent of development and tests:
 | Operator settings | `~/.config/graphql-production/operator.json` (0600) |
 | Workspaces/uploads | `~/.local/share/graphql-production/{workspaces,files}` |
 | Runs/cache | `~/.local/state/graphql-production/{runs,cache}` |
+| Owned OpenCode sessions and file materializations | `~/.local/state/graphql-production/runs/{opencode-sessions,chat-files}` |
 | Managed MCP launcher/routes | `~/.local/share/graphql/mcp/` (shared launcher; credential-scoped routes) |
 | Releases | `~/.local/lib/graphql-production/releases/`, selected by `current` |
 | API logs | `~/.local/state/graphql-production/logs/` (rotating, bounded) |
@@ -119,10 +127,23 @@ activation and readiness. Readiness verifies the database installation identity
 and selected compiled release before opening Chrome.
 
 Native harnesses use the desktop user's existing login files. The service keeps
-that user's `HOME`; without explicit XDG overrides, OpenCode reads its normal
-`~/.local/share/opencode/auth.json` and `~/.config/opencode` configuration. The
-installer keeps its cache separate and does not copy login files or change
-harness sandbox permissions.
+that user's `HOME`; without explicit XDG overrides, OpenCode loads the provider
+login from `~/.local/share/opencode/auth.json` and configuration from
+`~/.config/opencode`. The runtime copies that login into private, owner-specific
+OpenCode storage and isolates native history, media and file materializations.
+Its Bubblewrap namespace hides the API file vault and other native owners'
+storage. The installer keeps its cache separate; accepted harness permissions
+and file-tool grants still control each operation.
+
+## Claude access mode
+
+Claude runs only with Full access (`danger-full-access`). Read only, Workspace
+write and other access modes are rejected when saving a preset, host profile or
+agent and before starting a workflow. Existing saved configurations retain their
+values until the owner explicitly selects Full access; they are not upgraded.
+Tool approval rules, application grants and qualification still apply. Qualify
+an explicitly selected Full access profile before using the installed preset.
+No Claude-specific AppArmor exception is required or installed.
 
 For an environment-based provider credential, explicitly add the provider's
 variable, such as `OPENROUTER_API_KEY`, as a string in private `operator.json`,
@@ -167,10 +188,13 @@ After installing and configuring qualified native profiles, run the installed
 service regression through the heavy-job queue:
 
 ```sh
-corepack pnpm test:production:installed
+corepack pnpm production:verify
 ```
 
-This uses the installed compiled release and authenticated Operator MCP. It also
+This uses the installed compiled release and scoped agent HTTP/Operator MCP with
+denied callers. Automated agent processes retain their application credentials;
+verify credential-free human creation and edits in the actual browser, where OS
+client attribution identifies the human client. It also
 checks configuration migration and updates against actual systemd environment
 values in a temporary service. It tests
 an Operator reply, Codex/OpenCode workflows, denied callers, native cancellation,
@@ -181,8 +205,10 @@ it stops through MCP and verifies cleanup after another restart. Kernel removal 
 an empty native cgroup can confirm closure even when SIGKILL prevents an exit
 receipt; recovery requires the original parent and guardian to have exited and
 verifies the full, unchanged cgroup hierarchy. It verifies persisted readback and
-unchanged native execution/session bindings. It archives its own workspace and revokes its
-credentials; conversation and run history remain available for inspection. Run it
+unchanged native execution/session bindings. On success and failure, it settles its
+own native work, archives its workspace, removes that workspace's test runtime
+storage and revokes its credentials. Persisted conversation and run history remain
+available for inspection. Run it
 when no personal work is active because the recovery checks restart services.
 The API unit delegates its cgroup subtree to native guardians and restarts after
 both failure and unexpected clean shutdown. An explicit systemd stop stays stopped.
@@ -196,3 +222,5 @@ systemctl --user disable --now graphql-operator-api.service graphql-production-d
 ```
 
 These actions retain production data.
+
+Installed production verification is an administrative operation. `production:verify` writes temporary workflow/chat records to the installed production database and restarts its live services. Run it deliberately in a quiet maintenance window. It replaces `test:production:installed`; ordinary `test:*` commands use disposable resources and do not invoke this operation.

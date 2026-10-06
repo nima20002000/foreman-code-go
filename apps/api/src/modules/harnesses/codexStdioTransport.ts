@@ -9,6 +9,7 @@ export type JsonObject = Record<string, unknown>
 export type RequestId = string | number
 export interface RpcRequest { id: RequestId; method: string; params?: JsonObject }
 export interface CodexProtocol {
+  providerVersion?: string | undefined
   request(message: RpcRequest): void
   notification(message: JsonObject): void
   serverRequest(message: RpcRequest): void
@@ -27,19 +28,21 @@ export function object(value: unknown, code = 'CODEX_PROTOCOL_INVALID'): JsonObj
 }
 
 export class CodexRpcError extends HarnessExecutionError {
+  readonly nativeMessage: string | undefined
   constructor(
     readonly method: string,
     readonly operationId: RequestId,
     readonly uncertain: boolean,
     code: string,
-    readonly nativeMessage?: string,
+    details: { nativeMessage?: string | undefined; providerVersion?: string | undefined } = {},
     options?: ErrorOptions,
   ) {
     const message = uncertain
-      ? `The outcome of ${method} is uncertain; reconcile the operation before retrying.`
-      : `Codex did not accept ${method}.`
+      ? `Codex ${details.providerVersion ?? 'unknown version'}: the outcome of ${method} is uncertain; reconcile before retrying.`
+      : `Codex ${details.providerVersion ?? 'unknown version'} did not accept the ${method} command contract.`
     const preflightMessage = options?.cause instanceof HarnessExecutionError ? options.cause.message : undefined
     super(code, preflightMessage ?? message, false, options)
+    this.nativeMessage = details.nativeMessage
   }
 }
 
@@ -144,7 +147,7 @@ export class CodexStdioTransport {
     } catch (error) {
       const fallback = signal?.aborted ? 'CODEX_APP_SERVER_REQUEST_CANCELED' : 'CODEX_PROTOCOL_INVALID'
       const code = error instanceof HarnessExecutionError ? error.result.error!.code : fallback
-      throw new CodexRpcError(method, id, false, code, undefined, { cause: error })
+      throw new CodexRpcError(method, id, false, code, { providerVersion: this.protocol.providerVersion }, { cause: error })
     }
     const finished = beginRuntimeTiming('harness', 'native.rpc', { operation: method, intervalMs: this.timeoutMs,
       ...(typeof params?.threadId === 'string' ? { nativeSessionId: params.threadId } : {}) })
@@ -285,7 +288,7 @@ export class CodexStdioTransport {
     this.operations.delete(id)
     operation.cleanup()
     if (operation.submitted) this.uncertainOperations.set(id, operation)
-    operation.reject(new CodexRpcError(operation.method, id, operation.submitted, code))
+    operation.reject(new CodexRpcError(operation.method, id, operation.submitted, code, { providerVersion: this.protocol.providerVersion }))
   }
 
   private async readFrames(): Promise<void> {
@@ -345,7 +348,8 @@ export class CodexStdioTransport {
       const wasLate = this.uncertainOperations.has(id)
       let error: Error | undefined
       if (isObject(message.error) && typeof message.error.code === 'number' && typeof message.error.message === 'string') {
-        error = new CodexRpcError(operation.method, id, false, 'CODEX_APP_SERVER_REQUEST_FAILED', message.error.message)
+        error = new CodexRpcError(operation.method, id, false, message.error.code === -32601 ? 'CODEX_CONTRACT_UNSUPPORTED' : 'CODEX_APP_SERVER_REQUEST_FAILED',
+          { nativeMessage: message.error.message, providerVersion: this.protocol.providerVersion })
       } else {
         try {
           if (!Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error')) throw new Error('Malformed response.')

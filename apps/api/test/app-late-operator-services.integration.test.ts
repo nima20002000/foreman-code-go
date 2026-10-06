@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -15,8 +16,9 @@ import { jobSpec } from './helpers/jobFixture.js'
 
 // The integration runner supplies a disposable test database; this test owns its schema.
 // Saved metadata is synthetic; no native execution or qualification is claimed.
-it.skipIf(!process.env.TEST_DATABASE_URL)('exposes late Operator services through authenticated MCP with denied callers and persisted HTTP readback', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL!
+it('exposes late Operator services through authenticated MCP with denied callers and persisted HTTP readback', async () => {
+  const connectionString = process.env.TEST_DATABASE_URL
+  if (!connectionString) throw new Error('The integration runner must supply a disposable test database.')
   const url = new URL(connectionString)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !url.pathname.toLowerCase().includes('test')) {
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests.')
@@ -27,7 +29,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('exposes late Operator services throug
     options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
   const clients: Client[] = []
   let app: ReturnType<typeof buildApp> | undefined
-  await admin.query(`create schema ${schema}`)
+  await createFixtureSchema(admin, schema)
   try {
     await applyApplicationMigrations(pool)
     const workspaceId = randomUUID(), foreignWorkspaceId = randomUUID()
@@ -98,6 +100,6 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('exposes late Operator services throug
     await Promise.allSettled(clients.map(client => client.close()))
     await app?.close()
     await pool.end()
-    try { await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() }
+    try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
   }
 }, 120_000)

@@ -3,7 +3,7 @@ import { access, readFile, realpath } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { delimiter, isAbsolute, resolve } from 'node:path'
 import type { CompatibilityHarness } from '@foreman-code/contracts'
-import { baselineProfile, forgetQualifiedProfile, rememberQualifiedProfile, QUALIFICATION_TARGET_PROFILE } from './profiles.js'
+import { forgetQualifiedProfile, rememberQualifiedProfile, QUALIFICATION_TARGET_PROFILE } from './profiles.js'
 import type { HarnessQualificationRepository } from './repository.js'
 
 export class HarnessQualificationRegistry {
@@ -41,13 +41,8 @@ export class HarnessQualificationRegistry {
   }
 
   async trusted(harness: CompatibilityHarness, version: string, binarySha256: string): Promise<boolean> {
-    if (baselineProfile(harness, version)) return true
-    const revision = this.revisions[harness]
-    if (!revision) return false
-    const record = await this.repository.find(harness, version, binarySha256, revision)
-    const passed = record?.status === 'qualified' && record.profile === QUALIFICATION_TARGET_PROFILE[harness]
-    if (passed) rememberQualifiedProfile(harness, version, record.profile!)
-    else forgetQualifiedProfile(harness, version)
+    const passed = await this.trustedExact(harness, version, binarySha256)
+    if (!passed) forgetQualifiedProfile(harness, version)
     return passed
   }
 }

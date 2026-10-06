@@ -28,7 +28,7 @@ export function productionClaudeMetadata(input: {
     async discover(workingDirectory, signal) {
       signal.throwIfAborted()
       const configuration = (await input.defaults()).claude ?? { harness: 'claude' as const, model: 'default', authMode: 'subscription' as const,
-        configDirectory: detectedClaudeProfilePath(), permissionMode: 'default' as const, sandbox: 'read-only' as const,
+        configDirectory: detectedClaudeProfilePath(), permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
         tools: [], permissionRules: [], instructions: '', mcpServers: {} }
       if (configuration.authMode !== 'subscription') throw new DomainError('CLAUDE_API_KEY_DISCOVERY_UNAVAILABLE',
         'API-key metadata requires its explicitly provisioned host credential; a subscription login cannot authenticate this choice.', 409)
@@ -52,7 +52,7 @@ export function productionClaudeMetadata(input: {
             if (!await input.processes.closeOwner(recovery.owner)) throw new Error('Claude metadata process closure is unconfirmed.')
           }
           try {
-            const result = await discoverClaudeMetadata({ binary, profilePath: configuration.configDirectory, workingDirectory, recovery, signal: controller.signal })
+            const result = await discoverClaudeMetadata({ binary, model: configuration.model, profilePath: configuration.configDirectory, workingDirectory, recovery, signal: controller.signal })
             input.registry.installations.assertCurrent(binding)
             return { ...result, providerVersion: version.version }
           } finally { await close() }

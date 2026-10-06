@@ -1,5 +1,5 @@
 import {
-  HarnessConfigurationSchema, withAdvancedDefaults,
+  HarnessConfigurationSchema, SupportedHarnessConfigurationSchema, withAdvancedDefaults,
   type HarnessConfiguration,
 } from '@foreman-code/contracts'
 
@@ -50,7 +50,7 @@ function json(text: string, field: string, path: string[]): unknown {
 
 export function prepareHarnessEditor(editor: HarnessEditor): HarnessConfiguration {
   const value = withAdvancedDefaults(editor.configuration)
-  if (value.harness === 'claude') return HarnessConfigurationSchema.parse(value)
+  if (value.harness === 'claude') return SupportedHarnessConfigurationSchema.parse(value)
   return HarnessConfigurationSchema.parse(value.harness === 'codex' ? {
     ...value,
     advanced: {

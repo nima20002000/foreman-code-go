@@ -1,6 +1,7 @@
+import { createFixtureDatabase, dropFixtureDatabase, removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -27,10 +28,10 @@ import { seedAgent3 } from './helpers/wave25Agent3.js'
 it('F-10 exposes credential-free approval through authenticated MCP, denies a reader and persists its response', async () => {
   // Own one random local demo database; never migrate or delete a shared database.
   const name = `review_opencode_${randomUUID().replaceAll('-', '')}`
-  const admin = new pg.Client({ connectionString: 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+  const admin = new pg.Client({ connectionString: process.env.TEST_DATABASE_URL! })
   await admin.connect()
-  await admin.query(`create database "${name}"`)
-  const pool = new pg.Pool({ connectionString: `postgresql://graphql:graphql@127.0.0.1:5432/${name}`, max: 8 })
+  await createFixtureDatabase(admin, name)
+  const pool = new pg.Pool({ connectionString: new URL(`/${name}`, process.env.TEST_DATABASE_URL!).toString(), max: 8 })
   const directory = await mkdtemp(join(tmpdir(), 'review-opencode-mcp-'))
   const clients: Client[] = []
   let service: AgentChatService | undefined
@@ -102,7 +103,9 @@ it('F-10 exposes credential-free approval through authenticated MCP, denies a re
     const optionId = state.pendingInteraction!.responseOptions[0]!.optionId
     const args = { workspaceId, conversationId, requestId: 'answer', nativeRequestId: 'approval', optionId }
     assert.equal((await denied.listTools()).tools.some(tool => tool.name === 'agent_chat_respond'), false)
-    await assert.rejects(denied.callTool({ name: 'agent_chat_respond', arguments: args }), /not found/)
+    const deniedResponse = await denied.callTool({ name: 'agent_chat_respond', arguments: args })
+    assert.equal(deniedResponse.isError, true)
+    assert.match(JSON.stringify(deniedResponse.content), /ACCESS_DENIED/)
     assert.deepEqual(await repository.get(conversationId), before)
     assert.equal(provider.calls.filter(call => call.path.includes('/reply')).length, 0)
     const reply = await mcp.callTool({ name: 'agent_chat_respond', arguments: args })
@@ -118,8 +121,8 @@ it('F-10 exposes credential-free approval through authenticated MCP, denies a re
     await app?.close()
     vi.restoreAllMocks()
     await pool.end()
-    await admin.query(`drop database "${name}"`)
+    await dropFixtureDatabase(admin, name)
     await admin.end()
-    await rm(directory, { recursive: true, force: true })
+    await removeFixtureDirectory(directory)
   }
 }, 60_000)

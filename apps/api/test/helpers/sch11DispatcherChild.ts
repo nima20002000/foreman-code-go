@@ -58,7 +58,7 @@ async function run(input: Sch11ChildInput) {
   }
   const pool = new pg.Pool({ connectionString: url, max: 4,
     application_name: `sch11_child_${process.pid}`,
-    options: `-c search_path=${input.schema},public -c statement_timeout=15000 -c lock_timeout=10000` })
+    options: `-c search_path=${input.schema} -c statement_timeout=15000 -c lock_timeout=10000` })
   const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), input.runtimeRoot, 'local', input.projectRoot)
   try {
     const dispatcher = new PostgresScheduleDispatcher(pool, async (principal, request, guard) => {

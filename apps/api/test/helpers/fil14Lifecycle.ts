@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -85,7 +86,7 @@ export async function fil14Database() {
     }
     root = await mkdtemp(join(homedir(), '.fil14-lifecycle-'))
   } catch (error) {
-    if (root) await rm(root, { recursive: true, force: true })
+    if (root) await removeFixtureDirectory(root)
     await database.close(); throw error
   }
   const storageRoot = root
@@ -95,7 +96,7 @@ export async function fil14Database() {
   } = {}) {
     const applicationName = `fil14_${randomUUID()}`
     const pool = new pg.Pool({ connectionString, max: 6, application_name: applicationName,
-      options: `-c search_path=${database.schema},public -c statement_timeout=10000 -c lock_timeout=5000` })
+      options: `-c search_path=${database.schema} -c statement_timeout=10000 -c lock_timeout=5000` })
     const bytes = options.bytes ?? new FileByteStorage(storageRoot, MAX_FILE_BYTES)
     const files = options.repository?.(pool) ?? new PostgresFileRepository(pool, readFileRetentionSnapshot)
     const authorization = new PostgresFileConversationAuthorization(pool)
@@ -124,7 +125,7 @@ export async function fil14Database() {
   return { ...database, root: storageRoot, open,
     async close() {
       try { await Promise.all([...closers].map((close) => close())) }
-      finally { try { await rm(storageRoot, { recursive: true, force: true }) } finally { await database.close() } }
+      finally { try { await removeFixtureDirectory(storageRoot) } finally { await database.close() } }
     },
   }
 }

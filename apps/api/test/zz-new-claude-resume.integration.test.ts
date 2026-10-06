@@ -1,3 +1,5 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
@@ -16,15 +18,15 @@ import type { ClaudeSdkClient } from '../src/modules/harnesses/claudeSdk/port.js
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 
 async function claudeMcpFixture() {
-  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
   const schema = `claude_resume_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ ...admin.options, options: `-c search_path=${schema}` })
   let app: ReturnType<typeof buildApp> | undefined
   const clients: Client[] = []
   const close = async () => {
     await Promise.allSettled(clients.map(client => client.close())); await app?.close(); await pool.end()
-    try { await admin.query(`drop schema "${schema}" cascade`) } finally { await admin.end() }
+    try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
   }
   try {
     await applyApplicationMigrations(pool)
@@ -87,7 +89,7 @@ describe('NEW-CLAUDE F-13 authenticated resumed query', () => {
                   expect((await f.db.pool.query('select record from workspaces where id=$1', [id])).rows[0]?.record).toMatchObject({ id, name: workspaceName })
                 } else {
                   expect(names).not.toContain('workspace_create')
-                  await expect(query.transport!.callTool(create)).rejects.toThrow('not found')
+                  await expectMcpAccessDenied(query.transport!.callTool(create))
                   const read = await query.transport!.callTool({ name: 'workspace_get', arguments: { workspaceId: createdId! } })
                   expect(read.structuredContent).toMatchObject({ workspace: { id: createdId, name: workspaceName } })
                 }

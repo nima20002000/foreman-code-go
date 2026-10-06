@@ -37,7 +37,7 @@ it('owns Worker metadata reads separately and pins their binary, directory and c
     await f.diagnostics.run(f.pin, async io => {
       expect(f.admit).toHaveBeenCalledExactlyOnceWith(f.recovery)
       expect(io.environment()).toEqual({ HOST_SETTING: 'kept' })
-      const qualified = await io.qualify('/different-codex', 'different-version', '/different-directory',
+      const qualified = await io.qualify('/different-codex', '/different-directory',
         { CUSTOM_MCP_BEARER: 'injected' }, true)
       await io.qualifyModel(DEFAULT_HARNESS_DEFAULTS.codex, '/different-codex', '/different-directory',
         { FOREMAN_CODE_MCP_TOKEN: 'injected' }, undefined, f.writer, { qualified })

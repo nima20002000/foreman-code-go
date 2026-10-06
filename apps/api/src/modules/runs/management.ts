@@ -13,7 +13,7 @@ import { RunInspectionService } from './inspection.js'
 import { RunActivitiesService } from './activities.js'
 import { RunHandoffReadService } from './handoffRead.js'
 import { readCurrentRunDetails, withCurrentRunRead } from './currentRead.js'
-import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
+import { readAcceptedRepeatRunLocked, readAcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { admitRepeatRun } from './repeatStartAdmission.js'
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
 import { intersectGrants } from '../access/operatorDelegation.js'
@@ -219,7 +219,8 @@ export class RunManagementService {
 
   async stop(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: { workspaceId: string; runId: string; commandId: string }) {
     const input = RunStopInputSchema.parse(raw)
-    const run = await withCurrentRunRead(this.pool, principal, input.workspaceId, input.runId, 'runs:stop', async (_sql, snapshot) => snapshot.run)
+    const run = await withCurrentRunRead(this.pool, principal, input.workspaceId, input.runId, 'runs:stop',
+      async (_sql, snapshot) => snapshot.run, readAcceptedRepeatRunSnapshot)
     const resource = { workspaceId: input.workspaceId, workflowId: run.workflowId, runId: input.runId }
     requireAuthorization(principal, 'runs:stop', resource)
     const receiptSchema = CurrentJournalStopSchema.shape.receipt.unwrap()

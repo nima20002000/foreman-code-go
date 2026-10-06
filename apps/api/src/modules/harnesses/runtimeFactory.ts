@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { captureOriginalCodexSession, type OriginalCodexSession } from './originalCodexSession.js'
-import { createAdmittedNativeManager } from './admittedManager.js'
+import { createAdmittedNativeManager, type NativeManagerAdmission } from './admittedManager.js'
 import type { ClaudeOwnedVersionObservation } from './claudeSdk/currentPin.js'
 import { createAdmittedClaudeManager } from './claudeSdk/admittedManager.js'
 import { allocateClaudeNativeHarness, type ClaudeNativeAllocation, type ClaudeNativeAllocationResult } from './claudeSdk/composition.js'
@@ -14,6 +14,7 @@ import { CodexAppServerSessionManager, type CodexSessionDependencies } from './c
 import { qualifyCodex, assertCodexUnchanged } from './codexProtocol.js'
 import { CodexDiagnostics } from './codexDiagnostics.js'
 import { runCommand } from './process.js'
+import { binaryCacheIdentity } from './binaryIdentity.js'
 import type { CodexNativeOutputs } from './codexNativeOutput.js'
 import type { CodexChatFiles } from './codexFiles/runtime.js'
 import { codexMcpInspectorAdapter } from './codexMcpInspectorAdapter.js'
@@ -80,6 +81,7 @@ export class NativeHarnessFactories {
     openCodeBinary: string
     openCodeFileStorageRoot?: string
     workspaceRoot?: string
+    refreshInstallations?: (signal?: AbortSignal) => Promise<void>
     appMcpEndpoint?: string
     responseJournal?: NativeResponseJournal
     instances?: HarnessInstanceRegistry
@@ -110,9 +112,18 @@ export class NativeHarnessFactories {
     }
   }
 
-  allocateAdmitted(harness: 'codex' | 'opencode', prepare: (signal: AbortSignal) => Promise<NativeHarnessAllocation>) {
-    const result = createAdmittedNativeManager<NativeHarnessSessionManager>(harness, async signal => {
-      const accepted = await prepare(signal)
+  async cacheIdentity(harness: 'codex' | 'opencode', directory: string, configuration?: HarnessConfiguration) {
+    await this.config.refreshInstallations?.()
+    const selection = configuration ? this.config.selectConfiguration?.(configuration) : this.config.selectDefault?.(harness)
+    const binary = selection?.installation.launcher.resolvedLauncher
+      ?? (harness === 'codex' ? this.config.codexBinary : this.config.openCodeBinary)
+    return binaryCacheIdentity(harness, binary, directory)
+  }
+
+  allocateAdmitted(harness: 'codex' | 'opencode',
+    prepare: (signal: AbortSignal, admission: NativeManagerAdmission) => Promise<NativeHarnessAllocation>) {
+    const result = createAdmittedNativeManager<NativeHarnessSessionManager>(harness, async (signal, admission) => {
+      const accepted = await prepare(signal, admission)
       signal.throwIfAborted()
       return this.allocate(accepted)
     })
@@ -193,6 +204,10 @@ export class NativeHarnessFactories {
       && (input.appMcpAccess !== 'none' || input.credentialEnvironmentVariable)) {
       throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This runtime role has no application MCP credentials.', 403)
     }
+    if (input.chatFiles && input.appMcpAccess === 'scoped' && input.role !== 'operator') {
+      throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
+        'Only Operator chat can combine file tools with application management credentials.', 403)
+    }
     const auxiliary = input.role === 'diagnostics' || input.role === 'qualification'
     if (auxiliary && this.auxiliaryClosing) throw new DomainError(
       'NATIVE_RUNTIME_CLOSING', 'Native diagnostics and qualification are shutting down.', 503)
@@ -201,13 +216,13 @@ export class NativeHarnessFactories {
     if (input.harness === 'codex') {
       let dependencies: CodexSessionDependencies | undefined = this.infrastructure.mode === 'native'
         ? { ...this.infrastructure.codex, mode: 'native',
-          qualify: async (binary, version, cwd, environment, authenticated, signal) => {
+          qualify: async (binary, cwd, environment, authenticated, signal) => {
             await input.revalidateSelection?.(signal)
             if (input.selection) await this.assertInstallationUnchanged(input.selection, signal)
             const qualified = await (this.infrastructure.codex?.qualify
-              ?? ((selectedBinary, selectedVersion, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal) =>
-                qualifyCodex(selectedBinary, selectedVersion, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal, recovery)))(
-              binary, version, cwd, environment, authenticated, signal)
+              ?? ((selectedBinary, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal) =>
+                qualifyCodex(selectedBinary, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal, recovery)))(
+              binary, cwd, environment, authenticated, signal)
             await input.revalidateSelection?.(signal)
             if (input.selection) await this.assertInstallationUnchanged(input.selection, signal)
             return qualified
@@ -228,11 +243,11 @@ export class NativeHarnessFactories {
         const replay = this.infrastructure.codex
         dependencies = { ...replay,
           qualify: async (...args) => {
-            await input.revalidateSelection?.(args[5])
-            if (input.selection) await this.assertInstallationUnchanged(input.selection, args[5])
+            await input.revalidateSelection?.(args[4])
+            if (input.selection) await this.assertInstallationUnchanged(input.selection, args[4])
             const result = await replay.qualify(...args)
-            await input.revalidateSelection?.(args[5])
-            if (input.selection) await this.assertInstallationUnchanged(input.selection, args[5])
+            await input.revalidateSelection?.(args[4])
+            if (input.selection) await this.assertInstallationUnchanged(input.selection, args[4])
             return result
           },
           assertUnchanged: async qualified => {
@@ -260,6 +275,7 @@ export class NativeHarnessFactories {
               owner: recovery?.owner ?? `${input.role}:${input.ownerAgentId}:${input.workingDirectory}` } } : {}),
         ...(input.chatFiles && this.config.openCodeFileStorageRoot
           ? { managedFileRoot: join(this.config.workspaceRoot ?? input.workingDirectory, 'chat-files') } : {}),
+        ...(input.role === 'workflow' && recovery ? { restartDetachable: true as const } : {}),
         ...(recovery ? { processRecovery: recovery } : {}),
         ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
         ...(input.advancedConfiguration ? { advancedConfiguration: input.advancedConfiguration } : {}),
@@ -351,6 +367,7 @@ export class NativeHarnessFactories {
   }
 
   async qualifyConfiguration(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {
+    await this.config.refreshInstallations?.(signal)
     if (configuration.harness === 'claude') throw new DomainError('CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE',
       'The Claude preset is saved, but native profile qualification is not available in this runtime. Execution still requires verified authentication, sandbox isolation and lifecycle evidence for the exact host profile.', 409)
     const selection = this.config.selectConfiguration?.(configuration)

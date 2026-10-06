@@ -1,6 +1,8 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
-import { mkdtemp, mkdir, readdir, rename, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -30,7 +32,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
   const schema = 'mcp_parity_' + randomUUID().replaceAll('-', '')
   const admin = new pg.Pool({ connectionString })
   const parentPath = await mkdtemp(join(tmpdir(), 'mcp-parity-'))
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const clients: Client[] = []
   const access = new PostgresAccessService(pool)
@@ -252,8 +254,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
     expect((await limited.listTools()).tools.map((tool) => tool.name)).not.toContain('workspace_folder_create')
     expect((await limited.listTools()).tools.map((tool) => tool.name)).not.toContain('workspace_folder_undo')
     expect((await limited.listTools()).tools.map((tool) => tool.name)).not.toContain('workspace_folders_delete')
-    await expect(limited.callTool({ name: 'workspace_folders_delete', arguments: { paths: [folder.value.path], commandId: randomUUID() } })).rejects.toThrow('not found')
-    await expect(limited.callTool({ name: 'workspace_folder_undo', arguments: { ...undoInput, commandId: randomUUID() } })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(limited.callTool({ name: 'workspace_folders_delete', arguments: { paths: [folder.value.path], commandId: randomUUID() } }))
+    await expectMcpAccessDenied(limited.callTool({ name: 'workspace_folder_undo', arguments: { ...undoInput, commandId: randomUUID() } }))
     const readOnly = await access.issue({ name: 'Workflow reader', audience: 'operator',
       grants: [{ actions: ['workflows:read', 'graph:read'], scope: { workspaceIds: [workspaceId] } }],
       expiresAt: new Date(Date.now() + 60000) })
@@ -263,12 +265,12 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
     const denied = await limited.callTool({ name: 'workspace_create', arguments: { ...create, name: 'Denied', commandId: randomUUID() } })
     expect(denied.isError).toBe(true)
     expect(await readdir(parentPath)).not.toContain('Denied')
-    await expect(limited.callTool({ name: 'workflow_create', arguments: { workspaceId, commandId: randomUUID(), name: 'Denied workflow' } })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(limited.callTool({ name: 'workflow_create', arguments: { workspaceId, commandId: randomUUID(), name: 'Denied workflow' } }))
     expect((await pool.query("select count(*)::int as count from management_audit where source='mcp' and outcome='succeeded'")).rows[0].count).toBeGreaterThan(5)
   } finally {
     await Promise.all(clients.map((client) => client.close()))
     await app.close(); await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`); await admin.end()
-    await rm(parentPath, { recursive: true, force: true })
+    await dropFixtureSchema(admin, schema); await admin.end()
+    await removeFixtureDirectory(parentPath)
   }
 }, 30_000)

@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint'
@@ -10,9 +11,7 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 
 const connectionString =
-  process.env.TEST_DATABASE_URL ??
-  process.env.DATABASE_URL ??
-  'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
+  process.env.TEST_DATABASE_URL!
 
 function testSchema() {
   return `langgraph_probe_${randomUUID().replaceAll('-', '')}`
@@ -76,6 +75,7 @@ describe('PostgreSQL infrastructure', () => {
     })
     const app = buildApp({ readiness: { database, checkpoints }, readinessTimeoutMs: 1000 })
     try {
+      await createFixtureSchema(admin, schema)
       await checkpoints.setup()
       await checkpoints.saver.getTuple({ configurable: { thread_id: '__pool_test__' } })
       expect((await app.inject('/health/ready')).statusCode).toBe(200)
@@ -97,7 +97,7 @@ describe('PostgreSQL infrastructure', () => {
     } finally {
       await app.close()
       await Promise.all([checkpoints.close(), database.close()])
-      await admin.query(`drop schema if exists "${schema}" cascade`)
+      await dropFixtureSchema(admin, schema)
       await admin.end()
     }
   })
@@ -112,6 +112,7 @@ describe('PostgreSQL infrastructure', () => {
     const blocker = await admin.connect()
     let locked = false
     try {
+      await createFixtureSchema(admin, schema)
       await checkpoints.setup()
       expect((await app.inject('/health/ready')).statusCode).toBe(200)
       await blocker.query('begin')
@@ -143,7 +144,7 @@ describe('PostgreSQL infrastructure', () => {
       blocker.release()
       await app.close()
       await Promise.all([checkpoints.close(), database.close()])
-      await admin.query(`drop schema if exists "${schema}" cascade`)
+      await dropFixtureSchema(admin, schema)
       await admin.end()
     }
   }, 15000)

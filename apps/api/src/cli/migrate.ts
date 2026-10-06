@@ -3,8 +3,10 @@ import { createDatabase } from '../infrastructure/database.js'
 import { createCheckpointStore } from '../infrastructure/checkpoints.js'
 
 const config = loadConfig(process.env)
-const database = createDatabase(config.database)
-const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
+// DDL batches have a separate bounded deadline from individual API requests.
+const migrationOptions = { ...config.database, maxConnections: 1, queryTimeoutMs: 60_000 }
+const database = createDatabase(migrationOptions)
+const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, migrationOptions)
 try {
   await database.migrate()
   await checkpoints.setup()

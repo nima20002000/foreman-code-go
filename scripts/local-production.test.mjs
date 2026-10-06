@@ -1,14 +1,131 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { preserveOperatorConfiguration, publish, readEnvironment, renderEnvironment,
+import { desktopLaunchEnvironment, hasNativeTurnStarted, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment, removeUninstalledRelease, renderEnvironment,
   waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+
+test('desktop launch preserves the normal user environment without job ownership', () => {
+  const source = { PATH: '/user/bin', HOME: '/user', TMPDIR: '/user/tmp' }
+  const environment = desktopLaunchEnvironment(source)
+  assert.deepEqual(environment, source)
+  assert.notEqual(environment, source)
+})
+
+test('desktop launch drops job temporary overrides when no original directory was recorded', () => {
+  const source = { PATH: '/user/bin', TMPDIR: '/job/tmp', TMP: '/job/tmp', TEMP: '/job/tmp',
+    FOREMAN_CODE_HEAVY_JOB_TOKEN: 'owned-job', GRAPHQL_HEAVY_JOB_TOKEN: 'owned-job' }
+  assert.deepEqual(desktopLaunchEnvironment(source), { PATH: '/user/bin' })
+  assert.equal(source.TMPDIR, '/job/tmp')
+})
+
+test('a desktop child can create temporary files after its launching build job is removed', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-desktop-environment-'))
+  const base = join(directory, 'base')
+  const job = join(directory, 'job')
+  let child
+  try {
+    await mkdir(base)
+    await mkdir(job)
+    const environment = desktopLaunchEnvironment({ ...process.env,
+      TMPDIR: job, TMP: job, TEMP: job,
+      FOREMAN_CODE_HEAVY_JOB_TOKEN: 'owned-job', GRAPHQL_HEAVY_JOB_TOKEN: 'owned-job',
+      FOREMAN_CODE_HEAVY_BASE_TMPDIR: base, GRAPHQL_HEAVY_BASE_TMPDIR: base,
+    })
+    child = spawn(process.execPath, ['-e', `
+      const { mkdirSync, mkdtempSync } = require('node:fs');
+      const { tmpdir } = require('node:os');
+      const { join } = require('node:path');
+      process.on('message', () => {
+        mkdirSync(tmpdir(), { recursive: true });
+        const directory = mkdtempSync(join(tmpdir(), 'desktop-'));
+        process.send({ directory, ownsJob: Object.keys(process.env).some(key => /^(FOREMAN_CODE|GRAPHQL)_HEAVY_/.test(key)) });
+      });
+    `], { env: environment, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] })
+    await once(child, 'spawn')
+    await rm(job, { recursive: true })
+    const message = once(child, 'message')
+    child.send('create')
+    const [result] = await message
+    assert.equal(result.ownsJob, false)
+    assert.equal((await stat(result.directory)).isDirectory(), true)
+    await assert.rejects(stat(job), { code: 'ENOENT' })
+  } finally {
+    if (child && child.exitCode === null) {
+      const exited = once(child, 'exit')
+      child.kill('SIGTERM')
+      await exited
+    }
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('failed release cleanup removes only uninstalled staging and retains the active release through aliases', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-release-cleanup-'))
+  const installed = join(directory, 'installed')
+  const failed = join(directory, 'failed')
+  const current = join(directory, 'current')
+  const alias = join(directory, 'alias')
+  try {
+    await mkdir(installed)
+    await mkdir(failed)
+    await writeFile(join(installed, 'retained'), 'installed production')
+    await writeFile(join(failed, 'partial'), 'incomplete staging')
+    await symlink(installed, current)
+    await symlink(directory, alias)
+    await removeUninstalledRelease(join(alias, 'installed'), current)
+    assert.equal(await readFile(join(installed, 'retained'), 'utf8'), 'installed production')
+    await removeUninstalledRelease(failed, current)
+    await assert.rejects(stat(failed), { code: 'ENOENT' })
+    assert.equal(await readFile(join(current, 'retained'), 'utf8'), 'installed production')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('native startup requires a live provider event on the bound execution and session', () => {
+  const execution = { id: 'execution', nativeSessionId: 'session' }
+  const codex = { executionId: execution.id, type: 'turn.started', payload: { threadId: 'session' } }
+  const opencode = { executionId: execution.id, type: 'message.updated',
+    payload: { info: { role: 'assistant', sessionID: 'session' } } }
+  assert.equal(hasNativeTurnStarted('codex', execution, codex), true)
+  assert.equal(hasNativeTurnStarted('opencode', execution, opencode), true)
+  for (const [harness, event] of [['codex', codex], ['opencode', opencode]]) {
+    assert.equal(hasNativeTurnStarted(harness, { id: execution.id }, event), false)
+    assert.equal(hasNativeTurnStarted(harness, execution, { ...event, executionId: 'other' }), false)
+    assert.equal(hasNativeTurnStarted(harness, { ...execution, nativeSessionId: 'other' }, event), false)
+    assert.equal(hasNativeTurnStarted(harness, execution, { ...event, connectionId: 'history-replay' }), false)
+  }
+  assert.equal(hasNativeTurnStarted('opencode', execution,
+    { ...opencode, payload: { info: { role: 'user', sessionID: 'session' } } }), false)
+  assert.equal(hasNativeTurnStarted('opencode', execution,
+    { ...opencode, payload: { sessionID: 'session' }, type: 'session.idle' }), false)
+})
+
+test('production updates retire the browser-access setting while retaining native settings', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-retired-settings-'))
+  const path = join(directory, 'operator.json')
+  const owned = localProductionEnvironment('/owner/home', 'a'.repeat(64))
+  const native = { OPENCODE_BINARY: '/opt/owner/opencode' }
+  const retired = { FOREMAN_CODE_DEV_BROWSER_ACCESS: '0', GRAPHQL_DEV_BROWSER_ACCESS: '1' }
+  try {
+    assert.equal(Object.hasOwn(owned, 'FOREMAN_CODE_DEV_BROWSER_ACCESS'), false)
+    const first = await preserveOperatorConfiguration(path, { ...owned, ...native, ...retired }, owned, () => {})
+    assert.deepEqual(first, { ...native, ...owned })
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), native)
+    await writeFile(path, JSON.stringify({ ...native, ...retired }))
+    const updated = await preserveOperatorConfiguration(path, first, owned, () => {})
+    assert.deepEqual(updated, first)
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), native)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('renamed installer settings retain operator values and the existing database credential', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'production-renamed-settings-'))

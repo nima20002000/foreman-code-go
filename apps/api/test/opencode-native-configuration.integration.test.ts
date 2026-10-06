@@ -10,7 +10,7 @@ it('reattaches a persisted native fork after an unnamed turn initializes its def
   try {
     const { native, server } = f.allocate()
     const source = await native.createSession(f.start())
-    assert.equal(source.providerVersion, '1.18.31')
+    assert.equal(source.providerVersion, server.expectedVersion)
     await nativeJson(server, f.directory, `/session/${source.nativeSessionId}/message`, {
       ...nativePrompt('source-history', 'parent', 'Source task'), agent: 'parent',
     })
@@ -43,7 +43,7 @@ it('keeps the unnamed choice in native user messages despite a custom agent name
   try {
     const { native, server } = f.allocate()
     const session = await native.createSession(f.start({ ...f.harness, model: 'fixture/child', nativeAgent: 'reviewer' }))
-    assert.equal(session.providerVersion, '1.18.31')
+    assert.equal(session.providerVersion, server.expectedVersion)
     const agents = await server.request(`/agent?directory=${encodeURIComponent(f.directory)}`)
     const reviewer = (await agents.json() as Record<string, unknown>[]).find(agent => agent.name === 'reviewer')!
     assert.equal(reviewer.variant, 'focused')

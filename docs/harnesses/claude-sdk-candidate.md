@@ -112,10 +112,15 @@ background/deferred frames instead of settling their parent result as success.
 It stores the evidence file identity and SHA-256
 in the exact host/profile proof; it never supplies synthetic native results.
 
-Only explicit full-access profiles with an available Write tool can currently
-prove the tool/OS policy scenario. Read-only, workspace-write, exact cancellation
-and startup-prompt checks remain unverified and do not acquire capabilities from
-metadata. The broader four-owner-path, callback race, publication and restart
+Claude accepts only Full access (`danger-full-access`). Saving a preset, host
+profile or agent in another mode, or starting an existing non-full configuration,
+returns a clear validation error. Existing values are not silently upgraded.
+Native qualification requires Write and proves an allowed owned write plus an
+always-applied hook denial; application grants and approval routing still apply.
+Changed policy requires a fresh `claude-profile-check-v3` check. Earlier native
+profile evidence cannot enable execution. Unsupported sandbox checks remain
+historical evidence and do not acquire capabilities from metadata.
+The broader four-owner-path, callback race, publication and restart
 qualification below remains separate from this bounded default-chat path.
 An installed and signed-in PATH CLI does not satisfy native proof or substitute
 for the application's exact SDK executable pin. Scoped Foreman Code MCP HTTP credentials are

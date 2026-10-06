@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { childHistoryEvent } from '../src/modules/subagents/nativeReadback.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -38,11 +39,11 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     if (!connectionString || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(connectionString).hostname)) throw new Error('An explicit loopback TEST_DATABASE_URL (or SUBAGENT_CORE_ADMIN_DATABASE_URL) is required.')
     admin = new pg.Pool({ connectionString, max: 1 })
     schema = `subagent_core_${randomUUID().replaceAll('-', '')}`
-    await admin.query(`create schema "${schema}"`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString, max: 8, options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
     await applyApplicationMigrations(pool)
   }, 60000)
-  afterAll(async () => { await pool?.end(); if (schema) await admin.query(`drop schema "${schema}" cascade`); await admin?.end() })
+  afterAll(async () => { await pool?.end(); if (schema) await dropFixtureSchema(admin, schema); await admin?.end() })
   async function fixture(provider: 'codex' | 'opencode' | 'claude' = 'codex') {
     const suffix = randomUUID(), workspaceId = `w-${suffix}`, workflowId = `wf-${suffix}`, version = `v-${suffix}`, runId = `r-${suffix}`, executionId = `e-${suffix}`, agentId = `a-${suffix}`, configurationId = `cfg-${suffix}`
     await pool.query("insert into workspaces(id,record) values($1,'{}')", [workspaceId])
@@ -296,6 +297,23 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     const command = { ...f.input, subagentId: child.id, commandId: randomUUID(), expectedRevision: child.revision, text: 'follow up' }
     return { ...f, service, child, send, interrupt, lease, command }
   }
+  it.each([false, true])('refreshes newer child capability readback only with a verified current contract: %s', async verified => {
+    const f = await qualifiedFixture()
+    f.child.profile.providerVersion = '2.0.0'
+    f.child.capabilities.sendInput = { support: 'supported', qualification: 'unverified' }
+    await pool.query('update run_subagents set record=$2::jsonb where id=$1', [f.child.id, JSON.stringify(f.child)])
+    f.lease.inputContractVerified = verified
+    const input = { ...f.input, subagentId: f.child.id }
+    const first = await f.service.get(f.writer.principal, input)
+    expect(first.subagent.profile.providerVersion).toBe('2.0.0')
+    expect(first.subagent.capabilities.sendInput.qualification).toBe(verified ? 'passed' : 'unverified')
+    expect(first.availableActions.sendInput).toBe(verified)
+    expect((await f.service.get(f.reader.principal, input)).availableActions.sendInput).toBe(false)
+    expect((await f.service.get(f.writer.principal, input)).subagent.revision).toBe(first.subagent.revision)
+    expect((await pool.query('select record from workflow_versions where id=$1', [f.child.workflowVersionId])).rows[0].record)
+      .toEqual(f.versionRecord)
+    expect((await pool.query('select record from runs where id=$1', [f.child.runId])).rows[0].record).toEqual(f.runRecord)
+  })
   it('stores one idempotent receipt, checks current grants on retry, and binds changed input to conflict', async () => {
     const f = await qualifiedFixture()
     const [a, b] = await Promise.all([f.service.input(f.writer.principal, 'mcp', f.command), f.service.input(f.writer.principal, 'mcp', f.command)])

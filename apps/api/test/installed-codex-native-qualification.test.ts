@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm, writeFile, stat } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, writeFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
@@ -13,8 +13,10 @@ import { createInstalledNativeQualifier, CODEX_COMPLETED_QUALIFICATION_CHECKS, c
 import { inspectInstalledOpenCode } from '../src/modules/harnesses/installedOpenCodeInspection.js'
 import { createInstalledNativeQualificationRetention } from '../src/modules/harnesses/installedNativeQualificationRetention.js'
 import { requireHarnessQualification } from '../src/modules/harnesses/qualification/gate.js'
+import { runWithReadOnlyQualification } from '../src/modules/harnesses/qualification/gate.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { nativeQualification } from '../src/modules/harnesses/nativeQualification.js'
+import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
 import { HarnessQualificationRepository } from '../src/modules/harnesses/qualification/repository.js'
 import { HostHarnessInstanceProfileChecks, nativeProfileCheckId } from '../src/modules/harnesses/instanceSettings/profileChecks.js'
 import type { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
@@ -85,10 +87,13 @@ describe('explicit actual-suite worker qualification adapter', () => {
         .rejects.toMatchObject({ code: 'HARNESS_PROFILE_EVIDENCE_MISMATCH' })
     } finally { await release(f) }
   })
-  it('opens candidate scope only for the actual owned suite and closes it before returning a completed receipt', async () => {
+  it('keeps Worker execution denied until completed native qualification is retained by Main', async () => {
     const f = await fixture()
+    const reader = new HarnessQualificationRegistry({ list: async () => [], find: async () => null },
+      { codex: 'codex-live-4+identity-v1' })
+    const requireWorker = () => runWithReadOnlyQualification(reader, () => requireHarnessQualification('codex', '0.132.0', f.binary))
     try {
-      await expect(requireHarnessQualification('codex', '0.132.0', f.binary)).rejects.toMatchObject({ result: { error: { code: 'HARNESS_UNQUALIFIED' } } })
+      await expect(requireWorker()).rejects.toMatchObject({ result: { error: { code: 'HARNESS_UNQUALIFIED' } } })
       const proof = await f.qualifier.qualify(f.value, { checkId: f.checkId, signal: new AbortController().signal })
       expect(proof).toMatchObject({ authenticated: true, compatible: true, qualified: true,
         completedNativeQualification: { purpose: 'explicit-host-qualification', checkId: f.checkId, binding: f.binding,
@@ -98,8 +103,8 @@ describe('explicit actual-suite worker qualification adapter', () => {
       expect(f.probe.close).toHaveBeenCalledOnce()
       expect(f.registry.closeOwner).toHaveBeenCalledTimes(2)
       expect(proof.completedNativeQualification?.record.checks.map(check => check.id)).toEqual([...CODEX_COMPLETED_QUALIFICATION_CHECKS])
-      await expect(requireHarnessQualification('codex', '0.132.0', f.binary)).rejects.toMatchObject({ result: { error: { code: 'HARNESS_UNQUALIFIED' } } })
-      await expect(stat(f.run.mock.calls[0]![0].workDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(requireWorker()).rejects.toMatchObject({ result: { error: { code: 'HARNESS_UNQUALIFIED' } } })
+      expect((await readdir(f.directory)).some(name => name.startsWith('codex-qualification-'))).toBe(false)
     } finally { await release(f) }
   })
   it('retains a completed static failure without inventing authentication or issuing a model turn', async () => {

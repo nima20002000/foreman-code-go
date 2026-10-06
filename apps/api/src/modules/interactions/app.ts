@@ -9,10 +9,14 @@ import {
   HarnessExecutionSchema,
   GraphqlToolDefaultsSchema,
   GraphqlToolOverrideSchema,
+  HarnessConfigurationSchema,
   effectiveGraphqlTools,
   type GraphqlAgentTool,
 } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { WorkflowArtifactOutputsV1Schema } from '@foreman-code/contracts/workflow-artifact-result'
+import { WORKER_NATIVE_OUTPUT_TOOL_NAMES, WorkerNativeOutputOperationSchema } from '@foreman-code/contracts/worker-native-output'
+import { openCodeWorkflowOutputAllowed } from '../runs/remote/localWorkflowOutputPolicy.js'
 import { resolveImmutableApprovalRoute } from '../workflows/approvalRoutes.js'
 import { assertWave25WorkerBinding } from './wave25/credentialAuthority.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -99,16 +103,23 @@ export class PostgresAppInteractionService implements AppInteractionService {
   async toolAccess(principal: ManagementPrincipal): Promise<WorkerToolAccess> {
     workerScope(principal)
     // The Run pins the exact configuration version and workflow version; both are immutable for this credential.
-    const result = await this.pool.query<{ role: string | null; defaults: unknown; override: unknown }>(
+    const result = await this.pool.query<{ role: string | null; defaults: unknown; override: unknown;
+      harness: unknown; artifact_outputs: unknown; purpose: string; local_outputs: boolean }>(
       `select c.record->>'productRole' as role, c.record->'graphqlTools' as defaults,
+         c.record->'harness' as harness,b.purpose,
+         ((p.run_id is null and r.record#>>'{executionLocation,runnerId}'='runner-local')
+           or p.record#>>'{hostRef,kind}'='main') as local_outputs,
          (select n->'graphqlTools' from jsonb_array_elements(v.record->'definition'->'nodes') n
-          where n->>'id'=e.workflow_node_id limit 1) as override
+          where n->>'id'=e.workflow_node_id limit 1) as override,
+         (select n->'artifactOutputs' from jsonb_array_elements(v.record->'definition'->'nodes') n
+          where n->>'id'=e.workflow_node_id limit 1) as artifact_outputs
        from worker_credential_bindings b
        join runs r on r.id=b.run_id
        join agent_configuration_versions c on c.id=(r.record->'agentConfigurationVersionIds'->>b.agent_id)
          and c.workspace_id=r.workspace_id and c.agent_id=b.agent_id
        left join harness_executions e on e.id=b.execution_id and e.run_id=b.run_id and e.agent_id=b.agent_id
        left join workflow_versions v on v.id=r.workflow_version_id and v.workspace_id=r.workspace_id
+       left join run_node_placements p on p.run_id=r.id and p.node_id=e.workflow_node_id
        where b.principal_id=$1 and b.agent_id=$2 and b.revoked_at is null`,
       [principal.id, principal.agentId],
     )
@@ -116,7 +127,16 @@ export class PostgresAppInteractionService implements AppInteractionService {
     const role = row?.role === 'orchestrator' ? 'orchestrator' : 'coder'
     const defaults = row?.defaults == null ? undefined : GraphqlToolDefaultsSchema.parse(row.defaults)
     const override = row?.override == null ? undefined : GraphqlToolOverrideSchema.parse(row.override)
-    return { role, tools: effectiveGraphqlTools(role, defaults, override) }
+    const harness = HarnessConfigurationSchema.safeParse(row?.harness)
+    const declaresOutputs = WorkflowArtifactOutputsV1Schema.safeParse(row?.artifact_outputs).success
+    const tools = effectiveGraphqlTools(role, defaults, override).filter(tool => {
+      const operation = WorkerNativeOutputOperationSchema.options.find(operation =>
+        WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation] === tool)
+      if (!operation) return true
+      return row?.purpose === 'workflow' && row.local_outputs === true && declaresOutputs && harness.success
+        && harness.data.harness === 'opencode' && openCodeWorkflowOutputAllowed(harness.data, operation)
+    })
+    return { role, tools }
   }
 
   async canRead(principal: ManagementPrincipal): Promise<boolean> {

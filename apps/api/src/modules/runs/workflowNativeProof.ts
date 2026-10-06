@@ -1,4 +1,4 @@
-import { assertOriginalWorkflowTerminal } from '../interactions/workflowTerminalSource.js'
+import { assertOriginalWorkflowTerminal, workflowProviderId } from '../interactions/workflowTerminalSource.js'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { DurableInteractionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema, isSessionNativeInteraction,
@@ -174,7 +174,7 @@ export class WorkflowNativeProofServices {
       assertOriginalWorkflowTerminal(incoming, capture.session, history)
       const terminal = history.terminalTurn
       if (!terminal || terminal.correlationId !== command || history.correlationId !== command
-        || !terminal.providerId || terminal.providerId !== history.nativeTurnId
+        || !terminal.providerId || terminal.providerId !== workflowProviderId(capture.session, history)
         || terminal.providerId !== capture.lane.providerId || history.pendingInteraction
         || history.pendingInteractions.length || !sameRepeatValue(terminal.result, incoming.result)
         || incoming.finishedAt !== capture.observedAt) return fail('NATIVE_TERMINAL_EVIDENCE_MISMATCH')
@@ -356,7 +356,7 @@ export class WorkflowNativeProofServices {
     if (capture.source.type !== 'history' || !capture.lane) return fail('NATIVE_ORIGINAL_HISTORY_REQUIRED')
     const history = capture.source.history, terminal = history.terminalTurn
     if (!terminal || history.correlationId !== `execution:${stored.execution.id}` || terminal.correlationId !== history.correlationId
-      || terminal.providerId !== history.nativeTurnId || terminal.providerId !== capture.lane.providerId
+      || terminal.providerId !== workflowProviderId(capture.session, history) || terminal.providerId !== capture.lane.providerId
       || history.pendingInteraction || history.pendingInteractions.length) return
     assertOriginalWorkflowTerminal(stored.execution, capture.session, history)
     const publication = currentRunGraphPublication(sql, scope)
@@ -404,6 +404,9 @@ export class WorkflowNativeProofServices {
       const source = await this.persistOriginalLocked(sql, run, evidence, owner)
       if (incoming.state === 'waiting' && capture.source.type === 'history') {
         const history = capture.source.history
+        if (run.approval.handler === 'native' && history.pendingInteractions.length) {
+          return fail('WORKFLOW_NATIVE_APPROVAL_UNHANDLED')
+        }
         if (run.approval.handler === 'orchestrator' && run.approval.designatedOrchestratorAgentId === incoming.agentId) {
           return fail('ORCHESTRATOR_BOOTSTRAP_APPROVAL_UNSUPPORTED')
         }

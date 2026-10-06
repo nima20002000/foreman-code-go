@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { ClaudeSetupOptionsSchema } from '@foreman-code/contracts/claude'
@@ -43,7 +44,7 @@ it.skipIf(!postgresEnabled)('configures Claude MCP through authenticated HTTP/MC
     const reader = await f.access.issue({ name: 'Claude setup reader', audience: 'operator', expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['harnesses:read'], scope: {} }] })
     const readClient = await connect(reader.token)
     expect(ClaudeSetupOptionsSchema.parse(result(await readClient.callTool({ name: 'claude_setup_options_get', arguments: {} })))).toEqual(setup)
-    await expect(readClient.callTool({ name: 'harness_defaults_update', arguments: input })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(readClient.callTool({ name: 'harness_defaults_update', arguments: input }))
     const denied = await fetch(new URL('/api/management/harnesses/defaults', address), { method: 'PUT',
       headers: { authorization: `Bearer ${reader.token}`, 'content-type': 'application/json' }, body: JSON.stringify(input) })
     expect(denied.status).toBe(403)
@@ -57,7 +58,7 @@ it.skipIf(!postgresEnabled)('configures Claude MCP through authenticated HTTP/MC
       status: 'blocked', defaultsRevision: saved.value.revision, reason: { code: 'CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE' },
     })
     const none = await f.access.issue({ name: 'No Claude setup access', audience: 'operator', expiresAt: new Date(Date.now() + 600000), grants: [] })
-    await expect((await connect(none.token)).callTool({ name: 'claude_setup_options_get', arguments: {} })).rejects.toThrow('not found')
+    await expectMcpAccessDenied((await connect(none.token)).callTool({ name: 'claude_setup_options_get', arguments: {} }))
     const audit = await f.db.pool.query("select source,action from management_audit where principal_id=$1 and action='harness.defaults.update'", [f.writer.principal.id])
     expect(audit.rows).toContainEqual({ source: 'mcp', action: 'harness.defaults.update' })
   } finally { await Promise.allSettled(clients.map(client => client.close())); await app.close(); await catalog.shutdownChecks(); await f.close() }

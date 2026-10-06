@@ -35,11 +35,11 @@ export class OpenCodeNativeAutoReplies {
     this.pendingCount = 0
   }
 
-  consume(
-    readOwned: (signal: AbortSignal) => Promise<readonly PermissionIdentity[]>,
-    replyOnce: (request: PermissionIdentity, signal: AbortSignal) => Promise<void>,
+  consume<Request extends PermissionIdentity>(
+    readOwned: (signal: AbortSignal) => Promise<readonly Request[]>,
+    replyOnce: (request: Request, signal: AbortSignal) => Promise<void>,
     signal: AbortSignal,
-  ): Promise<readonly PermissionIdentity[]> {
+  ): Promise<readonly Request[]> {
     // Capture this turn's cancellation generation before queuing. A later turn
     // must not revive an older queued permission response.
     const combined = AbortSignal.any([signal, this.controller.signal])
@@ -48,7 +48,7 @@ export class OpenCodeNativeAutoReplies {
       const pending = await readOwned(combined)
       combined.throwIfAborted()
       this.pendingCount = pending.length
-      const submitted: PermissionIdentity[] = []
+      const submitted: Request[] = []
       for (const request of pending) {
         combined.throwIfAborted()
         const previous = this.replies.get(request.id)

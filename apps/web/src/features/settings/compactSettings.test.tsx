@@ -24,13 +24,13 @@ it('keeps the entire settings choice keyboard-accessible with a meaningful draft
   expect(screen.getByRole('button', { name: 'Edit Codex defaults' })).toBe(choice)
 })
 
-it('retains approval selection, revision checks, and saved readback in the compact workflow defaults form', async () => {
+it.each(['user', 'native'])('retains %s approval selection, revision checks, and saved readback in workflow defaults', async (selection) => {
   let current = { value: { approvalHandler: 'orchestrator' }, revision: 1, versionId: null }
   server.use(http.get('/api/management/settings/workflows', () => HttpResponse.json(current)),
     http.put('/api/management/settings/workflows', async ({ request }) => {
       const input = await request.json() as { expectedRevision: number; value: { approvalHandler: string } }
       expect(input.expectedRevision).toBe(1)
-      expect(input.value).toEqual({ approvalHandler: 'user' })
+      expect(input.value).toEqual({ approvalHandler: selection })
       current = { ...current, value: input.value, revision: 2 }
       return HttpResponse.json({ value: current, replayed: false })
     }))
@@ -40,10 +40,10 @@ it('retains approval selection, revision checks, and saved readback in the compa
   const handler = await screen.findByRole('combobox', { name: 'Approval handler' })
   expect(handler).toHaveValue('orchestrator')
   expect(screen.getByText('Choose who handles approval requests in new workflows.')).toBeVisible()
-  await user.selectOptions(handler, 'user')
+  await user.selectOptions(handler, selection)
   await user.click(screen.getByRole('button', { name: 'Save workflow defaults' }))
   expect(await screen.findByText('Changes saved to the server')).toBeVisible()
-  expect(handler).toHaveValue('user')
+  expect(handler).toHaveValue(selection)
   view.unmount()
   client.clear()
 })

@@ -1,6 +1,6 @@
 import { GRAPHQL_OPERATOR_TOOLS } from '../graphqlMcpTools.js'
 import { NativeInteractionSupportSchema } from '../nativeInteractionSupport.js'
-import { ClaudeHarnessConfigurationSchema } from '../claude.js';
+import { ClaudeFullAccessConfigurationSchema, ClaudeHarnessConfigurationSchema } from '../claude.js';
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
 import { z } from "zod";
@@ -20,6 +20,7 @@ import {
   OpenCodeHarnessConfigurationSchema,
   HarnessQualificationSchema,
   HarnessConfigurationSchema,
+  SupportedHarnessConfigurationSchema,
   GetRunResponseSchema,
   ExecutionLocationSchema,
   RunActivitySchema,
@@ -542,7 +543,7 @@ export const GraphDraftRevertAppliedResultSchema = z.object({
 
 export const HarnessDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields,
-  defaults: ManagementHarnessDefaultsSchema,
+  defaults: ManagementHarnessDefaultsSchema.safeExtend({ claude: ClaudeFullAccessConfigurationSchema.optional() }),
 }).strict();
 export const HarnessConfigurationCheckInputSchema = z.object({
   configuration: HarnessConfigurationSchema,
@@ -576,7 +577,14 @@ export const ManagedWorkflowDefaultsSchema = z.object({
   value: WorkflowDefaultsSchema, revision: ExpectedRevisionSchema, versionId: IdSchema.nullable(),
 }).strict();
 export const AgentDefaultsUpdateInputSchema = z.object({
-  ...RevisionMutationFields, value: AgentDefaultsSchema,
+  ...RevisionMutationFields, value: AgentDefaultsSchema.superRefine((value, context) => {
+    for (const role of ['orchestrator', 'coder', 'operator'] as const) {
+      const result = SupportedHarnessConfigurationSchema.safeParse(value[role].harness);
+      if (!result.success) for (const issue of result.error.issues) context.addIssue({
+        ...issue, path: [role, 'harness', ...issue.path],
+      });
+    }
+  }),
 }).strict();
 export const WorkflowDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields, value: WorkflowDefaultsSchema,
@@ -692,8 +700,10 @@ export const OperatorToolNameSchema = z.enum([
   "resource_telemetry_read", "resource_telemetry_selector_get",
   ...REPEAT_OPERATOR_TOOL_NAMES,
   "operator_mcp_setup_get",
-  "operator_chat_controls_get", "operator_chat_controls_update", "operator_chat_create", "operator_chat_get", "operator_chat_send", "operator_chat_cancel", "operator_chat_respond", "operator_handoff_history_get",
-  "agent_chat_controls_get", "agent_chat_controls_update", "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",
+  "operator_chat_controls_get", "operator_chat_controls_update", "agent_chat_controls_get", "agent_chat_controls_update",
+  "operator_chat_create", "operator_chat_list", "operator_chat_get", "operator_chat_history_get", "operator_chat_activity_get",
+  "operator_chat_send", "operator_chat_cancel", "operator_chat_respond", "operator_handoff_history_get",
+  "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",
   "workspace_defaults_get",
   'worker_execution_settings_get',
   "workspace_defaults_update",
@@ -735,7 +745,7 @@ export const OperatorToolNameSchema = z.enum([
   "run_resume",
   "run_retry",
   "interaction_summary",
-  "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update", "harness_qualifications_list", "harness_qualification_run",
+  "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update", "harness_qualifications_list", "harness_qualification_run", "harness_compatibility_list", "harness_compatibility_retry",
   "agent_defaults_get", "agent_defaults_update", "workflow_defaults_get", "workflow_defaults_update",
   "workspace_folders_list", "workspace_folder_create", "workspace_folder_rename", "workspace_folder_undo", "workspace_folders_delete",
   "workspace_storage_folders_list", "workspace_storage_folder_delete",

@@ -10,13 +10,13 @@ import { ClaudeHarnessConfigurationSchema } from '@foreman-code/contracts/claude
 import { HostHarnessOverrideSchema } from '@foreman-code/contracts/harness-registry'
 import { claudeQualificationCapabilities } from '@foreman-code/contracts/claude-qualification'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
-import { createClaudeCurrentPinResolver, installedClaudeSdkEntrypoint } from '../src/modules/harnesses/claudeSdk/currentPin.js'
+import { createClaudeCurrentPinResolver, discoverInstalledClaudeSdk, installedClaudeSdkEntrypoint } from '../src/modules/harnesses/claudeSdk/currentPin.js'
 import { qualifyClaudeNativeProfile } from '../src/modules/harnesses/claudeSdk/nativeProfileQualification.js'
-import { CLAUDE_CLI_CANDIDATE_VERSION, CLAUDE_SDK_CANDIDATE_VERSION } from '../src/modules/harnesses/claudeSdk/official.js'
 import { probeTrustedVersion } from '../src/modules/harnesses/hostDiscovery.js'
 import { HarnessInstallationRegistry } from '../src/modules/harnesses/installationRegistry.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { copyTestAuthenticationFile } from '../../../scripts/test-resources.mjs'
 
 it.runIf(process.env.RUN_CLAUDE_PROFILE_NATIVE_TESTS === '1')(
   'qualifies the installed Haiku profile through real native lifecycle and tool-policy scenarios', async () => {
@@ -24,6 +24,10 @@ it.runIf(process.env.RUN_CLAUDE_PROFILE_NATIVE_TESTS === '1')(
     if (!evidenceRoot) throw new Error('Native qualification requires the root runner evidence directory.')
     await mkdir(evidenceRoot, { recursive: true, mode: 0o700 })
     const directory = await mkdtemp(join(evidenceRoot, 'claude-haiku-'))
+    const authentication = process.env.FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE
+    if (authentication) copyTestAuthenticationFile({ directory: process.env.FOREMAN_CODE_TEST_ROOT!,
+      token: process.env.FOREMAN_CODE_TEST_OWNER! }, authentication,
+      join(process.env.CLAUDE_CONFIG_DIR!, '.credentials.json'))
     const configuration = ClaudeHarnessConfigurationSchema.parse({
       harness: 'claude', model: 'claude-haiku-4-5-20251001', authMode: 'subscription',
       configDirectory: resolve(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')),
@@ -67,8 +71,11 @@ it.runIf(process.env.RUN_CLAUDE_PROFILE_NATIVE_TESTS === '1')(
     const context = { hostGeneration: randomUUID(), harnessInstallationId: commandInputHash({ hostRef, binary }),
       environment, instanceRevision: commandInputHash(configuration), profilePath: configuration.configDirectory }
     const signal = AbortSignal.timeout(240_000)
+    const sdk = installedClaudeSdkEntrypoint(fileURLToPath(new URL('../../../pnpm-lock.yaml', import.meta.url)), binary)
+    const installed = await discoverInstalledClaudeSdk(sdk, context, signal)
+    let observedCliVersion: string | undefined
     const currentPin = createClaudeCurrentPinResolver({
-      sdk: installedClaudeSdkEntrypoint(fileURLToPath(new URL('../../../pnpm-lock.yaml', import.meta.url)), binary),
+      sdk,
       ownedVersionProbe: async input => {
         const probe = await probeTrustedVersion({ launcher: input.launcher, allowlistedLaunchers: [input.launcher],
           environment: process.env, neutralCwd: directory })
@@ -76,13 +83,15 @@ it.runIf(process.env.RUN_CLAUDE_PROFILE_NATIVE_TESTS === '1')(
         expect(probe.exitCode).toBe(0)
         const version = probe.stdout.trim().match(/^(\d+\.\d+\.\d+)(?: \(Claude Code\))?$/)?.[1]
         if (!version) throw new Error('The installed Claude CLI returned no recognized version.')
+        observedCliVersion = version
         return { ...input, version, positiveProcessClosure: true }
       },
     })
     const current = await currentPin(context, signal)
     if (current.status !== 'available') throw new Error(current.reason)
-    expect(current.pin.sdkVersion).toBe(CLAUDE_SDK_CANDIDATE_VERSION)
-    expect(current.pin.cliVersion).toBe(CLAUDE_CLI_CANDIDATE_VERSION)
+    expect(current.pin.sdkVersion).toBe(installed.sdkVersion)
+    expect(observedCliVersion).toBeTruthy()
+    expect(current.pin.cliVersion).toBe(observedCliVersion)
     const instances = new HarnessInstanceRegistry(localHarnessDrivers)
     instances.reload([{ instanceId, instanceRevision: context.instanceRevision,
       driverId: 'claude', enabled: true, configuration }])

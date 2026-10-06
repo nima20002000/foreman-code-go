@@ -1261,7 +1261,9 @@ export class AgentChatService {
       })
     }
     const known = knownNativeActivity(event, runtime.manager.harness)
-    const settled = known ? await this.activity.settleKnownByNative(id, known.change, known.native, redact) : undefined
+    const independent = known && (known.native.sessionId !== runtime.session?.nativeSessionId
+      || known.native.turnId !== nativeTurnId)
+    const settled = independent ? await this.activity.settleKnownByNative(id, known.change, known.native, redact) : undefined
     if (settled) this.events.publish(id, 'activity', settled)
     const change = operatorActivity(event, runtime.manager.harness, requestId)
     if (!settled && change && change.kind !== 'thinking'

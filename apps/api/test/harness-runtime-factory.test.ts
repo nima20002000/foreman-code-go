@@ -124,6 +124,33 @@ describe('native runtime construction', () => {
     expect(server).not.toHaveBeenCalled()
   })
 
+  it.each(['codex', 'opencode'] as const)('%s keeps combined file and management capabilities limited to Operator chat', async (harness) => {
+    const server = { expectedVersion: '1.18.31', ownerAgentId: 'agent-a',
+      ensure: vi.fn(), request: vi.fn(), dispose: vi.fn(async () => undefined) }
+    const serverFactory = vi.fn(() => server)
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' },
+      { mode: 'native', openCodeServer: serverFactory })
+    const common = { workingDirectory: '/project', ownerAgentId: 'agent-a', appMcpAccess: 'scoped' as const }
+    const prepare = vi.fn(async () => undefined)
+    const resolve = vi.fn(async () => undefined)
+    const files = harness === 'codex' ? { harness, chatFiles: { prepare } }
+      : { harness, chatFiles: () => ({ resolve }) }
+    expect(() => factories.allocate({ ...common, ...files, role: 'workflow' })).toThrow('Only Operator chat')
+    expect(() => factories.allocate({ ...common, ...files, role: 'agent-chat' })).toThrow('no application MCP credentials')
+    expect(serverFactory).not.toHaveBeenCalled()
+    const { manager } = factories.allocate({ ...common, ...files, role: 'operator' })
+    const start = input('/project')
+    start.request.configuration.harness = DEFAULT_HARNESS_DEFAULTS[harness]
+    await expect(manager.createSession(start)).rejects.toMatchObject({
+      result: { error: { code: harness === 'codex' ? 'CODEX_FILE_CHAT_ISOLATION_REQUIRED' : 'OPENCODE_APP_MCP_UNAVAILABLE' } },
+    })
+    expect(prepare).not.toHaveBeenCalled()
+    expect(resolve).not.toHaveBeenCalled()
+    expect(server.ensure).not.toHaveBeenCalled()
+    expect(server.request).not.toHaveBeenCalled()
+    await manager.dispose?.()
+  })
+
   it('fails closed for incomplete replay infrastructure rather than constructing native clients', () => {
     expect(() => new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' },
       { mode: 'replay' } as NativeFactoryInfrastructure)).toThrow('every provider infrastructure port')

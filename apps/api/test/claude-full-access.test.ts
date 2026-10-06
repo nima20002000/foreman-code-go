@@ -42,9 +42,10 @@ it('requires native full-access policy evidence and exact saved configuration id
   expect(() => compileClaudeConfiguration({ ...restricted.configuration, sandbox: 'danger-full-access' }, '/fixture/work', restricted.qualification, {})).toThrow('differs')
 })
 
-it.each(['read-only', 'workspace-write'] as const)('keeps the existing %s sandbox enforced', (sandbox) => {
+it.each(['read-only', 'workspace-write'] as const)('rejects %s instead of changing the accepted access mode', sandbox => {
   const f = fixture(sandbox)
-  expect(compileClaudeConfiguration(f.configuration, '/fixture/work', f.qualification, {}).sandbox.enabled).toBe(true)
+  expect(() => compileClaudeConfiguration(f.configuration, '/fixture/work', f.qualification, {})).toThrow(/Claude requires Full access/)
+  expect(f.configuration.sandbox).toBe(sandbox)
 })
 
 it('qualifies built-ins separately from MCP names and preserves explicit MCP automatic approvals', () => {

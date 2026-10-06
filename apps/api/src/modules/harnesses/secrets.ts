@@ -4,17 +4,22 @@ import { accessSync, constants } from 'node:fs'
 import { delimiter, dirname, resolve } from 'node:path'
 
 export function isDatabaseCredentialVariable(key: string): boolean {
-  return key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD'
+  return key === 'DATABASE_URL' || key.endsWith('_DATABASE_URL') || key === 'PGPASSWORD'
     || key === 'GRAPHQL_PRODUCTION_DB_PASSWORD' || key === 'FOREMAN_CODE_PRODUCTION_DB_PASSWORD'
+}
+
+export function isControllerEnvironmentVariable(key: string): boolean {
+  return key === 'NODE_OPTIONS' || key.startsWith('OPERATOR_')
+    || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP|TEST)_/.test(key)
+    || (APP_MCP_TOKEN_NAMES as readonly string[]).includes(key)
+    || key.endsWith('DATABASE_URL') || isDatabaseCredentialVariable(key)
 }
 
 /** Deliberate application-secret delivery boundary, not a host sandbox. */
 export function inheritedAgentEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...source, NO_COLOR: '1' }
   for (const key of Object.keys(environment)) {
-    if (key.startsWith('OPERATOR_') || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP)_/.test(key)
-      || (APP_MCP_TOKEN_NAMES as readonly string[]).includes(key)
-      || isDatabaseCredentialVariable(key)) delete environment[key]
+    if (isControllerEnvironmentVariable(key)) delete environment[key]
   }
   return environment
 }

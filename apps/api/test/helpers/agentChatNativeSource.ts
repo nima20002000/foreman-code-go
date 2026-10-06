@@ -42,7 +42,7 @@ export async function readNativeSource(session: NativeSessionReference, director
     for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'CODEX_HOME', 'SystemRoot']) {
       if (process.env[key] !== undefined) environment[key] = process.env[key]
     }
-    const qualified = await qualifyCodex(binaries.codexBinary, session.providerVersion, directory, environment, false, signal)
+    const qualified = await qualifyCodex(binaries.codexBinary, directory, environment, false, signal)
     const observer: CodexStdioTransport = new CodexStdioTransport(qualified.binary, directory, environment, qualified.protocol,
       async (request) => { await observer.reject(request.id, -32601, 'Read-only history observer does not answer native requests.') },
       () => {}, () => {})

@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -23,10 +24,10 @@ async function database<T>(perform: (pool: pg.Pool) => Promise<T>, beforeMigrati
   const connectionString = process.env.TEST_DATABASE_URL!
   const schema = `pr8_upgrade_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   try { await beforeMigration(pool); await applyApplicationMigrations(pool); return await perform(pool) }
-  finally { await pool.end(); await admin.query(`drop schema "${schema}" cascade`); await admin.end() }
+  finally { await pool.end(); await dropFixtureSchema(admin, schema); await admin.end() }
 }
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('PR8 current PostgreSQL atomicity, recovery and upgrades', () => {

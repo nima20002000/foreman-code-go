@@ -101,12 +101,14 @@ export async function inspectInstalledHarness(input: {
 /** Main-side read port over the existing persisted exact-binary qualification.
  * The authenticated execution authority owns calling this after its live tuple
  * checks. Worker file inventory and known baselines do not create a proof. */
-export async function readInstalledCodexQualification(repository: Pick<HarnessQualificationRepository, 'find'>,
+export async function readInstalledCodexQualification(repository: Pick<HarnessQualificationRepository, 'findInstalled'>,
   current: CurrentInstalledHarnessTarget, suiteRevision: string): Promise<HarnessQualification | null> {
-  const record = await repository.find('codex', current.expectedVersion, current.binarySha256, suiteRevision)
+  const records = await repository.findInstalled(current.target, current.binarySha256, suiteRevision)
+  if (records.length !== 1) return null
+  const record = records[0]
   if (!record) return null
   const proof = HarnessQualificationSchema.parse(record)
-  if (proof.harness !== 'codex' || proof.version !== current.expectedVersion || proof.binarySha256 !== current.binarySha256
+  if (proof.harness !== 'codex' || proof.binarySha256 !== current.binarySha256
     || proof.suiteRevision !== suiteRevision || proof.status !== 'qualified' || proof.profile !== QUALIFICATION_TARGET_PROFILE.codex
     || !proof.checkedAt || !proof.checks.length || proof.checks.some(check => !check.passed)) return null
   return proof
@@ -117,14 +119,13 @@ export async function readInstalledCodexQualification(repository: Pick<HarnessQu
  * flags and installer expectedVersion never supply either fact. */
 export async function retainInstalledHarnessInventory(input: {
   registry: Pick<import('./productionRegistry.js').ProductionHarnessRegistry, 'acceptRemoteSnapshot'>
-  qualifications: Pick<HarnessQualificationRepository, 'list'>
+  qualifications: Pick<HarnessQualificationRepository, 'findInstalled'>
   binding: DeviceSessionBinding
   inventory: unknown
   suiteRevision: string
   opencodeSuiteRevision?: string
 }): Promise<void> {
   const inventory = HarnessRegistryReadbackSchema.parse(input.inventory)
-  const records = (await input.qualifications.list()).map(record => HarnessQualificationSchema.parse(record))
   for (const installation of inventory.installations) {
     const harness = installation.driverId
     if (harness !== 'codex' && harness !== 'opencode') continue
@@ -132,6 +133,11 @@ export async function retainInstalledHarnessInventory(input: {
     installation.observedVersion = null; installation.qualified = false
     installation.authenticated = null; installation.compatible = null
     const sha256 = installation.launcher.payloadFingerprints?.find(value => value.path === installation.launcher.resolvedLauncher)?.fingerprint
+    if (!sha256 || !installation.installationFingerprint) continue
+    const target = { hostRef: installation.hostRef, applicationInstallationId: input.binding.workerInstallationId,
+      harnessInstallationId: installation.harnessInstallationId, installationFingerprint: installation.installationFingerprint }
+    const records = (await input.qualifications.findInstalled(target, sha256, input.suiteRevision))
+      .map(record => HarnessQualificationSchema.parse(record))
     const matching = records.filter(proof => installation.installed && installation.installationFingerprint
       && installation.launcher.fingerprint === installation.installationFingerprint && proof.harness === harness
       && proof.binarySha256 === sha256 && proof.suiteRevision === suiteRevision && proof.status === 'qualified'

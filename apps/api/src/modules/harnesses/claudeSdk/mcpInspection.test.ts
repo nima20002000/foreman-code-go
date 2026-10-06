@@ -1,7 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { claudeMcpDetection, decodeClaudeMcpControl } from './mcpInspection.js'
+import { assertClaudeCredentialEndpoint, claudeMcpDetection, decodeClaudeMcpControl } from './mcpInspection.js'
+import type { NativeMcpEntryEvidence } from '../mcpDetection.js'
 const now = '2026-10-01T00:00:00.000Z'
 describe('actual SDK MCP control evidence', () => {
+  it('permits credential delivery to the observed app endpoint after token-free OAuth failure', () => {
+    const endpoint = 'http://127.0.0.1:3041/mcp'
+    const entry: NativeMcpEntryEvidence = { name: 'foreman-code', transport: 'streamable-http',
+      endpoint, enabled: true, status: 'broken' }
+    expect(() => assertClaudeCredentialEndpoint(entry, endpoint)).not.toThrow()
+    const snapshot = decodeClaudeMcpControl([{ name: entry.name, status: 'failed',
+      config: { type: 'http', url: endpoint } }], 'generation', now)
+    expect(claudeMcpDetection(snapshot, { serverName: entry.name, url: endpoint })).toMatchObject({
+      state: 'broken', credentialArrangement: { kind: 'unknown' },
+    })
+    for (const changed of [undefined, { ...entry, name: 'foreign' }, { ...entry, endpoint: `${endpoint}/foreign` },
+      { ...entry, enabled: false }, { ...entry, status: 'disabled' as const },
+      { ...entry, transport: 'stdio' as const }]) {
+      expect(() => assertClaudeCredentialEndpoint(changed, endpoint)).toThrow('accepted Foreman Code HTTP endpoint')
+    }
+  })
   it.each(['graphql', 'foreman-code'])('recognizes %s with both supported token references and binds HTTP receipts to the observed name', (serverName) => {
     for (const token of ['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN']) {
       const stdio = decodeClaudeMcpControl([{ name: serverName, status: 'connected', config: {
@@ -52,13 +69,16 @@ describe('actual SDK MCP control evidence', () => {
     })
     expect(JSON.stringify(snapshot)).not.toMatch(/private-header|private-env/)
   })
-  it.each(['valid', 'scope', 'generation', 'endpoint', 'server', 'health'] as const)('checks actual SDK header receipt context: %s', (fault) => {
+  it.each(['valid', 'scope', 'generation', 'endpoint', 'server', 'health', 'broken'] as const)('checks actual SDK header receipt context: %s', (fault) => {
     const endpoint = 'http://127.0.0.1:3000/mcp'
     const acknowledgement = { source: 'sdk_set_mcp_servers' as const, serverName: fault === 'server' ? 'foreign' : 'graphql',
       endpoint: fault === 'endpoint' ? `${endpoint}/foreign` : endpoint,
       generation: fault === 'generation' ? 'old-generation' : 'generation',
       authorizationScope: fault === 'scope' ? 'old-scope' : 'current-scope' }
-    const snapshot = decodeClaudeMcpControl([{ name: 'graphql', status: fault === 'health' ? 'needs-auth' : 'connected',
+    let status = 'connected'
+    if (fault === 'health') status = 'needs-auth'
+    if (fault === 'broken') status = 'failed'
+    const snapshot = decodeClaudeMcpControl([{ name: 'graphql', status,
       config: { type: 'http', url: endpoint } }], 'generation', now,
     { httpCredentialAcknowledgement: acknowledgement, currentAuthorizationScope: 'current-scope' })
     const detection = claudeMcpDetection(snapshot, { serverName: 'graphql', url: endpoint })

@@ -19,8 +19,7 @@ import { operatorCodexFileAdmissions } from './codex.js'
 import { adoptOperatorFilePublications, operatorTurnHasFileInputs, recordOperatorFileSubmission,
   resolveOperatorOpenCodeFileAdmission } from './postgres.js'
 
-/** Shared by buildProductionApp and protocol regressions. Text-only Operator
- * management remains credentialed; an accepted file turn gets a file-only child. */
+/** Operator management credentials and accepted-turn file tokens remain separate. */
 export function productionOperatorManagers(input: {
   app: () => FastifyInstance
   pool: pg.Pool
@@ -75,14 +74,14 @@ export function productionOperatorManagers(input: {
       role: 'operator', workingDirectory: input.workingDirectory, ownerAgentId: configuration.operatorId,
       configured: { instanceId: selection?.instance.instanceId ?? configuration.operatorId, instanceRevision: configuration.id, driverId: configuration.harness.harness,
         enabled: true, configuration: configuration.harness },
-      processRecovery: recovery, appMcpAccess: fileInputs ? 'none' : 'scoped',
+      processRecovery: recovery, appMcpAccess: 'scoped',
       ...(configuration.harness.harness === 'codex'
         ? { harness: 'codex' as const, ...(fileInputs ? {
           chatFiles: productionCodexChatFiles(input.app, conversationId, operatorCodexFileAdmissions(input.app, input.pool,
             configuration, input.workingDirectory, input.config.fileStorageRoot ?? defaultFileStorageRoot())),
         } : {}) }
         : { harness: 'opencode' as const,
-          ...(!fileInputs ? { credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE } : {}),
+          credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
           ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
           ...(fileInputs ? { chatFiles: (server: OpenCodeServerController) => productionOpenCodeChatFiles(input.app, input.pool, input.config,
             conversationId, server, input.endpointHost, {

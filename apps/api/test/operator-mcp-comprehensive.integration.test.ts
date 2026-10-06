@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { removeFixtureDirectory } from './helpers/testResources.js'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -20,7 +21,7 @@ describe.skipIf(!postgresEnabled)('Operator domain-service persistence on isolat
   beforeAll(async()=>{ database = await currentDatabase() }, 60000)
   afterAll(async()=>{
     await database?.close()
-    for(const directory of directories) await rm(directory,{recursive:true,force:true})
+    for(const directory of directories) await removeFixtureDirectory(directory)
   })
   it('persists skills, reuses Agents, and preserves exact V3 Save receipts and immutable history',async()=>{
     const runtime=await mkdtemp(join(tmpdir(),'mcp-runtime-'));directories.push(runtime)

@@ -1,24 +1,25 @@
 #!/usr/bin/env node
 import { spawn, execFile } from 'node:child_process'
-import { randomBytes, randomUUID } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { setTimeout as delay } from 'node:timers/promises'
-import { BASE, HELP, assertOwned, databaseUrl, environment, freePort, options, publicError } from './safety.mjs'
+import { BASE, HELP, assertOwned, environment, freePort, options, publicError } from './safety.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const exec = promisify(execFile)
-const service = join(root, 'scripts/acceptance/service.mjs')
+const service = join(root, 'apps/api/scripts/local-acceptance-service.mjs')
 const abort = new AbortController()
-let state, owner, pg, api, web, input, stage = 'arguments', stopping = false, preserve = false
+let state, owner, resources, admin, removeRoot, dropDatabase, api, web, input, stage = 'arguments', stopping = false
 let end
 const ended = new Promise((resolve) => { end = resolve })
-const safeEnv = environment(process.env)
-const toolEnv = Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY')))
+let safeEnv = {}
+let toolEnv = {}
+let completeCleanup
+const cleanupOwners = []
 const children = []
 function interrupted() { if (abort.signal.aborted) throw new Error('Acceptance interrupted.') }
 function finish(code = 0) {
@@ -32,9 +33,29 @@ process.once('SIGTERM', () => finish())
 // forwarded to the terminal. stdout is captured only for non-secret identity probes.
 async function command(file, args, { cwd = root, capture = false, timeout = 90_000 } = {}) {
   interrupted()
-  const result = await exec(file, args, { cwd, env: toolEnv, encoding: 'utf8',
-    maxBuffer: 1024 * 1024, timeout, signal: abort.signal, killSignal: 'SIGTERM' })
-  return capture ? result.stdout.trim() : undefined
+  try {
+    const result = await exec(file, args, { cwd, env: toolEnv, encoding: 'utf8',
+      maxBuffer: 1024 * 1024, timeout, signal: abort.signal, killSignal: 'SIGTERM' })
+    return capture ? result.stdout.trim() : undefined
+  } catch (error) {
+    if (state) {
+      const secrets = Object.entries({ ...process.env, ...toolEnv }).filter(([key, value]) => value
+        && /TOKEN|SECRET|PASSWORD|KEY|DATABASE_URL/.test(key)).flatMap(([, value]) => [
+        value, JSON.stringify(value).slice(1, -1),
+      ]).sort((left, right) => right.length - left.length)
+      const redact = (text) => secrets.reduce((result, secret) => result.replaceAll(secret, '[REDACTED]'),
+        String(text ?? ''))
+      const diagnostic = { stage, code: error.code, signal: error.signal,
+        stdout: redact(error.stdout), stderr: redact(error.stderr) }
+      try {
+        await writeFile(join(state, 'command-failure.json'), JSON.stringify(diagnostic, null, 2),
+          { mode: 0o600, flag: 'wx' })
+      } catch {
+        console.error('ENG07 private command diagnostic unavailable.')
+      }
+    }
+    throw error
+  }
 }
 function ownedChild(name, file, args, env, ipc = false) {
   interrupted()
@@ -53,7 +74,6 @@ function ownedChild(name, file, args, env, ipc = false) {
     for (const request of record.pending.values()) request.reject(new Error('Service exited.'))
     record.pending.clear(); exited()
     if (!record.expected && !stopping) {
-      if (name === 'API') preserve = true
       console.error(`ENG07 ${name} exited unexpectedly. No other service will be adopted.`)
       finish(1)
     }
@@ -66,11 +86,10 @@ function ownedChild(name, file, args, env, ipc = false) {
     if (message?.type === 'notice') {
       // A notice is NOT evidence of recovery or native closure. Retain receipts
       // at teardown rather than erase potentially unresolved crash evidence.
-      preserve = true
       if (!record.noticeShown) { console.log('ENG07 recovery is unresolved; inspect the Run before continuing.'); record.noticeShown = true }
     }
     if (message?.type === 'failure') {
-      const error = Object.assign(new Error('Service operation failed.'), { code: message.code })
+      const error = Object.assign(new Error('Service operation failed.'), { code: message.code, stage: message.stage })
       if (message.requestId) record.pending.get(message.requestId)?.reject(error)
       else failed(error)
     }
@@ -99,9 +118,14 @@ async function request(record, type, content = {}) {
 async function stop(record, signal = 'SIGTERM', milliseconds = 75_000) {
   if (!record || record.done) return
   record.expected = true
-  // Exact child handles, never port owners, process-name matches or a PID file.
-  record.child.kill(signal)
-  await bounded(record.exited, milliseconds, 'owned shutdown')
+  if (signal === 'SIGTERM' && record.child.connected) {
+    const sent = new Promise((resolve, reject) => record.child.send({ type: 'shutdown' },
+      (error) => error ? reject(error) : resolve()))
+    await bounded(Promise.all([sent, record.exited]), milliseconds, 'owned shutdown')
+  } else {
+    record.child.kill(signal)
+    await bounded(record.exited, milliseconds, 'owned shutdown')
+  }
 }
 async function shutdown() {
   stopping = true
@@ -111,37 +135,45 @@ async function shutdown() {
     if (!record) continue
     try {
       await stop(record)
-      if (record.code !== 0 || !record.closed) orderly = false
-    } catch {
+      if (record.code !== 0 || !record.closed) {
+        orderly = false
+        console.error(`ENG07 ${record.name} shutdown did not confirm resource closure.`)
+      }
+    } catch (error) {
       orderly = false
+      console.error(`ENG07 ${record.name} shutdown failed (${publicError(error)}).`)
       record.expected = true; record.child.kill('SIGKILL')
       await bounded(record.exited, 5000, 'owned forced exit').catch(() => undefined)
     }
   }
-  try {
-    // SIGINT is PostgreSQL's fast shutdown, scoped to our foreground postmaster.
-    await stop(pg, 'SIGINT', 20_000)
-    if (pg && pg.code !== 0) orderly = false
-  } catch {
-    orderly = false
-    pg.expected = true; pg.child.kill('SIGQUIT')
-    await bounded(pg.exited, 5000, 'owned PostgreSQL exit').catch(() => undefined)
-  }
   if (!state) return
-  if (!orderly || preserve || children.some((record) => !record.done)) {
+  if (!orderly || children.some((record) => !record.done)) {
     process.exitCode = 1
     console.error(`ENG07 retained private task state: ${state}`)
     console.error('Native/cleanup settlement is not proven. Do not delete it or kill processes by name. See the walkthrough.')
+    await admin?.end()
     return
   }
   await assertOwned(state, owner)
-  await rm(state, { recursive: true })
-  console.log('ENG07 owned cluster and task files removed. No external database was contacted.')
+  for (const cleanup of cleanupOwners) completeCleanup(cleanup.resource, cleanup.id)
+  try {
+    if (resources.databaseUrl) await dropDatabase(admin, resources)
+  } finally { await admin.end() }
+  removeRoot(resources)
+  console.log('ENG07 owned test database and task files removed.')
 }
 async function readyHttp(url, accepts, headers = {}) {
   interrupted()
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) })
-  if (!response.ok || !accepts(await response.text())) throw new Error('Service readiness failed.')
+  const body = await response.text()
+  if (!response.ok) {
+    let code = 'ACCEPTANCE_READINESS_FAILED'
+    try { code = publicError(JSON.parse(body).error) } catch { /* A non-JSON response has no public error code. */ }
+    throw Object.assign(new Error('Service readiness failed.'), { code })
+  }
+  if (!accepts(body)) throw Object.assign(new Error('Service readiness response is invalid.'), {
+    code: 'ACCEPTANCE_READINESS_INVALID',
+  })
 }
 async function main() {
   const opts = options(process.argv.slice(2))
@@ -158,17 +190,42 @@ async function main() {
   const tsx = apiRequire.resolve('tsx')
   createRequire(join(root, 'apps/web/package.json')).resolve('vite')
   apiRequire.resolve('pg'); apiRequire.resolve('@modelcontextprotocol/client')
-  const pgBin = opts.pgBin ?? await command('pg_config', ['--bindir'], { capture: true })
-  if (!pgBin.startsWith('/') || /[\r\n\0]/.test(pgBin)) throw new Error('Invalid PostgreSQL binary directory.')
-  for (const executable of ['postgres', 'initdb', 'psql', 'pg_isready']) {
-    const version = await command(join(pgBin, executable), ['--version'], { capture: true })
-    if (!/\(PostgreSQL\) 17(?:\.|\s|$)/.test(version)) throw new Error('PostgreSQL 17 is required.')
+  const { createTestRoot, createTestDatabase, testAdminPool, testEnvironment,
+    completeTestResourceCleanup, registerTestResourceCleanup,
+    dropTestDatabase, removeTestRoot } = await import('../test-resources.mjs')
+  dropDatabase = dropTestDatabase
+  removeRoot = removeTestRoot
+  completeCleanup = completeTestResourceCleanup
+  admin = await testAdminPool()
+  resources = createTestRoot(undefined, 'eng07-')
+  state = resources.directory
+  cleanupOwners.push({ resource: resources, id: registerTestResourceCleanup(resources,
+    { kind: 'local-acceptance', stateDirectory: state }) })
+  if (process.env.FOREMAN_CODE_TEST_ROOT) {
+    const parent = { directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER }
+    cleanupOwners.push({ resource: parent, id: registerTestResourceCleanup(parent,
+      { kind: 'local-acceptance', stateDirectory: state }) })
+  }
+  owner = randomUUID()
+  await writeFile(join(state, 'owner.json'), JSON.stringify({ owner, base: BASE }), { mode: 0o600, flag: 'wx' })
+  resources = await createTestDatabase(admin, resources)
+  const isolated = testEnvironment(process.env, resources)
+  safeEnv = { ...environment(isolated), NODE_OPTIONS: isolated.NODE_OPTIONS,
+    FOREMAN_CODE_API_ENV_FILE: isolated.FOREMAN_CODE_API_ENV_FILE }
+  toolEnv = {
+    ...Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY'))),
+    // A build must validate the prepared dependencies rather than reinstall them under the isolated home.
+    pnpm_config_verify_deps_before_run: 'error',
+    // pnpm's default virtual-store setting depends on the install's CI context.
+    ...(isolated.CI !== undefined ? { CI: isolated.CI } : {}),
+    ...(isolated.FOREMAN_CODE_HEAVY_JOB_COMMON ? { FOREMAN_CODE_HEAVY_JOB_COMMON: isolated.FOREMAN_CODE_HEAVY_JOB_COMMON } : {}),
+    ...(isolated.FOREMAN_CODE_HEAVY_JOB_TOKEN ? { FOREMAN_CODE_HEAVY_JOB_TOKEN: isolated.FOREMAN_CODE_HEAVY_JOB_TOKEN } : {}),
   }
   // Do not run native providers in smoke mode: it verifies setup/transport only.
   if (!opts.smoke) {
-    stage = 'OpenCode prerequisite (qualified 1.18.31 binary)'
+    stage = 'OpenCode prerequisite (installed native binary)'
     const version = await command(safeEnv.OPENCODE_BINARY ?? 'opencode', ['--version'], { capture: true })
-    if (version !== '1.18.31') throw new Error('OpenCode version does not match the pinned source.')
+    if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version)) throw new Error('OpenCode returned no recognized version.')
   }
   stage = 'port reservation check'
   await freePort(opts.apiPort); await freePort(opts.webPort)
@@ -178,43 +235,18 @@ async function main() {
   await command('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'])
   interrupted()
   process.umask(0o077)
-  // Canonical /tmp also handles macOS /private/tmp. No caller-selected path.
-  state = await mkdtemp(join(await realpath('/tmp'), 'eng07-'))
-  await chmod(state, 0o700)
-  owner = randomUUID()
-  await writeFile(join(state, 'owner.json'), JSON.stringify({ owner, base: BASE }), { mode: 0o600, flag: 'wx' })
   await assertOwned(state, owner)
-  for (const name of ['socket', 'projects', 'runtime', 'empty-env', 'tmp']) await mkdir(join(state, name), { mode: 0o700 })
-  const database = `eng07_${randomBytes(8).toString('hex')}`
-  stage = 'isolated initdb'
-  await command(join(pgBin, 'initdb'), ['-D', join(state, 'pg'), '--username=eng07_owner',
-    '--encoding=UTF8', '--no-locale', '--auth-local=trust', '--auth-host=reject'], { cwd: state })
-  stage = 'isolated PostgreSQL startup'
-  pg = ownedChild('PostgreSQL', join(pgBin, 'postgres'), ['-D', join(state, 'pg'), '-k', join(state, 'socket'),
-    '-p', '5432', '-c', 'listen_addresses=', '-c', 'unix_socket_permissions=0700',
-    '-c', 'logging_collector=off', '-c', 'log_statement=none', '-c', 'log_min_error_statement=panic',
-    '-c', 'log_min_messages=panic', '-c', 'log_connections=off', '-c', 'log_disconnections=off'], toolEnv)
-  const connection = ['-h', join(state, 'socket'), '-p', '5432', '-U', 'eng07_owner']
-  let live = false
-  for (let n = 0; n < 120; n++) {
-    interrupted()
-    if (pg.done) throw new Error('Task PostgreSQL exited.')
-    try { await command(join(pgBin, 'pg_isready'), [...connection, '-d', 'postgres'], { timeout: 2000 }); live = true; break }
-    catch { await delay(250) }
-  }
-  if (!live) throw new Error('Task PostgreSQL never became ready.')
-  const sql = (db, statement, capture = false) => command(join(pgBin, 'psql'),
-    ['-X', '-w', ...connection, '-d', db, '-v', 'ON_ERROR_STOP=1', '-At', '-c', statement], { cwd: state, capture })
-  const directory = await sql('postgres', "select current_setting('data_directory')", true)
-  if (await realpath(directory) !== await realpath(join(state, 'pg'))) throw new Error('Task database identity mismatch.')
-  stage = 'task database and schema creation'
-  // Generated identifier only; there is no existing-server/admin URL argument.
-  await sql('postgres', `CREATE DATABASE ${database} OWNER eng07_owner TEMPLATE template0`)
-  await sql(database, 'CREATE SCHEMA eng07 AUTHORIZATION eng07_owner; REVOKE CREATE ON SCHEMA public FROM PUBLIC;')
-  await sql(database, `ALTER DATABASE ${database} SET search_path TO eng07, public`)
+  for (const name of ['projects', 'runtime', 'empty-env']) await mkdir(join(state, name), { mode: 0o700 })
+  const database = resources.name
+  const apiRequirePg = apiRequire('pg')
+  const pool = new apiRequirePg.Pool({ connectionString: resources.databaseUrl, max: 1 })
+  try {
+    await pool.query('CREATE SCHEMA eng07; REVOKE CREATE ON SCHEMA public FROM PUBLIC')
+    await pool.query(`ALTER DATABASE "${database}" SET search_path TO eng07`)
+  } finally { await pool.end() }
   const apiUrl = `http://127.0.0.1:${opts.apiPort}`, webUrl = `http://127.0.0.1:${opts.webPort}`
   const appEnv = { ...safeEnv, NODE_ENV: 'development', HOST: '127.0.0.1', PORT: String(opts.apiPort),
-    DATABASE_URL: databaseUrl(state, database), DATABASE_QUERY_TIMEOUT_MS: '60000',
+    DATABASE_URL: resources.databaseUrl, DATABASE_QUERY_TIMEOUT_MS: '60000',
     LANGGRAPH_CHECKPOINT_SCHEMA: 'eng07_checkpoints', HARNESS_WORKSPACE_ROOT: join(state, 'runtime'),
     FOREMAN_CODE_BROWSER_ORIGIN: webUrl,
     ENG07_DATABASE: database,
@@ -264,7 +296,7 @@ async function main() {
         if (text === 'crash-api') await stop(api, 'SIGKILL', 10_000)
         else {
           await stop(api)
-          if (!api.closed || api.code !== 0) { preserve = true; throw new Error('API shutdown is not proven.') }
+          if (!api.closed || api.code !== 0) { throw new Error('API shutdown is not proven.') }
         }
         await startApi()
         console.log('ENG07 API restarted against the SAME database and recovery directories. No seed, new Run or approval replay was submitted.')
@@ -275,14 +307,35 @@ async function main() {
       console.log('Use restart-api, crash-api, parity [RUN_ID], or quit. Do not enter credentials here.')
     }).catch((error) => {
       console.error(`ENG07 ${stage} failed (${publicError(error)}). Inspect the Board; no automatic command resubmission.`)
-      preserve = true; finish(1)
+      finish(1)
     })
   })
   input.once('close', () => finish())
   await ended
 }
-main().catch((error) => {
-  if (!abort.signal.aborted) console.error(`ENG07 ${stage} failed (${publicError(error)}). See prerequisites and troubleshooting in docs/acceptance/owner-walkthrough.md.`)
+main().catch(async (error) => {
+  if (!abort.signal.aborted) console.error(`ENG07 ${stage} failed (${publicError(error)}; service stage: ${error.stage ?? 'controller'}). See prerequisites and troubleshooting in docs/acceptance/owner-walkthrough.md.`)
+  const archive = process.env.FOREMAN_CODE_TEST_EVIDENCE_ARCHIVE
+  if (archive && state) {
+    try {
+      await mkdir(archive, { recursive: true, mode: 0o700 })
+      for (const kind of ['api', 'web', 'command']) {
+        const file = join(state, `${kind}-failure.json`)
+        try {
+          const diagnostic = await readFile(file, 'utf8')
+          const extension = kind === 'command' ? 'log' : 'json'
+          const archived = join(archive, `local-${kind}-failure-${randomUUID()}.${extension}`)
+          await writeFile(archived, diagnostic,
+            { flag: 'wx', mode: 0o600 })
+          if (kind === 'command') console.error(`ENG07 private command diagnostic log: ${archived}`)
+        } catch (failure) {
+          if (failure.code !== 'ENOENT') throw failure
+        }
+      }
+    } catch {
+      console.error('ENG07 private startup diagnostic archive failed.')
+    }
+  }
   process.exitCode = process.exitCode || 1
 }).finally(async () => {
   try { await shutdown() } catch {

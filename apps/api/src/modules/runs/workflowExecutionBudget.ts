@@ -1,0 +1,29 @@
+import type { WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
+import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
+import { repeatConflict } from './repeatResolution.js'
+
+/** Call while holding the Run lock. Starting an unissued activation consumes
+ * its reservation; retries and new activations require additional capacity. */
+export async function hasWorkflowExecutionCapacityLocked(sql: GraphTransactionSql, runId: string,
+  version: WorkflowVersionV3, activationId: string | null = null): Promise<boolean> {
+  assertGraphTransaction(sql)
+  const maximum = version.definition.executionPolicy!.maxNodeExecutions
+  const row = (await sql.query<{ total: string }>(`select (
+    (select count(*) from harness_executions where run_id=$1)
+    + (select count(*) from run_work_activations a where a.run_id=$1
+      and a.state in ('queued','waiting','running')
+      and ($2::text is null or a.activation_id<>$2)
+      and not exists (select 1 from harness_executions e
+        where e.run_id=a.run_id and e.work_activation_id=a.activation_id))
+    )::text as total`, [runId, activationId])).rows[0]
+  if (!row || !/^[0-9]+$/.test(row.total)) return repeatConflict('REPEAT_EXECUTION_BUDGET_INVALID')
+  return BigInt(row.total) < BigInt(maximum)
+}
+
+export async function assertWorkflowExecutionCapacityLocked(sql: GraphTransactionSql, runId: string,
+  version: WorkflowVersionV3, activationId: string | null = null): Promise<void> {
+  if (!await hasWorkflowExecutionCapacityLocked(sql, runId, version, activationId)) {
+    return repeatConflict(version.definition.handoffs
+      ? 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED' : 'REPEAT_EXECUTION_BUDGET_EXHAUSTED')
+  }
+}

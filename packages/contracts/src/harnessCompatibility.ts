@@ -34,7 +34,7 @@ export const HarnessCompatibilitySchema = z.object({
   checkerRevision: z.string().min(1).max(100),
   qualifiedRelease: HarnessReleaseProvenanceSchema,
   knownRelease: HarnessReleaseProvenanceSchema.nullable(),
-  /** Exact version gate only, NOT auth, settings, schema identity or permission qualification. */
+  /** Historical release identity only; execution depends on observed contracts and host policy. */
   matchesQualifiedVersion: z.boolean(),
   reason: HarnessCompatibilityReasonSchema.nullable(),
   schemaSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),

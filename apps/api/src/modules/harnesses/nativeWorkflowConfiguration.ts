@@ -7,6 +7,13 @@ import {
 } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
+import { CLAUDE_FULL_ACCESS_REQUIRED, ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
+
+export function assertClaudeFullAccess(configuration: HarnessConfiguration): void {
+  if (configuration.harness === 'claude' && !ClaudeFullAccessConfigurationSchema.safeParse(configuration).success) {
+    throw new DomainError('CLAUDE_FULL_ACCESS_REQUIRED', CLAUDE_FULL_ACCESS_REQUIRED, 400)
+  }
+}
 
 /** Approval authority is explicit; missing legacy fields never select another transport. */
 export function assertNativeWorkflowConfiguration(
@@ -14,6 +21,7 @@ export function assertNativeWorkflowConfiguration(
   approval?: WorkflowApprovalConfiguration,
   designatedOrchestrator = false,
 ): void {
+  assertClaudeFullAccess(configuration)
   if (approval && !AcceptedWorkflowApprovalConfigurationSchema.safeParse(approval).success) {
     throw new DomainError('WORKFLOW_APPROVAL_INCOMPLETE', 'Reopen and save the workflow with complete approval settings before starting it.', 409)
   }
@@ -21,7 +29,7 @@ export function assertNativeWorkflowConfiguration(
   catch {
     throw new DomainError('WORKFLOW_HARNESS_APPROVAL_CONFLICT', 'The Agent configuration is invalid or native automatic handling conflicts with routed workflow approval. Reopen and save the Agent and workflow settings.', 409)
   }
-  if (approval) {
+  if (approval && approval.handler !== 'native') {
     if (configuration.harness === 'codex'
       && !CodexSessionCompatibilitySchema.safeParse({ configuration, requiresResume: true }).success) {
       throw new DomainError('WORKFLOW_HARNESS_APPROVAL_CONFLICT', 'Routed approval requires a resumable Codex session. Reopen and save the Agent with persistent sessions.', 409)

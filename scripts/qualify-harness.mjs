@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, mkdir, mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises'
+import { access, mkdir, readFile, realpath, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { parseArgs } from 'node:util'
+import { completeTestResourceCleanup, createTestRoot, ownedTestDatabaseUrl,
+  registerTestResourceCleanup, removeTestRoot } from './test-resources.mjs'
 
 const { values } = parseArgs({ options: { harness: { type: 'string' }, binary: { type: 'string' },
   model: { type: 'string' } } })
@@ -30,7 +32,13 @@ const source = (name) => new URL(`../apps/api/src/modules/harnesses/qualificatio
 const { QUALIFICATION_TARGET_PROFILE, runAsQualificationCandidate, codexQualificationSuite, opencodeQualificationSuite,
   withNativeQualificationOwnership, NativeProcessRegistry, runCommand, inheritedAgentEnvironment,
   discoverLauncher, passiveDriverPayloads } = await tsImport(source('cliEntry.ts'), import.meta.url)
-const workRoot = await mkdtemp(join(tmpdir(), `graphql-${values.harness}-qualification-`))
+ownedTestDatabaseUrl()
+const resource = createTestRoot(tmpdir(), `graphql-${values.harness}-qualification-`)
+const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER }
+const cleanupId = registerTestResourceCleanup(invocation, {
+  kind: 'native-qualification', registryDirectory: join(resource.directory, 'native-process-registry'),
+})
+const workRoot = resource.directory
 const workDirectory = join(workRoot, 'project')
 await mkdir(workDirectory)
 const registry = new NativeProcessRegistry(join(workRoot, 'native-process-registry'))
@@ -72,7 +80,7 @@ try {
   const reported = (versionResult.stdout || versionResult.stderr).trim()
   const version = values.harness === 'codex' ? reported.replace(/^codex-cli\s+/, '') : reported
   if (!/^\d+\.\d+\.\d+/.test(version)) throw new Error('Harness did not report a release version.')
-  const result = await runAsQualificationCandidate(values.harness, before, () => suite.run({ binary, version, binarySha256: before,
+  const result = await runAsQualificationCandidate(values.harness, before, binary, () => suite.run({ binary, version, binarySha256: before,
     profile: QUALIFICATION_TARGET_PROFILE[values.harness], model: values.model ?? null,
     workDirectory, signal: controller.signal, ownCleanup }))
   const unchanged = before === await sha256()
@@ -89,5 +97,6 @@ try {
   process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop)
   const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
   if (errors.length) throw new AggregateError(errors, 'Qualification cleanup remains uncertain; recovery records were retained.')
-  await rm(workRoot, { recursive: true, force: true })
+  completeTestResourceCleanup(invocation, cleanupId)
+  removeTestRoot(resource)
 }

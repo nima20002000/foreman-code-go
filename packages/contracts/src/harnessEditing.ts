@@ -3,7 +3,7 @@ import {
   AgentEffortSchema,
   DEFAULT_CODEX_ADVANCED_CONFIGURATION,
   DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-  HarnessConfigurationSchema,
+  SupportedHarnessConfigurationSchema,
   type AgentEffort,
   type CodexHarnessConfiguration,
   type HarnessConfiguration,
@@ -35,7 +35,7 @@ export function prepareHarnessConfiguration(value: HarnessConfiguration): Harnes
   if (next.harness === 'codex' && next.advanced) {
     next.advanced.additionalWritableDirectories = next.advanced.additionalWritableDirectories.filter((path) => path !== '');
   }
-  return HarnessConfigurationSchema.parse(next);
+  return SupportedHarnessConfigurationSchema.parse(next);
 }
 
 /** Tightening/changing a sandbox must not leave incompatible writable permissions behind. */

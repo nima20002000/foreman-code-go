@@ -1,18 +1,19 @@
+import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import type pg from 'pg'
 import type { NativeSessionReference } from '@foreman-code/contracts'
-import { CodexAppServerSessionManager, QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexAppServer.js'
+import { CodexAppServerSessionManager, } from '../src/modules/harnesses/codexAppServer.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 
-const session: NativeSessionReference = { harness: 'codex', providerVersion: QUALIFIED_CODEX_VERSION, nativeSessionId: 'thread' }
+const session: NativeSessionReference = { harness: 'codex', providerVersion: RECORDED_CODEX_VERSION, nativeSessionId: 'thread' }
 const identity = { expectedTurnId: 'target', clientCorrelationId: 'steer-correlation' }
 function turn(items: unknown[], id = 'target', itemsView = 'full') { return { id, itemsView, status: 'completed', items } }
 function user(clientId: string) { return { type: 'userMessage', id: `native-item-${clientId}`, clientId, content: [] } }
 
 /** Executes the REAL adapter's evidence reader against a scripted RPC transport, never a binary/provider. */
 function codex(pages: unknown[], threadId = session.nativeSessionId) {
-  const manager = new CodexAppServerSessionManager('unused-fixture-binary', QUALIFIED_CODEX_VERSION)
+  const manager = new CodexAppServerSessionManager('unused-fixture-binary', RECORDED_CODEX_VERSION)
   const calls: Array<{ method: string; params: Record<string, unknown> }> = []
   let index = 0
   const owner = { session, disposed: false, closed: false, phase: 'active', streamActive: true,

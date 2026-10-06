@@ -59,20 +59,22 @@ describe('Explicit Claude agent configuration', () => {
   it('does not replace a mismatched supplied configuration with a provider default', () => {
     expect(() => defaultAgentForHarness('claude', 'new', 'New', DEFAULT_HARNESS_DEFAULTS.codex)).toThrow(/match/)
   })
-  it('preserves actual Claude settings while changing its model and supported sandbox', () => {
+  it('preserves Claude settings while changing its model and requires Full access', () => {
     const agent = defaultAgentForHarness('claude', 'claude-1', 'Claude agent', savedClaudeConfiguration)
     expect(agent.harnessConfiguration).toEqual(savedClaudeConfiguration)
     expect(agent.effort).toBeUndefined()
     expect(agent.fastMode).toBeUndefined()
-    expect(configuredHarness(agent, 'claude', 'chosen-model', 'high', true, 'workspace-write')).toEqual({
-      ...savedClaudeConfiguration, model: 'chosen-model', sandbox: 'workspace-write',
+    expect(configuredHarness(agent, 'claude', 'chosen-model', 'high', true, 'danger-full-access')).toEqual({
+      ...savedClaudeConfiguration, model: 'chosen-model', sandbox: 'danger-full-access',
     })
-    expect(() => configuredHarness(agent, 'claude', 'chosen-model', 'high', true, 'danger-full-access')).toThrow(/sandbox/)
+    for (const sandbox of ['read-only', 'workspace-write'] as const) {
+      expect(() => configuredHarness(agent, 'claude', 'chosen-model', 'high', true, sandbox)).toThrow(/Full access/)
+    }
     expect(effortOptions('claude', savedClaudeConfiguration.model)).toEqual([])
   })
   it('uses only an explicitly supplied Claude creation preset', () => {
     const agent = defaultAgentForHarness('codex', 'existing', 'Existing')
-    expect(configuredHarness(agent, 'claude', savedClaudeConfiguration.model, 'high', true, 'read-only', {
+    expect(configuredHarness(agent, 'claude', savedClaudeConfiguration.model, 'high', true, 'danger-full-access', {
       ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration,
     })).toEqual(savedClaudeConfiguration)
     expect(nextHarnessAgentName('claude', [{ id: 'existing', name: 'claude-001' }])).toBe('claude-002')

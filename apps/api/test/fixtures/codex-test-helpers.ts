@@ -6,16 +6,17 @@ import { join } from 'node:path'
 
 import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type NativeHarnessEvent } from '@foreman-code/contracts'
 import type { WorkflowNativeSessionStart } from '../../src/modules/harnesses/port.js'
-import { isQualifiedCodexVersion, protocolFromBundle, type QualifiedCodex } from '../../src/modules/harnesses/codexProtocol.js'
+import { protocolFromBundle, type QualifiedCodex } from '../../src/modules/harnesses/codexProtocol.js'
 import type { MessagePhase, Thread, ThreadItem } from '../../src/modules/harnesses/codexMethodTypes.js'
 import { isObject, type JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'
 import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 import { runCommand } from '../../src/modules/harnesses/process.js'
-import { normalizeHarnessVersion } from '../../src/modules/harnesses/qualification/profiles.js'
+import { assertTestRoot, type TestRoot } from '../../../../scripts/test-resources.mjs'
 
 export interface Fixture { directory: string; binary: string }
-export async function fixture(): Promise<Fixture> {
-  const directory = await mkdtemp(join(tmpdir(), 'graphql-codex-regression-'))
+export async function fixture(options: { root?: TestRoot } = {}): Promise<Fixture> {
+  if (options.root) assertTestRoot(options.root.directory, options.root.token)
+  const directory = options.root?.directory ?? await mkdtemp(join(tmpdir(), 'graphql-codex-regression-'))
   const binary = join(directory, 'codex')
   const source = await readFile(new URL('./codex-app-server.cjs', import.meta.url), 'utf8')
   await writeFile(binary, `#!${process.execPath}\n${source}`)
@@ -104,13 +105,12 @@ export function agentMessage(
   return { type: 'agentMessage', id, text, phase, memoryCitation: null, delivery: null, questions: null }
 }
 export async function fixtureQualification(
-  binary: string, expectedVersion: string | undefined, cwd: string, environment: NodeJS.ProcessEnv,
+  binary: string, cwd: string, environment: NodeJS.ProcessEnv,
   requireAuthentication: boolean, signal?: AbortSignal,
 ): Promise<QualifiedCodex> {
   const version = await runCommand(binary, ['--version'], cwd, signal, environment)
   const installed = version.stdout.trim()
-  if (version.exitCode !== 0 || (expectedVersion === undefined ? !isQualifiedCodexVersion(installed)
-    : normalizeHarnessVersion('codex', installed) !== normalizeHarnessVersion('codex', expectedVersion))) {
+  if (version.exitCode !== 0 || !/^codex-cli \d+\.\d+\.\d+$/.test(installed)) {
     throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', 'Fixture version rejected.')
   }
   if (requireAuthentication) {

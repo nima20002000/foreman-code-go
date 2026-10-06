@@ -32,7 +32,7 @@ it('constructs the activity replay through production without installed inventor
       }
       await expect(infrastructure.inventoryDiscovery!.payloads('codex', config.harnesses.codexBinary)).resolves.toEqual({ complete: true, paths: [] })
       await expect(infrastructure.inventoryDiscovery!.payloads('opencode', config.harnesses.openCodeBinary)).rejects.toThrow('Unrecorded auxiliary replay operation.')
-      await expect(infrastructure.codex.qualify('/unrecorded-provider', '', '/recorded', {}, true)).rejects.toThrow('Unrecorded replay qualification binary.')
+      await expect(infrastructure.codex.qualify('/unrecorded-provider', '/recorded', {}, true)).rejects.toThrow('Unrecorded replay qualification binary.')
       expect(replay.starts).toEqual([])
       expect(replay.calls).toEqual([])
     } finally { await production.app.close() }

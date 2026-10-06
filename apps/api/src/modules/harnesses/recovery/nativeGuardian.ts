@@ -92,7 +92,7 @@ let containmentFd
 ${CLAUDE_COMPACTION_CAPTURE_SOURCE}
 let capture
 let disconnected=false
-let stopping=false,started=false,leader=false
+let stopping=false,started=false,leader=false,detached=false
 function killTree() {
   // The cgroup includes detached descendants and is pinned by an open fd.
   if(containmentFd!==undefined) {
@@ -120,9 +120,12 @@ process.on('SIGTERM',stop)
 process.on('SIGINT',stop)
 process.on('disconnect',()=>{
   disconnected=true
+  if(detached)return
   if(capture?.pending())setTimeout(stop,120000).unref()
   else stop()
 })
+process.stdout.on('error',error=>{if(!capture&&(!detached||error.code!=='EPIPE'))stop()})
+process.stderr.on('error',error=>{if(!capture&&(!detached||error.code!=='EPIPE'))stop()})
 process.on('uncaughtException',stop)
 process.on('unhandledRejection',stop)
 process.on('message',input=>{
@@ -144,6 +147,7 @@ process.on('message',input=>{
       || typeof intent.owner!=='string')throw new Error('Unverified process generation')
     leader=true
     const certificate={format:1,id:intent.id,owner:intent.owner,boot,guardian:live}
+    let provider
     const expected=Buffer.from(intent.controlKey,'hex')
     const server=createServer(socket=>{
       let pending=''
@@ -157,11 +161,16 @@ process.on('message',input=>{
         try {
           const message=object(JSON.parse(pending.slice(0,pending.indexOf('\\n'))))
           const supplied=typeof message.controlKey==='string' && /^[0-9a-f]{64}$/.test(message.controlKey)?Buffer.from(message.controlKey,'hex'):Buffer.alloc(0)
-          if(message.operation!=='stop' || message.id!==intent.id || message.owner!==intent.owner
+          if(!['stop','detach'].includes(message.operation) || message.id!==intent.id || message.owner!==intent.owner
             || message.startTicks!==live.startTicks || supplied.length!==expected.length
             || !timingSafeEqual(supplied,expected)){socket.destroy();return}
+          if(message.operation==='detach') {
+            if(config.restartDetachable!==true || !provider || stopping){socket.destroy();return}
+            if(!detached)birth(join(dir,'restart-detached.json'),{...certificate,provider})
+            detached=true
+          }
           socket.end(JSON.stringify({id:intent.id,startTicks:live.startTicks,accepted:true})+'\\n')
-          stop()
+          if(message.operation==='stop')stop()
         }catch{socket.destroy()}
       })
     })
@@ -176,8 +185,9 @@ process.on('message',input=>{
         }
         birth(join(dir,'birth.json'),{...certificate,containment})
         if(stopping || !process.connected){stop();return}
+        const detachable=config.restartDetachable===true
         const native=spawn(config.binary,config.args,{cwd:config.cwd,env:environment,
-          detached:false,stdio:config.claudeSessionScope?['pipe','pipe','pipe']:['inherit','inherit','inherit'],windowsHide:true})
+          detached:false,stdio:config.claudeSessionScope?['pipe','pipe','pipe']:detachable?['ignore','pipe','pipe']:['inherit','inherit','inherit'],windowsHide:true})
         if(config.claudeSessionScope) {
           capture=claudeCompactionCapture(config.claudeSessionScope,()=>{if(disconnected)stop()})
           let stdoutClosed=false,stderrClosed=false
@@ -197,10 +207,12 @@ process.on('message',input=>{
           process.stdout.on('drain',()=>native.stdout.resume())
           native.stderr.on('data',chunk=>{if(!stderrClosed && !process.stderr.write(chunk))native.stderr.pause()})
           process.stderr.on('drain',()=>native.stderr.resume())
+        } else if(detachable) {
+          native.stdout.on('data',chunk=>{if(!detached&&process.connected)process.stdout.write(chunk)})
+          native.stderr.on('data',chunk=>{if(!detached&&process.connected)process.stderr.write(chunk)})
         }
         // Capture the actual CLI generation while it is still our direct child.
         // A very short-lived child may disappear before /proc capture; never guess.
-        let provider
         try{if(native.pid)provider=identity(native.pid)}catch{}
         try {
           birth(join(dir,'provider.json'),{format:1,id:intent.id,owner:intent.owner,boot,

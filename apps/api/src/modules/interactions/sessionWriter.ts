@@ -164,6 +164,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   readonly startInitialTurnBatches?: (start: NativeSessionStart, input: NativeInitialTurnInput,
     signal?: AbortSignal) => AsyncIterable<NativeHarnessEvent[]>
   readonly inspectResponseAvailability?: NonNullable<ResponseAvailabilityInspector['inspectResponseAvailability']>
+  readonly recoverEnvironment?: NonNullable<NativeHarnessSessionManager['recoverEnvironment']>
 
   constructor(
     private readonly manager: NativeHarnessSessionManager & ResponseAvailabilityInspector,
@@ -172,6 +173,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     private readonly leaseMs = 30_000,
   ) {
     this.harness = manager.harness
+    if (manager.recoverEnvironment) this.recoverEnvironment = manager.recoverEnvironment.bind(manager)
     if (manager.inspectResponseAvailability) this.inspectResponseAvailability = manager.inspectResponseAvailability.bind(manager)
     if (manager.startInitialTurn) {
       this.startInitialTurn = (start, input, signal) => this.initialTurn(start, input, signal)

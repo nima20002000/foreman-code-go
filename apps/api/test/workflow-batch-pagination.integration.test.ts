@@ -1,3 +1,5 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -13,10 +15,10 @@ import { WorkflowManagementService } from '../src/modules/workflows/management.j
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 it('paginates and atomically archives through authenticated MCP with scope, revision and retry safety', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
+  const connectionString = process.env.TEST_DATABASE_URL!
   const schema = 'batch_page_' + randomUUID().replaceAll('-', '')
   const admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
   const locations = new WorkspaceLocationService(pool, commands)
@@ -59,7 +61,7 @@ it('paginates and atomically archives through authenticated MCP with scope, revi
     const reader = await access.issue({ name: 'Reader', audience: 'operator', grants: [{ actions: ['workflows:read'], scope: { workspaceIds: [workspaceId] } }], expiresAt: new Date(Date.now() + 60_000) })
     const denied = await connect(reader.token)
     expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('workflow_batch_archive')
-    await expect(denied.callTool({ name: 'workflow_batch_archive', arguments: input })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(denied.callTool({ name: 'workflow_batch_archive', arguments: input }))
     const scoped = await access.issue({ name: 'Scoped', audience: 'operator', grants: [{ actions: ['workflows:read', 'workflows:archive'], scope: { workspaceIds: [workspaceId], workflowIds: [input.workflows[0]!.workflowId] } }], expiresAt: new Date(Date.now() + 60_000) })
     const scopedClient = await connect(scoped.token)
     expect((await scopedClient.callTool({ name: 'workflow_batch_archive', arguments: input })).isError).toBe(true)
@@ -81,6 +83,6 @@ it('paginates and atomically archives through authenticated MCP with scope, revi
   } finally {
     for (const client of clients) await client.close()
     await app.close(); await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`); await admin.end()
+    await dropFixtureSchema(admin, schema); await admin.end()
   }
 }, 30_000)

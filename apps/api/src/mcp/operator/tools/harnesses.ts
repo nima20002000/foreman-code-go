@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
+import { HarnessCompatibilityListSchema, HarnessCompatibilitySchema, HarnessCompatibilityRetryParamsSchema } from '@foreman-code/contracts'
 import { HarnessQualificationListSchema, HarnessQualificationRunParamsSchema, HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
 
 import {
@@ -18,6 +19,18 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
     inputSchema: z.object({}).strict(), outputSchema: ClaudeSetupOptionsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'claude_setup_options_get', async () => context.services.harnesses.claudeSetupOptions(context.principal)))
+  if (operatorToolAvailable(context, 'harness_compatibility_list')) server.registerTool('harness_compatibility_list', {
+    description: 'Read dynamic Codex/OpenCode protocol checks, observed versions, cached results and unmet contracts. Claude SDK compatibility is exposed by harness_get and execution_readiness_get. Authentication and host policy are checked separately.',
+    inputSchema: z.object({}).strict(), outputSchema: HarnessCompatibilityListSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => invokeOperatorTool(context, 'harness_compatibility_list', async () =>
+    context.services.harnessCompatibility!.read(context.principal)))
+  if (operatorToolAvailable(context, 'harness_compatibility_retry')) server.registerTool('harness_compatibility_retry', {
+    description: 'Recheck the installed Codex/OpenCode protocol contracts without a model turn or settings change. Requires harness update access.',
+    inputSchema: HarnessCompatibilityRetryParamsSchema, outputSchema: HarnessCompatibilitySchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'harness_compatibility_retry', () =>
+    context.services.harnessCompatibility!.requestRetry(context.principal, 'mcp', input.harness)))
   if (operatorToolAvailable(context, 'harness_qualifications_list')) server.registerTool('harness_qualifications_list', {
     description: 'Read persisted exact-binary harness qualification results.', inputSchema: z.object({}).strict(),
     outputSchema: HarnessQualificationListSchema,
@@ -34,14 +47,17 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'execution_readiness_get', () => context.services.executionReadiness!.get(context.principal, input.harness, input.scope, input.configurationVersionId)))
   if (operatorToolAvailable(context, 'harness_list')) server.registerTool('harness_list', {
-    description: 'List qualified local harness capabilities, saved defaults, and application interactionSupport limits. '
+    description: 'List observed local harness versions, dynamic model catalogs, contract compatibility, '
+      + 'saved defaults and application interactionSupport limits. Discovery errors identify unmet contracts. '
       + 'Codex supports generic questions, MCP approvals, and schema-validated data-entry forms.',
     inputSchema: z.object({}).strict(),
     outputSchema: HarnessCatalogResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'harness_list', async () => ({ items: await context.services.harnesses.list(context.principal) })))
   if (operatorToolAvailable(context, 'harness_get')) server.registerTool('harness_get', {
-    description: 'Read one qualified harness capability, its saved defaults, and application interactionSupport limits. '
+    description: 'Read the selected harness observed version, dynamic capabilities, saved defaults '
+      + 'and application interactionSupport limits. Compatible versions are accepted by contract behavior; '
+      + 'authentication and host policy still apply. '
       + 'Read supported and unsupported descriptions before requesting native input; '
       + 'Codex supports generic questions and schema-validated data-entry forms.',
     inputSchema: HarnessGetInputSchema,
@@ -49,7 +65,7 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_get', () => context.services.harnesses.get(context.principal, input.harness)))
   if (operatorToolAvailable(context, 'harness_defaults_update')) server.registerTool('harness_defaults_update', {
-    description: 'Revision-check and replace defaults copied into future board agents. Claude presets persist explicit configuration without native qualification; saving grants no execution or tool authority. Codex/OpenCode changes still require their model-free native checks.', inputSchema: HarnessDefaultsUpdateInputSchema,
+    description: 'Revision-check and replace defaults copied into future board agents. Claude accepts only Full access; other modes are refused without changing them. Claude presets persist explicit configuration without native qualification; saving grants no execution or tool authority. Codex/OpenCode changes still require their model-free native checks.', inputSchema: HarnessDefaultsUpdateInputSchema,
     outputSchema: HarnessDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_defaults_update', () => context.services.harnesses.updateDefaults(context.principal, 'mcp', input)))

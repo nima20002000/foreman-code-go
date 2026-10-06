@@ -10,6 +10,14 @@ function outcome(status: unknown): 'succeeded' | 'failed' | 'canceled' | undefin
   return status === 'completed' ? 'succeeded' : status === 'failed' ? 'failed' : status === 'interrupted' ? 'canceled' : undefined
 }
 
+export function workflowProviderId(session: NativeSessionReference, history: NativeHistory): string | undefined {
+  if (session.harness !== 'claude') return history.nativeTurnId
+  const submission = history.nativeSubmission
+  if (submission?.kind !== 'message' || submission.nativeSessionId !== session.nativeSessionId
+    || submission.clientCorrelationId !== history.correlationId) return undefined
+  return submission.nativeMessageId
+}
+
 /** Used only AFTER private original-source capture verification. Convenience
  * NativeHistory terminal fields and abort ACKs are not positive provider proof.
  * Require the matching original terminal frame or the rooted OpenCode history
@@ -20,8 +28,25 @@ export function assertOriginalWorkflowTerminal(execution: Pick<HarnessExecution,
   const fail = (): never => { throw new DomainError('NATIVE_TERMINAL_SOURCE_REQUIRED',
     'The exact original native terminal frame and pinned turn are required.', 409) }
   if (!terminal || terminal.correlationId !== command || history.correlationId !== command
-    || !terminal.providerId || terminal.providerId !== history.nativeTurnId
+    || !terminal.providerId || terminal.providerId !== workflowProviderId(session, history)
     || history.pendingInteraction || history.pendingInteractions.length) return fail()
+  if (session.harness === 'claude') {
+    for (const event of history.events) {
+      const payload = object(event.payload)
+      const raw = object(payload.nativeResult)
+      const prompts = Array.isArray(raw.user_message_uuids) ? raw.user_message_uuids : [raw.user_message_uuid]
+      if (event.type !== 'claude.result' || payload.clientCorrelationId !== command
+        || raw.type !== 'result' || raw.session_id !== session.nativeSessionId || raw.parent_tool_use_id != null
+        || typeof raw.uuid !== 'string' || !raw.uuid || object(payload.source).eventId !== raw.uuid
+        || !prompts.includes(terminal.providerId) || raw.deferred_tool_use != null) continue
+      if (raw.subtype === 'success' && raw.is_error === false && terminal.result.outcome === 'succeeded'
+        && raw.result === terminal.result.output) return
+      if (raw.is_error === true && ['error_during_execution', 'error_max_turns', 'error_max_budget_usd',
+        'error_max_structured_output_retries'].includes(String(raw.subtype))
+        && terminal.result.outcome === 'failed' && terminal.result.error?.code === 'CLAUDE_NATIVE_RESULT_ERROR') return
+    }
+    return fail()
+  }
   if (session.harness === 'opencode') {
     for (const event of history.events) {
       const proof = readOpenCodeReconciliation(event, { ownerAgentId: execution.agentId,

@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, realpath, writeFile } from 'node:fs/promises'
 import { join, relative, isAbsolute } from 'node:path'
+import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '../../packages/contracts/dist/product.js'
 
 export const OPEN_CODE_MODEL = 'opencode-go/deepseek-v4.1-flash'
 const COMMON = 'This is an isolated acceptance demo. Use only accepted workflow inputs. Do not read secrets, credentials, home directories or external services. Do not change files. Follow the node instruction exactly.'
 export function configuration(kind, codexModel, approval = false) {
   if (kind === 'codex') return {
-    harness: 'codex', model: codexModel, reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
+    harness: 'codex', model: codexModel, reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard',
     advanced: { approvalPolicy: 'on-request', approvalsReviewer: 'user', additionalWritableDirectories: [],
       sessionPersistence: 'persistent', shellEnvironment: { inherit: 'core', ignoreDefaultExcludes: false, filters: {}, set: {} },
       webSearch: 'disabled', mcpServers: {} },
@@ -60,9 +61,12 @@ export function scenarioGraph(spec, workflow, codexModel) {
   const graph = { ...workflow, executionSemanticsVersion: 3, entryNodeId: nodes[0].id,
     approval: { handler: 'user' }, executionCondition: { kind: 'manual' },
     executionPolicy: { maxParallelism: spec.parallel ? 2 : 1, maxNodeExecutions: spec.repeat ? 6 : nodes.length }, nodes, edges }
-  if (spec.repeat) graph.repeat = { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: nodes.map((node) => node.id),
-    entryNodeId: nodes[0].id, exitNodeId: nodes[1].id, maxOccurrences: 3,
-    repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] }
+  if (spec.repeat) {
+    delete graph.handoffs
+    graph.repeat = { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: nodes.map((node) => node.id),
+      entryNodeId: nodes[0].id, exitNodeId: nodes[1].id, maxOccurrences: 3,
+      repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] }
+  }
   return { graph, agents }
 }
 
@@ -73,7 +77,9 @@ export async function seed({ apiUrl, webUrl, projectRoot, codexModel, schemas })
       ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30_000) })
     if (!response.ok) {
       const failure = await response.json().catch(() => ({}))
-      throw Object.assign(new Error('Seed request failed; no automatic resubmission.'), { code: failure.error?.code })
+      throw Object.assign(new Error('Seed request failed; no automatic resubmission.'), {
+        code: failure.error?.code, method, path, status: response.status, details: failure.error?.details,
+      })
     }
     return response.json()
   }
@@ -87,14 +93,14 @@ export async function seed({ apiUrl, webUrl, projectRoot, codexModel, schemas })
   // Native preflight must resolve the exact endpoint and environment reference.
   // These are PUBLIC templates, not expanded credentials. Never change HOME's
   // OpenCode/Codex configuration or copy native account files into this task.
-  await writeFile(join(folder, 'opencode.json'), JSON.stringify({ mcp: { 'graphql': {
+  await writeFile(join(folder, 'opencode.json'), JSON.stringify({ mcp: { [APP_MCP_SERVER_NAMES[0]]: {
     type: 'remote', url: `${apiUrl}/mcp`, enabled: true, oauth: false,
-    headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' },
+    headers: { Authorization: `Bearer {env:${APP_MCP_TOKEN_NAMES[0]}}` },
   } } }, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
   if (codexModel) {
     await mkdir(join(folder, '.codex'), { mode: 0o700 })
     await writeFile(join(folder, '.codex/config.toml'),
-      `[mcp_servers.graphql]\nurl = "${apiUrl}/mcp"\nbearer_token_env_var = "GRAPHQL_MCP_TOKEN"\nenabled = true\n`,
+      `[mcp_servers.${JSON.stringify(APP_MCP_SERVER_NAMES[0])}]\nurl = "${apiUrl}/mcp"\nbearer_token_env_var = "${APP_MCP_TOKEN_NAMES[0]}"\nenabled = true\n`,
       { mode: 0o600, flag: 'wx' })
   }
   const workspaceId = workspace.workspace.id

@@ -11,6 +11,8 @@ import { claudeCandidateConfiguration } from './configuration.js'
 import { loadOfficialClaudeSdk } from './official.js'
 import { createClaudeSdkRunner } from './runner.js'
 import type { ClaudeSdkClient, ClaudeSdkSession } from './port.js'
+import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
+import { CLAUDE_PROFILE_CHECK_REVISION } from './profileRevision.js'
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -25,13 +27,14 @@ export async function qualifyClaudeNativeProfile(input: {
   assertCurrent(): Promise<void>; loadClient?: typeof loadOfficialClaudeSdk
 }) {
   if (input.value.configuration.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude qualification requires a Claude profile.', 409)
-  const configuration = input.value.configuration
+  const configuration = ClaudeFullAccessConfigurationSchema.parse(input.value.configuration)
   if (configuration.authMode !== 'subscription') throw new DomainError('CLAUDE_API_KEY_REQUIRED', 'The native profile checker requires explicitly provisioned API-key authority for API-key mode.', 409)
   const binary = input.binding.installation.launcher.resolvedLauncher
   if (!binary) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The exact Claude executable is unavailable.', 409)
   await mkdir(input.directory, { recursive: true, mode: 0o700 })
   const directory = await mkdtemp(join(input.directory, 'claude-profile-'))
-  const cwd = join(directory, 'work'), outside = join(directory, 'outside.txt'), denied = join(directory, 'denied.txt')
+  const cwd = join(directory, 'work'), outside = join(directory, 'outside.txt')
+  const denied = join(directory, 'denied.txt')
   await mkdir(cwd, { mode: 0o700 }); await mkdir(join(cwd, '.claude'), { mode: 0o700 })
   // An owned project sentinel verifies that ambient settings/hooks are excluded.
   const ambient = join(directory, 'ambient-hook.txt')
@@ -41,7 +44,7 @@ export async function qualifyClaudeNativeProfile(input: {
   const evidence: Record<string, unknown> = { checkId: input.checkId, pin: input.pin, configurationFingerprint: input.value.configurationFingerprint,
     cwd, model: compiled.model, effort: compiled.effort, sandbox: compiled.sandbox, sessions: [], hooks: [], receipts: [] }
   const passed = new Set<typeof CLAUDE_QUALIFICATION_CHECKS[number]>()
-  const hooks: Array<{ sessionId: string; toolUseId: string; tool: string; file?: string; denied: boolean }> = []
+  const hooks: Array<{ sessionId: string; toolUseId: string; tool: string; file?: string; command?: string; denied: boolean }> = []
   evidence.hooks = hooks
   let observedTools: string[] = [], faultAfterResult = false, expectedFault = false
   const client = await (input.loadClient ?? loadOfficialClaudeSdk)(configuration.configDirectory, input.recovery, binary)
@@ -73,9 +76,12 @@ export async function qualifyClaudeNativeProfile(input: {
     hooks: { PreToolUse: [{ hooks: [async hook => {
       if (hook.hook_event_name !== 'PreToolUse') return {}
       const path = object(hook.tool_input).file_path
+      const command = object(hook.tool_input).command
+      const blocked = path === denied
       hooks.push({ sessionId: hook.session_id, toolUseId: hook.tool_use_id, tool: hook.tool_name,
-        ...(typeof path === 'string' ? { file: path } : {}), denied: path === denied })
-      return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: path === denied ? 'deny' : 'ask',
+        ...(typeof path === 'string' ? { file: path } : {}),
+        ...(typeof command === 'string' ? { command } : {}), denied: blocked })
+      return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: blocked ? 'deny' : 'ask',
         permissionDecisionReason: 'Qualification-owned fixture policy' } }
     }] }] },
   }
@@ -201,14 +207,15 @@ export async function qualifyClaudeNativeProfile(input: {
       ? { state: 'passed', source: 'native_scenario', evidenceId, evidenceSha256 } : { state: 'unverified' }])) }
   const capabilities = claudeQualificationCapabilities(claudeProof)
   const builtinToolsObserved = compiled.tools.every(tool => observedTools.includes(tool))
+  const sandboxQualified = capabilities.policy.fullAccessPolicy
   const qualified = builtinToolsObserved && capabilities.basicTurns && capabilities.resume && capabilities.history
     && capabilities.policy.settingsIsolation && capabilities.policy.backgroundTasksDisabled
-    && capabilities.policy.alwaysAppliedToolHook && configuration.sandbox === 'danger-full-access' && capabilities.policy.fullAccessPolicy
+    && capabilities.policy.alwaysAppliedToolHook && sandboxQualified
   return HostHarnessProfileEvidenceSchema.parse({ target: input.value.target, instanceRevision: input.value.instanceRevision,
     configurationFingerprint: input.value.configurationFingerprint, driverId: 'claude', driverRevision: input.binding.installation.driverRevision,
-    protocolRevision: input.binding.installation.protocolRevision, suiteRevision: 'claude-profile-check-v1',
+    protocolRevision: input.binding.installation.protocolRevision, suiteRevision: CLAUDE_PROFILE_CHECK_REVISION,
     environmentGeneration: input.binding.installation.environmentGeneration, connectionGeneration: input.binding.installation.connectionGeneration,
     authenticated: passed.has('exactMessageReceipt'), compatible: capabilities.sdk, qualified, claudeProof,
-    ...(!qualified ? { failure: failure ?? { code: 'CLAUDE_POLICY_UNQUALIFIED', message: 'The selected profile has not proved its native tool and OS policy. Full-access qualification requires an explicitly available Write tool; other sandbox modes require their own OS proof.' } } : {}),
+    ...(!qualified ? { failure: failure ?? { code: 'CLAUDE_POLICY_UNQUALIFIED', message: 'The selected profile has not proved its native tool and OS policy. Full access requires an available Write tool and a proved tool policy.' } } : {}),
     checkedAt: new Date().toISOString() })
 }

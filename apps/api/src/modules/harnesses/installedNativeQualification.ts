@@ -98,7 +98,7 @@ export function createInstalledNativeQualifier(input: {
       try {
         const installed = await probe.inspect(harness, signal)
         version = normalizeHarnessVersion(harness, installed.version)
-        if (installed.executable !== target.installation.launcher.resolvedLauncher || version !== target.expectedVersion) denied()
+        if (installed.executable !== target.installation.launcher.resolvedLauncher) denied()
         const schemaHash = await probe.probe(harness, installed, signal)
         await probe.assertUnchanged(installed, signal)
         await assertInstallation(signal)
@@ -138,9 +138,10 @@ export function createInstalledNativeQualifier(input: {
           } }
         const ownedSuite = withNativeQualificationOwnership(selectedSuite, input.registry, () => assertInstallation)
         // Candidate authority exists only while this actual owned suite runs.
-        const result = await runAsQualificationCandidate(harness, target.binarySha256, () => ownedSuite.run({
+        const result = await runAsQualificationCandidate(harness, target.binarySha256, target.installation.launcher.resolvedLauncher!, () => ownedSuite.run({
           binary: target.installation.launcher.resolvedLauncher!, version: version!, binarySha256: target.binarySha256,
-          profile: QUALIFICATION_TARGET_PROFILE[harness], model: value.configuration.model, workDirectory: directory, signal, ownCleanup,
+          profile: QUALIFICATION_TARGET_PROFILE[harness], model: value.configuration.model,
+          reasoningEffort: value.configuration.harness === 'codex' ? value.configuration.reasoningEffort : undefined, workDirectory: directory, signal, ownCleanup,
         }))
         checks.push(...result.checks)
         await assertInstallation(signal)

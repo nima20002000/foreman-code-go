@@ -4,7 +4,7 @@ import type pg from 'pg'
 import { DomainError } from '../errors.js'
 import type { ChildProcessEnvironment } from '../harnesses/port.js'
 import type { PostgresAccessService } from './postgres.js'
-import { lockWorkerExecution, requireActiveWorkerExecution } from './workerLifecycle.js'
+import { lockActiveWorkerPrincipal, lockWorkerExecution, requireActiveWorkerExecution } from './workerLifecycle.js'
 import { WORKER_BINDING_ELIGIBLE } from './workerEligibility.js'
 
 export const APP_MCP_TOKEN_ENVIRONMENT_VARIABLE = 'GRAPHQL_MCP_TOKEN'
@@ -57,6 +57,29 @@ export class WorkerCredentialService {
 
   issueForReviewer(executionId: string): Promise<IssuedWorkerCredential> {
     return this.issue(executionId, 'reviewer')
+  }
+
+  /** Recover only the original live credential retained by a detached native process. */
+  async restoreForExecution(executionId: string, environment: ChildProcessEnvironment): Promise<IssuedWorkerCredential> {
+    const keys = Object.keys(environment.variables)
+    const token = environment.variables[APP_MCP_TOKEN_ENVIRONMENT_VARIABLE]
+    if (keys.length !== 1 || keys[0] !== APP_MCP_TOKEN_ENVIRONMENT_VARIABLE || !token) {
+      throw new DomainError('WORKER_CREDENTIAL_IDENTITY_CONFLICT', 'The retained worker environment is invalid.', 409)
+    }
+    const principal = await this.access.authenticate(token, 'worker')
+    return this.transaction(async client => {
+      const current = await lockActiveWorkerPrincipal(client, principal)
+      const binding = (await client.query<{ execution_id: string; agent_id: string; purpose: string;
+        environment_variable: string }>(`select execution_id,agent_id,purpose,environment_variable
+        from worker_credential_bindings where principal_id=$1 for share`, [current.id])).rows[0]
+      if (!binding || binding.execution_id !== executionId || binding.agent_id !== environment.agentId
+        || current.agentId !== environment.agentId || binding.purpose !== 'workflow'
+        || binding.environment_variable !== APP_MCP_TOKEN_ENVIRONMENT_VARIABLE) {
+        throw new DomainError('WORKER_CREDENTIAL_IDENTITY_CONFLICT',
+          'The retained credential belongs to another execution or Agent.', 409)
+      }
+      return { principalId: current.id, expiresAt: current.expiresAt, environment: structuredClone(environment) }
+    })
   }
 
   private async issue(executionId: string, purpose: 'workflow' | 'reviewer'): Promise<IssuedWorkerCredential> {

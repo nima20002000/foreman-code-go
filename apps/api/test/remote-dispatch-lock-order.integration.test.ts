@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -19,7 +20,7 @@ describe.skipIf(!postgresEnabled)('remote dispatch and worker credential lock or
 
   beforeAll(async () => {
     database = await agent3Database()
-    await database.pool.query(`create schema ${schema}`)
+    await createFixtureSchema(database.pool, schema)
     await database.pool.query(`create table ${schema}.runs(id text primary key)`)
     await database.pool.query(`create table ${schema}.execution_dispatch_intents(operation_id text primary key,
       run_id text,record jsonb,execution_id text,node_id text,binding_hash text,attempt_id text)`)
@@ -36,7 +37,7 @@ describe.skipIf(!postgresEnabled)('remote dispatch and worker credential lock or
   })
   afterAll(async () => {
     if (!database) return
-    try { await database.pool.query(`drop schema if exists ${schema} cascade`) }
+    try { await dropFixtureSchema(database.pool, schema) }
     finally { await database.close() }
   })
 

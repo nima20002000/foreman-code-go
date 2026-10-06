@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdir, readdir, rm, stat } from 'node:fs/promises'
+import { mkdir, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema } from '@foreman-code/contracts/wave25'
@@ -69,7 +70,9 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
       const reader = await f.connect(readonly.token)
       expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain(CURRENT_WORKFLOW_TOOLS.save)
       expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain('execution_readiness_get')
-      await expect(reader.callTool({ name: 'execution_readiness_get', arguments: { harness: 'codex' } })).rejects.toThrow('not found')
+      const deniedReadiness = await reader.callTool({ name: 'execution_readiness_get', arguments: { harness: 'codex' } })
+      expect(deniedReadiness.isError).toBe(true)
+      expect(JSON.stringify(deniedReadiness.content)).toContain('ACCESS_DENIED')
       const input = await f.create()
       expect((await reader.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: input })).isError).toBe(true)
       const wrong = await f.access.issue({ name: 'Wrong workspace', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
@@ -112,7 +115,7 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
         expect((await f.client.callTool({ name: 'workspace_location_set', arguments: { ...location, commandId: randomUUID() } })).isError).toBe(true)
       }
       expect(ids[0]).not.toBe(ids[1])
-      const rootPath = join(f.db.directory, 'project-1'); await rm(rootPath, { recursive: true })
+      const rootPath = join(f.db.directory, 'project-1'); await removeFixtureDirectory(rootPath, { force: false })
       await expect(stat(rootPath)).rejects.toMatchObject({ code: 'ENOENT' })
       expect(value(await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId: ids[1] } })))
         .toMatchObject({ executionLocation: { rootPath }, locationValidation: { status: 'unavailable' } })

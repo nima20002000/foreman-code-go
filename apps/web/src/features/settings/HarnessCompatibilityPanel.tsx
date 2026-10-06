@@ -10,7 +10,7 @@ const nameOf = (harness: CompatibilityHarness) => harness === 'codex' ? 'Codex' 
 const statusLabels: Record<HarnessCompatibility['status'], string> = {
   'not-checked': 'Not checked', checking: 'Checking…',
   'known-compatible': 'Version recognized',
-  'probe-passed': 'Check passed; execution blocked',
+  'probe-passed': 'Contract check passed',
   'probe-failed': 'Check failed', unavailable: 'Unavailable',
 }
 const sourceLabels: Record<HarnessCompatibility['source'], string> = {
@@ -24,8 +24,8 @@ function resultToast(report: HarnessCompatibility) {
     description: 'The version matches the recorded release. Normal execution qualification still applies.',
   }
   if (report.status === 'probe-passed') return {
-    title: `${name} local check passed`, tone: 'warning' as const,
-    description: `This is not execution qualification. Version ${report.installedVersion} remains outside the qualified release. ${report.cacheWarning ?? 'The diagnostic result can be reused.'}`,
+    title: `${name} local check passed`, tone: 'success' as const,
+    description: `Version ${report.installedVersion} satisfies the app’s protocol contracts. Authentication and host policy are checked separately. ${report.cacheWarning ?? 'The diagnostic result can be reused.'}`,
   }
   return {
     title: `${name} compatibility check failed`, tone: 'danger' as const,
@@ -101,20 +101,20 @@ export function HarnessCompatibilityPanel({ harness }: { harness: CompatibilityH
           onClick={() => void check(row.harness)}>{row.status === 'checking' ? `Checking ${name}…` : `Retry ${name} check`}</Button>
       </div>
       {row.reason ? <p role="alert">{row.reason.message}</p> : null}
-      {row.status === 'probe-passed' ? <p role="status">The local check passed, but this version is not qualified for execution.</p> : null}
+      {row.status === 'probe-passed' ? <p role="status">The installed harness satisfies the checked protocol contracts.</p> : null}
       {row.cacheWarning ? <p role="status">{row.cacheWarning}</p> : null}
       {query.isError ? <p role="alert">Could not refresh. The last result is still shown. <Button size="sm" onClick={() => void query.refetch()}>Try again</Button></p> : null}
       <details className="harness-compatibility-details"><summary>Check details and repair</summary>
         <dl>
-          <div><dt>Qualified release</dt><dd>{row.qualifiedRelease.version}</dd></div>
+          <div><dt>Historical release reference</dt><dd>{row.qualifiedRelease.version}</dd></div>
           {row.checkedAt ? <div><dt>Last checked</dt><dd><time dateTime={row.checkedAt}>{new Date(row.checkedAt).toLocaleString()}</time></dd></div> : null}
           <div><dt>Evidence</dt><dd>{sourceLabels[row.source]}</dd></div>
         </dl>
         <p>This checks the local version and exported schema only. Authentication, settings, and execution are checked separately.</p>
         {!query.data?.canRetry ? <p>Retry requires harness update access.</p> : null}
-        {row.status === 'probe-passed' ? <p>This version remains blocked by the exact-version execution gate.</p> : null}
-        <p>To repair, check <code>{harness === 'codex' ? 'CODEX_BINARY' : 'OPENCODE_BINARY'}</code> on the API host and restore the qualified release. Back up native data before changing versions.</p>
-        {harness === 'codex' ? <p>The default Codex binary comes from the pinned package. Restore it with <code>corepack pnpm install --frozen-lockfile</code>. Repair an explicit binary override separately.</p> : <p>OpenCode is installed separately from the app.</p>}
+        {row.status === 'probe-passed' ? <p>Compatible versions can run after authentication and host policy checks pass.</p> : null}
+        <p>To repair, check <code>{harness === 'codex' ? 'CODEX_BINARY' : 'OPENCODE_BINARY'}</code> on the API host and update or repair the installation to satisfy the reported contract.</p>
+        {harness === 'codex' ? <p>The default uses the computer’s installed native Codex when available. The bundled fallback can be restored with <code>corepack pnpm install --frozen-lockfile</code>. Repair an explicit binary override separately.</p> : <p>OpenCode is installed separately from the app.</p>}
         {row.reason?.code.startsWith('CHECKER_') ? <p>If the app checker failed, rebuild and restart the API before changing the CLI.</p> : null}
         {row.reason?.code === 'CLI_CLEANUP_FAILED' ? <p>Stop the unfinished diagnostic process and restart the API before retrying.</p> : null}
         <a href={row.qualifiedRelease.releaseUrl} target="_blank" rel="noopener noreferrer">Official {name} {row.qualifiedRelease.version} release</a>

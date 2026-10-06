@@ -9,6 +9,7 @@ import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { RepeatLockedHooks } from './repeatPostgres.js'
 import { repeatConflict, repeatDigest, repeatId, sameRepeatValue, type RepeatScope } from './repeatResolution.js'
 import { frozenWorkNotice, persistWorkLimitNoticeLocked, readWorkLimitNoticeLocked } from './workHandoffNotice.js'
+import { assertWorkflowExecutionCapacityLocked } from './workflowExecutionBudget.js'
 
 async function assertAcceptedWorkResult(sql: GraphTransactionSql, scope: RepeatScope,
   execution: ReturnType<typeof HarnessExecutionSchema.parse>, activationId: string): Promise<void> {
@@ -26,6 +27,17 @@ export type WorkRequestAdmission = { kind: 'accepted'; request: WorkRequest; rep
   | { kind: 'needs_direction'; unresolvedId: string; replayed: boolean }
 export interface WorkReturnReceipt { value: WorkReturn; replayed: boolean }
 
+async function readParentWorkRequestLocked(context: AdmissionContext, activationId: string): Promise<WorkRequest | undefined> {
+  const row = (await context.sql.query<{ record: unknown }>(
+    `select record from run_work_requests where run_id=$1
+      and request_id=work_parent_request($1,$2) for share`,
+    [context.scope.runId, activationId])).rows[0]
+  if (!row) return undefined
+  const request = WorkRequestSchema.parse(row.record)
+  if (!sameRepeatValue(request.scope, context.scope)) return repeatConflict('WORK_RETURN_ANCESTRY_CONFLICT')
+  return request
+}
+
 /** Reconstruct only from the exact saved cause and accepted result receipt. */
 export async function readWorkActivationInputLocked(context: AdmissionContext, activationId: string): Promise<WorkActivationInput> {
   const { sql, scope, version } = context
@@ -40,8 +52,10 @@ export async function readWorkActivationInputLocked(context: AdmissionContext, a
     || activation.workflowNodeId !== row.workflow_node_id || activation.cause.kind !== row.cause_kind) {
     return repeatConflict('WORK_ACTIVATION_PIN_CONFLICT')
   }
+  const parentRequest = activation.cause.kind === 'work_return' || activation.cause.kind === 'limit_denial'
+    ? await readParentWorkRequestLocked(context, activationId) : undefined
   const base = { executionSemanticsVersion: 3, runInput: context.hooks.run.input,
-    occurrence: null, entry: null, predecessors: [] }
+    occurrence: null, entry: null, predecessors: [], ...(parentRequest ? { parentRequest } : {}) }
   if (activation.cause.kind === 'entry') {
     if (activation.workflowNodeId !== version.entryNodeId || row.cause_id !== scope.runId
       || activation.lineageId !== scope.runId) return repeatConflict('WORK_ENTRY_PIN_CONFLICT')
@@ -122,7 +136,8 @@ export async function readWorkActivationInputLocked(context: AdmissionContext, a
         join run_work_results x on x.run_id=r.run_id and x.execution_id=r.requester_execution_id
         where r.run_id=$1 and r.destination_activation_id=$2 order by r.relationship_id`,
       [scope.runId, activationId])).rows
-    if (rows.length !== incoming.length) return repeatConflict('WORK_JOIN_INCOMPLETE')
+    const required = await readRequiredWorkJoinEdgesLocked(context, activationId, activation.workflowNodeId)
+    if (!required.length || rows.length !== required.length) return repeatConflict('WORK_JOIN_INCOMPLETE')
     const sources = rows.map((item) => {
       const request = WorkRequestSchema.parse(item.record)
       const acceptedSourceResult = AcceptedCurrentNodeResultSchema.parse(JSON.parse(item.result_json))
@@ -131,8 +146,8 @@ export async function readWorkActivationInputLocked(context: AdmissionContext, a
         || repeatDigest(acceptedSourceResult, 64 * 1024) !== item.result_digest) return repeatConflict('WORK_JOIN_SOURCE_CONFLICT')
       return { request, acceptedSourceResult }
     })
-    if (new Set(sources.map((item) => item.request.relationshipId)).size !== incoming.length
-      || incoming.some((edge) => !sources.some((item) => item.request.relationshipId === edge.id))) {
+    if (new Set(sources.map((item) => item.request.relationshipId)).size !== required.length
+      || required.some((id) => !sources.some((item) => item.request.relationshipId === id))) {
       return repeatConflict('WORK_JOIN_SOURCE_CONFLICT')
     }
     return WorkActivationInputSchema.parse({ ...base, work: { kind: 'join', activation, sources } })
@@ -144,6 +159,66 @@ interface AdmissionContext {
   sql: GraphTransactionSql; scope: RepeatScope; version: WorkflowVersionV3
   hooks: RepeatLockedHooks; now: string
   assertActive(): void
+}
+
+async function readRequiredWorkJoinEdgesLocked(context: AdmissionContext,
+  activationId: string, nodeId: string): Promise<string[]> {
+  const row = (await context.sql.query<{ required: string[] }>(
+    'select work_join_required_edges($1,work_round_id($1,$2),$3) as required',
+    [context.scope.runId, activationId, nodeId])).rows[0]
+  if (!row) return repeatConflict('WORK_JOIN_ROUND_CONFLICT')
+  return row.required
+}
+
+async function resolveWorkJoinLocked(context: AdmissionContext, activationId: string, nodeId: string): Promise<boolean> {
+  const required = await readRequiredWorkJoinEdgesLocked(context, activationId, nodeId)
+  const selected = (await context.sql.query<{ relationship_id: string }>(
+    'select relationship_id from run_work_requests where run_id=$1 and destination_activation_id=$2',
+    [context.scope.runId, activationId])).rows.map((item) => item.relationship_id)
+  if (new Set(selected).size !== selected.length || selected.some((id) => !required.includes(id))) {
+    return repeatConflict('WORK_JOIN_SOURCE_CONFLICT')
+  }
+  if (selected.length !== required.length) return false
+  context.assertActive()
+  await context.sql.query(`update run_work_activations set state=$3
+    where run_id=$1 and activation_id=$2 and state='waiting'`,
+    [context.scope.runId, activationId, required.length ? 'queued' : 'completed'])
+  return required.length > 0
+}
+
+async function claimWorkJoinDispatchLocked(context: AdmissionContext,
+  activationId: string, sourceActivationId: string): Promise<boolean> {
+  context.assertActive()
+  await context.sql.query(`insert into run_work_join_dispatches(run_id,activation_id,source_activation_id)
+    values($1,$2,$3) on conflict do nothing`, [context.scope.runId, activationId, sourceActivationId])
+  const row = (await context.sql.query<{ source_activation_id: string }>(
+    'select source_activation_id from run_work_join_dispatches where run_id=$1 and activation_id=$2',
+    [context.scope.runId, activationId])).rows[0]
+  return row?.source_activation_id === sourceActivationId
+}
+
+export async function resolveWaitingWorkJoinsLocked(context: AdmissionContext,
+  sourceActivationId: string): Promise<string[]> {
+  await context.hooks.assertAuthorityLocked(context.sql)
+  const rows = (await context.sql.query<{ activation_id: string; workflow_node_id: string; state: string }>(
+    `select a.activation_id,a.workflow_node_id,a.state from run_work_activations a
+      left join run_work_join_dispatches d on d.run_id=a.run_id and d.activation_id=a.activation_id
+      where a.run_id=$1 and a.cause_kind='join' and (d.source_activation_id=$2 or d.activation_id is null
+        and (a.state='waiting' or a.state='queued'
+        and not exists(select 1 from harness_executions e where e.run_id=a.run_id
+          and e.work_activation_id=a.activation_id))) order by a.activation_id for update of a`,
+    [context.scope.runId, sourceActivationId])).rows
+  const ready: string[] = []
+  for (const row of rows) {
+    const owned = (await context.sql.query(`select 1 from run_work_join_dispatches
+      where run_id=$1 and activation_id=$2 and source_activation_id=$3`,
+    [context.scope.runId, row.activation_id, sourceActivationId])).rowCount === 1
+    if (owned || (row.state === 'queued' || await resolveWorkJoinLocked(context, row.activation_id, row.workflow_node_id))
+      && await claimWorkJoinDispatchLocked(context, row.activation_id, sourceActivationId)) {
+      ready.push(row.activation_id)
+    }
+  }
+  return ready
 }
 
 /** Preserve the accepted native decision when no lawful continuation remains.
@@ -165,15 +240,29 @@ export async function recordUnresolvedWorkLocked(context: AdmissionContext,
   if (!node) return repeatConflict('WORKFLOW_NODE_NOT_FOUND')
   if (node.kind === 'job') return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   if (reason === 'finish_with_findings') {
-    if (relationshipId || result.routing.kind !== 'finish' || !result.data.remainingFindings.length) {
+    const acceptedReturn = result.routing.kind === 'return' && result.routing.outcome === 'accepted'
+    if (relationshipId || result.routing.kind !== 'finish' && !acceptedReturn || !result.data.remainingFindings.length) {
       return repeatConflict('WORK_UNRESOLVED_CAUSE_CONFLICT')
     }
-    const route = node.choice?.outcomes.find((item) => item.outcome === result.routing.outcome)?.target
+    if (acceptedReturn) {
+      const returned = (await sql.query<{ record: unknown }>(
+        'select record from run_work_returns where run_id=$1 and source_execution_id=$2',
+        [scope.runId, sourceExecutionId])).rows[0]
+      if (!returned) return repeatConflict('WORK_RETURN_RESULT_CONFLICT')
+      const value = WorkReturnSchema.parse(returned.record)
+      if (result.routing.kind !== 'return' || value.requestId !== result.routing.requestId
+        || value.outcome !== 'accepted' || value.acceptedResultDigest !== repeatDigest(execution.result, 64 * 1024)) {
+        return repeatConflict('WORK_RETURN_RESULT_CONFLICT')
+      }
+    }
+    const route = result.routing.kind === 'finish'
+      ? node.choice?.outcomes.find((item) => item.outcome === result.routing.outcome)?.target : undefined
     if (route?.kind === 'edge') return repeatConflict('WORK_UNRESOLVED_ROUTE_EXISTS')
   } else {
-    const selected = result.routing.kind === 'request'
-      ? node.choice?.outcomes.find((item) => item.outcome === result.routing.outcome)?.target : undefined
-    if (!relationshipId || selected?.kind !== 'edge' || selected.relationshipId !== relationshipId) {
+    const selected = (await sql.query<{ routes: string[] }>(
+      'select work_saved_routes(repeat_pinned_version($1),$2::jsonb,$3::jsonb) as routes',
+      [scope.runId, canonicalGraphJson(node), canonicalGraphJson(result)])).rows[0]
+    if (!relationshipId || !selected?.routes.includes(relationshipId)) {
       return repeatConflict('WORK_UNRESOLVED_CAUSE_CONFLICT')
     }
     const activation = (await sql.query<{ lineage_id: string }>(
@@ -184,14 +273,18 @@ export async function recordUnresolvedWorkLocked(context: AdmissionContext,
       where d.run_id=$1 and d.relationship_id=$2 and a.lineage_id=$3 limit 1`,
     [scope.runId, relationshipId, activation.lineage_id])).rowCount) return repeatConflict('WORK_UNRESOLVED_DENIAL_MISSING')
   }
-  const unresolvedId = repeatId('work-unresolved', scope.runId, sourceExecutionId)
-  const prior = (await sql.query<{ reason: string; relationship_id: string | null; result_digest: string }>(
-    'select reason,relationship_id,result_digest from run_work_unresolved where unresolved_id=$1 and run_id=$2',
-    [unresolvedId, scope.runId])).rows[0]
+  const prior = (await sql.query<{ unresolved_id: string; reason: string; result_digest: string }>(
+    `select unresolved_id,reason,result_digest from run_work_unresolved
+      where run_id=$1 and execution_id=$2 and relationship_id is not distinct from $3`,
+    [scope.runId, sourceExecutionId, relationshipId ?? null])).rows[0]
+  const unresolvedId = prior?.unresolved_id ?? (relationshipId
+    ? repeatId('work-unresolved', scope.runId, sourceExecutionId, relationshipId)
+    : repeatId('work-unresolved', scope.runId, sourceExecutionId))
   const resultDigest = repeatDigest(execution.result, 64 * 1024)
   if (prior) {
-    if (prior.reason !== reason || prior.relationship_id !== (relationshipId ?? null)
-      || prior.result_digest !== resultDigest) return repeatConflict('WORK_UNRESOLVED_REPLAY_CONFLICT')
+    if (prior.reason !== reason || prior.result_digest !== resultDigest) {
+      return repeatConflict('WORK_UNRESOLVED_REPLAY_CONFLICT')
+    }
     return { unresolvedId, replayed: true }
   }
   context.assertActive()
@@ -224,6 +317,7 @@ export async function ensureWorkEntryLocked(context: AdmissionContext): Promise<
     return activationId
   }
   context.assertActive()
+  await assertWorkflowExecutionCapacityLocked(sql, scope.runId, version)
   const value = WorkActivationIdentitySchema.parse({ scope, activationId,
     workflowNodeId: version.entryNodeId, lineageId: scope.runId, cause: { kind: 'entry' } })
   await sql.query(`insert into run_work_activations(activation_id,run_id,workflow_version_id,workflow_node_id,
@@ -301,11 +395,15 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
       || request.relationshipId !== relationship.id || !sameRepeatValue(request.scope, scope)) {
       return repeatConflict('WORK_REQUEST_REPLAY_CONFLICT')
     }
-    const state = (await sql.query<{ state: string }>(
-      'select state from run_work_activations where run_id=$1 and activation_id=$2',
+    const state = (await sql.query<{ state: string; cause_kind: string }>(
+      'select state,cause_kind from run_work_activations where run_id=$1 and activation_id=$2',
       [scope.runId, request.destinationActivationId])).rows[0]
     if (!state) return repeatConflict('WORK_ACTIVATION_MISSING')
-    return { kind: 'accepted', request, replayed: true, destinationReady: state.state !== 'waiting' }
+    const destinationReady = state.cause_kind === 'join'
+      ? state.state !== 'waiting' && await claimWorkJoinDispatchLocked(context,
+        request.destinationActivationId, activation.activationId)
+      : state.state !== 'waiting'
+    return { kind: 'accepted', request, replayed: true, destinationReady }
   }
   const denied = (await sql.query<{ record: unknown; payload_digest: string }>(
     'select record,payload_digest from run_work_denials where request_id=$1 and run_id=$2',
@@ -354,6 +452,7 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
     [denial.denialId, scope.runId, requestId, scope.workflowVersionId, relationship.id,
       activation.activationId, sourceExecutionId, payloadDigest, canonicalGraphJson(denial), context.now])
     const continuationActivationId = repeatId('work-activation', denial.denialId)
+    await assertWorkflowExecutionCapacityLocked(sql, scope.runId, version)
     const continuation = WorkActivationIdentitySchema.parse({ scope, activationId: continuationActivationId,
       workflowNodeId: node.id, lineageId: activation.lineageId,
       cause: { kind: 'limit_denial', denialId: denial.denialId } })
@@ -378,8 +477,11 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
   }
   const incoming = version.definition.edges.filter((edge) => edge.kind === 'execution' && edge.target === destinationNodeId)
   const join = relationship.target === destinationNodeId && destination.join?.mode === 'all' && incoming.length > 1
+  const round = join ? (await sql.query<{ round_id: string }>(
+    'select work_round_id($1,$2) as round_id', [scope.runId, activation.activationId])).rows[0] : undefined
+  if (join && !round) return repeatConflict('WORK_JOIN_ROUND_CONFLICT')
   const activationId = join
-    ? repeatId('work-join', scope.runId, activation.lineageId, destinationNodeId)
+    ? repeatId('work-join', scope.runId, round!.round_id, destinationNodeId)
     : repeatId('work-activation', requestId)
   const existingActivation = join ? (await sql.query<{ record: unknown; state: string }>(
     'select record,state from run_work_activations where run_id=$1 and activation_id=$2 for update',
@@ -391,16 +493,7 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
       return repeatConflict('WORK_JOIN_ACTIVATION_CONFLICT')
     }
   }
-  const reservedBudget = (await sql.query<{ total: string }>(`select (
-      (select count(*) from harness_executions where run_id=$1)
-      + (select count(*) from run_work_activations a where a.run_id=$1 and not exists (
-          select 1 from harness_executions e where e.run_id=a.run_id and e.work_activation_id=a.activation_id
-        ))
-    )::text as total`, [scope.runId])).rows[0]
-  if (!reservedBudget || !existingActivation
-    && BigInt(reservedBudget.total) >= BigInt(version.definition.executionPolicy!.maxNodeExecutions)) {
-    return repeatConflict('WORK_RUN_EXECUTION_BUDGET_EXHAUSTED')
-  }
+  if (!existingActivation) await assertWorkflowExecutionCapacityLocked(sql, scope.runId, version)
   const reserved = (await sql.query<{ used: number }>(`update run_work_connection_usage set used=used+1
     where run_id=$1 and workflow_version_id=$2 and relationship_id=$3
       and (maximum is null or used<maximum) returning used`,
@@ -424,16 +517,8 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
   [requestId, scope.runId, scope.workflowVersionId, relationship.id, reserved.used, activation.activationId,
     sourceExecutionId, activationId, node.id, destinationNodeId, payloadDigest, canonicalGraphJson(request), context.now])
   let destinationReady = !join
-  if (join) {
-    const selected = (await sql.query<{ relationship_id: string }>(
-      `select relationship_id from run_work_requests where run_id=$1 and destination_activation_id=$2
-        order by relationship_id`, [scope.runId, activationId])).rows.map((item) => item.relationship_id)
-    if (new Set(selected).size !== selected.length || selected.length > incoming.length
-      || selected.some((id) => !incoming.some((edge) => edge.id === id))) return repeatConflict('WORK_JOIN_SOURCE_CONFLICT')
-    destinationReady = selected.length === incoming.length
-    if (destinationReady) await sql.query(`update run_work_activations set state='queued'
-      where run_id=$1 and activation_id=$2 and state='waiting'`, [scope.runId, activationId])
-  }
+  if (join) destinationReady = await resolveWorkJoinLocked(context, activationId, destinationNodeId)
+    && await claimWorkJoinDispatchLocked(context, activationId, activation.activationId)
   await sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
     values($1,'backend','work_handoff_accepted',$2,$3,$4::jsonb)`, [scope.runId, sourceExecutionId,
     context.now, canonicalGraphJson({ requestId, relationshipId: relationship.id, requesterNodeId: node.id,
@@ -471,18 +556,14 @@ export async function returnWorkHandoffLocked(context: AdmissionContext, sourceE
   const activationRow = (await sql.query<{ record: unknown; cause_kind: string; cause_id: string }>(
     'select record,cause_kind,cause_id from run_work_activations where activation_id=$1 and run_id=$2 for share',
     [row.work_activation_id, scope.runId])).rows[0]
-  if (!activationRow || activationRow.cause_kind !== 'work_request') return repeatConflict('WORK_RETURN_REQUEST_MISSING')
+  if (!activationRow) return repeatConflict('WORK_RETURN_REQUEST_MISSING')
   const activation = WorkActivationIdentitySchema.parse(activationRow.record)
   if (!sameRepeatValue(activation.scope, scope) || activation.workflowNodeId !== execution.workflowNodeId) {
     return repeatConflict('WORK_RETURN_SOURCE_PIN_CONFLICT')
   }
-  const requestRow = (await sql.query<{ record: unknown }>(
-    'select record from run_work_requests where request_id=$1 and run_id=$2 for share',
-    [activationRow.cause_id, scope.runId])).rows[0]
-  if (!requestRow) return repeatConflict('WORK_RETURN_REQUEST_MISSING')
-  const request = WorkRequestSchema.parse(requestRow.record)
-  if (!sameRepeatValue(request.scope, scope) || request.destinationActivationId !== activation.activationId
-    || request.destinationNodeId !== execution.workflowNodeId) return repeatConflict('WORK_RETURN_ANCESTRY_CONFLICT')
+  const request = await readParentWorkRequestLocked(context, activation.activationId)
+  if (!request) return repeatConflict('WORK_RETURN_REQUEST_MISSING')
+  if (request.destinationNodeId !== execution.workflowNodeId) return repeatConflict('WORK_RETURN_ANCESTRY_CONFLICT')
   const result = parseWorkHandoffResult(execution.result)
   const routing = result.routing
   if (routing.kind !== 'return' || routing.requestId !== request.requestId) {
@@ -495,6 +576,9 @@ export async function returnWorkHandoffLocked(context: AdmissionContext, sourceE
     const value = WorkReturnSchema.parse(prior.record)
     if (value.sourceExecutionId !== sourceExecutionId || value.acceptedResultDigest !== resultDigest
       || !sameRepeatValue(value.scope, scope)) return repeatConflict('WORK_RETURN_REPLAY_CONFLICT')
+    if (value.outcome === 'accepted' && value.remainingFindings.length) {
+      await recordUnresolvedWorkLocked(context, sourceExecutionId, 'finish_with_findings')
+    }
     return { value, replayed: true }
   }
   context.assertActive()
@@ -510,6 +594,7 @@ export async function returnWorkHandoffLocked(context: AdmissionContext, sourceE
     latestDeliverable: result.data.latestDeliverable, remainingFindings: result.data.remainingFindings,
     returnedAt: context.now })
   if (continuationActivationId) {
+    await assertWorkflowExecutionCapacityLocked(sql, scope.runId, version)
     const requester = (await sql.query<{ record: unknown }>(
       'select record from run_work_activations where run_id=$1 and activation_id=$2 for share',
       [scope.runId, request.requesterActivationId])).rows[0]
@@ -553,6 +638,9 @@ export async function returnWorkHandoffLocked(context: AdmissionContext, sourceE
       context.now, canonicalGraphJson({ activationId: continuationActivationId,
         requesterNodeId: request.requesterNodeId, returnId,
         ...(notice ? { noticeId: notice.noticeId } : {}) })])
+  }
+  if (value.outcome === 'accepted' && value.remainingFindings.length) {
+    await recordUnresolvedWorkLocked(context, sourceExecutionId, 'finish_with_findings')
   }
   return { value, replayed: false }
 }

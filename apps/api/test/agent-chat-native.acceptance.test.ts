@@ -1,4 +1,5 @@
-import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { removeFixtureDirectory } from './helpers/testResources.js'
+import { mkdtemp, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -98,7 +99,7 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
             { close: () => factories.disposeAuxiliaries() },
           ])
         } finally {
-          await rm(directory, { recursive: true, force: true })
+          await removeFixtureDirectory(directory)
         }
       }
     }, 240_000)

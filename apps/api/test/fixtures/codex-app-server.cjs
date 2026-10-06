@@ -1,6 +1,6 @@
-/* global require, __dirname, console, process, setInterval, setTimeout */
+/* global require, __dirname, console, process, setInterval, setTimeout, fetch */
 /* eslint @typescript-eslint/no-require-imports: "off" -- Standalone executable fixture copied without compilation. */
-// Deterministic provider fault fixture. It never invokes a model or real tools.
+// Deterministic provider fault fixture; management calls use its native MCP configuration.
 const fs = require('node:fs')
 const path = require('node:path')
 const readline = require('node:readline')
@@ -16,6 +16,10 @@ const save = (name, value) => {
 }
 const flag = (name) => fs.existsSync(path.join(root, name))
 const log = (value) => fs.appendFileSync(path.join(root, 'calls.jsonl'), JSON.stringify({ processPid: process.pid, ...value }) + '\n')
+const timing = (value) => {
+  if (flag('record-wire-timing')) fs.appendFileSync(path.join(root, 'wire-timing.jsonl'),
+    JSON.stringify({ at: Date.now(), fixtureProcessId: process.pid, ...value }) + '\n')
+}
 const args = process.argv.slice(2)
 const processDisabledMcp = new Set(args.flatMap((argument, index) => {
   if (argument !== '-c') return []
@@ -63,8 +67,8 @@ if (args[0] !== 'app-server') process.exit(2)
 if (args[1] === 'generate-json-schema') {
   const directory = args[args.indexOf('--out') + 1]
   fs.mkdirSync(directory, { recursive: true })
-  // Deliberately NOT the qualified manifest; qualification tests must fail closed.
-  save(path.relative(root, path.join(directory, 'codex_app_server_protocol.schemas.json')), { definitions: {} })
+  // Schema fixtures exercise the real contract checker without a provider turn.
+  save(path.relative(root, path.join(directory, 'codex_app_server_protocol.schemas.json')), read('schema.json', { definitions: {} }))
   process.exit(0)
 }
 const agent = process.env.TEST_AGENT_ID || 'agent-a'
@@ -80,7 +84,11 @@ const replyOrHold = (kind, reply) => {
   if (flag(`hold-${kind}`)) heldReplies.push({ kind, reply })
   else reply()
 }
-const send = (value) => process.stdout.write(JSON.stringify(value) + '\n')
+const send = (value) => {
+  if (value.id !== undefined) timing({ direction: 'response', id: value.id, method: value.method,
+    errorCode: value.error?.code })
+  return process.stdout.write(JSON.stringify(value) + '\n')
+}
 const result = (id, value) => send({ id, result: value })
 const fail = (id) => send({ id, error: { code: -32000, message: 'fixture rejection' } })
 const store = (owner) => save(`state-${owner.id}.json`, owner)
@@ -175,6 +183,7 @@ process.on('exit', () => { log({ exited: process.pid }) })
 process.on('SIGTERM', () => { if (!flag('ignore-term')) process.exit(0) })
 const inbox = path.join(root, `inbox-${agent}.jsonl`)
 let offset = fs.existsSync(inbox) ? fs.readFileSync(inbox, 'utf8').length : 0
+let bufferedLength = 0
 setInterval(() => {
   for (let index = heldReplies.length - 1; index >= 0; index--) {
     const pending = heldReplies[index]
@@ -184,10 +193,39 @@ setInterval(() => {
   }
   if (!fs.existsSync(inbox)) return
   const contents = fs.readFileSync(inbox, 'utf8')
-  const batch = contents.slice(offset); offset = contents.length
+  const end = contents.lastIndexOf('\n') + 1
+  const partialLength = contents.length - Math.max(offset, end)
+  if (partialLength && partialLength !== bufferedLength) log({ inboxBufferedLength: partialLength })
+  bufferedLength = partialLength
+  if (end <= offset) return
+  const batch = contents.slice(offset, end)
+  offset = end
   for (const line of batch.split('\n').filter(Boolean)) {
     const message = JSON.parse(line)
-    const owner = loadThread(message.params?.threadId)
+    const owner = message.id !== undefined || message.method === 'turn/completed'
+      ? loadThread(message.params?.threadId) : undefined
+    if (message.method === 'fixture/management-call') {
+      void (async () => {
+        if (!owner) throw new Error('Native management session missing')
+        const configured = read('mcp.json', {})
+        const transport = configured.transport || {}
+        if (!configured.enabled || processDisabledMcp.has(configured.name)) throw new Error('Management MCP disabled')
+        const token = process.env[transport.bearer_token_env_var]
+        if (!transport.url || !token) throw new Error('Native management binding missing')
+        const response = await fetch(transport.url, {
+          method: 'POST', headers: { authorization: `Bearer ${token}`,
+            accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: message.id, method: 'tools/call',
+            params: { name: message.params.name, arguments: message.params.arguments } }),
+        })
+        const text = await response.text()
+        const data = text.split('\n').find(line => line.startsWith('data: '))
+        const body = JSON.parse(data ? data.slice(6) : text)
+        if (!response.ok || body.error || !body.result) throw new Error('Native management request failed')
+        log({ nativeManagementResult: { id: message.id, sessionId: owner.id, pid: process.pid, result: body.result } })
+      })().catch(error => log({ nativeManagementResult: { id: message.id, error: error.message } }))
+      continue
+    }
     if (message.id !== undefined && message.method && owner && !outstanding.has(message.id)) {
       outstanding.set(message.id, { threadId: owner.id, turnId: message.params.turnId || owner.turns.at(-1)?.id,
         remaining: 0 })
@@ -205,6 +243,7 @@ setInterval(() => {
 }, 10)
 readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line) => {
   const message = JSON.parse(line)
+  timing({ direction: 'request', id: message.id, method: message.method })
   log({ wire: message })
   const params = message.params || {}
   if (message.method === 'initialize') result(message.id, { userAgent: 'codex-cli 0.154.0', platformFamily: 'unix', platformOs: 'linux', codexHome: root })

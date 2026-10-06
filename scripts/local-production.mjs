@@ -10,7 +10,7 @@ import { readProductEnvironment } from '../packages/contracts/src/productEnviron
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
 import {
-  deployProductionApi, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
+  deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment, removeUninstalledRelease,
   readProductionIdentity, renderEnvironment, waitForProductionReady, withInstallationLock,
 } from './local-production-runtime.mjs'
 
@@ -71,24 +71,29 @@ async function stageRelease() {
   const releases = join(app, 'releases')
   await mkdir(releases, { recursive: true, mode: 0o700 })
   const release = await mkdtemp(join(releases, 'release-'))
-  await mkdir(join(release, 'apps'), { recursive: true })
-  await deployProductionApi(run, join(release, 'apps/api'))
-  await cp(join(source, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
-  await mkdir(join(release, 'scripts'), { recursive: true })
-  for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs']) {
-    await copyFile(join(source, 'scripts', name), join(release, 'scripts', name))
+  try {
+    await mkdir(join(release, 'apps'), { recursive: true })
+    await deployProductionApi(run, join(release, 'apps/api'))
+    await cp(join(source, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
+    await mkdir(join(release, 'scripts'), { recursive: true })
+    for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs']) {
+      await copyFile(join(source, 'scripts', name), join(release, 'scripts', name))
+    }
+    const contractsSource = join(release, 'packages/contracts/src')
+    await mkdir(contractsSource, { recursive: true })
+    await copyFile(join(source, 'packages/contracts/src/productEnvironment.mjs'),
+      join(contractsSource, 'productEnvironment.mjs'))
+    await mkdir(join(release, 'apps/worker/src'), { recursive: true })
+    for (const name of ['service.mjs', 'diagnostics.mjs', 'harnessPath.mjs']) {
+      await copyFile(join(source, 'apps/worker/src', name), join(release, 'apps/worker/src', name))
+    }
+    await copyFile(process.execPath, join(release, 'node'))
+    await chmod(join(release, 'node'), 0o700)
+    return release
+  } catch (error) {
+    await removeUninstalledRelease(release, current)
+    throw error
   }
-  const contractsSource = join(release, 'packages/contracts/src')
-  await mkdir(contractsSource, { recursive: true })
-  await copyFile(join(source, 'packages/contracts/src/productEnvironment.mjs'),
-    join(contractsSource, 'productEnvironment.mjs'))
-  await mkdir(join(release, 'apps/worker/src'), { recursive: true })
-  for (const name of ['service.mjs', 'diagnostics.mjs', 'harnessPath.mjs']) {
-    await copyFile(join(source, 'apps/worker/src', name), join(release, 'apps/worker/src', name))
-  }
-  await copyFile(process.execPath, join(release, 'node'))
-  await chmod(join(release, 'node'), 0o700)
-  return release
 }
 
 function service(template) {
@@ -189,35 +194,40 @@ async function install() {
   service('@NODE@ @APP@ @STATE@ @HOME@ @PATH@')
   await access('/usr/bin/docker', constants.X_OK)
   await access('/usr/bin/google-chrome', constants.X_OK)
+  await access('/usr/bin/ss', constants.X_OK)
   await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
   await run('corepack', ['pnpm', 'build'])
   const environment = await configureEnvironment()
   const release = await stageRelease()
-  await copyFile(join(source, 'compose.production.yaml'), join(app, 'compose.production.yaml'))
-  await run('/usr/bin/docker', ['volume', 'create', '--label', 'io.graphql.environment=production', 'graphql-production-postgres'])
-  await installServices()
-  await installDesktop()
-  await run('/usr/bin/systemctl', ['--user', 'daemon-reload'])
-  await run('/usr/bin/systemctl', ['--user', 'start', units.database])
-  await run('/usr/bin/systemctl', ['--user', 'stop', units.api])
-  await run(join(release, 'node'), ['dist/cli/migrate.js'], {
-    cwd: join(release, 'apps/api'), env: { ...process.env, ...environment },
-  })
-  const upgradeModule = join(release, 'apps/api/dist/modules/harnesses/productionMcpUpgrade.js')
-  const { upgradeProductionMcpLauncher } = await import(pathToFileURL(upgradeModule))
-  await upgradeProductionMcpLauncher(home)
-  const pending = join(app, `current.${randomBytes(8).toString('hex')}`)
   try {
-    await symlink(release, pending)
-    await rename(pending, current)
+    await copyFile(join(source, 'compose.production.yaml'), join(app, 'compose.production.yaml'))
+    await run('/usr/bin/docker', ['volume', 'create', '--label', 'io.graphql.environment=production', 'graphql-production-postgres'])
+    await installServices()
+    await installDesktop()
+    await run('/usr/bin/systemctl', ['--user', 'daemon-reload'])
+    await run('/usr/bin/systemctl', ['--user', 'start', units.database])
+    await run('/usr/bin/systemctl', ['--user', 'stop', units.api])
+    await run(join(release, 'node'), ['dist/cli/migrate.js'], {
+      cwd: join(release, 'apps/api'), env: { ...process.env, ...environment },
+    })
+    const upgradeModule = join(release, 'apps/api/dist/modules/harnesses/productionMcpUpgrade.js')
+    const { upgradeProductionMcpLauncher } = await import(pathToFileURL(upgradeModule))
+    await upgradeProductionMcpLauncher(home)
+    const pending = join(app, `current.${randomBytes(8).toString('hex')}`)
+    try {
+      await symlink(release, pending)
+      await rename(pending, current)
+    } finally {
+      await rm(pending, { force: true })
+    }
+    await run('/usr/bin/systemctl', ['--user', 'enable', units.database, units.api])
+    await run('/usr/bin/systemctl', ['--user', 'start', units.api])
+    await openDashboard()
+    console.log(`Foreman Code installed: ${origin}/workspaces`)
+    console.log(`API logs: ${state}/logs (and journalctl --user -u ${units.api})`)
   } finally {
-    await rm(pending, { force: true })
+    await removeUninstalledRelease(release, current)
   }
-  await run('/usr/bin/systemctl', ['--user', 'enable', units.database, units.api])
-  await run('/usr/bin/systemctl', ['--user', 'start', units.api])
-  await openDashboard()
-  console.log(`Foreman Code installed: ${origin}/workspaces`)
-  console.log(`API logs: ${state}/logs (and journalctl --user -u ${units.api})`)
 }
 
 async function openDashboard() {
@@ -225,7 +235,7 @@ async function openDashboard() {
   // Chrome joins the owner's browser session; closing the launcher must not close their browser.
   await new Promise((resolve, reject) => {
     const child = spawn('/usr/bin/google-chrome', [`--app=${origin}/workspaces`, '--class=graphql-production'], {
-      detached: true, stdio: 'ignore',
+      detached: true, stdio: 'ignore', env: desktopLaunchEnvironment(process.env),
     })
     child.once('error', reject)
     child.once('spawn', () => {

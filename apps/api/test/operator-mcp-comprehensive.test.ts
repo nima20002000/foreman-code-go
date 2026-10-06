@@ -131,6 +131,10 @@ describe('current device and Operator control MCP parity', () => {
       cancel, respond, get: async () => ({ ...state, activitySnapshot, qualificationKey: 'c'.repeat(64) }),
       setup: async () => ({ harness: 'codex', status: 'configured', endpoint: 'http://127.0.0.1/mcp', checkedAt: new Date().toISOString() }),
       create: async () => state.conversation, send: async () => ({ state, replayed: false }),
+      list: async () => [state.conversation],
+      history: async () => ({ conversationId: state.conversation.id, revision: state.revision,
+        activeRequestId: state.activeRequestId, entries: [], nextCursor: null }),
+      activityPage: async () => ({ activities: [], nextCursor: null }),
       handoffHistory: async () => ({ sourceConversationId: 'source', messages: [], nextCursor: null }),
     }
     c.services.operatorChat = chat

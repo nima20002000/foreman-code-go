@@ -1,32 +1,17 @@
 import { constants } from 'node:fs'
-import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { open, mkdir, rename, statfs, readdir, readlink, stat, readFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
-import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
+import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot,
+  withPrivateDirectoryLock } from './privateFilesystem.js'
 import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPort } from './ports.js'
 import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 
 const equal = isDeepStrictEqual
-/** Lock the anchored directory inode, never a replaceable lock pathname. Linux
- * flock is shared across processes and automatically released on process death. */
-async function withClaimLock<T>(root: FileHandle, work: () => Promise<T>, nonBlocking = false): Promise<T> {
-  const guard = await open(anchored(root), constants.O_RDONLY | constants.O_DIRECTORY)
-  try {
-    await new Promise<void>((resolve, reject) => {
-      // The child locks the inherited open file description; our guard keeps
-      // that same kernel lock alive after flock exits until the critical section ends.
-      const child = spawn('/usr/bin/flock', ['--exclusive', ...(nonBlocking ? ['--nonblock'] : []), '3'], { stdio: ['ignore', 'ignore', 'ignore', guard.fd] })
-      child.once('error', reject)
-      child.once('close', code => code === 0 ? resolve() : reject(new SourceError('SOURCE_CLAIM_LOCK_FAILED', 'Source ownership serialization failed.')))
-    })
-    return await work()
-  } finally { await guard.close() }
-}
 export class PrivateSourceMaterializer implements SourceMaterializationPort {
   private active = 0
   constructor(private readonly bytes: SourceByteReader | null, private readonly authorize: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<void>) {}
@@ -58,7 +43,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       signal.throwIfAborted()
       root = await openPrivateRoot(binding.canonicalPath)
       if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination filesystem identity changed.')
-      await withClaimLock(root, async () => {
+      await withPrivateDirectoryLock(root, async () => {
         lock = await open(anchored(root!, lockName), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
         await lock.writeFile(JSON.stringify({ version: 1, materializationId: id, binding, attempt })); await lock.sync(); await root!.sync()
       })
@@ -230,7 +215,7 @@ async function archiveMaterializationClaim(receipt: MaterializationReceipt,
   const binding = receipt.binding, root = await openPrivateRoot(binding.canonicalPath)
   try {
     if (!equal(await identity(root), options.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
-    await withClaimLock(root, async () => {
+    await withPrivateDirectoryLock(root, async () => {
       if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution ownership is not reconciled.')
       const name = `binding-${binding.rootId}.lock`, releasedName = 'released-claim.json'
       const directory = await openChildDirectory(root, receipt.materializationId)
@@ -302,7 +287,9 @@ async function archiveMaterializationClaim(receipt: MaterializationReceipt,
  * exposing argv or accepting PID/path assertions from the caller. */
 export async function preparationChildrenClosed(namespace: string): Promise<boolean> {
   const entries = await readdir('/proc')
-  if (entries.length > 32768) return false
+  if (entries.length > 32768) {
+    throw new SourceError('source-reconciliation-unconfirmed', 'Process inspection exceeded its process limit.')
+  }
   const inside = (path: string) => path === namespace || path.startsWith(namespace + '/')
   for (const pid of entries.filter(value => /^\d+$/.test(value) && Number(value) !== process.pid)) {
     const directory = `/proc/${pid}`
@@ -313,17 +300,33 @@ export async function preparationChildrenClosed(namespace: string): Promise<bool
       // children; requiring ptrace access to them would invent host authority.
       const comm = (await readFile(`${directory}/comm`, 'utf8')).trim()
       if (!['git', 'flock', 'node', 'rsync', 'podman', 'crun'].includes(comm)) continue
-      if (inside(await readlink(`${directory}/cwd`))) return false
+      if (inside(await readlink(`${directory}/cwd`))) {
+        throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} still uses the source directory.`)
+      }
       const args = await open(`${directory}/cmdline`, constants.O_RDONLY)
       try {
         const bytes = Buffer.alloc(65536), result = await args.read(bytes, 0, bytes.length, 0)
-        if (result.bytesRead === bytes.length || bytes.subarray(0, result.bytesRead).toString().split('\0').some(inside)) return false
+        if (result.bytesRead === bytes.length) {
+          throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} exceeded the argument inspection limit.`)
+        }
+        if (bytes.subarray(0, result.bytesRead).toString().split('\0').some(inside)) {
+          throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} still references the source directory.`)
+        }
       } finally { await args.close() }
       const descriptors = await readdir(`${directory}/fd`)
-      if (descriptors.length > 8192) return false
-      for (const fd of descriptors) if (inside(await readlink(`${directory}/fd/${fd}`))) return false
+      if (descriptors.length > 8192) {
+        throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} exceeded the descriptor inspection limit.`)
+      }
+      for (const fd of descriptors) {
+        if (inside(await readlink(`${directory}/fd/${fd}`))) {
+          throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} still holds a source descriptor.`)
+        }
+      }
     } catch (error) {
-      if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return false
+      if (error instanceof SourceError) throw error
+      if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} could not be inspected.`, { cause: error })
+      }
     }
   }
   return true
@@ -339,7 +342,7 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
   const binding = RootBindingSchema.parse(owner.root.binding), root = await openPrivateRoot(binding.canonicalPath)
   try {
     if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Original source cleanup root changed.')
-    return await withClaimLock(root, async () => {
+    return await withPrivateDirectoryLock(root, async () => {
       const proofName = `closed-preparation-${reconciliationId}.json`, archiveName = `closed-preparation-${reconciliationId}.claim.json`
       const readRecord = async (name: string) => {
         const file = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
@@ -362,8 +365,10 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
           || !equal(proof.filesystem, binding.filesystem)) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Closure proof belongs to another original preparation.')
         await reauthorize(); return proof
       }
-      if (!await nativeClosed() || !await preparationChildrenClosed(binding.canonicalPath))
-        throw new SourceError('source-reconciliation-unconfirmed', 'A native owner or source process is live or uncertain.')
+      if (!await nativeClosed()) {
+        throw new SourceError('source-reconciliation-unconfirmed', 'The native owner has not confirmed closure.')
+      }
+      await preparationChildrenClosed(binding.canonicalPath)
       await reauthorize()
       const lockName = `binding-${binding.rootId}.lock`, archive = await optionalRecord(archiveName), current = archive ?? await optionalRecord(lockName)
       let materializationId = owner.record?.receipt.materializationId ?? null
@@ -399,6 +404,6 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
       const file = await open(anchored(root, proofName), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
       try { await file.writeFile(JSON.stringify(proof)); await file.sync() } finally { await file.close() }
       await root.sync(); await reauthorize(); return proof
-    }, true)
+    }, { nonBlocking: true })
   } finally { await root.close() }
 }

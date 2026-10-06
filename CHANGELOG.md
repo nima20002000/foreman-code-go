@@ -13,6 +13,205 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - not verified / follow-up: Codex Agent/device first-turn callback timeout; remaining OpenCode Operator and device control journeys; Claude read-only qualification and context-setting live coverage.
 - not verified / follow-up: browser acceptance and interrupted compaction dispatch recovery. The full session-control acceptance matrix is incomplete; no complete native or browser acceptance is claimed.
 - not verified / follow-up: final caller-context and saved OpenCode inspection adjustments received typecheck/lint only under the owner release order; native reruns were stopped.
+## [0.0.49] - 2026-10-06
+
+### Changed
+
+- Require explicit Full access for Claude profiles, presets and Agents at Save and Start through the UI and Operator MCP. Existing unsupported values remain readable until explicitly corrected; they are never upgraded silently.
+- Retire Claude read-only and workspace-write execution policy and the custom AppArmor prerequisite. Application grants, permission rules and native qualification still apply to Full access.
+
+### Fixed
+
+- Retain the saved Claude host profile for local workflow execution and the complete accepted request during native inspection, including its execution context and correlation. Compare JSON values independently of object key order.
+- Deliver the scoped application bearer credential to the inspected Claude HTTP connection before requiring connected health, while retaining endpoint validation and the SDK credential acknowledgement.
+- Deliver pinned Agent instructions and verified skills through the Claude SDK instruction channel.
+- Persist Claude native correlations through an upgrade migration and validate workflow completion against the original SDK result and native message receipt.
+- Preserve sanitized native failure diagnostics before cleanup and keep detached desktop browser files outside temporary build directories.
+
+### Verified
+
+- Passed typecheck, lint, build and the affected contract, API, UI, authenticated MCP and PostgreSQL regressions, including denied callers, persisted Full access readback, invalid-mode Start refusal and database upgrade behavior.
+- Installed and qualified Claude Haiku (`claude-haiku-4-5-20251001`) with Full access on the local PC; completed a saved-profile workflow with a real native session and accepted result.
+- Confirmed Claude, Codex and OpenCode saved presets are eligible, installed services are active, the production database is separate, and the dashboard and desktop icons resolve.
+- The approval-case timeout passed its single unchanged rerun. The installed service also recovered an initial database response deadline on its unchanged automatic startup retry; final installed verification passed.
+
+## [0.0.48] - 2026-10-06
+
+### Fixed
+
+- Route managed MCP requests from native PID namespaces through the authenticated owning endpoint, preserving scope checks and revocation.
+- Preserve the original active OpenCode turn generation during recovery, and recapture the same running output call when an approval observer releases its writer lease.
+- Open the scoped Run graph publication before adopting artifacts with retained native approval receipts, preserving original approvals and publication results across restart.
+- Register native fixture databases and recover only idle owned databases after process closure, retaining active or foreign resources for confirmed cleanup.
+- Share private credential copying between the native runner and Haiku qualification fixture, preserving refreshed test credentials and the original host login.
+- Apply the artifact restart fixture's exact four-approval and zero-join expectations to its single-entry scenario.
+
+### Verified
+
+- Completed all 20 previously untested single-computer OpenCode cases locally: artifacts, mixed-provider handoffs, review returns, joins, approvals, handoff limits, audited qualification, Agent chat fork and terminal human-access isolation.
+- Qualified Claude Haiku (`claude-haiku-4-5-20251001`) through real native lifecycle and tool-policy checks. In-app Codex subjects used `gpt-5.6-luna` at medium reasoning; OpenCode used the pinned 1.18.31 binary.
+- Passed focused unit, authenticated MCP and PostgreSQL regressions, plus typecheck, lint and build. Two timing-only failures passed their single unchanged-case reruns under the owner rule; assertions and deadlines remain unchanged.
+
+## [0.0.47] - 2026-10-06
+
+### Fixed
+
+- Measure the selected executable's real hash in qualification deadline regression fixtures, so current integrity checks admit the valid candidate and reject a replacement before any native suite runs.
+
+## [0.0.46] - 2026-10-06
+
+### Added
+
+- Discover owned Operator conversations and retry creation with a command ID without creating duplicates.
+- Page Operator message history and activities through MCP, and inspect the configuration pinned to an existing conversation or request.
+- Use separately scoped file and management capabilities together in Codex and OpenCode Operator turns, including attached-spec workflow creation and persisted readback.
+
+### Changed
+
+- Return authorized execution-location details from workspace updates and command replays.
+- Recover owned OpenCode Operator sessions through observation attachment without issuing new management credentials or starting another turn.
+
+### Fixed
+
+- Recheck workspace mutation and replay authority under the command transaction, and require read access for Operator sends that return conversation state.
+- Compensate failed workspace provisioning after receipt, audit or commit failures, retaining uncertain commits for recovery.
+- Report malformed, unsupported and oversized MCP requests as safe client errors.
+- Preserve file declarations, original native session history and both credential lifecycles when a text-first Operator resumes with an attachment.
+- Retain split native fixture notifications through complete JSONL records and avoid saved-thread reads for stateless events, preserving burst delivery, bounded history and cursor coverage.
+- Join already active Job preparations when draining queue work, so closure failures and recovery remain observable after an automatic rescan.
+- Preserve process-closure refusal causes in source recovery diagnostics and archive requested native acceptance evidence before disposable storage is removed.
+- Reconcile completed current-turn tool activity through its original native owner so saved Codex results can settle without conflicting with late-child activity guards.
+
+### Security
+
+- Audit direct calls to known tools hidden by grants, while preserving unknown-tool responses and failing closed when audit storage is unavailable.
+- Keep file credentials separate from owner-delegated management grants; retain read-only harness policies, live revocation checks and scoped recovery ownership.
+
+
+
+
+## [0.0.45] - 2026-10-06
+
+### Added
+
+- Read and retry dynamic harness compatibility checks through Operator MCP with the same contracts, grants and audit service as the local app.
+
+### Changed
+
+- Accept compatible Codex, Claude Code and OpenCode installations by checking their observed runtime contracts rather than exact release versions or recorded schema hashes.
+- Prefer the computer's installed native Codex, with the bundled package as a fallback, and read model catalogs and supported settings from the selected harness.
+- Recheck compatibility when launcher or native payload identity changes, while preserving recorded Run, WorkflowVersion and native-session provenance.
+
+### Fixed
+
+- Make newer compatible Codex installations usable with their own model catalogs, including Codex 0.160.0/0.160.1 and gpt-6-luna at medium effort.
+- Resume saved native sessions across compatible harness releases without rewriting their historical version facts.
+- Report the observed harness version and missing protocol contract when compatibility verification fails.
+- Keep dedicated Codex and Claude native verification storage disposable, including cleanup after failed scenarios.
+- Include the MCP client required by the Claude runtime in deployed production dependencies, so the compiled API can start.
+
+### Security
+
+- Preserve launcher integrity and path trust, credential isolation, read-only enforcement, sandbox settings, approval policy and authenticated host-bound qualification.
+- Keep MCP and Worker credentials scoped and separate from the implicit local human; compatible-version checks grant no execution or write authority.
+
+## [0.0.44] - 2026-10-06 - 2026-10-06
+
+### Fixed
+
+- Observe each provider's native startup event during installed recovery verification, requiring the bound execution and session and rejecting replayed history.
+- Remove the installed test's runtime workspace after native cleanup on success and failure, while retaining production data and persisted audit history.
+- Retire the obsolete installer-owned browser-access setting during production updates, preserving native provider configuration and MCP security.
+- Give the standalone migration command a separate bounded DDL deadline while retaining API request deadlines, transactions and migration locks.
+- Remove unsuccessful release staging without deleting an activated release or production data.
+- Snapshot deployed API and workspace dependencies into independent files so later source builds cannot mutate an installed release.
+- Read committed Run-only snapshots during native publication without taking a mutation-blocking Run lock; preserve live grants, immutable pins, locked execution detail and mutation/Stop checks.
+- Cover delayed read/write responses, persisted write readback, replacement connections after SQL cancellation and bounded missing replies in the PostgreSQL deadline regression.
+- Preserve the supported OpenCode credential key when disposable test storage changes launcher identity, with unit and live native preflight coverage for legacy configuration merging.
+- Bind isolated OpenCode preflight and execution to the fixture-owned configuration file and directory, preventing a later source-directory override, restoring both settings during cleanup and preserving managed-launcher and credential checks.
+- Use one private OpenCode user-profile entry for native execution and managed MCP setup, retaining source ownership checks and restoring the prior configuration home.
+- Include the MCP client in production API dependencies so the compiled Claude runtime and installed API start without development packages.
+- Retain server-side failure codes and locations for unexpected Operator MCP errors without logging private error text, tool arguments or credentials.
+- Keep the native version-command deadline separate from installation verification and confirmed process cleanup during qualification, preserving binary guards and cancellation.
+
+### Changed
+
+- Verify compiled production hosting and scoped agent HTTP/MCP readback with denied callers after the noauth upgrade; verify credential-free human creation/edits in the actual browser without altering OS client attribution.
+- Retain redacted private Operator failure events and attempt independent test resource cleanup when another cleanup step fails.
+- Retain bounded database wait and blocker diagnostics during installed recovery verification.
+- Document OpenCode runtime isolation, private native storage and the Node/Bubblewrap requirements after the installed file-runtime upgrade.
+
+## [0.0.43] - 2026-10-06
+
+### Added
+
+- Explicit native harness approval handling for workflows, configured through the Board and Operator MCP with compatible pinned Agent settings and saved permission rules.
+- Publish declared artifact outputs from local Codex/OpenCode and connected Codex workflow turns through authenticated MCP and retain their original publication records for recovery.
+- Restore checkpoint-bound OpenCode approval sessions after verified restart without creating replacement native turns.
+
+### Changed
+
+- Retain every terminal handoff activation in Run output, including results from repeated review revisions.
+- Preserve frozen activation inputs during upgrades and provide the original caller through trusted execution context.
+- Sixteen real-native workflow cases covering OpenCode artifacts, mixed Codex/OpenCode handoffs, review returns, joins, approvals and handoff limits were verified locally in v0.0.48. All three Codex-only cases passed in the original gate.
+- The OpenCode approval-wait lifecycle case was verified locally in v0.0.48.
+
+### Fixed
+
+- Give workflow native-output storage a distinct migration number after the published Operator terminal migrations, preserving both capabilities when upgrading an existing database.
+- Preserve fresh original OpenCode terminal history after requester attachment, separating the current history observation from the original prompt submission generation.
+- Restore the original requester from its saved approval checkpoint before recording a response, joining startup recovery and retaining native identity and delivery checks.
+- Retain original Codex command output deltas when its completed command omits aggregated output, keeping native command, sandbox witness and process closure validation.
+- Close fixture-owned native processes and remove isolated databases and private directories after successful or failed acceptance runs, retaining cleanup and verification failures.
+- Accept the original first Codex transport generation for local and installed artifact storage, and recover its budget records without changing native identity.
+- Preserve original approval checkpoints when restart begins before the active graph invocation releases its Run owner.
+- Drain graph finalization writes along with activation tasks before Stop or restart releases ownership.
+- Keep resumed native observation on one writer lease until another approval or terminal result, so original MCP artifact calls remain authorized.
+- Cancel pending artifact adoption before restart locks the Run, then recover the same published output after recomposition.
+- Pass pinned file references through strict download validation during artifact adoption while retaining hash, size, scope and byte verification.
+- Adopt local workflow outputs after native settlement and resume unfinished adoption from the saved terminal execution after restart.
+- Use the same pinned artifact declarations during preflight and execution, and lock Run parents before artifact execution rows to prevent publication deadlocks.
+- Preserve original OpenCode call and permission names under both supported MCP connection names.
+- Validate Codex sandbox probe command payloads within the selected shell wrapper while retaining original session, terminal and filesystem checks.
+- Bind Orchestrator approvals to the accepted requester ancestry across delegated work, review returns and handoff-limit continuations.
+- Settle permanent failures and enforce one execution budget across retries, queued activations, returns and denial continuations.
+- Resolve choice branches and exhausted connections in separate causal join rounds, with replay-safe dispatch when branches arrive concurrently.
+- Support combined handoff/artifact results, clean choice-node finishes and durable direction waits for accepted review findings or exhausted routes.
+- Check derived return and notice sizes against persisted PostgreSQL envelopes before acceptance, including large numeric payloads.
+- Preserve safely unsubmitted or settled handoff work across restart, and physically close invalid artifact turns while retaining validation failures.
+- Reconstruct activation-result publication records for authenticated canonical graph reads after review cycles.
+- Lock the Run before its execution when checking original native output approvals, preventing deadlocks with credential recovery.
+
+### Security
+
+- Run sandbox qualification from an immutable program in protected storage, retaining the original actor and descendant write-denial checks and verified cleanup.
+- Keep native output storage outside agent write access, verify original native call ownership and sandbox policy, and enforce saved OpenCode permissions and original approvals for output operations.
+- Retain grants, scope checks, native closure records and credential revocation through output publication and approval recovery.
+
+## [0.0.42] - 2026-10-06
+
+### Added
+
+- Dedicated test PostgreSQL, owned disposable databases, and private homes, storage, MCP routes and runtime directories for each test invocation.
+- Ownership and cleanup recovery checks for database-backed tests and native acceptance.
+
+### Changed
+
+- Root and API test commands, including selected-file runs, provision isolated resources and preserve current Foreman Code local-human and scoped MCP behavior.
+- Installed production verification uses the separate `production:verify` command and refuses disposable test contexts.
+
+### Fixed
+
+- Keep source capture and qualification fixtures inside owned storage, join pending work on teardown, and keep controller Node startup options out of native commands.
+- Local smoke shutdown drains pending web requests before closing its dev server; settled resources are removed after failed assertions too.
+- Native acceptance uses explicit private provider profiles and managed MCP configuration, with retained diagnostics when physical cleanup cannot be confirmed.
+- Bounded MCP readback fills its response budget while preserving JSON characters, identity, choices and continuation integrity.
+
+### Security
+
+- Tests reject application and production database connections, ambient database fallbacks, and cleanup outside owned database or filesystem roots.
+- Native agents receive scoped provider and MCP settings without inheriting test-controller credentials, database selectors or the ambient user home.
+- Codex model diagnostics strip App and controller credentials and disable only configured App MCP entries, preserving provider sign-in and native startup with empty MCP configuration.
 
 ## [0.0.41] - 2026-10-06
 
@@ -76,7 +275,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Qualify native acceptance per provider, allowing Codex cases to run independently of an unused OpenCode installation.
 - Correlate late session and turn acknowledgements with the original accepted request and retain startup output until admission is persisted.
 - Run selected native acceptance files with invocation-owned databases and preserve process-group cleanup and qualification diagnostics.
-- OpenCode approval isolation (E03-A01), OpenCode Agent chat fork and terminal OpenCode local-human isolation are untested on Claude/OpenCode (laptops are Codex-only): the selected OpenCode Go provider is not connected on the laptops.
+- OpenCode approval isolation (E03-A01), OpenCode Agent chat fork and terminal OpenCode local-human isolation were verified locally in v0.0.48.
 
 ### Fixed
 
@@ -114,7 +313,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Pass the owned fixture directory explicitly to terminal OpenCode requests, preventing inherited PWD from creating the native session in the surrounding checkout.
 - Verify native MCP startup reads the fixture's unique placement marker while preserving every local HTTP denial, scoped MCP permission and cleanup assertion.
 - Check the selected native OpenCode model and provider through the shared qualification service before terminal launch, keeping unsupported models separate from missing provider credentials and closing the diagnostic process before the unregistered isolation client starts.
-- Terminal OpenCode local-human isolation remains untested on Claude/OpenCode (laptops are Codex-only). Its native model lookup failed before the MCP probe; native preflight now reports missing provider credentials explicitly. Both Codex isolation cases passed on Mana.
+- Terminal OpenCode local-human isolation was verified locally in v0.0.48. Native preflight reports missing provider credentials explicitly. Both Codex isolation cases passed on Mana in the original gate.
 
 ## [0.0.33] - 2026-10-06
 
@@ -134,7 +333,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Discover file tools before model input and bind file-operation credentials after native acknowledgement.
 - Support the full accepted image attachment count and size with bounded native media identities and recovery history.
 - Keep native acceptance histories, caches, configuration changes and MCP routes in disposable storage, and retain redacted failure codes in run logs.
-- OpenCode approval isolation (E03-A01), audited OpenCode qualification and OpenCode Agent chat fork are untested on Claude/OpenCode (laptops are Codex-only): native checks on Mana returned OPENCODE_AUTH_REQUIRED. Codex lifecycle and fork cases passed; this group adds no Claude provider case.
+- OpenCode approval isolation (E03-A01), audited OpenCode qualification and OpenCode Agent chat fork were verified locally in v0.0.48. Codex lifecycle and fork cases passed in the original gate; this group adds no Claude provider case.
 
 ### Fixed
 
@@ -164,7 +363,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Give native workflow acceptance invocation-owned CLI configuration and a temporary managed launcher, routing scoped credentials to the fixture API instead of an ambient installation's fixed endpoint.
 - Preserve installed MCP names and credential references, reject unmanaged connections through native preflight, and remove invocation-owned launcher resources during fixture cleanup.
 - Keep the selected Codex login in the private fixture CLI home, with private file permissions and cleanup after native processes close; leave the original native configuration untouched.
-- E03-A01 approval isolation: untested on Claude/OpenCode (laptops are Codex-only). The selected OpenCode Go provider and model were advertised, but that provider was not connected on the laptop.
+- E03-A01 approval isolation was verified locally with the connected OpenCode Go provider in v0.0.48.
 
 ## [0.0.29] - 2026-10-06
 
@@ -220,7 +419,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Open local development and production dashboards without account setup, login, passkeys, browser tokens or cookies.
 - Preserve the former browser owner's conversations, attachments, permissions and command retries across upgrade and restart.
-- Auth native verification: untested on Claude/OpenCode (laptops are Codex-only); credentialed local results are retained separately.
+- Native human-access isolation and credentialed OpenCode qualification were verified locally in v0.0.48; Claude Haiku lifecycle and tool-policy qualification also passed.
 
 ### Removed
 
@@ -262,7 +461,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Scope OpenCode live qualification to its approval case so Codex-only cases can run independently, retaining each provider's qualification and original assertions and deadlines.
 - Use explicit verification subject models without changing user defaults: interim Codex gpt-5.6-luna with medium reasoning and Claude Haiku when selected.
-- Native laptop gate: untested on Claude/OpenCode (laptops are Codex-only). Desktop production installation and native recovery verification remain required separately.
+- Single-computer OpenCode lifecycle, qualification, fork and isolation cases were verified locally in v0.0.48, along with Claude Haiku qualification. Desktop production installation and native recovery verification are recorded separately.
 
 ## [0.0.20] - 2026-10-05
 

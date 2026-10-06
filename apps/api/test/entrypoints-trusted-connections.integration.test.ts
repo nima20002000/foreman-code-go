@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -28,6 +29,7 @@ async function fixture() {
   config.workspaceStorageRoot = join(db.directory, 'workspaces')
   await mkdir(config.harnesses.workspaceRoot, { mode: 0o700 })
   const cpSchema = `${db.schema}_cp`
+  await createFixtureSchema(db.pool, cpSchema)
   const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, cpSchema, config.database)
   const clients: Client[] = []
   let production: ReturnType<typeof buildProductionApp> | undefined
@@ -35,7 +37,7 @@ async function fixture() {
     try { await Promise.allSettled(clients.map(client => client.close())); await production?.shutdown() }
     finally {
       await checkpoints.close()
-      await db.pool.query(`drop schema if exists "${cpSchema}" cascade`)
+      await dropFixtureSchema(db.pool, cpSchema)
       await db.close()
     }
   }

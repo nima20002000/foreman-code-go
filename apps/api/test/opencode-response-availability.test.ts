@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it, vi } from 'vitest'
-import { FixtureServer, configuration, json, manager, permission, sessionFor } from './opencode-fixtures.js'
+import { FixtureServer, configuration, environment, json, manager, permission, request, sessionFor } from './opencode-fixtures.js'
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
 import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtocol.js'
 
@@ -222,5 +222,28 @@ it('does not qualify a request when native ordered policy differs from the accep
   try {
     assert.equal((await native.inspectResponseAvailability(session, query())).reason, 'unqualified')
     assert.equal(server.calls.filter(call => call.path.includes('/reply')).length, 0)
+  } finally { await native.dispose() }
+})
+
+it('answers an owned permission after attaching saved provenance under a newer compatible server', async () => {
+  const server = new ResidentFixture()
+  const original = manager(server)
+  const saved = await sessionFor(original)
+  await original.dispose()
+  server.expectedVersion = '2.0.0'
+  server.beforeRequest = path => path === '/global/health' ? json({ healthy: true, version: '2.0.0' }) : undefined
+  const native = manager(server)
+  try {
+    assert.deepEqual(await native.attachSession(saved, { request: request(), environment: environment() }), saved)
+    ask(server)
+    const availability = await native.inspectResponseAvailability(saved, query())
+    assert.equal(availability.state, 'available')
+    assert.equal(availability.qualified, true)
+    const pending = await native.pending(saved)
+    assert(pending)
+    await native.respond(saved, 'request', pending.responseOptions[0]!)
+    assert(server.calls.some(call => call.path.startsWith('/permission/request/reply')))
+    assert.equal(saved.providerVersion, '1.18.31')
+    assert.equal((await native.capabilities()).providerVersion, '2.0.0')
   } finally { await native.dispose() }
 })

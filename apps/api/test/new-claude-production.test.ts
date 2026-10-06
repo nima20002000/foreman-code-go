@@ -34,7 +34,7 @@ function fixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sh
   const target = { hostRef: { kind: 'main' as const, mainId: '77d29f00-408e-4000-8000-000000000001' },
     applicationInstallationId: '77d29f00-408e-4000-8000-000000000001', harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload' }
   const harness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
-    configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
+    configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
     tools: [], permissionRules: [], instructions: 'Pinned fixture instructions',
     mcpServers: { graphql: { type: 'http' as const, url: endpoint.url } } }
   const override: HostHarnessOverride = { instanceId: 'recorded-profile', instanceRevision: 'profile-1', revision: 1,

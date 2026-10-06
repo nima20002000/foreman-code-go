@@ -2,7 +2,7 @@ import { z } from "zod";
 import { WorkflowVersionV3Schema } from "../wave25/workflowSchemas.js";
 import {
   AgentSchema, AgentConfigurationVersionSchema,
-  HarnessConfigurationSchema, HarnessQualificationSchema, ScopedMcpDetectionSchema,
+  HarnessConfigurationSchema, SupportedHarnessConfigurationSchema, HarnessQualificationSchema, ScopedMcpDetectionSchema,
   IdSchema, TimestampSchema, ApprovalHandlerSchema, MAX_SKILL_INSTRUCTIONS_CHARS,
 } from "../index.js";
 
@@ -13,7 +13,7 @@ const Page = { cursor: z.string().trim().min(1).optional(), limit: z.number().in
 const Workspace = { workspaceId: IdSchema };
 const Workflow = { ...Workspace, workflowId: IdSchema };
 const Mutation = { commandId: Command, expectedRevision: Revision };
-const Configuration = HarnessConfigurationSchema.refine(
+const Configuration = SupportedHarnessConfigurationSchema.refine(
   (value) => value.harness !== "opencode" || !value.autoApprove,
   "Managed OpenCode requires routed approval",
 );

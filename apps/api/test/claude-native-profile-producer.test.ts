@@ -10,6 +10,7 @@ import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))) })
+
 async function fixture(models: unknown[], emitReceipt = false) {
   const directory = await mkdtemp(join(tmpdir(), 'claude-producer-unit-')); directories.push(directory)
   const configuration = { harness: 'claude' as const, model: 'unit-model', effort: 'medium' as const, configDirectory: '/unit/profile',

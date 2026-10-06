@@ -146,9 +146,9 @@ export async function createInstalledWorkerConversations(input: {
           host: () => localCodexChatHost(fileStorageRoot) }) : undefined
       const dependencies = createInstalledCodexDependencies({ reader, codexSuiteRevision: suiteRevision })
       const operations: Extract<CodexSessionDependencies, { mode: 'native' }> = { ...dependencies,
-        qualify: async (executable, version, cwd, environment, authenticated, signal, recovery = scope) => {
+        qualify: async (executable, cwd, environment, authenticated, signal, recovery = scope) => {
           await before(signal)
-          return dependencies.qualify(executable, version, cwd, environment, authenticated, signal, recovery)
+          return dependencies.qualify(executable, cwd, environment, authenticated, signal, recovery)
         },
         assertUnchanged: async qualified => { await before(); await dependencies.assertUnchanged(qualified) },
         runCommand: async (executable, args, cwd, signal, environment, options) => {

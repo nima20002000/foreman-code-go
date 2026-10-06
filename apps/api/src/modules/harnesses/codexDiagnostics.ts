@@ -79,8 +79,8 @@ export class CodexDiagnostics {
     }
     const io: CodexDiagnosticOperations = {
       environment: (_input, excluded = []) => { guard(); return Object.fromEntries(Object.entries(environment).filter(([name]) => !excluded.includes(name))) },
-      qualify: (_binary, _version, _cwd, _environment, authentication, request) => track(() =>
-        (native?.qualify ?? qualifyCodex)(pin.binary, pin.expectedVersion, pin.cwd, { ...environment }, authentication, combined(request), recovery)),
+      qualify: (_binary, _cwd, _environment, authentication, request) => track(() =>
+        (native?.qualify ?? qualifyCodex)(pin.binary, pin.cwd, { ...environment }, authentication, combined(request), recovery)),
       assertUnchanged: (qualified) => track(() => {
         if (qualified.binary !== pin.binary) throw new DomainError('CODEX_DIAGNOSTIC_PIN_MISMATCH', 'The diagnostic binary differs from its native session pin.', 409)
         return (native?.assertUnchanged ?? assertCodexUnchanged)(qualified)

@@ -1,6 +1,7 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { AppMcpRoutes } from '../src/modules/harnesses/appMcpRoutes.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFile, mkdir, mkdtemp, rm, readFile, readdir } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/client'
@@ -28,7 +29,7 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both', 'private PID nam
   const settings = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(database.pool), commands)
   const services = { settings, commands } as OperatorServices
   const directory = await mkdtemp(join(tmpdir(), 'operator-routing-'))
-  cleanup.push(() => rm(directory, { recursive: true, force: true }))
+  cleanup.push(() => removeFixtureDirectory(directory))
   const launcher = join(directory, 'launcher.mjs')
   await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
   const vault = join(directory, 'vault')
@@ -84,7 +85,11 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both', 'private PID nam
   const readback = await readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })
   expect(readback.structuredContent).toMatchObject({ value })
   expect(await settings.getWorkspaceDefaults(owner.principal)).toMatchObject({ value })
-  await expect(readerClient.callTool({ name: 'workspace_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value } })).rejects.toThrow('not found')
+  const deniedUpdate = await readerClient.callTool({ name: 'workspace_defaults_update', arguments: {
+    commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value,
+  } })
+  expect(deniedUpdate.isError).toBe(true)
+  expect(JSON.stringify(deniedUpdate.content)).toContain('ACCESS_DENIED')
   // The SAME launcher and client follow a refreshed owner route after a port change.
   await first.app.close()
   await removeOwner()
@@ -113,7 +118,7 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both', 'private PID nam
 
 it('refuses conflicting launcher token aliases without exposing either credential', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'launcher-conflict-'))
-  cleanup.push(() => rm(directory, { recursive: true, force: true }))
+  cleanup.push(() => removeFixtureDirectory(directory))
   const launcher = join(directory, 'launcher.mjs')
   await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
   const client = new Client({ name: 'launcher-conflict', version: '1' })

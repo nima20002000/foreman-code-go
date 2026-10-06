@@ -3,13 +3,13 @@ import { McpServer } from '@modelcontextprotocol/server'
 import { paginateToolLists } from '../toolListPagination.js'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
+import { GRAPHQL_AGENT_TOOLS } from '@foreman-code/contracts'
 
 import { DomainError } from '../../modules/errors.js'
 import type { AppInteractionService } from '../../modules/interactions/app.js'
 import { registerAppTools } from '../app/server.js'
 import { registerOperatorTools } from '../operator/server.js'
 import type { OperatorServices } from '../operator/types.js'
-import { operatorToolAvailable } from '../operator/availability.js'
 import { toolFailure } from '../shared/results.js'
 import { MCP_ROLE_LABELS, roleInstructions, roleList, toolRoles, type McpRole } from './roles.js'
 
@@ -50,44 +50,47 @@ function operatorCatalog(services: OperatorServices): Promise<ToolDefinition[]> 
   }
   return catalog
 }
-let appCatalog: Promise<ToolDefinition[]> | undefined
-function agentCatalog(): Promise<ToolDefinition[]> {
-  const everything = { canRead: async () => true, canRespond: async () => true } as unknown as AppInteractionService
-  appCatalog ??= collectTools((server) => registerAppTools(server, { principal: CATALOG_PRINCIPAL, interactions: everything }))
-  return appCatalog
+function agentCatalog(): ToolDefinition[] {
+  return Object.entries(GRAPHQL_AGENT_TOOLS).map(([name, definition]) => ({ name, description: definition.description }))
 }
 
 const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.string() }).passthrough() }).passthrough()
 
-/** Tools outside the caller's role, or not enabled for its Agent, are not listed. A direct call to one
- * still gets an audited, explicit ROLE_NOT_ALLOWED or TOOL_NOT_ENABLED instead of the SDK's unknown-tool response. */
+/** Known tools hidden by role, Agent configuration or Operator grants still receive an audited denial. */
 export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unknown) {
   const call = ToolCall.safeParse(body)
   if (!call.success) return undefined
   const name = call.data.params.name
   const allowed = toolRoles(name)
   const enabled = !context.tools || context.tools.includes(name)
-  if (allowed.includes(context.role) && enabled) {
-    if (context.role === 'operator' && name === 'interaction_respond' && context.operator?.interactions
-      && !operatorToolAvailable({ principal: context.principal, services: context.operator }, name)) {
-      await context.operator.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
-      return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(new DomainError('ACCESS_DENIED',
-        'Responding to interactions requires read and respond grants.', 403)) }
-    }
-    return undefined
-  }
-  const catalog = [...(context.operator ? await operatorCatalog(context.operator) : []), ...(context.interactions ? await agentCatalog() : [])]
+  const roleAllowed = allowed.includes(context.role)
+  if (roleAllowed && enabled && context.role !== 'operator') return undefined
+  const catalog = [
+    ...(context.operator ? await operatorCatalog(context.operator) : []),
+    ...(context.interactions ? await agentCatalog() : []),
+  ]
   if (!catalog.some((tool) => tool.name === name)) return undefined
-  await context.operator?.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`).catch(() => undefined)
-  if (allowed.includes(context.role)) {
-    return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(new DomainError('TOOL_NOT_ENABLED',
+  let error: DomainError
+  if (roleAllowed && enabled) {
+    const services = context.operator
+    if (!services) return undefined
+    const available = await collectTools((server) => registerOperatorTools(server, {
+      principal: context.principal, services,
+    }))
+    if (available.some((tool) => tool.name === name)) return undefined
+    error = new DomainError('ACCESS_DENIED', 'The caller is not authorized for this operation and resource.', 403)
+  } else if (roleAllowed) {
+    error = new DomainError('TOOL_NOT_ENABLED',
       `This Agent does not have ${name} enabled in its Foreman Code MCP tools. Enabled: ${context.tools!.join(', ') || 'none'}.`, 403,
-      { enabledTools: [...context.tools!] })) }
+      { enabledTools: [...context.tools!] })
+  } else {
+    error = new DomainError('ROLE_NOT_ALLOWED',
+      `Your ${MCP_ROLE_LABELS[context.role]} role cannot use ${name}. Allowed roles: ${roleList(allowed)}.`, 403,
+      { role: context.role, allowedRoles: [...allowed] })
   }
-  return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(new DomainError('ROLE_NOT_ALLOWED',
-    `Your ${MCP_ROLE_LABELS[context.role]} role cannot use ${name}. Allowed roles: ${roleList(allowed)}.`, 403,
-    { role: context.role, allowedRoles: [...allowed] })) }
+  await context.operator?.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
+  return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(error) }
 }
 
 /** One server for every role. Each caller lists only its enabled tools: the existing, grant-checked implementations. */

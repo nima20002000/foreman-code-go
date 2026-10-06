@@ -5,7 +5,7 @@ import { WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root
 import { PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
-import { appMcpServerName, isSupportedAppMcpServerName } from './modules/harnesses/appMcpLauncher.js'
+import { appMcpServerName } from './modules/harnesses/appMcpLauncher.js'
 import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
 import { PostgresTrustedConnectionHumanAuthority, registerTrustedConnectionApprovalRoutes } from './modules/devices/trustedConnectionHumanAuthority.js'
@@ -35,7 +35,9 @@ import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
 import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
 import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
 import { createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
-import { MainWorkerMcpRelay, selectedMainMcpForward } from './modules/placement/workerMcpRelay.js'
+import { MainWorkerMcpRelay, selectedMainMcpForward, createWorkerNativeOutputAuthorizationPort } from './modules/placement/workerMcpRelay.js'
+import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
+import { recoverWorkflowArtifactOutputs } from './modules/runs/remote/workflowArtifactRecovery.js'
 import { readAcceptedPlacement } from './modules/placement/persistence.js'
 import type { RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
 import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
@@ -69,6 +71,7 @@ import { passiveDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
 import { runCommand } from './modules/harnesses/process.js'
 import { productionClaudeManager, type ClaudeProfileOwner } from './modules/harnesses/claudeSdk/production.js'
 import { requireClaudeProductionCredentialDelivery } from './modules/harnesses/claudeSdk/productionCredentials.js'
+import { assertClaudeCredentialEndpoint } from './modules/harnesses/claudeSdk/mcpInspection.js'
 import { PostgresClaudeInteractionAuthority } from './modules/harnesses/claudeSdk/domainAuthority.js'
 import { productionSelectedProfileManager } from './modules/harnesses/selectedProfileProduction.js'
 import { createProductionWorkerConversations } from './modules/conversations/workerProduction.js'
@@ -78,7 +81,8 @@ import type { GraphSqlClient } from './modules/run-graph/connection.js'
 import { currentOperatorAuthority } from './modules/access/runAuthority.js'
 import { requireAuthorization } from './modules/access/policy.js'
 import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from './modules/harnesses/instanceSettings/acceptedProfile.js'
-import type { AcceptedProfileSelector } from './modules/harnesses/instanceSettings/acceptedProfile.js'
+import { workflowProfileSelection } from './modules/harnesses/workflowProfileSelection.js'
+import { authorizeOperatorProfileObservation } from './modules/harnesses/operatorProfileObservation.js'
 import { HarnessExecutionRequestSchema, OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
 import { inspectClaudeOperatorConfiguration } from './modules/harnesses/claudeSdk/operatorConfigurationInspection.js'
 import { requireClaudePolicyQualification } from './modules/harnesses/claudeSdk/configuration.js'
@@ -97,8 +101,17 @@ import { createWorkflowRepositoryServices } from './modules/runs/workflowReposit
 import { createProductionWorkflowArtifactResultSource } from './modules/runs/remote/workflowArtifactResultProduction.js'
 import { WorkflowArtifactResultAdoption } from './modules/runs/remote/workflowArtifactResultAdoption.js'
 import { createWorkflowArtifactOutputsGate } from './modules/runs/remote/workflowArtifactAcceptance.js'
+import { LocalWorkflowArtifactAuthority, workflowArtifactsAreLocal } from './modules/runs/remote/localWorkflowArtifactAuthority.js'
+import { LocalWorkflowArtifacts } from './modules/runs/remote/localWorkflowArtifacts.js'
+import { createLocalWorkflowNativeOutputs } from './modules/runs/remote/localWorkflowNativeOutputs.js'
+import { LocalWorkflowNativeOutputMcp } from './modules/runs/remote/localWorkflowNativeOutputMcp.js'
+import { assertOpenCodeNativeOutputCall } from './modules/runs/remote/localWorkflowOutputApproval.js'
+import { readAcceptedRepeatRunLocked } from './modules/runs/repeatStartRead.js'
+import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { qualifyCodex } from './modules/harnesses/codexProtocol.js'
 import { PostgresWorkflowPhysicalArtifacts } from './modules/runs/remote/workflowPhysicalArtifacts.js'
 import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
+import { readTestResourcesIdentity } from './infrastructure/testRuntimeResources.js'
 import { fileURLToPath } from 'node:url'
 import { AppMcpRoutes } from './modules/harnesses/appMcpRoutes.js'
 import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
@@ -156,7 +169,6 @@ import { HarnessCompatibilityService } from './modules/harnesses/compatibility/s
 import { HarnessQualificationRepository } from './modules/harnesses/qualification/repository.js'
 import { HarnessQualificationRegistry } from './modules/harnesses/qualification/registry.js'
 import { HarnessQualificationService } from './modules/harnesses/qualification/service.js'
-import { clearQualificationGate, installQualificationGate } from './modules/harnesses/qualification/gate.js'
 import type { QualificationSuite } from './modules/harnesses/qualification/types.js'
 import { withNativeQualificationOwnership } from './modules/harnesses/qualification/nativeOwnership.js'
 import { withQualificationIdentity } from './modules/harnesses/qualification/identity.js'
@@ -169,7 +181,7 @@ import { productionOpenCodeChatFiles } from './modules/harnesses/opencodeFiles/p
 import { productionOperatorManagers } from './modules/harnesses/operatorFiles/managers.js'
 import { ExecutionReadinessService } from './modules/harnesses/executionReadiness.js'
 import { NativeRollout } from './modules/harnesses/nativeRollout.js'
-import type { NativeHarnessSessionManager } from './modules/harnesses/port.js'
+import type { NativeHarnessSessionManager, NativeOutputCallCapture } from './modules/harnesses/port.js'
 import { NativeHarnessConfigurationQualifier } from './modules/harnesses/nativeConfigurationQualifier.js'
 import { PostgresAppInteractionService } from './modules/interactions/app.js'
 import { PostgresApprovalBudgetRepository } from './modules/interactions/budget.js'
@@ -177,7 +189,8 @@ import { ApprovalExecutionCoordinator } from './modules/interactions/execution.j
 import { PostgresWorkflowClosureStore } from './modules/interactions/workflowClosure.js'
 import { OperatorInteractionService } from './modules/interactions/operator.js'
 import { Wave25InteractionRepository as PostgresInteractionRepository } from './modules/interactions/wave25/repository.js'
-import { ExecutionScopedNativeSessionManagerResolver } from './modules/interactions/runtimePorts.js'
+import { ExecutionScopedNativeSessionManagerResolver,
+  type NativeManagerResolutionContext } from './modules/interactions/runtimePorts.js'
 import { InteractionService } from './modules/interactions/service.js'
 import { AutomaticReviewService } from './modules/interactions/automaticReview.js'
 import { PostgresOperatorRepository } from './modules/operators/postgres.js'
@@ -392,16 +405,52 @@ export function buildProductionApp(
   let admitWorkflowFileContext: ReturnType<typeof createProductionWorkflowFileContexts> | undefined
   let artifactResultSource: ReturnType<typeof createProductionWorkflowArtifactResultSource> | undefined
   let artifactOutputsGate: ReturnType<typeof createWorkflowArtifactOutputsGate> | undefined
+  let localWorkflowArtifacts: LocalWorkflowArtifacts | undefined
+  let localNativeOutputMcp: LocalWorkflowNativeOutputMcp | undefined
   const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify, (sql, owner, capture) => {
     if (!remoteWorkflow) throw new DomainError('REMOTE_WORKFLOW_UNAVAILABLE', 'The actual original native physical composition is unavailable.', 503)
     return remoteWorkflow.assertPhysical(sql, owner, capture)
   }, async (sql, evidence, proof) => {
     if (!admitWorkflowFileContext) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE', 'The original Main file-context composition is unavailable.', 503)
     await admitWorkflowFileContext(sql, evidence, proof)
+    if (await workflowArtifactsAreLocal(sql, proof.scope.runId, proof.ref.nodeId)) {
+      const snapshot = await readAcceptedRepeatRunLocked(sql, proof.scope.runId)
+      const node = snapshot.version.definition.nodes.find(item => item.id === proof.ref.nodeId)
+      if (node && node.kind !== 'job' && node.artifactOutputs) {
+        if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+          'Local workflow artifact storage is unavailable.', 503)
+        await localWorkflowArtifacts.admitContextLocked(sql, workflowCapture.verify.read(evidence), proof)
+      }
+      return
+    }
     await artifactResultSource?.retainOriginalLocked(sql, evidence, proof)
   })
   const workflowServices: RepeatRepositoryServices = { ...workflowRuntime.services,
+    async reconcileWorkflowArtifacts(owner, run, execution, signal) {
+      signal.throwIfAborted()
+      const snapshot = await runs.getRepeatSnapshot(run.id, owner)
+      const node = snapshot.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
+      if (!node || node.kind === 'job' || !node.artifactOutputs) return
+      if (await workflowArtifactsAreLocal(database.pool, execution.runId, execution.workflowNodeId)) {
+        if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+          'Local workflow artifact storage is unavailable.', 503)
+        await localNativeOutputMcp?.cleanupClosed()
+        await localWorkflowArtifacts.recover(owner, execution, signal)
+        return
+      }
+      if (!artifactComposition || !workflowArtifacts) {
+        throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original artifact composition is unavailable.', 503)
+      }
+      await recoverWorkflowArtifactOutputs({ owner, execution, authority: artifactComposition.authority,
+        outputs: workflowArtifacts.artifacts.outputs })
+    },
     async assertWorkflowArtifactOutputsLocked(sql, run, version, execution) {
+      if (await workflowArtifactsAreLocal(sql, execution.runId, execution.workflowNodeId)) {
+        if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+          'Local workflow artifact storage is unavailable.', 503)
+        await localWorkflowArtifacts.assertOutputsLocked(sql, run, version, execution)
+        return
+      }
       if (!artifactOutputsGate) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original workflow artifact acceptance composition is unavailable.', 503)
       await artifactOutputsGate(sql, run, version, execution)
     },
@@ -411,7 +460,7 @@ export function buildProductionApp(
     },
     async preparePlacementExecution(owner, run, execution) {
       if (!artifactResultSource) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original workflow artifact composition is unavailable.', 503)
-      await owner.oneShotConnection().transaction(sql => artifactResultSource!.assertLaunchSupportedLocked(sql, execution.id, run.id))
+      await owner.oneShotConnection().transaction(sql => artifactResultSource!.assertLaunchDeclarationLocked(sql, execution.id, run.id))
       if (agentPreparation) {
         const prepared = await approvals.withSourceObservationLane(owner, execution, () => agentPreparation!.prepare(owner, run, execution))
         return prepared ? { ...prepared, revalidate: () => approvals.withSourceObservationLane(owner, execution, prepared.revalidate) } : undefined
@@ -502,14 +551,15 @@ export function buildProductionApp(
   // Live qualification is an explicit authenticated operation; optional
   // compatibility diagnostics never start model turns during startup.
   const harnessCompatibility = infrastructure?.auxiliary
-    ? new HarnessCompatibilityService(infrastructure.auxiliary.compatibility)
-    : new HarnessCompatibilityService({ probe: compatibilityProbe(), cache: new FileCompatibilityCache() })
+    ? new HarnessCompatibilityService({ ...infrastructure.auxiliary.compatibility, commands })
+    : new HarnessCompatibilityService({ probe: compatibilityProbe(), cache: new FileCompatibilityCache(), commands })
   const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   // One endpoint for every role; the bearer credential decides Operator, Orchestrator or Coder.
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
   const nativeFactories = new NativeHarnessFactories({ ...config.harnesses, appMcpEndpoint, responseJournal,
     openCodeFileStorageRoot: fileStorageRoot,
+    refreshInstallations: signal => harnessRegistry.refreshMain(signal),
     instances: harnessRegistry.instances, installations: harnessRegistry.installations,
     selectDefault: (harness) => harnessRegistry.pinDefault(harness),
     selectConfiguration: (configuration) => harnessRegistry.pinAccepted({
@@ -549,6 +599,8 @@ export function buildProductionApp(
         if (!row?.principal_id) throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The accepted Run principal is unavailable.', 409)
         const principal = (await currentOperatorAuthority(client, row.principal_id)).principal
         requireAuthorization(principal, 'runs:start', { workspaceId: current.run.workspaceId, workflowId: current.run.workflowId })
+      } else if (binding.kind === 'operator-observation') {
+        await authorizeOperatorProfileObservation(client, binding, selector)
       } else if (binding.kind === 'operator-inspection') {
         const principal = await access.currentHarnessInspectionPrincipal(binding.principalId, client)
         requireAuthorization(principal, 'harnesses:read')
@@ -578,7 +630,9 @@ export function buildProductionApp(
         if (!current) throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Claude replay requires its current installed profile metadata port.', 500)
         return current(binding, value, client)
       }
-      if (!await harnessRegistry.profileEvidence(value, client)) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The exact accepted native profile proof is stale.', 409)
+      if (binding.kind !== 'operator-observation' && !await harnessRegistry.profileEvidence(value, client)) {
+        throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The exact accepted native profile proof is stale.', 409)
+      }
       return { registry: harnessRegistry.pinOverride(value), applicationInstallationId: value.target.applicationInstallationId,
         suiteRevision: `${value.driverId}-profile-check-v1` }
     },
@@ -658,19 +712,20 @@ export function buildProductionApp(
     const recovery = processRegistry.scope(`execution:${context.executionId}`)
     const remote = remoteWorkflow!.manager(context, getOwner)
     if (remote) return remote
-    const placement = context.acceptedPlacement
-    let selector: AcceptedProfileSelector | undefined
-    if (placement) {
-      if (placement.payload.kind !== 'agent' || placement.payload.agentId !== context.agentId
-        || placement.payload.agentConfigurationVersionId !== context.configuration.id
-        || placement.runId !== context.runId || (remoteWorkflow!.binding(context.executionId)?.executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd) !== context.workingDirectory
-        || placement.payload.driverId !== configuration.harness) throw new DomainError('PLACEMENT_BINDING_CONFLICT',
-        'The native role must use its exact accepted workflow placement.', 409)
-      selector = { instanceId: placement.payload.instanceId, instanceRevision: placement.payload.instanceRevision,
-        target: { hostRef: placement.hostRef, applicationInstallationId: placement.hostRef.kind === 'main'
-          ? placement.hostRef.mainId : placement.registration!.workerInstallationId,
-        harnessInstallationId: placement.payload.harnessInstallationId, installationFingerprint: placement.payload.installationFingerprint } }
-    }
+    const nativeOutputs = configuration.harness === 'codex' && context.artifactOutputs && !context.purpose
+      ? createLocalWorkflowNativeOutputs({ executionId: context.executionId, artifacts: () => {
+        if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+          'Local workflow artifact storage is unavailable.', 503)
+        return localWorkflowArtifacts
+      }, stateDirectory: fileStorageRoot, assertCurrent: async signal => {
+        signal?.throwIfAborted()
+        const owner = getOwner()
+        if (!owner || owner.runId !== context.runId) throw new DomainError('RUN_OWNERSHIP_LOST',
+          'The local workflow no longer owns its native output turn.', 409)
+        owner.assertOwned()
+      }, qualification: { registry: processRegistry, qualify: qualifyCodex, command: runCommand } }) : undefined
+    const selector = workflowProfileSelection(context,
+      remoteWorkflow!.binding(context.executionId)?.executionPlacement?.workingTree.canonicalCwd)
     if (configuration.harness === 'claude') {
       requireClaudeProductionCredentialDelivery(configuration)
       if (!context.runId || !context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE',
@@ -686,10 +741,12 @@ export function buildProductionApp(
           if (!owner) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The workflow native owner is unavailable.', 409)
           const execution = await runs.getExecution(context.executionId, owner), run = await runs.get(context.runId!, owner)
           if (!execution || !run || execution.attempt !== context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The persisted execution attempt changed.', 409)
-          const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
+          const request = HarnessExecutionRequestSchema.parse({ ...context.workflowRequest,
+            executionId: execution.id, runId: execution.runId,
             workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
             runtimeDirectory: execution.runtimeDirectory, configuration: context.configuration, input: execution.input })
-          return execution.nativeSessionId ? { kind: 'workflow', correlationId: `execution:${execution.id}`, request } : { request }
+          return execution.nativeSessionId ? { kind: 'workflow', correlationId: `execution:${execution.id}`, request }
+            : { request, correlationId: `execution:${execution.id}` }
         },
       })
       claudeLaunches.set(claude.manager, claude)
@@ -701,7 +758,8 @@ export function buildProductionApp(
       const { manager } = productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
         selector, binding: { kind: 'workflow', runId: context.runId, executionId: context.executionId, attempt: context.attempt, getOwner,
           ...(context.purpose ? { purpose: context.purpose } : {}) },
-        configuration, role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId, recovery, appMcpAccess: 'scoped' })
+        configuration, role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId,
+        recovery, appMcpAccess: 'scoped', ...(nativeOutputs ? { nativeOutputs } : {}) })
       launchScopes.set(manager, recovery)
       return manager
     }
@@ -712,7 +770,7 @@ export function buildProductionApp(
       configured: { instanceId: selection?.instance.instanceId ?? context.agentId, instanceRevision: context.configuration.id, driverId: configuration.harness,
         enabled: true, configuration },
       processRecovery: recovery, appMcpAccess: 'scoped',
-      ...(configuration.harness === 'codex' ? { harness: 'codex' as const }
+      ...(configuration.harness === 'codex' ? { harness: 'codex' as const, ...(nativeOutputs ? { nativeOutputs } : {}) }
         : { harness: 'opencode' as const, ...(configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}) }),
     })
     launchScopes.set(manager, recovery)
@@ -729,7 +787,25 @@ export function buildProductionApp(
     },
   })
   const credentials = new WorkerCredentialService(database.pool, access)
+  const prepareWorkflowManagerContext = async (context: NativeManagerResolutionContext) => {
+    const prepared = await remoteWorkflow!.prepareContext(context)
+    if (!context.runId || context.purpose) return prepared
+    const row = (await database.pool.query<{ version: unknown; node_id: string }>(
+      `select v.record as version,e.workflow_node_id as node_id from harness_executions e
+       join runs r on r.id=e.run_id join workflow_versions v on v.id=r.workflow_version_id
+       where e.id=$1 and r.id=$2`, [context.executionId, context.runId])).rows[0]
+    if (!row) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The saved native execution is unavailable.', 409)
+    const node = WorkflowVersionV3Schema.parse(row.version).definition.nodes.find(item => item.id === row.node_id)
+    return node && node.kind !== 'job' && node.artifactOutputs
+      ? { ...prepared, artifactOutputs: node.artifactOutputs } : prepared
+  }
   const launchCredentials: ExecutionCredentialProvider = {
+    async restore(executionId, environment) {
+      await validateContinuation(executionId)
+      const credential = await credentials.restoreForExecution(executionId, environment)
+      await appRoutes.refresh()
+      return credential
+    },
     async prepare(input) {
       await validateContinuation(input.executionId, input.signal)
       const execution = await runs.getExecution(input.executionId)
@@ -746,8 +822,9 @@ export function buildProductionApp(
       const context = {
         executionId: execution.id, agentId: execution.agentId, harness: input.harness,
         workingDirectory: input.workingDirectory, configuration, runId: execution.runId, attempt: execution.attempt,
+        ...(input.purpose ? { purpose: input.purpose } : {}),
       }
-      const preparedContext = await remoteWorkflow.prepareContext(context)
+      const preparedContext = await prepareWorkflowManagerContext(context)
       const { manager } = managers.resolve(preparedContext)
       const detection = remoteWorkflow.isRemote(input.executionId)
         ? remoteMcpPreflight(manager, preparedContext)
@@ -757,11 +834,7 @@ export function buildProductionApp(
         if (!claude || configuration.harness.harness !== 'claude') throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The exact Claude launch is unavailable.', 409)
         const inspected = await nativeFactories.inspector(manager).inspect({ harness: 'claude', runnerId: run.executionLocation.runnerId,
           workingDirectory: input.workingDirectory, serverName: PRODUCT_SLUG, phase: 'configuration', ...(input.signal ? { signal: input.signal } : {}) })
-        const entry = inspected.entry
-        if (!entry || !isSupportedAppMcpServerName(entry.name) || entry.transport !== 'streamable-http' || entry.endpoint !== appMcpEndpoint
-          || entry.enabled === false || !['connected', 'authentication_required', 'status_unavailable'].includes(entry.status ?? '')) {
-          throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The owned Claude query has no accepted Foreman Code HTTP endpoint.', 409)
-        }
+        assertClaudeCredentialEndpoint(inspected.entry, appMcpEndpoint)
         await credentials.revokeSupersededForExecution(input.executionId)
         input.signal?.throwIfAborted()
         const credential = await (input.purpose === 'reviewer' ? credentials.issueForReviewer(input.executionId) : credentials.issueForExecution(input.executionId))
@@ -822,8 +895,55 @@ export function buildProductionApp(
         'NATIVE_LAUNCH_RESERVATION_CONFLICT', 'The exact manager launch scope is unavailable or already reserved.', 409)
       Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
     },
-    context => remoteWorkflow!.prepareContext(context),
+    prepareWorkflowManagerContext,
   )
+  const captureLocalNativeOutputCall = async (executionId: string, toolName: string,
+    args: unknown, signal: AbortSignal): Promise<NativeOutputCallCapture> => {
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+    for (;;) {
+      deadline.throwIfAborted()
+      const owned = approvals.passiveOwnedNativeSessions().find(item => item.execution.id === executionId
+        && item.session.harness === 'opencode' && item.manager.harness === 'opencode')
+      if (owned) {
+        try {
+          owned.assertCurrent()
+          const lane = await repository.coordination.getLane('opencode', owned.session.nativeSessionId)
+          if (lane?.id === owned.writer.id && lane.leaseToken === owned.writer.token
+            && lane.ownerAgentId === owned.execution.agentId
+            && lane.connectionGeneration === owned.writer.connectionGeneration
+            && lane.correlationId === `execution:${executionId}` && lane.currentTurnOrMessageId) {
+            if (!owned.manager.captureNativeOutputCall) throw new DomainError('WORKFLOW_NATIVE_OUTPUT_CAPTURE_REQUIRED',
+              'The native output call cannot be inspected on its original owner.', 409)
+            const capture = await owned.manager.captureNativeOutputCall(owned.session, toolName, args,
+              AbortSignal.any([signal, owned.signal]))
+            if (capture.descriptor.rootTurnId !== lane.currentTurnOrMessageId) throw new DomainError(
+              'WORKFLOW_NATIVE_OUTPUT_CALL_CONFLICT', 'The native output call belongs to another turn.', 409)
+            const assertCurrent = () => {
+              owned.assertCurrent()
+              capture.assertCurrent()
+              signal.throwIfAborted()
+            }
+            assertCurrent()
+            return { ...capture, assertCurrent }
+          }
+        } catch (error) {
+          if (!(error instanceof DomainError) || !['SESSION_LANE_LEASE_LOST', 'WORKER_EXECUTION_IDENTITY_INVALID']
+            .includes(error.code)) throw error
+        }
+      }
+      const execution = await runs.getExecution(executionId)
+      const run = execution && await runs.get(execution.runId)
+      if (!execution || !run || execution.state === 'completed' || run.executionState === 'completed'
+        || !['running', 'waiting'].includes(run.executionState) || await runs.hasPendingCleanup(run.id)) throw new DomainError(
+        'WORKFLOW_NATIVE_OUTPUT_CALL_CONFLICT', 'The native output execution is no longer active.', 409)
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => { deadline.removeEventListener('abort', abort); resolve() }, 25)
+        const abort = () => { clearTimeout(timer); deadline.removeEventListener('abort', abort); reject(deadline.reason) }
+        deadline.addEventListener('abort', abort, { once: true })
+        if (deadline.aborted) abort()
+      })
+    }
+  }
   let telemetry: ResourceTelemetryRuntime | undefined
   const telemetryLifetime = new AbortController()
   let mainTelemetryContext: Extract<TrustedTelemetryContext, { kind: 'main-local' }> | null = null
@@ -910,8 +1030,8 @@ export function buildProductionApp(
       return productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
         selector: configuration.harnessProfileSelection, binding: { kind: 'operator', conversationId, repository: operatorConversations },
         configuration: configuration.harness, role: 'operator', workingDirectory: operatorWorkingDirectory, ownerAgentId: configuration.operatorId,
-        recovery, appMcpAccess: fileInputs ? 'none' : 'scoped',
-        ...(!fileInputs && configuration.harness.harness === 'opencode' ? { credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE } : {}),
+        recovery, appMcpAccess: 'scoped',
+        ...(configuration.harness.harness === 'opencode' ? { credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE } : {}),
         ...(fileInputs ? { files: productionCodexChatFiles(() => app, conversationId, operatorCodexFileAdmissions(() => app, database.pool,
           configuration, operatorWorkingDirectory, fileStorageRoot)),
           openCodeFiles: (server: OpenCodeServerController) => productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost, {
@@ -1127,6 +1247,7 @@ export function buildProductionApp(
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
     harnesses: harnessCatalog,
+    harnessCompatibility,
     ...(harnessQualifications ? { harnessQualifications } : {}),
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators, harnessInstances),
     workerExecution,
@@ -1167,7 +1288,12 @@ export function buildProductionApp(
     jobRuntimeProfiles?: import('./modules/jobs/runtimeProfiles.js').JobRuntimeProfiles } = { ...operatorServices, extensions: operatorExtensions, harnessSettings }
   const localHuman = new PostgresLocalHumanAccess(database.pool, access)
   const app = buildApp({
-    runtimeIdentity: () => readRuntimeIdentity(database.pool, fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString),
+    runtimeIdentity: async () => {
+      const identity = await readRuntimeIdentity(database.pool,
+        fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString)
+      const testResourcesId = readTestResourcesIdentity(config)
+      return { ...identity, ...(testResourcesId ? { testResourcesId } : {}) }
+    },
     localHuman,
     ...(config.browserOrigin ? { browserOrigin: config.browserOrigin } : {}),
     readiness: { database, checkpoints },
@@ -1176,7 +1302,19 @@ export function buildProductionApp(
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
     operator: { access, services: runtimeServices },
     appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, repository, commands, interactions) },
-    workerArtifacts: () => workflowArtifacts?.extension,
+    workerArtifacts: () => {
+      const local = localNativeOutputMcp, remote = workflowArtifacts?.extension
+      if (!local) return remote
+      return {
+        async register(server, request, principal) {
+          if (await local.isLocal(principal)) await local.register(server, request, principal)
+          else await remote?.register(server, request, principal)
+        },
+        async call(request, principal, body) {
+          return await local.call(request, principal, body) ?? await remote?.call(request, principal, body)
+        },
+      }
+    },
     mcpDetection: { pool: database.pool, service: detection },
     logger,
   })
@@ -1218,7 +1356,6 @@ export function buildProductionApp(
       { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
       { name: 'live harness qualification admission', run: async () => { harnessQualifications?.stop() } },
       { name: 'harness compatibility diagnostics', run: () => harnessCompatibility.close() },
-      { name: 'harness qualification gate', run: async () => { if (qualificationRegistry) clearQualificationGate() } },
       { name: 'native MCP settings', run: () => harnessSettings.mcp.shutdown() },
       { name: 'Codex plugin settings', run: () => harnessSettings.plugins.shutdown() },
       { name: 'harness qualification checks', run: () => Promise.all([harnessCatalog.shutdownChecks(), nativeConfigurations.shutdownChecks()]).then(() => undefined) },
@@ -1240,6 +1377,7 @@ export function buildProductionApp(
       { name: 'worker conversation callback admissions', run: async () => { await workerChats?.close() } },
       { name: 'installed rsync canonical receiver', run: () => entrypoint ? entrypoint.close() : undefined },
       { name: 'workflow artifact byte receiver', run: async () => { await workflowArtifacts?.receiver.close() } },
+      { name: 'closed local native output bytes', run: async () => { await localNativeOutputMcp?.cleanupClosed() } },
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
@@ -1392,8 +1530,43 @@ export function buildProductionApp(
           return agentPlacement.assertPinsCurrent(...args)
         } } }
       const artifactAuthority = new PostgresArtifactPublicationAuthority(machine.installationId, database.pool, artifactPorts)
-      mainWorkerMcp = new MainWorkerMcpRelay(machine.installationId, database.pool, access, selectedMainMcpForward(app),
-        infrastructure?.nativeOutputAuthorization?.(artifactAuthority))
+      localWorkflowArtifacts = new LocalWorkflowArtifacts(database.pool,
+        new LocalWorkflowArtifactAuthority(machine.installationId, database.pool, locations, artifactPorts.producer), () => {
+          if (!fileStorage) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+            'Local workflow artifact storage is unavailable.', 503)
+          return fileStorage
+        })
+      localNativeOutputMcp = new LocalWorkflowNativeOutputMcp({ pool: database.pool, commands,
+        artifacts: () => {
+          if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
+            'Local workflow artifact storage is unavailable.', 503)
+          return localWorkflowArtifacts
+        }, nativeCall: (executionId, toolName, args, signal) =>
+          captureLocalNativeOutputCall(executionId, toolName, args, signal),
+        authorizeNativeCall: (sql, executionId, command, capture) =>
+          assertOpenCodeNativeOutputCall(sql, capture, { executionId, command }) })
+      const outputAuthorization = infrastructure?.nativeOutputAuthorization?.(artifactAuthority)
+        ?? createWorkerNativeOutputAuthorizationPort(artifactAuthority, async (input, connection, sql) => {
+          const binding = deviceRuntime.currentBinding(connection.deviceId)
+          const identity = binding && DeviceConnectionIdentitySchema.parse({ mainId: binding.mainId,
+            deviceId: binding.deviceId, workerInstallationId: binding.workerInstallationId, keyRevision: binding.keyRevision,
+            authorizationRevision: binding.authorizationRevision, bootId: binding.bootId,
+            connectionGeneration: binding.connectionGeneration })
+          const original = DeviceConnectionIdentitySchema.parse({ mainId: connection.mainId, deviceId: connection.deviceId,
+            workerInstallationId: connection.workerInstallationId, keyRevision: connection.keyRevision,
+            authorizationRevision: connection.authorizationRevision, bootId: connection.bootId,
+            connectionGeneration: connection.connectionGeneration })
+          if (!binding || !isDeepStrictEqual(identity, original)) {
+            throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original artifact connection changed.', 403)
+          }
+          const row = (await sql.query<{ workspace_id: string; workflow_id: string }>(
+            'select workspace_id,workflow_id from runs where id=$1 for share', [input.intent.runId])).rows[0]
+          if (!row) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE', 'The original artifact Run is unavailable.', 409)
+          return artifactAuthority.resolveWorkflowContext({ workspaceId: row.workspace_id, workflowId: row.workflow_id,
+            runId: input.intent.runId, nodeId: input.intent.nodeId, executionId: input.intent.executionId,
+            attemptId: input.intent.attemptId, placementHash: input.intent.bindingHash }, transferContextForBinding(binding), sql)
+        })
+      mainWorkerMcp = new MainWorkerMcpRelay(machine.installationId, database.pool, access, selectedMainMcpForward(app), outputAuthorization)
       artifactOutputsGate = createWorkflowArtifactOutputsGate(machine.installationId, artifactAuthority)
       artifactResultSource = createProductionWorkflowArtifactResultSource({ captures: workflowCapture.verify,
         physical: remoteWorkflow, authority: artifactAuthority })
@@ -1452,7 +1625,6 @@ export function buildProductionApp(
       // The bounded compatibility diagnostic creates no native session or model turn.
       if (qualificationRegistry && harnessQualifications) {
         await qualificationRegistry.load()
-        installQualificationGate(qualificationRegistry, harnessQualifications)
       }
       harnessCompatibility.start()
       assertOpen()
@@ -1491,6 +1663,7 @@ export function buildProductionApp(
     reconciliation = (async () => {
       if (jobRuntime) await jobRuntime.reconcileFailedCaptures(report)
       if (jobRuntime) await closeCompletedWorkflowSources(database.pool, jobRuntime.sources, report)
+      await localNativeOutputMcp?.cleanupClosed()
       await engine.reconcile(report)
       if (closing) return
       if (initialized) {

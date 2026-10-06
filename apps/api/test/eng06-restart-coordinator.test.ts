@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
-import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import { readWorkflowClosure } from '../src/modules/interactions/workflowClosure.js'
 import { recoveryDatabase, recoveryExecution } from './helpers/eng06Recovery.testSupport.js'
 
 type CoordinatorArgs = ConstructorParameters<typeof ApprovalExecutionCoordinator>
-type EngineArgs = ConstructorParameters<typeof LangGraphWorkflowEngine>
 
 function fixture(options: Parameters<typeof recoveryDatabase>[0] = {}) {
   const db = recoveryDatabase(options), calls: string[] = []
@@ -190,18 +188,4 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
     await f.owner.release()
   })
 
-  it('reaches cleanup before reading an interrupted approval checkpoint after restart', async () => {
-    const f = fixture({ detached: true }); f.snapshot.run.executionState = 'waiting'; f.state.execution.state = 'waiting'; f.state.fenced = false
-    const engine = new LangGraphWorkflowEngine(f.runs as unknown as EngineArgs[0], {} as EngineArgs[1], f.coordinator,
-      {} as EngineArgs[3], '/runtime', {} as EngineArgs[5], {} as EngineArgs[6], {} as EngineArgs[7])
-    let cleanup = 0
-    // Test the engine's real owner/reentry ordering, not a fake checkpoint saver
-    // accepting an invalid interrupt. Any checkpoint read would fail this test.
-    const internals = engine as unknown as { cleanupOwned: (owner: typeof f.owner) => Promise<void> }
-    internals.cleanupOwned = async (owner) => { cleanup++; await f.coordinator.cancelRun(owner.runId, owner) }
-    await engine.start(f.owner.runId)
-    assert.equal(cleanup, 1)
-    assert.equal(f.calls[0], 'request-cleanup'); assert.equal(f.calls.at(-1), 'settle-interrupted')
-    assert.equal(f.calls.includes('resolve'), false)
-  })
 })

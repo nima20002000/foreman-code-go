@@ -1,5 +1,6 @@
+import { createFixtureDatabase, dropFixtureDatabase, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -27,16 +28,15 @@ vi.mock('../src/modules/jobs/executor.js', async importOriginal => ({
 // and source qualification are explicit doubles; no installed OCI claim.
 describe.skipIf(process.env.JOB_LIFECYCLE_POSTGRES !== '1' && !process.env.TEST_DATABASE_URL)('Job retained-log MCP readback', () => {
   it('persists a failed final-log gap through completion and denies an ungranted MCP reader', async () => {
-    const url = new URL(process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres')
+    const url = new URL(process.env.TEST_DATABASE_URL!)
     if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('Job lifecycle tests require loopback PostgreSQL')
-    url.pathname = '/postgres'
     const admin = new pg.Client({ connectionString: url.toString() })
     const name = `job_log_test_${randomUUID().replaceAll('-', '')}`, clients: Client[] = []
     let pool: pg.Pool | undefined, app: ReturnType<typeof buildApp> | undefined, journal: RemoteOperationJournal | undefined
     let root: string | undefined, created = false
     await admin.connect()
     try {
-      await admin.query(`create database "${name}"`); created = true
+      await createFixtureDatabase(admin, name); created = true
       url.pathname = `/${name}`
       pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
       const db = pool
@@ -112,7 +112,7 @@ describe.skipIf(process.env.JOB_LIFECYCLE_POSTGRES !== '1' && !process.env.TEST_
       expect(vi.mocked(executeJob)).toHaveBeenCalledOnce(); expect(appendLog).toHaveBeenCalledOnce()
     } finally {
       await Promise.allSettled(clients.map(client => client.close())); await app?.close(); await journal?.close(); await pool?.end()
-      try { if (created) await admin.query(`drop database "${name}"`) } finally { await admin.end(); if (root) await rm(root, { recursive: true, force: true }) }
+      try { if (created) await dropFixtureDatabase(admin, name) } finally { await admin.end(); if (root) await removeFixtureDirectory(root) }
       vi.clearAllMocks()
     }
   }, 60000)

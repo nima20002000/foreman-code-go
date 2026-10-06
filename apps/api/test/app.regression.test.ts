@@ -89,6 +89,19 @@ describe('logger injection', () => {
   })
 })
 
+it('sanitizes unexpected errors even when they claim a client status', async () => {
+  const app = buildApp({ readiness: healthy() })
+  apps.push(app)
+  app.post('/unexpected-error', async () => {
+    throw Object.assign(new Error('private implementation detail'), { code: 'UNEXPECTED_FAILURE', statusCode: 400 })
+  })
+  const response = await app.inject({ method: 'POST', url: '/unexpected-error' })
+  expect(response.statusCode).toBe(500)
+  expect(response.json()).toEqual({ error: {
+    code: 'INTERNAL_ERROR', message: 'The API could not complete the request.', requestId: expect.any(String),
+  } })
+})
+
 it('loads configurable deadlines for both PostgreSQL pools and readiness', () => {
   const config = loadConfig({
     DATABASE_URL: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql',

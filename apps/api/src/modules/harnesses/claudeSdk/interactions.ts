@@ -1,6 +1,6 @@
 import { PendingNativeInteractionSchema, type PendingNativeInteraction, type NativeSessionReference, type ApprovalResponseOption } from '@foreman-code/contracts'
 import type { ClaudeLiveCallbackQuery, ClaudeResponseAvailability } from './callbackAvailability.js'
-import { ClaudeQuestionInputSchema, ClaudeQuestionAnswersSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import { ClaudeFullAccessConfigurationSchema, ClaudeQuestionInputSchema, ClaudeQuestionAnswersSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { isDeepStrictEqual } from 'node:util'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { NativeResponseDeliveryEvidence } from '../../interactions/delivery.js'
@@ -68,7 +68,7 @@ export class ClaudeInteractionBridge {
   private readonly controller = new AbortController()
   private readonly listeners = new Set<(notification: ClaudePendingNotification) => void>()
   constructor(configuration: ClaudeHarnessConfiguration, private readonly authority: ClaudeInteractionAuthority) {
-    this.configuration = structuredClone(configuration)
+    this.configuration = ClaudeFullAccessConfigurationSchema.parse(configuration)
   }
   close(): void {
     this.controller.abort()

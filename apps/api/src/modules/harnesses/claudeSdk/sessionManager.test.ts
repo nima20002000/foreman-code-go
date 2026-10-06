@@ -3,7 +3,9 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionPreferencesSchema } from '@foreman-code/contracts'
 import { describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import type { NativeSessionStart } from '../port.js'
+import type { HarnessExecutionRequest } from '@foreman-code/contracts'
 import { ClaudeBoundedQueue } from './queue.js'
 import { createClaudeSdkRunner } from './runner.js'
 import { claudePromptUuid, createClaudeNativeSessionManager, type ClaudeMessageTurnInput } from './sessionManager.js'
@@ -12,7 +14,7 @@ import type { ClaudeSdkClient, ClaudeSdkUserMessage } from './port.js'
 const scope = { deviceId: 'device-a', profilePath: '/profile-a', configRevision: 'revision-a', cwd: '/work' }
 const qualification = { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: true, history: true }
 const start = { kind: 'operator', correlationId: 'operator:one', configuration: {}, workingDirectory: '/work' } as NativeSessionStart
-function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionManager>[0]['decodeFactory'], extra: Partial<Pick<Parameters<typeof createClaudeNativeSessionManager>[0], 'liveCallbacks' | 'interactionPort' | 'qualification' | 'pendingInteractions' | 'inspectionStart' | 'expectedMcp' | 'credentialEnvironmentVariables' | 'appMcpAccess' | 'sdkOptions' | 'initializationTimeoutMs' | 'scope'>> = {}) {
+function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionManager>[0]['decodeFactory'], extra: Partial<Pick<Parameters<typeof createClaudeNativeSessionManager>[0], 'liveCallbacks' | 'interactionPort' | 'qualification' | 'pendingInteractions' | 'inspectionStart' | 'expectedMcp' | 'credentialEnvironmentVariables' | 'appMcpAccess' | 'sdkOptions' | 'initializationTimeoutMs' | 'scope'>> = {}, nativeVersion = '2.1.284') {
   const frames = new ClaudeBoundedQueue<unknown>(32)
   let messages: AsyncIterator<ClaudeSdkUserMessage>
   let ready!: () => void
@@ -42,10 +44,22 @@ function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionMana
   return { frames, close, interrupt, manager, runner, client, statuses, queries, setServers, offers, nextMessage: async () => {
     await started
     const value = (await messages.next()).value
-    if (value) void frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: '2.1.284', cwd: '/work' })
+    if (value) void frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: nativeVersion, cwd: '/work' })
     return value!
   } }
 }
+
+function workflowRequest(): HarnessExecutionRequest {
+  return { executionId: 'execution', runId: 'run', workspaceId: 'workspace',
+    workflowNodeId: 'node', workingDirectory: '/work', runtimeDirectory: '/runtime',
+    configuration: { id: 'config', workspaceId: 'workspace', agentId: 'agent', version: 1,
+      prompt: {}, assignedSkills: [], contentHash: 'recorded', createdAt: '2026-10-06T00:00:00.000Z',
+      harness: { harness: 'claude', model: 'recorded-model', authMode: 'subscription', configDirectory: '/profile-a',
+        permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [],
+        instructions: '', mcpServers: {} } }, initialPrompt: 'workflow notice',
+    executionContext: { parentRequest: null }, input: { first: 'one', second: 'two' } }
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason: unknown) => void
@@ -192,6 +206,53 @@ describe('Claude native session manager admission', () => {
       subtype: 'success', is_error: false, result: 'done' })
     await output
     expect(f.offers).toHaveBeenCalledTimes(1)
+    await f.manager.dispose?.()
+  })
+  it('accepts newer native init behavior and keeps the observed version as provenance', async () => {
+    const f = fixture(undefined, {}, '2.2.0')
+    let session: import('@foreman-code/contracts').NativeSessionReference | undefined
+    const output = drain(f.manager.startInitialTurn({ ...start, correlationId: 'newer-native' }, { prompt: 'first', clientCorrelationId: 'newer-native',
+      onSessionObserved: async value => { session = value } }))
+    const message = await f.nextMessage()
+    void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: message.uuid })
+    void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: message.uuid,
+      subtype: 'success', is_error: false, result: 'compatible' })
+    await output
+    expect(session?.providerVersion).toBe('2.2.0')
+    await f.manager.dispose?.()
+  })
+  it.each(['before', 'after'] as const)('keeps saved resume provenance when newer init arrives %s its control ACK', async order => {
+    const f = fixture()
+    const acknowledged = deferred<unknown>()
+    const consumed = deferred<void>()
+    const query = f.client.query
+    f.client.query = input => ({ ...query(input), initializationResult: () => acknowledged.promise })
+    const open = f.runner.open
+    f.runner.open = async input => {
+      const sdk = await open(input)
+      return { ...sdk, output: (async function* () {
+        for await (const observation of sdk.output) {
+          yield observation
+          if ((observation.raw as { type?: string }).type === 'system') consumed.resolve()
+        }
+      })() }
+    }
+    const saved = { harness: 'claude' as const, providerVersion: '2.1.280', nativeSessionId: 'native-session' }
+    const attaching = f.manager.attachSession(saved, start)
+    await vi.waitFor(() => expect(f.queries).toHaveBeenCalledOnce())
+    const init = { type: 'system', subtype: 'init', session_id: saved.nativeSessionId,
+      claude_code_version: '2.2.0', cwd: '/work' }
+    if (order === 'before') {
+      void f.frames.offer(init)
+      await consumed.promise
+    }
+    acknowledged.resolve({ models: [], account: {} })
+    expect(await attaching).toEqual(saved)
+    if (order === 'after') {
+      void f.frames.offer(init)
+      await consumed.promise
+    }
+    expect((await f.manager.capabilities()).providerVersion).toBe('2.2.0')
     await f.manager.dispose?.()
   })
 
@@ -378,12 +439,12 @@ describe('Claude native session manager admission', () => {
     await f.manager.dispose?.()
     const changed = fixture()
     changed.client.query = () => {
-      void changed.frames.offer({ type: 'system', subtype: 'init', session_id: 'wrong', claude_code_version: '2.1.286', cwd: '/work' })
+      void changed.frames.offer({ type: 'system', subtype: 'init', session_id: 'wrong', claude_code_version: '2.1.286', cwd: '/foreign' })
       return { [Symbol.asyncIterator]: () => changed.frames[Symbol.asyncIterator](), close: () => changed.frames.close(),
         initializationResult: async () => ({ models: [], account: {} }), interrupt: async () => undefined }
     }
     const changedResult = drain(changed.manager.startInitialTurn(start, { prompt: 'one', clientCorrelationId: 'operator:one', onSessionObserved: async () => undefined }))
-    await expect(changedResult).rejects.toThrow('qualified CLI version')
+    await expect(changedResult).rejects.toThrow('Claude Code 2.1.286 does not satisfy the init version/cwd contract')
     await changed.manager.dispose?.()
   })
 
@@ -499,6 +560,86 @@ describe('Claude native session manager admission', () => {
     expect(observed?.nativeSessionId).toBe('native-session'); expect(f.queries).toHaveBeenCalledTimes(1)
     await f.manager.dispose?.()
   })
+
+  it('keeps the complete accepted workflow request through JSON readback', async () => {
+    const f = fixture()
+    const request = workflowRequest()
+    const workflow = { request, correlationId: 'execution:execution' }
+    const readback = { correlationId: workflow.correlationId,
+      request: { ...request, input: { second: 'two', first: 'one' } } }
+    const prompt = 'first\nworkflow notice'
+    try {
+      await f.manager.prepareInspection(workflow)
+      await f.manager.prepareInspection(readback)
+      await expect(f.manager.prepareInspection({ ...workflow, request: { ...request,
+        input: { first: 'changed', second: 'two' } } })).rejects.toThrow('immutable inspection context')
+      await expect(f.manager.prepareInspection({ ...workflow, request: { ...request,
+        initialPrompt: 'changed' } })).rejects.toThrow('immutable inspection context')
+      await expect(f.manager.prepareInspection({ ...workflow, request: { ...request,
+        executionContext: { parentRequest: { requestId: 'foreign', requesterNodeId: 'foreign' } } } }))
+        .rejects.toThrow('immutable inspection context')
+      const running = drain(f.manager.startInitialTurn(readback, { prompt,
+        clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
+      const input = await f.nextMessage()
+      void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
+      void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid,
+        subtype: 'success', is_error: false, result: 'done' })
+      await running
+      await drain(f.manager.startInitialTurn(workflow, { prompt,
+        clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
+      expect(() => f.manager.startInitialTurn(readback, { prompt: 'changed',
+        clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
+        .toThrow('another accepted scope')
+      expect(f.queries).toHaveBeenCalledTimes(1)
+      expect(f.offers).toHaveBeenCalledTimes(1)
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
+
+  it.each(['native-v1', 'legacy'] as const)('delivers pinned Agent instructions through the %s channel', async delivery => {
+    const f = fixture(undefined, { sdkOptions: { systemPrompt: 'Harness policy' } })
+    const request = workflowRequest()
+    const text = 'Follow the saved output format.'
+    request.configuration.prompt.system = 'Return one raw JSON object.'
+    request.configuration.assignedSkills = [{ skillId: 'format', version: '1' }]
+    request.configuration.resolvedSkills = [{ skillId: 'format', version: '1', name: 'Format', instructions: text,
+      contentHash: `sha256:${createHash('sha256').update(text).digest('hex')}` }]
+    if (delivery === 'native-v1') request.configuration.instructionDelivery = 'native-v1'
+    try {
+      await f.manager.prepareInspection({ request, correlationId: 'execution:execution' })
+      const options = f.queries.mock.calls[0]![0].options
+      if (delivery === 'native-v1') {
+        expect(options.systemPrompt).toBe('Harness policy\n\nReturn one raw JSON object.\n\n# Skill: Format (format@1)\n\n' + text)
+      } else {
+        expect(options.systemPrompt).toBe('Harness policy')
+      }
+      expect(f.offers).not.toHaveBeenCalled()
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
+
+  it('retains the original attributed result in terminal history for workflow validation', async () => {
+    const f = fixture(() => raw => {
+      const frame = raw as Record<string, unknown>
+      return frame.type === 'result' ? [{ type: 'claude.result', payload: { source: { eventId: frame.uuid } } }] : []
+    })
+    let history: import('../port.js').NativeHistory | undefined
+    try {
+      const running = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'operator:one',
+        onSessionObserved: async () => undefined, onTerminal: async terminal => { history = terminal.history } }))
+      const input = await f.nextMessage()
+      void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
+      const result = { type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid,
+        subtype: 'success', is_error: false, result: 'done' }
+      void f.frames.offer(result)
+      await running
+      expect(history?.events.find(event => event.type === 'claude.result')?.payload.nativeResult).toEqual(result)
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
   it('does not treat saved MCP config as live connected or replace a prepared owner/query', async () => {
     const f = fixture(undefined, { expectedMcp: { serverName: 'graphql', url: 'http://127.0.0.1:3000/mcp/app' } })
     f.statuses.mockResolvedValueOnce([{ name: 'graphql', status: 'pending', source: 'dynamic', config: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app', headers: { Authorization: 'secret-token' } }, tools: [] }])
@@ -535,6 +676,33 @@ describe('Claude native session manager admission', () => {
       })).rejects.toThrow('server names, endpoints')
       expect(f.setServers).toHaveBeenCalledOnce()
     } finally { await f.manager.dispose?.() }
+  })
+  it('refreshes a token-free failed HTTP connection on the same query before offering input', async () => {
+    const endpoint = 'http://127.0.0.1:3000/mcp/app'
+    const servers = { graphql: { type: 'http', url: endpoint } }
+    const f = fixture(undefined, { sdkOptions: { mcpServers: servers }, appMcpAccess: 'management',
+      expectedMcp: { serverName: 'graphql', url: endpoint } })
+    f.statuses.mockResolvedValueOnce([{ name: 'graphql', status: 'failed', source: 'dynamic',
+      config: { type: 'http', url: endpoint, headers: { Authorization: '' } }, tools: [] }])
+    try {
+      const tokenFree = { ...start, environment: { agentId: 'operator', variables: {} } }
+      const inspection = await f.manager.prepareInspection(tokenFree)
+      expect(inspection.servers[0]?.status).toBe('failed')
+      expect(inspection.httpCredentialAcknowledgement).toBeUndefined()
+      expect(f.offers).not.toHaveBeenCalled()
+      const credentialed = { ...start, environment: { agentId: 'operator', variables: {
+        FOREMAN_CODE_MCP_TOKEN: 'scoped-token',
+      } } }
+      await f.manager.refreshInspectionCredentials(credentialed, {
+        graphql: { ...servers.graphql, headers: { Authorization: 'Bearer scoped-token' } },
+      })
+      expect(await f.manager.inspectMcp()).toMatchObject({ state: 'connected',
+        credentialArrangement: { kind: 'scoped_http_header' } })
+      expect(f.queries).toHaveBeenCalledTimes(1)
+      expect(f.offers).not.toHaveBeenCalled()
+    } finally {
+      await f.manager.dispose?.()
+    }
   })
 
   it.each([

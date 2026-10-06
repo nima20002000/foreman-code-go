@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -14,7 +15,7 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
   let admin: pg.Pool; let pool: pg.Pool; let repository: PostgresOperatorActivityRepository; let schema: string
   beforeEach(async () => {
     admin = new pg.Pool({ connectionString }); schema = `activity_${randomUUID().replaceAll('-', '')}`
-    await admin.query(`create schema "${schema}"`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` }); repository = new PostgresOperatorActivityRepository(pool)
     await pool.query(`create table operator_conversations (id text primary key, active_request_id text, native_session_id text,
       active_native_turn_id text, deleted_at timestamptz, revision bigint not null default 0,
@@ -28,7 +29,7 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
     await pool.query(`insert into operator_conversations (id,active_request_id,native_session_id,active_native_turn_id)
       values ('conversation','A','session','turn-A')`)
   })
-  afterEach(async () => { await pool?.end(); if (admin) { await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end() } })
+  afterEach(async () => { await pool?.end(); if (admin) { await dropFixtureSchema(admin, schema); await admin.end() } })
   const value = (status: 'running' | 'completed', title = 'Tool') => ({ id: 'tool', requestId: 'A', kind: 'tool' as const, title, status })
   const fence = (sequence: string) => ({ nativeSessionId: 'session', nativeTurnId: 'turn-A', source: { eventId: `event-${sequence}`, sequence } })
   it('claim start time remains immutable through activity revisions and repeated claims', async () => {

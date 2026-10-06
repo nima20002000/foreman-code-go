@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { BuildComputerSettings, buildComputerTarget } from '../src/modules/settings/buildComputers.js'
 import { JobComputerSelection } from '../src/modules/jobs/computerSelection.js'
 import { buildComputerFixture, buildQueueConfigurationFixture } from './helpers/buildComputerFixture.js'
@@ -26,7 +27,7 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
   const clients: Client[] = []
   let app: ReturnType<typeof buildApp> | undefined, dispatch: PostgresJobDispatch | undefined
   let jobs: JobService | undefined
-  await admin.query(`create schema ${schema}`)
+  await createFixtureSchema(admin, schema)
   try {
     await applyApplicationMigrations(pool)
     const workspaceId = randomUUID(), deviceId = randomUUID()
@@ -115,6 +116,6 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
     expect((await pool.query('select id from job_executions where workspace_id=$1', [workspaceId])).rows).toEqual([{ id: execution.id }])
   } finally {
     await Promise.allSettled(clients.map(client => client.close())); await app?.close(); await jobs?.closeQueue(); await dispatch?.close(); await pool.end()
-    try { await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() }
+    try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
   }
 }, 90000)

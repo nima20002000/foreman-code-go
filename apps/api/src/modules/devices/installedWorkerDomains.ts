@@ -156,7 +156,7 @@ export async function createInstalledWorkerDomains(input: {
       captureRequest: namespace => input.connection()?.captureRequest(namespace), sources, approvedRoots: roots,
       ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs } : {}),
       codexSuiteRevision: input.codexSuiteRevision, signal: lifetime.signal, registry, journal })
-    extensions.push(receiver.extension, { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
+    extensions.push({ ...receiver.extension, role: 'duplex' }, { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
       return { payload: await sources.handle(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) }) }
     } }, ...(native.kind === 'configured' ? native.extensions : []))
   }

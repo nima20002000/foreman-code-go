@@ -1,10 +1,19 @@
 import { sessionControlsMigration } from './sessionControlsMigration.js'
 import { workerConversationBindingMigration } from './workerConversationBindingMigration.js'
+import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
+import { localWorkflowNativeOutputMigration } from './localWorkflowNativeOutputMigration.js'
+import { workExhaustedRouteMigration } from './workExhaustedRouteMigration.js'
+import { workJoinRoundMigration } from './workJoinRoundMigration.js'
+import { workUnresolvedRoutesMigration } from './workUnresolvedRoutesMigration.js'
+import { workJoinDispatchMigration } from './workJoinDispatchMigration.js'
+import { workJoinDispositionMigration } from './workJoinDispositionMigration.js'
+import { workParentRequestMigration } from './workParentRequestMigration.js'
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { workflowPresentationMigration } from './workflowPresentationMigration.js'
 import { operatorTerminalMigration } from './operatorTerminalMigration.js'
 import { operatorTerminalHistoryMigration } from './operatorTerminalHistoryMigration.js'
 import { claudeCallbackMigration } from './claudeCallbackMigration.js'
+import { nativeCorrelationProvidersMigration } from './nativeCorrelationProvidersMigration.js'
 import { runSubagentsMigration } from './runSubagentsMigration.js'
 import { deviceIdentityMigration } from '../modules/devices/migration.js'
 import { activitySnapshotMigration } from './activitySnapshotMigration.js'
@@ -85,6 +94,7 @@ import { fileRetentionMigration } from './fileRetentionMigration.js'
 import { fileReferenceAccessMigration } from './fileReferenceAccessMigration.js'
 import { fileToolsMigration } from '../modules/files/tools/migration.js'
 import { harnessQualificationMigration } from './harnessQualificationMigration.js'
+import { workspaceProvisioningMigration } from './workspaceProvisioningMigration.js'
 
 // Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
 // HAP-04 400-409, HAP-05 500-509, HAP-06 600-609, HAP-07 700-709.
@@ -828,10 +838,20 @@ export const migrations = [
   jobQueueCleanupMigration,
   runPresentationMigration,
   workflowPresentationMigration,
+  workspaceProvisioningMigration,
+  workParentRequestMigration,
+  workJoinRoundMigration,
+  workExhaustedRouteMigration,
+  workDeliverySettlementMigration,
+  workUnresolvedRoutesMigration,
+  workJoinDispatchMigration,
+  workJoinDispositionMigration,
   operatorTerminalMigration,
   operatorTerminalHistoryMigration,
-  claudeCallbackMigration,
+  localWorkflowNativeOutputMigration,
   localHumanMigration,
+  claudeCallbackMigration,
+  nativeCorrelationProvidersMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

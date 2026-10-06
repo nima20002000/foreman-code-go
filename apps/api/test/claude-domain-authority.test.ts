@@ -6,7 +6,7 @@ import { PostgresOperatorConversationRepository } from '../src/modules/conversat
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { createPostgresClaudeInteractionBridge, PostgresClaudeInteractionAuthority } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
 import { claudeCallbackDatabase } from './support/claudeCallbackDatabase.js'
-const configuration: ClaudeHarnessConfiguration = { harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: '/fixture', permissionMode: 'default', sandbox: 'read-only', tools: ['Read', 'AskUserQuestion'], permissionRules: [], instructions: '', mcpServers: {} }
+const configuration: ClaudeHarnessConfiguration = { harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: '/fixture', permissionMode: 'default', sandbox: 'danger-full-access', tools: ['Read', 'AskUserQuestion'], permissionRules: [], instructions: '', mcpServers: {} }
 const session = { harness: 'claude' as const, nativeSessionId: 'native-session', providerVersion: 'fixture-cli' }
 const identity = { ownerPrincipalId: 'sender', attemptId: 'model-request', nativeSessionId: session.nativeSessionId, nativeMessageId: 'input-message', clientCorrelationId: 'accepted-correlation', generation: 'sdk-generation', toolUseId: 'tool-use', nativeRequestId: 'control-request', nativeRequestType: 'can_use_tool' as const }
 /** SQL modeled existing tables/claims; no live DB, fabricated native ACK or second application store. */

@@ -2,7 +2,7 @@ import { SessionPreferencesSchema, type CompactionState } from '@foreman-code/co
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -25,6 +25,9 @@ import {
   calls, collect, emit, errorCode, finish, fixture, fixtureProtocol, fixtureQualification,
   input, nativeThread, processesForRequests, state, until, type Fixture,
 } from './fixtures/codex-test-helpers.js'
+import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
+import { completeTestResourceCleanup, createTestRoot, registerTestResourceCleanup, removeTestRoot,
+  type TestRoot } from '../../../scripts/test-resources.mjs'
 
 // Only qualification is replaced here. Every lifecycle/translation/transport path
 // below runs the repository implementation, including the pinned native schema gate.
@@ -45,6 +48,9 @@ const managers: Manager[] = []
 let f: Fixture
 let manager: Manager
 let source: WorkflowNativeSessionStart
+let scratch: TestRoot
+let scratchCleanupId: string
+const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
 function makeManager(): Manager { const value = new CodexAppServerSessionManager(f.binary); managers.push(value); return value }
 function codex(value = source): CodexHarnessConfiguration {
   const harness = value.request.configuration.harness
@@ -189,12 +195,32 @@ describe('Codex fixture user-message contract', () => {
 
 // Executable fixtures use a POSIX shebang. Pure protocol tests cover portable shapes.
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
-  beforeEach(async () => { f = await fixture(); manager = makeManager(); source = input(f.directory) })
-  afterEach(async () => {
+  beforeEach(async () => {
+    // This file exercises a 500 ms wire deadline; fixture persistence uses owned temporary storage.
+    scratch = createTestRoot('/tmp', 'foreman-code-codex-wire-')
+    scratchCleanupId = registerTestResourceCleanup(invocation, {
+      kind: 'codex-wire-fixture', directory: scratch.directory, owner: scratch.token,
+    })
+    f = await fixture({ root: scratch })
+    await flag('record-wire-timing')
+    manager = makeManager()
+    source = input(f.directory)
+  })
+  afterEach(async context => {
     const results = await Promise.allSettled(managers.splice(0).map((value) => value.shutdown()))
-    await rm(f.directory, { recursive: true, force: true })
+    if (context.task.result?.state === 'fail' || results.some(value => value.status === 'rejected')) {
+      let timing = ''
+      try { timing = await readFile(join(f.directory, 'wire-timing.jsonl'), 'utf8') }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      await writeNativeAcceptanceEvidence(`codex-fixture-${randomUUID()}.json`, {
+        test: context.task.name, calls: await calls(f.directory),
+        wireTiming: timing.split('\n').filter(Boolean).map(line => JSON.parse(line) as unknown),
+      })
+    }
     const failure = results.find((value) => value.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
+    removeTestRoot(scratch)
+    completeTestResourceCleanup(invocation, scratchCleanupId)
   })
 
   it('owns two node chats independently with one Agent configuration and no workflow execution descriptor', async () => {
@@ -533,6 +559,29 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     }, 15_000)
   }
 
+  it('resumes saved sessions on a newer compatible binary without rewriting their provenance', async () => {
+    const session = await manager.createSession(source)
+    await manager.dispose()
+    await json('version.json', 'codex-cli 0.160.0')
+    const replacement = makeManager()
+    assert.deepEqual(await replacement.attachSession(session, source), session)
+    assert.equal((await replacement.capabilities()).providerVersion, 'codex-cli 0.160.0')
+    const fork = await replacement.forkSession(session, source)
+    assert.equal(fork.providerVersion, 'codex-cli 0.160.0')
+    assert.equal(session.providerVersion, 'codex-cli 0.154.0')
+  })
+
+  it('reports the installed version and model/list contract when discovery returns an invalid model identity', async () => {
+    await json('version.json', 'codex-cli 0.160.0')
+    await json('models.json', { models: [{ slug: '', supported_reasoning_levels: [{ effort: 'medium' }] }] })
+    await assert.rejects(manager.discoverModels(f.directory), error => error instanceof Error
+      && errorCode(error) === 'CODEX_MODEL_CATALOG_INVALID' && error.message.includes('0.160.0')
+      && error.message.includes('model/list catalog response contract'))
+    assert.equal((await wire('model/list')).length, 1)
+    assert.equal((await wire('thread/start')).length, 0)
+    await assertMetadataProcessesClosed()
+  })
+
   it('F01: refuses another Agent, workspace, run, or workflow-node owner on loaded attachment', async () => {
     const session = await manager.createSession(source)
     await assertCode(manager.attachSession(session, input(f.directory, 'agent-b')), 'CODEX_SESSION_OWNER_MISMATCH')
@@ -552,8 +601,8 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await manager.history(session)).terminalResult, undefined)
   })
 
-  it('reads the original CLI-labelled session under a canonical version pin and rejects altered references', async () => {
-    const pinned = new CodexAppServerSessionManager(f.binary, '0.154.0')
+  it('preserves observed version provenance and rejects altered loaded references', async () => {
+    const pinned = new CodexAppServerSessionManager(f.binary)
     managers.push(pinned)
     const session = await pinned.createSession(source)
     assert.equal(session.providerVersion, 'codex-cli 0.154.0')
@@ -898,6 +947,23 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const session = await until(async () => { try { return await manager.reconcileSessionCreation(source) } catch { return undefined } })
     assert.deepEqual(await manager.createSession(source), session)
     assert.equal((await wire('thread/start')).length, 1)
+  })
+
+  it('retains an incomplete fixture notification until its remaining bytes arrive', async () => {
+    const session = await manager.createSession(source)
+    const message = JSON.stringify({ method: 'thread/name/updated',
+      params: { threadId: session.nativeSessionId, threadName: 'split-notification' } }) + '\n'
+    const midpoint = Math.floor(message.length / 2)
+    const inbox = join(f.directory, 'inbox-agent-a.jsonl')
+    await appendFile(inbox, message.slice(0, midpoint))
+    await until(async () => (await calls(f.directory)).some(entry => entry.inboxBufferedLength === midpoint))
+    assert(!(await manager.history(session)).events.some(event => event.type === 'transport.disconnected'))
+    await appendFile(inbox, message.slice(midpoint))
+    await until(async () => (await manager.history(session)).events
+      .some(event => event.payload.threadName === 'split-notification'))
+    const history = await manager.history(session)
+    assert.equal(history.events.filter(event => event.payload.threadName === 'split-notification').length, 1)
+    assert(!history.events.some(event => event.type === 'native.malformed' || event.type === 'transport.disconnected'))
   })
 
   it('retains large qualified events with bounded history and monotonic cursors', async () => {
@@ -1440,25 +1506,28 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('thread/start')).length, 0)
   })
 
-  it('F27: rechecks version and authentication for later sessions and replacements', async () => {
+  it('rechecks observed version and authentication after a compatible replacement', async () => {
     const session = await manager.createSession(source)
     await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: 'recover' }))
     await json('version.json', 'codex-cli 0.155.0')
-    await assertCode(manager.createSession(input(f.directory, 'agent-b')), 'CODEX_APP_SERVER_VERSION_UNQUALIFIED')
-    await assertCode(manager.reconcile(session, 'recover'), 'CODEX_APP_SERVER_VERSION_UNQUALIFIED')
-    await unflag('version.json'); await flag('logged-out')
-    await assertCode(manager.createSession(input(f.directory, 'agent-b')), 'CODEX_APP_SERVER_AUTH_UNQUALIFIED')
-    await assertCode(manager.reconcile(session, 'recover'), 'CODEX_APP_SERVER_AUTH_UNQUALIFIED')
+    const compatible = await manager.createSession(input(f.directory, 'agent-b'))
+    assert.equal(compatible.providerVersion, 'codex-cli 0.155.0')
+    assert.equal((await manager.reconcile(session, 'recover')).terminalResult?.outcome, 'succeeded')
+    await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: 'auth-recover' }))
+    await flag('logged-out')
+    await assertCode(manager.createSession(input(f.directory, 'agent-c')), 'CODEX_APP_SERVER_AUTH_UNQUALIFIED')
+    await assertCode(manager.reconcile(session, 'auth-recover'), 'CODEX_APP_SERVER_AUTH_UNQUALIFIED')
     await unflag('logged-out')
-    await manager.reconcile(session, 'recover')
+    assert.equal((await manager.reconcile(session, 'auth-recover')).terminalResult?.outcome, 'succeeded')
   })
 
-  it('does not resume a saved thread across two separately qualified Codex releases', async () => {
+  it('resumes a saved thread across compatible Codex releases while retaining its provenance', async () => {
     const session = await manager.createSession(source)
     await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: 'recover' }))
     await json('version.json', 'codex-cli 0.156.1')
-    await assertCode(manager.reconcile(session, 'recover'), 'CODEX_SESSION_VERSION_MISMATCH')
-    assert.equal((await wire('thread/resume')).length, 0)
+    assert.equal((await manager.reconcile(session, 'recover')).terminalResult?.outcome, 'succeeded')
+    assert.equal((await wire('thread/resume')).length, 1)
+    assert.equal(session.providerVersion, 'codex-cli 0.154.0')
     await unflag('version.json')
     assert.equal((await manager.reconcile(session, 'recover')).terminalResult?.outcome, 'succeeded')
   })

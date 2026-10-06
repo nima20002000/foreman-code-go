@@ -86,6 +86,29 @@ function createDependencyCheck(
 
 const SLOW_REQUEST_MS = 2000
 
+function publicRequestError(error: unknown): DomainError {
+  if (error instanceof DomainError) return error
+  if (error instanceof z.ZodError) {
+    return new DomainError('INVALID_REQUEST', 'The request does not match its shared contract.', 400, {
+      issues: error.issues.map((issue) => ({ path: issue.path, message: issue.message })),
+    })
+  }
+  if (error instanceof Error && 'code' in error) {
+    switch (error.code) {
+      case 'FST_ERR_CTP_INVALID_JSON_BODY':
+      case 'FST_ERR_CTP_EMPTY_JSON_BODY':
+        return new DomainError('INVALID_REQUEST', 'The request body must contain valid JSON.', 400)
+      case 'FST_ERR_CTP_INVALID_CONTENT_LENGTH':
+        return new DomainError('INVALID_REQUEST', 'The request body does not match its Content-Length.', 400)
+      case 'FST_ERR_CTP_INVALID_MEDIA_TYPE':
+        return new DomainError('UNSUPPORTED_MEDIA_TYPE', 'The request content type is not supported.', 415)
+      case 'FST_ERR_CTP_BODY_TOO_LARGE':
+        return new DomainError('REQUEST_TOO_LARGE', 'The request body exceeds the allowed size.', 413)
+    }
+  }
+  return new DomainError('INTERNAL_ERROR', 'The API could not complete the request.', 500)
+}
+
 export function buildApp(options: BuildAppOptions): FastifyInstance {
   const timeoutMs = options.readinessTimeoutMs ?? 2000
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) {
@@ -160,13 +183,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   })
 
   app.setErrorHandler(async (error, request, reply) => {
-    const domain = error instanceof DomainError
-      ? error
-      : error instanceof z.ZodError
-        ? new DomainError('INVALID_REQUEST', 'The request does not match its shared contract.', 400, {
-            issues: error.issues.map((issue) => ({ path: issue.path, message: issue.message })),
-          })
-        : new DomainError('INTERNAL_ERROR', 'The API could not complete the request.', 500)
+    const domain = publicRequestError(error)
     if (domain.status >= 500) request.log.error({ err: error }, domain.message)
     const mcpRequest = request.url.split('?')[0] === '/mcp'
     if (options.operator && (domain.status === 401 || domain.status === 403)

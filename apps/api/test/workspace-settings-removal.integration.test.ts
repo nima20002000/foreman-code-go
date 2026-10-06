@@ -1,5 +1,7 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, readFile, rename, rm, stat } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rename, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -17,10 +19,10 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 it('removes a workspace through authenticated MCP with denied access, replay and persisted readback', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'workspace-removal-'))
-  const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
+  const connectionString = process.env.TEST_DATABASE_URL!
   const schema = 'settings_removal_' + randomUUID().replaceAll('-', '')
   const admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
   const locations = new WorkspaceLocationService(pool, commands)
@@ -58,7 +60,7 @@ it('removes a workspace through authenticated MCP with denied access, replay and
     expect((await pool.query('select created_project_folder from workspaces where id=$1', [single.workspace.id])).rows[0].created_project_folder.rootPath).toBe(project)
     const retained = await workflows.create(owner.principal, 'http', { commandId: randomUUID(), workspaceId: single.workspace.id, name: 'History stays' })
     const singleInput = { commandId: randomUUID(), workspaceId: single.workspace.id, expectedRevision: single.revision }
-    await expect(denied.callTool({ name: 'workspace_archive', arguments: singleInput })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(denied.callTool({ name: 'workspace_archive', arguments: singleInput }))
     const archiveOnly = await access.issue({ name: 'Archive only', audience: 'operator', grants: [{ actions: ['workspaces:archive'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
     expect((await (await connect(archiveOnly.token)).callTool({ name: 'workspace_archive', arguments: singleInput })).isError).toBe(true)
     expect(await readFile(join(project, 'owned.txt'), 'utf8')).toBe('owned content')
@@ -90,7 +92,7 @@ it('removes a workspace through authenticated MCP with denied access, replay and
     const retryInput = { commandId: randomUUID(), workspaceId: retry.workspace.id, expectedRevision: retry.revision }
     expect((await client.callTool({ name: 'workspace_archive', arguments: retryInput })).isError).toBe(true)
     expect(await readFile(join(retryPath, 'keep.txt'), 'utf8')).toBe('replacement')
-    await rm(retryPath, { recursive: true }); await rename(moved, retryPath)
+    await removeFixtureDirectory(retryPath, { force: false }); await rename(moved, retryPath)
     expect(c.ManagedWorkspaceCommandResultSchema.parse((await client.callTool({ name: 'workspace_archive', arguments: retryInput })).structuredContent).replayed).toBe(true)
     await expect(stat(retryPath)).rejects.toMatchObject({ code: 'ENOENT' })
 
@@ -102,7 +104,7 @@ it('removes a workspace through authenticated MCP with denied access, replay and
   } finally {
     for (const client of clients) await client.close()
     await app.close(); await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`); await admin.end()
-    await rm(directory, { recursive: true, force: true })
+    await dropFixtureSchema(admin, schema); await admin.end()
+    await removeFixtureDirectory(directory)
   }
 }, 30_000)

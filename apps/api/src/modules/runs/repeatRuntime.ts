@@ -42,6 +42,7 @@ export function repeatExecutionDriver(input: {
    * Completed input is per-execution cleanup/reconciliation ONLY. It must never
    * allocate a candidate, directory, credential, session or turn, or call finishRun. */
   observeExact(execution: HarnessExecution, signal: AbortSignal): Promise<void>
+  reconcileArtifacts?(execution: HarnessExecution, signal: AbortSignal): Promise<void>
 }): RepeatExecutionDriver {
   const inFlight = new Map<string, Promise<void>>()
   return {
@@ -63,6 +64,14 @@ export function repeatExecutionDriver(input: {
       const previous = inFlight.get(execution.id)
       if (previous) return previous
       const task = (async () => {
+        const finalize = async (terminal: HarnessExecution) => {
+          await input.store.settleNativeExecution(terminal.id)
+          input.owner.assertOwned()
+          signal.throwIfAborted()
+          await input.reconcileArtifacts?.(terminal, signal)
+          input.owner.assertOwned()
+          signal.throwIfAborted()
+        }
         const stored = await input.store.readExecution(execution.id)
         if (stored.execution.id !== execution.id || stored.execution.runId !== input.scope.runId) return repeatConflict('REPEAT_EXECUTION_INPUT_CONFLICT')
         input.owner.assertOwned()
@@ -71,9 +80,7 @@ export function repeatExecutionDriver(input: {
         // No native callback at all is needed for a close/COMMIT reply gap.
         if (stored.execution.state === 'completed') {
           try {
-            await input.store.settleNativeExecution(execution.id)
-            input.owner.assertOwned()
-            signal.throwIfAborted()
+            await finalize(stored.execution)
             return
           } catch (error) {
             if (!repeatSettlementPending(error)) throw error
@@ -93,18 +100,14 @@ export function repeatExecutionDriver(input: {
           if (terminal.execution.state !== 'completed') throw error
           // Native cleanup can throw after the terminal committed. Preserve it,
           // but never let that fact alone unblock a repeat or technical retry.
-          await input.store.settleNativeExecution(execution.id)
-          input.owner.assertOwned()
-          signal.throwIfAborted()
+          await finalize(terminal.execution)
           return
         }
         input.owner.assertOwned()
         signal.throwIfAborted()
         const terminal = await input.store.readExecution(execution.id)
         if (terminal.execution.state !== 'completed') return repeatConflict('REPEAT_BOUNDARY_PENDING')
-        await input.store.settleNativeExecution(execution.id)
-        input.owner.assertOwned()
-        signal.throwIfAborted()
+        await finalize(terminal.execution)
       })().catch((error: unknown) => {
         if (!repeatSettlementPending(error)) throw error
         input.owner.assertOwned()
@@ -266,14 +269,19 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         'Copy requestId verbatim, including every character. Check it against the accepted input before responding.',
       ].join('\n') : undefined
       const prompts = [initialPrompt, noticePrompt, returnPrompt].filter(Boolean)
+      const executionContext = context.version.definition.handoffs
+        ? await store.readWorkExecutionContext(execution.id) : undefined
+      check()
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: run.id,
         workspaceId: run.workspaceId, workflowNodeId: node.id, ...paths,
         ...(prompts.length ? { initialPrompt: prompts.join('\n\n') } : {}),
-        configuration, input: execution.input })
+        configuration, input: execution.input, ...(executionContext ? { executionContext } : {}) })
       for (;;) {
         const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal })
         execution = observation.execution
-        if (observation.state === 'completed') return
+        if (observation.state === 'completed') {
+          return
+        }
         // Also gate a later request in this same native turn. Replaying older
         // task-local resume values must not reopen its budget/native observer.
         await waitForApprovals()
@@ -331,7 +339,7 @@ export async function executeRepeatRuntime(input: {
   owner: Pick<RunOwnership, 'assertOwned'>; signal: AbortSignal
   store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition'
     | 'resolveExcluded' | 'completeRun' | 'ensureWorkEntry' | 'admitWorkActivation' | 'acceptWorkTerminal'
-    | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'completeWorkRun'>
+    | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'resolveWaitingWorkJoins' | 'completeWorkRun'>
   driver: RepeatExecutionDriver; lifecycle: RepeatRuntimeLifecycle
   checkpointer: import('@langchain/langgraph-checkpoint').BaseCheckpointSaver
   configuredParallelism?: number
@@ -354,6 +362,23 @@ export async function executeRepeatRuntime(input: {
       // Launch preflight refusals happen before any native session exists.
       'APP_MCP_PREFLIGHT_FAILED', 'MCP_INSPECTION_CONTEXT_MISMATCH', 'HARNESS_INSPECTOR_UNAVAILABLE',
       'WORKER_EXECUTION_IDENTITY_INVALID', 'HARNESS_CONFIGURATION_MISMATCH',
+      'WORKER_NATIVE_OUTPUT_PROTECTION_FAILED', 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT',
+      'WORKFLOW_ARTIFACT_SOURCE_CONFLICT', 'WORKFLOW_TERMINAL_SOURCE_CONFLICT',
+      'WORK_SELECTED_EXECUTION_FAILED', 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED',
+      'WORK_POLICY_PIN_CONFLICT', 'WORK_ACTIVATION_REPLAY_CONFLICT', 'WORK_ACTIVATION_PIN_CONFLICT',
+      'WORK_TERMINAL_REPLAY_CONFLICT', 'WORK_RETRY_ACTIVATION_CONFLICT', 'WORK_RETRY_NOT_ALLOWED',
+      'WORK_RESULT_RECEIPT_MISSING', 'WORK_SOURCE_RESULT_CONFLICT', 'WORK_SOURCE_PIN_CONFLICT',
+      'WORK_SOURCE_ACTIVATION_CONFLICT', 'WORK_COUNTER_PIN_CONFLICT',
+      'WORK_REQUEST_OUTCOME_UNDECLARED', 'WORK_REQUEST_ROUTE_FORBIDDEN', 'WORK_REQUEST_REPLAY_CONFLICT',
+      'WORK_RETURN_REQUEST_MISSING', 'WORK_RETURN_ANCESTRY_CONFLICT', 'WORK_RETURN_RESULT_CONFLICT',
+      'WORK_RETURN_SOURCE_PIN_CONFLICT', 'WORK_RETURN_REQUESTER_CONFLICT',
+      'WORK_RETURN_REPLAY_CONFLICT', 'WORK_JOIN_ACTIVATION_CONFLICT', 'WORK_JOIN_SOURCE_CONFLICT',
+      'WORK_FINISH_OUTCOME_REQUIRED', 'WORK_UNRESOLVED_CAUSE_CONFLICT', 'WORK_UNRESOLVED_RECEIPT_CONFLICT',
+      'WORK_UNRESOLVED_RECEIPT_MISSING', 'WORK_UNRESOLVED_REPLAY_CONFLICT',
+      'WORK_ACTIVATIONS_UNRESOLVED', 'WORK_DENIAL_CONTINUATION_UNRESOLVED', 'WORK_REQUEST_UNRESOLVED',
+      'WORK_DIRECTION_WAIT_WRITER_REQUIRED',
+      'WORKFLOW_NATIVE_APPROVAL_UNHANDLED',
+      'WORK_CHECKPOINT_ACTIVATION_MISSING', 'WORK_SUCCESSOR_DUPLICATE', 'WORK_HANDOFF_DELIVERY_TOO_LARGE',
     ].includes(code)
   }
   const cancel = () => cancellation ??= input.lifecycle.cancelNativeAndRequestCleanup()
@@ -426,7 +451,10 @@ export async function executeRepeatRuntime(input: {
         // independently, then existing exact native cleanup and wrapper drain run below.
         let onAbort: (() => void) | undefined
         try {
-          await Promise.race([invoke(state), new Promise<never>((_resolve, reject) => {
+          const invocation = invoke(state)
+          tasks.add(invocation)
+          void invocation.then(() => { tasks.delete(invocation) }, () => { tasks.delete(invocation) })
+          await Promise.race([invocation, new Promise<never>((_resolve, reject) => {
             onAbort = () => reject(signal.reason)
             signal.addEventListener('abort', onAbort, { once: true })
             if (signal.aborted) onAbort()
@@ -475,7 +503,6 @@ export async function executeRepeatRuntime(input: {
     if (input.signal.aborted && input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART') {
       // The owning engine closes the original native sessions before releasing
       // ownership. Restart is not a synthetic Stop or terminal business result.
-      await input.lifecycle.requestCleanup()
       failed.abort(error)
       await drain(true)
       throw error

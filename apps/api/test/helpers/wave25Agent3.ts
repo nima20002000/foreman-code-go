@@ -1,6 +1,6 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './testResources.js'
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
-import { rm } from 'node:fs/promises'
 import pg from 'pg'
 import { AgentSchema, HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture, AcceptedRepeatStartV1Schema, WorkflowRunV3Schema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
@@ -17,6 +17,8 @@ import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import type { RepeatNativeEvidence } from '../../src/modules/runs/repeatNativeRepository.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { LOCAL_RUNNER_ID } from '../../src/modules/workspaces/location.js'
+import { assertFixtureResourcesSettled } from '../../../../scripts/test-resources.mjs'
+import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
 
 export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 export type Agent3Fixture = ReturnType<typeof makeCurrentWorkflowFixture>
@@ -32,21 +34,32 @@ export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   }
   const schema = `wave25_a3_${randomUUID().replaceAll('-', '')}`
+  const started = performance.now()
   const admin = new pg.Pool({ connectionString: url, max: 1 })
-  await admin.query(`create schema ${schema}`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString: url, max: 10,
-    options: `-c search_path=${schema},public -c statement_timeout=10000 -c lock_timeout=5000` })
+    options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
   const directory = await privateFixtureDirectory('wave25-a3-')
+  const beforeMigration = performance.now()
   try { await applyApplicationMigrations(pool) } catch (error) {
-    await pool.end(); await admin.query(`drop schema ${schema} cascade`); await admin.end()
-    await rm(directory, { recursive: true, force: true }); throw error
+    await pool.end(); await dropFixtureSchema(admin, schema); await admin.end()
+    await removeFixtureDirectory(directory); throw error
+  }
+  if (process.env.FOREMAN_CODE_TEST_EVIDENCE_ARCHIVE) {
+    await writeNativeAcceptanceEvidence(`fixture-setup-${randomUUID()}.json`, {
+      kind: 'workflow-database-fixture', schema,
+      setupMs: beforeMigration - started, migrationMs: performance.now() - beforeMigration,
+    })
   }
   return {
     pool, schema, directory,
     async close() {
       await pool.end()
-      try { await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() }
-      await rm(directory, { recursive: true, force: true })
+      try {
+        assertFixtureResourcesSettled(directory)
+        await dropFixtureSchema(admin, schema)
+      } finally { await admin.end() }
+      await removeFixtureDirectory(directory)
     },
   }
 }

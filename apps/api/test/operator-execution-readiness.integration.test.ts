@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { expect, it } from 'vitest'
 import { OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
 import { ExecutionReadinessSchema } from '@foreman-code/contracts/management'
@@ -69,9 +70,9 @@ it.skipIf(!postgresEnabled)('reads the exact persisted Operator readiness throug
     expect(ExecutionReadinessSchema.parse(await response.json())).toMatchObject({ status: 'eligible', configurationVersionId: configuration.id })
     const denied = await f.access.issue({ name: 'No readiness grant', audience: 'operator', expiresAt: new Date(Date.now() + 600000), grants: [] })
     expect((await fetch(url, { headers: { authorization: `Bearer ${denied.token}` } })).status).toBe(403)
-    await expect((await connect(denied.token)).callTool({ name: 'execution_readiness_get', arguments: {
+    await expectMcpAccessDenied((await connect(denied.token)).callTool({ name: 'execution_readiness_get', arguments: {
       harness: configuration.harness.harness, scope: 'operator-configuration',
-    } })).rejects.toThrow('not found')
+    } }))
     expect((await f.db.pool.query('select id,record from operator_configuration_versions order by id')).rows).toEqual(before.rows)
     expect(await settings.getAgentDefaults()).toEqual(defaults)
 

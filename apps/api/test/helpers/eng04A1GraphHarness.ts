@@ -110,11 +110,12 @@ export function graphHarness(f: A1Scenario, options: {
   }
   const unsupportedWork = async (): Promise<never> => { throw new Error('Unexpected work handoff') }
   const store: RepeatGraphStore & Pick<RepeatRunRepository, 'ensureWorkEntry' | 'admitWorkActivation' | 'acceptWorkTerminal'
-    | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'completeWorkRun'>
+    | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'resolveWaitingWorkJoins' | 'completeWorkRun'>
     & { resolveExcluded(): Promise<void>; completeRun(): Promise<void> } = {
     ensureWorkEntry: unsupportedWork, admitWorkActivation: unsupportedWork, acceptWorkTerminal: unsupportedWork,
     admitWorkRequest: unsupportedWork, returnWork: unsupportedWork, recordWorkUnresolved: unsupportedWork,
     completeWorkRun: unsupportedWork,
+    resolveWaitingWorkJoins: unsupportedWork,
     async admit(ref, allocate) {
       controller.signal.throwIfAborted(); assertRepeatRef(version, f.scope, ref)
       const rows = scopeRows(ref), admission = decideRepeatAdmission(version, ref, rows)

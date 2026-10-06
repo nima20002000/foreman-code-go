@@ -229,3 +229,12 @@ it('Claude evidence requires an exact observed native message receipt and termin
   assert.equal(reviewTurnEvidence(claude, { ...noReceipt, nativeTurnId: message.nativeMessageId }, correlationId).terminal, false)
   assert.equal(reviewTurnEvidence(claude, { ...history, pendingInteractions: [permission()] }, correlationId).terminal, false)
 })
+
+it('recovers a review with saved dynamic-version provenance without replaying the submission', async () => {
+  const fixture = await reviewerFixture({ recovering: true, savedProviderVersion: 'codex-cli 0.158.0' })
+  const result = await fixture.dispatcher.dispatchNext(fixture.job.reviewerAgentId, 'worker')
+  assert.equal(result?.state, 'completed')
+  assert.equal(result.providerTurnOrMessageId, providerId)
+  assert.equal(fixture.attaches.length, 1)
+  assert.equal(fixture.starts.length, 0)
+})
