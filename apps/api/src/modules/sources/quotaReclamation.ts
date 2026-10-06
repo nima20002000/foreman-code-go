@@ -51,16 +51,20 @@ async function writeRecord(root: FileHandle, name: string, record: unknown, sign
   }
 }
 async function removeDirectory(parent: FileHandle, name: string,
-  receipt: Pick<MaterializationReceipt, 'binding' | 'quota'>, signal: AbortSignal): Promise<void> {
+  receipt: Pick<MaterializationReceipt, 'binding' | 'quota'>, signal: AbortSignal, privateRoot = true): Promise<void> {
   signal.throwIfAborted()
   let directory: FileHandle
-  try { directory = await openChildDirectory(parent, name) }
+  try { directory = privateRoot ? await openChildDirectory(parent, name)
+    : await open(anchored(parent, name), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW) }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
     throw error
   }
   try {
     signal.throwIfAborted()
+    if ((await directory.stat()).uid !== process.getuid()) {
+      throw new SourceError('SOURCE_DIRECTORY_NOT_PRIVATE', 'Quota workload directories must remain worker-owned.')
+    }
     const filesystem = await identity(directory)
     signal.throwIfAborted()
     if (filesystem.device !== receipt.quota!.filesystem.device
@@ -71,7 +75,7 @@ async function removeDirectory(parent: FileHandle, name: string,
     signal.throwIfAborted()
     for (const entry of entries) {
       signal.throwIfAborted()
-      if (entry.isDirectory()) await removeDirectory(directory, entry.name, receipt, signal)
+      if (entry.isDirectory()) await removeDirectory(directory, entry.name, receipt, signal, false)
       else await unlink(anchored(directory, entry.name))
       signal.throwIfAborted()
     }

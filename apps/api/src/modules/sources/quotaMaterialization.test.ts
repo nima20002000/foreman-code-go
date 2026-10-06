@@ -77,6 +77,18 @@ async function fixture(slotCount = 2) {
 }
 
 describe('per-Job source quota ownership', () => {
+  it('reclaims normal readable dependency directories beneath the private owned namespace', async () => {
+    const f = await fixture(1)
+    const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    const dependency = join(sourceMaterializationParent(receipt), 'tree/node_modules/package')
+    await mkdir(dependency, { recursive: true, mode: 0o755 })
+    await chmod(dependency, 0o755)
+    await writeFile(join(dependency, 'index.js'), 'ordinary installed dependency', { mode: 0o644 })
+    await releaseMaterializationClaim(receipt, async () => 'released', f.quota)
+    const successor = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    expect(successor.quota).toEqual(receipt.quota)
+    expect(successor.materializationId).not.toBe(receipt.materializationId)
+  })
   it('releases and reuses a quota slot when the filesystem rejects cross-project renames', async () => {
     const f = await fixture(1)
     projectDirectories.push(...f.quota.pool.slots.map(slot => join(f.root, slot.namespace)))
