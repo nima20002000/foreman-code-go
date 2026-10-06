@@ -110,9 +110,13 @@ describe('installed worker Claude metadata and saved profile admission', () => {
         profile: async () => ({ installation: target.installation, override, profile: proof, qualification: null }) },
       approvedRoots: async () => roots, registry, journal: journal.conversations,
       request: async () => { throw new Error('No native application request is expected') }, signal: f.input.signal })
+    const originalHint = process.env.NATIVE_PROFILE_FIXTURE_HINT
     try {
+      process.env.NATIVE_PROFILE_FIXTURE_HINT = 'changed after allocation'
       const start = { correlationId: 'initial', instructionsDelivered: true }
-      const before = await allocation.start(start)
+      const starting = allocation.start(start)
+      await expect(starting).resolves.toMatchObject({ kind: 'agent-chat', configuration })
+      const before = await starting
       proof.checkedAt = '2026-10-05T01:00:00.000Z'
       expect(await allocation.start(start)).toEqual(before)
       proof.claudeProof!.pin.cliVersion = '2.1.286'
@@ -120,7 +124,11 @@ describe('installed worker Claude metadata and saved profile admission', () => {
       proof.claudeProof!.pin.cliVersion = '2.1.284'
       proof.claudeProof!.checks.readOnlySandbox!.state = 'failed'
       await expect(allocation.start(start)).rejects.toMatchObject({ result: { error: { code: 'CLAUDE_POLICY_UNQUALIFIED' } } })
-    } finally { await allocation.close() }
+    } finally {
+      if (originalHint === undefined) delete process.env.NATIVE_PROFILE_FIXTURE_HINT
+      else process.env.NATIVE_PROFILE_FIXTURE_HINT = originalHint
+      await allocation.close()
+    }
   })
   it('publishes SDK metadata without inventing CLI version, authentication or qualification', async () => {
     const f = await fixture()

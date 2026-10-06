@@ -28,7 +28,12 @@ import type { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { PostgresAgentChatRepository } from '../../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
 
-export const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
+export const deferred = <T>() => {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
 const createdAt = '2026-10-01T00:00:00.000Z'
 /** Synthetic installed/profile records and redacted SDK frames. Exercises actual
  * admission/domain/factory/manager classes without native or PostgreSQL claims. */
@@ -141,9 +146,17 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
   const setMcpServers = vi.fn(async () => ({ added: ['graphql'], removed: [], errors: {} }))
   const sdkQuery = vi.fn<ClaudeSdkClient['query']>(options => {
     const frames = queries.length ? new ClaudeBoundedQueue<unknown>(64) : initialFrames
-    const messages = options.prompt[Symbol.asyncIterator]()
+    const incoming = options.prompt[Symbol.asyncIterator]()
+    const first = incoming.next()
+    let firstRead = false
+    const messages: AsyncIterator<ClaudeSdkUserMessage> = { next() {
+      if (firstRead) return incoming.next()
+      firstRead = true
+      return first
+    } }
     queries.push({ frames, messages })
-    ready.resolve(messages)
+    // An inspection query can stay empty; readiness belongs to the SDK query that consumes the input.
+    void first.then(value => { if (!value.done) ready.resolve(messages) }, error => ready.reject(error))
     return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), close: () => frames.close(), interrupt: async () => undefined,
       initializationResult: async () => ({}), setMcpServers,
       mcpServerStatus: async () => [{ name: 'graphql', status: 'connected', config: { type: 'http', url: harness.mcpServers.graphql!.url }, tools: [] }] }

@@ -19,8 +19,8 @@ async function offeredTool(f: ReturnType<typeof productionClaudeFixture>, name: 
     })) observed.push(event.type)
   })()
   const message = (await (await f.ready.promise).next()).value!
-  void f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, claude_code_version: session.providerVersion, cwd: '/recorded/work' })
-  void f.frames.offer({ type: 'assistant', uuid: 'tool-reply', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+  await f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, claude_code_version: session.providerVersion, cwd: '/recorded/work' })
+  await f.frames.offer({ type: 'assistant', uuid: 'tool-reply', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
     parent_tool_use_id: null, message: { id: 'tool-api-message', content: [{ type: 'tool_use', id: 'observed-tool', name, input }] } })
   await vi.waitFor(() => expect(f.manager.nativeCallbackContext(session.nativeSessionId, 'observed-tool')).toBeDefined())
   const options = f.sdkQuery.mock.calls[0]![0].options as Options
@@ -33,7 +33,10 @@ async function offeredTool(f: ReturnType<typeof productionClaudeFixture>, name: 
     signal: controller.signal, mcpServer: provenance })
   return { session, message, output, observed, options, controller, hookInput, policy, permission,
     finish: async () => {
-      void f.frames.offer({ type: 'result', uuid: 'tool-result', session_id: session.nativeSessionId,
+      await f.frames.offer({ type: 'assistant', uuid: 'final-reply', session_id: session.nativeSessionId,
+        user_message_uuid: message.uuid, parent_tool_use_id: null,
+        message: { id: 'final-api-message', content: [{ type: 'text', text: 'DONE' }] } })
+      await f.frames.offer({ type: 'result', uuid: 'tool-result', session_id: session.nativeSessionId,
         user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'DONE' })
       await output
     } }

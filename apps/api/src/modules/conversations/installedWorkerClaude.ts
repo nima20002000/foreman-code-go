@@ -59,7 +59,9 @@ export async function allocateInstalledWorkerClaude(input: {
   const original = await profiles.capture()
   const binary = original.installation.launcher.resolvedLauncher
   if (!binary) throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'The installed Claude executable is unavailable.', 409)
-  const compiled = compileClaudeConfiguration(configuration.harness, binding.workingDirectory, original.accepted)
+  const nativeEnvironment = { ...process.env }
+  const compiled = compileClaudeConfiguration(configuration.harness, binding.workingDirectory,
+    original.accepted, nativeEnvironment)
   const reader = input.purpose === 'compaction-read'
   let owner = `conversation:${binding.owner.conversationId}`
   if (reader) owner = `conversation-read:${binding.owner.conversationId}:${randomUUID()}`
@@ -70,10 +72,14 @@ export async function allocateInstalledWorkerClaude(input: {
     signal?.throwIfAborted()
     await directory.assertCurrent(signal)
     const current = await profiles.capture()
-    const policy = compileClaudeConfiguration(configuration.harness, binding.workingDirectory, current.accepted)
-    if (!isDeepStrictEqual(policy, compiled)
-      || !isDeepStrictEqual(current.accepted.currentBinding.pin, original.accepted.currentBinding.pin)) throw new DomainError(
-      'HARNESS_PROFILE_UNAVAILABLE', 'The accepted Claude native policy changed.', 409)
+    const policy = compileClaudeConfiguration(configuration.harness, binding.workingDirectory,
+      current.accepted, nativeEnvironment)
+    const changedFields = (Object.keys(policy) as Array<keyof typeof policy>)
+      .filter(field => !isDeepStrictEqual(policy[field], compiled[field]))
+    const nativePinChanged = !isDeepStrictEqual(current.accepted.currentBinding.pin, original.accepted.currentBinding.pin)
+    if (changedFields.length || nativePinChanged) throw new DomainError(
+      'HARNESS_PROFILE_UNAVAILABLE', 'The accepted Claude native policy changed.', 409,
+      { changedFields, nativePinChanged })
   }
   const reserve = () => {
     if (reserved) return
