@@ -1236,7 +1236,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
-      { name: 'worker conversation callback admissions', run: async () => { workerChats?.close() } },
+      { name: 'worker conversation callback admissions', run: async () => { await workerChats?.close() } },
       { name: 'installed rsync canonical receiver', run: () => entrypoint ? entrypoint.close() : undefined },
       { name: 'workflow artifact byte receiver', run: async () => { await workflowArtifacts?.receiver.close() } },
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },

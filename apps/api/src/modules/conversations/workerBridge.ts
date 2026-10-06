@@ -6,6 +6,8 @@ import {
   type WorkerConversationProfileFacts,
   type WorkerClaudeAuthorityRequest,
 } from '@foreman-code/contracts/remote-execution-rpc'
+import { nativeMessageId } from '../harnesses/opencodeProtocol.js'
+import { MainWorkerOpenCodeFiles, type MainOpenCodeFilePorts } from './mainWorkerOpenCodeFiles.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import type { NativeSessionReference } from '@foreman-code/contracts'
@@ -22,6 +24,7 @@ export interface WorkerConversationCallbacks {
   submitted?(correlationId: string, identity: Pick<NativeHistory, 'nativeTurnId' | 'nativeSubmission'>): Promise<void>
   settingsApplied?(): Promise<void>
   files?: PrepareWorkerFiles
+  openCodeFiles?: MainOpenCodeFilePorts
 }
 export interface WorkerConversationChannel {
   binding: Readonly<DeviceSessionBinding>
@@ -38,6 +41,7 @@ interface Admission {
   closed: boolean
   claudeGeneration?: string
   files?: MainWorkerFiles
+  openCodeFiles?: MainWorkerOpenCodeFiles
 }
 function denied(): never {
   throw new DomainError('WORKER_CONVERSATION_CALLBACK_DENIED', 'The original admitted worker chat request is unavailable.', 403)
@@ -82,6 +86,9 @@ export class MainWorkerConversationBridge {
         return reply.payload
       })
     }
+    if (admission.callbacks.openCodeFiles) {
+      admission.openCodeFiles = new MainWorkerOpenCodeFiles(admission.callbacks.openCodeFiles)
+    }
     return {
       admissionId,
       async request(signal?: AbortSignal) {
@@ -91,9 +98,10 @@ export class MainWorkerConversationBridge {
         if (reply.bytes !== undefined) denied()
         return reply.payload
       },
-      close: () => {
+      close: async () => {
         admission.closed = true
         this.admissions.delete(admissionId)
+        await admission.openCodeFiles?.close()
       },
     }
   }
@@ -150,6 +158,27 @@ export class MainWorkerConversationBridge {
       const identity = admission.identities.get(callback.correlationId)
       const result = await admission.files.handle(callback.action, { session,
         clientCorrelationId: callback.correlationId, signal, nativeTurnId: identity?.nativeTurnId })
+      await this.current(admission, callback.binding, connection, signal)
+      return result
+    }
+    if (callback.method === 'conversation.opencode-files') {
+      const request = admission.request
+      const session = 'session' in request ? request.session : admission.session
+      const identity = callback.identity
+      if (!admission.openCodeFiles || callback.binding.harness !== 'opencode'
+        || callback.binding.appMcpAccess !== 'none'
+        || request.method !== 'conversation.start-turn' && request.method !== 'conversation.initial-turn'
+        || !('correlationId' in request) || identity.clientCorrelationId !== request.correlationId
+        || !session || session.nativeSessionId !== identity.nativeSessionId
+        || identity.nativeTurnId !== nativeMessageId(request.correlationId)
+        || identity.directory !== callback.binding.workingDirectory) denied()
+      const owner = callback.binding.owner
+      if (identity.ownerAgentId !== (owner.kind === 'operator' ? owner.operatorId : owner.agentId)) denied()
+      const submitted = admission.identities.get(request.correlationId)?.nativeTurnId
+      const result = await admission.openCodeFiles.handle(identity, callback.action, {
+        signal, acknowledgedTurnId: submitted,
+        readOnly: request.sessionMode === 'plan' || identity.configuration.nativeAgent === 'plan',
+      })
       await this.current(admission, callback.binding, connection, signal)
       return result
     }
@@ -219,8 +248,9 @@ export class MainWorkerConversationBridge {
     return task
   }
 
-  close() {
+  async close() {
     for (const admission of this.admissions.values()) admission.closed = true
+    await Promise.all([...this.admissions.values()].map(admission => admission.openCodeFiles?.close()))
     this.admissions.clear()
   }
 }

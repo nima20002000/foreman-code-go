@@ -24,6 +24,7 @@ import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import { MainWorkerConversationBridge, type WorkerConversationCallbacks, type WorkerConversationChannel } from './workerBridge.js'
 import { DomainError } from '../errors.js'
 import type { PrepareWorkerFiles } from './mainWorkerFiles.js'
+import type { MainOpenCodeFilePorts } from './mainWorkerOpenCodeFiles.js'
 
 function conflict(message: string): never { throw new DomainError('WORKER_CONVERSATION_CONFLICT', message, 409) }
 interface ManagerOptions {
@@ -37,6 +38,7 @@ interface ManagerOptions {
   claudeAuthority?(request: WorkerClaudeAuthorityRequest, signal: AbortSignal): Promise<unknown>
   sourceWorkingDirectory?: string
   files?: PrepareWorkerFiles
+  openCodeFiles?: MainOpenCodeFilePorts
   previousBinding?: WorkerConversationBinding
 }
 
@@ -65,6 +67,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     const lease = this.options.bridge.capture({ request: frame, channel: this.options.channel,
       callbacks: { ...(this.options.profile ? { profile: this.options.profile } : {}),
         ...(this.options.files ? { files: this.options.files } : {}),
+        ...(this.options.openCodeFiles ? { openCodeFiles: this.options.openCodeFiles } : {}),
         ...(this.options.claudeAuthority ? { claudeAuthority: this.options.claudeAuthority } : {}), ...options.callbacks },
       ...(options.recoveredSubmission ? { recoveredSubmission: options.recoveredSubmission } : {}),
       ...(options.recoveredTurnId ? { recoveredTurnId: options.recoveredTurnId } : {}),
@@ -72,17 +75,17 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     this.leases.add(lease)
     return lease
   }
-  private release(lease: ReturnType<MainWorkerConversationBridge['capture']>) {
-    lease.close()
+  private async release(lease: ReturnType<MainWorkerConversationBridge['capture']>) {
+    await lease.close()
     this.leases.delete(lease)
   }
-  private releaseCredential() {
-    if (this.credentialLease) this.release(this.credentialLease)
+  private async releaseCredential() {
+    if (this.credentialLease) await this.release(this.credentialLease)
     this.credentialLease = undefined
   }
   private async request(input: Record<string, unknown>, signal?: AbortSignal) {
     const lease = this.capture(this.frame(input))
-    try { return await lease.request(signal) } finally { this.release(lease) }
+    try { return await lease.request(signal) } finally { await this.release(lease) }
   }
   private adopt(raw: unknown) {
     const value = z.object({ receipt: WorkerConversationReceiptSchema.optional() }).passthrough().parse(raw)
@@ -145,7 +148,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
       }
       this.session = structuredClone(session)
       await this.options.observeSession?.(session)
-      this.releaseCredential()
+      await this.releaseCredential()
     } } })
     try {
       const receipt = this.adopt(await lease.request(signal))
@@ -156,7 +159,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         delete this.options.previousBinding
       }
       return receipt.session
-    } finally { this.release(lease) }
+    } finally { await this.release(lease) }
   }
   async createSession(start: NativeSessionStart, signal?: AbortSignal) { return this.open(start, 'create', undefined, signal) }
   async attachSession(session: NativeSessionReference, start: NativeSessionStart, signal?: AbortSignal) {
@@ -227,12 +230,12 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     }))
     try {
       const result = z.object({ acknowledged: z.literal(true) }).strict().parse(await lease.request(signal))
-      this.releaseCredential()
+      await this.releaseCredential()
       // Before native SID persistence, the normal credential relay needs its live startup admission.
-      if (this.session) this.release(lease)
+      if (this.session) await this.release(lease)
       else this.credentialLease = lease
       return result
-    } catch (error) { this.release(lease); throw error }
+    } catch (error) { await this.release(lease); throw error }
   }
 
   private async *stream(frame: WorkerConversationRpcRequest, input: NativeTurnInput,
@@ -243,7 +246,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         await initial.onSessionObserved(session)
         this.session = structuredClone(session)
         await this.options.observeSession?.(session)
-        this.releaseCredential()
+        await this.releaseCredential()
       },
       submitted: async (_correlationId, identity) => {
         if (identity.nativeTurnId) await input.onSubmitted?.(identity.nativeTurnId)
@@ -282,7 +285,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         if (turn?.status === 'uncertain') conflict('The original worker turn needs native recovery; input was not replayed.')
         await delay(100, undefined, { signal: pollSignal })
       }
-    } finally { this.release(lease) }
+    } finally { await this.release(lease) }
   }
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.assertSession(session)
@@ -334,7 +337,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     if (live) {
       const history = this.historyResponse(await live.request(signal))
       if (this.receipt?.turns.find(turn => turn.correlationId === correlationId)?.status === 'completed') {
-        this.release(live)
+        await this.release(live)
         this.recoveredCallbacks.delete(correlationId)
       }
       return history
@@ -349,14 +352,14 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     try {
       const history = this.historyResponse(await lease.request(signal))
       const previous = this.recoveredCallbacks.get(correlationId)
-      if (previous) this.release(previous)
+      if (previous) await this.release(previous)
       this.recoveredCallbacks.delete(correlationId)
       const turn = this.receipt?.turns.find(turn => turn.correlationId === correlationId)
       if ((submission || recoveredTurnId) && turn?.status !== 'completed') this.recoveredCallbacks.set(correlationId, lease)
-      else this.release(lease)
+      else await this.release(lease)
       return history
     } catch (error) {
-      this.release(lease)
+      await this.release(lease)
       throw error
     }
   }
@@ -449,7 +452,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         state = await this.reconcileCompaction(session, state, signal)
         if (state.status === 'uncertain') return state
       }
-    } finally { this.release(lease) }
+    } finally { await this.release(lease) }
   }
   async reconcileCompaction(session: NativeSessionReference, state: CompactionState, signal?: AbortSignal) {
     this.assertSession(session)
@@ -480,7 +483,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
       this.preparationActive = false
     }
     this.lifetime.abort(new DomainError('ENGINE_RESTART', 'Main detached its worker conversation observer.', 503))
-    for (const lease of this.leases) this.release(lease)
+    for (const lease of this.leases) await this.release(lease)
     this.recoveredCallbacks.clear()
     this.credentialLease = undefined
   }

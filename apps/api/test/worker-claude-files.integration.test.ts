@@ -107,7 +107,7 @@ async function fixture(readOnly: boolean) {
   const client = new Client({ name: 'Worker file caller', version: '1.0.0' })
   resources.close = async () => {
     lifetime.abort()
-    lease.close()
+    await lease.close()
     try { await workerFiles.close() }
     finally { try { await client.close() } finally { await mainFiles.close() } }
   }
@@ -171,7 +171,7 @@ describe.skipIf(!postgresEnabled)('Claude worker file calls on admitted native m
     await f.acknowledge()
     expect((await f.call('files.read', f.ref)).isError).not.toBe(true)
     expect((await f.call('files.create_working_copy', {})).isError).toBe(true)
-    f.lease.close()
+    await f.lease.close()
     expect((await f.call('files.read', f.ref)).isError).toBe(true)
     await f.mainFiles.close()
     const live = await f.db.pool.query('select count(*)::int as count from file_tool_sessions where revoked_at is null')

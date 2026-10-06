@@ -3,6 +3,7 @@ import { WorkerConversationProfileFactsSchema,
   type WorkerConversationRpcRequest, type WorkerConversationProfileFacts } from '@foreman-code/contracts/remote-execution-rpc'
 import type { WorkerClaudeAuthorityRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { WorkerConversationFileAction, WorkerConversationFileCopy } from '@foreman-code/contracts/remote-execution-rpc'
+import type { WorkerOpenCodeFileAction, WorkerOpenCodeFileIdentity } from '@foreman-code/contracts/remote-execution-rpc'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { WorkerConversationHostPorts } from './workerHost.js'
@@ -21,6 +22,8 @@ export function workerConversationCallbacks(input: {
     action: WorkerConversationFileAction, signal: AbortSignal): Promise<unknown>
   authorizeCopy(source: WorkerConversationRpcRequest, copy: WorkerConversationFileCopy,
     signal: AbortSignal): Promise<void>
+  openCodeFiles(source: WorkerConversationRpcRequest, identity: WorkerOpenCodeFileIdentity,
+    action: WorkerOpenCodeFileAction, signal: AbortSignal): Promise<unknown>
 } {
   const request = async (source: WorkerConversationRpcRequest, payload: Record<string, unknown>, signal: AbortSignal) => {
     if (!source.admissionId) throw new DomainError('WORKER_CONVERSATION_CALLBACK_DENIED',
@@ -38,6 +41,8 @@ export function workerConversationCallbacks(input: {
     return reply.payload
   }
   return {
+    openCodeFiles: (source, identity, action, signal) => request(source,
+      { method: 'conversation.opencode-files', identity, action }, signal),
     files: (source, session, correlationId, action, signal) => request(source,
       { method: 'conversation.files', session, correlationId, action }, signal),
     authorizeCopy: async (source, copy, signal) => {

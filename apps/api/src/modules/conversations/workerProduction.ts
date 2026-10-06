@@ -35,6 +35,7 @@ import type { PrepareWorkerFiles } from './mainWorkerFiles.js'
 import { createMainWorkerClaudeFiles } from './mainWorkerClaudeFiles.js'
 import type { AgentFileToolService } from '../files/tools/service.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
+import { resolveOpenCodeFileAdmission, adoptOpenCodePublications } from '../harnesses/opencodeFiles/postgres.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -233,6 +234,12 @@ export function createProductionWorkerConversations(input: {
         sourceWorkingDirectory: options.workingDirectory,
         ...(configuration.harness.harness === 'codex' && binding.appMcpAccess === 'none' && input.files
           ? { files: input.files(options.conversationId, configuration, binding.workingDirectory) } : {}),
+        ...(configuration.harness.harness === 'opencode' && binding.owner.kind === 'agent' && input.fileService
+          ? { openCodeFiles: {
+            resolve: (identity) => resolveOpenCodeFileAdmission(input.pool, options.conversationId, identity),
+            service: input.fileService,
+            adopt: (context) => adoptOpenCodePublications(input.pool, context),
+          } } : {}),
         ...(configuration.harness.harness === 'claude' ? { claudeAuthority: async (
           request: import('@foreman-code/contracts/remote-execution-rpc').WorkerClaudeAuthorityRequest,
           effectSignal: AbortSignal) => {

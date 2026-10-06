@@ -67,7 +67,7 @@ it('recovers the worker’s persisted Claude boundary after Main restarts withou
     expect(allocations).toBe(0)
   } finally {
     await manager.dispose()
-    bridge.close()
+    await bridge.close()
     await host.shutdown()
     await journal.close()
     await rm(root, { recursive: true, force: true })

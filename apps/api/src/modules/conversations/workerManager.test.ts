@@ -111,7 +111,7 @@ it('carries Plan and context through the issued-request bridge without creating 
     expect((await journal.conversations.read(f.binding))?.closed).toBe(false)
   } finally {
     await manager.dispose()
-    bridge.close()
+    await bridge.close()
     await host.shutdown()
     await journal.close()
     await rm(root, { recursive: true, force: true })
@@ -141,7 +141,7 @@ it('maps the admitted Main startup directory to the actual selected worker direc
     await expect(manager.createSession({ ...start, workingDirectory: '/foreign/startup' }))
       .rejects.toThrow('startup differs')
     expect(requests).toHaveLength(1)
-  } finally { await manager.dispose(); bridge.close() }
+  } finally { await manager.dispose(); await bridge.close() }
 })
 
 it('retains a pre-message credential admission until the prepared owner is disposed', async () => {
@@ -162,7 +162,7 @@ it('retains a pre-message credential admission until the prepared owner is dispo
   await manager.dispose()
   expect(requests.map(value => value.method)).toEqual(['conversation.refresh-mcp', 'conversation.release-preparation'])
   await expect(bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 403 })
-  bridge.close()
+  await bridge.close()
 })
 
 it('retains recovered callback admission until native settlement and rechecks revoked grants', async () => {
@@ -217,5 +217,5 @@ it('retains recovered callback admission until native settlement and rechecks re
     expect(requests.map(request => request.method)).toEqual([
       'conversation.open', 'conversation.reconcile', 'conversation.respond', 'conversation.reconcile',
     ])
-  } finally { await manager.dispose(); bridge.close() }
+  } finally { await manager.dispose(); await bridge.close() }
 })

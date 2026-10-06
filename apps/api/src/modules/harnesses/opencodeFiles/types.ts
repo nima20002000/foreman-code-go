@@ -42,8 +42,9 @@ export interface OpenCodeExecutionFiles {
 }
 
 export type OpenCodeFileService = Pick<AgentFileToolService,
-  'artifacts' | 'list' | 'read' | 'createWorkingCopy' | 'publish' | 'publishedForTurn'>
+  'list' | 'read' | 'createWorkingCopy' | 'publish' | 'publishedForTurn'>
   & Partial<Pick<AgentFileToolService, 'writeWorkingCopy' | 'applyFormatEdit'>>
+  & { artifacts: Pick<AgentFileToolService['artifacts'], 'get' | 'beginWrite' | 'abortWrite' | 'completeWrite' | 'readSnapshot'> }
   & { sessions: Pick<AgentFileToolService['sessions'],
     'issueForAcceptedSession' | 'authenticate' | 'authorizeAccepted' | 'revoke'> }
 

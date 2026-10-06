@@ -30,7 +30,7 @@ it('authorizes only the Main-issued request and rechecks its live grants', async
     admissionId: f.lease.admissionId, prompt: 'Replacement task' } })).rejects.toMatchObject({ status: 403 })
   f.current.mockRejectedValueOnce(new Error('Principal revoked'))
   await expect(f.invoke({ method: 'conversation.authorize', request: frame })).rejects.toThrow('Principal revoked')
-  f.lease.close()
+  await f.lease.close()
 })
 
 it('allows a scoped access change only through its issued attachment or credential-delivery admission', async () => {
@@ -48,7 +48,7 @@ it('allows a scoped access change only through its issued attachment or credenti
   await expect(authorize()).resolves.toBeUndefined()
   current.mockRejectedValueOnce(new Error('Sender revoked'))
   await expect(authorize()).rejects.toThrow('Sender revoked')
-  lease.close()
+  await lease.close()
   await expect(authorize()).rejects.toMatchObject({ status: 403 })
   const inspection = bridge.capture({ request: { method: 'conversation.capabilities', binding: next,
     configuration: f.configuration }, current, channel })
@@ -73,7 +73,7 @@ it('uses the current callback signal after an earlier request signal has ended',
   const stopped = new AbortController()
   stopped.abort(new Error('Current callback ended'))
   await expect(bridge.handle(callback, f.connection, stopped.signal)).rejects.toThrow('Current callback ended')
-  lease.close()
+  await lease.close()
 })
 
 it('requires a persisted Claude message acknowledgement before authorizing native callbacks', async () => {
@@ -104,7 +104,7 @@ it('requires a persisted Claude message acknowledgement before authorizing nativ
     .rejects.toMatchObject({ status: 403 })
   current.mockRejectedValueOnce(new Error('Original sender revoked'))
   await expect(invoke(validate)).rejects.toThrow('Original sender revoked')
-  lease.close()
+  await lease.close()
   await expect(invoke(validate)).rejects.toMatchObject({ status: 403 })
 })
 
@@ -119,7 +119,7 @@ it('never lets a read-only conversation lease supply new Claude message authorit
   await expect(bridge.handle({ method: 'conversation.claude-authority', binding, admissionId: lease.admissionId,
     request: { phase: 'admission' } }, f.connection, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 403 })
   expect(authority).not.toHaveBeenCalled()
-  lease.close()
+  await lease.close()
 })
 
 it('keeps recovered Claude callbacks on the submitted message and current sender grants', async () => {
@@ -146,7 +146,7 @@ it('keeps recovered Claude callbacks on the submitted message and current sender
   current.mockRejectedValueOnce(new Error('Sender revoked'))
   await expect(invoke(identity)).rejects.toThrow('Sender revoked')
   expect(authority).toHaveBeenCalledOnce()
-  lease.close()
+  await lease.close()
   await expect(invoke(identity)).rejects.toMatchObject({ status: 403 })
   expect(() => bridge.capture({ request, current, channel,
     recoveredSubmission: { ...submission, nativeSessionId: 'another-session' } })).toThrow()
@@ -169,7 +169,7 @@ it('rejects unissued admissions, foreign conversations and other authenticated g
   await expect(f.bridge.handle(callback, { ...f.connection, connectionEpoch: randomUUID() }, AbortSignal.timeout(1000)))
     .rejects.toMatchObject({ status: 403 })
   expect(f.submitted).not.toHaveBeenCalled()
-  f.lease.close()
+  await f.lease.close()
 })
 
 it('preserves provider identity and refuses a different message, turn or correlation', async () => {
@@ -184,7 +184,7 @@ it('preserves provider identity and refuses a different message, turn or correla
     clientCorrelationId: 'original-correlation', nativeSessionId: 'foreign-session', nativeMessageId: 'observed-message' } } }))
     .rejects.toMatchObject({ status: 403 })
   expect(f.submitted).toHaveBeenCalledOnce()
-  f.lease.close()
+  await f.lease.close()
 })
 
 it('does not acknowledge failed persistence and rejects callbacks after Main detaches', async () => {
@@ -193,7 +193,7 @@ it('does not acknowledge failed persistence and rejects callbacks after Main det
   f.submitted.mockRejectedValueOnce(new Error('Persistence failed'))
   await expect(f.invoke(callback)).rejects.toThrow('Persistence failed')
   expect(await f.invoke(callback)).toEqual({ acknowledged: true })
-  f.lease.close()
+  await f.lease.close()
   await expect(f.invoke(callback)).rejects.toMatchObject({ status: 403 })
   expect(f.submitted).toHaveBeenCalledTimes(2)
 })
@@ -212,7 +212,7 @@ it('keeps read admissions unable to claim execution or applied settings', async 
   expect(observed).not.toHaveBeenCalled()
   expect(applied).not.toHaveBeenCalled()
   reader.close()
-  f.lease.close()
+  await f.lease.close()
 })
 
 it('forwards the native applied-settings acknowledgement only for the admitted turn', async () => {
@@ -220,7 +220,7 @@ it('forwards the native applied-settings acknowledgement only for the admitted t
   expect(await f.invoke({ method: 'conversation.settings-applied', correlationId: 'original-correlation' }))
     .toEqual({ acknowledged: true })
   expect(f.applied).toHaveBeenCalledOnce()
-  f.bridge.close()
+  await f.bridge.close()
   await expect(f.lease.request()).rejects.toMatchObject({ status: 403 })
 })
 
@@ -238,5 +238,5 @@ it('keeps native profile reads on a live Main-issued request and rechecks the ca
   expect(profile).toHaveBeenCalledOnce()
   reader.close()
   await expect(f.bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 403 })
-  f.lease.close()
+  await f.lease.close()
 })

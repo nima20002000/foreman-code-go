@@ -14,6 +14,7 @@ import { CompactionStateSchema, SessionModeSchema, SessionPreferencesSchema } fr
 import { PairedMcpEndpointSchema } from './mcpDetection.js'
 import { AgentChatDirectoryBindingSchema } from './agentChat.js'
 import { FileMediaTypeSchema, MAX_FILE_BYTES, MessageAttachmentRefsSchema } from './files.js'
+import { WorkerOpenCodeFileIdentitySchema, WorkerOpenCodeFileActionSchema } from './workerOpenCodeFiles.js'
 
 const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -235,6 +236,8 @@ export type WorkerClaudeAuthorityRequest = z.infer<typeof WorkerClaudeAuthorityR
 export const WorkerClaudeCallbackAuthoritySchema = z.object({ ownerPrincipalId: id, attemptId: id }).strict()
 export const WorkerClaudeAuthorizationSchema = z.object({ authorized: z.literal(true) }).strict()
 export const WorkerConversationCallbackSchema = z.discriminatedUnion('method', [
+  z.object({ method: z.literal('conversation.opencode-files'), ...callback,
+    identity: WorkerOpenCodeFileIdentitySchema, action: WorkerOpenCodeFileActionSchema }).strict(),
   z.object({ method: z.literal('conversation.files'), ...callback,
     session: z.lazy(() => NativeSessionReferenceSchema), correlationId: id,
     action: WorkerConversationFileActionSchema }).strict(),

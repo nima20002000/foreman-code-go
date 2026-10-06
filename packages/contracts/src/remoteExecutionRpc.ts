@@ -6,6 +6,7 @@ import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, Approva
 import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema, CurrentAcceptedNodePlacementSchema, CurrentDispatchIntentSchema } from './nodePlacement.js'
 import { RemoteOwnerControlSchema, RemoteOwnerReconciliationSchema, RemoteApplicationAccessSchema } from './remoteExecution.js'
 export * from './workerConversations.js'
+export * from './workerOpenCodeFiles.js'
 const binding = { intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, executionPlacement: NativeExecutionPlacementSchema.optional() }
 export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.enum(['physical-readout','physical-ack']), ...binding, receiptSequence: z.number().int().positive(),

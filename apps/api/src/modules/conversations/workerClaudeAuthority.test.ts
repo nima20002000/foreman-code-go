@@ -51,7 +51,7 @@ it('reauthorizes the original callback on a replacement observer without sending
     expect(await f.controls.bridge.beforeToolUse(f.identity, 'Read', { file_path: '/approved/read-only' })).toEqual({})
     expect(f.request.mock.calls.at(-1)?.[0]).toEqual(f.recovery)
     expect(f.nativeStart).toHaveBeenCalledOnce()
-  } finally { await f.stream.return?.(); f.controls.bridge.close() }
+  } finally { await f.stream.return?.(); await f.controls.bridge.close() }
 })
 
 it('rejects a different native message or sender while retaining the original callback owner', async () => {
@@ -66,7 +66,7 @@ it('rejects a different native message or sender while retaining the original ca
     expect(await f.controls.bridge.beforeToolUse(f.identity, 'Read', {})).toEqual({})
     expect(f.request.mock.calls.at(-1)?.[0]).toEqual(f.source)
     expect(f.nativeStart).toHaveBeenCalledOnce()
-  } finally { await f.stream.return?.(); f.controls.bridge.close() }
+  } finally { await f.stream.return?.(); await f.controls.bridge.close() }
 })
 
 it('does not replace callback admission when the current sender is revoked', async () => {
@@ -78,7 +78,7 @@ it('does not replace callback admission when the current sender is revoked', asy
       .rejects.toThrow('Original sender revoked')
     expect(await f.controls.bridge.beforeToolUse(f.identity, 'Read', {})).toEqual({})
     expect(f.request.mock.calls.at(-1)?.[0]).toEqual(f.source)
-  } finally { await f.stream.return?.(); f.controls.bridge.close() }
+  } finally { await f.stream.return?.(); await f.controls.bridge.close() }
 })
 
 it('offers no worker input without a Main native-message acknowledgement callback', async () => {
@@ -89,7 +89,7 @@ it('offers no worker input without a Main native-message acknowledgement callbac
     await expect(stream.next()).rejects.toMatchObject({ code: 'CLAUDE_NATIVE_MESSAGE_NOT_ADMITTED' })
     expect(f.nativeStart).not.toHaveBeenCalled()
     expect(f.request).not.toHaveBeenCalled()
-  } finally { await stream.return?.(); f.controls.bridge.close() }
+  } finally { await stream.return?.(); await f.controls.bridge.close() }
 })
 
 it('forwards file calls only for the acknowledged root message and original sender', async () => {
@@ -111,7 +111,7 @@ it('forwards file calls only for the acknowledged root message and original send
         .rejects.toMatchObject({ code: 'CLAUDE_FILE_NATIVE_CONTEXT_REQUIRED' })
     }
     expect(f.request).toHaveBeenCalledTimes(count)
-  } finally { await f.stream.return?.(); f.controls.bridge.close() }
+  } finally { await f.stream.return?.(); await f.controls.bridge.close() }
   await expect(f.controls.file(f.identity, 'files.read', {}, signal))
     .rejects.toMatchObject({ code: 'CLAUDE_CALLBACK_SCOPE_DENIED' })
 })

@@ -71,7 +71,7 @@ async function fixture(options: { repeatCopies?: boolean } = {}) {
     identity: { nativeTurnId: 'native-turn' } })
   return { ...f, ports, directory, lease, invoke, prepare, submitted, sentCopies, current, physical,
     bridge, worker, channel, prepareFiles,
-    async close() { lease.close(); await worker.close(); await rm(directory, { recursive: true, force: true }) } }
+    async close() { await lease.close(); await worker.close(); await rm(directory, { recursive: true, force: true }) } }
 }
 
 it('delivers immutable worker copies and uses the persisted native ACK for file tools', async () => {
@@ -143,7 +143,7 @@ it('rejects unsolicited host copies and a replay through an ended or different c
       action: { phase: 'publications' } }
     await expect(f.invoke(callback, { ...f.connection, connectionGeneration: f.connection.connectionGeneration + 1 }))
       .rejects.toMatchObject({ status: 403 })
-    f.lease.close()
+    await f.lease.close()
     await expect(f.invoke(callback)).rejects.toMatchObject({ status: 403 })
   } finally { await f.close() }
 })
@@ -183,7 +183,7 @@ it('rejects file authority on read-only leases and on management-MCP sessions', 
         session: f.session, correlationId: 'message', action: { phase: 'prepare', executionHostId: 'host' } },
       f.connection, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 403 })
       expect(prepare).not.toHaveBeenCalled()
-    } finally { lease.close() }
+    } finally { await lease.close() }
   }
 })
 
@@ -199,7 +199,7 @@ it('restores file callbacks for the recorded turn while retaining its original w
     const path = (JSON.parse(attachment) as { path: string }).path
     await f.submitted()
     await turn!.activate('native-turn')
-    f.lease.close()
+    await f.lease.close()
     const request: Extract<WorkerConversationRpcRequest, { method: 'conversation.history' | 'conversation.reconcile' }> = {
       method: 'conversation.reconcile', binding: f.binding, session: f.session, correlationId: 'message',
     }
@@ -220,5 +220,5 @@ it('restores file callbacks for the recorded turn while retaining its original w
     await expect(turn!.nativeInput('Read the attached notes.')).rejects.toMatchObject({ status: 403 })
     await turn!.close()
     await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
-  } finally { recovery?.close(); await f.close() }
+  } finally { await recovery?.close(); await f.close() }
 })
