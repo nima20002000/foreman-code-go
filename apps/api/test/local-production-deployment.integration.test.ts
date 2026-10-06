@@ -42,22 +42,30 @@ it('keeps source development commands usable after successful and failed product
     ].join('\n') + '\n')
     await writeFile(join(api, 'package.json'), JSON.stringify({
       name: '@foreman-code/api', private: true, version: '1.0.0', type: 'module',
-      main: 'dist/index.js', files: ['dist'], dependencies: { '@foreman-code/contracts': 'workspace:*' },
+      main: 'dist/index.js', files: ['dist'], dependencies: {
+        '@foreman-code/contracts': 'workspace:*', '@modelcontextprotocol/client': '2.0.0',
+      },
     }))
     await writeFile(join(contracts, 'package.json'), JSON.stringify({ name: '@foreman-code/contracts',
       private: true, version: '1.0.0', type: 'module', main: 'dist/index.js', files: ['dist'] }))
     await writeFile(join(contracts, 'dist/index.js'), 'export const contractValue = () => "production API available"\n')
     await writeFile(join(api, 'dist/index.js'),
-      'import { contractValue } from "@foreman-code/contracts"; export const deployed = () => contractValue()\n')
+      'import { Client } from "@modelcontextprotocol/client";\n'
+      + 'import { contractValue } from "@foreman-code/contracts";\n'
+      + 'export async function deployed() {\n'
+      + '  const client = new Client({ name: "production-deployment-fixture", version: "1.0.0" });\n'
+      + '  await client.close();\n'
+      + '  return contractValue();\n'
+      + '}\n')
     await run('corepack', ['pnpm', 'install'])
     await verifyDevelopment()
     await deployProductionApi(run, destination)
     const deployed = await import(pathToFileURL(join(destination, 'dist/index.js')).href)
-    expect(deployed.deployed()).toBe('production API available')
+    expect(await deployed.deployed()).toBe('production API available')
     await writeFile(join(contracts, 'dist/index.js'), 'export const contractValue = () => "rebuilt contracts"\n')
     await writeFile(join(api, 'dist/index.js'), 'export const deployed = () => "rebuilt source API"\n')
     const { stdout } = await execute(process.execPath, ['--input-type=module', '-e',
-      'const module = await import(process.argv[1]); console.log(module.deployed());',
+      'const module = await import(process.argv[1]); console.log(await module.deployed());',
       pathToFileURL(join(destination, 'dist/index.js')).href])
     expect(stdout.trim()).toBe('production API available')
     await verifyDevelopment()
