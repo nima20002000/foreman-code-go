@@ -53,6 +53,10 @@ export type InstalledJobRuntimeCaptureInput = z.infer<typeof InstalledJobRuntime
 export const InstalledJobRuntimeCaptureInputRecordSchema = z.union([
   InstalledJobRuntimeCaptureInputSchema, InstalledVerificationRuntimeCaptureInputSchema,
 ])
+export const InstalledJobRuntimeRefreshInputSchema = z.object({
+  expectedConfigurationSha256: digest,
+  captureInput: InstalledJobRuntimeCaptureInputRecordSchema,
+}).strict()
 export const InstalledJobRuntimeConfigurationRecordSchema = z.union([
   InstalledJobRuntimeConfigurationSchema, InstalledVerificationRuntimeConfigurationSchema,
 ])

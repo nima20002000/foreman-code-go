@@ -262,6 +262,63 @@ test('packaged capture uses the passive helper, publishes protected pins once an
   assert.equal(hash(await readFile(path)), hash(bytes)); await f.unchanged();
 });
 
+test('reviewed refresh preserves the previous configuration and rejects stale digests or unfinished work', { skip: !artifact }, async t => {
+  for (const kind of ['refresh', 'stale-digest', 'unfinished-work', 'active-worker']) await t.test(kind, async child => {
+    const f = await fixture(child);
+    assert.equal(f.run().status, 0);
+    const configurationPath = join(f.state, 'job-runtime.json');
+    const original = await readFile(configurationPath);
+    const journal = { schemaVersion: 1, receipts: [], qualificationReceipts: [], reconciliations: [],
+      jobOutputs: [], jobLogs: [], jobOwners: [] };
+    for (const name of ['workflow-operations.json', 'job-runtime-operations.json']) {
+      await writeFile(join(f.state, name), JSON.stringify(journal), { mode: 0o600 });
+    }
+    if (kind === 'unfinished-work') {
+      const target = f.input.target;
+      journal.receipts.push({ schemaVersion: 1,
+        intent: { schemaVersion: 1, protocolVersion: 1, mainId: target.mainInstallationId,
+          runId: 'run', nodeId: 'node', executionId: 'execution', occurrenceId: null, occurrenceIndex: 0,
+          technicalAttempt: 1, attemptId: 'attempt', operationId: 'operation', bindingHash: 'a'.repeat(64),
+          inputDigest: `sha256:${'a'.repeat(64)}`, owner: { grantId: 'grant', epoch: '1' } },
+        connection: { mainId: target.mainInstallationId, deviceId: target.hostRef.deviceId,
+          workerInstallationId: target.registration.workerInstallationId, bootId: randomUUID(),
+          keyRevision: 1, authorizationRevision: 3, connectionGeneration: 1 },
+        workerIncarnationId: randomUUID(), sequence: 1, phase: 'received', entryAttempted: false,
+        turnEntryAttempted: false, stopFence: false, controls: [] });
+      await writeFile(join(f.state, 'workflow-operations.json'), JSON.stringify(journal));
+    }
+    const reviewed = { expectedConfigurationSha256: kind === 'stale-digest' ? '0'.repeat(64) : hash(original),
+      captureInput: { ...f.input, toolchainDigest: '1'.repeat(64) } };
+    await writeFile(f.inputPath, JSON.stringify(reviewed), { mode: 0o600 });
+    const unlock = kind === 'active-worker' ? await acquireWorkerLock(f.state) : undefined;
+    let result;
+    try {
+      result = spawnSync(process.execPath, [join(artifact, 'src/cli.mjs'), 'refresh-job-runtime',
+        '--state', f.state, '--input', f.inputPath],
+      { encoding: 'utf8', timeout: 15000, env: { PATH: '/usr/bin:/bin', HOME: f.directory, LANG: 'C.UTF-8' } });
+    } finally { await unlock?.(); }
+    if (kind !== 'refresh') {
+      assert.equal(result.status, 1);
+      const codes = { 'stale-digest': 'job_runtime_configuration_conflict',
+        'unfinished-work': 'job_runtime_capture_failed', 'active-worker': 'worker_already_running' };
+      assert.equal(result.stderr.trim(), codes[kind]);
+      assert.deepEqual(await readFile(configurationPath), original);
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(result.stdout);
+    assert.equal(receipt.refreshed, true);
+    assert.equal(receipt.executionAuthorized, false);
+    assert.deepEqual(await readFile(receipt.previousConfigurationPath), original);
+    const updated = JSON.parse(await readFile(configurationPath, 'utf8'));
+    assert.equal(updated.pins.toolchainDigest, reviewed.captureInput.toolchainDigest);
+    assert.equal((await stat(configurationPath)).nlink, 1);
+    for (const name of ['identity.json', 'pairing.json', 'approved-roots.json']) {
+      assert.equal(hash(await readFile(join(f.state, name))), f.originalFiles[name]);
+    }
+  });
+});
+
 test('packaged capture rejects private-file and destination violations without altering state', { skip: !artifact }, async t => {
   for (const kind of ['input-mode', 'input-symlink', 'input-hardlink', 'existing-output', 'output-symlink', 'missing-identity', 'missing-roots']) await t.test(kind, async child => {
     const f = await fixture(child);

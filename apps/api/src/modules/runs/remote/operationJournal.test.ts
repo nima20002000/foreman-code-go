@@ -90,6 +90,15 @@ describe('durable remote ownership', () => {
     await expect(RemoteOperationJournal.open(path, { assertExclusiveOwner: () => {} }))
       .rejects.toMatchObject({ code: 'EEXIST' })
   })
+  it('allows runtime refresh only after all persisted work has reached its terminal fence', async () => {
+    const { journal } = await setup()
+    await expect(journal.assertRuntimeQuiescent()).resolves.toBeUndefined()
+    await journal.accept(intent, connection, randomUUID())
+    await expect(journal.assertRuntimeQuiescent()).rejects.toThrow()
+    await journal.control(stop)
+    await journal.terminal('operation', { kind: 'not_started', closureEvidenceDigest: digest })
+    await expect(journal.assertRuntimeQuiescent()).resolves.toBeUndefined()
+  })
   it('respond reserves one exact native question and rejects stale/replacement questions', async () => {
     const { journal } = await setup(); await journal.accept(intent, connection, randomUUID()); await journal.reserveEntry('operation'); await journal.acknowledgeStart('operation', native); await journal.markRunning('operation')
     await journal.interaction('operation', { interactionId: 'question', interactionRevision: '2', nativeInteractionId: 'native-question', native })

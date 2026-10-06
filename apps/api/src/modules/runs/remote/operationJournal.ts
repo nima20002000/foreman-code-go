@@ -293,8 +293,22 @@ export class RemoteOperationJournal {
   async pendingQualifications(): Promise<QualificationReceipt[]> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
-    return structuredClone(this.data.qualificationReceipts.filter(receipt => receipt.phase !== 'received'
-      && (receipt.phase !== 'closed' || !receipt.result || receipt.quotaClaims.length)))
+    return structuredClone(this.data.qualificationReceipts.filter(receipt =>
+      receipt.phase !== 'closed' || !receipt.result || receipt.quotaClaims.length))
+  }
+  async assertRuntimeQuiescent(): Promise<void> {
+    await this.tail
+    if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
+    const qualificationPending = this.data.qualificationReceipts.some(receipt =>
+      receipt.phase !== 'closed' || !receipt.result || receipt.quotaClaims.length)
+    const executionPending = this.data.receipts.some(receipt => receipt.phase !== 'confirmed_terminal'
+      || 'kind' in receipt && receipt.publication !== 'complete')
+    const nativePending = this.data.jobOwners.some(owner => owner.launches.some(launch => !launch.closed)
+      || owner.container && owner.container.certificate?.lifecycle !== 'closed'
+      || owner.verification && !owner.verification.finalizedAt)
+    if (qualificationPending || executionPending || nativePending) {
+      throw new Error('Installed runtime still has unfinished work.')
+    }
   }
   async qualificationStatus(operationId: string): Promise<QualificationReceipt | null> {
     await this.tail
