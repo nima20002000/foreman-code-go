@@ -7,6 +7,8 @@ import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { sessionControlHeaders } from './session-control-client.mjs'
 import { assertCodexContextBudget } from './native-context-budget.mjs'
+import { sessionControlProduct } from './session-control-product.mjs'
+import { sessionControlTransport } from './session-control-transport.mjs'
 
 // Run against the integrated production-wired app and twelve separately owned native chats.
 // Tokens are referenced by environment-variable name in the manifest and never written to the report.
@@ -19,6 +21,7 @@ assert.equal(matrix.sourceCommit, source.stdout.trim(), 'The source commit does 
 const pkg = JSON.parse(await readFile(new URL('../../apps/api/package.json', import.meta.url), 'utf8'))
 assert.equal(matrix.rows.length, 12, 'Provide Operator and node chats for each harness on main and a paired worker.')
 for (const row of matrix.rows) {
+  assert.equal(row.mcpTokenEnv, matrix.mcpTokenEnv, 'Use the same creating MCP caller for the prepared chats.')
   if (row.harness === 'claude') assert.ok(['haiku', 'claude-haiku-4-5-20251001'].includes(row.model),
     'Claude acceptance chats must explicitly use the qualified Haiku model.')
 }
@@ -36,20 +39,17 @@ const evidence = { sdkPins: { codex: pkg.dependencies['@openai/codex'], claude: 
   opencode: pkg.dependencies['@opencode-ai/sdk'] }, sourceCommit: matrix.sourceCommit, baseUrl: base.origin, rows: [],
   nativeQualification: false }
 
-function endpoint(row, suffix) {
-  const path = row.role === 'operator' ? `/api/operator/conversations/${encodeURIComponent(row.conversationId)}`
-    : `/api/workspaces/${encodeURIComponent(row.workspaceId)}/agent-chat/conversations/${encodeURIComponent(row.conversationId)}`
-  return new URL(`${path}${suffix}`, base)
-}
 const httpHeaders = sessionControlHeaders(matrix)
-async function request(url, body) {
+async function request(url, body, options = {}) {
   const response = await fetch(url, { headers: httpHeaders, credentials: 'omit',
     ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(180000) })
+    signal: options.signal ?? AbortSignal.timeout(180000) })
   assert.ok(response.ok, `Application request failed: ${response.status}`)
   return response.json()
 }
-const read = row => request(endpoint(row, '/session-controls'))
+const product = await sessionControlProduct(matrix)
+const transport = sessionControlTransport({ baseUrl: base, tool: product.tool, request })
+const read = row => transport.controls(row)
 async function idle(row) {
   const deadline = Date.now() + 180000
   while (Date.now() < deadline) {
@@ -60,14 +60,13 @@ async function idle(row) {
   throw new Error('The native conversation did not become idle.')
 }
 async function transcript(row) {
-  if (row.role === 'operator') return request(endpoint(row, ''))
-  return request(new URL(row.readPath, base))
+  return transport.transcript(row)
 }
 function messages(value) { return value.state?.messages ?? value.messages }
 async function send(row, content, sessionMode) {
   const input = { ...row.sendRequest, requestId: randomUUID(), content,
     ...(sessionMode ? { sessionMode } : {}) }
-  const accepted = await request(new URL(row.sendPath, base), input)
+  const accepted = await transport.send(row, input)
   await idle(row)
   return { input, accepted }
 }
@@ -82,7 +81,7 @@ async function settled(row, requestId) {
 }
 async function update(row, input) {
   const state = await read(row)
-  return request(endpoint(row, '/session-controls'), { ...input,
+  return transport.change(row, { ...input,
     requestId: randomUUID(), expectedRevision: state.revision })
 }
 async function restart(row) {
@@ -116,8 +115,7 @@ async function restartUnsettled(row, scenario) {
   // It reads the native request journal; it does not substitute provider responses or SDK methods.
   await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'arm')
   const lost = new AbortController()
-  const submission = fetch(endpoint(row, '/session-controls'), { method: 'POST', headers: httpHeaders, credentials: 'omit',
-    body: JSON.stringify(input), signal: lost.signal }).catch(error => {
+  const submission = transport.change(row, input, { signal: lost.signal }).catch(error => {
     if (!lost.signal.aborted) throw error
   })
   const native = await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'dispatched')
@@ -142,7 +140,7 @@ async function restartUnsettled(row, scenario) {
   const observed = await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'settled')
   assert.equal(observed.dispatchCount, 1, 'Read-only recovery dispatched compaction again.')
   assert.equal(observed.terminalStatus, scenario.expectedStatus)
-  const replay = await request(endpoint(row, '/session-controls'), input)
+  const replay = await transport.change(row, input)
   assert.equal(replay.compaction.requestId, input.requestId)
   assert.equal(replay.compactions.filter(compaction => compaction.requestId === input.requestId).length, 1)
   const afterReplay = await nativeCheckpoint(row, scenario.checkpoint, input.requestId, 'settled')
@@ -164,7 +162,7 @@ async function preferences(row, desired) {
 }
 async function checkedProfile(row) {
   assert.ok(row.profileCheckRequest, 'Supply an explicitly authorized qualification request for this actual profile.')
-  const checked = await request(new URL('/api/management/harness-instances/check', base),
+  const checked = await product.tool('harness_instance_check',
     { ...row.profileCheckRequest, commandId: randomUUID() })
   assert.equal(checked.value.instanceId, row.nativeProfile)
   assert.equal(checked.value.target.hostRef.kind, row.hostKind)
@@ -185,7 +183,7 @@ async function freshControls(row) {
   assert.deepEqual(configured.desired, desired, 'Fresh preference admission did not persist.')
   assert.deepEqual(messages(await transcript(row)), [], 'Preference admission submitted a model message.')
   const command = { kind: 'compact', requestId: randomUUID(), expectedRevision: configured.revision }
-  const admitted = await request(endpoint(row, '/session-controls'), command)
+  const admitted = await transport.change(row, command)
   assert.equal(admitted.compaction?.requestId, command.requestId, 'Fresh compact was not durably admitted.')
   const compacted = await settled(row, command.requestId)
   // An empty provider session may report nothing to compact or a native refusal.
@@ -204,174 +202,178 @@ async function freshControls(row) {
   assert.deepEqual(messages(await transcript(row)), [], 'Plan off submitted a model message.')
   return { before, plan, configured, compacted, regular }
 }
-for (const row of matrix.rows) {
-  assert.ok(row.nativeHost && row.nativeProfile && row.nativeCliVersion && row.model,
-    'Record the measured native host, profile, CLI version and selected model.')
-  const nativeProof = await checkedProfile(row)
-  const fresh = await freshControls(row)
-  assert.ok(Array.isArray(row.compactionInputs) && row.compactionInputs.length, 'Supply native context-building messages.')
-  const marker = randomUUID()
-  const beforeRun = row.runReadPath ? await request(new URL(row.runReadPath, base)) : null
-  const normal = await send(row, `Remember this session marker and repeat it exactly once: ${marker}`)
-  if (fresh.compacted.nativeSessionId) {
-    assert.equal((await read(row)).nativeSessionId, fresh.compacted.nativeSessionId,
-      'The first message replaced the existing fresh native session.')
-  }
-  for (const content of row.compactionInputs) await send(row, content)
-  const before = await idle(row)
-  assert.ok(before.nativeSessionId, 'A normal text turn must establish a native session.')
-  assert.equal(before.nativeProviderVersion, row.nativeCliVersion, 'The live session differs from the measured native CLI.')
-  assert.equal(before.capabilities.model, row.model, 'The native manager differs from the selected model.')
-  assert.equal(before.capabilities.compact.supported, true)
-  assert.equal(before.capabilities.plan.supported, true)
-  const beforeTranscript = messages(await transcript(row))
-  const command = { kind: 'compact', requestId: randomUUID(), expectedRevision: before.revision }
-  let compacted = await request(endpoint(row, '/session-controls'), command)
-  if (['accepted', 'running', 'uncertain'].includes(compacted.compaction?.status)) {
-    const deadline = Date.now() + 180000
-    do {
-      compacted = await read(row)
-      if (['completed', 'no-op', 'failed'].includes(compacted.compaction?.status)) break
-      await new Promise(resolve => setTimeout(resolve, 1000))
-    } while (Date.now() < deadline)
-  }
-  assert.equal(compacted.compaction?.status, 'completed', 'The native session must produce a manual compaction boundary.')
-  assert.equal(compacted.compaction.requestId, command.requestId)
-  assert.equal(compacted.nativeSessionId, before.nativeSessionId)
-  const replay = await request(endpoint(row, '/session-controls'), command)
-  assert.equal(replay.compaction.requestId, command.requestId)
-  assert.deepEqual(messages(await transcript(row)), beforeTranscript, 'Compaction changed application message history.')
-  const turnCount = messages(await transcript(row)).length
-  const planned = await request(endpoint(row, '/session-controls'), {
-    kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: replay.revision,
-  })
-  assert.equal(planned.desiredMode, 'plan')
-  assert.equal(messages(await transcript(row)).length, turnCount, 'Bare Plan created a model message.')
-  const task = await send(row, '/plan Describe a short read-only inspection plan. Do not modify files.', 'plan')
-  const duplicate = await request(new URL(row.sendPath, base), task.input)
-  assert.equal(duplicate.replayed, true)
-  const afterPlan = await idle(row)
-  assert.equal(afterPlan.appliedMode, 'plan', 'The native Plan control was not acknowledged before the task.')
-  assert.equal(messages(await transcript(row)).filter(message => message.requestId === task.input.requestId && message.role === 'user').length, 1)
-  const exited = await request(endpoint(row, '/session-controls'), {
-    kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: afterPlan.revision,
-  })
-  assert.equal(exited.desiredMode, 'regular')
-  await send(row, 'Reply with only the session marker from the earlier message.')
-  const reply = messages(await transcript(row)).filter(message => message.role === 'assistant').at(-1)
-  assert.ok(reply?.content.includes(marker), 'The follow-up did not retain the prior session context.')
-  if (beforeRun) assert.deepEqual(await request(new URL(row.runReadPath, base)), beforeRun, 'Chat controls changed the selected Run.')
-  let desired = (await idle(row)).desired
-  if (row.harness === 'codex') {
-    const controls = await read(row)
-    if (controls.capabilities.contextBudgets.length) {
-      desired = { ...desired, contextBudget: controls.capabilities.contextBudgets[0] }
-      const configured = await preferences(row, desired)
-      assertCodexContextBudget(controls, configured, desired.contextBudget)
-    } else {
-      assert.ok(controls.capabilities.modelCapacity > 0, 'Unknown model capacity does not prove a native budget limitation.')
-      assert.ok(controls.capabilities.contextBudgetReason, 'Expose the qualified native budget limit explicitly.')
+try {
+  assert.deepEqual(product.identity, matrix.expectedIdentity, 'The prepared production fixture identity changed.')
+  for (const row of matrix.rows) {
+    assert.ok(row.nativeHost && row.nativeProfile && row.nativeCliVersion && row.model,
+      'Record the measured native host, profile, CLI version and selected model.')
+    const nativeProof = await checkedProfile(row)
+    const fresh = await freshControls(row)
+    assert.ok(Array.isArray(row.compactionInputs) && row.compactionInputs.length, 'Supply native context-building messages.')
+    const marker = randomUUID()
+    const beforeRun = row.runReadPath ? await request(new URL(row.runReadPath, base)) : null
+    const normal = await send(row, `Remember this session marker and repeat it exactly once: ${marker}`)
+    if (fresh.compacted.nativeSessionId) {
+      assert.equal((await read(row)).nativeSessionId, fresh.compacted.nativeSessionId,
+        'The first message replaced the existing fresh native session.')
     }
-  }
-  if (row.harness === 'claude') {
-    const controls = await read(row)
-    assert.ok(controls.capabilities.modelCapacity >= 100000)
-    assert.ok(controls.capabilities.contextProfiles.length, 'Claude must expose this model/account’s qualified profiles.')
-    desired = { ...desired, autoCompact: 'off', autoCompactTokens: 100000 }
-    await preferences(row, desired)
     for (const content of row.compactionInputs) await send(row, content)
-    const manual = await update(row, { kind: 'compact' })
-    assert.equal((await settled(row, manual.compaction.requestId)).compaction.status, 'completed',
-      'Manual compact must still work with automatic compaction Off.')
-    for (const profile of controls.capabilities.contextProfiles) {
-      await preferences(row, { ...desired, contextProfile: profile.id })
-      assert.equal((await read(row)).capabilities.modelCapacity, profile.capacity)
+    const before = await idle(row)
+    assert.ok(before.nativeSessionId, 'A normal text turn must establish a native session.')
+    assert.equal(before.nativeProviderVersion, row.nativeCliVersion, 'The live session differs from the measured native CLI.')
+    assert.equal(before.capabilities.model, row.model, 'The native manager differs from the selected model.')
+    assert.equal(before.capabilities.compact.supported, true)
+    assert.equal(before.capabilities.plan.supported, true)
+    const beforeTranscript = messages(await transcript(row))
+    const command = { kind: 'compact', requestId: randomUUID(), expectedRevision: before.revision }
+    let compacted = await transport.change(row, command)
+    if (['accepted', 'running', 'uncertain'].includes(compacted.compaction?.status)) {
+      const deadline = Date.now() + 180000
+      do {
+        compacted = await read(row)
+        if (['completed', 'no-op', 'failed'].includes(compacted.compaction?.status)) break
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      } while (Date.now() < deadline)
     }
-    desired = { ...desired, autoCompact: 'on', contextProfile: null }
-    await preferences(row, desired)
-    assert.ok(Array.isArray(row.autoCompactInputs) && row.autoCompactInputs.length,
-      'Supply enough real native context to reach the accepted automatic budget.')
-    const count = boundaries(await transcript(row)).length
-    for (const content of row.autoCompactInputs) await send(row, content)
-    assert.ok(boundaries(await transcript(row)).length > count, 'No native automatic compaction boundary was observed.')
-    await preferences(row, { ...desired, autoCompact: 'default', autoCompactTokens: null })
-    desired = (await read(row)).desired
-  }
-  await update(row, { kind: 'save-default', preferences: desired })
-  assert.ok(row.futureDefaultsReadPath, 'Supply an uninitialized future-chat defaults read path in this scope.')
-  assert.deepEqual((await request(new URL(row.futureDefaultsReadPath, base))).desired, desired)
-  const restartBefore = await idle(row)
-  await restart(row)
-  assert.deepEqual((await read(row)).desired, restartBefore.desired)
-  assert.equal((await read(row)).nativeSessionId, before.nativeSessionId)
-  await send(row, 'Reply with the remembered session marker only.')
-  const after = await idle(row)
-  assert.deepEqual(after.applied, desired, 'Restart did not restore the durable accepted preferences.')
-  assert.equal(after.appliedMode, 'regular')
+    assert.equal(compacted.compaction?.status, 'completed', 'The native session must produce a manual compaction boundary.')
+    assert.equal(compacted.compaction.requestId, command.requestId)
+    assert.equal(compacted.nativeSessionId, before.nativeSessionId)
+    const replay = await transport.change(row, command)
+    assert.equal(replay.compaction.requestId, command.requestId)
+    assert.deepEqual(messages(await transcript(row)), beforeTranscript, 'Compaction changed application message history.')
+    const turnCount = messages(await transcript(row)).length
+    const planned = await transport.change(row, {
+      kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: replay.revision,
+    })
+    assert.equal(planned.desiredMode, 'plan')
+    assert.equal(messages(await transcript(row)).length, turnCount, 'Bare Plan created a model message.')
+    const task = await send(row, 'Describe a short read-only inspection plan. Do not modify files.', 'plan')
+    const duplicate = await transport.send(row, task.input)
+    assert.equal(duplicate.replayed, true)
+    const afterPlan = await idle(row)
+    assert.equal(afterPlan.appliedMode, 'plan', 'The native Plan control was not acknowledged before the task.')
+    assert.equal(messages(await transcript(row)).filter(message => message.requestId === task.input.requestId && message.role === 'user').length, 1)
+    const exited = await transport.change(row, {
+      kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: afterPlan.revision,
+    })
+    assert.equal(exited.desiredMode, 'regular')
+    await send(row, 'Reply with only the session marker from the earlier message.')
+    const reply = messages(await transcript(row)).filter(message => message.role === 'assistant').at(-1)
+    assert.ok(reply?.content.includes(marker), 'The follow-up did not retain the prior session context.')
+    if (beforeRun) assert.deepEqual(await request(new URL(row.runReadPath, base)), beforeRun, 'Chat controls changed the selected Run.')
+    let desired = (await idle(row)).desired
+    if (row.harness === 'codex') {
+      const controls = await read(row)
+      if (controls.capabilities.contextBudgets.length) {
+        desired = { ...desired, contextBudget: controls.capabilities.contextBudgets[0] }
+        const configured = await preferences(row, desired)
+        assertCodexContextBudget(controls, configured, desired.contextBudget)
+      } else {
+        assert.ok(controls.capabilities.modelCapacity > 0, 'Unknown model capacity does not prove a native budget limitation.')
+        assert.ok(controls.capabilities.contextBudgetReason, 'Expose the qualified native budget limit explicitly.')
+      }
+    }
+    if (row.harness === 'claude') {
+      const controls = await read(row)
+      assert.ok(controls.capabilities.modelCapacity >= 100000)
+      assert.ok(controls.capabilities.contextProfiles.length, 'Claude must expose this model/account’s qualified profiles.')
+      desired = { ...desired, autoCompact: 'off', autoCompactTokens: 100000 }
+      await preferences(row, desired)
+      for (const content of row.compactionInputs) await send(row, content)
+      const manual = await update(row, { kind: 'compact' })
+      assert.equal((await settled(row, manual.compaction.requestId)).compaction.status, 'completed',
+        'Manual compact must still work with automatic compaction Off.')
+      for (const profile of controls.capabilities.contextProfiles) {
+        await preferences(row, { ...desired, contextProfile: profile.id })
+        assert.equal((await read(row)).capabilities.modelCapacity, profile.capacity)
+      }
+      desired = { ...desired, autoCompact: 'on', contextProfile: null }
+      await preferences(row, desired)
+      assert.ok(Array.isArray(row.autoCompactInputs) && row.autoCompactInputs.length,
+        'Supply enough real native context to reach the accepted automatic budget.')
+      const count = boundaries(await transcript(row)).length
+      for (const content of row.autoCompactInputs) await send(row, content)
+      assert.ok(boundaries(await transcript(row)).length > count, 'No native automatic compaction boundary was observed.')
+      await preferences(row, { ...desired, autoCompact: 'default', autoCompactTokens: null })
+      desired = (await read(row)).desired
+    }
+    await update(row, { kind: 'save-default', preferences: desired })
+    assert.deepEqual((await transport.futureDefaults(row)).desired, desired)
+    const restartBefore = await idle(row)
+    await restart(row)
+    assert.deepEqual((await read(row)).desired, restartBefore.desired)
+    assert.equal((await read(row)).nativeSessionId, before.nativeSessionId)
+    await send(row, 'Reply with the remembered session marker only.')
+    const after = await idle(row)
+    assert.deepEqual(after.applied, desired, 'Restart did not restore the durable accepted preferences.')
+    assert.equal(after.appliedMode, 'regular')
 
-  assert.equal(after.nativeSessionId, before.nativeSessionId)
-  const token = process.env[row.mcpTokenEnv]
-  assert.ok(token, 'Provide the explicit MCP writer grant for this chat.')
-  const client = new Client({ name: 'session-control-native-acceptance', version: '1' })
-  try {
-    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', base), { authProvider: { token: async () => token } }))
-    const parity = await client.callTool({ name: `${row.role}_chat_controls_get`, arguments: {
-      conversationId: row.conversationId, ...(row.workspaceId ? { workspaceId: row.workspaceId } : {}),
-    } })
-    assert.ok(!parity.isError)
-    assert.equal(parity.structuredContent.nativeSessionId, after.nativeSessionId)
-    assert.equal(parity.structuredContent.desiredMode, 'regular')
-    assert.deepEqual(parity.structuredContent.capabilities.contextBudgets, after.capabilities.contextBudgets)
-    assert.equal(parity.structuredContent.capabilities.contextBudgetReason, after.capabilities.contextBudgetReason)
-    const target = { conversationId: row.conversationId, ...(row.workspaceId ? { workspaceId: row.workspaceId } : {}) }
-    const write = await client.callTool({ name: `${row.role}_chat_controls_update`, arguments: { ...target,
-      request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: parity.structuredContent.revision } } })
-    assert.ok(!write.isError)
-    assert.equal((await read(row)).desiredMode, 'plan')
-    const restore = await read(row)
-    const preferencesWrite = await client.callTool({ name: `${row.role}_chat_controls_update`, arguments: { ...target,
-      request: { kind: 'preferences', preferences: desired, requestId: randomUUID(), expectedRevision: restore.revision } } })
-    assert.ok(!preferencesWrite.isError)
-    const defaultsWrite = await client.callTool({ name: `${row.role}_chat_controls_update`, arguments: { ...target,
-      request: { kind: 'save-default', preferences: desired, requestId: randomUUID(),
-        expectedRevision: (await read(row)).revision } } })
-    assert.ok(!defaultsWrite.isError)
-    await update(row, { kind: 'mode', mode: 'regular' })
-    const deniedToken = process.env[row.deniedMcpTokenEnv]
-    assert.ok(deniedToken, 'Supply a caller without the matching write authority.')
-    const denied = new Client({ name: 'session-controls-denied', version: '1' })
+    assert.equal(after.nativeSessionId, before.nativeSessionId)
+    const token = process.env[row.mcpTokenEnv]
+    assert.ok(token, 'Provide the explicit MCP writer grant for this chat.')
+    const client = new Client({ name: 'session-control-native-acceptance', version: '1' })
     try {
-      await denied.connect(new StreamableHTTPClientTransport(new URL('/mcp', base), {
-        authProvider: { token: async () => deniedToken },
-      }))
-      const rejected = await denied.callTool({ name: `${row.role}_chat_controls_update`, arguments: { ...target,
-        request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: (await read(row)).revision } } })
-      assert.equal(rejected.isError, true)
-      assert.equal((await read(row)).desiredMode, 'regular')
-    } finally { await denied.close() }
-    assert.ok(Array.isArray(row.restartRecovery) && row.restartRecovery.length,
-      'Supply native output checkpoints for restart during unsettled dispatch.')
-    const expectedOutcomes = row.harness === 'claude' ? ['completed', 'no-op', 'failed'] : ['completed']
-    for (const outcome of expectedOutcomes) {
-      assert.ok(row.restartRecovery.some(scenario => scenario.expectedStatus === outcome),
-        `Missing unsettled ${row.harness} ${outcome} restart case.`)
-    }
-    row.recoveryEvidence = []
-    for (const scenario of row.restartRecovery) {
-      for (const content of scenario.inputs ?? []) await send(row, content)
-      row.recoveryEvidence.push(await restartUnsettled(row, scenario))
-    }
-  } finally { await client.close() }
-  const finalNativeProof = await checkedProfile(row)
-  assert.deepEqual(finalNativeProof.target, nativeProof.target)
-  assert.equal(finalNativeProof.configurationFingerprint, nativeProof.configurationFingerprint)
-  evidence.rows.push({ harness: row.harness, role: row.role, host: row.nativeHost, profile: row.nativeProfile,
-    freshControls: fresh,
-    model: row.model, nativeCliVersion: row.nativeCliVersion, normalRequestId: normal.input.requestId,
-    nativeSessionId: after.nativeSessionId, compactRequestId: command.requestId, compactResult: compacted.compaction,
-    hostKind: row.hostKind, nativeProof, finalNativeProof, beforeContext: before.context, afterContext: after.context, planTaskRequestId: task.input.requestId,
-    restartRecovery: row.recoveryEvidence, appliedMode: after.appliedMode, preferences: { desired: after.desired, applied: after.applied } })
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', base), { authProvider: { token: async () => token } }))
+      const parity = await client.callTool({ name: `${row.role}_chat_controls_get`, arguments: {
+        conversationId: row.conversationId, ...(row.workspaceId ? { workspaceId: row.workspaceId } : {}),
+      } })
+      assert.ok(!parity.isError)
+      assert.equal(parity.structuredContent.nativeSessionId, after.nativeSessionId)
+      assert.equal(parity.structuredContent.desiredMode, 'regular')
+      assert.deepEqual(parity.structuredContent.capabilities.contextBudgets, after.capabilities.contextBudgets)
+      assert.equal(parity.structuredContent.capabilities.contextBudgetReason, after.capabilities.contextBudgetReason)
+      const target = { conversationId: row.conversationId, ...(row.workspaceId ? { workspaceId: row.workspaceId } : {}) }
+      const write = await client.callTool({ name: `${row.role}_chat_controls_update`, arguments: { ...target,
+        request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: parity.structuredContent.revision } } })
+      assert.ok(!write.isError)
+      assert.equal((await read(row)).desiredMode, 'plan')
+      const restore = await read(row)
+      const preferencesWrite = await client.callTool({ name: `${row.role}_chat_controls_update`, arguments: { ...target,
+        request: { kind: 'preferences', preferences: desired, requestId: randomUUID(), expectedRevision: restore.revision } } })
+      assert.ok(!preferencesWrite.isError)
+      const defaultsWrite = await client.callTool({ name: `${row.role}_chat_controls_update`, arguments: { ...target,
+        request: { kind: 'save-default', preferences: desired, requestId: randomUUID(),
+          expectedRevision: (await read(row)).revision } } })
+      assert.ok(!defaultsWrite.isError)
+      await update(row, { kind: 'mode', mode: 'regular' })
+      const deniedToken = process.env[row.deniedMcpTokenEnv]
+      assert.ok(deniedToken, 'Supply a caller without the matching write authority.')
+      const denied = new Client({ name: 'session-controls-denied', version: '1' })
+      try {
+        await denied.connect(new StreamableHTTPClientTransport(new URL('/mcp', base), {
+          authProvider: { token: async () => deniedToken },
+        }))
+        const rejected = await denied.callTool({ name: `${row.role}_chat_controls_update`, arguments: { ...target,
+          request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: (await read(row)).revision } } })
+        assert.equal(rejected.isError, true)
+        assert.equal((await read(row)).desiredMode, 'regular')
+      } finally { await denied.close() }
+      assert.ok(Array.isArray(row.restartRecovery) && row.restartRecovery.length,
+        'Supply native output checkpoints for restart during unsettled dispatch.')
+      const expectedOutcomes = row.harness === 'claude' ? ['completed', 'no-op', 'failed'] : ['completed']
+      for (const outcome of expectedOutcomes) {
+        assert.ok(row.restartRecovery.some(scenario => scenario.expectedStatus === outcome),
+          `Missing unsettled ${row.harness} ${outcome} restart case.`)
+      }
+      row.recoveryEvidence = []
+      for (const scenario of row.restartRecovery) {
+        for (const content of scenario.inputs ?? []) await send(row, content)
+        row.recoveryEvidence.push(await restartUnsettled(row, scenario))
+      }
+    } finally { await client.close() }
+    const finalNativeProof = await checkedProfile(row)
+    assert.deepEqual(finalNativeProof.target, nativeProof.target)
+    assert.equal(finalNativeProof.configurationFingerprint, nativeProof.configurationFingerprint)
+    evidence.rows.push({ harness: row.harness, role: row.role, host: row.nativeHost, profile: row.nativeProfile,
+      freshControls: fresh,
+      model: row.model, nativeCliVersion: row.nativeCliVersion, normalRequestId: normal.input.requestId,
+      nativeSessionId: after.nativeSessionId, compactRequestId: command.requestId, compactResult: compacted.compaction,
+      hostKind: row.hostKind, nativeProof, finalNativeProof, beforeContext: before.context, afterContext: after.context, planTaskRequestId: task.input.requestId,
+      restartRecovery: row.recoveryEvidence, appliedMode: after.appliedMode, preferences: { desired: after.desired, applied: after.applied } })
+  }
+  evidence.nativeQualification = true
+  await writeFile(process.argv[3], `${JSON.stringify(evidence, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+  process.stdout.write('Twelve production native control paths, policy checks and restart recovery qualified.\n')
+} finally {
+  await product.close()
 }
-evidence.nativeQualification = true
-await writeFile(process.argv[3], `${JSON.stringify(evidence, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
-process.stdout.write('Twelve production native control paths, policy checks and restart recovery qualified.\n')

@@ -27,8 +27,8 @@ export async function sessionControlProduct(input) {
       authProvider: { token: async () => process.env[input.mcpTokenEnv] },
     }))
     return { contracts, agentChat, management, profiles, placements, workflows, read, identity: await read('/health/identity'),
-      close: () => client.close(), tool: async (name, args) => {
-        const result = await client.callTool({ name, arguments: args }, { timeout: 360000 })
+      close: () => client.close(), tool: async (name, args, options = {}) => {
+        const result = await client.callTool({ name, arguments: args }, { timeout: 360000, ...options })
         assert.ok(!result.isError, `Product tool ${name} failed.`)
         return result.structuredContent
       } }

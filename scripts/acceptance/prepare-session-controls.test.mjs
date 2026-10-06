@@ -54,7 +54,7 @@ function fixture() {
     }
     if (name === 'operator_chat_create') {
       const conversation = { id: randomUUID(), agentId: 'application-operator', scope: 'application',
-        operatorConfigurationVersionId: randomUUID(), title: args.title, status: 'open', createdAt, updatedAt: createdAt }
+        operatorConfigurationVersionId: defaults.versionId, title: args.title, status: 'open', createdAt, updatedAt: createdAt }
       conversations.set(conversation.id, { conversation, messages: [], turnState: 'idle',
         settings: contracts.operatorChatSettings(defaults.value.operator.harness) })
       return { conversation }
@@ -110,7 +110,13 @@ test('creates twelve distinct empty chats through the product tools and restores
   assert.equal(new Set(matrix.rows.map(row => row.conversationId)).size, 12)
   assert.ok(matrix.rows.every(row => !Object.hasOwn(row, 'httpTokenEnv')))
   assert.ok(matrix.rows.every(row => row.mcpTokenEnv === f.input.mcpTokenEnv))
-  assert.equal(f.calls.filter(call => call.name === 'operator_chat_create').length, 6)
+  const futureIds = matrix.rows.filter(row => row.role === 'operator').map(row => row.futureDefaultsConversationId)
+  assert.equal(new Set(futureIds).size, 6)
+  assert.ok(futureIds.every(id => !matrix.rows.some(row => row.conversationId === id)))
+  assert.equal(f.calls.filter(call => call.name === 'operator_chat_create').length, 12)
+  assert.equal(f.calls.filter(call => call.name === 'operator_chat_get').length, 6)
+  assert.equal(matrix.mcpTokenEnv, f.input.mcpTokenEnv)
+  assert.deepEqual(matrix.expectedIdentity, f.input.expectedIdentity)
   assert.equal(f.calls.filter(call => call.name === 'agent_chat_controls_update').length, 12)
   assert.equal(f.calls.some(call => call.name.endsWith('_send') || call.name === 'run_start'), false)
   assert.deepEqual(f.defaults().value, f.original.value)

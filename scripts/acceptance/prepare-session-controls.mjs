@@ -45,6 +45,11 @@ export async function prepareSessionControlMatrix(input, { contracts, agentChat,
       const created = contracts.CreateOperatorConversationResponseSchema.parse(await tool('operator_chat_create', {
         title: `Session controls · ${subject.harness} · ${subject.hostKind}`,
       })).conversation
+      const future = contracts.CreateOperatorConversationResponseSchema.parse(await tool('operator_chat_create', {
+        title: `Future controls · ${subject.harness} · ${subject.hostKind}`,
+      })).conversation
+      assert.equal(future.operatorConfigurationVersionId, created.operatorConfigurationVersionId,
+        'The future chat must inherit the same profile and settings scope.')
       const operator = contracts.OperatorConversationStateSchema.parse(await tool('operator_chat_get', {
         conversationId: created.id,
       }))
@@ -80,6 +85,7 @@ export async function prepareSessionControlMatrix(input, { contracts, agentChat,
       const common = { ...details, mcpTokenEnv: input.mcpTokenEnv,
         deniedMcpTokenEnv: input.deniedMcpTokenEnv }
       rows.push({ ...common, role: 'operator', conversationId: created.id,
+        futureDefaultsConversationId: future.id,
         sendPath: `/api/operator/conversations/${encodeURIComponent(created.id)}/messages`,
         sendRequest: { configurationVersionId: created.operatorConfigurationVersionId } })
       rows.push({ ...common, role: 'agent', workspaceId: selectedNode.workspaceId,
@@ -102,6 +108,7 @@ export async function prepareSessionControlMatrix(input, { contracts, agentChat,
   if (failure) throw failure
   assert.equal(new Set(rows.map(row => row.conversationId)).size, 12)
   return { baseUrl: input.baseUrl, sourceCommit: input.sourceCommit, restart: input.restart,
+    mcpTokenEnv: input.mcpTokenEnv, expectedIdentity: input.expectedIdentity,
     ...(input.browserOrigin ? { browserOrigin: input.browserOrigin } : {}), rows }
 }
 
