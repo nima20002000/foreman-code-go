@@ -70,14 +70,14 @@ async function fixture(readOnly = false) {
       return token!
     },
     async close() {
-      try {
-        await client.close()
-        await managed?.nativeProcessClosed(AbortSignal.timeout(10000))
-        await worker.close()
-      } finally {
-        await main.close()
-        await rm(root, { recursive: true, force: true })
+      const errors: unknown[] = []
+      for (const close of [() => client.close(),
+        async () => { await managed?.nativeProcessClosed(AbortSignal.timeout(10000)) },
+        () => worker.close(), () => main.close(), () => rm(root, { recursive: true, force: true })]) {
+        try { await close() }
+        catch (error) { errors.push(error) }
       }
+      if (errors.length) throw new AggregateError(errors, 'Worker file fixture cleanup failed.')
     } }
 }
 
