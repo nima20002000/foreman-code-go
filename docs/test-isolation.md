@@ -54,8 +54,8 @@ API-key authentication can use
 `FOREMAN_CODE_TEST_OPENCODE_API_KEY`. Ambient provider keys and real harness homes are
 not reused. Do not commit credential files. Acceptance fails when its native
 prerequisites or dedicated authentication are unavailable.
-Native agents do not inherit database selector URLs or test-controller ownership
-and credential variables. Explicit provider authentication stays in their private
+Native agents do not inherit controller Node startup options, database selector URLs,
+or test-controller ownership and credential variables. Explicit provider authentication stays in their private
 profiles and standard provider variables.
 Test settings use `FOREMAN_CODE_*`. The shared product environment resolver also
 accepts the legacy spellings documented in [rename compatibility](rebranding.md)

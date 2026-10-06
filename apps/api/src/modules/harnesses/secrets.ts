@@ -9,7 +9,8 @@ export function isDatabaseCredentialVariable(key: string): boolean {
 }
 
 export function isControllerEnvironmentVariable(key: string): boolean {
-  return key.startsWith('OPERATOR_') || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP|TEST)_/.test(key)
+  return key === 'NODE_OPTIONS' || key.startsWith('OPERATOR_')
+    || /^(?:GRAPHQL|FOREMAN_CODE)_(?:OPERATOR|APP|TEST)_/.test(key)
     || (APP_MCP_TOKEN_NAMES as readonly string[]).includes(key)
     || key.endsWith('DATABASE_URL') || isDatabaseCredentialVariable(key)
 }

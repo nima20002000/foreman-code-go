@@ -19,6 +19,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Keep source capture and qualification fixtures inside owned storage, join pending work on teardown, and keep controller Node startup options out of native commands.
 - Local smoke shutdown drains pending web requests before closing its dev server; settled resources are removed after failed assertions too.
 - Native acceptance uses explicit private provider profiles and managed MCP configuration, with retained diagnostics when physical cleanup cannot be confirmed.
 - Bounded MCP readback fills its response budget while preserving JSON characters, identity, choices and continuation integrity.

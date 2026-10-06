@@ -32,6 +32,7 @@ it('withholds database selectors and test-controller credentials from native age
     PGPASSWORD: 'controller-password',
     FOREMAN_CODE_TEST_OWNER: 'controller-owner',
     FOREMAN_CODE_TEST_OPENAI_API_KEY: 'test-key-alias',
+    NODE_OPTIONS: '--import=controller-bootstrap.mjs',
     OPENAI_API_KEY: 'explicit-provider-key',
     HOME: '/private/native-home',
   }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { appendFile, link, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { appendFile, link, realpath, stat, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, it } from 'vitest'
@@ -10,19 +10,41 @@ import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/process
 import { nativeCompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
 import { CompatibilityCheckError } from '../src/modules/harnesses/compatibility/errors.js'
 import { calls, errorCode, fixture, fixtureProtocol, type Fixture } from './fixtures/codex-test-helpers.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
+import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../scripts/test-resources.mjs'
 
 let f: Fixture
+let closeFixture: (() => Promise<void>) | undefined
 
 describe.skipIf(process.platform === 'win32')('Codex installation qualification (unmocked)', () => {
-  beforeEach(async () => { f = await fixture() })
-  afterEach(async () => { await rm(f.directory, { recursive: true, force: true }) })
+  beforeEach(async () => {
+    closeFixture = undefined
+    f = await fixture()
+  })
+  afterEach(async () => {
+    await closeFixture?.()
+    await removeFixtureDirectory(f.directory)
+  })
 
   it.skipIf(process.platform !== 'linux')('attributes model-free qualification commands to the existing recovery owner', async () => {
     const registry = new NativeProcessRegistry(join(f.directory, 'qualification-recovery'))
     const owner = 'codex-qualification-owner'
     const scope = registry.scope(owner)
     assert.equal(await registry.closeOwner(owner), false)
-    await assert.rejects(qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory, { ...process.env }, true, undefined, scope),
+    const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
+    const cleanupId = registerTestResourceCleanup(invocation,
+      { kind: 'native-owner', owner, registryDirectory: join(f.directory, 'qualification-recovery') })
+    const controller = new AbortController()
+    const qualification = qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory,
+      { ...process.env, NODE_OPTIONS: '--import=data:text/javascript,throw%20new%20Error(%22controller%20bootstrap%22)' },
+      true, controller.signal, scope)
+    closeFixture = async () => {
+      controller.abort(new Error('Qualification fixture is closing.'))
+      await qualification.catch(() => {})
+      assert.equal(await registry.closeOwner(owner), true)
+      completeTestResourceCleanup(invocation, cleanupId)
+    }
+    await assert.rejects(qualification,
       (error: unknown) => errorCode(error) === 'CODEX_SCHEMA_UNQUALIFIED')
     assert.equal(await registry.closeOwner(owner), true)
   })
