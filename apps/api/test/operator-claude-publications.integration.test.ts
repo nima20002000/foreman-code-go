@@ -15,7 +15,6 @@ import { readConversationPublicationReceipts } from '../src/modules/conversation
 import { registerProductionFileStorage } from '../src/modules/files/production.js'
 import { productionFileTools } from '../src/modules/files/tools/production.js'
 import { productionClaudeFileAdmission } from '../src/modules/harnesses/claudeSdk/fileProduction.js'
-import { createQualificationFileServer } from '../src/modules/harnesses/qualification/fileServer.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.skipIf(!postgresEnabled)('Operator Claude publication recovery', () => {
@@ -23,13 +22,9 @@ describe.skipIf(!postgresEnabled)('Operator Claude publication recovery', () => 
     const db = await agent3Database()
     const app = Fastify({ logger: false })
     const client = new Client({ name: 'Operator file publication test', version: '1' })
-    let fileServer: ReturnType<typeof createQualificationFileServer> | undefined
     onTestFinished(async () => {
       try { await client.close() }
-      finally {
-        try { await fileServer?.close() }
-        finally { try { await app.close() } finally { await db.close() } }
-      }
+      finally { try { await app.close() } finally { await db.close() } }
     })
     const config: ApiConfig = { host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
       database: { connectionString: process.env.TEST_DATABASE_URL!, maxConnections: 4,
@@ -71,8 +66,7 @@ describe.skipIf(!postgresEnabled)('Operator Claude publication recovery', () => 
     const accepted = await admission.current(identity)
     expect(accepted).toBeDefined()
     const token = await service.sessions.issueForAcceptedSession(accepted!.context, accepted!.expiresAt)
-    fileServer = createQualificationFileServer(() => service, () => {})
-    const endpoint = new URL('/mcp/files', await fileServer.listen())
+    const endpoint = new URL('/mcp/files', await app.listen({ host: '127.0.0.1', port: 0 }))
     const denied = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     expect(denied.status).toBe(401)
     await client.connect(new StreamableHTTPClientTransport(endpoint, { authProvider: { token: async () => token } }))
