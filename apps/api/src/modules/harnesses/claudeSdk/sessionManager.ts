@@ -261,6 +261,9 @@ export function createClaudeNativeSessionManager(options: {
   }
   function sessionContext(start: NativeSessionStart) {
     start = canonicalStart(start)
+    if (start.kind === 'agent-chat') return { kind: start.kind, configuration: start.configuration,
+      conversationId: start.conversationId, workflowId: start.workflowId, workflowNodeId: start.workflowNodeId,
+      cwd: start.workingDirectory, environment: start.environment }
     return start.kind === 'operator'
       ? { kind: start.kind, configuration: start.configuration,
         cwd: start.workingDirectory, environment: start.environment }

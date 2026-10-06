@@ -1,6 +1,6 @@
 import { useFloatingSurface } from '../../../shared/ui/nocturne/useFloatingSurface'
 import { useEffect, useId, useRef, useState } from 'react'
-import { compactionBlocksSend, type SessionPreferences } from '@graphql/contracts'
+import { compactionBlocksSend, type SessionPreferences } from '@foreman-code/contracts'
 import { Button, TextField, Select } from '../../../shared/ui/nocturne'
 import type { ComposerSessionControls } from './useSessionControls'
 import './sessionControls.css'

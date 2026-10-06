@@ -30,6 +30,8 @@ function fixture() {
     yield { sequence: 1, type: 'session.pending', occurredAt: new Date().toISOString(), payload: {} }
   })
   const manager = { startTurn: nativeStart, startInitialTurn: nativeStart,
+    history: async () => ({ events: [], pendingInteractions: [] }),
+    reconcile: async () => ({ events: [], pendingInteractions: [] }),
     notifyPendingChanged: () => {} } as unknown as ClaudeNativeSessionManager
   controls.bind(manager)
   const recovery: Extract<WorkerConversationRpcRequest, { method: 'conversation.history' | 'conversation.reconcile' }> = {
