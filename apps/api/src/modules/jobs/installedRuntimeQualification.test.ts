@@ -245,6 +245,27 @@ describe('actual qualification reservation seams with mocked native entry only',
     expect(await admitted.native.close()).toBe(true)
     expect(f.registry.abandonReservedLaunch).toHaveBeenCalled()
   })
+  it('prepares the reserved executable PATH without changing the reviewed controller environment', async () => {
+    const f = await fixture()
+    f.candidate.controllerEnvironment.PATH = '/approved/helpers:/usr/bin:/bin'
+    const originalEnvironment = { ...f.candidate.controllerEnvironment }
+    const admitted = await reserveInstalledJobQualification(f.input)
+    const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn() } }) as unknown as
+      ReturnType<typeof processes.spawnNativeProcess>
+    const spawn = vi.spyOn(processes, 'spawnNativeProcess').mockReturnValue(child)
+    const argv = ['--remote=false', 'info']
+    const reservation = await admitted.native.reserveProcess(process.execPath, argv)
+    admitted.native.spawnProcess(reservation, process.execPath, argv, {
+      shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: originalEnvironment,
+    })
+    expect(spawn).toHaveBeenCalledWith(process.execPath, argv, expect.objectContaining({
+      env: nativeAgentEnvironment(process.execPath, f.candidate.runtimeRoot, originalEnvironment),
+    }))
+    expect(f.candidate.controllerEnvironment).toEqual(originalEnvironment)
+    expect(() => admitted.native.spawnProcess(reservation, process.execPath, argv, {
+      shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: { ...originalEnvironment, SECRET: 'forbidden' },
+    })).toThrow('entry changed')
+  })
   it('wrapper zero alone cannot become confirmed native success', async () => {
     const f = await fixture(), admitted = await reserveInstalledJobQualification(f.input)
     const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn() } }) as unknown as ReturnType<typeof processes.spawnNativeProcess>

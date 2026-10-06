@@ -339,11 +339,13 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     if (closed || !launch || launch.child || launch.closed || launch.binary !== binary || !same(launch.argv, argv)
       || bootIdentity() !== admission.bootId || options.shell !== false
       || !same(options.stdio, ['ignore', 'pipe', 'pipe'])
-      || !same(options.env, candidate.controllerEnvironment)
-      || !same(nativeAgentEnvironment(binary, candidate.runtimeRoot, candidate.controllerEnvironment), candidate.controllerEnvironment)) {
+      || !same(options.env, candidate.controllerEnvironment)) {
       throw new Error('Original noninteractive guarded native entry changed.')
     }
-    const child = spawnNativeProcess(binary, argv, { cwd: candidate.runtimeRoot, env: candidate.controllerEnvironment, recovery: launch.scope })
+    const environment = nativeAgentEnvironment(binary, candidate.runtimeRoot, candidate.controllerEnvironment)
+    const child = spawnNativeProcess(binary, argv, {
+      cwd: candidate.runtimeRoot, env: environment, recovery: launch.scope,
+    })
     launch.child = child
     child.stdin.end()
     return child
