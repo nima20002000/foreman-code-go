@@ -1,4 +1,5 @@
 import { constants } from 'node:fs'
+import { componentLogger } from '../../../infrastructure/logger.js'
 import { open, realpath } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -717,6 +718,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             const observation=matchingOriginalRegistryLaunch(registry,resident.native.launch)
             if(observation.lifecycle!=='closed'||observation.closureEvidence!=='cgroup_v2_empty')unavailable('original_physical_closure_missing')
             resident.physicalClosure=observation
+            componentLogger('engine').info({ executionId: intent.executionId }, 'Original workflow owner settled')
             await resident.mcp?.close()
           }
           if (reviewer) refreshReviewer(resident)
@@ -761,7 +763,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     void task.then(() => construction.delete(intent.executionId), () => construction.delete(intent.executionId))
     return task
   }
-  const closeResidentPreparation = async (resident: InstalledOperation) => {
+  const closeResidentPreparation = async (resident: InstalledOperation, reason: string) => {
+    componentLogger('engine').warn({ executionId: resident.intent.executionId, reason,
+      native: Boolean(resident.native), session: Boolean(resident.session) }, 'Closing original workflow preparation')
     resident.launchDisabled = true
     resident.preparationRecovery = true
     await resident.host?.abortPreparation(resident.intent.operationId)
@@ -865,7 +869,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, frame.placement, action)
             current(context.binding)
             resident.context = context
-            await closeResidentPreparation(resident)
+            await closeResidentPreparation(resident, resident.preparationRecovery ? 'preparation_recovery'
+              : `binding_changed:${status.status}:${Boolean(status.status === 'known' && status.receipt.native)}`)
             current(context.binding)
           }
         }
@@ -1054,13 +1059,14 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         await registry.abandonReservedLaunch(owned.scope)
       }
       if (!await registry.closeOwner(entry.owner)) return false
+      componentLogger('engine').warn({ executionId: owner.attempt.executionId }, 'Source preparation closed an unentered workflow owner')
       await owned?.mcp?.close()
       return true
     }
     let receipt = status.receipt
     if (receipt.intent.executionId === owner.attempt.executionId && receipt.intent.attemptId === owner.attempt.attemptId
       && receipt.entryAttempted && !receipt.native && !hasPositiveRemoteEntryClosure(receipt)) {
-      if (owned) await closeResidentPreparation(owned)
+      if (owned) await closeResidentPreparation(owned, 'source_preparation_closed_before_entry')
       else await recovery.closePendingEntry(receipt, log, signal)
       const closed = await log.status(receipt.intent.operationId)
       if (closed.status !== 'known') return false
@@ -1089,6 +1095,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       await owned.manager.dispose()
     }
     if ((receipt.native || launches().length) && !await registry.closeOwner(processOwner)) return false
+    componentLogger('engine').warn({ executionId: owner.attempt.executionId, terminal: Boolean(receipt.terminal) },
+      'Source preparation closed a workflow owner')
     await owned?.mcp?.close()
     const terminal = receipt.terminal ? receipt : await log.terminal(owner.identity.operationId, {
       kind: receipt.native ? 'cancelled' : 'not_started',
