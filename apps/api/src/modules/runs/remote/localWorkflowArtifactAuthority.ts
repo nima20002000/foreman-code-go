@@ -19,8 +19,9 @@ import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
 import { openCodeWorkflowOutputAllowed } from './localWorkflowOutputPolicy.js'
 import type { WorkerNativeOutputOperation } from '@foreman-code/contracts/worker-native-output'
 
-const denied = (): never => {
-  throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original local artifact execution is unavailable.', 403)
+const denied = (reason?: string): never => {
+  throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original local artifact execution is unavailable.', 403,
+    reason === undefined ? undefined : { reason })
 }
 
 export async function workflowArtifactsAreLocal(sql: FileQuery, runId: string, nodeId: string): Promise<boolean> {
@@ -98,18 +99,24 @@ export class LocalWorkflowArtifactAuthority {
     if (!conversation.length) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_PENDING',
       'The original native output context is awaiting its committed turn source.', 409)
     const admission = conversation[0]?.record.localWorkflowFileContext
-    if (conversation.length !== 1 || !admission || !same(admission.attempt, current.attempt)) return denied()
+    if (conversation.length !== 1 || !admission || !same(admission.attempt, current.attempt)) {
+      return denied('The saved artifact context belongs to a different attempt.')
+    }
     const { context, proof } = admission
     const scope = context.scope.chat
     if (scope.kind !== 'agent' || scope.conversationId !== conversation[0]!.id
       || scope.workspaceId !== current.run.workspaceId || scope.workflowId !== current.run.workflowId
       || scope.runId !== current.run.id || scope.executionId !== executionId || scope.agentId !== current.execution.agentId
       || current.execution.nativeSessionId !== context.nativeSessionId || context.nativeSessionId !== proof.session.nativeSessionId
-      || context.turnId !== proof.lane?.providerId || context.ownerPrincipalId !== current.principal.id) return denied()
+      || context.turnId !== proof.lane?.providerId || context.ownerPrincipalId !== current.principal.id) {
+      return denied('The saved artifact context does not match the execution, native turn or owner.')
+    }
     const stored = (await query.query<{ record: WorkflowNativeProofRecord; source_digest: string }>(
       'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 and execution_id=$3 for share',
       [proof.proofId, current.run.id, executionId])).rows[0]
-    if (!stored || !same(stored.record, proof) || stored.source_digest !== repeatDigest(proof, 4 * 1024 * 1024)) return denied()
+    if (!stored || !same(stored.record, proof) || stored.source_digest !== repeatDigest(proof, 4 * 1024 * 1024)) {
+      return denied('The saved artifact context does not match its original native source.')
+    }
     requireAuthorization(current.principal, 'agent_chat:read', { workspaceId: current.run.workspaceId,
       workflowId: current.run.workflowId, runId: current.run.id })
     if (options.mutation) await this.assertWritable(query, current, context, options.operation ?? 'publish')
@@ -133,7 +140,9 @@ export class LocalWorkflowArtifactAuthority {
     context: FileToolContext, operation: WorkerNativeOutputOperation): Promise<void> {
     await this.assertDeclarations(current.execution.id, query, operation)
     if (!context.allowMutation || !context.allowedTools.includes('files.publish_result')
-      || !['running', 'waiting'].includes(current.execution.state)) return denied()
+      || !['running', 'waiting'].includes(current.execution.state)) {
+      return denied('The saved artifact context cannot write in this execution state.')
+    }
     const live = await query.query(`select 1 from runs r join execution_native_closures c on c.execution_id=$2
       join native_session_lanes l on l.harness=$7 and l.native_session_id=$3 and l.owner_agent_id=$4
       where r.id=$1 and r.stop_requested_at is null
@@ -144,6 +153,6 @@ export class LocalWorkflowArtifactAuthority {
       and (l.record->>'leaseExpiresAt')::timestamptz>clock_timestamp() for share of r,c,l`,
     [current.run.id, current.execution.id, context.nativeSessionId, current.execution.agentId,
       `execution:${current.execution.id}`, context.turnId, current.configuration.harness.harness])
-    if (live.rowCount !== 1) return denied()
+    if (live.rowCount !== 1) return denied('The original native lifetime and turn writer are not active.')
   }
 }
