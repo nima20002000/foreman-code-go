@@ -14,7 +14,7 @@ import pg from 'pg'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import {
   AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessConfigurationSchema, HarnessExecutionSchema,
-  type AgentConfigurationVersion, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent, type NativeSessionReference,
+  type AgentConfigurationVersion, type ExecutionResult, type HarnessConfiguration, type HarnessExecution, type HarnessNativeEvent, type NativeSessionReference,
 } from '@foreman-code/contracts'
 import {
   ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture,
@@ -56,22 +56,6 @@ import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { nativePersistenceRedactor } from '../../src/modules/interactions/nativePersistence.js'
 import type { NativeHarnessSessionManager } from '../../src/modules/harnesses/port.js'
 
-function nativeFailure(error: unknown, depth = 0): Record<string, unknown> {
-  if (!(error instanceof Error)) return { name: typeof error }
-  const redact = nativePersistenceRedactor([])
-  const result: Record<string, unknown> = {
-    name: error.name,
-    code: 'code' in error ? redact.text(String(error.code)).slice(0, 200) : null,
-    message: redact.text(error.message).slice(0, 2_000),
-  }
-  if (depth < 3) {
-    if (error.cause !== undefined) result.cause = nativeFailure(error.cause, depth + 1)
-    if (error instanceof AggregateError) {
-      result.errors = [...error.errors].slice(0, 4).map(child => nativeFailure(child, depth + 1))
-    }
-  }
-  return result
-}
 import type { AuthorizeWorkflowStop } from '../../src/modules/runs/repeatLifecycle.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
@@ -697,6 +681,16 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
          order by execution_id,sequence`, [runId]).catch(() => undefined)
       evidence.failureNativeEvents = events?.rows
     }
+    process.stdout.write(`ENG03 failure ${JSON.stringify({ scenario,
+      startTaskState: evidence.failureStartTaskState, startError: evidence.startError,
+      error: describeNativeFailure(error, nativeSecrets),
+      observations: evidence.nativeObservationErrors,
+      executions: Array.isArray(evidence.failureExecutions) ? evidence.failureExecutions.map(value => {
+        const execution = value as { id: string; state: string; result?: ExecutionResult }
+        return { id: execution.id, state: execution.state, outcome: execution.result?.outcome,
+          ...(execution.result?.error ? { error: nativePersistenceRedactor(nativeSecrets).value(execution.result.error) } : {}) }
+      }) : [],
+    })}\n`)
     await stopRun?.().catch(() => undefined)
   } finally {
     activeRuntime?.factories.stopAuxiliaries()
