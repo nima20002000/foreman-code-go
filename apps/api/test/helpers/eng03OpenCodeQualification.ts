@@ -46,7 +46,7 @@ export async function qualifyEng03OpenCode() {
       [() => admin.end(), () => rm(directory, { recursive: true, force: true })],
     ]
     for (const phase of phases) {
-      const results = await Promise.allSettled(phase.map(close => Promise.resolve().then(close)))
+      const results = await Promise.allSettled(phase.map(close => Promise.resolve().then(async () => { await close() })))
       for (const result of results) if (result.status === 'rejected') errors.push(result.reason)
     }
     if (errors.length) throw new AggregateError(errors, 'Native qualification cleanup failed.')
@@ -153,7 +153,7 @@ export async function qualifyEng03OpenCode() {
     try {
       await close()
     } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], 'Native qualification and cleanup failed.', { cause: error })
+      throw new AggregateError([error, cleanupError], 'Native qualification and cleanup failed.', { cause: cleanupError })
     }
     throw error
   }

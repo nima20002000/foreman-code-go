@@ -691,7 +691,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       [() => admin.end()],
     ]
     for (const phase of phases) {
-      const results = await Promise.allSettled(phase.map(close => Promise.resolve().then(close)))
+      const results = await Promise.allSettled(phase.map(close => Promise.resolve().then(async () => { await close() })))
       for (const result of results) if (result.status === 'rejected') cleanupErrors.push(result.reason)
     }
     if (cleanupErrors.length) {
