@@ -122,7 +122,13 @@ interface RpcEnvelope { result?: RpcResult; error?: unknown }
 const origins = new WeakMap<FastifyInstance, Promise<string>>()
 export async function graphRpc(app: FastifyInstance, token: string, method: string, params: Record<string, unknown> = {}) {
   let origin = origins.get(app)
-  if (!origin) { origin = app.listen({ host: '127.0.0.1', port: 0 }); origins.set(app, origin) }
+  if (!origin) {
+    const address = app.server.address()
+    origin = address && typeof address !== 'string'
+      ? Promise.resolve(`http://127.0.0.1:${address.port}`)
+      : app.listen({ host: '127.0.0.1', port: 0 })
+    origins.set(app, origin)
+  }
   const response = await fetch(new URL('/mcp', await origin), { method: 'POST',
     headers: { accept: 'application/json, text/event-stream', authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })

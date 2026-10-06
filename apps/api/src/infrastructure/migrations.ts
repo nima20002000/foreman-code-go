@@ -8,6 +8,9 @@ import { workJoinDispositionMigration } from './workJoinDispositionMigration.js'
 import { workParentRequestMigration } from './workParentRequestMigration.js'
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { workflowPresentationMigration } from './workflowPresentationMigration.js'
+import { operatorTerminalMigration } from './operatorTerminalMigration.js'
+import { operatorTerminalHistoryMigration } from './operatorTerminalHistoryMigration.js'
+import { claudeCallbackMigration } from './claudeCallbackMigration.js'
 import { runSubagentsMigration } from './runSubagentsMigration.js'
 import { deviceIdentityMigration } from '../modules/devices/migration.js'
 import { activitySnapshotMigration } from './activitySnapshotMigration.js'
@@ -836,8 +839,11 @@ export const migrations = [
   workUnresolvedRoutesMigration,
   workJoinDispatchMigration,
   workJoinDispositionMigration,
+  operatorTerminalMigration,
+  operatorTerminalHistoryMigration,
   localWorkflowNativeOutputMigration,
   localHumanMigration,
+  claudeCallbackMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

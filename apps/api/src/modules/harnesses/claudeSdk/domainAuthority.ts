@@ -1,3 +1,4 @@
+import { matchingChatResponseAcknowledgment, AcceptedChatResponseControlSchema } from '@foreman-code/contracts/interaction-activity'
 import type pg from 'pg'
 import { DurableInteractionSchema, PendingNativeInteractionSchema, type ApprovalResponseOption, type NativeSessionReference } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -9,6 +10,7 @@ import type { GraphSqlClient } from '../../run-graph/connection.js'
 import type { PostgresOperatorConversationRepository } from '../../conversations/operatorChatRepository.js'
 import type { PostgresAgentChatRepository } from '../../conversations/agentChatRepository.js'
 import { DomainError } from '../../errors.js'
+import { PostgresClaudeCallbackJournal } from './callbackJournal.js'
 import { ClaudeInteractionBridge, type ClaudeCallbackIdentity, type ClaudeInteractionAnswer, type ClaudeInteractionAuthority } from './interactions.js'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 
@@ -33,8 +35,13 @@ function denied(code = 'CLAUDE_CALLBACK_SCOPE_DENIED'): never { throw new Domain
 /** Concrete reads of existing admissions and response receipts. No credential issuer or second request store. */
 export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuthority {
   private bridge: ClaudeInteractionBridge | undefined
+  readonly callbackJournal: PostgresClaudeCallbackJournal
   constructor(private readonly database: Database, readonly binding: ClaudeDomainBinding,
-    private readonly manager: ClaudeCurrentCallbackOwner) {}
+    private readonly manager: ClaudeCurrentCallbackOwner) {
+    const owner = binding.kind === 'workflow' ? `execution:${binding.executionId}:${binding.attempt}`
+      : `${binding.kind}:${binding.conversationId}`
+    this.callbackJournal = new PostgresClaudeCallbackJournal(database, owner)
+  }
   bind(bridge: ClaudeInteractionBridge): void { if (this.bridge) denied(); this.bridge = bridge }
 
   /** HRT calls this on the admitted turn/technical attempt before constructing SDK callbacks. */
@@ -97,6 +104,41 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
         || receipt.nativeSessionId !== identity.nativeSessionId || receipt.nativeMessageId !== identity.nativeMessageId
         || receipt.clientCorrelationId !== actual.clientCorrelationId) denied('CLAUDE_NATIVE_MESSAGE_NOT_ADMITTED')
     }
+  }
+  async deliveryPersisted(identity: ClaudeCallbackIdentity, optionId: string): Promise<boolean> {
+    if (this.binding.kind === 'workflow') {
+      const rows = (await this.database.query<{ record: unknown }>(`select record from durable_interactions
+        where execution_id=$1 and native_session_id=$2 and native_request_id=$3 and record->>'deliveryState'='delivered'`,
+      [this.binding.executionId, identity.nativeSessionId, identity.nativeRequestId])).rows
+      return rows.some(row => {
+        const parsed = DurableInteractionSchema.safeParse(row.record)
+        if (!parsed.success) return false
+        const interaction = parsed.data
+        const request = interaction.request as Record<string, unknown>
+        return interaction.selectedOptionId === optionId && request.nativeMessageId === identity.nativeMessageId
+          && request.generation === identity.generation && request.toolUseId === identity.toolUseId
+      })
+    }
+    const rows = (await this.database.query<{ result: { acceptedControl?: unknown; providerAcknowledgment?: unknown } }>(`
+      select result from management_command_receipts where operation=$1 and target_key=$2
+        and result#>>'{acceptedControl,modelRequestId}'=$3
+        and result#>>'{acceptedControl,native,requestId}'=$4`,
+    [this.binding.kind === 'operator' ? 'operator_chat_control' : 'agent_chat_control',
+      this.binding.conversationId, identity.attemptId, identity.nativeRequestId])).rows
+    return rows.some(row => {
+      const parsed = AcceptedChatResponseControlSchema.safeParse(row.result.acceptedControl)
+      if (!parsed.success) return false
+      const control = parsed.data
+      return control.native.sessionId === identity.nativeSessionId && control.native.messageId === identity.nativeMessageId
+        && control.native.generation === identity.generation && control.choice.optionId === optionId
+        && Boolean(matchingChatResponseAcknowledgment(control, row.result.providerAcknowledgment))
+    })
+  }
+  async messageSubmitted(correlationId: string): Promise<boolean> {
+    if (this.binding.kind === 'workflow') return false
+    return (await this.database.query(`select 1 from operator_conversation_turns
+      where conversation_id=$1 and payload#>>'{nativeSubmission,clientCorrelationId}'=$2 limit 1`,
+    [this.binding.conversationId, correlationId])).rowCount === 1
   }
   async request(identity: ClaudeCallbackIdentity, toolName: string, _input: Record<string, unknown>, signal: AbortSignal): Promise<ClaudeInteractionAnswer> {
     await this.validate(identity)
@@ -171,7 +213,8 @@ export function createPostgresClaudeInteractionBridge(input: {
       respond: (session: NativeSessionReference, requestId: string, option: ApprovalResponseOption, signal?: AbortSignal) => bridge.respond(session, requestId, option, signal),
       async reconcileResponse(session: NativeSessionReference, response: { nativeRequestId: string; option: ApprovalResponseOption }, signal?: AbortSignal) {
         const observation = await bridge.observeResponse(session, response.nativeRequestId, response.option, signal)
-        return { events: [], pendingInteractions: bridge.pendingInteractions(session), interactionDeliveries: [observation], responseDeliveries: [] }
+        return { events: [], pendingInteractions: bridge.pendingInteractions(session), interactionDeliveries: [observation],
+          responseDeliveries: (await bridge.deliveryEvidence(session)).filter(proof => proof.nativeRequestId === response.nativeRequestId) }
       },
       stopAutomaticResponses() { bridge.close() },
     } }

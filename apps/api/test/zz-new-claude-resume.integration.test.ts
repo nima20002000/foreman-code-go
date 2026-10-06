@@ -91,9 +91,9 @@ describe('NEW-CLAUDE F-13 authenticated resumed query', () => {
                   const read = await query.transport!.callTool({ name: 'workspace_get', arguments: { workspaceId: createdId! } })
                   expect(read.structuredContent).toMatchObject({ workspace: { id: createdId, name: workspaceName } })
                 }
-                frames.offer({ type: 'system', subtype: 'init', session_id: saved.nativeSessionId, claude_code_version: saved.providerVersion, cwd: '/work' })
-                frames.offer({ type: 'assistant', uuid: 'reply', session_id: saved.nativeSessionId, user_message_uuid: message.uuid })
-                frames.offer({ type: 'result', uuid: 'result', session_id: saved.nativeSessionId, user_message_uuid: message.uuid,
+                void frames.offer({ type: 'system', subtype: 'init', session_id: saved.nativeSessionId, claude_code_version: saved.providerVersion, cwd: '/work' })
+                void frames.offer({ type: 'assistant', uuid: 'reply', session_id: saved.nativeSessionId, user_message_uuid: message.uuid })
+                void frames.offer({ type: 'result', uuid: 'result', session_id: saved.nativeSessionId, user_message_uuid: message.uuid,
                   subtype: 'success', is_error: false, result: 'MCP checked' })
               }
             })().catch(error => frames.close(error))

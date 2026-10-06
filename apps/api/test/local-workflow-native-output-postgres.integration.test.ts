@@ -5,6 +5,7 @@ import type { WorkerNativeOutputCommand } from '@foreman-code/contracts/worker-n
 import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import type { TemporaryFileScope } from '@foreman-code/contracts/files'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { localWorkflowNativeOutputMigration } from '../src/infrastructure/localWorkflowNativeOutputMigration.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { readLiveManagementPrincipal } from '../src/modules/access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../src/modules/access/policy.js'
@@ -16,6 +17,7 @@ import type { NativeOutputCallCapture } from '../src/modules/harnesses/port.js'
 import { runWorkHandoffWithRestart, workHandoffRuntimeFixture } from './helpers/workHandoffRuntimeFixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
+import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import type pg from 'pg'
 
 // Byte-journal boundaries only. Native ownership, publication and MCP calls are
@@ -75,6 +77,29 @@ async function fixture(pool: pg.Pool) {
 }
 
 describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('PostgreSQL original native output byte journal', () => {
+  it('upgrades an Operator database and replays accepted output commands after reconstruction', async () => {
+    const db = await currentDatabase({ beforeMigration: localWorkflowNativeOutputMigration.version })
+    try {
+      const columns = 'select terminal_observation,terminal_history from operator_conversation_turns'
+      const before = (await db.pool.query(columns)).rows
+      const f = await fixture(db.pool)
+      const create = { operation: 'create' as const, commandId: randomUUID(),
+        filename: 'upgrade.md', mediaType: 'text/markdown' as const }
+      const created = await f.dispatch(create)
+      if (created.operation !== 'create') throw new Error('Create reply required')
+      const bytes = Buffer.from('output after upgrade\n')
+      await f.dispatch({ operation: 'append', commandId: randomUUID(), artifactId: created.artifactId,
+        offset: 0, contentBase64: bytes.toString('base64') })
+      const reconstructed = new LocalWorkflowNativeOutputRepository(db.pool)
+      expect(await f.dispatch(create, f.callers[0], f.writer.principal.id, reconstructed)).toEqual(created)
+      expect(await f.dispatch({ operation: 'seal', commandId: randomUUID(), artifactId: created.artifactId },
+        f.callers[0], f.writer.principal.id, reconstructed)).toEqual({ operation: 'seal',
+        artifactId: created.artifactId, byteSize: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex') })
+      expect((await db.pool.query(columns)).rows).toEqual(before)
+    } finally { await db.close() }
+  }, 120000)
+
   it.each(['artifact context', 'output approval'] as const)(
     'keeps %s reads from locking executions ahead of their Run after acceptance and restart', async boundary => {
     const definition = makeCurrentWorkflowFixture(randomUUID(), 'single')

@@ -35,7 +35,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'operator_chat_create', async () => ({ conversation: await context.services.operatorChat!.create(context.principal, input.title) })))
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_get')) server.registerTool('operator_chat_get', {
-    description: 'Read an owned Operator conversation, including its harness handoff parent and persisted messages. Message acceptedModel identifies the model from that message\'s immutable accepted turn configuration, when recorded. Requires operator_chat:read.',
+    description: 'Read an owned Operator conversation, including its harness handoff parent and persisted messages. nativeSubmission identifies the observed Claude input message for the active request. Message acceptedModel identifies the model from that message\'s immutable accepted turn configuration, when recorded. Requires operator_chat:read.',
     inputSchema: z.object({ conversationId: z.string().min(1) }).strict(), outputSchema: GetOperatorConversationResponseSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ conversationId }) => invokeOperatorTool(context, 'operator_chat_get', () => context.services.operatorChat!.get(conversationId, context.principal)))

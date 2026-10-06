@@ -40,6 +40,24 @@ async function fixture(allowMutation = true, nativeResolver = false) {
 }
 
 describe('official Claude SDK admitted file MCP server', () => {
+  it('reads decoded UTF-8 Markdown while preserving split-character bytes', async () => {
+    const f = await fixture()
+    try {
+      const text = '# 界\n'
+      const ref = await f.upload(text)
+      const result = await f.client.callTool({ name: 'files.read', arguments: ref })
+      expect(result.isError).not.toBe(true)
+      expect(result.content).toContainEqual({ type: 'text', text })
+      expect(result.structuredContent).toMatchObject({ contentBase64: Buffer.from(text).toString('base64') })
+      const split = await f.client.callTool({ name: 'files.read', arguments: { ...ref, offset: 2, length: 1 } })
+      expect(split.isError).not.toBe(true)
+      expect(split.structuredContent).toMatchObject({
+        byteLength: 1, contentBase64: Buffer.from('界').subarray(0, 1).toString('base64'),
+      })
+      expect(split.content).not.toContainEqual({ type: 'text', text: '�' })
+    } finally { await f.close() }
+  })
+
   it('uses the actual SDK transport and shared service; discovery creates no credential', async () => {
     const f = await fixture()
     try {
@@ -50,10 +68,26 @@ describe('official Claude SDK admitted file MCP server', () => {
       const result = await f.client.callTool({ name: 'files.read', arguments: { ...ref, offset: 0, length: 6 } })
       expect(result.isError).not.toBe(true)
       expect(result.structuredContent).toMatchObject({ status: 'ready', contentBase64: Buffer.from('native').toString('base64') })
+      expect(result.content).toContainEqual({ type: 'text', text: 'native' })
       expect(f.issue).toHaveBeenCalledOnce()
+      const issued = await f.issue.mock.results[0]!.value
+      await expect(f.sessions.authenticate(issued)).rejects.toMatchObject({ code: 'FILE_SESSION_EXPIRED' })
       expect(f.tools.reads).toMatchObject([{ runId: 'run-a', executionId: 'execution-a', ...ref }])
       f.revoke()
       expect((await f.client.callTool({ name: 'files.read', arguments: ref })).isError).toBe(true)
+    } finally { await f.close() }
+  })
+
+  it('retires each completed call credential while later calls in the same request remain authorized', async () => {
+    const f = await fixture()
+    try {
+      for (let index = 0; index < 16; index += 1) {
+        const result = await f.client.callTool({ name: 'files.list', arguments: { scope: f.scope, limit: 25 } })
+        expect(result.isError).not.toBe(true)
+        const issued = await f.issue.mock.results[index]!.value
+        await expect(f.sessions.authenticate(issued)).rejects.toMatchObject({ code: 'FILE_SESSION_EXPIRED' })
+      }
+      expect(f.issue).toHaveBeenCalledTimes(16)
     } finally { await f.close() }
   })
 

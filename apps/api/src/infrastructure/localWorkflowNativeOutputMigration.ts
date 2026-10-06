@@ -1,4 +1,4 @@
-export const localWorkflowNativeOutputMigration = { version: 285208, sql: String.raw`
+export const localWorkflowNativeOutputMigration = { version: 285210, sql: String.raw`
 create table local_workflow_native_outputs (
   artifact_id uuid primary key,
   main_id uuid not null,

@@ -27,6 +27,7 @@ export interface NativeProcessRecovery {
 // This tracks ordinary sequential subprocesses of the SAME live manager. It is
 // never consulted as closure evidence and cannot be reconstructed on restart.
 const consumedLaunchScopes = new WeakMap<NativeProcessRecovery, { root: string; owner: string; launchId: string }>()
+const abandonedLaunchScopes = new WeakMap<NativeProcessRecovery, { root: string; owner: string; launchId: string }>()
 interface LaunchRecord {
   format: 1; id: string; owner: string; boot: string; parent: LinuxProcessIdentity; controlKey: string
 }
@@ -275,6 +276,14 @@ export class NativeProcessRegistry {
   async abandonReservedLaunch(scope: NativeProcessRecovery): Promise<boolean> {
     if (process.platform !== 'linux' || resolve(scope.root) !== resolve(this.root)
       || !scope.launchId || !/^[0-9a-f-]{36}$/.test(scope.launchId)) throw new Error('Invalid native launch abandonment scope.')
+    const abandoned = abandonedLaunchScopes.get(scope)
+    if (abandoned) {
+      if (abandoned.root !== resolve(scope.root) || abandoned.owner !== scope.owner || abandoned.launchId !== scope.launchId) {
+        throw new Error('The abandoned native launch scope was modified.')
+      }
+      await this.closeRegistration(scope, scope.launchId)
+      return true
+    }
     const consumed = consumedLaunchScopes.get(scope)
     if (consumed) {
       if (consumed.root !== resolve(scope.root) || consumed.owner !== scope.owner || consumed.launchId !== scope.launchId) {
@@ -300,6 +309,7 @@ export class NativeProcessRegistry {
       if (row.id !== launch.id || row.owner !== launch.owner) throw new Error('Conflicting native startup evidence.')
     } else writeRecord(join(directory, 'not-started.json'), { id: launch.id, owner: launch.owner }, true)
     await this.closeRegistration(scope, launch.id)
+    abandonedLaunchScopes.set(scope, { root: resolve(scope.root), owner: scope.owner, launchId: scope.launchId })
     return true
   }
   async closeOwner(owner: string, signal?: AbortSignal): Promise<boolean> {

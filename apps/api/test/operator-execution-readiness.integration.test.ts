@@ -154,6 +154,11 @@ it.skipIf(!postgresEnabled)('reads the exact persisted Operator readiness throug
     await f.access.revoke(delegate.principal.id)
     await deniedInspection()
     await f.db.pool.query('update management_principals set revoked_at=null where id=$1', [delegate.principal.id])
+    expect(await conversations.journalTerminal(owned.id, requestId, { outcome: 'canceled' }, {
+      retryable: false, requiresRuntimeClosure: true,
+    })).toBe(true)
+    expect(await conversations.closurePending(owned.id, requestId)).toBe(true)
+    expect(await conversations.closureProven(owned.id, requestId)).toBe(true)
     expect(await conversations.finish(owned.id, requestId, { outcome: 'canceled' })).toBe(true)
     const completed = await inspect()
     expect(completed.isError).toBe(true); expect(JSON.stringify(completed)).toContain('AUTH_CHAT_ENDED')
