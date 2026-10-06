@@ -21,13 +21,19 @@ const jobEnv = (cwd) => {
   delete env.FOREMAN_CODE_HEAVY_BASE_TMPDIR
   return env
 }
-const run = (cwd, args) => new Promise((resolve) => {
+const run = (cwd, args, { signal } = {}) => new Promise((resolve) => {
   const env = jobEnv(cwd)
   const child = spawn(process.execPath, ['scripts/heavy-job.mjs', ...args], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const abort = () => child.kill('SIGTERM')
+  signal?.addEventListener('abort', abort, { once: true })
   let output = ''
   child.stdout.on('data', (data) => { output += data })
   child.stderr.on('data', (data) => { output += data })
-  child.once('exit', (code) => resolve({ code, output, child }))
+  child.once('exit', (code) => {
+    signal?.removeEventListener('abort', abort)
+    resolve({ code, output, child })
+  })
+  if (signal?.aborted) abort()
 })
 function git(cwd, ...args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' })
@@ -155,7 +161,7 @@ test('a dead queued owner cannot retain FIFO behind unrelated unreadable environ
 
 for (const owner of ['absent', 'reused']) {
   test(`reclaims an empty running slot after its coordinator is ${owner}, despite unrelated unreadable environments`,
-    { timeout: 6000 }, async () => {
+    { timeout: 6000 }, async (context) => {
       const f = fixture()
       try {
         mockProc(f, `function readFileSync(path, ...args) { if (path === '/proc/99999998/environ') throw Object.assign(new Error('unrelated fixture denied'), { code: 'EACCES' }); return actualReadFileSync(path, ...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? ['99999998'] : actualReaddirSync(path, ...args) }`)
@@ -172,7 +178,8 @@ for (const owner of ['absent', 'reused']) {
           utimesSync(path, new Date(0), new Date(0))
         }
         utimesSync(join(f.state, 'active'), new Date(0), new Date(0))
-        const result = await run(f.first, ['--', process.execPath, '-e', 'console.log("replacement admitted")'])
+        const result = await run(f.first, ['--', process.execPath, '-e', 'console.log("replacement admitted")'],
+          { signal: context.signal })
         assert.equal(result.code, 0, result.output)
         assert.match(result.output, /replacement admitted/)
       } finally { rmSync(f.home, { recursive: true, force: true }) }
