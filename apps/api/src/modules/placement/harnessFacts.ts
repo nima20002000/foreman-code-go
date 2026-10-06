@@ -70,6 +70,8 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     || installation.installationFingerprint !== payload.installationFingerprint || installation.driverId !== payload.driverId
     || installation.driverRevision !== payload.driverRevision || installation.protocolRevision !== payload.protocolRevision
     || !installation.installed) unavailable('profile_binding_changed')
+  // Main's Claude has no binary suite; its exact-target profile check (above) is the native qualification.
+  if (payload.driverId === 'claude' && placement.hostRef.kind === 'main') return { override, profileProof, installation, qualification: undefined }
   if (payload.driverId !== 'codex' && payload.driverId !== 'opencode') unavailable('unsupported_driver')
   const harness = payload.driverId as CompatibilityHarness
   const binarySha256 = installation.launcher.payloadFingerprints?.find(item => item.path === installation.launcher.resolvedLauncher)?.fingerprint

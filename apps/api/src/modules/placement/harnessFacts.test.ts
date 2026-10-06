@@ -10,15 +10,17 @@ import { HarnessInstanceRegistry, localHarnessDrivers } from '../harnesses/insta
 import { qualificationIdentity } from '../harnesses/qualification/identity.js'
 import { readPlacementHarnessFacts } from './harnessFacts.js'
 
-function fixture() {
+function fixture(driver: 'codex' | 'claude' = 'codex') {
   const hostRef = { kind: 'main' as const, mainId: randomUUID() }
   const instanceId = randomUUID()
   const fingerprint = 'a'.repeat(64)
   const suiteRevision = 'codex-live-fixture'
-  const configuration = DEFAULT_HARNESS_DEFAULTS.codex
+  const configuration = driver === 'codex' ? DEFAULT_HARNESS_DEFAULTS.codex : { harness: 'claude' as const, model: 'claude-haiku-4-5',
+    authMode: 'subscription' as const, configDirectory: '/home/operator/.claude', permissionMode: 'default' as const,
+    sandbox: 'danger-full-access' as const, tools: ['Read', 'Write'], permissionRules: [], instructions: '', mcpServers: {} }
   const installation: HarnessInstallationRecord = {
     hostRef, harnessInstallationId: 'installed-codex', installationFingerprint: fingerprint,
-    driverId: 'codex', driverRevision: '1', protocolRevision: 'codex-native-adapter-v1',
+    driverId: driver, driverRevision: '1', protocolRevision: 'codex-native-adapter-v1',
     environmentGeneration: 'environment', connectionGeneration: 'connection', observedVersion: null,
     installed: true, authenticated: null, compatible: null, qualified: null,
     launcher: { requested: '/installed/codex', resolvedLauncher: '/installed/codex', fingerprint,
@@ -27,17 +29,17 @@ function fixture() {
       environment: { generation: 'environment', provenance: 'systemd', cwd: '/workspace', path: '/usr/bin' } },
   }
   const instances = new HarnessInstanceRegistry(localHarnessDrivers)
-  instances.reload([{ instanceId, instanceRevision: '1', driverId: 'codex', enabled: true, configuration }])
+  instances.reload([{ instanceId, instanceRevision: '1', driverId: driver, enabled: true, configuration }])
   const installations = new HarnessInstallationRegistry(instances)
   installations.refresh([installation])
   const binding = installations.pin({ instanceId, hostRef, harnessInstallationId: installation.harnessInstallationId,
     connectionGeneration: 'connection', environmentGeneration: 'environment' })
   const override: HostHarnessOverride = { instanceId, revision: 1, instanceRevision: '1',
     target: { hostRef, applicationInstallationId: hostRef.mainId, harnessInstallationId: installation.harnessInstallationId,
-      installationFingerprint: fingerprint }, presetId: 'local-default:codex', enabled: true, driverId: 'codex',
+      installationFingerprint: fingerprint }, presetId: `local-default:${driver}`, enabled: true, driverId: driver,
     configuration, configurationFingerprint: commandInputHash(configuration), qualification: 'qualified' }
   const proof: HostHarnessProfileEvidence = { target: override.target, instanceRevision: '1',
-    configurationFingerprint: override.configurationFingerprint, driverId: 'codex', driverRevision: '1',
+    configurationFingerprint: override.configurationFingerprint, driverId: driver, driverRevision: '1',
     protocolRevision: installation.protocolRevision, suiteRevision: 'codex-profile-check-v1',
     environmentGeneration: 'environment', connectionGeneration: 'connection', authenticated: true,
     compatible: true, qualified: true, checkedAt: new Date().toISOString() }
@@ -56,13 +58,13 @@ function fixture() {
     return { rows: records }
   })
   const placement: Pick<AcceptedNodePlacement, 'hostRef' | 'payload'> = { hostRef, payload: {
-    kind: 'agent', agentId: 'agent', agentConfigurationVersionId: 'configuration', driverId: 'codex', driverRevision: '1',
+    kind: 'agent', agentId: 'agent', agentConfigurationVersionId: 'configuration', driverId: driver, driverRevision: '1',
     instanceId, instanceRevision: '1', harnessInstallationId: installation.harnessInstallationId,
     installationFingerprint: fingerprint, runtimeContractVersion: 1, protocolRevision: installation.protocolRevision, credentialScopeRefs: [],
   } }
   const read = (options?: { purpose: 'resident' }) => readPlacementHarnessFacts(
     { query } as unknown as GraphSqlClient, placement, installations, { codex: suiteRevision, opencode: 'unused' }, options)
-  return { read, installations, records, proof, evidence, override }
+  return { read, installations, records, proof, evidence, override, placement, query }
 }
 
 it('admits passive inventory only with its exact measured binary and qualified profile', async () => {
@@ -106,7 +108,7 @@ it('retains original qualification for a surviving process across transport reco
   const facts = await f.read({ purpose: 'resident' })
   expect(facts.installation.connectionGeneration).toBe('replacement-channel')
   expect(facts.profileProof.connectionGeneration).toBe('connection')
-  expect(facts.qualification.status).toBe('qualified')
+  expect(facts.qualification?.status).toBe('qualified')
 })
 
 it.each(['environment', 'installation', 'payload', 'disabled'])('keeps %s checks for an existing process', async defect => {
@@ -130,6 +132,16 @@ it.each([true, false])('uses the latest measurement after a native instance revi
   newer.checked_at = new Date(newer.checked_at.getTime() + 1_000)
   newer.checks[0]!.passed = passed
   f.records.push(newer)
-  if (passed) expect((await f.read()).qualification.checkedAt).toBe(newer.checked_at.toISOString())
+  if (passed) expect((await f.read()).qualification?.checkedAt).toBe(newer.checked_at.toISOString())
   else await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+})
+
+it('admits Main Claude by its exact qualified profile check, which is its native qualification', async () => {
+  const f = fixture('claude')
+  f.records.length = 0
+  const facts = await f.read()
+  expect(facts.profileProof).toMatchObject({ authenticated: true, compatible: true, qualified: true })
+  expect(facts.qualification).toBeUndefined()
+  f.proof.qualified = false
+  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE', details: { reason: 'profile_binding_changed' } })
 })

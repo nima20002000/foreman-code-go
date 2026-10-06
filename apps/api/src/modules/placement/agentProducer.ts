@@ -105,7 +105,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         signal?.throwIfAborted()
         if (item.pins.payload.kind !== 'agent') this.conflict()
         item.pins.payload.profileProofDigest = placementDigest(facts.profileProof)
-        item.pins.payload.qualificationDigest = placementDigest(facts.qualification)
+        if (facts.qualification) item.pins.payload.qualificationDigest = placementDigest(facts.qualification)
       }
       return { bind: runId => prepared.map(({ pins }) => freezePlacement({ ...pins, runId })),
         fence: transaction => ({ assertCurrent: async pin => {
