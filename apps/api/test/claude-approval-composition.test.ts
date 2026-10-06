@@ -104,6 +104,7 @@ describe('production Claude approval composition', () => {
   })
 
   it('keeps an allow-once selection uncertain when the SDK aborts before callback completion', async () => {
+    const stage = (name: string) => console.info(`Recorded approval abort: ${name}`)
     const endpoint = await managementEndpoint()
     const f = productionClaudeFixture('operator', undefined, endpoint.url)
     const validateResponse = PostgresClaudeInteractionAuthority.prototype.validateResponse
@@ -111,12 +112,16 @@ describe('production Claude approval composition', () => {
     try {
       f.start.environment = { agentId: 'operator', variables: { GRAPHQL_MCP_TOKEN: 'synthetic-scoped-token' } }
       await f.manager.inspectMcp()
+      stage('inspection complete')
       await f.manager.refreshInspectionCredentials(f.start, { graphql: { type: 'http', url: endpoint.url,
         headers: { Authorization: 'Bearer synthetic-scoped-token' } } })
+      stage('credential refresh complete')
       const call = await offeredTool(f, 'mcp__graphql__workspace_list', {}, { name: 'graphql', source: 'dynamic' })
+      stage('tool observed')
       const decision = call.permission()
       await vi.waitFor(async () => expect(await f.manager.pending(call.session)).toBeDefined())
       const pending = (await f.manager.pending(call.session))!
+      stage('approval pending')
       f.claim(call.session, 'observed-permission', 'observed-tool')
       let validations = 0
       validation.mockImplementation(async function (this: PostgresClaudeInteractionAuthority, identity, answer) {
@@ -126,19 +131,25 @@ describe('production Claude approval composition', () => {
         }
       })
       await expect(f.manager.respond(call.session, 'observed-permission', pending.responseOptions[0]!)).rejects.toThrow('canceled')
+      stage('response uncertain')
       expect(await decision).toMatchObject({ behavior: 'deny', interrupt: true })
+      stage('SDK callback completed')
       const observed = await f.manager.reconcileResponse!(call.session, { nativeRequestId: 'observed-permission',
         nativeRequestType: pending.nativeRequestType, option: pending.responseOptions[0]! })
+      stage('response reconciled')
       expect(observed.responseDeliveries).toEqual([])
       expect(observed.interactionDeliveries).toMatchObject([{ state: 'uncertain' }])
       expect(endpoint.list).not.toHaveBeenCalled()
       const closed = expect(call.output).rejects.toThrow('submission remains uncertain')
       f.frames.close()
       await closed
+      stage('SDK output closed')
     } finally {
+      stage('disposing')
       validation.mockRestore()
       await f.manager.dispose?.()
       await endpoint.app.close()
+      stage('cleanup complete')
     }
   })
 
