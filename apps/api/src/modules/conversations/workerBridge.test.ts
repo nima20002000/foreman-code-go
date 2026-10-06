@@ -54,7 +54,7 @@ it('allows a scoped access change only through its issued attachment or credenti
     configuration: f.configuration }, current, channel })
   await expect(bridge.authorizeAppAccessChange(inspection.admissionId, f.binding, next,
     f.connection, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 403 })
-  inspection.close()
+  await inspection.close()
 })
 
 it('uses the current callback signal after an earlier request signal has ended', async () => {
@@ -154,7 +154,7 @@ it('keeps recovered Claude callbacks on the submitted message and current sender
   await expect(bridge.handle({ method: 'conversation.claude-authority', binding: f.binding,
     admissionId: reader.admissionId, request: { phase: 'admission' } }, f.connection, AbortSignal.timeout(1000)))
     .rejects.toMatchObject({ status: 403 })
-  reader.close()
+  await reader.close()
 })
 
 it('rejects unissued admissions, foreign conversations and other authenticated generations', async () => {
@@ -211,7 +211,7 @@ it('keeps read admissions unable to claim execution or applied settings', async 
     .rejects.toMatchObject({ status: 403 })
   expect(observed).not.toHaveBeenCalled()
   expect(applied).not.toHaveBeenCalled()
-  reader.close()
+  await reader.close()
   await f.lease.close()
 })
 
@@ -236,7 +236,7 @@ it('keeps native profile reads on a live Main-issued request and rechecks the ca
   f.current.mockRejectedValueOnce(new Error('Read grant revoked'))
   await expect(f.bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).rejects.toThrow('Read grant revoked')
   expect(profile).toHaveBeenCalledOnce()
-  reader.close()
+  await reader.close()
   await expect(f.bridge.handle(callback, f.connection, AbortSignal.timeout(1000))).rejects.toMatchObject({ status: 403 })
   await f.lease.close()
 })
