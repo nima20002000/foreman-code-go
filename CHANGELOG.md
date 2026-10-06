@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.47] - 2026-10-06
+
+### Fixed
+
+- Measure the selected executable's real hash in qualification deadline regression fixtures, so current integrity checks admit the valid candidate and reject a replacement before any native suite runs.
+
 ## [0.0.46] - 2026-10-06
 
 ### Added
