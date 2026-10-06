@@ -201,10 +201,12 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     expect(JSON.parse(content.text)).toMatchObject({ error: { code } })
   }
 
-  async function nativeMcp(harness: 'codex' | 'opencode', name: string, args: Record<string, unknown>) {
+  async function nativeMcp(harness: 'codex' | 'opencode', nativeSessionId: string,
+    name: string, args: Record<string, unknown>) {
     if (harness === 'opencode') return (servers[0] as OperatorFixtureServer).callManagement(name, args)
     const id = randomUUID()
-    await emit(f.directory, { id, method: 'fixture/management-call', params: { name, arguments: args } })
+    await emit(f.directory, { id, method: 'fixture/management-call',
+      params: { threadId: nativeSessionId, name, arguments: args } })
     return until(async () => {
       const result = (await calls(f.directory)).map(entry => entry.nativeManagementResult as {
         id: string; sessionId?: string; pid?: number; error?: string; result?: CallToolResult
@@ -212,7 +214,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
       if (!result) return undefined
       if (result.error) throw new Error(result.error)
       expect(result.pid).toBeGreaterThan(0)
-      expect(result.sessionId).toBeTruthy()
+      expect(result.sessionId).toBe(nativeSessionId)
       return result.result
     }, 10000)
   }
@@ -565,20 +567,20 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
       }
       const create = { workspaceId: workspace.id, commandId: randomUUID(), name: 'Spec workflow' }
       const created = SavedManagedWorkflowCommandResultSchema.parse(
-        (await nativeMcp(harness, 'workflow_create', create)).structuredContent)
+        (await nativeMcp(harness, file.context.nativeSessionId, 'workflow_create', create)).structuredContent)
       expect(created.replayed).toBe(false)
       expect(created.value.workflow.name).toBe('Spec workflow')
       expect(SavedManagedWorkflowCommandResultSchema.parse(
-        (await nativeMcp(harness, 'workflow_create', create)).structuredContent))
+        (await nativeMcp(harness, file.context.nativeSessionId, 'workflow_create', create)).structuredContent))
         .toEqual({ ...created, replayed: true })
       const workflowId = created.value.workflow.id
       const deniedCommandId = randomUUID()
-      expectMcpError(await nativeMcp(harness, 'workflow_create', {
+      expectMcpError(await nativeMcp(harness, file.context.nativeSessionId, 'workflow_create', {
         ...create, workspaceId: foreign.id, commandId: deniedCommandId,
       }), 'ACCESS_DENIED')
-      expectMcpError(await nativeMcp(harness, 'workflow_update', { workspaceId: workspace.id, workflowId,
+      expectMcpError(await nativeMcp(harness, file.context.nativeSessionId, 'workflow_update', { workspaceId: workspace.id, workflowId,
         commandId: randomUUID(), expectedRevision: created.value.revision + 1, name: 'Stale change' }), 'REVISION_CONFLICT')
-      const readback = SavedManagedWorkflowSchema.parse((await nativeMcp(harness, 'workflow_get', {
+      const readback = SavedManagedWorkflowSchema.parse((await nativeMcp(harness, file.context.nativeSessionId, 'workflow_get', {
         workspaceId: workspace.id, workflowId,
       })).structuredContent)
       expect(readback).toEqual(created.value)
@@ -626,13 +628,13 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
       const delegated = await access.authenticate(managementToken)
       expect(delegated.grants.flatMap((grant) => grant.actions)).not.toContain('workflows:create')
       const commandId = randomUUID()
-      const denied = await nativeMcp(harness, 'workflow_create', {
+      const denied = await nativeMcp(harness, file.context.nativeSessionId, 'workflow_create', {
         workspaceId: workspace.id, commandId, name: 'Denied workflow',
       })
       expectMcpError(denied, 'ACCESS_DENIED')
       expect((await pool.query('select outcome from management_audit where principal_id=$1 and action=$2',
         [delegated.id, 'workflow_create'])).rows).toEqual([{ outcome: 'denied' }])
-      const page = SavedManagedWorkflowPageSchema.parse((await nativeMcp(harness, 'workflow_list', {
+      const page = SavedManagedWorkflowPageSchema.parse((await nativeMcp(harness, file.context.nativeSessionId, 'workflow_list', {
         workspaceId: workspace.id,
       })).structuredContent)
       expect(page.items).toEqual([])

@@ -221,7 +221,6 @@ setInterval(() => {
         if (!owner.turns.some((value) => value.status === 'inProgress')) owner.status = { type: 'idle' }
         store(owner)
       }
-
     }
     send(message)
   }

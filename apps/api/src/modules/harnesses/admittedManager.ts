@@ -72,7 +72,6 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
       try { current = await executionManager(signal) } catch (error) {
         throw new NativeDeliveryError('session_creation', 'not_sent', error)
       }
-
       if (!current.forkSession) throw new DomainError('HARNESS_FORK_UNAVAILABLE', 'The admitted driver has no fork capability.', 409)
       return current.forkSession(source, start, signal)
     },
