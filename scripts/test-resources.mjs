@@ -350,6 +350,14 @@ export async function dropFixtureDatabase(sql, name) {
     throw new Error('Fixture database cleanup ownership mismatch')
   }
   await sql.query(`drop database ${identifier(name)}`)
+  const resource = { directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER }
+  const directory = assertTestPath(resource, join(resource.directory, cleanupDirectory))
+  for (const file of existsSync(directory) ? readdirSync(directory) : []) {
+    const record = JSON.parse(readFileSync(assertTestPath(resource, join(directory, file)), 'utf8'))
+    if (record.kind === 'fixture-database' && record.name === name) {
+      completeTestResourceCleanup(resource, record.id)
+    }
+  }
 }
 
 export async function createFixtureSchema(sql, name) {

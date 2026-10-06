@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import pg from 'pg'
 import { privateFixtureDirectory, withPrivateFixtureDirectories } from './privateFixtureDirectory.js'
-import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
+import { registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
 
 /** A fresh database and directory for this workstream only. Neither the admin
  * database nor an existing application database is migrated or cleaned. */
@@ -18,7 +18,6 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   const admin = new pg.Client({ connectionString: configured, connectionTimeoutMillis: 10000 })
   let pool: pg.Pool | undefined
   let created = false
-  let cleanupId: string | undefined
   const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
   let outcome: { value: T } | { error: unknown }
   try {
@@ -26,7 +25,7 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
     assert.equal((await admin.query<{ server_version_num: string }>('show server_version_num')).rows[0]?.server_version_num.startsWith('17'), true)
     await createFixtureDatabase(admin, name, "template template0 encoding 'UTF8'")
     created = true
-    cleanupId = registerTestResourceCleanup(invocation, { kind: 'fixture-database', name })
+    registerTestResourceCleanup(invocation, { kind: 'fixture-database', name })
     url.pathname = `/${name}`
     pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
     assert.equal((await pool.query<{ name: string }>('select current_database() as name')).rows[0]?.name, name)
@@ -60,7 +59,6 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   try {
     if (created) {
       await dropFixtureDatabase(admin, name)
-      completeTestResourceCleanup(invocation, cleanupId!)
     }
   }
   catch (error) { cleanupErrors.push(error) }

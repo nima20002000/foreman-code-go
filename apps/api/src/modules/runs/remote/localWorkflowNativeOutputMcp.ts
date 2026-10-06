@@ -49,21 +49,9 @@ export class LocalWorkflowNativeOutputMcp implements WorkerArtifactMcpExtension 
   private async binding(principal: ManagementPrincipal, sql: FileQuery = this.ports.pool) {
     if (principal.audience !== 'worker') throw denied()
     await assertWave25WorkerBinding(sql, principal.id)
-    return this.declaredBinding(principal, sql)
-  }
-
-  private async declaredBinding(principal: ManagementPrincipal, sql: FileQuery = this.ports.pool) {
-    if (principal.audience !== 'worker') throw denied()
     const row = (await sql.query<{ execution_id: string; native_session_id: string | null }>(
-      `select b.execution_id,b.approval_native_session_id as native_session_id
-       from worker_credential_bindings b join harness_executions e on e.id=b.execution_id
-         and e.run_id=b.run_id and e.agent_id=b.agent_id
-       join runs r on r.id=b.run_id and r.workspace_id=b.workspace_id and r.workflow_id=b.workflow_id
-       where b.principal_id=$1 and b.agent_id=$2 and b.purpose='workflow' and b.revoked_at is null
-         and r.stop_requested_at is null and r.worker_credentials_closed_at is null
-         and r.execution_state in ('queued','running','waiting')
-         and e.worker_credentials_closed_at is null and e.record->>'state' in ('starting','running','waiting')
-       for share of b`,
+      `select execution_id,approval_native_session_id as native_session_id from worker_credential_bindings
+       where principal_id=$1 and agent_id=$2 and purpose='workflow' and revoked_at is null for share`,
       [principal.id, principal.agentId])).rows[0]
     if (!row) throw denied()
     return row
@@ -71,7 +59,7 @@ export class LocalWorkflowNativeOutputMcp implements WorkerArtifactMcpExtension 
 
   async isLocal(principal: ManagementPrincipal): Promise<boolean> {
     try {
-      const bound = await this.declaredBinding(principal)
+      const bound = await this.binding(principal)
       const row = (await this.ports.pool.query<{ run_id: string; node_id: string }>(
         'select run_id,workflow_node_id as node_id from harness_executions where id=$1', [bound.execution_id])).rows[0]
       return !!row && workflowArtifactsAreLocal(this.ports.pool, row.run_id, row.node_id)
@@ -81,11 +69,6 @@ export class LocalWorkflowNativeOutputMcp implements WorkerArtifactMcpExtension 
   private async declaration(principal: ManagementPrincipal, operation: WorkerNativeOutputOperation,
     sql: FileQuery = this.ports.pool) {
     const bound = await this.binding(principal, sql)
-    return this.outputDeclaration(bound, operation, sql)
-  }
-
-  private async outputDeclaration(bound: { execution_id: string; native_session_id: string | null },
-    operation: WorkerNativeOutputOperation, sql: FileQuery = this.ports.pool) {
     const artifacts = this.ports.artifacts()
     const current = await artifacts.authority.execution(sql, bound.execution_id)
     const harness = current.configuration.harness
@@ -145,9 +128,7 @@ export class LocalWorkflowNativeOutputMcp implements WorkerArtifactMcpExtension 
 
   async register(server: McpServer, _request: FastifyRequest, principal: ManagementPrincipal): Promise<void> {
     for (const operation of operations) {
-      // OpenCode caches declarations while starting its MCP client, before the native turn budget starts.
-      // Execution still requires the full current credential, native call and committed turn context.
-      try { await this.outputDeclaration(await this.declaredBinding(principal), operation) }
+      try { await this.declaration(principal, operation) }
       catch (error) { if (error instanceof DomainError && error.status < 500) continue; throw error }
       const schema = WorkerNativeOutputToolInputSchemas[operation]
       server.registerTool(WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation], { inputSchema: schema,

@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot,
+import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot,
   testAdminPool, testEnvironment } from './test-resources.mjs'
 import { groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
   superviseIntegrationProcess } from './integration-process.mjs'
@@ -481,8 +481,7 @@ async function main() {
       if (!cleanupError) {
         for (const slot of slots) if (slot.name) {
           try {
-            await dropTestDatabase(admin, slot)
-            removeTestRoot(slot)
+            await cleanupTestResources(slot)
           }
           catch (error) { cleanupError ??= error }
         }

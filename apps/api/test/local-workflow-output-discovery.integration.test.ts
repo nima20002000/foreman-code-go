@@ -9,6 +9,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { readLiveManagementPrincipal } from '../src/modules/access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../src/modules/access/policy.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { DomainError } from '../src/modules/errors.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { LocalWorkflowArtifactAuthority } from '../src/modules/runs/remote/localWorkflowArtifactAuthority.js'
@@ -41,6 +42,8 @@ it.runIf(Boolean(process.env.TEST_DATABASE_URL))(
         executionLocation: { ...f.run.executionLocation, runnerId: 'runner-local' },
       })
       await insertProviderRun(db.pool, f)
+      await db.pool.query(`update runs set execution_state='running',
+        record=jsonb_set(record,'{executionState}','"running"') where id=$1`, [f.run.id])
       const execution = HarnessExecutionSchema.parse({ ...candidateFor(f), state: 'starting' })
       await db.pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
         values($1,$2,$3,$4,1,$5::jsonb)`, [execution.id, f.run.id, execution.workflowNodeId,
@@ -53,7 +56,9 @@ it.runIf(Boolean(process.env.TEST_DATABASE_URL))(
       }, { assertPinsCurrent: async () => { throw new Error('The fixture has no remote placement') } })
       const artifacts = new LocalWorkflowArtifacts(db.pool, authority,
         () => { throw new Error('Discovery cannot open artifact storage') })
-      const nativeCall = vi.fn(async () => { throw new Error('An unadmitted turn cannot execute an output call') })
+      const nativeCall = vi.fn(async () => {
+        throw new DomainError('OPENCODE_NATIVE_OUTPUT_CALL_UNAVAILABLE', 'No original native call is running.', 409)
+      })
       const commands = new PostgresCommandCoordinator(db.pool)
       const extension = new LocalWorkflowNativeOutputMcp({ pool: db.pool, commands, artifacts: () => artifacts,
         nativeCall, authorizeNativeCall: async () => { throw new Error('The native call is not admitted') },
@@ -73,14 +78,10 @@ it.runIf(Boolean(process.env.TEST_DATABASE_URL))(
       const worker = await connect(credential.environment.variables.GRAPHQL_MCP_TOKEN!)
       const outputs = Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES)
       expect((await worker.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining(outputs))
-      // Native session acknowledgement can precede the first turn's active budget.
-      await db.pool.query("update harness_executions set record=jsonb_set(record,'{state}','\"running\"') where id=$1",
-        [execution.id])
-      expect((await worker.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining(outputs))
       const denied = await worker.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
         arguments: { commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' } })
       expect(denied.isError).toBe(true)
-      expect(nativeCall).not.toHaveBeenCalled()
+      expect(nativeCall).toHaveBeenCalledOnce()
       expect((await db.pool.query('select * from local_workflow_native_outputs')).rows).toEqual([])
       expect((await db.pool.query(`select source,action,outcome from management_audit where principal_id=$1
         and action=$2 and outcome='denied'`, [credential.principalId, WORKER_NATIVE_OUTPUT_TOOL_NAMES.create])).rows)
@@ -89,13 +90,25 @@ it.runIf(Boolean(process.env.TEST_DATABASE_URL))(
         expiresAt: new Date(Date.now() + 300_000), grants: [{ actions: ['interactions:read'],
           scope: { workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId], runIds: [f.run.id] } }],
       })
-      const reader = await connect(unrelated.token)
-      expect((await reader.listTools()).tools.filter(tool => outputs.includes(tool.name as never))).toEqual([])
-      expect((await reader.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
-        arguments: { commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' } })).isError).toBe(true)
+      const list = (token: string) => app!.inject({ method: 'POST', url: '/mcp',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      })
+      const unbound = await list(unrelated.token)
+      expect(unbound.statusCode).toBe(401)
+      expect(unbound.json()).toMatchObject({ error: { code: 'AUTH_REVOKED' } })
+      await db.pool.query("update harness_executions set record=jsonb_set(record,'{state}','\"running\"') where id=$1",
+        [execution.id])
+      const unadmitted = await list(credential.environment.variables.GRAPHQL_MCP_TOKEN!)
+      expect(unadmitted.statusCode).toBe(401)
+      expect(unadmitted.json()).toMatchObject({ error: { code: 'AUTH_REVOKED' } })
+      await db.pool.query("update harness_executions set record=jsonb_set(record,'{state}','\"starting\"') where id=$1",
+        [execution.id])
       await db.pool.query('update worker_credential_bindings set revoked_at=clock_timestamp() where principal_id=$1',
         [credential.principalId])
-      expect((await worker.listTools()).tools.filter(tool => outputs.includes(tool.name as never))).toEqual([])
+      const revoked = await list(credential.environment.variables.GRAPHQL_MCP_TOKEN!)
+      expect(revoked.statusCode).toBe(401)
+      expect(revoked.json()).toMatchObject({ error: { code: 'AUTH_REVOKED' } })
       expect((await db.pool.query('select * from local_workflow_native_outputs')).rows).toEqual([])
     } finally {
       for (const client of clients) await client.close()
