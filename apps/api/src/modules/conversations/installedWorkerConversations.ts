@@ -11,7 +11,8 @@ import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfiguration
 import { createWorkerMcpEndpoint } from '../runs/remote/workerMcpEndpoint.js'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { NativeProcessRegistry, type NativeLaunchObservation } from '../harnesses/recovery/processRegistry.js'
-import { CodexAppServerSessionManager } from '../harnesses/codexAppServer.js'
+import { CodexAppServerSessionManager, type CodexSessionDependencies } from '../harnesses/codexAppServer.js'
+import { CodexDiagnostics } from '../harnesses/codexDiagnostics.js'
 import { codexMcpInspectorAdapter } from '../harnesses/codexMcpInspectorAdapter.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
 import { inspectInstalledOpenCode } from '../harnesses/installedOpenCodeInspection.js'
@@ -121,6 +122,7 @@ export async function createInstalledWorkerConversations(input: {
     }
     let manager: NativeHarnessSessionManager
     let inspector: NativeMcpInspector
+    let codexDiagnostics: CodexDiagnostics | undefined
     let openCodeFiles: ReturnType<typeof createWorkerOpenCodeFiles> | undefined
     if (harness === 'codex') {
       if (configuration.harness.harness !== 'codex') unavailable('The selected Codex configuration changed.')
@@ -138,22 +140,33 @@ export async function createInstalledWorkerConversations(input: {
         ? files.adapter({ source, signal: input.signal, assertCurrent: assertFileHost,
           host: () => localCodexChatHost(fileStorageRoot) }) : undefined
       const dependencies = createInstalledCodexDependencies({ reader, codexSuiteRevision: suiteRevision })
-      const native = new CodexAppServerSessionManager(binary, original.qualification.version, undefined, scope, appMcpAccess,
-      chatFiles, { ...dependencies,
-        qualify: async (executable, version, cwd, environment, authenticated, signal) => {
+      const operations: Extract<CodexSessionDependencies, { mode: 'native' }> = { ...dependencies,
+        qualify: async (executable, version, cwd, environment, authenticated, signal, recovery = scope) => {
           await before(signal)
-          return dependencies.qualify(executable, version, cwd, environment, authenticated, signal, scope)
+          return dependencies.qualify(executable, version, cwd, environment, authenticated, signal, recovery)
         },
         assertUnchanged: async qualified => { await before(); await dependencies.assertUnchanged(qualified) },
         runCommand: async (executable, args, cwd, signal, environment, options) => {
           await before(signal)
-          return dependencies.runCommand(executable, args, cwd, signal, environment, { ...options, recovery: scope })
+          return dependencies.runCommand(executable, args, cwd, signal, environment,
+            { ...options, recovery: options?.recovery ?? scope })
         },
-        qualifyModel: async (configuration, executable, cwd, environment, signal, _recovery, inspection) => {
+        qualifyModel: async (configuration, executable, cwd, environment, signal, recovery = scope, inspection) => {
           await before(signal)
-          return dependencies.qualifyModel(configuration, executable, cwd, environment, signal, scope, inspection)
+          return dependencies.qualifyModel(configuration, executable, cwd, environment, signal, recovery, inspection)
+        },
+      }
+      const diagnostics = new CodexDiagnostics({ native: operations,
+        createRecovery: () => input.registry.scope(`conversation-diagnostics:${binding.owner.conversationId}:${randomUUID()}`),
+        admitRecovery: recovery => { Object.assign(recovery, input.registry.reserveLaunch(recovery.owner)) },
+        abandonRecovery: async recovery => { await input.registry.abandonReservedLaunch(recovery) },
+        closeRecovery: async recovery => {
+          if (!await input.registry.closeOwner(recovery.owner)) unavailable('Native diagnostic closure is unconfirmed.')
         },
       })
+      codexDiagnostics = diagnostics
+      const native = new CodexAppServerSessionManager(binary, original.qualification.version, undefined, scope, appMcpAccess,
+        chatFiles, { ...operations, withDiagnostics: (pin, run) => diagnostics.run(pin, run, scope) })
       manager = native
       inspector = codexMcpInspectorAdapter(native)
     } else {
@@ -221,7 +234,9 @@ export async function createInstalledWorkerConversations(input: {
       } satisfies Pick<WorkerConversationAllocation, 'recoverFiles'> : {}),
       async close() {
         const errors: unknown[] = []
+        codexDiagnostics?.stop()
         try { await manager.dispose?.() } catch (error) { errors.push(error) }
+        try { await codexDiagnostics?.dispose() } catch (error) { errors.push(error) }
         if (!await input.registry.closeOwner(scope.owner)) unavailable('Native chat closure is unconfirmed.')
         if (purpose === 'chat') {
           try {

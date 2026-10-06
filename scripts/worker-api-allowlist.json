@@ -89,6 +89,7 @@
   "apps/api/src/modules/harnesses/claudeSdk/sessionManager.ts",
   "apps/api/src/modules/harnesses/codexAppServer.ts",
   "apps/api/src/modules/harnesses/codexChildControls.ts",
+  "apps/api/src/modules/harnesses/codexDiagnostics.ts",
   "apps/api/src/modules/harnesses/codexFiles/bytes.ts",
   "apps/api/src/modules/harnesses/codexFiles/declarations.ts",
   "apps/api/src/modules/harnesses/codexFiles/index.ts",
