@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { NativeSessionStart } from '../port.js'
+import type { HarnessExecutionRequest } from '@foreman-code/contracts'
 import { ClaudeBoundedQueue } from './queue.js'
 import { createClaudeSdkRunner } from './runner.js'
 import { claudePromptUuid, createClaudeNativeSessionManager, type ClaudeMessageTurnInput } from './sessionManager.js'
@@ -489,20 +490,38 @@ describe('Claude native session manager admission', () => {
     await f.manager.dispose?.()
   })
 
-  it('starts the inspected workflow query with its original execution correlation', async () => {
+  it('keeps workflow inspection identity through JSON readback and per-turn notice text', async () => {
     const f = fixture()
-    const workflow = { request: { executionId: 'execution', workingDirectory: '/work' },
-      correlationId: 'execution:execution' } as NativeSessionStart
+    const request: HarnessExecutionRequest = { executionId: 'execution', runId: 'run', workspaceId: 'workspace',
+      workflowNodeId: 'node', workingDirectory: '/work', runtimeDirectory: '/runtime',
+      configuration: { id: 'config', workspaceId: 'workspace', agentId: 'agent', version: 1,
+        prompt: {}, assignedSkills: [], contentHash: 'recorded', createdAt: '2026-10-06T00:00:00.000Z',
+        harness: { harness: 'claude', model: 'recorded-model', authMode: 'subscription', configDirectory: '/profile-a',
+          permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [],
+          instructions: '', mcpServers: {} } }, input: { first: 'one', second: 'two' } }
+    const workflow = { request, correlationId: 'execution:execution' }
+    const readback = { correlationId: workflow.correlationId,
+      request: { ...request, initialPrompt: 'workflow notice', input: { second: 'two', first: 'one' } } }
+    const prompt = 'first\nworkflow notice'
     try {
       await f.manager.prepareInspection(workflow)
-      const running = drain(f.manager.startInitialTurn(workflow, { prompt: 'first',
+      await f.manager.prepareInspection(readback)
+      await expect(f.manager.prepareInspection({ ...workflow, request: { ...request,
+        input: { first: 'changed', second: 'two' } } })).rejects.toThrow('immutable inspection context')
+      const running = drain(f.manager.startInitialTurn(readback, { prompt,
         clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
       const input = await f.nextMessage()
       void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
       void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid,
         subtype: 'success', is_error: false, result: 'done' })
       await running
+      await drain(f.manager.startInitialTurn(workflow, { prompt,
+        clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
+      expect(() => f.manager.startInitialTurn(readback, { prompt: 'changed',
+        clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
+        .toThrow('another accepted scope')
       expect(f.queries).toHaveBeenCalledTimes(1)
+      expect(f.offers).toHaveBeenCalledTimes(1)
     } finally {
       await f.manager.dispose?.()
     }

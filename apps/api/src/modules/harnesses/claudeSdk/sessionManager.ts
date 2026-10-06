@@ -118,6 +118,10 @@ function startupSignal(signal?: AbortSignal): { signal?: AbortSignal; release():
   return { signal: controller.signal, release: () => signal.removeEventListener('abort', forward) }
 }
 
+function sameJson(left: string, right: string): boolean {
+  return isDeepStrictEqual(JSON.parse(left), JSON.parse(right))
+}
+
 export function createClaudeNativeSessionManager(options: {
   runner: ClaudeSdkRunner
   scope: ClaudeSessionScope
@@ -228,6 +232,12 @@ export function createClaudeNativeSessionManager(options: {
     }
   }
   function canonicalStart(start: NativeSessionStart): NativeSessionStart {
+    if (start.kind !== 'operator') {
+      // Workflow notices are per-turn text, offered and bound through input.prompt after inspection.
+      const request = { ...start.request }
+      delete request.initialPrompt
+      start = { ...start, request }
+    }
     if (!start.environment) return start
     const variables = { ...start.environment.variables }
     const token = readProductEnvironment(variables, 'MCP_TOKEN')
@@ -335,7 +345,7 @@ export function createClaudeNativeSessionManager(options: {
     const nativeOptions = queryOptions(start)
     const identity = JSON.stringify(canonicalStart(start))
     if (prepared) {
-      if (prepared.identity !== identity) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'The owned SDK query already has another immutable inspection context.')
+      if (!sameJson(prepared.identity, identity)) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'The owned SDK query already has another immutable inspection context.')
       return prepared.opening
     }
     const runtime = makeRuntime(start)
@@ -373,7 +383,14 @@ export function createClaudeNativeSessionManager(options: {
     const nativeOptions = queryOptions(start)
     const identity = JSON.stringify(canonicalStart(start))
     const inspected = prepared
-    if (inspected && inspected.identity !== identity) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Input differs from the exact inspected owner/configuration/environment.')
+    if (inspected && !sameJson(inspected.identity, identity)) {
+      const previous = JSON.parse(inspected.identity) as Record<string, unknown>
+      const current = JSON.parse(identity) as Record<string, unknown>
+      const changed = ['kind', 'correlationId', 'request', 'environment', 'nativeTurnId', 'instructionsDelivered']
+        .filter(key => !isDeepStrictEqual(previous[key], current[key]))
+      throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT',
+        `Input differs from the exact inspected owner/configuration/environment (${changed.join(', ')}).`)
+    }
     const previous = inspected ? await inspected.opening : undefined
     if (previous?.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'Model input cannot be offered while an owned SDK control operation is pending.')
     if (previous?.closed) throw new HarnessExecutionError('CLAUDE_SESSION_CLOSED', 'The owned SDK query is closed.')
@@ -762,7 +779,7 @@ export function createClaudeNativeSessionManager(options: {
         return JSON.stringify({ ...value, environment: { agentId, variables } })
       }
       const original = JSON.parse(inspected.identity) as NativeSessionStart
-      if (withoutCredentials(original) !== withoutCredentials(start)) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Credential delivery changed the accepted owner/configuration or noncredential environment.')
+      if (!sameJson(withoutCredentials(original), withoutCredentials(start))) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Credential delivery changed the accepted owner/configuration or noncredential environment.')
       const configured = options.sdkOptions.mcpServers && typeof options.sdkOptions.mcpServers === 'object' ? options.sdkOptions.mcpServers as Record<string, unknown> : {}
       const topology = (entries: Readonly<Record<string, unknown>>) => JSON.stringify(Object.entries(entries).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => {
         const config = value && typeof value === 'object' ? value as Record<string, unknown> : {}
@@ -814,7 +831,7 @@ export function createClaudeNativeSessionManager(options: {
       const identity = JSON.stringify({ start: canonicalStart(start), prompt: input.prompt, correlationId: input.clientCorrelationId })
       const previous = initialTurns.get(input.clientCorrelationId)
       if (previous) {
-        if (previous.identity !== identity) throw new HarnessExecutionError('CLAUDE_CREATION_IDENTITY_CONFLICT', 'The initial input belongs to another accepted scope.')
+        if (!sameJson(previous.identity, identity)) throw new HarnessExecutionError('CLAUDE_CREATION_IDENTITY_CONFLICT', 'The initial input belongs to another accepted scope.')
         return subscribe(previous.turn, signal)
       }
       if (initialTurns.size >= 128) throw new HarnessExecutionError('CLAUDE_CREATION_LIMIT', 'Resolve existing initial turn attempts before allocating more.')
