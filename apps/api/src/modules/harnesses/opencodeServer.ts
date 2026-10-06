@@ -224,23 +224,27 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
     }
     assertCurrent()
+    const read = async (path: string) => {
+      combined.throwIfAborted()
+      assertCurrent()
+      const response = await resident!.call(this.options.server, withDirectory(path, state.directory), combined, generation)
+      if (!response?.ok) {
+        await response?.body?.cancel()
+        throw new HarnessExecutionError('OPENCODE_NATIVE_OUTPUT_CALL_UNAVAILABLE', 'The original native output inspection failed.')
+      }
+      const value = this.sanitize(await readJson(response, combined))
+      const nextCursor = response.headers.get('x-next-cursor')
+      if (nextCursor && nextCursor.length > 1024) throw new Error('Native output history cursor exceeds its limit.')
+      assertCurrent()
+      return { value, ...(nextCursor ? { nextCursor } : {}) }
+    }
     return captureOpenCodeNativeOutput({ session, rootTurnId: rootTurnId!, agentName: state.configuration.nativeAgent,
-      toolName, args, assertCurrent,
-      read: async path => {
-        combined.throwIfAborted()
-        assertCurrent()
-        const response = await resident!.call(this.options.server, withDirectory(path, state.directory), combined, generation)
-        if (!response?.ok) {
-          await response?.body?.cancel()
-          throw new HarnessExecutionError('OPENCODE_NATIVE_OUTPUT_CALL_UNAVAILABLE', 'The original native output inspection failed.')
-        }
-        const value = this.sanitize(await readJson(response, combined))
-        const nextCursor = response.headers.get('x-next-cursor')
-        if (nextCursor && nextCursor.length > 1024) throw new Error('Native output history cursor exceeds its limit.')
-        assertCurrent()
-        return { value, ...(nextCursor ? { nextCursor } : {}) }
-      },
-      verifySession: native => this.verifyAttachedSession(native, session.nativeSessionId, state.directory, state.configuration),
+      toolName, args, assertCurrent, read,
+      verifySession: native => this.verifyAttachedSession(native, session.nativeSessionId, state.directory,
+        state.configuration, combined, async () => {
+          const root = await read(`/session/${encodeURIComponent(session.nativeSessionId)}/message/${encodeURIComponent(rootTurnId!)}`)
+          return object(object(root.value).info)
+        }),
       autoApproval: (assistantMessageId, callId) => {
         const saved = state.outputAutoApprovals.get(JSON.stringify([assistantMessageId, callId]))
         if (saved?.generation === generation && saved.rootTurnId === rootTurnId) return saved.approval

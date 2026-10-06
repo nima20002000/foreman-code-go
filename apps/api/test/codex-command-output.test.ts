@@ -25,6 +25,21 @@ it('separates command output from other threads, turns, items and reconstructed 
   expect(new CodexCommandOutput().read(command, null)).toBeUndefined()
 })
 
+it('captures the original completed native function result with string and text-part output', () => {
+  const output = new CodexCommandOutput()
+  output.complete({ ...command, output: 'native stdout' })
+  expect(output.read(command, null)).toBe('native stdout')
+  expect(output.read({ ...command, turnId: 'foreign' }, null)).toBeUndefined()
+  expect(output.read({ ...command, threadId: 'foreign' }, null)).toBeUndefined()
+  expect(output.read({ ...command, itemId: 'foreign' }, null)).toBeUndefined()
+  output.complete({ ...command, output: [{ type: 'input_text', text: 'native stdout' }] })
+  expect(() => output.complete({ ...command, output: 'changed stdout' })).toThrow('result changed')
+  const invalid = new CodexCommandOutput()
+  invalid.complete({ ...command, output: [{ type: 'output_text', text: 'assistant claim' }] })
+  expect(invalid.read(command, null)).toBeUndefined()
+  expect(() => invalid.complete({ ...command, output: 'x'.repeat(64 * 1024 + 1) })).toThrow('exceeds its bound')
+})
+
 it('fails oversized diagnostic capture without truncating it into acceptable evidence', () => {
   const output = new CodexCommandOutput()
   output.append({ ...command, delta: 'a'.repeat(64 * 1024) })

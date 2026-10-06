@@ -20,7 +20,9 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
 import { buildProductionApp } from '../src/production.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, appMcpServerName } from '../src/modules/harnesses/appMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, isSupportedAppMcpTokenName,
+  isAppLauncher, appMcpServerName } from '../src/modules/harnesses/appMcpLauncher.js'
+import { record } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
 import { DomainError } from '../src/modules/errors.js'
@@ -209,6 +211,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           const connections = await new OpenCodeMcpConnections(binaries.openCodeBinary, projectPath)
             .read(AbortSignal.timeout(30_000))
           openCodeServerName = appMcpServerName(connections.effective, appServerName)
+          expect(isAppLauncher('opencode', record(connections.effective[openCodeServerName]))).toBe(true)
+          expect(isSupportedAppMcpTokenName(connections.credentialReferences?.[openCodeServerName])).toBe(true)
         }
         const settings = new PostgresSettingsRepository(pool)
         const defaults = await settings.getHarnessDefaults()

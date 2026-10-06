@@ -23,7 +23,7 @@ interface CaptureInput {
   toolName: string
   args: unknown
   read(path: string): Promise<ResidentOpenCodeRead>
-  verifySession(native: JsonObject): void
+  verifySession(native: JsonObject): void | Promise<void>
   autoApproval(assistantMessageId: string, callId: string): NativeOutputCallCapture['nativeAutoApproval']
   assertCurrent(): void
 }
@@ -102,7 +102,7 @@ async function runningCall(input: CaptureInput, expected: unknown) {
 async function effectivePolicy(input: CaptureInput,
   call: { assistantMessageId: string; callId: string; nativeToolName: string }) {
   const session = object((await input.read(`/session/${encodeURIComponent(input.session.nativeSessionId)}`)).value)
-  input.verifySession(session)
+  await input.verifySession(session)
   const agents = (await input.read('/agent')).value
   if (!Array.isArray(agents)) return conflict()
   const matches = agents.filter(agent => object(agent).name === input.agentName)

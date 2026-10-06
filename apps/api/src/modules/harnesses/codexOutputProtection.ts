@@ -97,6 +97,19 @@ export async function qualifyCodexOutputProtection(input: {
           if (item.type === 'commandExecution' && typeof params.threadId === 'string' && typeof params.turnId === 'string') {
             commands.push({ threadId: params.threadId, turnId: params.turnId, item })
           }
+          if (item.type === 'functionCallOutput' && typeof item.id === 'string'
+            && typeof params.threadId === 'string' && typeof params.turnId === 'string') {
+            commandOutput.complete({ threadId: params.threadId, turnId: params.turnId,
+              itemId: item.id, output: item.output })
+          }
+        }
+        if (method === 'rawResponseItem/completed') {
+          const item = object(params.item)
+          if (item.type === 'function_call_output' && typeof item.call_id === 'string'
+            && typeof params.threadId === 'string' && typeof params.turnId === 'string') {
+            commandOutput.complete({ threadId: params.threadId, turnId: params.turnId,
+              itemId: item.call_id, output: item.output })
+          }
         }
         if (method === 'turn/completed') {
           const turn = object(params.turn)
@@ -110,6 +123,7 @@ export async function qualifyCodexOutputProtection(input: {
     const policy = selected.expectedSandbox
     const started = object(await transport.request('thread/start', { cwd: policy.cwd,
       runtimeWorkspaceRoots: [policy.cwd], sandbox: 'workspace-write', approvalPolicy: 'never', ephemeral: true,
+      experimentalRawEvents: true,
       model: selected.configuration.model,
       config: { ...Object.fromEntries(disabled.map((name) => [`mcp_servers.${name}.enabled`, false])),
         model_reasoning_effort: selected.configuration.reasoningEffort,
@@ -168,14 +182,11 @@ export async function qualifyCodexOutputProtection(input: {
         })
     }
     const originalCommand = observed[0]!
-    let output = typeof originalCommand.item.id === 'string'
-      ? commandOutput.read({ threadId, turnId, itemId: originalCommand.item.id }, originalCommand.item.aggregatedOutput)
+    const aggregate = recordedCodexCommandOutput(observed.map(entry => ({ turnId: entry.turnId, item: entry.item })),
+      { turnId, itemId: originalCommand.item.id as string, command: originalCommand.item.command })
+    const output = typeof originalCommand.item.id === 'string'
+      ? commandOutput.read({ threadId, turnId, itemId: originalCommand.item.id }, aggregate)
       : undefined
-    if (output === undefined) {
-      const page = object(await transport.request('thread/items/list', { threadId, turnId, limit: 16 }, signal))
-      if (typeof originalCommand.item.id === 'string') output = recordedCodexCommandOutput(page.data,
-        { turnId, itemId: originalCommand.item.id, command: originalCommand.item.command })
-    }
     const result = parseCodexNativeProbeOutput(output, marker)
     if (!result) {
       throw new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',

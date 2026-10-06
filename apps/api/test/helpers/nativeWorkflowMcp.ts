@@ -66,7 +66,11 @@ export async function configureNativeWorkflowMcp(input: {
     ].join('\n'), { mode: 0o600 })
     if (openCode) {
       const name = appMcpServerName(openCode.effective, input.appServerName)
-      const token = openCode.credentialReferences?.[name] ?? APP_MCP_TOKEN
+      const source = record(openCode.user[name])
+      const sourceToken = appLauncherTokenName('opencode', source)
+      const referencedToken = sourceToken && record(source.environment)[sourceToken] === `{env:${sourceToken}}`
+        ? sourceToken : undefined
+      const token = openCode.credentialReferences?.[name] ?? referencedToken ?? APP_MCP_TOKEN
       await writeFile(join(input.projectDirectory, 'opencode.json'), JSON.stringify({ mcp: { [name]: {
         type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,
         environment: { [token]: `{env:${token}}` },
