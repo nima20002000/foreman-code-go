@@ -40,11 +40,6 @@ export async function configureNativeWorkflowMcp(input: {
     if (sourceLauncher !== undefined) process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = sourceLauncher
     const codex = await new CodexMcpConnections(input.codexBinary, input.projectDirectory)
       .read(AbortSignal.timeout(30_000))
-    // Inspect both installed entries before changing launcher identity. OpenCode
-    // merges credential keys from its user and project configuration.
-    const openCode = input.openCodeBinary
-      ? await new OpenCodeMcpConnections(input.openCodeBinary, input.projectDirectory).read(AbortSignal.timeout(30_000))
-      : undefined
     const codexName = appMcpServerName(codex.effective)
     const entry = record(codex.effective[codexName])
     const reference = appLauncherTokenName('codex', entry) ?? entry.bearer_token_env_var
