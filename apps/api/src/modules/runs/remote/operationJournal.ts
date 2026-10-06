@@ -19,7 +19,8 @@ import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordS
   type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { JobNativeOwnerSchema, JobOCICertificateSchema, isPreparatoryVerificationOwner, type JobNativeOwner } from '../../jobs/executorJournal.js'
 import { jobSupervisorIdentity } from '../../jobs/executor.js'
-import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'
+import { QualificationReceiptSchema, QualificationOCICertificateSchema, qualificationCleanupCommandAllowed,
+  type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 
 const JournalSchema = z.object({ schemaVersion: z.literal(1), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptRecordSchema])),
   reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobOutputs: z.array(z.object({ operationId: z.string(), commandId: z.uuid(), path: z.string(), mediaType: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().nonnegative() }).strict()).default([]), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
@@ -309,11 +310,7 @@ export class RemoteOperationJournal {
   qualificationReserveCleanupProcess(operationId: string, input: { launchId: string; binary: string; argv: string[] }) {
     return this.change(data => {
       const receipt = this.qualificationReceipt(data, operationId)
-      const target = receipt.container?.containerId ?? receipt.container?.identity
-      const permitted = input.binary === receipt.candidate.fingerprint.runtimeExecutable && input.argv[0] === '--remote=false'
-        && target && (same(input.argv.slice(1), ['container', 'inspect', target])
-          || same(input.argv.slice(1), ['stop', '--time', '1', target])
-          || same(input.argv.slice(1), ['kill', '--signal', 'KILL', target]))
+      const permitted = qualificationCleanupCommandAllowed(receipt, input.binary, input.argv)
       if (!permitted || !['native_entry_attempted', 'uncertain'].includes(receipt.phase)
         || receipt.launches.some(value => !value.closed || value.launchId === input.launchId)
         || receipt.launches.length >= 512) throw new Error('Original qualification cleanup reservation unavailable')

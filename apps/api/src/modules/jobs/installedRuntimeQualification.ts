@@ -12,6 +12,7 @@ import { nativeAgentEnvironment } from '../harnesses/secrets.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+import { qualificationCleanupCommandAllowed } from './qualificationJournal.js'
 import { inspectInstalledJobRuntimeCandidate, type InstalledRuntimeHostDependencies, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 import type { OCIContainerOwnership, OCIHostCertificate } from './executorContainerOwner.js'
 import type { z } from 'zod'
@@ -250,14 +251,8 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     async reserveCleanupProcess(binary: string, argv: string[]) {
       await assertClosure()
       const receipt = (await journal.qualificationStatus(operationId))!
-      const container = receipt.container
-      const target = container?.containerId ?? container?.identity
-      const permitted = argv[0] === '--remote=false' && target && (
-        same(argv.slice(1), ['container', 'inspect', target])
-        || same(argv.slice(1), ['stop', '--time', '1', target])
-        || same(argv.slice(1), ['kill', '--signal', 'KILL', target]))
-      if (binary !== candidate.fingerprint.runtimeExecutable || !permitted) {
-        throw new Error('Only original-container inspect and stop are permitted during cleanup.')
+      if (!qualificationCleanupCommandAllowed(receipt, binary, argv)) {
+        throw new Error('Only original-container inspection, stop and confirmed removal are permitted during cleanup.')
       }
       for (const launch of receipt.launches.filter(value => !value.closed)) {
         await registry.closeRegistration({ ...registry.scope(owner), launchId: launch.launchId }, launch.launchId)

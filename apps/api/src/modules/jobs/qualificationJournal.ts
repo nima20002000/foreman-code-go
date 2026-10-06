@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isDeepStrictEqual } from 'node:util'
 import { JobRuntimeNativeAdmissionRecordSchema, JobQualificationCandidateRecordSchema, JobRuntimeQualificationResultRecordSchema }
   from '@foreman-code/contracts/job-verification-runtime'
 
@@ -27,3 +28,20 @@ export const QualificationReceiptSchema = z.object({
     containerId: z.string().regex(/^[a-f0-9]{64}$/).nullable(), certificate: QualificationOCICertificateSchema.nullable() }).strict().nullable(),
 }).strict()
 export type QualificationReceipt = z.infer<typeof QualificationReceiptSchema>
+
+export function qualificationCleanupCommandAllowed(receipt: QualificationReceipt, binary: string, argv: string[]) {
+  const container = receipt.container
+  const target = container?.containerId ?? container?.identity
+  if (binary !== receipt.candidate.fingerprint.runtimeExecutable || argv[0] !== '--remote=false' || !target) {
+    return false
+  }
+  const command = argv.slice(1)
+  if (isDeepStrictEqual(command, ['container', 'inspect', target])
+    || isDeepStrictEqual(command, ['stop', '--time', '1', target])
+    || isDeepStrictEqual(command, ['kill', '--signal', 'KILL', target])) return true
+  const containerId = container?.containerId
+  if (!containerId || container.certificate?.lifecycle !== 'closed'
+    || container.certificate.containerId !== containerId) return false
+  return isDeepStrictEqual(command, ['container', 'exists', containerId])
+    || isDeepStrictEqual(command, ['rm', '--volumes', containerId])
+}

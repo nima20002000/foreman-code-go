@@ -279,6 +279,30 @@ describe('actual qualification reservation seams with mocked native entry only',
     expect(f.registry.closeRegistration).toHaveBeenCalled()
     await expect(admitted.native.readNativeExit(reservation, new EventEmitter() as ChildProcess, { exitCode: 0, signal: null })).rejects.toThrow('target changed')
   })
+  it('allows removal only for the original container after its closure is retained', async () => {
+    const f = await fixture()
+    const admitted = await reserveInstalledJobQualification(f.input)
+    const identity = `graphql-ci-qualification-${id}`
+    const containerId = 'b'.repeat(64)
+    await admitted.ownership.reserveContainerIntent(identity, f.admission.fingerprintDigest)
+    await admitted.ownership.bindContainer(identity, containerId)
+    const certificate = { scope: admitted.ownership.scope, containerId,
+      process: { pid: 42, startTicks: '123', bootId: f.admission.bootId },
+      boundary: { kind: 'cgroup-v2' as const, path: `/sys/fs/cgroup/libpod-${containerId}.scope`,
+        device: '1', inode: '2' }, helpers: [], lifecycle: 'active' as const }
+    await admitted.ownership.publish(certificate)
+    const remove = ['--remote=false', 'rm', '--volumes', containerId]
+    await expect(admitted.native.reserveCleanupProcess!(process.execPath, remove)).rejects.toThrow('Only original-container')
+    await admitted.ownership.publish({ ...certificate, lifecycle: 'closed' })
+    for (const argv of [remove, ['--remote=false', 'container', 'exists', containerId]]) {
+      expect(await admitted.native.reserveCleanupProcess!(process.execPath, argv)).toBeTruthy()
+    }
+    for (const argv of [['--remote=false', 'rm', '--force', containerId],
+      ['--remote=false', 'rm', '--volumes', 'c'.repeat(64)]]) {
+      await expect(admitted.native.reserveCleanupProcess!(process.execPath, argv)).rejects.toThrow('Only original-container')
+    }
+    expect(await admitted.native.close()).toBe(true)
+  })
   it('container identity/certificate and positive closure persist on the same journal', async () => {
     const f = await fixture(), admitted = await reserveInstalledJobQualification(f.input), ownership = admitted.ownership
     const identity = `graphql-ci-qualification-${id}`, containerId = 'b'.repeat(64)
