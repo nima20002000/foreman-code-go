@@ -139,7 +139,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
               advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
                 { permission: '*', pattern: '*', effect: 'deny' as const },
                 { permission: 'read', pattern: '*', effect: 'allow' as const },
-                { permission: 'graphql_*', pattern: '*', effect: 'allow' as const },
+                { permission: 'graphql_files_*', pattern: '*', effect: 'allow' as const },
                 { permission: 'foreman-code_*', pattern: '*', effect: 'allow' as const },
                 { permission: 'foreman_code_*', pattern: '*', effect: 'allow' as const },
               ], mcp: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION.mcp,
