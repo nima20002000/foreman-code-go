@@ -194,7 +194,8 @@ setInterval(() => {
   offset = end
   for (const line of batch.split('\n').filter(Boolean)) {
     const message = JSON.parse(line)
-    const owner = loadThread(message.params?.threadId)
+    const owner = message.id !== undefined || message.method === 'turn/completed'
+      ? loadThread(message.params?.threadId) : undefined
     if (message.method === 'fixture/management-call') {
       void (async () => {
         if (!owner) throw new Error('Native management session missing')
@@ -217,6 +218,7 @@ setInterval(() => {
       })().catch(error => log({ nativeManagementResult: { id: message.id, error: error.message } }))
       continue
     }
+
     if (message.id !== undefined && message.method && owner && !outstanding.has(message.id)) {
       outstanding.set(message.id, { threadId: owner.id, turnId: message.params.turnId || owner.turns.at(-1)?.id,
         remaining: 0 })
