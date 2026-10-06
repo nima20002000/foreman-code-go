@@ -39,7 +39,7 @@ export class NativeCodexPlugins implements CodexPluginAdapter {
   private async command(args: string[], signal: AbortSignal, mutation = false) {
     const environment = pluginCommandEnvironment()
     if (mutation && (!this.processRecovery || process.platform !== 'linux')) throw new DomainError('CODEX_PLUGIN_RECOVERY_UNAVAILABLE', 'Persistent process recovery is required before changing plugins.', 503)
-    const qualified = await qualifyCodex(this.binary, undefined, this.directory, environment, true, signal)
+    const qualified = await qualifyCodex(this.binary, this.directory, environment, true, signal)
     await assertCodexUnchanged(qualified)
     return runCommand(qualified.binary, args, this.directory, signal, environment,
       { maxOutputBytes: 8_000_000, ...(mutation && this.processRecovery ? { recovery: this.processRecovery } : {}) })

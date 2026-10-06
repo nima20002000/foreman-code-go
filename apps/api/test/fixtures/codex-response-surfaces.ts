@@ -1,5 +1,5 @@
+import { RECORDED_CODEX_VERSION } from './codex-version.js'
 import type { NativeSessionStart } from '../../src/modules/harnesses/port.js'
-import { QUALIFIED_CODEX_VERSION, QUALIFIED_CODEX_SCHEMA_SHA256, QUALIFIED_STABLE_SCHEMA_GIT_BLOB } from '../../src/modules/harnesses/codexProtocol.js'
 import { input } from './codex-test-helpers.js'
 
 /** Deterministic source fixtures for the shared production factory. The caller
@@ -8,9 +8,9 @@ import { input } from './codex-test-helpers.js'
 export const codexResponseSurfaceEvidence = {
   origin: 'synthetic' as const,
   redacted: true as const,
-  protocolRevision: QUALIFIED_CODEX_VERSION,
-  stableSchemaGitBlob: QUALIFIED_STABLE_SCHEMA_GIT_BLOB,
-  referenceManifestSha256: QUALIFIED_CODEX_SCHEMA_SHA256,
+  protocolRevision: RECORDED_CODEX_VERSION,
+  stableSchemaGitBlob: 'synthetic-stable-schema',
+  referenceManifestSha256: 'synthetic-schema-manifest',
 }
 
 export function codexResponseSurfaceFixtures(directory: string) {

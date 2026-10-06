@@ -28,6 +28,12 @@ export class HarnessInstanceSettingsRepository {
     const result = await client.query<{ record: unknown }>('select record from harness_instance_settings where instance_id=$1 order by revision desc limit 1', [instanceId])
     return result.rows[0] ? HostHarnessOverrideSchema.parse(result.rows[0].record) : null
   }
+  async savedRevision(client: pg.ClientBase, instanceId: string, instanceRevision: string): Promise<HostHarnessOverride | null> {
+    const result = await client.query<{ record: unknown }>(`select record from harness_instance_settings
+      where instance_id=$1 and record->>'instanceRevision'=$2 order by revision desc limit 1`,
+    [instanceId, instanceRevision])
+    return result.rows[0] ? HostHarnessOverrideSchema.parse(result.rows[0].record) : null
+  }
   async lockRevision(client: pg.ClientBase, instanceId: string): Promise<void> {
     await client.query('select pg_advisory_xact_lock(hashtext($1))', [`harness-instance:${instanceId}`])
   }

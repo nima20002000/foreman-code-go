@@ -39,7 +39,7 @@ export interface OperatorServices {
   fileReferences?: FileReferenceService
   executionReadiness?: import('../../modules/harnesses/executionReadiness.js').ExecutionReadinessService
   runGraph?: RunGraphReadApi
-  operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'get' | 'send' | 'handoffHistory' | 'cancel' | 'respond'>
+  operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'list' | 'get' | 'history' | 'activityPage' | 'send' | 'handoffHistory' | 'cancel' | 'respond'>
   agentChat?: AgentChatService
   fileRetention?: FileRetentionService
   harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService }
@@ -50,6 +50,7 @@ export interface OperatorServices {
   workflows: WorkflowManagementService
   agents: AgentManagementService
   harnesses: HarnessCatalogService
+  harnessCompatibility?: import('../../modules/harnesses/compatibility/service.js').HarnessCompatibilityService
   harnessQualifications?: import('../../modules/harnesses/qualification/service.js').HarnessQualificationService
   settings?: FoundationSettingsManagementService
   runs: RunManagementService

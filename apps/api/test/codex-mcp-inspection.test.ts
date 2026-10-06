@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { CodexAppServerSessionManager, type CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
-import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
 import { fixtureProtocol } from './fixtures/codex-test-helpers.js'
 
 function fixture(entries: Record<string, { enabled: boolean }>,
@@ -10,7 +10,7 @@ function fixture(entries: Record<string, { enabled: boolean }>,
   const dependencies: Extract<CodexSessionDependencies, { mode: 'replay' }> = {
     mode: 'replay', environment: () => ({}),
     qualify: async (binary) => ({ binary, identity: 'recorded-launcher', protocol: fixtureProtocol,
-      providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded', stableSchemaGitBlob: 'recorded',
+      providerVersion: RECORDED_CODEX_VERSION, schemaManifestSha256: 'recorded', stableSchemaGitBlob: 'recorded',
       referenceSchemaManifestSha256: 'recorded' }),
     assertUnchanged: forbidden, qualifyModel: forbidden, transport: forbidden,
     withDiagnostics: forbidden, id: () => 'recorded', now: () => new Date(), schedule: setTimeout, cancelTimer: clearTimeout,

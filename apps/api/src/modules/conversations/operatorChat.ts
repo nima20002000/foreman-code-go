@@ -109,7 +109,7 @@ interface Runtime {
   environment?: ChildProcessEnvironment
   disposal?: Promise<void>
   disposalStarted?: boolean
-  /** Dummy-credential attachment: inspection/responses only, never launch another turn. */
+  /** Recovery attachment cannot launch another turn. */
   observationOnly?: boolean
 }
 interface HistoryContext {
@@ -198,7 +198,7 @@ export class OperatorChatService {
     const row = input.conversationId ? await this.assertAccess(input.conversationId, principal) : undefined
     const accepted = row && input.requestId ? await this.repository.acceptedConfiguration(row.id, input.requestId) : undefined
     let configuration = accepted ?? (input.configurationVersionId
-      ? await this.repository.configuration(input.configurationVersionId) : undefined)
+      ? await this.repository.configurationForInspection(input.configurationVersionId, principal) : undefined)
     if (input.configurationVersionId && !configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'The pending command configuration is unavailable.', 409)
     // Legacy pending payloads did not include a pin. Prefer their matching idle
     // conversation configuration, never a different current harness's defaults.
@@ -249,8 +249,16 @@ export class OperatorChatService {
     }
     return row
   }
-  async create(principal: ManagementPrincipal, title?: string) {
-    this.assertOpen(); requireAuthorization(principal, 'operator_chat:write')
+  async create(principal: ManagementPrincipal, title?: string, command?: { commandId: string; source: 'http' | 'mcp' }) {
+    this.assertOpen()
+    requireAuthorization(principal, 'operator_chat:write')
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:write')
+    if (command) {
+      return this.repository.createCommand(principal, { ...command, title }, async (client) => {
+        this.assertOpen()
+        return this.operators.ensure(client)
+      })
+    }
     const { operator, configuration } = await this.operators.ensure()
     this.assertOpen()
     return this.repository.create(operator.id, configuration, principal.id, title)
@@ -263,9 +271,12 @@ export class OperatorChatService {
       return { conversationId: id }
     })
   }
-  list(principal: ManagementPrincipal) {
+  async list(principal: ManagementPrincipal) {
     requireAuthorization(principal, 'operator_chat:read')
-    return this.repository.list(principal.id)
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
+    const conversations = await this.repository.list(principal.id)
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
+    return conversations
   }
   summaries(principal: ManagementPrincipal, limit?: number, attentionOnly = false) {
     requireAuthorization(principal, 'operator_chat:read')
@@ -307,6 +318,7 @@ export class OperatorChatService {
     await this.assertAccess(id, principal)
     const page = await this.repository.history(id, query)
     if (!page) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
     return page
   }
 
@@ -317,7 +329,9 @@ export class OperatorChatService {
 
   async activityPage(id: string, principal: ManagementPrincipal, input: Partial<OperatorActivityQuery>) {
     await this.assertAccess(id, principal)
-    return this.repository.activity.page(id, input)
+    const { activities, nextCursor } = await this.repository.activity.page(id, input)
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
+    return { activities, nextCursor }
   }
 
   private historyContext(id: string, requestId: string, runtime: Runtime): HistoryContext {
@@ -327,10 +341,11 @@ export class OperatorChatService {
   private async recordActivity(id: string, requestId: string, runtime: HistoryContext, event: NativeHarnessEvent, nativeTurnId: string | null, authoritativeReconciliation = false, nativeSubmission?: NativeMessageSubmission) {
     const redact = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {}))
     const known = knownNativeActivity(event, runtime.harness)
-    if (known) {
+    if (known && (known.native.sessionId !== runtime.session?.nativeSessionId
+      || known.native.turnId !== nativeTurnId)) {
       const settled = await this.repository.activity.settleKnownByNative(id, known.change, known.native, redact)
-      if (settled) { this.events.publish(id, 'activity', settled); return }
-      if (known.native.sessionId !== runtime.session?.nativeSessionId || known.native.turnId !== nativeTurnId) return
+      if (settled) this.events.publish(id, 'activity', settled)
+      return
     }
     const change = operatorActivity(event, runtime.harness, requestId)
     if (!change) return
@@ -379,7 +394,9 @@ export class OperatorChatService {
   }
   private async accept(id: string, value: SendOperatorMessageRequest, principal: ManagementPrincipal, controller: AbortController) {
     const input = SendOperatorMessageRequestSchema.parse(value)
+    requireAuthorization(principal, 'operator_chat:read')
     const row = await this.assertAccess(id, principal, 'operator_chat:write')
+    requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
     // Resolve receipts before reading mutable defaults or validating a native
     // installation. A recovered receipt is not a request for a new native turn.
     const sourceReceipt = await this.repository.hasTurn(id, input.requestId)
@@ -392,7 +409,14 @@ export class OperatorChatService {
       if (!receiptId) throw new DomainError('OPERATOR_RECEIPT_NOT_FOUND', 'No receipt is currently visible for this command.', 404)
       // This branch cannot call validate, setup, prepare, or runTurn, even for
       // a retryable receipt. A missing receipt is not evidence of non-delivery.
-      return this.control(receiptId, () => this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, true))
+      return this.control(receiptId, async () => {
+        const current = await this.authority.current(principal.id)
+        requireAuthorization(current, 'operator_chat:write')
+        requireAuthorization(current, 'operator_chat:read')
+        const begun = await this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, true)
+        requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
+        return begun
+      })
     }
     if (publicOperatorConversation(row.record).status === 'archived') {
       throw new DomainError('CONVERSATION_ARCHIVED', 'This conversation is read-only.', 409)
@@ -403,7 +427,9 @@ export class OperatorChatService {
     const fork = Boolean(harness && harness.harness !== row.harness && await this.repository.hasMessages(id))
     const admit = () => this.control(id, async () => {
       this.assertOpen(); controller.signal.throwIfAborted()
-      requireAuthorization(await this.authority.current(row.owner_principal_id!), 'operator_chat:write')
+      const current = await this.authority.current(row.owner_principal_id!)
+      requireAuthorization(current, 'operator_chat:write')
+      requireAuthorization(current, 'operator_chat:read')
       const begun = receiptId
         ? await this.repository.beginTurn(receiptId, input, row.owner_principal_id!, undefined, undefined, false,
             (accepted) => this.validate(accepted))
@@ -412,11 +438,15 @@ export class OperatorChatService {
               (accepted) => this.validate(accepted))
           : await this.repository.beginTurn(id, input, row.owner_principal_id!, input.settings ? harness : undefined,
               configuration!.id, false, (accepted) => this.validate(accepted))
-      if (begun.replayed) return begun
+      if (begun.replayed) {
+        requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
+        return begun
+      }
       const targetId = begun.state.conversation.id
       const acceptedId = begun.state.conversation.operatorConfigurationVersionId!
       let accepted: OperatorConfigurationVersion
       try {
+        requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
         const saved = await this.repository.configuration(acceptedId)
         if (!saved) throw new Error('Accepted Operator configuration disappeared.')
         accepted = saved
@@ -424,6 +454,7 @@ export class OperatorChatService {
         const resident = this.runtimes.get(targetId)
         if (resident && resident.configuration?.id !== accepted.id) await this.release(targetId)
         if (this.closing || controller.signal.aborted) throw new Error('Operator chat stopped before native submission.')
+        requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
       } catch (error) {
         await this.repository.finish(targetId, input.requestId, failure(error), undefined, true)
         throw error
@@ -444,8 +475,9 @@ export class OperatorChatService {
     const resident = this.runtimes.get(id)
     if (resident && (resident.observationOnly || Boolean(resident.fileInputs) !== fileInputs)) await this.release(id)
     const existing = this.runtimes.get(id)
+    const fileOnly = fileInputs && configuration.harness.harness === 'claude'
     if (existing?.session) {
-      if (!fileInputs && (await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
+      if (!fileOnly && (await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
         throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the Foreman Code MCP connection in the selected harness before chatting.', 409)
       }
       existing.configuration = configuration; return existing
@@ -453,10 +485,9 @@ export class OperatorChatService {
     const runtime: Runtime = existing ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     runtime.configuration = configuration
     this.runtimes.set(id, runtime) // Includes managers still starting; shutdown must see them.
-    // File turns never acquire the management token, including on an existing
-    // native session. Fence an older token before attaching a file-only child.
-    if (fileInputs) await this.authority.release(id)
-    const environment = fileInputs ? { agentId: configuration.operatorId, variables: {} }
+    // Claude's file runtime has separate credential delivery composition.
+    if (fileOnly) await this.authority.release(id)
+    const environment = fileOnly ? { agentId: configuration.operatorId, variables: {} }
       : await this.authority.prepare(runtime.manager, configuration, id, row.owner_principal_id!, signal)
     runtime.environment = environment
     signal.throwIfAborted(); this.assertOpen()
@@ -493,7 +524,9 @@ export class OperatorChatService {
     const runtime: Runtime = this.runtimes.get(id) ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     this.runtimes.set(id, runtime)
     if (!runtime.session) {
-      runtime.session = await runtime.manager.attachSession({ harness: row.harness,
+      const observationAttach = runtime.manager.attachSessionForObservation?.bind(runtime.manager)
+      const attach = observationAttach ?? runtime.manager.attachSession.bind(runtime.manager)
+      runtime.session = await attach({ harness: row.harness,
         providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id }, {
         kind: 'operator', correlationId: nativeCorrelation(id, row.active_request_id), configuration,
         workingDirectory: this.workingDirectory,
@@ -501,12 +534,13 @@ export class OperatorChatService {
         // This is deliberately NOT an issued credential: the App rejects it.
         // Do not mint fresh owner authority merely to inspect/stop old work.
         environment: { agentId: configuration.operatorId,
-          variables: fileInputs ? {} : { [APP_MCP_TOKEN]: 'operator-cleanup-disabled' } },
+          variables: observationAttach || fileInputs && configuration.harness.harness === 'claude'
+            ? {} : { [APP_MCP_TOKEN]: 'operator-cleanup-disabled' } },
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
       }, signal)
     }
     runtime.configuration = configuration
-    // A detached, dummy-credential attach cannot be reused to launch another turn.
+    // Recovery must reacquire live launch authority before another turn.
     runtime.observationOnly = true
     // OpenCode history reads can consume automatic permissions. Stop that local
     // responder before any cleanup read, including immediately after reattachment.

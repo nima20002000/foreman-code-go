@@ -64,7 +64,7 @@ export async function qualifyCodexOutputProtection(input: {
     const redact = nativePersistenceRedactor(Object.values(environment)
       .filter((value): value is string => typeof value === 'string' && value.length >= 8))
     if (selected.expectedSandbox.tmpdir) environment.TMPDIR = selected.expectedSandbox.tmpdir
-    const qualified = await input.qualify(selected.binary, selected.providerVersion,
+    const qualified = await input.qualify(selected.binary,
       selected.expectedSandbox.cwd, environment, true, signal, recovery)
     if (qualified.identity !== selected.binaryIdentity || qualified.schemaManifestSha256 !== selected.schemaIdentity) {
       throw unavailable()

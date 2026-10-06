@@ -82,7 +82,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       input.signal.throwIfAborted()
       const code = error instanceof DomainError ? error.code
         : typeof error === 'object' && error && 'result' in error ? (error as { result?: { error?: { code?: string } } }).result?.error?.code : undefined
-      if (!code || !/^(?:CODEX_(?:SETTING|MODEL|MCP|REQUIRED_MCP|APP_SERVER_AUTH)|OPENCODE_(?:SETTING|MODEL|PROVIDER|AGENT|VARIANT|MCP|SERVER_VERSION))/.test(code)) throw error
+      if (!code || !/^(?:CODEX_(?:CONTRACT|SETTING|MODEL|MCP|REQUIRED_MCP|APP_SERVER_AUTH)|OPENCODE_(?:CONTRACT|SETTING|MODEL|PROVIDER|AGENT|VARIANT|MCP|SERVER_VERSION))/.test(code)) throw error
       const sanitized = qualificationError(error)
       failure = { code: sanitized.code, message: sanitized.message }
       qualified = false

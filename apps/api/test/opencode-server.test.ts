@@ -9,7 +9,7 @@ import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation,
   matchesOpenCodeHistorySource } from '../src/modules/harnesses/opencodeReconciliation.js'
 import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
-import { forgetQualifiedProfile, rememberQualifiedProfile } from '../src/modules/harnesses/qualification/profiles.js'
+import { forgetQualifiedProfile } from '../src/modules/harnesses/qualification/profiles.js'
 
 import { advanced, brokenBody, configuration, environment, errorCode, FixtureServer, json, manager, permission, request, sessionFor } from './opencode-fixtures.js'
 
@@ -160,9 +160,8 @@ it('qualifies the pinned live API and submits one prompt after opening its event
   await native.close(session)
 })
 
-it('reports the live health version for a qualified non-baseline server', async () => {
+it('accepts a newer compatible server and reports its live version', async () => {
   const version = '1.18.33'
-  rememberQualifiedProfile('opencode', version, 'opencode-1.18.31')
   const server = new FixtureServer()
   server.expectedVersion = version
   server.providers = { ...server.providers as object, connected: ['opencode-go'] }
@@ -659,7 +658,9 @@ it('[F23] keeps an unsupported-question turn fenced until its owned busy child i
 
 it('[F26] requires evidence for every named variant and represents no selection with an empty string', async () => {
   const server = new FixtureServer()
-  server.providers = { all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: {} } } }] }
+  server.providers = { ...object(server.providers),
+    all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: {} } } }],
+  }
   await assert.rejects(sessionFor(manager(server)), errorCode('OPENCODE_MODEL_UNAVAILABLE'))
   const noVariant = configuration(); noVariant.variant = ''
   const native = manager(server)
@@ -791,4 +792,40 @@ it('[F07,F08] explicit native cancellation returns the shared canceled outcome',
   await iterator.return?.()
   assert.equal(await native.cancel(session), true)
   assert.deepEqual((await native.reconcile(session, 'cancel-outcome')).terminalResult, { outcome: 'canceled' })
+})
+
+it('identifies the observed OpenCode version and missing server API contract', async () => {
+  const server = new FixtureServer()
+  server.expectedVersion = '2.0.0'
+  server.beforeRequest = path => path === '/global/health' ? json({ healthy: true, version: '2.0.0' }) : undefined
+  delete server.paths['/permission/{requestID}/reply']
+  const native = manager(server)
+  try {
+    await assert.rejects(sessionFor(native), error => error instanceof Error
+      && error.message.includes('OpenCode 2.0.0') && error.message.includes('/permission/{requestID}/reply'))
+  } finally { await native.dispose() }
+})
+
+it('reports the version and missing cleanup route through configuration qualification', async () => {
+  const server = new FixtureServer()
+  server.expectedVersion = '2.0.0'
+  server.beforeRequest = path => path === '/global/health' ? json({ healthy: true, version: '2.0.0' }) : undefined
+  delete server.paths['/question/{requestID}/reject']
+  const native = manager(server)
+  try {
+    await assert.rejects(native.qualifyConfiguration(configuration(), '/workspace/project'), error => error instanceof Error
+      && error.message.includes('OpenCode 2.0.0') && error.message.includes('/question/{requestID}/reject'))
+  } finally { await native.dispose() }
+})
+
+it('preserves the installed version and catalog response contract on malformed provider metadata', async () => {
+  const server = new FixtureServer()
+  server.expectedVersion = '2.0.0'
+  server.beforeRequest = path => path === '/global/health' ? json({ healthy: true, version: '2.0.0' }) : undefined
+  server.providers = { unsupportedCatalog: [] }
+  const native = manager(server)
+  try {
+    await assert.rejects(native.discoverOptions('/workspace/project'), error => error instanceof Error
+      && error.message.includes('OpenCode 2.0.0') && error.message.includes('GET /provider response.all'))
+  } finally { await native.dispose() }
 })

@@ -1,7 +1,7 @@
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { AppMcpRoutes } from '../src/modules/harnesses/appMcpRoutes.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFile, mkdtemp, readFile, readdir } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/client'
@@ -15,10 +15,11 @@ import { PostgresFoundationSettingsRepository } from '../src/modules/settings/fo
 import { FoundationSettingsManagementService } from '../src/modules/settings/management.js'
 import { registerAppRoute } from '../src/modules/harnesses/appMcpLauncher.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { OpenCodeVaultIsolation } from '../src/modules/harnesses/opencodeFiles/isolation.js'
 
 const cleanup: Array<() => Promise<unknown>> = []
 afterEach(async () => { while (cleanup.length) await cleanup.pop()!() })
-it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for simultaneous instances and changed ports through authenticated MCP, preserving grants and durable writes', async (tokenVariable) => {
+it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both', 'private PID namespace'])('routes %s for simultaneous instances and changed ports through authenticated MCP, preserving grants and durable writes', async (tokenVariable) => {
   const database = createDatabase({ connectionString: process.env.TEST_DATABASE_URL!,
     maxConnections: 4, connectionTimeoutMs: 5000, queryTimeoutMs: 5000 })
   cleanup.push(() => database.close())
@@ -31,6 +32,8 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   cleanup.push(() => removeFixtureDirectory(directory))
   const launcher = join(directory, 'launcher.mjs')
   await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
+  const vault = join(directory, 'vault')
+  if (tokenVariable === 'private PID namespace') await mkdir(vault, { mode: 0o700 })
   const issue = async (writable: boolean) => access.issue({ name: 'launcher-test', audience: 'operator',
     grants: [{ actions: writable ? ['settings:read', 'settings:update'] : ['settings:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
   const owner = await issue(true)
@@ -60,7 +63,14 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   const connect = async (token: string) => {
     const client = new Client({ name: 'launcher-integration', version: '1' })
     cleanup.push(() => client.close())
-    await client.connect(new StdioClientTransport({ command: process.execPath, args: [launcher], env: tokenVariable === 'both' ? { GRAPHQL_MCP_TOKEN: token, FOREMAN_CODE_MCP_TOKEN: token } : { [tokenVariable]: token }, stderr: 'pipe' }))
+    const environment = tokenVariable === 'both' || tokenVariable === 'private PID namespace'
+      ? { GRAPHQL_MCP_TOKEN: token, FOREMAN_CODE_MCP_TOKEN: token } : { [tokenVariable]: token }
+    const command = tokenVariable === 'private PID namespace'
+      ? await new OpenCodeVaultIsolation(vault).launch({ binary: process.execPath, args: [launcher],
+        workingDirectory: directory, environment }, AbortSignal.timeout(10_000))
+      : { binary: process.execPath, args: [launcher] }
+    await client.connect(new StdioClientTransport({ command: command.binary, args: command.args,
+      env: environment, stderr: 'pipe' }))
     return client
   }
   const ownerClient = await connect(owner.token)
@@ -75,7 +85,11 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   const readback = await readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })
   expect(readback.structuredContent).toMatchObject({ value })
   expect(await settings.getWorkspaceDefaults(owner.principal)).toMatchObject({ value })
-  await expect(readerClient.callTool({ name: 'workspace_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value } })).rejects.toThrow('not found')
+  const deniedUpdate = await readerClient.callTool({ name: 'workspace_defaults_update', arguments: {
+    commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value,
+  } })
+  expect(deniedUpdate.isError).toBe(true)
+  expect(JSON.stringify(deniedUpdate.content)).toContain('ACCESS_DENIED')
   // The SAME launcher and client follow a refreshed owner route after a port change.
   await first.app.close()
   await removeOwner()

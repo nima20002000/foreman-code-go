@@ -52,7 +52,7 @@ export function productionClaudeMetadata(input: {
             if (!await input.processes.closeOwner(recovery.owner)) throw new Error('Claude metadata process closure is unconfirmed.')
           }
           try {
-            const result = await discoverClaudeMetadata({ binary, profilePath: configuration.configDirectory, workingDirectory, recovery, signal: controller.signal })
+            const result = await discoverClaudeMetadata({ binary, model: configuration.model, profilePath: configuration.configDirectory, workingDirectory, recovery, signal: controller.signal })
             input.registry.installations.assertCurrent(binding)
             return { ...result, providerVersion: version.version }
           } finally { await close() }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -58,6 +58,57 @@ test('acceptance resources reject app URLs and socket overrides and own their na
     assert.equal(safe.CODEX_HOME, join(resource.directory, 'home/.codex'))
     assert.equal(safe.TEST_DATABASE_URL, url.href)
   } finally { removeTestRoot(resource) }
+})
+test('explicit Claude login is copied into disposable storage and refreshes leave the host login unchanged', async () => {
+  const { copyTestAuthenticationFile, createTestRoot, removeTestRoot, testAdminUrl, testEnvironment } = await import('../test-resources.mjs')
+  const sourceDirectory = await mkdtemp(join(await realpath('/tmp'), 'claude-auth-source-'))
+  const source = join(sourceDirectory, '.credentials.json')
+  const resource = createTestRoot()
+  const owned = { ...resource, databaseUrl: new URL('/graphql_test_acceptance', testAdminUrl).href }
+  try {
+    await writeFile(source, 'subscription-fixture', { mode: 0o600 })
+    const ambient = testEnvironment({ CLAUDE_CONFIG_DIR: sourceDirectory }, owned)
+    const destination = join(ambient.CLAUDE_CONFIG_DIR, '.credentials.json')
+    await assert.rejects(access(destination), { code: 'ENOENT' })
+    const isolated = testEnvironment({ FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE: source }, owned)
+    assert.equal(await readFile(destination, 'utf8'), 'subscription-fixture')
+    assert.equal((await lstat(destination)).isSymbolicLink(), false)
+    assert.equal((await lstat(destination)).mode & 0o777, 0o600)
+    copyTestAuthenticationFile(resource, source, destination)
+    assert.equal(await readFile(destination, 'utf8'), 'subscription-fixture')
+    await writeFile(destination, 'refreshed-fixture')
+    copyTestAuthenticationFile(resource, source, destination)
+    testEnvironment(isolated, owned)
+    assert.equal(await readFile(destination, 'utf8'), 'refreshed-fixture')
+    assert.equal(await readFile(source, 'utf8'), 'subscription-fixture')
+    await chmod(source, 0o644)
+    assert.throws(() => testEnvironment({ FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE: source }, owned), /private file/)
+  } finally {
+    removeTestRoot(resource)
+    await rm(sourceDirectory, { recursive: true, force: true })
+  }
+})
+test('authentication copies reject symlinks, public destinations and paths outside their fixture', async () => {
+  const { copyTestAuthenticationFile, createTestRoot, removeTestRoot } = await import('../test-resources.mjs')
+  const sourceDirectory = await mkdtemp(join(await realpath('/tmp'), 'claude-auth-source-'))
+  const source = join(sourceDirectory, '.credentials.json')
+  const resource = createTestRoot()
+  try {
+    await writeFile(source, 'subscription-fixture', { mode: 0o600 })
+    const linked = join(resource.directory, 'linked.json')
+    await symlink(source, linked)
+    assert.throws(() => copyTestAuthenticationFile(resource, source, linked), /symlink/)
+    const publicCopy = join(resource.directory, 'public.json')
+    await writeFile(publicCopy, 'other-fixture', { mode: 0o644 })
+    assert.throws(() => copyTestAuthenticationFile(resource, source, publicCopy), /ownership changed/)
+    assert.throws(() => copyTestAuthenticationFile(resource, source, join(sourceDirectory, 'outside.json')))
+    assert.equal(await readFile(source, 'utf8'), 'subscription-fixture')
+    assert.equal(await readFile(publicCopy, 'utf8'), 'other-fixture')
+    await assert.rejects(access(join(sourceDirectory, 'outside.json')), { code: 'ENOENT' })
+  } finally {
+    removeTestRoot(resource)
+    await rm(sourceDirectory, { recursive: true, force: true })
+  }
 })
 test('occupied ports are rejected without terminating or adopting the listener', async () => {
   const server = createServer()

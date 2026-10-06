@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { strict as assert } from 'node:assert'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -15,13 +16,14 @@ it.skipIf(process.platform === 'win32')('passes each saved harness model to the 
       ['codex', 0, null], ['codex', 1, 'saved-codex-model'], ['opencode', 1, 'saved-opencode-model'],
     ] as const) {
       const binary = join(directory, `fake-${harness}`)
-      await writeFile(binary, `#!/bin/sh\necho "${harness === 'codex' ? 'codex-cli ' : ''}0.158.0"\n`)
+      const binaryBytes = `#!/bin/sh\necho "${harness === 'codex' ? 'codex-cli ' : ''}0.158.0"\n`
+      await writeFile(binary, binaryBytes)
       await chmod(binary, 0o700)
       const run = vi.fn(async (input: QualificationSuiteInput) => ({ checks: [{ id: 'live', passed: true, detail: null }], evidence: { model: input.model } }))
       const save = vi.fn(async () => undefined)
       const service = new HarnessQualificationService(
         { find: async () => undefined, save } as unknown as ConstructorParameters<typeof HarnessQualificationService>[0],
-        { inspectBinary: async () => ({ binary, sha256: 'a'.repeat(64) }), trusted: async () => true } as unknown as ConstructorParameters<typeof HarnessQualificationService>[1],
+        { inspectBinary: async () => ({ binary, sha256: createHash('sha256').update(binaryBytes).digest('hex') }), trusted: async () => true } as unknown as ConstructorParameters<typeof HarnessQualificationService>[1],
         { codex: { harness: 'codex', revision: 'test', run }, opencode: { harness: 'opencode', revision: 'test', run } },
         { codex: binary, opencode: binary },
         {} as ConstructorParameters<typeof HarnessQualificationService>[4],
@@ -43,7 +45,8 @@ it.skipIf(process.platform === 'win32')('retries only a timed-out static probe w
   const directory = await mkdtemp(join(tmpdir(), 'qualification-timeout-'))
   try {
     const binary = join(directory, 'fake-opencode')
-    await writeFile(binary, '#!/bin/sh\necho "1.18.33"\n')
+    const binaryBytes = '#!/bin/sh\necho "1.18.33"\n'
+    await writeFile(binary, binaryBytes)
     await chmod(binary, 0o700)
     const save = vi.fn(async (qualification: HarnessQualification) => { void qualification })
     const run = vi.fn(async () => ({ checks: [{ id: 'live', passed: true, detail: null }], evidence: {} }))
@@ -55,7 +58,7 @@ it.skipIf(process.platform === 'win32')('retries only a timed-out static probe w
     const onFinished = vi.fn()
     const service = new HarnessQualificationService(
       { find: async () => undefined, save } as unknown as ConstructorParameters<typeof HarnessQualificationService>[0],
-      { inspectBinary: async () => ({ binary, sha256: 'a'.repeat(64) }), trusted: async () => true } as unknown as ConstructorParameters<typeof HarnessQualificationService>[1],
+      { inspectBinary: async () => ({ binary, sha256: createHash('sha256').update(binaryBytes).digest('hex') }), trusted: async () => true } as unknown as ConstructorParameters<typeof HarnessQualificationService>[1],
       { opencode: { harness: 'opencode', revision: 'test', run }, codex: { harness: 'codex', revision: 'test', run } },
       { opencode: binary, codex: binary }, {} as ConstructorParameters<typeof HarnessQualificationService>[4],
       { getManagedHarnessDefaults: async () => ({ revision: 0, defaults: DEFAULT_HARNESS_DEFAULTS }) }, staticCheck, onFinished)

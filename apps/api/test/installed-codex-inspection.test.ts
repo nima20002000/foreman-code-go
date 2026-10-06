@@ -45,9 +45,9 @@ describe('passive installed worker Codex evidence producer', () => {
         authenticated: null, compatible: null, qualified: false })
       expect(result.inventory.hostMetadata).toMatchObject({ hostRef: { kind: 'device', mainId: f.input.binding.mainId, deviceId: f.input.binding.deviceId }, applicationInstallationId: f.input.binding.workerInstallationId })
       expect(target.target.installationFingerprint).toBe(result.inventory.installations[0]?.installationFingerprint)
-      const find = vi.fn(async () => null)
-      expect(await readInstalledCodexQualification({ find }, target, 'actual-suite-v1')).toBeNull()
-      expect(find).toHaveBeenCalledWith('codex', '0.132.0', target.binarySha256, 'actual-suite-v1')
+      const findInstalled = vi.fn(async () => [])
+      expect(await readInstalledCodexQualification({ findInstalled }, target, 'actual-suite-v1')).toBeNull()
+      expect(findInstalled).toHaveBeenCalledWith(target.target, target.binarySha256, 'actual-suite-v1')
     } finally { await rm(f.root, { recursive: true, force: true }) }
   })
   it('detects actual changed executable and payload bytes in the target fingerprint', async () => {
@@ -109,12 +109,12 @@ describe('passive installed worker Codex evidence producer', () => {
     const f = await fixture()
     try {
       const target = (await inspectInstalledCodex(f.input)).currentTarget!
-      const original = proof(target)
-      expect(await readInstalledCodexQualification({ find: async () => original }, target, 'actual-suite-v1')).toEqual(original)
-      for (const changed of [ { status: 'unqualified' as const }, { status: 'baseline' as const }, { version: '0.154.0' },
+      const original = { ...proof(target), version: '0.160.0' }
+      expect(await readInstalledCodexQualification({ findInstalled: async () => [original] }, target, 'actual-suite-v1')).toEqual(original)
+      for (const changed of [ { status: 'unqualified' as const }, { status: 'baseline' as const },
         { binarySha256: 'a'.repeat(64) }, { suiteRevision: 'stale-suite' }, { checkedAt: null }, { checks: [] },
         { profile: 'codex-0.154' as const }, { checks: [{ id: 'native-protocol-and-live-turn', passed: false, detail: null }] } ]) {
-        expect(await readInstalledCodexQualification({ find: async () => ({ ...original, ...changed }) }, target, 'actual-suite-v1')).toBeNull()
+        expect(await readInstalledCodexQualification({ findInstalled: async () => [{ ...original, ...changed }] }, target, 'actual-suite-v1')).toBeNull()
       }
     } finally { await rm(f.root, { recursive: true, force: true }) }
   })
@@ -141,7 +141,7 @@ describe('passive installed worker Codex evidence producer', () => {
       () => connected ? binding : null, {})
     try {
       const report = (await inspectInstalledCodex(f.input)).inventory
-      await retainInstalledCodexInventory({ registry, qualifications: { list: async () => [] }, binding, inventory: report, suiteRevision: 'actual-suite-v1' })
+      await retainInstalledCodexInventory({ registry, qualifications: { findInstalled: async () => [] }, binding, inventory: report, suiteRevision: 'actual-suite-v1' })
       const host = { kind: 'device' as const, mainId: binding.mainId, deviceId: binding.deviceId }
       const readback = await registry.get(principal, host)
       expect(readback.installations).toEqual(report.installations)
@@ -154,6 +154,32 @@ describe('passive installed worker Codex evidence producer', () => {
     } finally { registry.stop(); await rm(f.root, { recursive: true, force: true }) }
   })
 
+  it('retains the current payload proof when two versions share the same launcher bytes', async () => {
+    const f = await fixture()
+    try {
+      const payload = join(f.root, 'native-payload')
+      await writeFile(payload, 'native-a')
+      await writeFile(f.path, JSON.stringify({ schemaVersion: 1, codexBinary: f.binary,
+        appMcpLauncher: '/installed/graphql-mcp-launcher', expectedVersion: '0.154.0', payloadPaths: [payload] }), { mode: 0o600 })
+      const previous = await inspectInstalledCodex(f.input)
+      const old = { target: previous.currentTarget!.target, record: { ...proof(previous.currentTarget!), version: '0.158.0' } }
+      await writeFile(payload, 'native-b')
+      const current = await inspectInstalledCodex(f.input)
+      const next = { target: current.currentTarget!.target, record: { ...proof(current.currentTarget!), version: '0.160.0' } }
+      expect(old.record.binarySha256).toBe(next.record.binarySha256)
+      expect(old.target.installationFingerprint).not.toBe(next.target.installationFingerprint)
+      const records = [old, next]
+      const qualifications = { findInstalled: async (target: typeof next.target) => records
+        .filter(row => row.target.installationFingerprint === target.installationFingerprint).map(row => row.record) }
+      const acceptRemoteSnapshot = vi.fn()
+      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications,
+        binding: f.input.binding, inventory: current.inventory, suiteRevision: 'actual-suite-v1' })
+      expect(acceptRemoteSnapshot.mock.calls[0]?.[1].installations[0]).toMatchObject({ observedVersion: '0.160.0', qualified: true })
+      expect(await readInstalledCodexQualification(qualifications, current.currentTarget!, 'actual-suite-v1')).toEqual(next.record)
+      expect(old.record.version).toBe('0.158.0')
+    } finally { await rm(f.root, { recursive: true, force: true }) }
+  })
+
   it('Main supplies observed version only from its unique exact persisted proof and clears worker trust claims', async () => {
     const f = await fixture()
     try {
@@ -162,14 +188,14 @@ describe('passive installed worker Codex evidence producer', () => {
       inspection.inventory.installations[0]!.observedVersion = '0.154.0'
       inspection.inventory.installations[0]!.authenticated = true
       const acceptRemoteSnapshot = vi.fn()
-      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { list: async () => [] },
+      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { findInstalled: async () => [] },
         binding: f.input.binding, inventory: inspection.inventory, suiteRevision: 'actual-suite-v1' })
       expect(acceptRemoteSnapshot.mock.calls[0]?.[1].installations[0]).toMatchObject({ observedVersion: null, qualified: false, authenticated: null })
       const actual = proof(target)
-      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { list: async () => [actual] },
+      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { findInstalled: async () => [actual] },
         binding: f.input.binding, inventory: inspection.inventory, suiteRevision: 'actual-suite-v1' })
       expect(acceptRemoteSnapshot.mock.calls[1]?.[1].installations[0]).toMatchObject({ observedVersion: '0.132.0', qualified: true, authenticated: null })
-      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { list: async () => [actual, { ...actual, version: 'ambiguous-version' }] },
+      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { findInstalled: async () => [actual, { ...actual, version: 'ambiguous-version' }] },
         binding: f.input.binding, inventory: inspection.inventory, suiteRevision: 'actual-suite-v1' })
       expect(acceptRemoteSnapshot.mock.calls[2]?.[1].installations[0]).toMatchObject({ observedVersion: null, qualified: false })
     } finally { await rm(f.root, { recursive: true, force: true }) }

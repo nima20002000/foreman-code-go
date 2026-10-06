@@ -7,7 +7,7 @@ import {
   applyOperatorChatSettings, operatorChatSettings, ConversationSchema, MessageSchema, OperatorConfigurationVersionSchema, OperatorConversationStateSchema,
   ExecutionResultSchema,
   OperatorConversationSummarySchema, type OperatorConversationSummary,
-  type HarnessConfiguration, type Conversation, type ExecutionResult, type OperatorConfigurationVersion, type AgentHarness,
+  type HarnessConfiguration, type Conversation, type ExecutionResult, type OperatorAgent, type OperatorConfigurationVersion, type AgentHarness,
   type OperatorConversationState, type PendingNativeInteraction, type SendOperatorMessageRequest,
 } from '@foreman-code/contracts'
 import {
@@ -15,6 +15,7 @@ import {
   type OperatorConversationHistoryPage, type OperatorConversationHistoryQuery,
 } from '@foreman-code/contracts/operator-chat'
 import type pg from 'pg'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { messageAttachmentIdentity } from '@foreman-code/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
@@ -28,6 +29,10 @@ import { readOperatorActivitySnapshot } from './operatorActivitySnapshot.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { DomainError } from '../errors.js'
+import { PostgresCommandCoordinator } from '../commands/postgres.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { requireAuthorization } from '../access/policy.js'
+import { authorizeOperatorConfigurationRead } from '../operators/configurationRead.js'
 import { acceptOperatorConfiguration } from './operatorAcceptedConfiguration.js'
 import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { OperatorConversationRecordSchema, publicOperatorConversation } from './operatorConversationRecord.js'
@@ -129,6 +134,30 @@ export class PostgresOperatorConversationRepository {
     return this.createWithQuery(this.pool, operatorId, configuration, ownerId, title, id)
   }
 
+  async createCommand(
+    principal: ManagementPrincipal,
+    input: { commandId: string; source: 'http' | 'mcp'; title?: string | undefined },
+    configure: (client: pg.PoolClient) => Promise<{ operator: OperatorAgent; configuration: OperatorConfigurationVersion }>,
+  ): Promise<Conversation> {
+    const result = await new PostgresCommandCoordinator(this.pool).execute({
+      principal,
+      source: input.source,
+      operation: 'operator_chat_create',
+      commandId: input.commandId,
+      targetKey: 'operator-conversations',
+      payload: { title: input.title ?? 'New conversation' },
+      authorize: async (client) => {
+        requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'operator_chat:write')
+      },
+      perform: async (client) => {
+        const { operator, configuration } = await configure(client)
+        return this.createWithQuery(client, operator.id, configuration, principal.id, input.title, randomUUID())
+      },
+      replayResult: (value) => ConversationSchema.parse(value),
+    })
+    return result.value
+  }
+
   private async createWithQuery(query: Queryable, operatorId: string, configuration: OperatorConfigurationVersion,
     ownerId: string, title: string | undefined, id: string): Promise<Conversation> {
     const now = new Date().toISOString()
@@ -212,7 +241,8 @@ export class PostgresOperatorConversationRepository {
       coalesce((select jsonb_agg(a.record || jsonb_build_object('sequence',a.sequence::text,'revision',a.revision) order by a.sequence)
         from (select record,sequence,revision from operator_conversation_activity where conversation_id=c.id order by sequence desc limit 100) a),'[]'::jsonb) as activities,
       case when exists(select 1 from operator_conversation_activity where conversation_id=c.id order by sequence desc offset 100 limit 1)
-        then (select sequence::text from operator_conversation_activity where conversation_id=c.id order by sequence desc offset 99 limit 1) end as activity_cursor,
+        then (select sequence::text from operator_conversation_activity where conversation_id=c.id
+          order by operator_conversation_activity.sequence desc offset 99 limit 1) end as activity_cursor,
       coalesce((select jsonb_agg(retained.record order by retained.sequence) from (
         select recent.*,sum(octet_length(recent.record::text)) over (order by recent.sequence desc) as bytes
         from (select m.record || jsonb_build_object('revision',m.activity_record_revision::text,'sequence',m.sequence::text)
@@ -326,6 +356,10 @@ export class PostgresOperatorConversationRepository {
   async configuration(id: string, query: Queryable = this.pool): Promise<OperatorConfigurationVersion | undefined> {
     const result = await query.query<{ record: unknown }>('select record from operator_configuration_versions where id=$1', [id])
     return result.rows[0] ? OperatorConfigurationVersionSchema.parse(result.rows[0].record) : undefined
+  }
+  async configurationForInspection(id: string, principal: ManagementPrincipal) {
+    await authorizeOperatorConfigurationRead(this.pool, principal, id)
+    return this.configuration(id)
   }
   async hasTurn(id: string, requestId: string): Promise<boolean> {
     return (await this.pool.query('select 1 from operator_conversation_turns where conversation_id=$1 and request_id=$2', [id, requestId])).rowCount === 1

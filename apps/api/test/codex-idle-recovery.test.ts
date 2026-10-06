@@ -1,10 +1,11 @@
+import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
 import assert from 'node:assert/strict'
 import { readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, it, vi } from 'vitest'
 import type { CodexHarnessConfiguration } from '@foreman-code/contracts'
 import { CodexAppServerSessionManager, type CodexDiagnosticOperations, type CodexDiagnosticPin } from '../src/modules/harnesses/codexAppServer.js'
-import { assertCodexUnchanged, codexExecutableIdentity, QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { assertCodexUnchanged, codexBinaryIdentity } from '../src/modules/harnesses/codexProtocol.js'
 import { qualifyNativeCodexModel } from '../src/modules/harnesses/codexQualification.js'
 import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTransport.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
@@ -28,13 +29,13 @@ async function ownedFixture() {
   let failClose = false
   let schemaDrift = false
   const qualify = (scope: typeof recovery): CodexDiagnosticOperations['qualify'] =>
-    async (binary, _version, cwd, environment, _authentication, signal) => {
+    async (binary, cwd, environment, _authentication, signal) => {
       const result = await runCommand(binary, ['--version'], cwd, signal, environment, { recovery: scope })
       assert.equal(result.exitCode, 0)
-      assert.equal(result.stdout.trim(), QUALIFIED_CODEX_VERSION)
+      assert.equal(result.stdout.trim(), RECORDED_CODEX_VERSION)
       const path = await realpath(binary)
-      return { binary: path, identity: await codexExecutableIdentity(path),
-        providerVersion: QUALIFIED_CODEX_VERSION, protocol: fixtureProtocol,
+        return { binary: path, identity: await codexBinaryIdentity(path),
+        providerVersion: RECORDED_CODEX_VERSION, protocol: fixtureProtocol,
         schemaManifestSha256: schemaDrift ? 'different-schema' : 'fixture-schema', stableSchemaGitBlob: 'fixture-stable', referenceSchemaManifestSha256: 'fixture-reference' }
     }
   // Replace only the fixture's deliberately unqualified schema. Real subprocesses

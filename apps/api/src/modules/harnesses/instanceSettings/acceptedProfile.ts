@@ -57,13 +57,22 @@ export class AcceptedHarnessProfileAdmission<Owner> {
     private readonly authority: AcceptedProfileAuthority<Owner>,
   ) {}
   async admit(owner: Owner, selector: AcceptedProfileSelector): Promise<AcceptedHarnessProfile> {
+    return this.readProfile(owner, selector, { purpose: 'execution' })
+  }
+  async admitObservation(owner: Owner, selector: AcceptedProfileSelector): Promise<AcceptedHarnessProfile> {
+    return this.readProfile(owner, selector, { purpose: 'observation' })
+  }
+  private async readProfile(owner: Owner, selector: AcceptedProfileSelector,
+    options: { purpose: 'execution' | 'observation' }): Promise<AcceptedHarnessProfile> {
     // Snapshot before any await so a mutable caller cannot change the authorized selector.
     const selected = freeze(structuredClone(selector))
     return this.settings.readAuthorized(async client => {
       await this.authority.authorize(owner, selected, client)
       await this.settings.lockRevision(client, selected.instanceId)
-      const value = await this.settings.latest(client, selected.instanceId)
-      if (!value || !value.enabled || value.driverId !== value.configuration.harness
+      const value = options.purpose === 'observation'
+        ? await this.settings.savedRevision(client, selected.instanceId, selected.instanceRevision)
+        : await this.settings.latest(client, selected.instanceId)
+      if (!value || (options.purpose === 'execution' && !value.enabled) || value.driverId !== value.configuration.harness
         || value.instanceRevision !== selected.instanceRevision || !isDeepStrictEqual(value.target, selected.target)) return unavailable()
       const proof = await this.proofs.latest(value.instanceId, value.revision, client)
       if (!proof || !proof.qualified || proof.authenticated !== true || proof.compatible !== true ) return unavailable()
@@ -86,6 +95,10 @@ export class AcceptedHarnessProfileAdmission<Owner> {
       }
       for (const key of ['target', 'instanceRevision', 'configurationFingerprint', 'driverId', 'driverRevision',
         'protocolRevision', 'suiteRevision', 'environmentGeneration', 'connectionGeneration'] as const) {
+        // A restart changes process generations; saved-session cleanup still
+        // verifies the installed payload, protocol and accepted configuration.
+        if (options.purpose === 'observation'
+          && (key === 'environmentGeneration' || key === 'connectionGeneration')) continue
         if (!isDeepStrictEqual(proof[key], binding[key])) return unavailable()
       }
       if (value.configuration.harness === 'claude' && (!proof.claudeProof || !binding.pin
@@ -99,6 +112,13 @@ export class AcceptedHarnessProfileAdmission<Owner> {
   async revalidate(owner: Owner, accepted: AcceptedHarnessProfile): Promise<void> {
     const current = await this.admit(owner, {
       instanceId: accepted.override.instanceId, instanceRevision: accepted.override.instanceRevision, target: accepted.override.target,
+    })
+    if (!isDeepStrictEqual(current, accepted)) unavailable()
+  }
+  async revalidateObservation(owner: Owner, accepted: AcceptedHarnessProfile): Promise<void> {
+    const current = await this.admitObservation(owner, {
+      instanceId: accepted.override.instanceId, instanceRevision: accepted.override.instanceRevision,
+      target: accepted.override.target,
     })
     if (!isDeepStrictEqual(current, accepted)) unavailable()
   }

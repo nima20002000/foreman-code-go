@@ -9,10 +9,9 @@ const service = createHarnessCompatibility({
 try {
   const reports = await service.checkAll()
   for (const report of reports) {
-    console.info(`[harness compatibility] ${report.harness}: installed=${report.installedVersion ?? 'unavailable'}; ${report.status}; qualified=${report.qualifiedRelease.version}`)
+    console.info(`[harness compatibility] ${report.harness}: installed=${report.installedVersion ?? 'unavailable'}; ${report.status}`)
     if (report.reason) console.warn(`${report.reason.code}: ${report.reason.message}`)
     if (report.cacheWarning) console.warn(report.cacheWarning)
-    if (!report.matchesQualifiedVersion) console.warn('Execution remains subject to the existing exact-version qualification gate. No harness was substituted.')
   }
-  console.info('Compatibility is diagnostic only. Authentication, model/settings, protocol identity, approval and sandbox qualification are unchanged.')
+  console.info('Installed versions are checked against runtime protocol contracts. Authentication, selected model/settings, approval policy and host sandbox checks still apply.')
 } finally { await service.close() }

@@ -16,7 +16,10 @@ import { DomainError } from '../errors.js'
 import { ClaudeSetupOptionsSchema } from '@foreman-code/contracts/claude'
 
 export class HarnessCatalogService {
-  private readonly checks = new QualificationCache<{ qualification: ReturnType<typeof HarnessQualificationSchema.parse>; checkedAt: string }>()
+  // Retain pending-operation ownership, without reusing settled configuration-only results.
+  private readonly checks = new QualificationCache<{
+    qualification: ReturnType<typeof HarnessQualificationSchema.parse>; checkedAt: string
+  }>(0)
   invalidateChecks(): void { this.checks.clear() }
   async shutdownChecks(): Promise<void> { await this.checks.close() }
 
@@ -29,7 +32,8 @@ export class HarnessCatalogService {
   private async inspectConfiguration(value: HarnessConfiguration) {
     try {
       return await this.checks.get(canonical(withAdvancedDefaults(value)), async () => {
-        const qualification = HarnessQualificationSchema.parse(await this.qualifier.qualify(value, this.qualificationDirectory, AbortSignal.timeout(60_000)))
+        const qualification = HarnessQualificationSchema.parse(
+          await this.qualifier.qualify(value, this.qualificationDirectory, AbortSignal.timeout(60_000)))
         if (!qualification.ready || !qualification.authenticated || qualification.harness !== value.harness) {
           throw new DomainError('HARNESS_DEFAULTS_UNQUALIFIED', 'Sign in to the native harness and check this selection again.', 409)
         }

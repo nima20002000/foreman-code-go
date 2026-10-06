@@ -57,7 +57,9 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     const client = await connect(delegated.token)
     const denied = await connect(reader.token)
     expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('harness_mcp_managed_request')
-    await expect(denied.callTool({ name: 'harness_mcp_managed_request', arguments: {} })).rejects.toThrow('not found')
+    const deniedRequest = await denied.callTool({ name: 'harness_mcp_managed_request', arguments: {} })
+    expect(deniedRequest.isError).toBe(true)
+    expect(JSON.stringify(deniedRequest.content)).toContain('ACCESS_DENIED')
     const listed = async (harness: 'codex' | 'opencode') => HarnessMcpListResultSchema.parse(
       (await client.callTool({ name: 'harness_mcp_servers_list', arguments: { harness } })).structuredContent)
     for (const harness of ['codex', 'opencode'] as const) {

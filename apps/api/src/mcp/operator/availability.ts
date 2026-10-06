@@ -121,7 +121,8 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
   let scope: ScopeKind = extended?.scope ?? 'resource'
-  if (['harness_list','harness_get','harness_defaults_update','harness_qualifications_list','harness_qualification_run','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create','operator_chat_create','operator_chat_get','operator_chat_send','operator_chat_cancel','operator_chat_respond','operator_handoff_history_get'].includes(name)) scope = 'global'
+  if (['harness_list','harness_get','harness_defaults_update','harness_qualifications_list','harness_qualification_run','harness_compatibility_list','harness_compatibility_retry','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create','operator_chat_create','operator_chat_get','operator_chat_send','operator_chat_cancel','operator_chat_respond','operator_handoff_history_get'].includes(name)) scope = 'global'
+  if (['operator_chat_list', 'operator_chat_history_get', 'operator_chat_activity_get'].includes(name)) scope = 'global'
   if (['workflow_create','workspace_get','workspace_update','workspace_archive','workspace_location_validate','workspace_location_set','agent_get'].includes(name)) scope = 'workspace'
   if (name === 'execution_readiness_get' || name === 'harness_registry_get') scope = 'global'
   if (name === 'worker_execution_settings_get' || name.startsWith('build_computer_')) scope = 'global'
@@ -154,7 +155,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   // Every chat command returns protected state. Discovery requires overlapping
   // read and command grants, including grants restricted to a selected Run.
   if (name.startsWith('agent_chat_') && name !== 'agent_chat_read') result.push({action:'agent_chat:read',scope:'resource'})
-  if (['operator_chat_cancel', 'operator_chat_respond'].includes(name)) result.push({action:'operator_chat:read',scope:'global'})
+  if (['operator_chat_send', 'operator_chat_cancel', 'operator_chat_respond'].includes(name)) result.push({action:'operator_chat:read',scope:'global'})
   if (name === 'skill_archive') result.push({action:'skills:read',scope:'workspace'})
   if (name === 'workspace_folders_list') result.push({action:'harnesses:read',scope:'global'})
   if (['workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) result.push({action:'workspace_locations:read',scope:'global'})
@@ -217,6 +218,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (name.startsWith('run_subagent') && !service.runs?.subagents) return false
   if (name.startsWith('workflow_') && !service.workflows) return false
   if (name === 'execution_readiness_get' && !service.executionReadiness) return false
+  if (name.startsWith('harness_compatibility_') && !service.harnessCompatibility) return false
   if ((name === 'harness_qualifications_list' || name === 'harness_qualification_run') && !service.harnessQualifications) return false
   if (name.startsWith('agent_chat_') && !service.agentChat) return false
   if ((name === 'operator_mcp_setup_get' || name.startsWith('operator_chat_') || name === 'operator_handoff_history_get')

@@ -19,7 +19,7 @@ export const childControlRecord = (overrides: Partial<RunSubagent> = {}) => RunS
   name: 'Child', status: 'running', evidence: 'confirmed', firstObservedAt: '2026-10-04T00:00:00.000Z',
   startedAt: '2026-10-04T00:00:00.000Z', finishedAt: null, lastObservedAt: '2026-10-04T00:00:00.000Z',
   coverage: { transcript: 'partial', tools: 'partial', gaps: true },
-  capabilities: subagentCapabilities('codex-multi-agent-v2', '0.154.0'), ...overrides,
+  capabilities: subagentCapabilities('codex-multi-agent-v2'), ...overrides,
 })
 
 export function childControlReceipt(child = childControlRecord(), overrides: Partial<RunSubagentCommandReceipt> = {}) {

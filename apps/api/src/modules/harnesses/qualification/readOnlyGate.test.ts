@@ -25,7 +25,7 @@ describe('operation-scoped readonly Main qualification with authority doubles, n
     const f = await fixture(), find = vi.fn(async () => null)
     const registry = new HarnessQualificationRegistry({ list: async () => [], find }, { codex: f.revision })
     await expect(runWithReadOnlyQualification(registry, () => requireHarnessQualification('codex', 'codex-cli 0.154.0', f.binary))).rejects.toMatchObject({ result: { error: { code: 'HARNESS_UNQUALIFIED' } } })
-    await expect(runWithReadOnlyQualification(registry, () => runAsQualificationCandidate('codex', f.sha256,
+    await expect(runWithReadOnlyQualification(registry, () => runAsQualificationCandidate('codex', f.sha256, f.binary,
       () => requireHarnessQualification('codex', 'codex-cli 0.132.0', f.binary)))).rejects.toMatchObject({ result: { error: { code: 'HARNESS_UNQUALIFIED' } } })
     await expect(requireHarnessQualification('codex', 'codex-cli 0.154.0', f.binary)).resolves.toBeUndefined()
     expect(find).toHaveBeenCalledTimes(2)

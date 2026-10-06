@@ -7,7 +7,6 @@ import { subagentCapabilities, RunSubagentSchema, RunSubagentGetInputSchema, Run
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
-import { harnessProfile } from '../harnesses/qualification/profiles.js'
 import { subagentAvailableActions } from './capabilities.js'
 import { reconcileRunSubagents } from './projection.js'
 import { backfillRunSubagents } from './recovery.js'
@@ -23,7 +22,7 @@ const recoveryLogger = componentLogger('harness')
 function readSubagent(record: unknown) {
   const child = RunSubagentSchema.parse(record)
   if (child.provider !== 'codex') return child
-  const controls = subagentCapabilities(child.nativeMode, child.profile.providerVersion)
+  const controls = subagentCapabilities(child.nativeMode)
   return { ...child, capabilities: { ...child.capabilities,
     sendInput: controls.sendInput, interrupt: controls.interrupt,
     executionResume: controls.executionResume, inputTiming: controls.inputTiming,
@@ -87,9 +86,12 @@ export class RunSubagentService {
     return this.refreshCapabilities(scope, child)
   }
   private async refreshCapabilities(scope: SubagentReadScope, child: ReturnType<typeof RunSubagentSchema.parse>) {
-    if (child.nativeMode !== 'opencode-task'
-      || harnessProfile('opencode', child.profile.providerVersion) !== 'opencode-1.18.31') return child
-    const capabilities = subagentCapabilities(child.nativeMode, '1.18.31')
+    const lease = this.controls(child)
+    if (child.nativeMode !== 'opencode-task' || !lease?.inputContractVerified
+      || !lease.sendInput || !lease.matches(child)) return child
+    lease.assertCurrent()
+    const capabilities = { ...subagentCapabilities(child.nativeMode),
+      sendInput: { support: 'supported' as const, qualification: 'passed' as const } }
     if (isDeepStrictEqual(child.capabilities, capabilities)) return child
     const updated = RunSubagentSchema.parse({ ...child, capabilities, revision: String(BigInt(child.revision) + 1n) })
     await scope.sql.query('update run_subagents set revision=$2,record=$3::jsonb where id=$1',

@@ -27,10 +27,7 @@ export class CodexChildControls {
 
   lease(child: RunSubagent, host: CodexChildControlHost, assertOwner: () => void): SubagentControlLease | undefined {
     const target = child.native.childSessionId
-    const version = (value: string) => value.replace(/^codex-cli\s+/, '')
-    if (child.provider !== 'codex' || !target || target === host.rootThreadId
-      || version(child.profile.providerVersion) !== version(host.qualified.providerVersion)
-      || child.profile.schemaIdentity && child.profile.schemaIdentity !== host.qualified.schemaManifestSha256) return undefined
+    if (child.provider !== 'codex' || !target || target === host.rootThreadId) return undefined
     const current = () => {
       assertOwner()
       host.assertCurrent()
@@ -43,7 +40,7 @@ export class CodexChildControls {
         host.qualified.protocol.request({ id: 'child-control', method, params })
         return true
       } catch (error) {
-        if (error instanceof HarnessExecutionError && ['CODEX_METHOD_UNQUALIFIED', 'CODEX_PROTOCOL_INVALID']
+        if (error instanceof HarnessExecutionError && ['CODEX_METHOD_UNQUALIFIED', 'CODEX_PROTOCOL_INVALID', 'CODEX_CONTRACT_UNSUPPORTED']
           .includes(error.result.error?.code ?? '')) return false
         throw error
       }

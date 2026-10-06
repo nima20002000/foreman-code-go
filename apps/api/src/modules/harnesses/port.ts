@@ -181,6 +181,9 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
     forkSource?: NativeSessionReference): Promise<NativeSessionReference>
   /** Verify and rebind a persisted provider identity; never create a replacement session. */
   attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
+  /** Attach saved work for history and cancellation without management MCP credentials. */
+  attachSessionForObservation?(session: NativeSessionReference, input: NativeSessionStart,
+    signal?: AbortSignal): Promise<NativeSessionReference>
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>
   /** One first prompt under existing app admission; never a planned/local native session ID. */
   startInitialTurn?(start: NativeSessionStart, input: NativeInitialTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>

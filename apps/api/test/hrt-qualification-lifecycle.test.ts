@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import type { QualificationSuiteInput } from '../src/modules/harnesses/qualification/types.js'
@@ -15,8 +19,14 @@ function gate<T = void>() {
   return { promise, resolve }
 }
 
+const binaryDirectories: string[] = []
 function fixture(staticCheck: ConstructorParameters<typeof HarnessQualificationService>[6] = async () => 'schema') {
-  const inspectBinary = vi.fn(async () => ({ binary: '/fixture/codex', sha256: 'a'.repeat(64) }))
+  const directory = mkdtempSync(join(tmpdir(), 'qualification-lifecycle-binary-'))
+  binaryDirectories.push(directory)
+  const binary = join(directory, 'codex')
+  const bytes = Buffer.from('model-free binary identity fixture')
+  writeFileSync(binary, bytes)
+  const inspectBinary = vi.fn(async () => ({ binary, sha256: createHash('sha256').update(bytes).digest('hex') }))
   const save = vi.fn(async (qualification: import('@foreman-code/contracts/harness-qualification').HarnessQualification, evidence?: Record<string, unknown>): Promise<void> => { void qualification; void evidence })
   const run = vi.fn(async (input: QualificationSuiteInput) => { void input; return { checks: [{ id: 'live', passed: true, detail: null }], evidence: {} } })
   const audit = vi.fn(async (): Promise<void> => undefined)
@@ -24,12 +34,12 @@ function fixture(staticCheck: ConstructorParameters<typeof HarnessQualificationS
   const service = new HarnessQualificationService({ find: async () => undefined, save } as never,
     { inspectBinary, trusted: async () => true } as never,
     { codex: { harness: 'codex', revision: 'test', run }, opencode: { harness: 'opencode', revision: 'test', run } },
-    { codex: '/fixture/codex', opencode: '/fixture/opencode' }, { recordAudit: audit } as never,
+    { codex: binary, opencode: binary }, { recordAudit: audit } as never,
     { getManagedHarnessDefaults: settings }, staticCheck)
-  return { service, inspectBinary, save, run, audit, settings }
+  return { service, binary, inspectBinary, save, run, audit, settings }
 }
 
-afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); vi.mocked(rm).mockResolvedValue(undefined); vi.mocked(mkdtemp).mockResolvedValue('/qualification-owned') })
+afterEach(() => { for (const directory of binaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true }); vi.useRealTimers(); vi.clearAllMocks(); vi.mocked(rm).mockResolvedValue(undefined); vi.mocked(mkdtemp).mockResolvedValue('/qualification-owned') })
 
 describe('qualification stop/cancel/join', () => {
   it('settles an interruption after static success before shutdown finishes', async () => {
@@ -179,7 +189,7 @@ describe('qualification stop/cancel/join', () => {
     const service = new HarnessQualificationService({ find: async () => undefined, save: f.save } as never,
       { inspectBinary: f.inspectBinary } as never,
       { codex: { harness: 'codex', revision: 'test', run: f.run }, opencode: { harness: 'opencode', revision: 'test', run: f.run } },
-      { codex: '/fixture/codex', opencode: '/fixture/opencode' }, {} as never, { getManagedHarnessDefaults: f.settings })
+      { codex: f.binary, opencode: f.binary }, {} as never, { getManagedHarnessDefaults: f.settings })
     await service.begin('codex')
     await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1))
     await expect(service.shutdown()).rejects.toThrow('cleanup was incomplete')

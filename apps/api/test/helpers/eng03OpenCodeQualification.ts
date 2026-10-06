@@ -20,7 +20,6 @@ import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
 import { HarnessCatalogService } from '../../src/modules/harnesses/catalog.js'
 import { NativeHarnessConfigurationQualifier } from '../../src/modules/harnesses/nativeConfigurationQualifier.js'
 import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
-import { clearQualificationGate, installQualificationGate } from '../../src/modules/harnesses/qualification/gate.js'
 import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeServer.js'
 import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
@@ -54,7 +53,6 @@ export async function qualifyEng03OpenCode() {
   let service: HarnessQualificationService | undefined
   let catalog: HarnessCatalogService | undefined
   const close = async () => {
-    clearQualificationGate()
     await catalog?.shutdownChecks()
     factories?.stopAuxiliaries()
     await factories?.disposeAuxiliaries()
@@ -191,7 +189,7 @@ export async function qualifyEng03OpenCode() {
     assert.equal(qualification.status, 'qualified', JSON.stringify(qualification))
     assert.ok(qualification.binarySha256)
     assert.equal(await registry.trustedExact('opencode', qualification.version, qualification.binarySha256), true)
-    installQualificationGate(registry, service)
+    await registry.load()
     return close
   } catch (error) {
     console.error(`OpenCode qualification failure ${JSON.stringify(describeNativeFailure(error, secrets))}`)

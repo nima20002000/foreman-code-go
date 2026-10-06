@@ -13,17 +13,6 @@ import { collectChecks, nonempty, object, requireCondition, type Check } from '.
 import type { QualificationSuite } from '../types.js'
 import type { NativeQualificationSuiteInput } from '../nativeOwnership.js'
 
-// The resident controller validates against expectedVersion at startup. The suite
-// supplies the candidate version without changing production's baseline pin.
-class CandidateOpenCodeServer extends ManagedOpenCodeServer {
-  constructor(input: NativeQualificationSuiteInput) {
-    super({ binary: input.binary, workingDirectory: input.workDirectory,
-      ...(input.processRecovery ? { processRecovery: input.processRecovery } : {}),
-      ...(input.assertInstallation ? { assertInstallation: input.assertInstallation } : {}),
-      ownerAgentId: 'qualification', appMcpAccess: 'none', startupTimeoutMs: 30_000 })
-    Object.defineProperty(this, 'expectedVersion', { value: input.version })
-  }
-}
 
 const requiredPaths = ['/session', '/session/status', '/session/{sessionID}', '/session/{sessionID}/message',
   '/session/{sessionID}/message/{messageID}', '/session/{sessionID}/prompt_async', '/session/{sessionID}/abort',
@@ -33,7 +22,12 @@ export const opencodeQualificationSuite: QualificationSuite = {
   harness: 'opencode', revision: 'opencode-live-6',
   async run(input: NativeQualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
-    const server = new CandidateOpenCodeServer(input)
+    const server = new ManagedOpenCodeServer({
+      binary: input.binary, workingDirectory: input.workDirectory,
+      ...(input.processRecovery ? { processRecovery: input.processRecovery } : {}),
+      ...(input.assertInstallation ? { assertInstallation: input.assertInstallation } : {}),
+      ownerAgentId: 'qualification', appMcpAccess: 'none', startupTimeoutMs: 30_000,
+    })
     const app = Fastify({ logger: false })
     const releaseServer = input.ownCleanup?.(() => server.dispose())
     const releaseApp = input.ownCleanup?.(() => app.close())

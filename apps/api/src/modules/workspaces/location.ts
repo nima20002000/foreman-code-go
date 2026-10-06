@@ -20,6 +20,7 @@ import {
 import type pg from 'pg'
 
 import { requireAuthorization } from '../access/policy.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
@@ -68,7 +69,8 @@ export class WorkspaceLocationService {
     this.managedRuntimeRoot = managedRuntimeRoot ? resolve(managedRuntimeRoot) : undefined
   }
 
-  async createProjectFolder(principal: ManagementPrincipal, workspaceId: string, parentPath: string, name: string) {
+  async createProjectFolder(principal: ManagementPrincipal, workspaceId: string, parentPath: string, name: string,
+    provisioning?: { create(path: string): Promise<void> }) {
     requireAuthorization(principal, 'workspace_locations:provision', { workspaceId })
     requireAuthorization(principal, 'workspace_locations:update', { workspaceId })
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId })
@@ -78,14 +80,21 @@ export class WorkspaceLocationService {
     }
     const parent = await this.validatePath(workspaceId, this.runnerId, parentPath, 'read-write')
     const path = resolve(parent.validation.location.rootPath, name)
-    try { await mkdir(path) } catch (error) {
+    try {
+      if (provisioning) await provisioning.create(path)
+      else await mkdir(path)
+    } catch (error) {
+      if (error instanceof DomainError) throw error
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
         throw new DomainError('WORKSPACE_FOLDER_EXISTS', 'A folder with this name already exists. Choose another name or location.', 409)
       }
       throw locationError(error, path)
     }
     try { return await this.validatePath(workspaceId, this.runnerId, path, 'read-write') }
-    catch (error) { await rmdir(path).catch(() => undefined); throw error }
+    catch (error) {
+      if (!provisioning) await rmdir(path)
+      throw error
+    }
   }
 
   private async validatePath(
@@ -173,6 +182,13 @@ export class WorkspaceLocationService {
     return this.commands.execute({
       principal, source, operation: 'workspace.location.set', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:location`, payload: input,
+      authorize: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
+        await client.query('select id from workspaces where id = $1 for update', [input.workspaceId])
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(live, 'workspace_locations:update', { workspaceId: input.workspaceId })
+      },
       perform: async (client) => {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
@@ -283,9 +299,9 @@ export class WorkspaceLocationService {
     }
   }
 
-  async inspect(principal: ManagementPrincipal, workspaceId: string) {
+  async inspect(principal: ManagementPrincipal, workspaceId: string, client: GraphSqlClient = this.pool) {
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId })
-    const result = await this.pool.query<LocationRow>(
+    const result = await client.query<LocationRow>(
       `select execution_location, execution_location_identity, location_revision, archived_at
        from workspaces where id = $1`, [workspaceId],
     )

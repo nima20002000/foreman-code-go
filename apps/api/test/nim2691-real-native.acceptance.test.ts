@@ -37,6 +37,7 @@ import { nativePersistenceRedactor } from '../src/modules/interactions/nativePer
 import { detectedClaudeProfilePath } from '../src/modules/harnesses/claudeSdk/productionMetadata.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
+import { LocalWorkflowArtifactAuthority } from '../src/modules/runs/remote/localWorkflowArtifactAuthority.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import { configureNativeAcceptanceMcp } from './helpers/nativeAcceptanceMcp.js'
 import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
@@ -152,11 +153,21 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         })
       const toolFailure = mcpResults.toolFailure
       const mcpFailureObserver = vi.spyOn(mcpResults, 'toolFailure').mockImplementation((error, message) => {
-        if (nativeFailures.length < 16 && (!(error instanceof DomainError) || error.status >= 500)) {
+        if (nativeFailures.length < 16) {
           nativeFailures.push({ stage: 'mcp_tool', error: describeNativeFailure(error, [...secrets]) })
         }
         return toolFailure(error, message)
       })
+      const artifactExecution = LocalWorkflowArtifactAuthority.prototype.execution
+      const artifactObserver = vi.spyOn(LocalWorkflowArtifactAuthority.prototype, 'execution')
+        .mockImplementation(async function (this: LocalWorkflowArtifactAuthority, sql, executionId) {
+          try { return await artifactExecution.call(this, sql, executionId) }
+          catch (error) {
+            if (artifacts && nativeFailures.length < 16) nativeFailures.push({ stage: 'artifact_declaration',
+              executionId, error: describeNativeFailure(error, [...secrets]) })
+            throw error
+          }
+        })
       const cancellations: Array<{ nativeSessionId: string; caller: string[]; reason?: NativeFailureDetail }> = []
       const inspectMcp = CodexAppServerSessionManager.prototype.inspectMcpConfiguration
       const inspectionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'inspectMcpConfiguration')
@@ -277,6 +288,11 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                 typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/u.test(value)) : [] })
         }
         const observeEngine = (runtime: ReturnType<typeof buildProductionApp>) => {
+          runtime.app.addHook('onError', async (request, _reply, error) => {
+            if (artifacts && request.url === '/mcp' && nativeFailures.length < 16) {
+              nativeFailures.push({ stage: 'mcp_http', error: describeNativeFailure(error, [...secrets]) })
+            }
+          })
           const start = runtime.engine.start.bind(runtime.engine)
           runtime.engine.start = async (runId) => {
             try { return await start(runId) }
@@ -302,7 +318,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               nativeAgent: 'build', thinking: false, autoApprove: false,
               ...(scenario.approval && index === approvalNode ? { advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
                 permissionRules: [{ permission: 'shell', pattern: 'pwd', effect: 'ask' }] } } : {}) }
-            : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
+            : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? process.env.CODEX_TEST_MODEL ?? 'gpt-6-luna',
               reasoningEffort: process.env.NIM2691_CODEX_REASONING_EFFORT ?? 'medium',
               sandbox: 'read-only', serviceTier: 'standard' },
           prompt: { system: scenario.capLoop
@@ -778,11 +794,11 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         }
         if (restartOnApproval) {
           expect(restarted).toBe(true)
-          expect(approved.size).toBe(1)
+          expect(approved.size).toBe(artifacts ? 4 : 1)
           expect((await pool.query('select id from harness_executions where run_id=$1 and workflow_node_id=$2',
             [runId, fixture.version.definition.nodes[approvalNode]!.id])).rowCount).toBe(1)
           expect((await pool.query('select activation_id from run_work_join_dispatches where run_id=$1',
-            [runId])).rowCount).toBe(1)
+            [runId])).rowCount).toBe(scenario.form === 'parallel' ? 1 : 0)
         }
         if (scenario.approval) {
           const nativeTypes = (await pool.query<{ type: string }>(`select e.record->>'type' as type
@@ -1018,6 +1034,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       sessionObserver.mockRestore()
       cancellationObserver.mockRestore()
       mcpFailureObserver.mockRestore()
+      artifactObserver.mockRestore()
       historyObserver.mockRestore()
       const cleanupErrors: unknown[] = []
       if (artifactBoundary) {

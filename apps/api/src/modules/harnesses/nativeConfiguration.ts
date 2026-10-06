@@ -28,7 +28,8 @@ export class NativeConfigurationService {
     try {
       // The selected Claude host/profile proof must be rechecked on every read.
       if (value.harness === 'claude') return await this.inspectConfiguration(value)
-      return await this.configurationChecks.get(JSON.stringify(value), () => this.inspectConfiguration(value))
+      const identity = await this.factories.cacheIdentity(value.harness, this.directory, value)
+      return await this.configurationChecks.get(JSON.stringify([identity, value]), () => this.inspectConfiguration(value))
     }
     catch (error) { throw qualificationError(error) }
   }
@@ -52,7 +53,8 @@ export class NativeConfigurationService {
   async options(harness: AgentHarness) {
     try {
       if (harness === 'claude') return await this.discoverOptions(harness)
-      return await this.catalogCache.get(harness, () => this.discoverOptions(harness))
+      const identity = await this.factories.cacheIdentity(harness, this.directory)
+      return await this.catalogCache.get(JSON.stringify([harness, identity]), () => this.discoverOptions(harness))
     }
     catch (error) { throw qualificationError(error) }
   }
@@ -66,7 +68,7 @@ export class NativeConfigurationService {
           const signal = AbortSignal.timeout(60_000)
           const version = await this.command(this.openCodeBinary, ['--version'], this.directory, signal)
           if (version.exitCode !== 0) {
-            throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'The configured OpenCode CLI is not the qualified release.')
+            throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'The configured OpenCode CLI could not report its version.')
           }
           await requireHarnessQualification('opencode', (version.stdout || version.stderr).trim(), this.openCodeBinary)
           // Update the shared registry without loading plugins; the fresh /provider read still filters connected providers.

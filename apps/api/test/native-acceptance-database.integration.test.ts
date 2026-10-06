@@ -6,7 +6,8 @@ import { expect, it } from 'vitest'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { completeTestResourceCleanup, dropFixtureDatabase, ownedTestDatabaseUrl,
-  registerTestResourceCleanup } from '../../../scripts/test-resources.mjs'
+  registerTestResourceCleanup, createTestDatabase, provisionTestResources,
+  testAdminPool } from '../../../scripts/test-resources.mjs'
 
 
 async function disposeRetainedBootstrap(admin: pg.Pool, name: string): Promise<void> {
@@ -24,6 +25,45 @@ async function disposeRetainedBootstrap(admin: pg.Pool, name: string): Promise<v
   }
   throw new Error('Retained bootstrap cleanup record is missing.')
 }
+
+it('suite teardown removes registered child databases only after their callers close and preserves foreign ownership', async () => {
+  const environment = { ...process.env }
+  delete environment.FOREMAN_CODE_TEST_ROOT
+  delete environment.FOREMAN_CODE_TEST_OWNER
+  const suite = await provisionTestResources(environment)
+  const resource = { directory: suite.environment.FOREMAN_CODE_TEST_ROOT!,
+    token: suite.environment.FOREMAN_CODE_TEST_OWNER!, databaseUrl: suite.environment.TEST_DATABASE_URL! }
+  const admin = await testAdminPool()
+  let caller: pg.Client | undefined
+  let foreignCleanup: string | undefined
+  try {
+    const child = await createTestDatabase(admin, resource)
+    registerTestResourceCleanup(resource, { kind: 'fixture-database', name: child.name })
+    caller = new pg.Client({ connectionString: child.databaseUrl })
+    await caller.connect()
+    await expect(suite.close()).rejects.toThrow('ownership or closure is unconfirmed')
+    expect((await caller.query('select 1')).rowCount).toBe(1)
+    await caller.end()
+    caller = undefined
+    foreignCleanup = registerTestResourceCleanup(resource, { kind: 'fixture-database',
+      name: new URL(ownedTestDatabaseUrl()).pathname.slice(1) })
+    await expect(suite.close()).rejects.toThrow('ownership or closure is unconfirmed')
+    expect((await admin.query('select 1 from pg_database where datname=$1',
+      [new URL(ownedTestDatabaseUrl()).pathname.slice(1)])).rows).toHaveLength(1)
+    completeTestResourceCleanup(resource, foreignCleanup)
+    foreignCleanup = undefined
+    await suite.close()
+    expect((await admin.query('select 1 from pg_database where datname=$1', [child.name])).rows).toEqual([])
+    await expect(access(resource.directory)).rejects.toMatchObject({ code: 'ENOENT' })
+  } finally {
+    await caller?.end()
+    if (foreignCleanup) completeTestResourceCleanup(resource, foreignCleanup)
+    try {
+      const retained = await access(resource.directory).then(() => true, () => false)
+      if (retained) await suite.close()
+    } finally { await admin.end() }
+  }
+}, 30_000)
 
 it('acceptance bootstrap supplies an isolated database and removes it after success and failure', async () => {
   const script = new URL('../../../scripts/test-native-acceptance.mjs', import.meta.url).href

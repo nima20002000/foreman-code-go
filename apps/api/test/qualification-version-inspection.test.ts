@@ -1,4 +1,5 @@
-import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { appendFile, chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
@@ -16,7 +17,8 @@ function service(binary: string, factory: (timeoutMs: number) => CompatibilityPr
   const save = vi.fn(async () => undefined)
   const run = vi.fn(async () => ({ checks: [{ id: 'recorded', passed: true, detail: null }], evidence: {} }))
   const qualification = new HarnessQualificationService({ find: async () => null, save } as never,
-    { inspectBinary: async () => ({ binary, sha256: 'a'.repeat(64) }), trusted: async () => true } as never,
+    { inspectBinary: async () => ({ binary, sha256: createHash('sha256')
+      .update(await readFile(binary)).digest('hex') }), trusted: async () => true } as never,
     { codex: { harness: 'codex', revision: 'recorded', run }, opencode: { harness: 'opencode', revision: 'recorded', run } },
     { codex: binary, opencode: binary }, {} as never,
     { getManagedHarnessDefaults: async () => ({ revision: 0, defaults: DEFAULT_HARNESS_DEFAULTS }) },
@@ -71,6 +73,28 @@ it('keeps installation verification and closure outside the native version-comma
     closed.release()
     await result
     vi.useRealTimers()
+    await instance.qualification.shutdown()
+    await removeFixtureDirectory(f.directory)
+  }
+})
+
+it('refuses a binary replacement after version inspection before admitting its suite', async () => {
+  const f = await binaryFixture("console.log('codex-cli 0.160.1')")
+  const instance = service(f.binary, timeoutMs => {
+    const raw = nativeCompatibilityProbe({ codex: f.binary, opencode: f.binary }, f.directory, process.env, timeoutMs)
+    return { ...raw, async inspect(harness, signal) {
+      const result = await raw.inspect(harness, signal)
+      await appendFile(f.binary, '\n// replacement payload\n')
+      return result
+    } }
+  })
+  try {
+    await instance.qualification.begin('codex')
+    await instance.qualification.join()
+    expect(instance.run).not.toHaveBeenCalled()
+    expect(instance.save).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'failed',
+      version: '0.160.1', failureReason: expect.stringContaining('changed before its native contract checks') }))
+  } finally {
     await instance.qualification.shutdown()
     await removeFixtureDirectory(f.directory)
   }
