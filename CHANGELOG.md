@@ -7,12 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-Claude and OpenCode workflows across two computers remain untested. The available laptop provider logins support Codex only.
+Claude and OpenCode workflows across two computers remain untested. The available laptop provider logins support Codex only. Installed OpenCode workers refuse declared artifact outputs.
 
 ### Added
 
 - Remote Orchestrator review turns on the original native session, with authenticated assignment and decision readback.
-- Native artifact production, sealing, publication and Agent-to-Agent transfer for Main and installed Codex/OpenCode workers.
+- Native artifact production, sealing, publication and Agent-to-Agent transfer for Main and installed Codex workers.
 - Worker build targets for Ubuntu 24.04 and 26.04 x64 with Node 22.23.2, retaining exact OS, libc and runtime checks.
 
 ### Changed
@@ -32,7 +32,6 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 - Retain the original scoped Worker credential atomically when an Orchestrator finishes its initial turn, preserving authenticated review access through credential cleanup.
 - Start and recover fully placed Agent workflows using their accepted host directories while preserving the workspace selection and authorization checks.
 - Keep scoped cancellation available on saturated channels and retry original approval responses only when non-delivery is proven.
-- Initialize and recover worker output stores automatically; serialize budgets and reuse released reservation capacity.
 - Keep Main available when a native catalog cannot select an automatic default model, persist its unavailable state and expose it through Settings and Operator MCP.
 - Let an operator select one native preset while other harnesses remain unavailable, retaining native checks, revisions and idempotent retries.
 - Forward explicit native acceptance file selections through the queued root command.
@@ -42,6 +41,12 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 
 - Retain sandbox permissions, scoped credentials, assignment checks and owner fences across local and remote artifact and review paths.
 - Preserve kernel-backed native closure evidence and revalidate authenticated reconnects without authorizing replacement launches.
+
+## [0.0.47] - 2026-10-06
+
+### Fixed
+
+- Measure the selected executable's real hash in qualification deadline regression fixtures, so current integrity checks admit the valid candidate and reject a replacement before any native suite runs.
 
 ## [0.0.46] - 2026-10-06
 
