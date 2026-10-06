@@ -1,5 +1,6 @@
 import type pg from 'pg'
 import { MessageSchema, type ActivitySourceRevision, type Message } from '@foreman-code/contracts'
+import { readClaudeMessagePublications } from '../harnesses/claudeSdk/publications.js'
 import {
   FileWithRevisionSchema, MessageAttachmentRefsSchema, fileStateAt,
   type FileWithRevision, type MessageAttachmentRef,
@@ -121,6 +122,9 @@ export async function hydrateMessageAttachments(query: Queryable, conversationId
     .map((message) => message.id)
   const originalInputs = await readOriginalMessageInputs(query, conversationId, messages.filter((message) => message.role === 'user').map((message) => message.id))
   const recovered = await readCodexMessagePublications(query, conversationId, candidates)
+  for (const [messageId, refs] of await readClaudeMessagePublications(query, conversationId, candidates)) {
+    recovered.set(messageId, mergeMessagePins(recovered.get(messageId) ?? [], refs))
+  }
   const missing = [...recovered.values()].flat().filter((ref) => !rows.has(identity(ref)))
   for (const [key, value] of await readPins(query, conversationId, missing, onFileRevision)) rows.set(key, value)
   return messages.map(({ attachmentRefs, publicationRefs, ...message }) => {
