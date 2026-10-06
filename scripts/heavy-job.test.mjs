@@ -153,6 +153,60 @@ test('a dead queued owner cannot retain FIFO behind unrelated unreadable environ
   } finally { rmSync(f.home, { recursive: true, force: true }) }
 })
 
+for (const owner of ['absent', 'reused']) {
+  test(`reclaims an empty running slot after its coordinator is ${owner}, despite unrelated unreadable environments`,
+    { timeout: 6000 }, async () => {
+      const f = fixture()
+      try {
+        mockProc(f, `function readFileSync(path, ...args) { if (path === '/proc/99999998/environ') throw Object.assign(new Error('unrelated fixture denied'), { code: 'EACCES' }); return actualReadFileSync(path, ...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? ['99999998'] : actualReaddirSync(path, ...args) }`)
+        const pid = owner === 'absent' ? 99999999 : process.pid
+        const start = owner === 'absent' ? '0'
+          : String(BigInt(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]) + 1n)
+        const ticket = '000000000001-abandoned'
+        const record = JSON.stringify({ common: f.common, worktree: f.first, pid, start,
+          pgid: 99999997, phase: 'running', namespace, token: randomUUID() })
+        for (const folder of ['queue', 'running', 'active']) mkdirSync(join(f.state, folder), { recursive: true })
+        for (const path of [join(f.state, 'queue', ticket), join(f.state, 'running', ticket),
+          join(f.state, 'active', 'owner.json')]) {
+          writeFileSync(path, record)
+          utimesSync(path, new Date(0), new Date(0))
+        }
+        utimesSync(join(f.state, 'active'), new Date(0), new Date(0))
+        const result = await run(f.first, ['--', process.execPath, '-e', 'console.log("replacement admitted")'])
+        assert.equal(result.code, 0, result.output)
+        assert.match(result.output, /replacement admitted/)
+      } finally { rmSync(f.home, { recursive: true, force: true }) }
+    })
+}
+
+test('an empty published group still retains its live detached token-bearing worker', { timeout: 6000 }, async () => {
+  const f = fixture()
+  const token = randomUUID()
+  const worker = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'],
+    { detached: true, stdio: 'ignore', env: { ...jobEnv(f.first), FOREMAN_CODE_HEAVY_JOB_TOKEN: token } })
+  const exited = new Promise(resolve => worker.once('exit', resolve))
+  try {
+    mockProc(f, `function readFileSync(path, ...args) { if (path === '/proc/99999998/environ') throw Object.assign(new Error('unrelated fixture denied'), { code: 'EACCES' }); return actualReadFileSync(path, ...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? ['99999998', ${JSON.stringify(String(worker.pid))}] : actualReaddirSync(path, ...args) }`)
+    const ticket = '000000000001-detached-running'
+    const record = JSON.stringify({ common: f.common, pid: 99999999, start: '0',
+      pgid: 99999997, phase: 'running', namespace, token })
+    for (const folder of ['queue', 'running', 'active']) mkdirSync(join(f.state, folder), { recursive: true })
+    for (const path of [join(f.state, 'queue', ticket), join(f.state, 'running', ticket),
+      join(f.state, 'active', 'owner.json')]) {
+      writeFileSync(path, record)
+      utimesSync(path, new Date(0), new Date(0))
+    }
+    utimesSync(join(f.state, 'active'), new Date(0), new Date(0))
+    const result = await probe(f)
+    assert.match(result.output, /queued .*waiting/)
+    assert.doesNotMatch(result.output, /\[heavy-job\] running /)
+  } finally {
+    worker.kill('SIGTERM')
+    await exited
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})
+
 for (const [name, phase, pid, pgid, identity] of [
   ['live queued owner', 'queued', process.pid, null, namespace],
   ['queued foreign ownership', 'queued', 99999999, null, { ...namespace, boot: 'foreign' }],

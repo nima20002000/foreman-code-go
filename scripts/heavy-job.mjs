@@ -66,6 +66,12 @@ const groupUsed = (pgid, conservative = false) => {
   } catch { return true }
   return false
 }
+const workUsed = (record) => {
+  const launchedGroup = record.phase === 'running' && Number.isSafeInteger(record.pgid) && record.pgid > 0
+  // A published empty group is not retained by unrelated unreadable environments.
+  // Visible token-bearing workers still retain ownership after detaching.
+  return groupUsed(record.pgid, true) || tokenUsed(record.token, 0, !launchedGroup)
+}
 const usedPath = (path) => {
   try {
     for (const entry of readdirSync('/proc')) {
@@ -100,17 +106,17 @@ function cleanQueue() {
   for (const name of readdirSync(running)) {
     const path = join(running, name)
     const record = readJson(path)
-    if (record?.common === common && ageMs(path) > 10_000 && !alive(record) && !groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)) rmSync(path, { force: true })
+    if (record?.common === common && ageMs(path) > 10_000 && !alive(record) && !workUsed(record)) rmSync(path, { force: true })
   }
   const held = readJson(join(active, 'owner.json'))
-  if (held?.common === common && ageMs(active) > 10_000 && !alive(held) && !groupUsed(held.pgid, true) && !tokenUsed(held.token, 0, true)) rmSync(active, { recursive: true, force: true })
+  if (held?.common === common && ageMs(active) > 10_000 && !alive(held) && !workUsed(held)) rmSync(active, { recursive: true, force: true })
   for (const name of readdirSync(queue)) {
     const path = join(queue, name)
     const record = readJson(path)
     // A queued coordinator has not acquired a slot or spawned token-bearing work.
     // The durable phase changes before acquisition, including its crash windows.
     const neverLaunched = record?.phase === 'queued' && record.pgid === null
-    if (record?.common === common && !alive(record) && (neverLaunched || (!groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)))) rmSync(path, { force: true })
+    if (record?.common === common && !alive(record) && (neverLaunched || !workUsed(record))) rmSync(path, { force: true })
   }
 }
 const slotRecords = () => readdirSync(running).map((name) => readJson(join(running, name)))
