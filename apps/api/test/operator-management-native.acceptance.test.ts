@@ -102,7 +102,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           const current = await operators.ensure()
           const native = harness === 'codex'
             ? { harness: 'codex' as const, model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
-              reasoningEffort: 'low' as const, sandbox: 'read-only' as const, serviceTier: 'standard' as const }
+              reasoningEffort: 'medium' as const, sandbox: 'read-only' as const, serviceTier: 'standard' as const }
             : { harness: 'opencode' as const, model: process.env.OPENCODE_TEST_MODEL ?? 'opencode-go/gpt-5.6-luna',
               variant: 'low', nativeAgent: 'plan', thinking: false, autoApprove: false,
               advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [

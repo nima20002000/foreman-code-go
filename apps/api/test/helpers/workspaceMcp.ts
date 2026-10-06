@@ -15,6 +15,7 @@ import { PostgresFoundationSettingsRepository } from '../../src/modules/settings
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
 import { WorkspaceManagementService } from '../../src/modules/workspaces/management.js'
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
+import { closeTestResources } from '../support/cleanup.js'
 
 export async function workspaceMcpFixture(options: {
   connectionString?: string
@@ -38,7 +39,6 @@ export async function workspaceMcpFixture(options: {
   const schema = 'workspace_mcp_' + randomUUID().replaceAll('-', '')
   const parentPath = await mkdtemp(join(tmpdir(), 'workspace-mcp-'))
   const admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}`, application_name: schema })
   const clients: Client[] = []
   const access = new PostgresAccessService(pool)
@@ -51,15 +51,19 @@ export async function workspaceMcpFixture(options: {
     database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
   }, operator: { access, services } })
 
-  async function close() {
-    await Promise.all(clients.map(client => client.close()))
-    await app.close()
-    await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`)
-    await admin.end()
-    await rm(parentPath, { recursive: true, force: true })
+  let closing: Promise<void> | undefined
+  function close() {
+    return closing ??= closeTestResources([
+      ...clients.map(client => () => client.close()),
+      () => app.close(),
+      () => pool.end(),
+      () => admin.query(`drop schema if exists "${schema}" cascade`),
+      () => admin.end(),
+      () => rm(parentPath, { recursive: true, force: true }),
+    ])
   }
   try {
+    await admin.query(`create schema "${schema}"`)
     await applyApplicationMigrations(pool)
     await options.configure?.({ app, pool, access, commands, parentPath, services })
     const address = await app.listen({ host: '127.0.0.1', port: options.port ?? 0 })
@@ -81,7 +85,10 @@ export async function workspaceMcpFixture(options: {
     const owner = await issue()
     return { app, pool, access, commands, defaults, parentPath, owner, connect, issue, close, services, address }
   } catch (error) {
-    await close()
+    try { await close() }
+    catch (cleanup) {
+      throw new AggregateError([error, cleanup], 'Workspace fixture setup and cleanup failed.', { cause: cleanup })
+    }
     throw error
   }
 }
