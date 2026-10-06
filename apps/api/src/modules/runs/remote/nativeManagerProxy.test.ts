@@ -8,7 +8,7 @@ import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
-import { RemoteNativeSessionManager, type RemoteNativeTransport } from './nativeManagerProxy.js'
+import { RemoteNativeSessionManager, type RemoteNativeTransport, type RemoteNativeManagerOptions } from './nativeManagerProxy.js'
 
 function event(sequence: number, text = 'event'): NativeHarnessEvent {
   return { sequence, type: 'native.notification', occurredAt: '2026-10-01T00:00:00.000Z', payload: { text } }
@@ -48,7 +48,7 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
   })
   const status = { status: 'known' as const, receipt }
   const cursors: Array<number | undefined> = []
-  const observeOriginalSource = vi.fn(async () => {})
+  const observeOriginalSource = vi.fn<NonNullable<RemoteNativeManagerOptions['observeOriginalSource']>>(async () => {})
   const observedReceipts: Array<ReturnType<typeof RemoteOperationReceiptSchema.parse>> = []
   const request = vi.fn<RemoteNativeTransport['request']>(async (method, raw) => {
     const frame = RemoteExecutionRpcRequestSchema.parse(raw)
@@ -103,6 +103,37 @@ describe('remote native history streaming', () => {
     } finally {
       clock.mockRestore()
     }
+  })
+
+  it('refetches the remaining stream after a receipt refresh observes another history page', async () => {
+    const events = Array.from({ length: 90 }, (_, sequence) => event(sequence, 'x'.repeat(20_000)))
+    const available = new Map<number, Set<number>>()
+    const f = setup(() => terminal(events), reply => {
+      const sequence = reply.status.receipt.sequence
+      const values = available.get(sequence) ?? new Set<number>()
+      for (const event of reply.history.events) values.add(event.sequence)
+      available.set(sequence, values)
+    })
+    f.observeOriginalSource.mockImplementation(async (receipt, source) => {
+      if (source.type === 'event' && !available.get(receipt.sequence)?.has(source.event.sequence)) {
+        throw new Error('This receipt has no original physical event observation')
+      }
+    })
+    const session = await f.proxy.createSession(f.start)
+    const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+    const delivered: NativeHarnessEvent[] = []
+    while (!f.cursors.some(cursor => cursor !== undefined && cursor >= 0)) {
+      delivered.push((await stream.next()).value as NativeHarnessEvent)
+    }
+    f.receipt.sequence++
+    const request = f.request.getMockImplementation()!
+    f.request.mockImplementation((method, payload, signal) => method === 'status'
+      ? Promise.resolve({ status: 'known', receipt: f.receipt }) : request(method, payload, signal))
+    await f.proxy.observeBoundary(session)
+    await f.proxy.history(session)
+    for await (const event of stream) delivered.push(event)
+    expect(delivered).toEqual(events)
+    expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
   })
 
   it.each(['entry', 'non-entry'] as const)('retains a closed %s receipt when preparation has no session acknowledgment', async kind => {

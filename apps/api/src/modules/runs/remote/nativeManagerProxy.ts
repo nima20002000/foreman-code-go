@@ -201,7 +201,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
         for (const event of value.history.events) {
           if (event.sequence <= sequence) continue
           // Publication can outlast the Worker's physical observation window.
-          if (Date.now() - observedAt >= 30_000) continue streaming
+          if (Date.now() - observedAt >= 30_000 || !isDeepStrictEqual(receipt, this.receipt)) continue streaming
           if (event.sequence !== sequence + 1) {
             throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'Remote native event sequences are discontinuous.')
           }
