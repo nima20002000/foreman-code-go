@@ -22,12 +22,12 @@ export function verificationEnvironment(environment) {
     COREPACK_ENABLE_NETWORK: '0',
     COREPACK_DEFAULT_TO_LATEST: '0',
     COREPACK_ENABLE_AUTO_PIN: '0',
-    npm_config_offline: 'true',
-    npm_config_store_dir: `${VERIFICATION_SCRATCH}/pnpm-store`,
-    npm_config_cache_dir: `${VERIFICATION_SCRATCH}/cache/pnpm`,
-    npm_config_verify_store_integrity: 'true',
-    npm_config_userconfig: '/dev/null',
-    npm_config_globalconfig: '/dev/null',
+    PNPM_CONFIG_OFFLINE: 'true',
+    PNPM_CONFIG_STORE_DIR: `${VERIFICATION_SCRATCH}/pnpm-store`,
+    PNPM_CONFIG_CACHE_DIR: `${VERIFICATION_SCRATCH}/cache/pnpm`,
+    PNPM_CONFIG_VERIFY_STORE_INTEGRITY: 'true',
+    PNPM_CONFIG_USERCONFIG: '/dev/null',
+    PNPM_CONFIG_GLOBALCONFIG: '/dev/null',
     CI: '1',
   };
 }

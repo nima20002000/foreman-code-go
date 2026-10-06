@@ -179,7 +179,7 @@ test('verification installer fixes offline frozen dev installs, isolates caches 
     NPM_CONFIG_USERCONFIG: '/owner/.npmrc', COREPACK_HOME: '/owner/cache', NODE_OPTIONS: '--import=/owner/hook',
     FOREMAN_CODE_VERIFICATION_UNIT_WORKERS: '1' });
   assert.equal(environment.HOME, '/job-scratch/home');
-  assert.equal(environment.npm_config_offline, 'true');
+  assert.equal(environment.PNPM_CONFIG_OFFLINE, 'true');
   assert.equal(environment.FOREMAN_CODE_VERIFICATION_UNIT_WORKERS, '1');
   assert.equal(environment.npm_config_minimum_release_age, undefined);
   assert.equal(environment.NODE_OPTIONS, undefined);
@@ -194,6 +194,19 @@ test('verification installer fixes offline frozen dev installs, isolates caches 
   assert.doesNotThrow(() => assertEffectiveVerificationStore(store));
   assert.throws(() => assertEffectiveVerificationStore({ ...store, offline: false }));
   assert.throws(() => assertEffectiveVerificationStore({ ...store, storeDir: '/owner/.pnpm-store' }));
+});
+
+test('the pinned pnpm reads the enforced offline store and cache from its supported environment', async t => {
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'pnpm-effective-policy-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const environment = verificationEnvironment({ ...process.env, PNPM_CONFIG_STORE_DIR: '/owner/store',
+    PNPM_CONFIG_CACHE_DIR: '/owner/cache', PNPM_CONFIG_OFFLINE: 'false' });
+  const config = JSON.parse(execFileSync('corepack', ['pnpm', 'config', 'list', '--json'], {
+    env: { ...environment, HOME: directory, TMPDIR: directory, COREPACK_HOME: process.env.COREPACK_HOME },
+    encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024,
+  }));
+  assertEffectiveVerificationStore(config);
+  assertEffectivePackagePolicy(config);
 });
 
 async function fixture(t) {
