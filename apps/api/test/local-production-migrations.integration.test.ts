@@ -9,12 +9,14 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 
 it.skipIf(!postgresEnabled)('migrates under DDL contention without changing the API request deadline', async () => {
   const fixture = await currentDatabase({ beforeMigration: 2026100401 })
   const url = new URL(process.env.TEST_DATABASE_URL!)
   url.searchParams.set('options', `-c search_path=${fixture.schema},public`)
   const checkpointSchema = `${fixture.schema}_checkpoints`
+  await createFixtureSchema(fixture.pool, checkpointSchema)
   const environment = { ...process.env, DATABASE_URL: url.toString(), DATABASE_QUERY_TIMEOUT_MS: '100',
     LANGGRAPH_CHECKPOINT_SCHEMA: checkpointSchema }
   const options = loadConfig(environment).database
@@ -52,7 +54,7 @@ it.skipIf(!postgresEnabled)('migrates under DDL contention without changing the 
     if (command) await command
     await checkpoints.close()
     await runtime.close()
-    await fixture.pool.query(`drop schema if exists ${checkpointSchema} cascade`)
+    await dropFixtureSchema(fixture.pool, checkpointSchema)
     await fixture.close()
   }
 }, 30_000)

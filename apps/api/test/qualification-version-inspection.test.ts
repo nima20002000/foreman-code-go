@@ -1,10 +1,11 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { nativeCompatibilityProbe, type CompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
 import { HarnessQualificationService } from '../src/modules/harnesses/qualification/service.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 
 function gate() {
   let resolve!: () => void
@@ -71,7 +72,7 @@ it('keeps installation verification and closure outside the native version-comma
     await result
     vi.useRealTimers()
     await instance.qualification.shutdown()
-    await rm(f.directory, { recursive: true, force: true })
+    await removeFixtureDirectory(f.directory)
   }
 })
 
@@ -86,6 +87,6 @@ it('still stops a stalled version command at the native deadline without admitti
     expect(instance.save).not.toHaveBeenCalled()
   } finally {
     await instance.qualification.shutdown()
-    await rm(f.directory, { recursive: true, force: true })
+    await removeFixtureDirectory(f.directory)
   }
 }, 10_000)
