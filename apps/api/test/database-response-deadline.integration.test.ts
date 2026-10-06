@@ -8,7 +8,7 @@ import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase
 async function forwardPostgres(connectionString: string) {
   const upstream = new URL(connectionString)
   const sockets = new Set<Socket>()
-  const queued: { socket: Socket; data: Buffer }[] = []
+  const queued: { socket: Socket; data: Buffer | string }[] = []
   let holdResponses = false
   const server = createServer(client => {
     const database = createConnection({ host: upstream.hostname, port: Number(upstream.port || 5432) })
