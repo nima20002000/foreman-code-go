@@ -69,7 +69,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       try { await manager.dispose() }
       finally {
         try { await restore?.() }
-        finally { await rm(directory, { recursive: true, force: true }) }
+        finally { await removeFixtureDirectory(directory) }
       }
     }
   }, 90_000)
