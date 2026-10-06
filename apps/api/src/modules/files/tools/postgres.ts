@@ -2,7 +2,8 @@ import type pg from 'pg'
 import type { MessageAttachmentRef, RunFileProvenance } from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import { bindingIdentity } from './context.js'
-import type { ArtifactSnapshot, CopyReceipt, FileToolArtifact, FileToolRepository, FileToolSession, PublicationLink } from './types.js'
+import type { ArtifactSnapshot, CopyReceipt, FileToolArtifact, FileToolContext,
+  FileToolRepository, FileToolSession, PublicationLink } from './types.js'
 
 export class PostgresFileToolRepository implements FileToolRepository {
   constructor(private readonly pool: pg.Pool) {}
