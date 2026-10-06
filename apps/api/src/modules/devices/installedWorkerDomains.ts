@@ -42,6 +42,8 @@ import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/inst
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
 import { createInstalledWorkerProfileChecks } from '../harnesses/installedWorkerProfileChecks.js'
 import { DomainError } from '../errors.js'
+import { createWorkerResourceTelemetryExtension } from '../resource-telemetry/ingestion/carrier.js'
+import { createLinuxResourceCollector } from '../resource-telemetry/collector/ports.js'
 
 /** Shipped worker domains consume actual protected installation selections and
  * sole Main authority. No database, Run scheduler, generated grant or ready flag. */
@@ -183,7 +185,19 @@ export async function createInstalledWorkerDomains(input: {
         mainInstallationId: input.pairing.mainId, bootId: input.bootId } })
   }
   let qualification: ReturnType<typeof createWorkerQualificationExtension> | undefined
+  let telemetry: ReturnType<typeof createWorkerResourceTelemetryExtension> | undefined
   if (input.jobConfiguration && approved) {
+    telemetry = createWorkerResourceTelemetryExtension({ signal: lifetime.signal, currentBinding: current,
+      createCollector: (identity, signal) => createLinuxResourceCollector({ identity, signal,
+        // The installed Job controller already reads host MemAvailable at native entry.
+        wholeHostVisible: true,
+        // This mount supplies computer metrics; no logical owner attribution is inferred.
+        ownership: { async snapshot(signal) {
+          signal.throwIfAborted()
+          return { revision: jobRegistry.revision(), views: [] }
+        }, changes: (revision, signal) => jobRegistry.changes(revision, signal) },
+      }) })
+    extensions.push(telemetry.extension)
     qualification = createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
     currentBinding: current, request, journal: jobJournal, registry: jobRegistry, signal: lifetime.signal })
     extensions.push(qualification)
@@ -264,6 +278,7 @@ export async function createInstalledWorkerDomains(input: {
       lifetime.abort()
       const failures: unknown[] = []
       try { await profileChecks?.close() } catch (error) { failures.push(error) }
+      try { await telemetry?.close() } catch (error) { failures.push(error) }
       try { if (rsync.kind === 'configured') await rsync.rsyncWriters.close() } catch (error) { failures.push(error) }
       try { if (jobOpening) await (await jobOpening).shutdown() } catch (error) { failures.push(error) }
       try { await jobInputs?.close() } catch (error) { failures.push(error) }

@@ -10,6 +10,8 @@ import { extensionDescriptors } from './deviceApplicationChannel.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { afterEach } from 'vitest'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+import { TelemetryCollectedBatchSchema } from '@foreman-code/contracts/resource-telemetry'
+import { resourceTelemetryExtension } from '../resource-telemetry/ingestion/ports.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -76,17 +78,40 @@ describe('actual installed worker mount availability, no physical acceptance', (
     const approved=ApprovedRootAllowlistSchema.parse({schemaVersion:1,hostRef:{kind:'device',mainId:pairing.mainId,deviceId:pairing.deviceId},applicationInstallationId:pairing.workerInstallationId,
       configurationRevision:'1',bases:[{baseId:randomUUID(),canonicalPath:'/uncreated-input-client-root',filesystem,accessModes:['read-write']}],
       managedRuntimeRoot:stateDirectory,runtimeFilesystem:filesystem})
-    const input={stateDirectory,pairing,bootId:randomUUID(),configuration:null,approvedRoots:async()=>approved,
-      connection:()=>undefined,codexSuiteRevision:'source-test-current-suite'}
+    const bootId = bootIdentity()
+    const binding = { mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
+      keyRevision: 1, authorizationRevision: 1, bootId, connectionEpoch: randomUUID(), connectionGeneration: 1 }
+    const input={stateDirectory,pairing,bootId,configuration:null,approvedRoots:async()=>approved,
+      connection:()=>({ currentBinding:()=>binding, captureRequest:()=>null }),codexSuiteRevision:'source-test-current-suite'}
     const absent=await createInstalledWorkerDomains(input)
     expect(absent.extensions.some(value=>value.namespace==='job-inputs-v1')).toBe(false)
     expect(extensionDescriptors(absent.extensions).filter(value => value.namespace === 'byte-transfer-v1'))
       .toEqual([{ namespace: 'byte-transfer-v1', version: 1, role: 'duplex', maxJsonBytes: 16384, maxBinaryBytes: 1048576 }])
+    expect(absent.extensions.some(value => value.namespace === resourceTelemetryExtension.namespace)).toBe(false)
     await absent.close()
     const configured=await createInstalledWorkerDomains({...input,jobConfiguration:{path:'/uncreated-job-selection.json',ownerUid:process.getuid!()}})
     expect(extensionDescriptors(configured.extensions).filter(value=>value.namespace==='job-inputs-v1')).toEqual([{namespace:'job-inputs-v1',version:1,role:'client',maxJsonBytes:1_048_576,maxBinaryBytes:8192}])
     expect(extensionDescriptors(configured.extensions).filter(value => value.namespace === 'byte-transfer-v1'))
       .toEqual([{ namespace: 'byte-transfer-v1', version: 1, role: 'duplex', maxJsonBytes: 16384, maxBinaryBytes: 1048576 }])
-    await configured.close()
+    try {
+      const telemetry = configured.extensions.find(value => value.namespace === resourceTelemetryExtension.namespace)!
+      const identity = { mainId: pairing.mainId, host: { hostRef: approved.hostRef, deviceId: pairing.deviceId,
+        applicationInstallationId: pairing.workerInstallationId, bootId, runtimeEpoch: binding.connectionEpoch,
+        keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1, collectorGeneration: 'installed-controller' } }
+      const now = Date.now()
+      const payload = { operation: 'collect', challenge: { schemaVersion: 1, identity, challengeId: randomUUID(),
+        issuedAtUnixMs: now, freshUntilUnixMs: now + 5000 } }
+      const context = { binding, signal: AbortSignal.timeout(5000) }
+      const result = await telemetry.handle!(payload, context)
+      const batch = TelemetryCollectedBatchSchema.parse(result.payload)
+      expect(batch.identity).toEqual(identity)
+      expect(batch.host?.memory).toMatchObject({ state: 'ok', value: { kind: 'host-used-estimate' } })
+      if (batch.host?.memory.state !== 'ok' || !('availableBytes' in batch.host.memory.value)) throw new Error('Host memory unavailable')
+      expect(batch.host.memory.value.availableBytes).toBeGreaterThan(0)
+      expect(batch.host.memory.value.availableBytes).toBeLessThanOrEqual(batch.host.memory.value.totalBytes)
+      await expect(telemetry.handle!({ ...payload, challenge: { ...payload.challenge,
+        challengeId: randomUUID(), identity: { ...identity, host: { ...identity.host, bootId: randomUUID() } } } }, context))
+        .rejects.toThrow()
+    } finally { await configured.close() }
   })
 })
