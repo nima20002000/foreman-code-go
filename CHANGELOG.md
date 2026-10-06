@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.39] - 2026-10-06
+
+### Fixed
+
+- Preserve the original managed-launcher location when native acceptance inspects copied MCP configuration, then install and use the fixture-owned launcher. Keep scoped credential provenance and preflight enforcement intact across both supported environment names.
+- Restore the outer isolated launcher setting during cleanup and prevent legacy environment aliases from redirecting native route writes outside owned storage.
+
 ## [0.0.38] - 2026-10-06
 
 ### Fixed
