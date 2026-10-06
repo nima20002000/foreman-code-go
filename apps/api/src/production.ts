@@ -1097,6 +1097,7 @@ export function buildProductionApp(
   }
   let httpClosing = false
   let initialization: Promise<void> | undefined
+  let nativeDefaultsInitialization: Promise<void> | undefined
   let reconciliation: Promise<void> | undefined
   let applicationClose: Promise<void> | undefined
   const runtimeOwner = new OperatorRuntimeOwner(config.database.connectionString, (error) => {
@@ -1138,6 +1139,7 @@ export function buildProductionApp(
       // Initialization errors belong to initialize()'s caller, not to cleanup.
       // Wait for its last DB/filesystem operation even if startup was canceled.
       { name: 'initialization', run: () => initialization?.then(() => undefined, () => undefined) },
+      { name: 'native defaults initialization', run: () => nativeDefaultsInitialization?.then(() => undefined, () => undefined) },
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
@@ -1357,15 +1359,6 @@ export function buildProductionApp(
         await qualificationRegistry.load()
         installQualificationGate(qualificationRegistry, harnessQualifications)
       }
-      if (infrastructure?.mode !== 'replay') {
-        await initializeNativeDefaults({ pool: database.pool, options: harness => nativeConfigurations.options(harness), appMcpEndpoint })
-        await harnessRegistry.refreshMain()
-        const initializedDefaults = await foundationSettings.getAgentDefaults()
-        const currentOperator = await operators.ensure()
-        if (!isDeepStrictEqual(currentOperator.configuration.harness, initializedDefaults.value.operator.harness)) {
-          await operators.update(initializedDefaults.value.operator.harness, currentOperator.operator.currentConfigurationVersionId)
-        }
-      }
       harnessCompatibility.start()
       assertOpen()
       initialized = true
@@ -1376,6 +1369,27 @@ export function buildProductionApp(
     // barrier may release the owner, after any already-admitted work drains.
     return initialization
   }
+  // Native catalogs may need provider authentication or network access. Local HTTP
+  // becomes available first; execution still uses its existing qualification gates.
+  app.addHook('onListen', async () => {
+    if (!initialized || closing || infrastructure?.mode === 'replay') return
+    nativeDefaultsInitialization ??= (async () => {
+      await initializeNativeDefaults({
+        pool: database.pool,
+        options: harness => nativeConfigurations.options(harness),
+        appMcpEndpoint,
+      })
+      assertOpen()
+      await harnessRegistry.refreshMain()
+      assertOpen()
+      const initializedDefaults = await foundationSettings.getAgentDefaults()
+      const currentOperator = await operators.ensure()
+      if (!isDeepStrictEqual(currentOperator.configuration.harness, initializedDefaults.value.operator.harness)) {
+        await operators.update(initializedDefaults.value.operator.harness, currentOperator.operator.currentConfigurationVersionId)
+      }
+    })()
+    await nativeDefaultsInitialization
+  })
   const reconcile = (report: (error: unknown) => void): Promise<void> => {
     if (closing) return Promise.resolve()
     if (reconciliation) return reconciliation
