@@ -72,10 +72,14 @@ export async function assertDependencyInputs(root, receipt) {
   }
 }
 
-export async function copyVerificationSeed(seedDirectory, scratchDirectory, receiptBytes) {
+async function createVerificationDirectories(scratchDirectory) {
   for (const directory of ['home', 'cache', 'config', 'data', 'tmp']) {
     await mkdir(`${scratchDirectory}/${directory}`, { recursive: true, mode: 0o700 });
   }
+}
+
+export async function copyVerificationSeed(seedDirectory, scratchDirectory, receiptBytes) {
+  await createVerificationDirectories(scratchDirectory);
   const marker = `${scratchDirectory}/seed-receipt.sha256`;
   const existing = await readFile(marker, 'utf8').catch(error => {
     if (error.code === 'ENOENT') return null;
@@ -86,6 +90,14 @@ export async function copyVerificationSeed(seedDirectory, scratchDirectory, rece
     await cp(`${seedDirectory}/registry-cache`, `${scratchDirectory}/cache/pnpm`, { recursive: true, force: false, errorOnExist: true });
     await writeFile(marker, sha256(receiptBytes), { flag: 'wx', mode: 0o600 });
   } else if (existing !== sha256(receiptBytes)) throw new Error('Job-local store belongs to another approved seed.');
+}
+
+export async function prepareVerificationWorkspace(args, seedDirectory, scratchDirectory, receiptBytes) {
+  const readOnlyConfig = args[0] === 'config' && (
+    args[1] === 'get' && args.length === 3
+    || args[1] === 'list' && (args.length === 2 || args.length === 3 && args[2] === '--json'));
+  if (readOnlyConfig) await createVerificationDirectories(scratchDirectory);
+  else await copyVerificationSeed(seedDirectory, scratchDirectory, receiptBytes);
 }
 
 /** Every invocation uses image-controlled pnpm and configuration; workloads never share a writable installer store. */
@@ -102,7 +114,7 @@ export async function prepareVerificationPnpm(argv, environment = process.env) {
     && !['--offline', '--prod=false'].includes(arg))) {
     throw new Error('Caller package configuration overrides are unavailable in verification.');
   }
-  await copyVerificationSeed(`${imageRoot}/seed`, VERIFICATION_SCRATCH, receiptBytes);
+  await prepareVerificationWorkspace(args, `${imageRoot}/seed`, VERIFICATION_SCRATCH, receiptBytes);
   const config = JSON.parse(execFileSync(process.execPath, [corepack, 'pnpm', 'config', 'list', '--json'],
     { env, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 30_000 }));
   assertEffectivePackagePolicy(config);

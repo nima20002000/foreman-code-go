@@ -13,7 +13,7 @@ import { acquireWorkerLock } from '../src/runtime.mjs';
 import { validateSeedReceipt, verifySeedFiles } from '../artifacts/ci-runtime/seed-policy.mjs';
 import { assertEffectivePackagePolicy, assertEffectiveVerificationStore, verificationEnvironment, verificationInstallArguments }
   from '../artifacts/ci-runtime/verification-policy.mjs';
-import { copyVerificationSeed } from '../artifacts/ci-runtime/verification-policy.mjs';
+import { copyVerificationSeed, prepareVerificationWorkspace } from '../artifacts/ci-runtime/verification-policy.mjs';
 
 const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -59,6 +59,20 @@ test('offline preparation copies a fresh private store and cache before retainin
   assert.equal(await readFile(join(scratch, 'seed-receipt.sha256'), 'utf8'), hash(receipt));
   await copyVerificationSeed(f.directory, scratch, receipt);
   await assert.rejects(copyVerificationSeed(f.directory, scratch, Buffer.from('another receipt')), /another approved seed/);
+});
+
+test('read-only package policy queries do not copy dependencies but install still creates its private cold store', async t => {
+  const f = await offlineSeedFixture(t);
+  const scratch = join(f.directory, 'query-scratch');
+  const receipt = Buffer.from(JSON.stringify(f.receipt));
+  for (const args of [['config', 'get', 'minimumReleaseAge'], ['config', 'list', '--json']]) {
+    await prepareVerificationWorkspace(args, f.directory, scratch, receipt);
+  }
+  await assert.rejects(stat(join(scratch, 'pnpm-store')), { code: 'ENOENT' });
+  await assert.rejects(stat(join(scratch, 'seed-receipt.sha256')), { code: 'ENOENT' });
+  await prepareVerificationWorkspace(['install', '--frozen-lockfile'], f.directory, scratch, receipt);
+  assert.equal(await readFile(join(scratch, 'pnpm-store/index.db'), 'utf8'), 'closed store');
+  assert.equal(await readFile(join(scratch, 'seed-receipt.sha256'), 'utf8'), hash(receipt));
 });
 
 test('offline seed validates every locked release at the strict 48-hour boundary and verifies captured bytes', async t => {
