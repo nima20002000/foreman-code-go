@@ -73,6 +73,9 @@ export function compatibleJobComputer(candidate: JobComputerCandidate, request: 
 }
 export function orderBuildComputers(candidates: EnrolledCandidate[]): EnrolledCandidate[] {
   return candidates.filter(candidate => candidate.ready && candidate.preference.buildEnabled).sort((left, right) => {
+    // Every primary is tried before any backup; within a role the higher priority goes first.
+    const role = Number(left.preference.buildRole === 'backup') - Number(right.preference.buildRole === 'backup')
+    if (role) return role
     const priority = right.preference.buildPriority - left.preference.buildPriority
     if (priority) return priority
     const leftKey = `${buildComputerKey(left.preference.target)}:${left.profile.root.binding.rootId}:${left.profile.id}`
@@ -82,7 +85,15 @@ export function orderBuildComputers(candidates: EnrolledCandidate[]): EnrolledCa
     return 0
   })
 }
-export function jobComputerCapacity(profile: JobRuntimeProfileRecord): JobRuntimeProfile['limits'] {
+/** Capacity a computer lends to builds: its qualified allowance minus the control reserve, with CPU and
+ * memory further limited to the owner's build allowance percent. */
+export function jobComputerCapacity(profile: JobRuntimeProfileRecord, allowancePercent = 100): JobRuntimeProfile['limits'] {
+  const lent = jobComputerFullCapacity(profile)
+  if (allowancePercent >= 100) return lent
+  return { ...lent, cpuLimit: lent.cpuLimit * allowancePercent / 100,
+    memoryBytes: Math.floor(lent.memoryBytes * allowancePercent / 100) }
+}
+function jobComputerFullCapacity(profile: JobRuntimeProfileRecord): JobRuntimeProfile['limits'] {
   const runtime = profile.schemaVersion === 1 ? profile.measurement?.runtime : profile.measurement?.fingerprint
   if (!runtime?.deviceLimits || !runtime.quota) return jobRuntimeProfileLimits(profile)
   const allowance = runtime.deviceLimits
@@ -247,15 +258,15 @@ export class JobComputerSelection {
     return { spec: null, compatibleTargetCount, diagnosticCodes, waitingHosts: [...new Set(waitingHosts)],
       selectedHost: null, exceedsMaximum, reasons: [...new Set(normalized)] }
   }
-  private fitsEmptyComputer(candidate: JobComputerCandidate): boolean {
-    const capacity = jobComputerCapacity(candidate.profile)
+  private fitsEmptyComputer(candidate: EnrolledCandidate): boolean {
+    const capacity = jobComputerCapacity(candidate.profile, candidate.preference.buildAllowancePercent)
     const sourceBytes = candidate.profile.schemaVersion === 2
       ? verificationSourceStorageBytes(candidate.profile) : SOURCE_AGGREGATE_LIMITS.bytes
     if (candidate.sourceReservation.reservedBytes > sourceBytes) return false
     return (Object.keys(capacity) as (keyof typeof capacity)[])
       .every(field => jobRuntimeProfileLimits(candidate.profile)[field] <= capacity[field])
   }
-  private async fits(sql: JobSql, candidate: JobComputerCandidate): Promise<JobComputerCapacityDecision> {
+  private async fits(sql: JobSql, candidate: EnrolledCandidate): Promise<JobComputerCapacityDecision> {
     const storage = (await sql.query<{ bytes: string; verification_bytes: string; materializations: string }>(`select
       coalesce(sum(bytes) filter(where not verification),0)::text as bytes,
       coalesce(sum(bytes) filter(where verification),0)::text as verification_bytes,
@@ -278,7 +289,8 @@ export class JobComputerSelection {
     const usedBytes = candidate.profile.schemaVersion === 2 ? Number(storage.verification_bytes) : Number(storage.bytes)
     if (usedBytes + candidate.sourceReservation.reservedBytes > sourceBytes
       || Number(storage.materializations) >= sourceSlots) return { fits: false, reason: 'busy' }
-    return jobComputerCapacityDecision(sql, candidate.spec.target, candidate.profile, this.availableMemory)
+    return jobComputerCapacityDecision(sql, candidate.spec.target, candidate.profile, this.availableMemory,
+      candidate.preference.buildAllowancePercent)
   }
 
   async prepare(sql: JobSql, definition: JobDefinitionRecord, identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
@@ -317,7 +329,7 @@ export async function jobComputerHasCapacity(sql: JobSql,
 
 export async function jobComputerCapacityDecision(sql: JobSql,
   target: Pick<ResolvedJobDefinitionSpecRecord['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfileRecord,
-  availableMemory?: VerificationMemoryReader): Promise<JobComputerCapacityDecision> {
+  availableMemory?: VerificationMemoryReader, allowancePercent = 100): Promise<JobComputerCapacityDecision> {
   const hostKey = buildComputerKey({ hostRef: target.hostRef })
   const rows = (await sql.query<{ limits: JobRuntimeProfile['limits']; compute_closed: boolean; inodes?: number }>(`select s.limits,
     coalesce(p.record #>> '{spec,resources,mutableInodes}','0')::bigint as inodes,
@@ -348,7 +360,7 @@ export async function jobComputerCapacityDecision(sql: JobSql,
       and m.record #> '{receipt,quota}' is not null`,
   [hostKey, target.mainId,
     target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'main'])).rows
-  const capacity = jobComputerCapacity(profile)
+  const capacity = jobComputerCapacity(profile, allowancePercent)
   const computing = rows.filter(row => !row.compute_closed)
   let slots = 1
   if (profile.schemaVersion === 2) {

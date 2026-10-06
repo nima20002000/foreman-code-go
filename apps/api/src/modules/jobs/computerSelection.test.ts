@@ -30,7 +30,7 @@ describe('reviewed verification admission capacity', () => {
         limits: profile.spec.resources.limits } })
     const candidate = { spec, profile, ready: false, reasons: ['runtime_setup_required'],
       sourceReservation: { scopeId: 'approved-source', reservedBytes: 1024 * 1024 } }
-    const preference = { target: buildComputerTarget(spec.target), revision: 1, buildEnabled: true, buildPriority: 100 }
+    const preference = { target: buildComputerTarget(spec.target), revision: 1, buildEnabled: true, buildPriority: 100, buildRole: 'primary' as const, buildAllowancePercent: 100 }
     const settings = { preference: async () => preference } as unknown as BuildComputerSettings
     const workerExecution = { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy
     const selection = new JobComputerSelection(settings,
@@ -48,6 +48,16 @@ describe('reviewed verification admission capacity', () => {
     expect(await jobComputerCapacityDecision(capacityRows(profile, 3), target, profile)).toEqual({ fits: true })
     expect(await jobComputerCapacityDecision(capacityRows(profile, 4), target, profile))
       .toEqual({ fits: false, reason: 'busy' })
+  })
+  it('leaves a Job waiting once the owner build allowance of the computer is used', async () => {
+    const profile = verificationCapacityFixture('main')
+    const target = { mainId, hostRef: profile.root.selection.hostRef }
+    const full = jobComputerCapacity(profile), job = profile.spec.resources.limits
+    const percent = Math.max(10, Math.ceil(100 * job.memoryBytes / full.memoryBytes))
+    expect(await jobComputerCapacityDecision(capacityRows(profile, 0), target, profile, undefined, percent)).toEqual({ fits: true })
+    expect(await jobComputerCapacityDecision(capacityRows(profile, 1), target, profile, undefined, percent))
+      .toEqual({ fits: false, reason: 'busy' })
+    expect(await jobComputerCapacityDecision(capacityRows(profile, 1), target, profile)).toEqual({ fits: true })
   })
   it('accounts for the provisioned independent byte and inode quotas, including closed retained owners', async () => {
     const profile = verificationCapacityFixture('main')
@@ -85,10 +95,10 @@ describe('reviewed verification admission capacity', () => {
       .toEqual({ fits: false, reason: 'busy' })
   })
 })
-function enrolled(priority: number, enabled = true, deviceId?: string) {
+function enrolled(priority: number, enabled = true, deviceId?: string, buildRole: 'primary' | 'backup' = 'primary') {
   const fixture = buildComputerFixture(mainId, 'workspace', deviceId)
   return { ...fixture.candidate, preference: { target: fixture.target, revision: 1,
-    buildEnabled: enabled, buildPriority: priority } }
+    buildEnabled: enabled, buildPriority: priority, buildRole, buildAllowancePercent: 100 } }
 }
 describe('build computer ordering', () => {
   it.each([
@@ -116,6 +126,18 @@ describe('build computer ordering', () => {
     const b = enrolled(50, true, '11111111-1111-4111-8111-111111111113')
     expect(orderBuildComputers([b, a])).toEqual([a, b])
     expect(orderBuildComputers([a, b])).toEqual([a, b])
+  })
+  it('tries every primary before any backup, whatever their priorities', () => {
+    const backup = enrolled(100, true, '11111111-1111-4111-8111-111111111114', 'backup')
+    const primaryLow = enrolled(10, true, '11111111-1111-4111-8111-111111111115')
+    const primaryHigh = enrolled(60, true, '11111111-1111-4111-8111-111111111116')
+    expect(orderBuildComputers([backup, primaryLow, primaryHigh])).toEqual([primaryHigh, primaryLow, backup])
+  })
+  it('lends only the owner build allowance of CPU and memory', () => {
+    const candidate = enrolled(50), full = jobComputerCapacity(candidate.profile)
+    expect(jobComputerCapacity(candidate.profile, 50)).toEqual({ ...full, cpuLimit: full.cpuLimit / 2,
+      memoryBytes: Math.floor(full.memoryBytes / 2) })
+    expect(jobComputerCapacity(candidate.profile, 100)).toEqual(full)
   })
   it('keeps an empty pool empty and uses only measured runtime limits', () => {
     expect(orderBuildComputers([enrolled(100, false)])).toEqual([])
