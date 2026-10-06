@@ -44,6 +44,7 @@ async function qualifyProfile(subject, { profiles, tool }) {
   }
   const installation = inventory.installations.find(value => value.driverId === subject.configuration.harness)
   assert.ok(installation?.installed && installation.installationFingerprint, 'The selected native installation is unavailable.')
+  assert.deepEqual(installation.hostRef, subject.hostRef, 'The installation readback belongs to another host.')
   const target = profiles.HostHarnessOverrideTargetSchema.parse({ hostRef: subject.hostRef,
     applicationInstallationId: inventory.hostMetadata.applicationInstallationId,
     harnessInstallationId: installation.harnessInstallationId,
