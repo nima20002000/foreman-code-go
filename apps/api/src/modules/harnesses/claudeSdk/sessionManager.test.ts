@@ -143,8 +143,8 @@ describe('Claude native session manager admission', () => {
     const output = drain(f.manager.startInitialTurn({ ...start, correlationId: 'newer-native' }, { prompt: 'first', clientCorrelationId: 'newer-native',
       onSessionObserved: async value => { session = value } }))
     const message = await f.nextMessage()
-    f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: message.uuid })
-    f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: message.uuid,
+    void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: message.uuid })
+    void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: message.uuid,
       subtype: 'success', is_error: false, result: 'compatible' })
     await output
     expect(session?.providerVersion).toBe('2.2.0')
@@ -172,13 +172,13 @@ describe('Claude native session manager admission', () => {
     const init = { type: 'system', subtype: 'init', session_id: saved.nativeSessionId,
       claude_code_version: '2.2.0', cwd: '/work' }
     if (order === 'before') {
-      f.frames.offer(init)
+      void f.frames.offer(init)
       await consumed.promise
     }
     acknowledged.resolve({ models: [], account: {} })
     expect(await attaching).toEqual(saved)
     if (order === 'after') {
-      f.frames.offer(init)
+      void f.frames.offer(init)
       await consumed.promise
     }
     expect((await f.manager.capabilities()).providerVersion).toBe('2.2.0')

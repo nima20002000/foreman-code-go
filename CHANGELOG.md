@@ -23,6 +23,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Resume saved native sessions across compatible harness releases without rewriting their historical version facts.
 - Report the observed harness version and missing protocol contract when compatibility verification fails.
 - Keep dedicated Codex and Claude native verification storage disposable, including cleanup after failed scenarios.
+- Include the MCP client required by the Claude runtime in deployed production dependencies, so the compiled API can start.
 
 ### Security
 
