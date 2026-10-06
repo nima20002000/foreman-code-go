@@ -5,6 +5,35 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.43] - 2026-10-06
+
+### Added
+
+- Discover owned Operator conversations and retry creation with a command ID without creating duplicates.
+- Page Operator message history and activities through MCP, and inspect the configuration pinned to an existing conversation or request.
+- Use separately scoped file and management capabilities together in Codex and OpenCode Operator turns, including attached-spec workflow creation and persisted readback.
+
+### Changed
+
+- Return authorized execution-location details from workspace updates and command replays.
+- Recover owned OpenCode Operator sessions through observation attachment without issuing new management credentials or starting another turn.
+
+### Fixed
+
+- Recheck workspace mutation and replay authority under the command transaction, and require read access for Operator sends that return conversation state.
+- Compensate failed workspace provisioning after receipt, audit or commit failures, retaining uncertain commits for recovery.
+- Report malformed, unsupported and oversized MCP requests as safe client errors.
+- Preserve file declarations, original native session history and both credential lifecycles when a text-first Operator resumes with an attachment.
+- Retain split native fixture notifications through complete JSONL records and avoid saved-thread reads for stateless events, preserving burst delivery, bounded history and cursor coverage.
+
+### Security
+
+- Audit direct calls to known tools hidden by grants, while preserving unknown-tool responses and failing closed when audit storage is unavailable.
+- Keep file credentials separate from owner-delegated management grants; retain read-only harness policies, live revocation checks and scoped recovery ownership.
+
+
+
+
 ## [0.0.42] - 2026-10-06
 
 ### Added
