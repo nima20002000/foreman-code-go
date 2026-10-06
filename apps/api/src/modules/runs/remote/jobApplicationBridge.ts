@@ -35,7 +35,11 @@ export class JobApplicationBridge {
     } finally { sql.release() }
   }
   private async authorizeInSql(sql: pg.PoolClient, intent: RemoteJobDispatchIntent, binding: JobApplicationConnection, action: 'start'|'read'|'control'|'publish') {
-    const execution = await this.repository.execution(sql, intent.subject.workspaceId, intent.executionId)
+    let execution = await this.repository.execution(sql, intent.subject.workspaceId, intent.executionId)
+    if (action === 'publish') {
+      if (execution.workflow) await sql.query('select id from runs where id=$1 for share', [execution.workflow.runId])
+      execution = await this.repository.execution(sql, intent.subject.workspaceId, intent.executionId, true)
+    }
     const target = execution.acceptedSpec.target
     if (target.mainId !== binding.mainId) throw new Error('Accepted Job belongs to another Main.')
     if (target.hostRef.kind === 'device') {
