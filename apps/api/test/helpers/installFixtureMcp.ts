@@ -12,6 +12,7 @@ import { OpenCodeMcpConnections } from '../../src/modules/harnesses/openCodeMcpC
 import { HarnessMcpSettingsService } from '../../src/modules/harnesses/mcpSettings.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import type { NativeMcpAdapter } from '../../src/modules/harnesses/nativeMcpCommon.js'
+import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 import { randomUUID } from 'node:crypto'
 
 const Input = z.object({ databaseUrl: z.string().url(), endpoint: z.string().url(),
@@ -19,20 +20,25 @@ const Input = z.object({ databaseUrl: z.string().url(), endpoint: z.string().url
   codexBinary: z.string().startsWith('/'), openCodeBinary: z.string().startsWith('/') }).strict()
 
 function diagnosticAdapter(harness: string, adapter: NativeMcpAdapter): NativeMcpAdapter {
-  const recordFailure = (error: unknown) => {
+  const recordFailure = (operation: string, error: unknown) => {
     const codes: string[] = []
     let cause = error
     while (cause instanceof Error && codes.length < 5) {
-      const code = (cause as NodeJS.ErrnoException).code
+      const code = cause instanceof HarnessExecutionError ? cause.result.error?.code
+        : (cause as NodeJS.ErrnoException).code
       codes.push(code && /^[A-Z0-9_]+$/.test(code) ? code : cause.name)
+      const frames = cause.stack?.split('\n').filter(line => /^\s+at /.test(line)
+        && /\/apps\/api\/src\//.test(line)).slice(0, 3)
+      if (frames?.length) console.info(`Managed App MCP ${harness} ${operation} source: ${frames.join(' | ')}`)
       cause = cause.cause
     }
-    console.info(`Managed App MCP ${harness} failure codes: ${codes.join(' / ')}`)
+    console.info(`Managed App MCP ${harness} ${operation} failure codes: ${codes.join(' / ')}`)
     throw error
   }
   return {
-    read: signal => adapter.read(signal).catch(recordFailure),
-    apply: (snapshot, change, signal, managed) => adapter.apply(snapshot, change, signal, managed).catch(recordFailure),
+    read: signal => adapter.read(signal).catch(error => recordFailure('read', error)),
+    apply: (snapshot, change, signal, managed) => adapter.apply(snapshot, change, signal, managed)
+      .catch(error => recordFailure('apply', error)),
   }
 }
 
