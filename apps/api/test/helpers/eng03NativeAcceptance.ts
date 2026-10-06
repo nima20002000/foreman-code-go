@@ -371,7 +371,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         codexBinary, openCodeBinary, appMcpEndpoint: endpoint,
         auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
         admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
-        abandonRecovery: recovery => registry.abandonReservedLaunch(recovery),
+        abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
         closeRecovery: async recovery => {
           if (!await registry.closeOwner(recovery.owner)) throw new Error('Native diagnostic closure is unconfirmed.')
         },
