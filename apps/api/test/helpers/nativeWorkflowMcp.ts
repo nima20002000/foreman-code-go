@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
   APP_MCP_TOKEN, appLauncherPath, appLauncherTokenName, appMcpServerName, installAppLauncher,
@@ -8,7 +9,7 @@ import { CodexMcpConnections } from '../../src/modules/harnesses/codexMcpConnect
 import { OpenCodeMcpConnections } from '../../src/modules/harnesses/openCodeMcpConnections.js'
 import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
 
-/** Use the fixture's route registry without changing the native user configuration. */
+/** Use fixture-owned CLI configuration and routes while retaining the provider login. */
 export async function configureNativeWorkflowMcp(input: {
   projectDirectory: string
   runtimeDirectory: string
@@ -16,13 +17,14 @@ export async function configureNativeWorkflowMcp(input: {
   openCodeBinary?: string
 }): Promise<() => void> {
   const previous = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
-  process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(input.runtimeDirectory, 'mcp')
+  const previousCodexHome = process.env.CODEX_HOME
   const restore = () => {
     if (previous === undefined) delete process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
     else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previous
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME
+    else process.env.CODEX_HOME = previousCodexHome
   }
   try {
-    await installAppLauncher()
     const codex = await new CodexMcpConnections(input.codexBinary, input.projectDirectory)
       .read(AbortSignal.timeout(30_000))
     const codexName = appMcpServerName(codex.effective)
@@ -30,8 +32,16 @@ export async function configureNativeWorkflowMcp(input: {
     const reference = appLauncherTokenName('codex', entry) ?? entry.bearer_token_env_var
     const codexToken = typeof reference === 'string' && isSupportedAppMcpTokenName(reference)
       ? reference : APP_MCP_TOKEN
-    await mkdir(join(input.projectDirectory, '.codex'), { recursive: true })
-    await writeFile(join(input.projectDirectory, '.codex', 'config.toml'), [
+    const codexHomeDirectory = join(input.runtimeDirectory, 'codex')
+    await mkdir(codexHomeDirectory, { recursive: true, mode: 0o700 })
+    // Reuse only the selected provider login; unrelated native configuration stays outside the fixture.
+    await copyFile(join(previousCodexHome ?? join(homedir(), '.codex'), 'auth.json'),
+      join(codexHomeDirectory, 'auth.json'))
+    await chmod(join(codexHomeDirectory, 'auth.json'), 0o600)
+    process.env.CODEX_HOME = codexHomeDirectory
+    process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(input.runtimeDirectory, 'mcp')
+    await installAppLauncher()
+    await writeFile(join(codexHomeDirectory, 'config.toml'), [
       `[mcp_servers.${codexName}]`,
       `command = ${JSON.stringify(process.execPath)}`,
       `args = [${JSON.stringify(appLauncherPath())}]`,

@@ -593,6 +593,9 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           .map(({ type, occurredAt, sequence }) => ({ type, occurredAt, sequence })) })) })
     return { artifactPath, outcome, overlap, identitiesDistinct, joinExact: joined, cleanup }
   } catch (error) {
+    console.error('ENG03_NATIVE_FAILURE', JSON.stringify({ scenario,
+      startError: evidence.startError, observationErrors: evidence.nativeObservationErrors,
+      mcpInspectionErrors: evidence.mcpInspectionErrors }))
     evidence.error = error instanceof Error ? { name: error.name, message: error.message } : String(error)
     evidence.failureAt = new Date().toISOString()
     evidence.failureStartTaskState = evidence.startTaskState

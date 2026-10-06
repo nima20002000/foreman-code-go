@@ -64,7 +64,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       const detection = new McpDetectionService(codexMcpInspectorAdapter(manager), 'http://127.0.0.1:1/mcp')
       const input = { harness: 'codex' as const, runnerId: 'fixture', workingDirectory: directory }
       expect((await detection.preflight(input)).detection.state).toBe('status_unavailable')
-      await writeFile(join(directory, '.codex', 'config.toml'), [
+      await writeFile(join(process.env.CODEX_HOME!, 'config.toml'), [
         `[mcp_servers.${configured.serverName}]`,
         `command = ${JSON.stringify(process.execPath)}`,
         'args = ["--version"]',
