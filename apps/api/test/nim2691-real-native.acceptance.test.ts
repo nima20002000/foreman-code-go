@@ -38,7 +38,6 @@ import { detectedClaudeProfilePath } from '../src/modules/harnesses/claudeSdk/pr
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
-import { configureNativeWorkflowMcp } from './helpers/nativeWorkflowMcp.js'
 import { configureNativeAcceptanceMcp } from './helpers/nativeAcceptanceMcp.js'
 import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
 import { LocalNativeArtifactOutputSchema } from '../src/modules/runs/remote/nativeArtifactOutputs.js'
@@ -124,7 +123,6 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       await mkdir(runtimeRoot, { mode: 0o700 })
       const binaries = harnessBinaries(process.env)
       let openCodeServerName: string = appServerName
-      let restoreNativeMcp: (() => Promise<void>) | undefined
       const port = await taskPort()
       const config = { ...loadConfig({ ...process.env, HOST: '127.0.0.1', PORT: String(port),
         DATABASE_URL: suppliedUrl.replace(/^postgres:/, 'postgresql:'),
@@ -239,9 +237,6 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         await configureNativeAcceptanceMcp(database.pool, runtimeRoot, {
           codex: config.harnesses.codexBinary, opencode: config.harnesses.openCodeBinary,
         }, `http://127.0.0.1:${port}/mcp`, scenario.providers)
-        restoreNativeMcp = await configureNativeWorkflowMcp({ projectDirectory: projectPath,
-          runtimeDirectory: runtimeRoot, codexBinary: binaries.codexBinary, appServerName,
-          ...(usesOpenCode ? { openCodeBinary: binaries.openCodeBinary } : {}) })
         if (usesOpenCode) {
           const connections = await new OpenCodeMcpConnections(binaries.openCodeBinary, projectPath)
             .read(AbortSignal.timeout(30_000))
@@ -1052,8 +1047,6 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       catch (error) { cleanupErrors.push(error) }
       const resources = await Promise.allSettled([checkpoints.close(), database.close()])
       for (const result of resources) if (result.status === 'rejected') cleanupErrors.push(result.reason)
-      try { await restoreNativeMcp?.() }
-      catch (error) { cleanupErrors.push(error) }
       if (cleanupErrors.length) {
         if (failure) cleanupErrors.unshift(failure.error)
         throw new AggregateError(cleanupErrors, 'Native workflow verification or cleanup failed.',
