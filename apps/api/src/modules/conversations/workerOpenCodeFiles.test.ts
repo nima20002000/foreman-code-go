@@ -175,10 +175,9 @@ it('advertises only read tools for Plan and cannot publish through the worker li
     await f.prepare()
     await f.acknowledge()
     expect((await f.client.listTools()).tools.map(tool => tool.name)).toEqual(['files.list', 'files.read'])
-    const denied = await f.client.callTool({ name: 'files.create_working_copy', arguments: {
+    await expect(f.client.callTool({ name: 'files.create_working_copy', arguments: {
       commandId: randomUUID(), source: f.ref, destination: f.files.scope,
-    } })
-    expect(denied.isError).toBe(true)
+    } })).rejects.toMatchObject({ name: 'ProtocolError', code: -32602 })
     expect(f.files.tools.artifacts.size).toBe(0)
   } finally { await f.close() }
 })
