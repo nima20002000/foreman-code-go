@@ -79,7 +79,6 @@ describe.skipIf(!postgresEnabled)('pending workflow approval restart', () => {
     // Another restart must use the successor detachment and keep the same business activation.
     await runtime.engine.shutdown()
     runtime = f.compose()
-    await runtime.engine.prepareInteraction(pending!)
     expect(await readCurrentExecutions(runtime.runs, runId)).toEqual(executions)
     expect(await f.saver.getTuple(f.config)).toEqual(checkpoint)
     const denied = await new PostgresAccessService(f.db.pool).issue({ name: 'Read-only approval caller', audience: 'user',
@@ -89,6 +88,7 @@ describe.skipIf(!postgresEnabled)('pending workflow approval restart', () => {
       .rejects.toMatchObject({ status: 403 })
     expect(await runtime.repository.get(pending!.id)).toEqual(pending)
     expect(f.provider.counts.responses).toBe(0)
+    expect(f.provider.counts.attaches).toBe(counts.attaches + 1)
     const response = await runtime.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(pending!))
     expect(response.interaction).toMatchObject({ id: pending!.id, nativeSessionId: pending!.nativeSessionId,
       nativeRequestId: pending!.nativeRequestId, status: 'delivered', deliveryState: 'delivered' })
