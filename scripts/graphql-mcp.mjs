@@ -71,7 +71,8 @@ async function forward(message, controller) {
       || !Number.isInteger(route.pid) || route.pid <= 0 || Date.parse(route.expiresAt) <= Date.now()
       || !Number.isFinite(Date.parse(route.expiresAt))) throw new BridgeFailure('route_unavailable',
         'The owning app MCP route is invalid or expired. Open the owning app to refresh this credential’s connection.')
-    process.kill(route.pid, 0)
+    // The owning API's host PID is not visible inside a harness PID namespace.
+    // Each request proves access through the endpoint's scoped credential authentication.
     requestSignal = controller ? AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)])
       : AbortSignal.timeout(120_000)
     const response = await fetch(url, { method: 'POST', redirect: 'error',
