@@ -106,12 +106,15 @@ it('excludes App and controller credentials from model metadata while retaining 
   const inspection = recordedInspection(async () => ({ data: [], nextCursor: null }), async () => undefined)
   const factory = inspection.transportFactory!
   let delivered: NodeJS.ProcessEnv | undefined
+  let disabledMcp: readonly string[] | undefined
   inspection.transportFactory = (...args) => {
     delivered = args[2]
+    disabledMcp = args[9]
     return factory(...args)
   }
   await readNativeCodexModelCatalog(inspection, '/recorded-workspace', source)
   expect(delivered).toMatchObject({ CODEX_HOME: source.CODEX_HOME, OPENAI_API_KEY: source.OPENAI_API_KEY })
+  expect(disabledMcp).toEqual(expect.arrayContaining(['foreman-code', 'graphql', 'graphql-app', 'graphql-operator']))
   for (const key of ['FOREMAN_CODE_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN', 'JOB_DISPATCH_DATABASE_URL',
     'FOREMAN_CODE_TEST_OWNER', 'NODE_OPTIONS']) expect(delivered?.[key]).toBeUndefined()
   expect(source.FOREMAN_CODE_MCP_TOKEN).toBe('scoped-fixture-token')

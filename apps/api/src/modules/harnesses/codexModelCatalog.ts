@@ -3,6 +3,7 @@ import { CodexStdioTransport, isObject, type JsonObject } from './codexStdioTran
 import { assertCodexUnchanged, codexRequest, type QualifiedCodex } from './codexProtocol.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { inheritedAgentEnvironment } from './secrets.js'
+import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
 
 const MAX_MODELS = 10_000
 const REFRESH_FAILURE = 'failed to refresh available models:'
@@ -31,7 +32,8 @@ export async function readNativeCodexModelCatalog(
     { ...inheritedAgentEnvironment(environment), RUST_LOG: 'codex_models_manager=error,codex_core::models_manager=error' },
     inspection.qualified.protocol,
     async request => { await transport.reject(request.id, -32601, 'Model inspection cannot answer native requests.') },
-    () => undefined, () => undefined, undefined, recovery, [], () => { refreshFailed = true })
+    () => undefined, () => undefined, undefined, recovery,
+    chatExcludedAppMcpServerNames(APP_MCP_SERVER_NAME), () => { refreshFailed = true })
   let catalog: ReturnType<typeof parseCodexModelCatalog> | undefined
   let failed = false
   let failure: unknown
