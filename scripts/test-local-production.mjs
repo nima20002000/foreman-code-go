@@ -47,6 +47,37 @@ async function waitUntil(read, accept, label, timeoutMs = 180_000) {
   throw new Error(`Timed out waiting for ${label}.`)
 }
 
+async function observeOperatorErrors(conversationId, token, events) {
+  const cancellation = new AbortController()
+  const response = await fetch(new URL(`/api/operator/conversations/${conversationId}/events`, origin), {
+    headers: { authorization: `Bearer ${token}` }, signal: cancellation.signal,
+  })
+  if (response.status !== 200) await response.body?.cancel()
+  assert.equal(response.status, 200, 'Operator diagnostics must use the authenticated event stream')
+  assert.ok(response.body)
+  const observing = (async () => {
+    const decoder = new TextDecoder()
+    let pending = ''
+    for await (const chunk of response.body) {
+      pending += decoder.decode(chunk, { stream: true }).replaceAll('\r\n', '\n')
+      assert.ok(pending.length < 512 * 1024, 'Operator diagnostic frame exceeded its bound')
+      let boundary
+      while ((boundary = pending.indexOf('\n\n')) >= 0) {
+        const frame = pending.slice(0, boundary)
+        pending = pending.slice(boundary + 2)
+        if (frame.startsWith('event: error\n') && events.length < 32) {
+          const payload = frame.split('\n').filter(line => line.startsWith('data: '))
+            .map(line => line.slice(6)).join('\n')
+          events.push({ receivedAt: new Date().toISOString(), event: JSON.parse(payload) })
+        }
+      }
+    }
+  })().catch(error => {
+    if (!cancellation.signal.aborted) events.push({ observerError: error.message })
+  })
+  return async () => { cancellation.abort(); await observing }
+}
+
 async function recoverFailedDatabaseStartup(environment, ready) {
   const directory = await mkdtemp(join(config, 'database-startup-regression-'))
   const faultEnvironment = join(directory, 'database.env')
@@ -163,13 +194,18 @@ async function main() {
   const access = new PostgresAccessService(pool)
   const clients = []
   const credentials = []
+  const secretValues = Object.entries(environment)
+    .filter(([key]) => /SECRET|PASSWORD|TOKEN|API_KEY|DATABASE_URL/.test(key)).map(([, value]) => value)
   const runScopes = []
+  const operatorErrors = []
+  let stopOperatorObserver
   let workspaceId
   let conversationId
   const issue = async grants => {
     const issued = await access.issue({ name: 'Installed production regression', audience: 'operator', grants,
       expiresAt: new Date(Date.now() + 30 * 60_000) })
     credentials.push(issued.principal.id)
+    secretValues.push(issued.token)
     return issued
   }
   const connect = async issued => {
@@ -220,6 +256,7 @@ async function main() {
     assert.equal(persistedWorkspace.workspace.description, update.description)
     const conversation = await call(writer, 'operator_chat_create', { title: 'Production regression' })
     conversationId = conversation.conversation.id
+    stopOperatorObserver = await observeOperatorErrors(conversationId, writerCredential.token, operatorErrors)
     const beforeChat = await call(writer, 'operator_chat_get', { conversationId: conversation.conversation.id })
     assert.ok(beforeChat.settings, 'Read the accepted Operator settings before native verification')
     const chatSettings = { ...beforeChat.settings }
@@ -239,6 +276,8 @@ async function main() {
     assert.equal(chat.turnState, 'idle', chat.error)
     assert.ok(chat.messages.some(message => message.role === 'assistant'
       && message.content.includes('LOCAL_PRODUCTION_OPERATOR')), 'Missing real native Operator reply')
+    await stopOperatorObserver()
+    stopOperatorObserver = undefined
 
     const startWorkflow = async (harness, task) => {
       const catalog = await call(writer, 'harness_get', { harness })
@@ -381,10 +420,30 @@ async function main() {
     failure = error
   } finally {
     const errors = failure ? [failure] : []
+    if (stopOperatorObserver) await stopOperatorObserver()
+    if (failure && conversationId) {
+      try {
+        const { nativePersistenceRedactor } = await import(pathToFileURL(
+          join(release, 'apps/api/dist/modules/interactions/nativePersistence.js')))
+        const state = (await pool.query(`select harness,native_session_id,active_request_id,
+          active_native_turn_id,turn_state,active_phase,cancel_requested,last_error
+          from operator_conversations where id=$1`, [conversationId])).rows[0]
+        const diagnostic = join(process.cwd(), '.logs/production-installed', `${conversationId}.json`)
+        await publish(diagnostic, JSON.stringify(nativePersistenceRedactor(secretValues).value({
+          conversationId, error: failure.message, state, operatorErrors,
+        }), null, 2) + '\n')
+        console.log(`Installed Operator failure evidence: ${diagnostic}`)
+      } catch (error) {
+        errors.push(error)
+      }
+    }
     try {
       if (writerCredential) {
         const cleanupClient = await connect(writerCredential)
-        if (conversationId) {
+        const cleanup = async action => {
+          try { await action() } catch (error) { errors.push(error) }
+        }
+        if (conversationId) await cleanup(async () => {
           const chat = await call(cleanupClient, 'operator_chat_get', { conversationId })
           if (chat.activeRequestId) {
             await call(cleanupClient, 'operator_chat_cancel', { conversationId,
@@ -392,23 +451,23 @@ async function main() {
             await waitUntil(() => call(cleanupClient, 'operator_chat_get', { conversationId }),
               value => !value.activeRequestId, 'test-owned Operator cleanup')
           }
-        }
-        for (const scope of runScopes) {
+        })
+        for (const scope of runScopes) await cleanup(async () => {
           const record = await call(cleanupClient, 'run_record_get', scope)
           if (record.run.executionState !== 'completed' || record.cleanupPending) {
             await call(cleanupClient, 'run_stop', { ...scope, commandId: randomUUID() })
             await waitUntil(() => call(cleanupClient, 'run_record_get', scope),
               value => value.run.executionState === 'completed' && !value.cleanupPending, 'test-owned run cleanup')
           }
-        }
-        if (workspaceId) {
+        })
+        if (workspaceId) await cleanup(async () => {
           const workspace = await call(cleanupClient, 'workspace_get', { workspaceId })
           await call(cleanupClient, 'workspace_archive', { workspaceId, commandId: randomUUID(),
             expectedRevision: workspace.revision })
           const runtime = join(environment.HARNESS_WORKSPACE_ROOT, workspaceId)
           await rm(runtime, { recursive: true, force: true })
           await assert.rejects(stat(runtime), { code: 'ENOENT' }, 'Test-owned runtime storage must be removed')
-        }
+        })
       }
     } catch (error) {
       errors.push(error)
