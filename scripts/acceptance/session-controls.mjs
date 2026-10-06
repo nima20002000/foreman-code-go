@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { sessionControlHeaders } from './session-control-client.mjs'
+import { assertCodexContextBudget } from './native-context-budget.mjs'
 
 // Run against the integrated production-wired app and twelve separately owned native chats.
 // Tokens are referenced by environment-variable name in the manifest and never written to the report.
@@ -263,9 +264,14 @@ for (const row of matrix.rows) {
   let desired = (await idle(row)).desired
   if (row.harness === 'codex') {
     const controls = await read(row)
-    assert.ok(controls.capabilities.contextBudgets.length, 'Codex must advertise a qualified budget independently of its override.')
-    desired = { ...desired, contextBudget: controls.capabilities.contextBudgets[0] }
-    await preferences(row, desired)
+    if (controls.capabilities.contextBudgets.length) {
+      desired = { ...desired, contextBudget: controls.capabilities.contextBudgets[0] }
+      const configured = await preferences(row, desired)
+      assertCodexContextBudget(controls, configured, desired.contextBudget)
+    } else {
+      assert.ok(controls.capabilities.modelCapacity > 0, 'Unknown model capacity does not prove a native budget limitation.')
+      assert.ok(controls.capabilities.contextBudgetReason, 'Expose the qualified native budget limit explicitly.')
+    }
   }
   if (row.harness === 'claude') {
     const controls = await read(row)
@@ -315,6 +321,8 @@ for (const row of matrix.rows) {
     assert.ok(!parity.isError)
     assert.equal(parity.structuredContent.nativeSessionId, after.nativeSessionId)
     assert.equal(parity.structuredContent.desiredMode, 'regular')
+    assert.deepEqual(parity.structuredContent.capabilities.contextBudgets, after.capabilities.contextBudgets)
+    assert.equal(parity.structuredContent.capabilities.contextBudgetReason, after.capabilities.contextBudgetReason)
     const target = { conversationId: row.conversationId, ...(row.workspaceId ? { workspaceId: row.workspaceId } : {}) }
     const write = await client.callTool({ name: `${row.role}_chat_controls_update`, arguments: { ...target,
       request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: parity.structuredContent.revision } } })
