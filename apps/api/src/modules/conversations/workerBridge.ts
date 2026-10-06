@@ -136,7 +136,7 @@ export class MainWorkerConversationBridge {
     const admission = this.admissions.get(callback.admissionId)
     if (!admission) {
       componentLogger('devices').error({ callbackMethod: callback.method,
-        conversationKind: callback.binding.owner.kind, conversationId: callback.binding.owner.conversationId },
+        conversationKind: callback.binding.owner.kind },
       'Worker callback has no live conversation request')
       denied()
     }
