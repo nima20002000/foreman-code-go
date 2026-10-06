@@ -79,8 +79,12 @@ export async function verifyJobQuotaOwnership(input: {
 
 export async function readVerificationQuotaPool(pool: JobVerificationQuotaPool, binding: RootBinding,
   signal: AbortSignal, read?: JobQuotaReader): Promise<JobProjectQuotaReadback[]> {
-  return Promise.all(pool.slots.map(slot => verifyJobQuotaOwnership({ pool, binding, slot, signal,
-    ...(read ? { read } : {}) })))
+  const observations: JobProjectQuotaReadback[] = []
+  for (const slot of pool.slots) {
+    observations.push(await verifyJobQuotaOwnership({ pool, binding, slot, signal,
+      ...(read ? { read } : {}) }))
+  }
+  return observations
 }
 
 const SourceQuotaConfigurationSchema = z.object({

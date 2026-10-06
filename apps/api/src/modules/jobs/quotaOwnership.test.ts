@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { join } from 'node:path'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
-import { verifyJobQuotaOwnership, type JobQuotaReader } from './quotaOwnership.js'
+import { readVerificationQuotaPool, verifyJobQuotaOwnership, type JobQuotaReader } from './quotaOwnership.js'
 
 const profile = verificationCapacityFixture('main')
 const pool = profile.measurement!.fingerprint.quotaPool!
@@ -14,6 +15,22 @@ function verify(read: JobQuotaReader) {
     signal: new AbortController().signal, read })
 }
 describe('observed project quota ownership', () => {
+  it('reads every slot without overlapping commands on the diagnostic owner', async () => {
+    let active = 0
+    let maximum = 0
+    const read: JobQuotaReader = async (_pool, directory) => {
+      active++
+      maximum = Math.max(maximum, active)
+      await Promise.resolve()
+      active--
+      const selected = pool.slots.find(value => directory === join(profile.root.binding.canonicalPath, value.namespace))!
+      return { ...observed, projectId: selected.projectId, hardLimitBytes: selected.hardLimitBytes,
+        hardInodes: selected.hardInodes, filesystem: selected.filesystem }
+    }
+    const results = await readVerificationQuotaPool(pool, profile.root.binding, new AbortController().signal, read)
+    expect(results.map(value => value.projectId)).toEqual(pool.slots.map(value => value.projectId))
+    expect(maximum).toBe(1)
+  })
   it('accepts kernel readback matching the selected independent quota', async () => {
     expect(await verify(async () => observed)).toEqual(observed)
   })
