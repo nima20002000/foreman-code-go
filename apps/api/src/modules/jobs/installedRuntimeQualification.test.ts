@@ -461,6 +461,48 @@ describe('actual qualification reservation seams with mocked native entry only',
       ['--remote=false', 'container', 'exists', containerId])).rejects.toThrow('reservation unavailable')
     expect((await journal.qualificationStatus(id))?.launches.slice(0, 512)).toEqual(launches)
   })
+  it.each([[false, 1], [true, 0], [true, 1]] as const)(
+    'observes interrupted creation once after exhausted cleanup (owner closed %s, exists exit %s)',
+    async (ownerClosed, exitCode) => {
+      const f = await fixture()
+      const admitted = await reserveInstalledJobQualification(f.input)
+      const identity = `graphql-ci-qualification-${id}`
+      await admitted.ownership.reserveContainerIntent(identity, f.admission.fingerprintDigest)
+      await f.journal.close()
+      const persisted = JSON.parse(await readFile(f.path, 'utf8'))
+      const launches = Array.from({ length: 528 }, (_, index) => ({ launchId: randomUUID(), binary: process.execPath,
+        argv: index === 0 ? ['--remote=false', 'create', '--name', identity]
+          : ['--remote=false', 'container', 'inspect', identity],
+        exit: index === 0 ? null : { exitCode: 125, signal: null }, closed: true }))
+      persisted.qualificationReceipts[0].launches = launches
+      await writeFile(f.path, JSON.stringify(persisted))
+      const journal = await RemoteOperationJournal.open(f.path)
+      journals.push(journal)
+      vi.mocked(f.registry.closeOwner).mockResolvedValue(ownerClosed)
+      const spawn = vi.spyOn(processes, 'spawnNativeProcess').mockImplementation(() => {
+        const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn() },
+          stdout: new EventEmitter(), stderr: new EventEmitter() })
+        setImmediate(() => child.emit('close', exitCode, null))
+        return child as unknown as ReturnType<typeof processes.spawnNativeProcess>
+      })
+      vi.spyOn(processes, 'nativeProcessExit').mockReturnValue({ exitCode, exitSignal: null })
+      const result = await reconcileInstalledJobRuntimeQualification({ ...f.input, journal })
+      const closed = ownerClosed && exitCode === 1
+      expect(result).toMatchObject({ outcome: 'denied', closure: closed ? 'confirmed' : 'unconfirmed' })
+      const receipt = await journal.qualificationStatus(id)
+      expect(receipt?.launches.slice(0, 528)).toEqual(launches)
+      expect(receipt?.launches).toHaveLength(ownerClosed ? 529 : 528)
+      expect(receipt?.phase === 'closed').toBe(closed)
+      expect(f.registry.closeOwner).toHaveBeenCalled()
+      expect(spawn).toHaveBeenCalledTimes(Number(ownerClosed))
+      if (ownerClosed) expect(spawn).toHaveBeenCalledWith(process.execPath,
+        ['--remote=false', 'container', 'exists', identity], expect.anything())
+      const recovered = await reserveInstalledJobQualification({ ...f.input, journal, entry: 'reconcile' })
+      await expect(recovered.native.reserveProcess(process.execPath, ['--remote=false', 'create']))
+        .rejects.toThrow()
+      if (!closed && ownerClosed) await expect(recovered.native.reserveCleanupProcess!(process.execPath,
+        ['--remote=false', 'container', 'exists', identity])).rejects.toThrow('reservation unavailable')
+    })
   it('container identity/certificate and positive closure persist on the same journal', async () => {
     const f = await fixture(), admitted = await reserveInstalledJobQualification(f.input), ownership = admitted.ownership
     const identity = `graphql-ci-qualification-${id}`, containerId = 'b'.repeat(64)

@@ -378,6 +378,28 @@ export class RemoteOperationJournal {
       return receipt
     })
   }
+  async qualificationReserveCreationObservation(operationId: string,
+    reserveAfterOwnerClosure: () => Promise<{ launchId: string; binary: string; argv: string[] }>) {
+    const original = await this.qualificationStatus(operationId)
+    if (!original || !qualificationCreationStopped(original)
+      || original.launches.length !== QUALIFICATION_CLEANUP_COMMAND_LIMIT) {
+      throw new Error('Stopped original creation required for final absence observation')
+    }
+    const input = await reserveAfterOwnerClosure()
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId)
+      if (receipt.sequence !== original.sequence || !qualificationCreationStopped(receipt)
+        || !['native_entry_attempted', 'uncertain'].includes(receipt.phase)
+        || input.binary !== receipt.candidate.fingerprint.runtimeExecutable
+        || !same(input.argv, ['--remote=false', 'container', 'exists', receipt.container!.identity])
+        || receipt.launches.some(value => value.launchId === input.launchId)) {
+        throw new Error('Original creation observation changed')
+      }
+      receipt.launches.push({ ...input, exit: null, closed: false })
+      receipt.sequence++
+      return receipt
+    })
+  }
   qualificationReserveProcess(operationId: string, input: { launchId: string; binary: string; argv: string[] }) {
     return this.change(data => {
       const receipt = this.qualificationReceipt(data, operationId)

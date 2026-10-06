@@ -12,14 +12,15 @@ import { nativeAgentEnvironment } from '../harnesses/secrets.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
-import { qualificationCleanupCommandAllowed, qualificationCreationStopped } from './qualificationJournal.js'
+import { qualificationCleanupCommandAllowed, qualificationCreationStopped,
+  QUALIFICATION_CLEANUP_COMMAND_LIMIT } from './qualificationJournal.js'
 import { inspectInstalledJobRuntimeCandidate, type InstalledRuntimeHostDependencies, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 import type { OCIContainerOwnership, OCIHostCertificate } from './executorContainerOwner.js'
 import type { z } from 'zod'
 import { VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
 import { jobSupervisorIdentity } from './executor.js'
 import { jobQualificationFingerprint, createQualificationNativeOwner, fingerprintQualificationPath,
-  qualifyJobRuntime, jobRuntimeMeasurement, type JobQualificationAuthority } from './qualification.js'
+  qualifyJobRuntime, jobRuntimeMeasurement, runQualificationCommand, type JobQualificationAuthority } from './qualification.js'
 import type { JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
 
 /** Samples the original Job boundary; no host-wide memory/CPU estimate is substituted for its cgroup. */
@@ -281,12 +282,34 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
         const local = launches.get(launch.launchId)
         if (local) local.closed = true
       }
-      const scope = registry.reserveLaunch(owner)
-      if (!scope.launchId) throw new Error('Original cleanup process reservation unavailable.')
-      launches.set(scope.launchId, { scope, binary, argv: [...argv], closed: false })
-      cleanupLaunches.add(scope.launchId)
-      await journal.qualificationReserveCleanupProcess(operationId, { launchId: scope.launchId, binary, argv })
-      return scope.launchId
+      let launchId = ''
+      let reservedScope: NativeProcessRecovery | undefined
+      const reserve = () => {
+        const scope = registry.reserveLaunch(owner)
+        if (!scope.launchId) throw new Error('Original cleanup process reservation unavailable.')
+        launchId = scope.launchId
+        reservedScope = scope
+        launches.set(scope.launchId, { scope, binary, argv: [...argv], closed: false })
+        cleanupLaunches.add(scope.launchId)
+        return { launchId: scope.launchId, binary, argv }
+      }
+      try {
+        if (recovering && receipt.launches.length === QUALIFICATION_CLEANUP_COMMAND_LIMIT
+          && qualificationCreationStopped(receipt)
+          && same(argv, ['--remote=false', 'container', 'exists', receipt.container!.identity])) {
+          await journal.qualificationReserveCreationObservation(operationId, async () => {
+            if (!await registry.closeOwner(owner)) throw new Error('Original creation owner closure unconfirmed.')
+            return reserve()
+          })
+        } else await journal.qualificationReserveCleanupProcess(operationId, reserve())
+      } catch (error) {
+        if (reservedScope && await registry.abandonReservedLaunch(reservedScope)) {
+          launches.delete(launchId)
+          cleanupLaunches.delete(launchId)
+        }
+        throw error
+      }
+      return launchId
     },
     spawnCleanupProcess(id: string, binary: string, argv: string[], options: import('node:child_process').SpawnOptions) {
       if (!cleanupLaunches.has(id)) throw new Error('Original cleanup reservation required.')
@@ -425,7 +448,18 @@ export async function reconcileInstalledJobRuntimeQualification(input: Installed
   const owner = createQualificationNativeOwner(input.candidate, reserved.native, reserved.ownership, reserved.authority)
   let closed = false
   let reason = 'Qualification was interrupted before its result was retained.'
-  try { closed = await owner.close() }
+  try {
+    // A stopped create needs one absence query, even if failed inspections consumed its cleanup budget.
+    if (prior.launches.length === QUALIFICATION_CLEANUP_COMMAND_LIMIT && qualificationCreationStopped(prior)) {
+      const identity = prior.container!.identity
+      const observation = await runQualificationCommand({ ...reserved.native,
+        reserveProcess: reserved.native.reserveCleanupProcess!, spawnProcess: reserved.native.spawnCleanupProcess! },
+      input.candidate.fingerprint.runtimeExecutable, ['--remote=false', 'container', 'exists', identity],
+      input.candidate.controllerEnvironment, AbortSignal.timeout(30000))
+      closed = observation.exitCode === 1 && await reserved.ownership.confirmFailedCreation!(identity)
+        && await reserved.native.close()
+    } else closed = await owner.close()
+  }
   catch (error) { reason = error instanceof Error ? error.message : reason }
   const result: JobRuntimeQualificationResult = { outcome: 'denied',
     closure: closed ? 'confirmed' : 'unconfirmed',

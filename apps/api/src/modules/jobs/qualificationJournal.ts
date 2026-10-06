@@ -26,7 +26,7 @@ export const QualificationReceiptSchema = z.object({
   closedContainers: z.array(QualificationOCICertificateSchema).max(16).default([]),
   launches: z.array(z.object({ launchId: z.uuid(), binary: z.string().startsWith('/'), argv: z.array(z.string()).max(256),
     exit: z.object({ exitCode: z.number().int().min(0).max(255).nullable(), signal: z.string().nullable() }).strict().nullable(),
-    closed: z.boolean() }).strict()).max(QUALIFICATION_CLEANUP_COMMAND_LIMIT),
+    closed: z.boolean() }).strict()).max(QUALIFICATION_CLEANUP_COMMAND_LIMIT + 1),
   container: z.object({ identity: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
     containerId: z.string().regex(/^[a-f0-9]{64}$/).nullable(), certificate: QualificationOCICertificateSchema.nullable() }).strict().nullable(),
   creationAbsent: z.boolean().default(false),
