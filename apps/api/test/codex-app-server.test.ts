@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, it, onTestFailed, vi } from 'vitest'
 
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
 import { DomainError } from '../src/modules/errors.js'
+import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
 import type { WorkflowNativeSessionStart, AgentChatNativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { ThreadItem, Turn } from '../src/modules/harnesses/codexMethodTypes.js'
@@ -266,17 +267,54 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('thread/compact/start')).length, 1)
   })
 
-  it('discovers budget choices from model facts when a saved override starts or resumes the session', async () => {
-    await json('models.json', { models: [{ slug: 'test-model', context_window: 200000,
-      supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }], additional_speed_tiers: ['fast'] }] })
+  it('offers budgets from native default usage and retains the capacity while an override is applied', async () => {
+    const session = await manager.createSession(source)
+    assert.deepEqual((await manager.sessionControlCapabilities(session)).contextBudgets, [])
+    await assertCode(manager.applySessionPreferences(session,
+      SessionPreferencesSchema.parse({ contextBudget: 100000 })), 'CODEX_CONTEXT_BUDGET_INVALID')
+    await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'default-window' }))
+    const turnId = (await state(f.directory, session.nativeSessionId)).turns.at(-1)!.id
+    const usage = { inputTokens: 900, cachedInputTokens: 0, outputTokens: 100,
+      reasoningOutputTokens: 0, totalTokens: 1000 }
+    await emit(f.directory, { method: 'thread/tokenUsage/updated', params: {
+      threadId: session.nativeSessionId, turnId,
+      tokenUsage: { last: usage, total: usage, modelContextWindow: 200000 },
+    } })
+    await until(async () => manager.contextSnapshot(session)?.capacityTokens === 200000)
+    assert.deepEqual((await manager.sessionControlCapabilities(session)).contextBudgets, [100000, 200000])
+    await manager.applySessionPreferences(session, SessionPreferencesSchema.parse({ contextBudget: 100000 }))
+    assert.equal(manager.appliedSessionPreferences(session)?.contextBudget, 100000)
+    await emit(f.directory, { method: 'thread/tokenUsage/updated', params: {
+      threadId: session.nativeSessionId, turnId,
+      tokenUsage: { last: usage, total: usage, modelContextWindow: 100000 },
+    } })
+    await until(async () => manager.contextSnapshot(session)?.capacityTokens === 100000)
+    const capabilities = await manager.sessionControlCapabilities(session)
+    assert.equal(capabilities.modelCapacity, 200000)
+    assert.deepEqual(capabilities.contextBudgets, [100000, 200000])
+    const last = (await wire('thread/resume')).at(-1)!
+    assert.equal((last.params as { config: Record<string, unknown> }).config.model_context_window, 100000)
+  })
+
+  it('preserves a saved budget on creation and cold resume without inventing model capacity', async () => {
     source = { ...source, sessionPreferences: SessionPreferencesSchema.parse({ contextBudget: 100000 }) }
     const session = await manager.createSession(source)
-    assert.deepEqual((await manager.sessionControlCapabilities(session)).contextBudgets, [100000, 200000])
+    const capabilities = await manager.sessionControlCapabilities(session)
+    assert.deepEqual(capabilities.contextBudgets, [])
+    assert.equal(capabilities.modelCapacity, null)
+    assert(capabilities.contextBudgetReason)
     assert.equal(manager.appliedSessionPreferences(session)?.contextBudget, 100000)
+    const creation = (await wire('thread/start')).at(-1)!
+    assert.equal((creation.params as { config: Record<string, unknown> }).config.model_context_window, 100000)
     await manager.closeForRestart(session)
     const resumed = makeManager()
-    await resumed.attachSession(session, source)
-    assert.deepEqual((await resumed.sessionControlCapabilities(session)).contextBudgets, [100000, 200000])
+    assert.deepEqual(await resumed.attachSession(session, source), session)
+    assert.equal(resumed.appliedSessionPreferences(session)?.contextBudget, 100000)
+    assert.deepEqual((await resumed.sessionControlCapabilities(session)).contextBudgets, [])
+    const resumes = (await wire('thread/resume')).length
+    await assertCode(resumed.applySessionPreferences(session,
+      SessionPreferencesSchema.parse({ contextBudget: 200000 })), 'CODEX_CONTEXT_BUDGET_INVALID')
+    assert.equal((await wire('thread/resume')).length, resumes)
     await resumed.applySessionPreferences(session, SessionPreferencesSchema.parse({}))
     assert.equal(resumed.appliedSessionPreferences(session)?.contextBudget, null)
     const last = (await wire('thread/resume')).at(-1)!
@@ -622,7 +660,15 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await collect(fileManager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'previous' }))
     const previous = (await fileManager.history(session)).terminalResult
     const stream = collect(fileManager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'unsent' }))
-    const rejected = assert.rejects(stream, (error: unknown) => error instanceof Error && error.name === 'AbortError')
+    const rejected = assert.rejects(stream, (error: unknown) => {
+      assert(error instanceof NativeDeliveryError)
+      assert.equal(error.operation, 'turn_submission')
+      assert.equal(error.delivery, 'not_sent')
+      assert.equal(error.cleanup, 'confirmed')
+      assert(error.cause instanceof Error)
+      assert.equal(error.cause.name, 'AbortError')
+      return true
+    })
     await prepared
     assert.equal(await fileManager.cancel(session), false)
     await rejected
