@@ -3,7 +3,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { expect, it, vi } from 'vitest'
+import { expect, it, onTestFinished, vi } from 'vitest'
 import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema } from '@foreman-code/contracts/files'
 import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import { fileToolFixture } from '../../../test/support/fileTools.js'
@@ -16,6 +16,7 @@ import { createWorkerOpenCodeFiles } from './workerOpenCodeFiles.js'
 
 async function fixture(readOnly = false) {
   const root = await mkdtemp(join(tmpdir(), 'foreman-worker-opencode-files-'))
+  onTestFinished(() => rm(root, { recursive: true, force: true }))
   const files = await fileToolFixture()
   const ref = await files.upload()
   const context = { ...files.context, messageId: 'message-a' }
