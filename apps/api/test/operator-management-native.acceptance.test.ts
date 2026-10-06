@@ -69,7 +69,8 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
     it.each([false, true])(`${harness}: reads an attached spec and applies live management scope (denied: %s)`, async denied => {
       if (!connectionString) throw new Error('The root acceptance runner must supply a disposable test database.')
       const home = await mkdtemp(join(homedir(), '.operator-management-native-'))
-      const environmentNames = ['CODEX_HOME', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG_CONTENT'] as const
+      const environmentNames = ['CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG',
+        'OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG_CONTENT'] as const
       const previousEnvironment = Object.fromEntries(environmentNames.map(name => [name, process.env[name]]))
       let f: Awaited<ReturnType<typeof workspaceMcpFixture>> | undefined
       const nativeEvents: NativeHarnessEvent[] = []
@@ -85,11 +86,12 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
         const endpoint = `http://127.0.0.1:${port}/mcp`
         const directory = join(home, 'runtime', 'operator')
         const codexHome = join(home, 'codex')
-        const openCodeConfigDirectory = join(home, 'opencode-config')
+        const configHome = join(home, 'config')
+        const openCodeConfigDirectory = join(configHome, 'opencode')
         const openCodeConfig = join(directory, 'opencode.json')
         await mkdir(directory, { recursive: true, mode: 0o700 })
         await mkdir(codexHome, { mode: 0o700 })
-        await mkdir(openCodeConfigDirectory, { mode: 0o700 })
+        await mkdir(openCodeConfigDirectory, { recursive: true, mode: 0o700 })
         if (harness === 'codex') {
           const sourceHome = previousEnvironment.CODEX_HOME ?? join(homedir(), '.codex')
           await copyFile(join(sourceHome, 'auth.json'), join(codexHome, 'auth.json'))
@@ -104,9 +106,21 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           headers: { Authorization: `Bearer {env:${APP_MCP_TOKEN}}` },
         } } }), { mode: 0o600 })
         process.env.CODEX_HOME = codexHome
+        process.env.XDG_CONFIG_HOME = configHome
         process.env.OPENCODE_CONFIG = openCodeConfig
         process.env.OPENCODE_CONFIG_DIR = openCodeConfigDirectory
         delete process.env.OPENCODE_CONFIG_CONTENT
+        if (harness === 'opencode') {
+          const result = await runCommand(binaries.openCodeBinary, ['debug', 'config'], directory,
+            AbortSignal.timeout(30_000))
+          expect(result.exitCode).toBe(0)
+          const config = JSON.parse(result.stdout) as { mcp?: Record<string, { type?: string; url?: string }> }
+          const entries = Object.entries(config.mcp ?? {}).map(([name, entry]) => ({
+            name, type: entry.type, endpointMatches: entry.url === endpoint,
+          }))
+          configurationReadbacks.push({ phase: 'fixture-configuration', entries })
+          expect(entries).toEqual([{ name: APP_MCP_SERVER_NAME, type: 'remote', endpointMatches: true }])
+        }
         f = await workspaceMcpFixture({ connectionString, port, async configure({ app, pool, access, commands, parentPath, services }) {
           const fileStorageRoot = join(home, 'vault')
           const config: ApiConfig = { host: '127.0.0.1', port, readinessTimeoutMs: 2000,
