@@ -851,6 +851,7 @@ export function buildProductionApp(
     operators: operatorConversations, agents: agentConversations, registry: harnessRegistry,
     qualifications: qualificationRepository, access, mcpForward: () => selectedMainMcpForward(app),
     fileService: () => productionFileTools(app),
+    fileStorageRoot,
     files: (conversationId, configuration, workingDirectory) => async ({ host, assertHost, ...turn }) => {
       const admissions = 'operatorId' in configuration
         ? operatorCodexFileAdmissions(() => app, database.pool, configuration, workingDirectory, fileStorageRoot,

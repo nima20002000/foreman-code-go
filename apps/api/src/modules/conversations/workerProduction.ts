@@ -36,6 +36,8 @@ import { createMainWorkerClaudeFiles } from './mainWorkerClaudeFiles.js'
 import type { AgentFileToolService } from '../files/tools/service.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { resolveOpenCodeFileAdmission, adoptOpenCodePublications } from '../harnesses/opencodeFiles/postgres.js'
+import { resolveOperatorOpenCodeFileAdmission, adoptOperatorFilePublications } from '../harnesses/operatorFiles/postgres.js'
+import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -70,6 +72,7 @@ export function createProductionWorkerConversations(input: {
   mcpForward(): SelectedMainMcpForward
   files?(conversationId: string, configuration: WorkerConversationConfiguration, workingDirectory: string): PrepareWorkerFiles
   fileService?(): AgentFileToolService
+  fileStorageRoot: string
 }) {
   const bridge = new MainWorkerConversationBridge()
   const inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
@@ -234,11 +237,16 @@ export function createProductionWorkerConversations(input: {
         sourceWorkingDirectory: options.workingDirectory,
         ...(configuration.harness.harness === 'codex' && binding.appMcpAccess === 'none' && input.files
           ? { files: input.files(options.conversationId, configuration, binding.workingDirectory) } : {}),
-        ...(configuration.harness.harness === 'opencode' && binding.owner.kind === 'agent' && input.fileService
+        ...(configuration.harness.harness === 'opencode' && binding.appMcpAccess === 'none' && input.fileService
           ? { openCodeFiles: {
-            resolve: (identity) => resolveOpenCodeFileAdmission(input.pool, options.conversationId, identity),
+            sourceHost: () => ({ bootId: bootIdentity(), storageRoot: input.fileStorageRoot }),
+            resolve: (identity) => 'operatorId' in configuration
+              ? resolveOperatorOpenCodeFileAdmission(input.pool, options.conversationId, configuration,
+                binding.workingDirectory, identity)
+              : resolveOpenCodeFileAdmission(input.pool, options.conversationId, identity),
             service: input.fileService,
-            adopt: (context) => adoptOpenCodePublications(input.pool, context),
+            adopt: (context) => 'operatorId' in configuration
+              ? adoptOperatorFilePublications(input.pool, context) : adoptOpenCodePublications(input.pool, context),
           } } : {}),
         ...(configuration.harness.harness === 'claude' ? { claudeAuthority: async (
           request: import('@foreman-code/contracts/remote-execution-rpc').WorkerClaudeAuthorityRequest,

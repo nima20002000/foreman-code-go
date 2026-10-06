@@ -39,6 +39,8 @@ import { assertCodexChatHost } from '../harnesses/codexFiles/localHost.js'
 import { workerConversationProcessDigest } from './workerNativeOwner.js'
 import { recoverWorkerConversation } from './recoverWorkerConversation.js'
 import { join } from 'node:path'
+import { createWorkerOpenCodeFiles } from './workerOpenCodeFiles.js'
+import { assertWorkerOpenCodeFileHost } from './workerOpenCodeFileHost.js'
 
 function unavailable(message: string): never {
   throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE', message, 409)
@@ -104,6 +106,7 @@ export async function createInstalledWorkerConversations(input: {
     }
     let manager: NativeHarnessSessionManager
     let inspector: NativeMcpInspector
+    let openCodeFiles: ReturnType<typeof createWorkerOpenCodeFiles> | undefined
     if (harness === 'codex') {
       if (configuration.harness.harness !== 'codex') unavailable('The selected Codex configuration changed.')
       const fileStorageRoot = join(input.stateDirectory, 'conversation-file-storage')
@@ -149,7 +152,13 @@ export async function createInstalledWorkerConversations(input: {
         assertInstallation: before })
       const ensure = server.ensure.bind(server)
       server.ensure = signal => runWithReadOnlyQualification(registry, () => ensure(signal))
-      const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: ownerId, appMcpAccess })
+      if (purpose === 'chat' && appMcpAccess === 'none') {
+        openCodeFiles = createWorkerOpenCodeFiles({ stateDirectory: input.stateDirectory,
+          source, callbacks, server, assertCurrent: before,
+          assertSourceIsolation: assertWorkerOpenCodeFileHost, signal: input.signal })
+      }
+      const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: ownerId, appMcpAccess,
+        ...(openCodeFiles ? { chatFiles: openCodeFiles.adapter } : {}) })
       manager = native
       inspector = openCodeMcpInspectorAdapter(native)
     }
@@ -193,6 +202,7 @@ export async function createInstalledWorkerConversations(input: {
       async close() {
         await manager.dispose?.()
         if (!await input.registry.closeOwner(scope.owner)) unavailable('Native chat closure is unconfirmed.')
+        await openCodeFiles?.close()
         if (purpose === 'chat') await files.closeConversation(binding.owner.conversationId)
         await mcp?.close()
       } }

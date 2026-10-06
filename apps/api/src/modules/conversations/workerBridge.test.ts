@@ -3,6 +3,9 @@ import { expect, it, vi } from 'vitest'
 import { MainWorkerConversationBridge } from './workerBridge.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
 import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
+import { WorkerOpenCodeFilePreparationSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { fileToolFixture } from '../../../test/support/fileTools.js'
+import { nativeMessageId } from '../harnesses/opencodeProtocol.js'
 
 function setup() {
   const f = workerConversationFixture()
@@ -19,6 +22,54 @@ function setup() {
     binding: f.binding, admissionId: lease.admissionId }, f.connection, AbortSignal.timeout(1000))
   return { ...f, bridge, current, send, request, submitted, applied, lease, invoke }
 }
+
+it('binds OpenCode file callbacks to their admitted chat and persisted acknowledgement on the paired channel', async () => {
+  const f = workerConversationFixture('agent', 'opencode')
+  const files = await fileToolFixture()
+  const ref = await files.upload()
+  const correlationId = `agent-chat:${files.scope.chat.conversationId}:${randomUUID()}`
+  const turnId = nativeMessageId(correlationId)
+  const context = { ...files.context, turnId, messageId: 'accepted-message' }
+  const binding = { ...f.binding, owner: { ...f.binding.owner, conversationId: files.scope.chat.conversationId,
+    kind: 'agent' as const, agentId: 'agent-a', workspaceId: 'workspace-a', workflowId: 'workflow-a', workflowNodeId: 'node' } }
+  const session = { ...f.session, nativeSessionId: context.nativeSessionId }
+  if (f.configuration.harness.harness !== 'opencode') throw new Error('OpenCode fixture required')
+  const identity = { ownerAgentId: 'agent-a', nativeSessionId: session.nativeSessionId, nativeTurnId: turnId,
+    clientCorrelationId: correlationId, directory: binding.workingDirectory,
+    configuration: f.configuration.harness }
+  const current = vi.fn(async () => {})
+  const submitted = vi.fn(async () => {})
+  const bridge = new MainWorkerConversationBridge()
+  const lease = bridge.capture({ request: { method: 'conversation.start-turn', binding, session,
+    prompt: 'Accepted input', correlationId, sessionMode: 'plan' }, current,
+  channel: { binding: f.connection, request: async () => ({ payload: {} }) }, callbacks: {
+    submitted, openCodeFiles: { service: () => files.service,
+      sourceHost: () => ({ bootId: f.connection.bootId, storageRoot: '/main-private-vault' }),
+      resolve: async () => ({ context, attachments: [ref] }), adopt: async () => {} },
+  } })
+  const invoke = (action: unknown, actual = identity, connection = f.connection) => bridge.handle({
+    method: 'conversation.opencode-files', binding, admissionId: lease.admissionId, identity: actual, action,
+  }, connection, AbortSignal.timeout(5000))
+  try {
+    const prepared = WorkerOpenCodeFilePreparationSchema.parse(await invoke({ phase: 'prepare' }))
+    expect(prepared.context.allowMutation).toBe(false)
+    const issue = { phase: 'issue', context: prepared.context, expiresAt: prepared.expiresAt }
+    await expect(invoke(issue)).rejects.toMatchObject({ status: 403 })
+    await bridge.handle({ method: 'conversation.submitted', binding, admissionId: lease.admissionId,
+      correlationId, identity: { nativeTurnId: turnId } }, f.connection, AbortSignal.timeout(5000))
+    expect(submitted).toHaveBeenCalledOnce()
+    await expect(invoke(issue)).resolves.toMatchObject({ token: expect.any(String) })
+    await expect(invoke({ phase: 'prepare' }, { ...identity, nativeSessionId: 'foreign' }))
+      .rejects.toMatchObject({ status: 403 })
+    await expect(invoke({ phase: 'prepare' }, identity, { ...f.connection, connectionGeneration: 2 }))
+      .rejects.toMatchObject({ status: 403 })
+    current.mockRejectedValueOnce(new Error('Sender revoked'))
+    await expect(invoke({ phase: 'read-input', input: { ...ref, offset: 0, length: 1 } })).rejects.toThrow('Sender revoked')
+  } finally {
+    await lease.close()
+    await bridge.close()
+  }
+})
 
 it('authorizes only the Main-issued request and rechecks its live grants', async () => {
   const f = setup()

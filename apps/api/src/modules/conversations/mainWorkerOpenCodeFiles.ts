@@ -13,6 +13,7 @@ import { isMutation } from '../files/tools/context.js'
 import { DomainError } from '../errors.js'
 
 export interface MainOpenCodeFilePorts {
+  sourceHost(): { bootId: string; storageRoot: string }
   resolve(identity: WorkerOpenCodeFileIdentity): Promise<{
     context: FileToolContext; attachments: MessageAttachmentRef[];
   } | undefined>
@@ -75,7 +76,8 @@ export class MainWorkerOpenCodeFiles {
     }
     const { context, attachments } = prepared
     const service = this.ports.service()
-    if (action.phase === 'prepare') return { context, attachments, expiresAt: new Date(Date.now() + 3600000).toISOString() }
+    if (action.phase === 'prepare') return { context, attachments,
+      expiresAt: new Date(Date.now() + 3600000).toISOString(), sourceHost: this.ports.sourceHost() }
     if (action.phase === 'read-input') {
       if (!attachments.some(ref => ref.fileId === action.input.fileId && ref.revisionId === action.input.revisionId)) this.denied()
       return service.readAccepted(context, action.input)

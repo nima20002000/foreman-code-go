@@ -32,6 +32,7 @@ export const WorkerOpenCodeFilePreparationSchema = z.object({
   context: WorkerOpenCodeFileContextSchema,
   attachments: MessageAttachmentRefsSchema,
   expiresAt: z.iso.datetime(),
+  sourceHost: z.object({ bootId: z.uuid(), storageRoot: z.string().startsWith('/').max(4096) }).strict(),
 }).strict()
 export const WorkerOpenCodeFileCallerSchema = z.object({
   context: WorkerOpenCodeFileContextSchema,

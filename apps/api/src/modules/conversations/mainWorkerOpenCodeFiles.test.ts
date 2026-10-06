@@ -15,6 +15,7 @@ async function fixture() {
     directory: '/accepted-project', configuration: DEFAULT_HARNESS_DEFAULTS.opencode }
   const adopt = vi.fn(async () => {})
   const proxy = new MainWorkerOpenCodeFiles({ service: () => files.service,
+    sourceHost: () => ({ bootId: '11111111-1111-4111-8111-111111111111', storageRoot: '/main-private-vault' }),
     resolve: async () => ({ context, attachments: [ref] }), adopt })
   let acknowledgedTurnId: string | undefined
   let readOnly = false
