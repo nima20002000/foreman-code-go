@@ -103,7 +103,19 @@ export async function qualifyEng03OpenCode() {
         try {
           const result = await opencodeQualificationSuite.run(input)
           if (result.checks.some(check => !check.passed)) {
-            console.error(`OpenCode qualification checks ${nativeFailureSummary({ checks: result.checks }, secrets)}`)
+            const turns = Array.isArray(result.evidence.nativeTurns) ? result.evidence.nativeTurns : []
+            const messages = turns.flatMap(turn => {
+              if (!turn || typeof turn !== 'object' || !('messages' in turn) || !Array.isArray(turn.messages)) return []
+              return turn.messages.flatMap((message: unknown) => {
+                if (!message || typeof message !== 'object' || !('info' in message)
+                  || !message.info || typeof message.info !== 'object') return []
+                const info = message.info as Record<string, unknown>
+                return [{ id: info.id, parentID: info.parentID, role: info.role,
+                  finish: info.finish, error: info.error, time: info.time }]
+              })
+            })
+            console.error(`OpenCode qualification checks ${nativeFailureSummary({ checks: result.checks,
+              failureExecutions: messages }, secrets)}`)
           }
           return result
         } catch (error) {

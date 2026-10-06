@@ -16,7 +16,7 @@ export function nativeFailureSummary(evidence: Record<string, unknown>, secrets:
     'checks', 'failureReason']
   const selected = Object.fromEntries(fields.filter(name => evidence[name] !== undefined)
     .map(name => [name, evidence[name]]))
-  const privateField = /^(?:environment|variables|headers|authorization|cookie|token|password|secret|credential|input|output|body|responseBody)$/i
+  const privateField = /^(?:environment|variables|headers|authorization|cookie|set-cookie|token|password|secret|credential|api[_-]?key|access[_-]?token|refresh[_-]?token|input|output|body|responseBody)$/i
   return JSON.stringify(nativePersistenceRedactor(secrets).value(selected), (key, value: unknown) => {
     if (privateField.test(key)) return undefined
     if (typeof value === 'string') return value.slice(0, 2_048)

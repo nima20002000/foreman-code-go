@@ -1,6 +1,7 @@
 import { publicationSignal } from './publicationSignal.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
 import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
+import { prepareNativeTestMcp } from './nativeTestMcp.js'
 import { runtimeTimingChannel, type RuntimeTimingRecord } from '../../src/infrastructure/runtimeTiming.js'
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
@@ -300,6 +301,11 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     })
     mcpRoutes = new AppMcpRoutes(livePool, endpoint)
     evidence.mcpEndpoint = endpoint
+    const setupProcesses = new NativeProcessRegistry(join(runtimeDirectory, 'mcp-configuration'))
+    for (const harness of new Set(harnesses)) {
+      await prepareNativeTestMcp({ harness, binary: harness === 'codex' ? codexBinary : openCodeBinary,
+        directory: projectDirectory, endpoint, recovery: setupProcesses.scope(`mcp-configuration:${harness}`) })
+    }
     const makeRuntime = (saver: BaseCheckpointSaver): RuntimeInstance => {
       const commands = new PostgresCommandCoordinator(livePool)
       const locations = new WorkspaceLocationService(livePool, commands, runtimeDirectory)
