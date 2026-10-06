@@ -41,10 +41,21 @@ describe('Operator MCP permission boundaries', () => {
     delete c.services.settings
     expect(operatorToolAvailable(c,'agent_defaults_get')).toBe(false)
   })
-  it('has unique tool names and keeps workflow human approval outside Operator controls', () => {
+  it('has unique tool names and separates workflow interaction grants from Operator chat replies', () => {
     expect(new Set(OPERATOR_TOOL_ACTIONS.map(t=>t.name)).size).toBe(OPERATOR_TOOL_ACTIONS.length)
     expect(OPERATOR_TOOL_ACTIONS.find(t=>t.name==='operator_chat_respond')?.action).toBe('operator_chat:respond')
-    expect(OPERATOR_TOOL_ACTIONS.map(t=>String(t.name))).not.toContain('interaction_respond')
+    const chatResponder: ManagementPrincipal = { ...owner, grants: [{
+      actions: ['operator_chat:respond', 'interactions:read'], scope: {},
+    }] }
+    expect(operatorToolAvailable(context(chatResponder), 'interaction_respond')).toBe(false)
+    const responseOnly: ManagementPrincipal = { ...owner, grants: [{
+      actions: ['interactions:respond'], scope: {},
+    }] }
+    expect(operatorToolAvailable(context(responseOnly), 'interaction_respond')).toBe(false)
+    const workflowResponder: ManagementPrincipal = { ...owner, grants: [{
+      actions: ['interactions:read', 'interactions:respond'], scope: { workspaceIds: ['workspace'] },
+    }] }
+    expect(operatorToolAvailable(context(workflowResponder), 'interaction_respond')).toBe(true)
   })
 })
 
