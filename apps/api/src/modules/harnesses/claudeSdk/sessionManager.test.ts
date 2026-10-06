@@ -488,6 +488,27 @@ describe('Claude native session manager admission', () => {
     expect(observed?.nativeSessionId).toBe('native-session'); expect(f.queries).toHaveBeenCalledTimes(1)
     await f.manager.dispose?.()
   })
+
+  it('retains the original attributed result in terminal history for workflow validation', async () => {
+    const f = fixture(() => raw => {
+      const frame = raw as Record<string, unknown>
+      return frame.type === 'result' ? [{ type: 'claude.result', payload: { source: { eventId: frame.uuid } } }] : []
+    })
+    let history: import('../port.js').NativeHistory | undefined
+    try {
+      const running = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'operator:one',
+        onSessionObserved: async () => undefined, onTerminal: async terminal => { history = terminal.history } }))
+      const input = await f.nextMessage()
+      void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
+      const result = { type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid,
+        subtype: 'success', is_error: false, result: 'done' }
+      void f.frames.offer(result)
+      await running
+      expect(history?.events.find(event => event.type === 'claude.result')?.payload.nativeResult).toEqual(result)
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
   it('does not treat saved MCP config as live connected or replace a prepared owner/query', async () => {
     const f = fixture(undefined, { expectedMcp: { serverName: 'graphql', url: 'http://127.0.0.1:3000/mcp/app' } })
     f.statuses.mockResolvedValueOnce([{ name: 'graphql', status: 'pending', source: 'dynamic', config: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app', headers: { Authorization: 'secret-token' } }, tools: [] }])

@@ -530,7 +530,9 @@ export function createClaudeNativeSessionManager(options: {
               rememberOwner(runtime.toolOwners, toolId, eventOwner)
               resolveCallbackWaiters()
             }
-            await record(runtime, event.type, event.payload, frame.type === 'result' ? matched : eventOwner?.submitted ? eventOwner : undefined)
+            const payload = frame.type === 'result' && event.type === 'claude.result'
+              ? { ...event.payload, nativeResult: output.raw } : event.payload
+            await record(runtime, event.type, payload, frame.type === 'result' ? matched : eventOwner?.submitted ? eventOwner : undefined)
           }
         }
         if (matched && !matched.terminal && terminalAdmissible && frame.type === 'result') {
