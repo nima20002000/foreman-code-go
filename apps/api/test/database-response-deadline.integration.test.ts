@@ -56,29 +56,31 @@ it.skipIf(!postgresEnabled)('delivers completed queries after a delayed reply wh
     const proxy = await forwardPostgres(url.toString())
     try {
       const pool = createPool({ connectionString: proxy.connectionString, maxConnections: 1,
-        connectionTimeoutMs: 2000, queryTimeoutMs: 250 }, 'database-response-deadline')
+        connectionTimeoutMs: 2000, queryTimeoutMs: 1000 }, 'database-response-deadline')
       const table = `response_deadline_${randomUUID().replaceAll('-', '')}`
       try {
         await pool.query('select 1')
         await pool.query(`create table ${table}(value int primary key)`)
         proxy.hold()
+        const readStarted = Date.now()
         const completed = pool.query<{ value: number }>('select 42::int as value')
           .then(result => ({ rows: result.rows }), error => ({ error }))
         await proxy.received()
-        await delay(500)
+        await delay(Math.max(0, 1250 - (Date.now() - readStarted)))
         proxy.release()
         expect(await completed).toEqual({ rows: [{ value: 42 }] })
 
         proxy.hold()
+        const writeStarted = Date.now()
         const committed = pool.query<{ value: number }>(`insert into ${table}(value) values(42) returning value`)
           .then(result => ({ rows: result.rows }), error => ({ error }))
         await proxy.received()
-        await delay(500)
+        await delay(Math.max(0, 1250 - (Date.now() - writeStarted)))
         proxy.release()
         expect(await committed).toEqual({ rows: [{ value: 42 }] })
         expect((await pool.query(`select value from ${table}`)).rows).toEqual([{ value: 42 }])
 
-        await expect(pool.query('select pg_sleep(1)')).rejects.toMatchObject({ code: '57014' })
+        await expect(pool.query('select pg_sleep(2)')).rejects.toMatchObject({ code: '57014' })
 
         proxy.hold()
         const silent = pool.query('select 1').catch(error => error as Error)
