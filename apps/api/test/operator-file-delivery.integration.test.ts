@@ -187,7 +187,8 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       appMcpEndpoint: managementEndpoint, responseJournal }, {
       mode: 'native', openCodeServer: options => {
         serverOptions.push(options)
-        const server = new RecordedOpenCodeServer({ ...options, pure: true })
+        const server = new RecordedOpenCodeServer({ ...options,
+          ...(options.advancedConfiguration ? {} : { pure: true }) })
         server.onPromptAccepted = () => accepted.resolve()
         servers.push(server)
         return server
@@ -323,11 +324,17 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect(list).not.toHaveBeenCalled()
       expect(prepare).toHaveBeenCalledTimes(1)
       expect(setup).toHaveBeenCalledTimes(1)
+      const access = new PostgresAccessService(pool)
+      const textEnvironment = await prepare.mock.results[0]!.value
+      const textToken = textEnvironment.variables[OPERATOR_MCP_ENVIRONMENT_VARIABLE]!
+      const textDelegate = await access.authenticate(textToken)
+      expect(textDelegate.id).not.toBe(owner.id)
       expect((await calls(f.directory)).some((entry) =>
         (entry.af02CredentialKeys as string[] | undefined)?.includes('GRAPHQL_MCP_TOKEN'))).toBe(true)
       await finish(f.directory, nativeSessionId, 'Text-only turn completed.')
       await until(async () => (await chat.get(conversation.id, owner)).turnState === 'idle', 10000)
       await until(async () => managers.size === 0, 10000)
+      await expect(access.authenticate(textToken)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       const textHistory = structuredClone((await state(f.directory, nativeSessionId)).turns)
       expect(textHistory).toHaveLength(1)
       expect(textHistory[0]!.status).toBe('completed')
@@ -351,8 +358,17 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect(managers.get(conversation.id)).not.toBe(textManager)
       expect(await retainedCodexDeclarations(f, nativeSessionId)).toEqual(declarations)
       expect((await state(f.directory, nativeSessionId)).turns[0]).toEqual(textHistory[0])
-      expect(prepare).toHaveBeenCalledTimes(1)
-      expect(setup).toHaveBeenCalledTimes(1)
+      expect(prepare).toHaveBeenCalledTimes(2)
+      expect(setup).toHaveBeenCalledTimes(2)
+      const fileManagementEnvironment = await prepare.mock.results[1]!.value
+      const managementToken = fileManagementEnvironment.variables[OPERATOR_MCP_ENVIRONMENT_VARIABLE]!
+      expect(managementToken).not.toBe(textToken)
+      expect(managementToken).not.toBe(token)
+      const fileDelegate = await access.authenticate(managementToken)
+      expect(fileDelegate.id).not.toBe(textDelegate.id)
+      expect(fileDelegate.grants).toEqual(textDelegate.grants)
+      expect(fileDelegate.grants.flatMap(grant => grant.actions)).not.toContain('operator_chat:write')
+      await expect(tools.sessions.authenticate(managementToken)).rejects.toThrow()
       const wire = (await calls(f.directory)).map((entry) => entry.wire as {
         method?: string; params?: Record<string, unknown>
       } | undefined)
@@ -366,10 +382,11 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       const fileEnvironment = (await calls(f.directory)).slice(fileAuditOffset)
         .filter((entry) => 'af02CredentialKeys' in entry)
       expect(fileEnvironment.length).toBeGreaterThan(0)
-      expect(fileEnvironment.every((entry) => (entry.af02CredentialKeys as string[]).length === 0)).toBe(true)
+      expect(fileEnvironment.every((entry) =>
+        (entry.af02CredentialKeys as string[]).includes(OPERATOR_MCP_ENVIRONMENT_VARIABLE))).toBe(true)
       expect((await pool.query(`select count(*)::int as count from operator_chat_credentials c
         join management_principals p on p.id=c.principal_id
-        where c.conversation_id=$1 and p.revoked_at is null`, [conversation.id])).rows[0].count).toBe(0)
+        where c.conversation_id=$1 and p.revoked_at is null`, [conversation.id])).rows[0].count).toBe(1)
 
       const nativeTurnId = context.turnId
       assert.ok(nativeTurnId, 'This Codex fixture requires an observed native turn binding.')
@@ -394,6 +411,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       await until(async () => (await chat.get(conversation.id, owner)).turnState === 'idle', 10000)
       await until(async () => managers.size === 0, 10000)
       await expect(tools.sessions.authenticate(token)).rejects.toThrow()
+      await expect(access.authenticate(managementToken)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       const transcript = await chat.get(conversation.id, owner)
       expect(transcript.messages.filter((message) => message.role === 'user')).toHaveLength(2)
       expect(transcript.messages.flatMap((message) => message.attachments ?? [])
@@ -586,7 +604,11 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     await chat.send(conversation.id, { requestId: randomUUID(), content: 'Manage the app.',
       ...(attachments ? { attachments: refs } : {}) }, owner)
     // The accepted settings disable management MCP for both message shapes.
-    await until(async () => (await chat.get(conversation.id, owner)).turnState === 'error', 10000)
+    const failed = await until(async () => {
+      const state = await chat.get(conversation.id, owner)
+      return state.turnState === 'error' ? state : undefined
+    }, 10000)
+    expect(failed.lastResult).toMatchObject({ outcome: 'failed', error: { code: 'OPERATOR_MCP_SETUP_REQUIRED' } })
     expect(prepare).toHaveBeenCalledTimes(1)
     expect(setup).toHaveBeenCalledTimes(1)
     expect(serverOptions[0]!.appMcpAccess).toBe('scoped')
