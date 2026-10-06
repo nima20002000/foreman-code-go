@@ -10,6 +10,7 @@ import type { FileToolContext } from '../../../files/tools/types.js'
 import { ManagedOpenCodeServer } from '../../opencodeTransport.js'
 import { collectChecks, nonempty, object, requireCondition, type Check } from './checks.js'
 import type { QualificationSuite } from '../types.js'
+import type { NativeQualificationSuiteInput } from '../nativeOwnership.js'
 
 
 const requiredPaths = ['/session', '/session/status', '/session/{sessionID}', '/session/{sessionID}/message',
