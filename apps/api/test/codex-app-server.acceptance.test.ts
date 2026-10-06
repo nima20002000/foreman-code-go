@@ -82,31 +82,37 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       assert((await manager.inspectConfiguration(session, false, signal)).config)
       assert(Array.isArray((await manager.inspectNativeMcp(session, signal)).data))
 
-      const started = deferred()
+      const started = deferred<string>()
       const interrupt = (async () => {
         for await (const event of manager.startTurn(session, {
           prompt: 'Run this exact shell command and wait for it to finish before answering: sleep 120. Do not simulate the command.',
           clientCorrelationId: 'interrupt',
         }, signal)) {
-          if (event.type === 'turn.started' && event.payload.clientCorrelationId === 'interrupt') started.resolve()
+          if (event.type === 'turn.started' && event.payload.clientCorrelationId === 'interrupt') {
+            assert(typeof event.payload.turnId === 'string' && event.payload.turnId.length > 0)
+            started.resolve(event.payload.turnId)
+          }
         }
       })()
       void interrupt.then(
         () => started.reject(new Error('The native turn ended before interruption.')),
         error => started.reject(error),
       )
-      await started.promise
+      const nativeTurnId = await started.promise
       try {
-        assert.equal(await manager.cancel(session, signal), true)
+        assert.equal(await manager.cancel(session, signal, nativeTurnId), true)
       } catch (error) {
         if (error instanceof CodexRpcError) assert.fail(`Native turn/interrupt failed: ${error.nativeMessage ?? 'no provider diagnostic'}`)
         throw error
       }
       await interrupt
       assert.equal((await manager.history(session)).terminalResult?.outcome, 'canceled')
+      assert.equal((await manager.reconcile(session, 'interrupt', signal)).nativeTurnId, nativeTurnId)
       await manager.close(session)
-      assert.deepEqual(await restored.attachSession(session, input, signal), session)
+      const recoveryInput = { ...input, correlationId: 'interrupt', nativeTurnId }
+      assert.deepEqual(await restored.attachSession(session, recoveryInput, signal), session)
       const recovered = await restored.reconcile(session, 'interrupt', signal)
+      assert.equal(recovered.nativeTurnId, nativeTurnId)
       assert.equal(recovered.terminalResult?.outcome, 'canceled')
       for await (const event of restored.startTurn(session, { prompt: 'Reply exactly HAP02_REATTACHED. Do not use tools.', clientCorrelationId: 'reattached' }, signal)) void event
       assert(outputText((await restored.history(session)).terminalResult?.output).includes('HAP02_REATTACHED'))
