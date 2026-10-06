@@ -101,6 +101,7 @@ export async function qualifyEng03OpenCode() {
     }
     const commands = new PostgresCommandCoordinator(pool)
     const settings = new PostgresSettingsRepository(pool)
+    const defaults = await settings.getHarnessDefaults()
     const selected = await registry.inspectBinary(binaries.opencode)
     const checker = await registry.inspectBinary(process.execPath)
     const guard = (binary: string, sha256: string) => async (signal?: AbortSignal) => {

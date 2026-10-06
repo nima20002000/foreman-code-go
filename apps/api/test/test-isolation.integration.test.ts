@@ -1,13 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import pg from 'pg'
-import { expect, it } from 'vitest'
+import { afterAll, beforeAll, expect, it } from 'vitest'
 import { createFixtureDatabase, createFixtureSchema, dropFixtureDatabase, dropFixtureSchema } from './helpers/testResources.js'
 import { assertOwnedExecutionDestinations } from './helpers/testResources.js'
 import { agent3Database, candidateFor, seedAgent3 } from './helpers/wave25Agent3.js'
 import { createTestRoot, removeTestRoot } from '../../../scripts/test-resources.mjs'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
+
+let destinationFixture: Awaited<ReturnType<typeof agent3Database>>
+beforeAll(async () => { destinationFixture = await agent3Database() })
+afterAll(async () => { await destinationFixture?.close() })
 
 it('rejects connections to the app PostgreSQL endpoint before connecting', async () => {
   const client = new pg.Client({ connectionString: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql' })
@@ -73,7 +77,7 @@ it('rejects a prepared acceptance API bound to a different database before start
 })
 
 it('checks persisted execution destinations again after reconnecting to the prepared database', async () => {
-  const fixture = await agent3Database()
+  const fixture = destinationFixture
   const outside = createTestRoot(dirname(process.env.FOREMAN_CODE_TEST_ROOT!))
   let restarted: pg.Pool | undefined
   try {
@@ -102,14 +106,13 @@ it('checks persisted execution destinations again after reconnecting to the prep
       [configuration.id, JSON.stringify(saved.configurations[0])])
     await assertOwnedExecutionDestinations(restarted, selection)
   } finally {
-    await restarted?.end()
-    await fixture.close()
-    removeTestRoot(outside)
+    try { await restarted?.end() }
+    finally { removeTestRoot(outside) }
   }
 })
 
 it('checks accepted Run locations and native directories independently of the current workspace location', async () => {
-  const fixture = await agent3Database()
+  const fixture = destinationFixture
   const outside = createTestRoot(dirname(process.env.FOREMAN_CODE_TEST_ROOT!))
   try {
     const outsideRun = await seedAgent3(fixture.pool, outside.directory,
@@ -135,7 +138,6 @@ it('checks accepted Run locations and native directories independently of the cu
       [execution.id, JSON.stringify({ ...execution, runtimeDirectory: fixture.directory })])
     await assertOwnedExecutionDestinations(fixture.pool, selection)
   } finally {
-    await fixture.close()
     removeTestRoot(outside)
   }
 })
