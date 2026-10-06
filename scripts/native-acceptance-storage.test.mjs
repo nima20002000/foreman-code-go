@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -78,6 +78,46 @@ test('failed native operations remove their storage and preserve the original fa
     }), error => error === failure)
     await assert.rejects(access(owned), { code: 'ENOENT' })
     assert.equal(await readFile(join(source.CODEX_HOME, 'history.jsonl'), 'utf8'), 'original-history')
+  })
+})
+
+test('linked plugin caches keep aliases inside owned storage and preserve missing versions', async () => {
+  await fixture(async source => {
+    const plugins = join(source.HOME, 'source-plugins')
+    const cache = join(plugins, 'cache', 'fixture')
+    await mkdir(join(cache, 'available'), { recursive: true })
+    await symlink(plugins, join(source.CODEX_HOME, 'plugins'))
+    await writeFile(join(cache, 'available', 'plugin.json'), 'original-plugin')
+    await symlink('removed', join(cache, 'latest'))
+    await symlink(join(cache, 'available'), join(cache, 'selected'))
+    let owned
+    await withNativeAcceptanceStorage(source, async environment => {
+      owned = join(environment.CODEX_HOME, 'plugins', 'cache', 'fixture')
+      await assert.rejects(access(join(owned, 'latest')), { code: 'ENOENT' })
+      assert.equal(await readlink(join(owned, 'latest')), 'removed')
+      assert.equal(await readFile(join(owned, 'selected', 'plugin.json'), 'utf8'), 'original-plugin')
+      await writeFile(join(owned, 'selected', 'plugin.json'), 'fixture-plugin-write')
+      assert.equal(await readFile(join(cache, 'available', 'plugin.json'), 'utf8'), 'original-plugin')
+    })
+    await assert.rejects(access(owned), { code: 'ENOENT' })
+    assert.equal(await readlink(join(cache, 'latest')), 'removed')
+  })
+})
+
+test('external plugin assets are copied without sharing their writable target', async () => {
+  await fixture(async source => {
+    const cache = join(source.CODEX_HOME, 'plugins', 'cache')
+    const original = join(source.HOME, 'external-plugin')
+    await mkdir(cache, { recursive: true })
+    await mkdir(original)
+    await writeFile(join(original, 'plugin.json'), 'external-original')
+    await symlink(original, join(cache, 'external'))
+    await withNativeAcceptanceStorage(source, async environment => {
+      const asset = join(environment.CODEX_HOME, 'plugins', 'cache', 'external', 'plugin.json')
+      assert.equal(await readFile(asset, 'utf8'), 'external-original')
+      await writeFile(asset, 'fixture-external-write')
+      assert.equal(await readFile(join(original, 'plugin.json'), 'utf8'), 'external-original')
+    })
   })
 })
 

@@ -1,6 +1,6 @@
-import { chmod, cp, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, cp, lstat, mkdir, mkdtemp, readlink, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 async function copyOptional(source, destination) {
   try {
@@ -11,6 +11,36 @@ async function copyOptional(source, destination) {
   }
   await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
   await cp(source, destination, { recursive: true, dereference: true })
+}
+
+async function copyPluginCache(source, destination) {
+  let root
+  try {
+    root = await realpath(source)
+  } catch (error) {
+    if (error.code === 'ENOENT') return
+    throw error
+  }
+  await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
+  await cp(root, destination, {
+    recursive: true,
+    dereference: false,
+    filter: async (entry, target) => {
+      if (!(await lstat(entry)).isSymbolicLink()) return true
+      const resolved = resolve(dirname(entry), await readlink(entry))
+      const suffix = relative(root, resolved)
+      const internal = suffix !== '..' && !suffix.startsWith('../') && !isAbsolute(suffix)
+      if (internal) {
+        // Mirror internal aliases, including missing versions, inside the owned cache.
+        const owned = join(destination, suffix)
+        await symlink(relative(dirname(target), owned), target)
+      } else {
+        // Native writes through an external alias must never reach the source profile.
+        await cp(resolved, target, { recursive: true, dereference: true })
+      }
+      return false
+    },
+  })
 }
 
 /** Keep native credentials/configuration, while owning every test-created history and cache. */
@@ -35,9 +65,10 @@ export async function withNativeAcceptanceStorage(source, execute) {
       await mkdir(environment[name], { recursive: true, mode: 0o700 })
     }
     const codex = source.CODEX_HOME ?? join(originalHome, '.codex')
-    for (const name of ['auth.json', 'config.toml', 'models_cache.json', 'skills', 'plugins']) {
+    for (const name of ['auth.json', 'config.toml', 'models_cache.json', 'skills']) {
       await copyOptional(join(codex, name), join(environment.CODEX_HOME, name))
     }
+    await copyPluginCache(join(codex, 'plugins'), join(environment.CODEX_HOME, 'plugins'))
     try {
       await writeFile(join(environment.CODEX_HOME, 'config.toml'), '', { flag: 'wx', mode: 0o600 })
     } catch (error) {
