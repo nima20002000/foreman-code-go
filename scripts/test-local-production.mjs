@@ -78,6 +78,35 @@ async function observeOperatorErrors(conversationId, token, events) {
   return async () => { cancellation.abort(); await observing }
 }
 
+async function observeDatabaseWaits(pool, samples) {
+  const cancellation = new AbortController()
+  const observing = (async () => {
+    while (!cancellation.signal.aborted) {
+      const started = Date.now()
+      try {
+        const { rows } = await pool.query(`select pid,application_name,state,wait_event_type,wait_event,
+          floor(extract(epoch from(clock_timestamp()-xact_start))*1000)::text as transaction_ms,
+          floor(extract(epoch from(clock_timestamp()-query_start))*1000)::text as query_ms,
+          pg_blocking_pids(pid) as blockers,md5(query) as statement_id
+          from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid()
+          and state<>'idle' and (wait_event_type='Lock' or query_start<clock_timestamp()-interval '250 milliseconds')
+          order by query_start limit 16`)
+        if (rows.length) samples.push({ observedAt: new Date().toISOString(), probeMs: Date.now() - started, rows })
+      } catch (error) {
+        // Database restart is part of this test. Record the failed diagnostic
+        // probe without substituting for or weakening any product assertion.
+        samples.push({ observedAt: new Date().toISOString(), probeMs: Date.now() - started,
+          probeError: typeof error.code === 'string' ? error.code : 'query_failed' })
+      }
+      if (samples.length > 128) samples.splice(0, samples.length - 128)
+      await delay(250, undefined, { signal: cancellation.signal }).catch(error => {
+        if (!cancellation.signal.aborted) throw error
+      })
+    }
+  })()
+  return async () => { cancellation.abort(); await observing }
+}
+
 async function recoverFailedDatabaseStartup(environment, ready) {
   const directory = await mkdtemp(join(config, 'database-startup-regression-'))
   const faultEnvironment = join(directory, 'database.env')
@@ -198,6 +227,8 @@ async function main() {
     .filter(([key]) => /SECRET|PASSWORD|TOKEN|API_KEY|DATABASE_URL/.test(key)).map(([, value]) => value)
   const runScopes = []
   const operatorErrors = []
+  const databaseWaits = []
+  const stopDatabaseObserver = await observeDatabaseWaits(pool, databaseWaits)
   let stopOperatorObserver
   let workspaceId
   let conversationId
@@ -430,7 +461,7 @@ async function main() {
           from operator_conversations where id=$1`, [conversationId])).rows[0]
         const diagnostic = join(process.cwd(), '.logs/production-installed', `${conversationId}.json`)
         await publish(diagnostic, JSON.stringify(nativePersistenceRedactor(secretValues).value({
-          conversationId, error: failure.message, state, operatorErrors,
+          conversationId, error: failure.message, state, operatorErrors, databaseWaits,
         }), null, 2) + '\n')
         console.log(`Installed Operator failure evidence: ${diagnostic}`)
       } catch (error) {
@@ -477,7 +508,7 @@ async function main() {
       const revoked = await Promise.allSettled(credentials.map(id => access.revoke(id)))
       for (const result of [...closed, ...revoked]) if (result.status === 'rejected') errors.push(result.reason)
     } finally {
-      await pool.end()
+      try { await stopDatabaseObserver() } finally { await pool.end() }
     }
     if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'))
   }
