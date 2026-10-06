@@ -11,7 +11,7 @@ import { claudeCandidateConfiguration } from './configuration.js'
 import { loadOfficialClaudeSdk } from './official.js'
 import { createClaudeSdkRunner } from './runner.js'
 import type { ClaudeSdkClient, ClaudeSdkSession } from './port.js'
-import { claudeToolRespectsSandbox } from './readOnlyPolicy.js'
+import { claudeSandboxStartupFailure, claudeToolRespectsSandbox } from './readOnlyPolicy.js'
 import { CLAUDE_PROFILE_CHECK_REVISION } from './profileRevision.js'
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -198,7 +198,8 @@ export async function qualifyClaudeNativeProfile(input: {
       const shellWrite = await turn(resumed, `Use Bash to run exactly this owned disposable diagnostic command: ${writeCommand}. Do not change it, retry, or use another tool. Reply DONE.`)
       const shellHook = hooks.find(hook => hook.tool === 'Bash' && hook.command === writeCommand && !hook.denied)
       const denial = shellHook && toolResults(shellWrite.frames).find(result => result.tool_use_id === shellHook.toolUseId && result.is_error === true)
-      if (denial && /read-only file system/i.test(JSON.stringify(denial.content))
+      if (denial) failure = claudeSandboxStartupFailure(denial.content)
+      if (!failure && denial && /read-only file system/i.test(JSON.stringify(denial.content))
         && !await exists(inside) && !await exists(outside)) passed.add('readOnlySandbox')
     }
     await resumed.close()

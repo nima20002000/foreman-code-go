@@ -7,9 +7,18 @@ import type { RegistryHarnessSelection } from '../src/modules/harnesses/installa
 import type { ClaudeSdkClient } from '../src/modules/harnesses/claudeSdk/port.js'
 import { qualifyClaudeNativeProfile } from '../src/modules/harnesses/claudeSdk/nativeProfileQualification.js'
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
+import { claudeSandboxStartupFailure } from '../src/modules/harnesses/claudeSdk/readOnlyPolicy.js'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))) })
+
+it('reports a native sandbox startup failure separately from an enforced filesystem write denial', () => {
+  const privateDiagnostic = 'private-native-diagnostic'
+  const failure = claudeSandboxStartupFailure(`Exit code 1\napply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied\n${privateDiagnostic}`)
+  expect(failure).toMatchObject({ code: 'CLAUDE_SANDBOX_UNAVAILABLE' })
+  expect(failure?.message).not.toContain(privateDiagnostic)
+  expect(claudeSandboxStartupFailure('Exit code 1\nbash: /owned/file: Read-only file system')).toBeUndefined()
+})
 async function fixture(models: unknown[], emitReceipt = false) {
   const directory = await mkdtemp(join(tmpdir(), 'claude-producer-unit-')); directories.push(directory)
   const configuration = { harness: 'claude' as const, model: 'unit-model', effort: 'medium' as const, configDirectory: '/unit/profile',
