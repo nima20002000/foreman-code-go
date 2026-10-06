@@ -1227,7 +1227,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       }
       const allowed = await connect(writer.token)
       const denied = await connect(reader.token)
-      const created = await allowed.callTool({ name: 'operator_chat_create', arguments: {} })
+      const created = await allowed.callTool({ name: 'operator_chat_create', arguments: { commandId: randomUUID() } })
       expect(created.isError, JSON.stringify(created)).not.toBe(true)
       const conversationId = (created.structuredContent as { conversation: { id: string } }).conversation.id
       const input = { requestId: 'mcp-terminal-request', content: 'Run once.' }

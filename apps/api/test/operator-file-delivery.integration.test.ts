@@ -27,7 +27,7 @@ import type { FileToolContext } from '../src/modules/files/tools/types.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import type { ManagedOpenCodeServerOptions } from '../src/modules/harnesses/opencodeTransport.js'
 import { RecordedOpenCodeServer } from './support/opencodeRecordedServer.js'
-import { calls, emit, finish, fixtureQualification, input, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
+import { calls, emit, finish, fixtureQualification, input, processesForRequests, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
 import { deferred } from './helpers/wave25Agent3.js'
 import { fileRuntimeFixture } from './fixtures/codex-file-runtime-helpers.js'
 
@@ -93,6 +93,25 @@ async function retainedCodexDeclarations(f: Fixture, sessionId: string) {
   }
   return persisted.dynamicTools ?? []
 }
+
+async function expectCodexCredentialIsolation(directory: string, auditOffset = 0) {
+  const audit = (await calls(directory)).slice(auditOffset)
+  const executionPids = new Set((await processesForRequests(directory, 'thread/start', 'thread/resume'))
+    .map(entry => entry.pid))
+  const metadataPids = new Set((await processesForRequests(directory, 'model/list')).map(entry => entry.pid))
+  const environments = audit.filter(entry => 'af02CredentialKeys' in entry)
+  const execution = environments.filter(entry => executionPids.has(entry.processPid))
+  const metadata = environments.filter(entry => metadataPids.has(entry.processPid))
+  expect(execution.length).toBeGreaterThan(0)
+  expect(metadata.length).toBeGreaterThan(0)
+  expect(execution.every(entry => (entry.af02CredentialKeys as string[])
+    .includes(OPERATOR_MCP_ENVIRONMENT_VARIABLE))).toBe(true)
+  expect(metadata.every(entry => (entry.af02CredentialKeys as string[]).length === 0)).toBe(true)
+  const overrides = audit.filter(entry => Array.isArray(entry.cli)
+    && (entry.cli as string[]).some(arg => /^mcp_servers\..+\.enabled=false$/.test(arg)))
+  expect(overrides.some(entry => metadataPids.has(entry.processPid))).toBe(true)
+  expect(overrides.some(entry => executionPids.has(entry.processPid))).toBe(false)
+}
 function fileCallValue(result: CodexFileCallResult): unknown {
   expect(result.success).toBe(true)
   const content = result.contentItems[0]
@@ -149,7 +168,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     const seam = "const agent = process.env.TEST_AGENT_ID || 'agent-a'"
     assert.equal(binary.split(seam).length, 2)
     await writeFile(f.binary, binary.replace(seam,
-      `log({ af02CredentialKeys: Object.keys(process.env).filter((key) => /GRAPHQL.*(?:TOKEN|CREDENTIAL)/.test(key) && key !== 'GRAPHQL_HEAVY_JOB_TOKEN') })\n${seam}`))
+      `log({ af02CredentialKeys: Object.keys(process.env).filter((key) => /^(?:GRAPHQL|FOREMAN_CODE).*(?:TOKEN|CREDENTIAL)/.test(key) && key !== 'GRAPHQL_HEAVY_JOB_TOKEN' && key !== 'FOREMAN_CODE_HEAVY_JOB_TOKEN') })\n${seam}`))
     const reservation = createServer()
     await new Promise<void>((resolve, reject) => {
       reservation.once('error', reject)
@@ -380,11 +399,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect(resumes).toHaveLength(1)
       expect(resumes[0]!.params!.threadId).toBe(nativeSessionId)
       expect(resumes[0]!.params).not.toHaveProperty('dynamicTools')
-      const fileEnvironment = (await calls(f.directory)).slice(fileAuditOffset)
-        .filter((entry) => 'af02CredentialKeys' in entry)
-      expect(fileEnvironment.length).toBeGreaterThan(0)
-      expect(fileEnvironment.every((entry) =>
-        (entry.af02CredentialKeys as string[]).includes(OPERATOR_MCP_ENVIRONMENT_VARIABLE))).toBe(true)
+      await expectCodexCredentialIsolation(f.directory, fileAuditOffset)
       expect((await pool.query(`select count(*)::int as count from operator_chat_credentials c
         join management_principals p on p.id=c.principal_id
         where c.conversation_id=$1 and p.revoked_at is null`, [conversation.id])).rows[0].count).toBe(1)
@@ -469,13 +484,9 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
         prompt = parts[0]!.text!
         deliveredImage = parts.find((part) => part.type === 'localImage')?.path
         const audit = await calls(f.directory)
-        const environments = audit.filter((entry) => 'af02CredentialKeys' in entry)
-        expect(environments.length).toBeGreaterThan(0)
-        expect(environments.every((entry) => (entry.af02CredentialKeys as string[]).includes(OPERATOR_MCP_ENVIRONMENT_VARIABLE))).toBe(true)
+        await expectCodexCredentialIsolation(f.directory)
         const thread = wire.find((entry) => entry?.method === 'thread/start')!
         expect(thread.params!.dynamicTools).toBeInstanceOf(Array)
-        expect(audit.some((entry) => Array.isArray(entry.cli)
-          && (entry.cli as string[]).some((arg) => /^mcp_servers\..+\.enabled=false$/.test(arg)))).toBe(false)
       } else {
         const server = servers[0]!
         expect(server.nativePid).toBeDefined()
