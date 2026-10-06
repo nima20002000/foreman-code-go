@@ -193,7 +193,8 @@ describe('native session controls through the production Main and installed Work
         }
         return { hostRef, configuration, parentPath: f.mainProjects,
           ...(hostKind === 'device' ? { rootSelection: { hostRef, allowedBaseId: f.roots.bases[0]!.baseId,
-            configurationRevision: f.roots.configurationRevision, relativePath: '', accessMode: 'read-only' } } : {}) }
+            configurationRevision: f.roots.configurationRevision, relativePath: '',
+            accessMode: harness === 'opencode' ? 'read-write' : 'read-only' } } : {}) }
       }))
     const prepared: unknown = await module.provisionSessionControlMatrix({ subjects, harnesses, expectedIdentity: f.identity,
       baseUrl: f.baseUrl, browserOrigin: f.browserOrigin, sourceCommit: f.sourceCommit }, {

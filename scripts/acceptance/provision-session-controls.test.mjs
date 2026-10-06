@@ -22,7 +22,7 @@ function fixture() {
   const filesystem = { device: '1', inode: '2', mountId: '3' }
   const allowlist = { schemaVersion: 1, hostRef: { kind: 'device', mainId, deviceId },
     applicationInstallationId: workerInstallationId, configurationRevision: '1',
-    bases: [{ baseId: allowedBaseId, canonicalPath: '/worker/projects', filesystem, accessModes: ['read-only'] }],
+    bases: [{ baseId: allowedBaseId, canonicalPath: '/worker/projects', filesystem, accessModes: ['read-only', 'read-write'] }],
     managedRuntimeRoot: '/worker/runtime', runtimeFilesystem: filesystem }
   const identity = { installationId: mainId, checkoutId: 'b'.repeat(64), databaseId: 'c'.repeat(64) }
   const defaults = { value: structuredClone(contracts.DEFAULT_AGENT_DEFAULTS), revision: 0, versionId: null }
@@ -36,7 +36,7 @@ function fixture() {
     const hostRef = kind === 'main' ? { kind, mainId } : { kind, mainId, deviceId }
     subjects.push({ hostRef, configuration, parentPath: '/owned/projects', compactionInputs: ['Accepted context'],
       ...(kind === 'device' ? { rootSelection: { hostRef, allowedBaseId, configurationRevision: '1',
-        relativePath: 'controls', accessMode: 'read-only' } } : {}) })
+        relativePath: 'controls', accessMode: harness === 'opencode' ? 'read-write' : 'read-only' } } : {}) })
   }
   const input = { subjects, expectedIdentity: identity }
   const overrides = new Map()
@@ -190,7 +190,7 @@ function fixture() {
     }
     throw new Error(`Unexpected product tool ${name}`)
   }
-  return { input, calls, defaults, workspaces, nodes, overrides,
+  return { input, calls, defaults, workspaces, nodes, overrides, locations,
     ports: { contracts, management, profiles, placements, workflows, roots, boundLocations, identity, tool },
     failQualification() { qualified = false }, changeReadback() { readbackChanged = true }, disconnect() { connected = false } }
 }
@@ -238,6 +238,8 @@ test('provisions six saved nodes and independently checked host profiles without
     const saved = f.nodes.get(subject.agent.context.workflowId)
     assert.equal(saved.saved, true)
     if (subject.hostKind === 'device') {
+      assert.equal(f.locations.get(subject.agent.workspaceId).binding.accessMode,
+        subject.harness === 'opencode' ? 'read-write' : 'read-only')
       assert.deepEqual(saved.request.graph.nodes[0].placement.hostRef, selected.target.hostRef)
       assert.equal(saved.request.graph.nodes[0].placement.instanceId, selected.instanceId)
       assert.equal(saved.request.expectedLocationRevision, 2)

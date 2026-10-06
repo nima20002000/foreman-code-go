@@ -354,7 +354,7 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
     const hostRef = { kind: 'device' as const, mainId: pairing.mainId, deviceId: pairing.deviceId }
     const roots = await qualifyApprovedRootAllowlist({ schemaVersion: 1, hostRef,
       applicationInstallationId: pairing.workerInstallationId, configurationRevision: '1', managedRuntimeRoot: runtime,
-      bases: [{ baseId: randomUUID(), canonicalPath: project, accessModes: ['read-only'] }] })
+      bases: [{ baseId: randomUUID(), canonicalPath: project, accessModes: ['read-only', 'read-write'] }] })
     await writeFile(join(state, 'approved-roots.json'), JSON.stringify(roots), { mode: 0o600, flag: 'wx' })
     const installedHarness = (driver: string) => {
       const value = main.installations.find(entry => entry.driverId === driver && entry.installed)

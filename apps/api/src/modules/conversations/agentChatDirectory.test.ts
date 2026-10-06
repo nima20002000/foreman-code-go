@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
 import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
@@ -67,4 +68,19 @@ it('preserves an unplaced local chat folder and rejects borrowing it for a selec
     location: { runnerId: 'runner-local', rootPath: '/main/workspace' } }
   expect(await resolveAgentChatDirectory(input)).toEqual({ workingDirectory: '/main/workspace' })
   await expect(resolveAgentChatDirectory({ ...input, configuration: f.configuration })).rejects.toThrow('another execution host')
+})
+
+it('requires an explicitly approved read-write root for the OpenCode profile', async () => {
+  const f = fixture()
+  const configuration = { ...f.configuration, harness: structuredClone(DEFAULT_HARNESS_DEFAULTS.opencode) }
+  const input = { ...f.input, configuration }
+  await expect(resolveAgentChatDirectory(input)).rejects.toThrow('approved host settings')
+  f.policy.accessMode = 'read-write'
+  await expect(resolveAgentChatDirectory(input)).rejects.toThrow('approved host settings')
+  f.approved.bases[0]!.accessModes.push('read-write')
+  const result = await resolveAgentChatDirectory(input)
+  expect(result.workingDirectory).toBe('/worker/project/src')
+  expect(result.directoryBinding?.policy.accessMode).toBe('read-write')
+  f.policy.accessMode = 'read-only'
+  await expect(resolveAgentChatDirectory(input)).rejects.toThrow('approved host settings')
 })
