@@ -17,6 +17,7 @@ import { DomainError } from '../errors.js'
 import { MainWorkerFiles, type PrepareWorkerFiles } from './mainWorkerFiles.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { definedProperties } from '../definedProperties.js'
+import { componentLogger } from '../../infrastructure/logger.js'
 
 export interface WorkerConversationCallbacks {
   profile?(): Promise<WorkerConversationProfileFacts>
@@ -133,7 +134,12 @@ export class MainWorkerConversationBridge {
   async handle(raw: unknown, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<unknown> {
     const callback = WorkerConversationCallbackSchema.parse(raw)
     const admission = this.admissions.get(callback.admissionId)
-    if (!admission) denied()
+    if (!admission) {
+      componentLogger('devices').error({ callbackMethod: callback.method,
+        conversationKind: callback.binding.owner.kind, conversationId: callback.binding.owner.conversationId },
+      'Worker callback has no live conversation request')
+      denied()
+    }
     await this.current(admission, callback.binding, connection, signal)
     if (callback.method === 'conversation.authorize') {
       if (!isDeepStrictEqual(admission.request, callback.request)) denied()

@@ -19,6 +19,7 @@ import { activityTextEnvelope } from './activityTextEnvelope.js'
 import { nativeInteractionAvailability } from './interactionAvailability.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { mkdir } from 'node:fs/promises'
+import { componentLogger } from '../../infrastructure/logger.js'
 import { join, resolve } from 'node:path'
 import type pg from 'pg'
 import type { z } from 'zod'
@@ -1198,6 +1199,13 @@ export class AgentChatService {
       textStream.flush()
       await this.observe(id, turn.requestId, runtime!, correlationId)
     } catch (error) {
+      const code = failure(error).error?.code
+      componentLogger('harness').error({
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
+        ...(code && /^[A-Za-z0-9_-]{1,64}$/.test(code) ? { errorCode: code } : {}),
+        stackFrames: error instanceof Error
+          ? error.stack?.split('\n').filter(frame => /^\s+at\s/.test(frame)).slice(0, 8) ?? [] : [],
+      }, 'Agent native turn failed')
       if (signal.aborted || observer.signal.aborted) textStream?.dispose(); else textStream?.flush()
       if (error instanceof RejectedSessionCreation) {
         // Retire the matching creation marker and terminal receipt in ONE ownership-fenced commit.
