@@ -1,15 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { randomUUID } from 'node:crypto'
-import { createRequire } from 'node:module'
-import { pathToFileURL } from 'node:url'
 import { prepareSessionControlMatrix } from './prepare-session-controls.mjs'
 
-const require = createRequire(new URL('../../apps/api/package.json', import.meta.url))
-const contracts = await import(pathToFileURL(require.resolve('@foreman-code/contracts')).href)
-const agentChat = await import(pathToFileURL(require.resolve('@foreman-code/contracts/agent-chat')).href)
-const management = await import(pathToFileURL(require.resolve('@foreman-code/contracts/management')).href)
-const profileContracts = await import(pathToFileURL(require.resolve('@foreman-code/contracts/harness-registry')).href)
+const contracts = await import(new URL('../../packages/contracts/dist/index.js', import.meta.url))
+const agentChat = await import(new URL('../../packages/contracts/dist/agentChat.js', import.meta.url))
+const management = await import(new URL('../../packages/contracts/dist/management/index.js', import.meta.url))
+const profileContracts = await import(new URL('../../packages/contracts/dist/harnessRegistry.js', import.meta.url))
 
 // Product-response ports are recorded. These checks do not qualify native profiles or a twelve-chat runtime.
 function fixture() {
