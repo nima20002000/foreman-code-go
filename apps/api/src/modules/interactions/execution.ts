@@ -470,7 +470,7 @@ export class ApprovalExecutionCoordinator {
     private readonly repeatReviewerBindings?: RepeatReviewerBindings,
     private readonly nativeCaptures?: WorkflowNativeCapturePort,
     private readonly reviewNativeCaptures?: ReviewNativeCapturePort,
-    private readonly recoverNativeProcesses?: (executionId: string, signal: AbortSignal) => Promise<boolean>,
+    private readonly recoverNativeProcesses?: (executionId: string, signal: AbortSignal, owner: RunOwnership) => Promise<boolean>,
     private readonly reserveNativeLaunch?: (executionId: string, manager: NativeHarnessSessionManager) => void,
     private readonly prepareManagerContext?: (context: NativeManagerResolutionContext) => Promise<NativeManagerResolutionContext>,
     private readonly commitReviewNative?: (executionId: string) => Promise<void>,

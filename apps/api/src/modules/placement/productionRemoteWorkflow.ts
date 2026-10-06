@@ -5,7 +5,7 @@ import type { CapturedRemoteTelemetryNativeOwner } from '../resource-telemetry/p
 import type pg from 'pg'
 import type { HarnessExecution } from '@foreman-code/contracts'
 import { sameWorkflowValue, canonicalGraphJson } from '@foreman-code/contracts/wave25'
-import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
+import { DeviceConnectionIdentitySchema, type DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { AgentPlacementProducer } from './agentProducer.js'
@@ -100,7 +100,7 @@ export function createProductionRemoteWorkflow(input: {
   const sourceKey = (source: WorkflowOriginalNativeSource) => remoteWorkflowSourceDigest(source)
   return {
     prepare,
-    async confirmClosedExecution(executionId: string, signal: AbortSignal): Promise<boolean> {
+    async confirmClosedExecution(executionId: string, signal: AbortSignal, owner: RunOwnership): Promise<boolean> {
       const binding = await prepare(executionId)
       if (!binding || binding.placement.hostRef.kind !== 'device') return false
       const captured = input.endpoint().captureRequest(binding.placement.hostRef.deviceId, 'execution-v1')
@@ -121,7 +121,24 @@ export function createProductionRemoteWorkflow(input: {
       if (!row) return false
       const session = NativeSessionReferenceSchema.parse(row.reference)
       const original = await physical.prefetch(status.receipt, binding.placement, { type: 'boundary' }, signal)
-      return physical.confirmedClosed(original, session)
+      if (!physical.confirmedClosed(original, session)) return false
+      const { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision,
+        connectionGeneration } = captured.binding
+      const authenticated = DeviceConnectionIdentitySchema.parse({ mainId, deviceId, workerInstallationId,
+        bootId, keyRevision, authorizationRevision, connectionGeneration })
+      await VerifiedRemoteEvidence.commit(status.receipt, authenticated,
+        new OwnedRemoteReceiptCommit(owner, status.receipt, authenticated, {
+          async assertCurrent(sql, intent, placement, connection) {
+            await authority(sql, { intent, placement }, connection, 'read')
+            if (!physical.confirmedClosed(original, session)) throw new DomainError(
+              'REMOTE_CLOSURE_INVALID', 'The original physical closure changed during recovery.', 409)
+          },
+          async publishNative() {
+            if (!physical.confirmedClosed(original, session)) throw new DomainError(
+              'REMOTE_CLOSURE_INVALID', 'The original physical closure changed during publication.', 409)
+          },
+        }))
+      return true
     },
     binding(executionId: string) { return bindings.get(executionId) },
     async prepareContext(context: NativeManagerResolutionContext): Promise<NativeManagerResolutionContext> {

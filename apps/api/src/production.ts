@@ -866,11 +866,11 @@ export function buildProductionApp(
       remoteWorkflow.captureReview(reviewCapture.verify.read(evidence))
       return evidence
     } },
-    async (executionId, signal) => {
+    async (executionId, signal, owner) => {
       signal.throwIfAborted()
       const placement = await readExecutionPlacement(database.pool, executionId)
       const closed = placement?.hostRef.kind === 'device'
-        ? await remoteWorkflow.confirmClosedExecution(executionId, signal)
+        ? await remoteWorkflow.confirmClosedExecution(executionId, signal, owner)
           || await remoteWorkflowPreparationClosed(database.pool, executionId)
         : await processRegistry.closeOwner(`execution:${executionId}`, signal)
       signal.throwIfAborted()
