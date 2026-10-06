@@ -1,4 +1,5 @@
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+import { retainedHeavyJobTokens } from './heavy-job-slots.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -147,13 +148,13 @@ if (process.argv[2] === '__schedule') {
     const records = slotRecords()
     const held = readJson(join(active, 'owner.json'))
     const legacy = existsSync(active) && !isGate(held) && !records.some((record) => record?.token && record.token === held?.token)
-    const occupied = records.length + Number(legacy)
+    const tickets = readdirSync(queue).sort().map(name => ({ name, record: readJson(join(queue, name)) }))
+    const retained = retainedHeavyJobTokens(tickets.map(ticket => ticket.record), records, held)
+    const occupied = records.length + Number(legacy) + retained.size
     // Running tickets stay in queue to fence old callers after their active
     // directory disappears. Only skip those tickets when admitting new code.
-    const first = readdirSync(queue).sort().find((name) => {
-      const record = readJson(join(queue, name))
-      return !(record?.token && (records.some((slot) => slot?.token === record.token) || record.token === held?.token))
-    })
+    const first = tickets.find(({ record }) => !(record?.token && (retained.has(record.token)
+      || records.some(slot => slot?.token === record.token) || record.token === held?.token)))?.name
     const record = readJson(join(queue, ticket))
     if (first === ticket && record?.token === token && occupied < slotCount()) {
       const acquiring = { ...record, phase: 'acquiring' }
