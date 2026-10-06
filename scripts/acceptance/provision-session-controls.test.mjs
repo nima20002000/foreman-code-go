@@ -141,10 +141,10 @@ function fixture() {
     if (name === 'workspace_root_location_get') return locations.get(args.workspaceId)
     if (name === 'workflow_create') {
       workflows.CurrentWorkflowCreateInputSchema.parse(args)
-      return { value: { workflow: { id: randomUUID(), workspaceId: args.workspaceId, name: args.name,
+      return workflows.SavedManagedWorkflowCommandResultSchema.parse({ value: { workflow: { id: randomUUID(), workspaceId: args.workspaceId, name: args.name,
         executionSemanticsVersion: 3, version: 1, entryNodeId: null, executionCondition: { kind: 'manual' },
-        nodes: [], edges: [], approval: { handler: 'operator' }, handoffs: { contractVersion: 1 }, createdAt },
-      revision: 0, currentVersionId: null, archivedAt: null }, replayed: false }
+        nodes: [], edges: [], approval: { handler: 'orchestrator' }, handoffs: { contractVersion: 1 }, createdAt },
+      revision: 0, currentVersionId: null, archivedAt: null }, replayed: false })
     }
     if (name === 'workflow_edit_v3' && args.action === 'stage_edits') {
       const request = workflows.CurrentEditStageInputSchema.parse(args)
