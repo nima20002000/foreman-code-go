@@ -31,6 +31,8 @@ import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppS
 import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
 import { inspectOpenCodeMcpConfiguration } from '../src/modules/harnesses/opencodeMcpConfiguration.js'
+import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
+import { managedStatus } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { APP_MCP_SERVER_NAME, isSupportedAppMcpTokenName } from '../src/modules/harnesses/appMcpLauncher.js'
 import { provisionTestResources } from '../../../scripts/test-resources.mjs'
 import { stopGroup } from '../../../scripts/integration-process.mjs'
@@ -71,6 +73,8 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       expect(openCode?.automaticEndpoint, JSON.stringify(openCode)).toBe(true)
       expect(isSupportedAppMcpTokenName(openCode?.credentialEnvironmentVariable)).toBe(true)
       expect(openCode?.credentialEnvironmentVariable).toBe('GRAPHQL_MCP_TOKEN')
+      const settings = await new OpenCodeMcpConnections(openCodeBinary, directory).read(AbortSignal.timeout(30_000))
+      expect(managedStatus(settings, 'graphql')).toBe('installed')
       const configured = await manager.inspectMcpConfiguration(directory)
       expect(configured.configured.automaticEndpoint).toBe(true)
       const detection = new McpDetectionService(codexMcpInspectorAdapter(manager), 'http://127.0.0.1:1/mcp')

@@ -43,6 +43,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
   const previousSourceLauncher = process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
   const previousOpenCodeConfig = process.env.OPENCODE_CONFIG
   const previousOpenCodeConfigDirectory = process.env.OPENCODE_CONFIG_DIR
+  const previousConfigHome = process.env.XDG_CONFIG_HOME
   const previousAuthentication = process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
   let restore: (() => Promise<void>) | undefined
   try {
@@ -83,6 +84,9 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
     const directoryConfig = JSON.parse(await readFile(
       join(process.env.OPENCODE_CONFIG_DIR!, 'opencode.json'), 'utf8')) as typeof configured
     expect(directoryConfig.mcp[identity.name]).toEqual(entry)
+    const userConfig = JSON.parse(await readFile(
+      join(process.env.XDG_CONFIG_HOME!, 'opencode', 'opencode.json'), 'utf8')) as typeof configured
+    expect(userConfig.mcp[identity.name]).toEqual(entry)
     // OpenCode merges environment maps from user and project configuration.
     const effective = { ...entry, environment: { [identity.token]: '', ...entry.environment } }
     expect(entry.environment).toEqual({ [identity.token]: `{env:${identity.token}}` })
@@ -94,6 +98,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
     expect(process.env.FOREMAN_CODE_APP_MCP_DIRECTORY).toBe(restoredLauncherDirectory)
     expect(process.env.OPENCODE_CONFIG).toBe(previousOpenCodeConfig)
     expect(process.env.OPENCODE_CONFIG_DIR).toBe(sourceConfigDirectory)
+    expect(process.env.XDG_CONFIG_HOME).toBe(previousConfigHome)
     expect(await readFile(join(sourceConfigDirectory, 'opencode.json'), 'utf8')).toBe(sourceConfig)
     await expect(access(ownedHome)).rejects.toMatchObject({ code: 'ENOENT' })
   } finally {
@@ -109,6 +114,8 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
       else process.env.OPENCODE_CONFIG = previousOpenCodeConfig
       if (previousOpenCodeConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR
       else process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDirectory
+      if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = previousConfigHome
       if (previousAuthentication === undefined) delete process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
       else process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE = previousAuthentication
       await rm(directory, { recursive: true, force: true })
