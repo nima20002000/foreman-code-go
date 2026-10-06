@@ -9,7 +9,7 @@ export type MaterializationAttempt = {
   placementHash: string; executionId: string; attemptId: string; keyRevision: number | null; authorizationRevision: number | null
 }
 export interface SourceMaterializationPort {
-  prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<MaterializationReceipt>
+  prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal; sharedWritableTree?: true }): Promise<MaterializationReceipt>
   verify(receipt: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<void>
   resolve(receipt: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<string>
 }

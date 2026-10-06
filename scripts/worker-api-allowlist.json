@@ -179,6 +179,8 @@
   "apps/api/src/modules/sources/retainedDirectoryUsage.ts",
   "apps/api/src/modules/sources/rootAttestation.ts",
   "apps/api/src/modules/sources/rsyncTransferLifecycle.ts",
+  "apps/api/src/modules/sources/sharedWorkingTree.ts",
+  "apps/api/src/modules/sources/sourceTreePaths.ts",
   "apps/api/src/modules/sources/workingDirectory.ts",
   "apps/api/src/modules/subagents/controlErrors.ts",
   "apps/api/src/modules/subagents/nativeReadback.ts"

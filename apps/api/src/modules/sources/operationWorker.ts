@@ -1,6 +1,6 @@
 /** Worker-safe actual source filesystem operations: Node/shared contracts only. */
 import { constants } from 'node:fs'
-import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
+import { measureRetainedMaterialization } from './retainedDirectoryUsage.js'
 import { open } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -156,7 +156,9 @@ export class SourceOperationWorkerService {
           // Complete framing is checked BEFORE activation in the materializer's
           // final authorization callback, not after a partial ready receipt.
           if (packageReader!.readyToComplete) await packageReader!.complete()
-        }).prepare({ manifest, binding: owner.root.binding, attempt: owner.attempt, signal: context.signal })
+        }).prepare({ manifest, binding: owner.root.binding, attempt: owner.attempt, signal: context.signal,
+          ...(owner.preparationKind === 'workflow' && owner.root.binding.accessMode === 'exclusive-write'
+            ? { sharedWritableTree: true } : {}) })
         await packageReader.complete(); await reauthorize()
         return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, receipt: receiptValue })
       }
@@ -205,10 +207,7 @@ export class SourceOperationWorkerService {
       })
       await this.options.executionTransfersClosed?.(record, context.signal)
       await reauthorize()
-      const binding = record.receipt.binding
-      const retainedBytes = await measureRetainedSourceDirectory(
-        binding.canonicalPath, record.receipt.materializationId, binding.filesystem,
-      )
+      const retainedBytes = await measureRetainedMaterialization(record.receipt)
       await reauthorize()
       return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation,
         materializationId: record.receipt.materializationId, operationId: record.operationId, released: true, retainedBytes })

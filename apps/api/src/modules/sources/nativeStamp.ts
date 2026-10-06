@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import { VerifiedSourceWorkingTreeSchema, type SourceMaterializationRecord, type VerifiedSourceWorkingTree } from '@foreman-code/contracts/source-admission'
 import { sourceMaterializationDigest } from './bindingHash.js'
 import { sourceSha256 } from './manifest.js'
@@ -10,7 +10,7 @@ import { DomainError } from '../errors.js'
  */
 export function verifiedSourceWorkingTree(record: SourceMaterializationRecord, verifiedPath: string,
   privateGit: VerifiedSourceWorkingTree['privateGit'] = null): VerifiedSourceWorkingTree {
-  const expected = join(record.receipt.binding.canonicalPath, record.receipt.materializationId, 'tree')
+  const expected = sourceWorkingTreePath(record.receipt)
   if (verifiedPath !== expected) throw new DomainError('SOURCE_DIRECTORY_CONFLICT', 'Native execution must use the actual verified private source tree.', 409)
   return VerifiedSourceWorkingTreeSchema.parse({ materializationId: record.receipt.materializationId, materializationDigest: sourceMaterializationDigest(record),
     canonicalProjectRoot: verifiedPath, canonicalCwd: verifiedPath, filesystem: record.receipt.localTreeIdentity,

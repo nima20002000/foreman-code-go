@@ -3,7 +3,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { SourceRootRecord, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@foreman-code/contracts/source-admission'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { DomainError } from '../errors.js'
-import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
+import { measureRetainedMaterialization } from './retainedDirectoryUsage.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation } from './materialization.js'
 import { verifyMaterializedWorkingDirectory } from './workingDirectory.js'
 import { createPrivateSourceRepository } from './repository.js'
@@ -76,11 +76,12 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
   authorizeFinal(sql: GraphSqlClient, principal: ManagementPrincipal, record: SourceMaterializationRecord, hash: string) {
     return this.authority.authorizeFinal(sql, principal, record, hash)
   }
-  async prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt) {
+  async prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt,
+    options?: { sharedWritableTree?: true }) {
     if (root.binding.mainId !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source copy belongs to another main.', 403)
     if (root.binding.deviceId !== null) return this.remote.prepare(manifest, root, attempt)
     const materializer = new PrivateSourceMaterializer(this.bytes, async () => this.authority.revalidate(root, attempt))
-    return materializer.prepare({ manifest, binding: root.binding, attempt })
+    return materializer.prepare({ manifest, binding: root.binding, attempt, ...options })
   }
   async verify(record: SourceMaterializationRecord): Promise<string> {
     if (record.receipt.binding.mainId !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source copy belongs to another main.', 403)
@@ -99,8 +100,7 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
   async releaseClaim(record: SourceMaterializationRecord): Promise<number> {
     if (record.receipt.binding.deviceId !== null) return this.remote.releaseClaim(record)
     await releaseMaterializationClaim(record.receipt, async () => 'released')
-    const binding = record.receipt.binding
-    return measureRetainedSourceDirectory(binding.canonicalPath, record.receipt.materializationId, binding.filesystem)
+    return measureRetainedMaterialization(record.receipt)
   }
   /** CI-only explicit detached write copy; read-only references cannot acquire
    * write authority or Git working metadata through this helper. */

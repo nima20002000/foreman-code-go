@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { chmod, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
+import { measureRetainedMaterialization, measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim } from './materialization.js'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
-import type { RootBinding } from '@foreman-code/contracts/source-materialization'
+import type { RootBinding, MaterializationReceipt } from '@foreman-code/contracts/source-materialization'
 import type { MaterializationAttempt } from './ports.js'
 
 const pauses = vi.hoisted(() => ({ beforeUnlink: null as null | (() => Promise<void>) }))
@@ -47,13 +48,22 @@ async function fixture(accessMode: RootBinding['accessMode'] = 'exclusive-write'
   return { root, bytes, manifest, binding, attempt, materializer }
 }
 
+async function claimPath(root: string, receipt: MaterializationReceipt) {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (!entry.isFile()) continue
+    const value = JSON.parse(await readFile(join(root, entry.name), 'utf8')) as { materializationId?: string }
+    if (value.materializationId === receipt.materializationId) return join(root, entry.name)
+  }
+  throw new Error('The original execution claim is missing')
+}
+
 it('serializes a delayed duplicate release with successor acquisition and preserves the successor claim', async () => {
   const f = await fixture(), receipt = await f.materializer().prepare(f), entered = deferred(), resume = deferred()
   pauses.beforeUnlink = async () => { entered.resolve(); await resume.promise }
   const delayed = releaseMaterializationClaim(receipt, async () => 'released')
   await entered.promise
   const duplicate = releaseMaterializationClaim(receipt, async () => 'released').then(() => 'released' as const, () => 'rejected' as const)
-  const next = { ...f, attempt: { ...f.attempt, executionId: randomUUID(), attemptId: randomUUID() } }
+  const next = { ...f, attempt: { ...f.attempt, attemptId: randomUUID() } }
   let successor
   try {
     // On the defective implementation the duplicate removes M0 while the first
@@ -63,8 +73,7 @@ it('serializes a delayed duplicate release with successor acquisition and preser
   } finally { resume.resolve() }
   await delayed; await duplicate
   successor ??= await f.materializer().prepare(next)
-  const claim = JSON.parse(await readFile(join(f.root, `binding-${f.binding.rootId}.lock`), 'utf8')) as { materializationId: string }
-  expect(claim.materializationId).toBe(successor.materializationId)
+  expect(await f.materializer().prepare(next)).toEqual(successor)
   await expect(f.materializer().prepare({ ...next, attempt: { ...next.attempt, attemptId: randomUUID() } })).rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
 })
 
@@ -84,12 +93,53 @@ it('lets another execution prepare a read-only root while the first execution ke
   await releaseMaterializationClaim(second, async () => 'released')
 })
 
-it('keeps an exclusive-write root owned by one execution at a time', async () => {
-  const f = await fixture('exclusive-write'), first = await f.materializer().prepare(f)
-  const other = { ...f, attempt: { ...f.attempt, executionId: randomUUID(), attemptId: randomUUID() } }
-  await expect(f.materializer().prepare(other)).rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
-  await releaseMaterializationClaim(first, async () => 'released')
-  expect((await f.materializer().prepare(other)).executionId).toBe(other.attempt.executionId)
+it('lets two writable executions write in the same working directory while the first writer stays alive', async () => {
+  const f = await fixture('exclusive-write')
+  const firstInput = { ...f, sharedWritableTree: true as const }
+  const first = await f.materializer().prepare(firstInput)
+  const cwd = await f.materializer().resolve(first, { binding: f.binding, attempt: f.attempt })
+  const script = `
+    const fs = require('node:fs');
+    fs.writeFileSync('orchestrator.txt', 'ORCHESTRATOR');
+    fs.writeFileSync('src/app.ts', 'shared edit');
+    console.log('ready');
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      if (fs.existsSync('requester.txt')) { clearInterval(timer); process.exit(0); }
+      if (Date.now() > deadline) { clearInterval(timer); process.exit(1); }
+    }, 10);
+  `
+  const writer = spawn(process.execPath, ['-e', script], { cwd, stdio: ['ignore', 'pipe', 'inherit'] })
+  const exited = new Promise<number | null>(resolve => writer.once('exit', resolve))
+  try {
+    await new Promise<void>((resolve, reject) => {
+      writer.stdout.once('data', () => resolve())
+      writer.once('error', reject)
+      writer.once('exit', () => reject(new Error('The first writer exited before readiness')))
+    })
+    const other = { ...firstInput, attempt: { ...f.attempt, executionId: randomUUID(), attemptId: randomUUID() } }
+    const second = await f.materializer().prepare(other)
+    const secondCwd = await f.materializer().resolve(second, { binding: f.binding, attempt: other.attempt })
+    expect(secondCwd).toBe(cwd)
+    expect(writer.exitCode).toBeNull()
+    await promisify(execFile)(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      if (fs.readFileSync('orchestrator.txt', 'utf8') !== 'ORCHESTRATOR') process.exit(2);
+      fs.writeFileSync('requester.txt', 'REQUESTER');
+    `], { cwd: secondCwd })
+    expect(await exited).toBe(0)
+    expect(await readFile(join(cwd, 'src/app.ts'), 'utf8')).toBe('shared edit')
+    expect(await readFile(join(cwd, 'requester.txt'), 'utf8')).toBe('REQUESTER')
+    expect(await measureRetainedMaterialization(first)).toBe(
+      await measureRetainedSourceDirectory(f.root, first.materializationId)
+      + await measureRetainedSourceDirectory(f.root, first.sharedTree!.id))
+    await releaseMaterializationClaim(first, async () => 'released')
+    expect(await f.materializer().prepare(other)).toEqual(second)
+    await releaseMaterializationClaim(second, async () => 'released')
+  } finally {
+    if (writer.exitCode === null) writer.kill('SIGTERM')
+    await exited
+  }
 })
 
 it('holds a kernel lock across validated claim deletion, including other processes', async () => {
@@ -113,7 +163,7 @@ async function inFreshProcess(receipt: unknown, loseAcknowledgement = false) {
 it('replays the exact durable release in a fresh process after a lost acknowledgement', async () => {
   const f = await fixture(), receipt = await f.materializer().prepare(f)
   await expect(inFreshProcess(receipt, true)).rejects.toMatchObject({ code: 42 })
-  await expect(readFile(join(f.root, `binding-${f.binding.rootId}.lock`))).rejects.toMatchObject({ code: 'ENOENT' })
+  expect(await f.materializer().recover(f.binding, f.attempt)).toBeNull()
   await inFreshProcess(receipt)
   expect(await readFile(join(f.root, receipt.materializationId, 'tree/src/app.ts'))).toEqual(f.bytes)
 })
@@ -121,17 +171,16 @@ it('replays the exact durable release in a fresh process after a lost acknowledg
 it('replays an old release without deleting a successor claim', async () => {
   const f = await fixture(), receipt = await f.materializer().prepare(f)
   await releaseMaterializationClaim(receipt, async () => 'released')
-  const next = { ...f, attempt: { ...f.attempt, executionId: randomUUID(), attemptId: randomUUID() } }
+  const next = { ...f, attempt: { ...f.attempt, attemptId: randomUUID() } }
   const successor = await f.materializer().prepare(next)
   await inFreshProcess(receipt)
-  const claim = JSON.parse(await readFile(join(f.root, `binding-${f.binding.rootId}.lock`), 'utf8')) as { materializationId: string }
-  expect(claim.materializationId).toBe(successor.materializationId)
+  expect(await f.materializer().prepare(next)).toEqual(successor)
   await expect(f.materializer().prepare({ ...next, attempt: { ...next.attempt, attemptId: randomUUID() } })).rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
 })
 
 it('rejects arbitrary missing claims without a durable original release', async () => {
   const f = await fixture(), receipt = await f.materializer().prepare(f)
-  await unlink(join(f.root, `binding-${f.binding.rootId}.lock`))
+  await unlink(await claimPath(f.root, receipt))
   await expect(releaseMaterializationClaim(receipt, async () => 'released')).rejects.toMatchObject({ code: 'ENOENT' })
 })
 
@@ -162,5 +211,5 @@ it('rejects a corrupted durable release record', async () => {
 it('rejects changed receipt facts before releasing an active claim', async () => {
   const f = await fixture(), receipt = await f.materializer().prepare(f)
   await expect(releaseMaterializationClaim({ ...receipt, verifiedAt: '2020-01-01T00:00:00.000Z' }, async () => 'released')).rejects.toMatchObject({ code: 'SOURCE_RECEIPT_CONFLICT' })
-  expect(JSON.parse(await readFile(join(f.root, `binding-${f.binding.rootId}.lock`), 'utf8'))).toMatchObject({ materializationId: receipt.materializationId })
+  expect(await f.materializer().prepare(f)).toEqual(receipt)
 })

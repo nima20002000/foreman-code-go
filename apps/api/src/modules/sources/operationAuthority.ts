@@ -24,10 +24,10 @@ export class PostgresSourceOperationAuthority {
     catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
   }
   private async allocation(sql: GraphSqlClient, attempt: MaterializationAttempt) {
-    const rows = await sql.query<{ operation_id: string; principal_id: string }>(`select operation_id,principal_id from job_preparations where execution_id=$1 and attempt_id=$2
-      union all select p.preparation->>'operationId',r.record->>'authorizationPrincipalId' from workflow_job_preparations p
+    const rows = await sql.query<{ operation_id: string; principal_id: string; preparation_kind: 'job' | 'workflow' }>(`select operation_id,principal_id,'job' preparation_kind from job_preparations where execution_id=$1 and attempt_id=$2
+      union all select p.preparation->>'operationId',r.record->>'authorizationPrincipalId','job' from workflow_job_preparations p
       join runs r on r.id=p.preparation->>'runId' where p.preparation->>'executionId'=$1 and p.preparation->>'attemptId'=$2
-      union all select i.operation_id,r.record->>'authorizationPrincipalId' from execution_dispatch_intents i
+      union all select i.operation_id,r.record->>'authorizationPrincipalId','workflow' from execution_dispatch_intents i
       join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id and e.workflow_node_id=i.node_id
       join runs r on r.id=i.run_id where i.execution_id=$1 and i.attempt_id=$2`, [attempt.executionId, attempt.attemptId])
     if (rows.rows.length !== 1) throw new DomainError('SOURCE_ALLOCATION_CONFLICT', 'The original actual Main preparation is missing or ambiguous.', 409)
@@ -100,7 +100,8 @@ export class PostgresSourceOperationAuthority {
         || Date.parse(identity.expiresAt) <= Date.now()) throw new DomainError('SOURCE_OWNER_CONFLICT', 'Source ownership is expired or differs from the actual Main allocation.', 403)
       const activeNativeSession = request.operation === 'sources.verify' && record?.receipt.binding.accessMode === 'exclusive-write'
         ? await this.activeNativeSession?.(sql, record) ?? null : null
-      return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed, activeNativeSession })
+      return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed, activeNativeSession,
+        ...(allocated.preparation_kind === 'workflow' ? { preparationKind: 'workflow' } : {}) })
     })
   }
 }

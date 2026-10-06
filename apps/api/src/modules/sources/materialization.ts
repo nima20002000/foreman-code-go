@@ -9,15 +9,14 @@ import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySource
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPort } from './ports.js'
 import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
+import { prepareSharedWorkingTree, verifySharedWorkingTree } from './sharedWorkingTree.js'
+import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 
 const equal = isDeepStrictEqual
-/** Exclusive-write roots admit one execution at a time. Read-only roots give
- * every execution its own private copy, so each execution owns a separate
- * claim; a retained Orchestrator cannot block another Agent on the same root.
- * Attempts of one execution still share and serialize on that claim. */
-function claimName(binding: RootBinding, executionId: string): string {
-  if (binding.accessMode === 'exclusive-write') return `binding-${binding.rootId}.lock`
+/** New executions own separate claims; old receipts retain their original cleanup path. */
+function claimName(binding: RootBinding, executionId: string, scope?: 'execution'): string {
+  if (!scope && binding.accessMode === 'exclusive-write') return `binding-${binding.rootId}.lock`
   return `binding-${binding.rootId}-${createHash('sha256').update(executionId).digest('hex')}.lock`
 }
 /** Lock the anchored directory inode, never a replaceable lock pathname. Linux
@@ -38,7 +37,7 @@ async function withClaimLock<T>(root: FileHandle, work: () => Promise<T>, nonBlo
 export class PrivateSourceMaterializer implements SourceMaterializationPort {
   private active = 0
   constructor(private readonly bytes: SourceByteReader | null, private readonly authorize: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<void>) {}
-  async prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<MaterializationReceipt> {
+  async prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal; sharedWritableTree?: true }): Promise<MaterializationReceipt> {
     if (!this.bytes) throw new SourceError('SOURCE_READ_ONLY_VERIFIER', 'A verification-only materializer cannot prepare source bytes.')
     const manifest = verifySourceManifest(input.manifest), binding = RootBindingSchema.parse(input.binding)
     if (binding.snapshotId !== manifest.snapshotId || binding.manifestDigest !== manifest.manifestDigest)
@@ -61,7 +60,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     this.active++
     const signal = AbortSignal.any([AbortSignal.timeout(SOURCE_LIMITS.preparationMs), ...(input.signal ? [input.signal] : [])])
     let root: FileHandle | undefined, reservation: FileHandle | undefined, tree: FileHandle | undefined, lock: FileHandle | undefined
-    const id = randomUUID(), lockName = claimName(binding, attempt.executionId)
+    const id = randomUUID(), lockName = claimName(binding, attempt.executionId, 'execution')
     try {
       signal.throwIfAborted()
       root = await openPrivateRoot(binding.canonicalPath)
@@ -85,7 +84,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
         const { parent, leaf } = await entryParent(tree, entry.path, true)
         try {
           const file = await open(anchored(parent, leaf), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-          try { await file.writeFile(content); await file.chmod(binding.accessMode === 'read-only' ? (entry.executable ? 0o500 : 0o400) : (entry.executable ? 0o700 : 0o600)); await file.sync() }
+          try { await file.writeFile(content); await file.chmod(binding.accessMode === 'read-only' || input.sharedWritableTree ? (entry.executable ? 0o500 : 0o400) : (entry.executable ? 0o700 : 0o600)); await file.sync() }
           finally { await file.close() }
           await parent.sync()
         } finally { await parent.close() }
@@ -95,9 +94,15 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       const current = await openPrivateRoot(binding.canonicalPath)
       try { if (!equal(await identity(current), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root replaced before activation.') }
       finally { await current.close() }
+      const referenceIdentity = await identity(tree)
+      const shared = input.sharedWritableTree && binding.accessMode === 'exclusive-write'
+        ? await withClaimLock(root, () => prepareSharedWorkingTree({ root: root!, binding, manifest,
+          reference: tree!, signal, authorize: () => this.authorize(binding, attempt) })) : undefined
       const receipt = MaterializationReceiptSchema.parse({ version: 1, materializationId: id, binding, ...attempt,
+        claimScope: 'execution',
+        ...(shared ? { sharedTree: { id: shared.id, referenceIdentity } } : {}),
         verifiedManifestDigest: manifest.manifestDigest, verifiedEntries: manifest.totalEntries,
-        verifiedBytes: manifest.totalBytes, verifiedAt: new Date().toISOString(), localTreeIdentity: await identity(tree) })
+        verifiedBytes: manifest.totalBytes, verifiedAt: new Date().toISOString(), localTreeIdentity: shared?.filesystem ?? referenceIdentity })
       const record = await open(anchored(reservation, 'receipt.json'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
       try { await record.writeFile(JSON.stringify({ receipt, manifest })); await record.sync() } finally { await record.close() }
       await tree.sync()
@@ -120,10 +125,13 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     const root = await openPrivateRoot(binding.canonicalPath)
     try {
       if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
-      const lock = await open(anchored(root, claimName(binding, attempt.executionId)), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
+      const readClaim = (name: string) => open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
         if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
         throw error
       })
+      let lock = await readClaim(claimName(binding, attempt.executionId, 'execution'))
+      const legacy = !lock && binding.accessMode === 'exclusive-write'
+      if (legacy) lock = await readClaim(claimName(binding, attempt.executionId))
       if (!lock) return null
       let claim: { materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }
       try {
@@ -131,6 +139,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
         if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_CLAIM_INVALID', 'Invalid source ownership claim.')
         claim = JSON.parse(await lock.readFile('utf8')) as typeof claim
       } finally { await lock.close() }
+      if (legacy && claim.attempt.executionId !== attempt.executionId) return null
       MaterializationReceiptSchema.shape.materializationId.parse(claim.materializationId)
       if (!equal(claim.binding, binding) || !equal(claim.attempt, attempt)) throw new SourceError('SOURCE_ROOT_OWNED', 'The root belongs to another accepted execution/attempt.')
       const directory = await openChildDirectory(root, claim.materializationId)
@@ -174,15 +183,16 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
           throw new SourceError('SOURCE_RECEIPT_INVALID', 'Stored source receipt changed.')
         const tree = await openChildDirectory(directory, 'tree')
         try {
-          if (!equal(await identity(tree), receipt.localTreeIdentity)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Materialized tree replaced.')
+          if (!equal(await identity(tree), receipt.sharedTree?.referenceIdentity ?? receipt.localTreeIdentity)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Materialized source reference replaced.')
           await verifyMaterializedSourceTree(tree, manifest, expected.signal)
+          await verifySharedWorkingTree(root, receipt)
         } finally { await tree.close() }
       } finally { await directory.close() }
     } finally { await root.close() }
   }
   async resolve(receipt: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<string> {
     await this.verify(receipt, expected)
-    return join(receipt.binding.canonicalPath, receipt.materializationId, 'tree')
+    return sourceWorkingTreePath(receipt)
   }
 }
 export async function verifyMaterializedSourceTree(tree: FileHandle, manifest: SourceManifest, signal?: AbortSignal): Promise<void> {
@@ -240,7 +250,7 @@ async function archiveMaterializationClaim(receipt: MaterializationReceipt,
     if (!equal(await identity(root), options.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
     await withClaimLock(root, async () => {
       if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution ownership is not reconciled.')
-      const name = claimName(binding, receipt.executionId), releasedName = 'released-claim.json'
+      const name = claimName(binding, receipt.executionId, receipt.claimScope), releasedName = 'released-claim.json'
       const directory = await openChildDirectory(root, receipt.materializationId)
       const validateClaim = async (lock: FileHandle): Promise<void> => {
         const stat = await lock.stat()
@@ -373,7 +383,7 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
       if (!await nativeClosed() || !await preparationChildrenClosed(binding.canonicalPath))
         throw new SourceError('source-reconciliation-unconfirmed', 'A native owner or source process is live or uncertain.')
       await reauthorize()
-      const lockName = claimName(binding, owner.attempt.executionId), archive = await optionalRecord(archiveName), current = archive ?? await optionalRecord(lockName)
+      const lockName = claimName(binding, owner.attempt.executionId, owner.record ? owner.record.receipt.claimScope : 'execution'), archive = await optionalRecord(archiveName), current = archive ?? await optionalRecord(lockName)
       let materializationId = owner.record?.receipt.materializationId ?? null
       if (current) {
         const claim = current as { version: number; materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }
