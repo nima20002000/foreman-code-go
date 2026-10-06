@@ -1,7 +1,7 @@
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdir, realpath, stat, writeFile } from 'node:fs/promises'
+import { mkdir, realpath, stat } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'

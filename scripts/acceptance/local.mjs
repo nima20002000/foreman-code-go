@@ -13,7 +13,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const exec = promisify(execFile)
 const service = join(root, 'apps/api/scripts/local-acceptance-service.mjs')
 const abort = new AbortController()
-let state, owner, resources, admin, removeRoot, dropDatabase, api, web, input, stage = 'arguments', stopping = false, preserve = false
+let state, owner, resources, admin, removeRoot, dropDatabase, api, web, input, stage = 'arguments', stopping = false
 let end
 const ended = new Promise((resolve) => { end = resolve })
 let safeEnv = {}
@@ -74,7 +74,6 @@ function ownedChild(name, file, args, env, ipc = false) {
     for (const request of record.pending.values()) request.reject(new Error('Service exited.'))
     record.pending.clear(); exited()
     if (!record.expected && !stopping) {
-      if (name === 'API') preserve = true
       console.error(`ENG07 ${name} exited unexpectedly. No other service will be adopted.`)
       finish(1)
     }
@@ -87,7 +86,6 @@ function ownedChild(name, file, args, env, ipc = false) {
     if (message?.type === 'notice') {
       // A notice is NOT evidence of recovery or native closure. Retain receipts
       // at teardown rather than erase potentially unresolved crash evidence.
-      preserve = true
       if (!record.noticeShown) { console.log('ENG07 recovery is unresolved; inspect the Run before continuing.'); record.noticeShown = true }
     }
     if (message?.type === 'failure') {
@@ -149,7 +147,7 @@ async function shutdown() {
     }
   }
   if (!state) return
-  if (!orderly || preserve || children.some((record) => !record.done)) {
+  if (!orderly || children.some((record) => !record.done)) {
     process.exitCode = 1
     console.error(`ENG07 retained private task state: ${state}`)
     console.error('Native/cleanup settlement is not proven. Do not delete it or kill processes by name. See the walkthrough.')
@@ -298,7 +296,7 @@ async function main() {
         if (text === 'crash-api') await stop(api, 'SIGKILL', 10_000)
         else {
           await stop(api)
-          if (!api.closed || api.code !== 0) { preserve = true; throw new Error('API shutdown is not proven.') }
+          if (!api.closed || api.code !== 0) { throw new Error('API shutdown is not proven.') }
         }
         await startApi()
         console.log('ENG07 API restarted against the SAME database and recovery directories. No seed, new Run or approval replay was submitted.')
@@ -309,7 +307,7 @@ async function main() {
       console.log('Use restart-api, crash-api, parity [RUN_ID], or quit. Do not enter credentials here.')
     }).catch((error) => {
       console.error(`ENG07 ${stage} failed (${publicError(error)}). Inspect the Board; no automatic command resubmission.`)
-      preserve = true; finish(1)
+      finish(1)
     })
   })
   input.once('close', () => finish())
