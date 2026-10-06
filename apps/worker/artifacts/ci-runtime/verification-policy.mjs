@@ -72,6 +72,22 @@ export async function assertDependencyInputs(root, receipt) {
   }
 }
 
+export async function copyVerificationSeed(seedDirectory, scratchDirectory, receiptBytes) {
+  for (const directory of ['home', 'cache', 'config', 'data', 'tmp']) {
+    await mkdir(`${scratchDirectory}/${directory}`, { recursive: true, mode: 0o700 });
+  }
+  const marker = `${scratchDirectory}/seed-receipt.sha256`;
+  const existing = await readFile(marker, 'utf8').catch(error => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (existing === null) {
+    await cp(`${seedDirectory}/pnpm-store`, `${scratchDirectory}/pnpm-store`, { recursive: true, force: false, errorOnExist: true });
+    await cp(`${seedDirectory}/registry-cache`, `${scratchDirectory}/cache/pnpm`, { recursive: true, force: false, errorOnExist: true });
+    await writeFile(marker, sha256(receiptBytes), { flag: 'wx', mode: 0o600 });
+  } else if (existing !== sha256(receiptBytes)) throw new Error('Job-local store belongs to another approved seed.');
+}
+
 /** Every invocation uses image-controlled pnpm and configuration; workloads never share a writable installer store. */
 export async function prepareVerificationPnpm(argv, environment = process.env) {
   if (argv[0] !== 'pnpm') throw new Error('The verification runtime uses its pinned pnpm only.');
@@ -86,19 +102,7 @@ export async function prepareVerificationPnpm(argv, environment = process.env) {
     && !['--offline', '--prod=false'].includes(arg))) {
     throw new Error('Caller package configuration overrides are unavailable in verification.');
   }
-  for (const directory of ['home', 'cache', 'cache/pnpm', 'config', 'data', 'tmp']) {
-    await mkdir(`${VERIFICATION_SCRATCH}/${directory}`, { recursive: true, mode: 0o700 });
-  }
-  const marker = `${VERIFICATION_SCRATCH}/seed-receipt.sha256`;
-  const existing = await readFile(marker, 'utf8').catch(error => {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  });
-  if (existing === null) {
-    await cp(`${imageRoot}/seed/pnpm-store`, `${VERIFICATION_SCRATCH}/pnpm-store`, { recursive: true, force: false, errorOnExist: true });
-    await cp(`${imageRoot}/seed/registry-cache`, `${VERIFICATION_SCRATCH}/cache/pnpm`, { recursive: true, force: false, errorOnExist: true });
-    await writeFile(marker, sha256(receiptBytes), { flag: 'wx', mode: 0o600 });
-  } else if (existing !== sha256(receiptBytes)) throw new Error('Job-local store belongs to another approved seed.');
+  await copyVerificationSeed(`${imageRoot}/seed`, VERIFICATION_SCRATCH, receiptBytes);
   const config = JSON.parse(execFileSync(process.execPath, [corepack, 'pnpm', 'config', 'list', '--json'],
     { env, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 30_000 }));
   assertEffectivePackagePolicy(config);

@@ -13,6 +13,7 @@ import { acquireWorkerLock } from '../src/runtime.mjs';
 import { validateSeedReceipt, verifySeedFiles } from '../artifacts/ci-runtime/seed-policy.mjs';
 import { assertEffectivePackagePolicy, assertEffectiveVerificationStore, verificationEnvironment, verificationInstallArguments }
   from '../artifacts/ci-runtime/verification-policy.mjs';
+import { copyVerificationSeed } from '../artifacts/ci-runtime/verification-policy.mjs';
 
 const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -46,6 +47,19 @@ async function offlineSeedFixture(t) {
     now: Date.parse('2026-10-03T00:00:00Z') };
   return { directory, receipt, options };
 }
+
+test('offline preparation copies a fresh private store and cache before retaining its seed marker', async t => {
+  const f = await offlineSeedFixture(t);
+  const scratch = join(f.directory, 'job-scratch');
+  const receipt = Buffer.from(JSON.stringify(f.receipt));
+  await copyVerificationSeed(f.directory, scratch, receipt);
+  assert.equal(await readFile(join(scratch, 'pnpm-store/index.db'), 'utf8'), 'closed store');
+  assert.deepEqual(await readFile(join(scratch, 'cache/pnpm/fixture.json')),
+    await readFile(join(f.directory, 'registry-cache/fixture.json')));
+  assert.equal(await readFile(join(scratch, 'seed-receipt.sha256'), 'utf8'), hash(receipt));
+  await copyVerificationSeed(f.directory, scratch, receipt);
+  await assert.rejects(copyVerificationSeed(f.directory, scratch, Buffer.from('another receipt')), /another approved seed/);
+});
 
 test('offline seed validates every locked release at the strict 48-hour boundary and verifies captured bytes', async t => {
   const f = await offlineSeedFixture(t);
