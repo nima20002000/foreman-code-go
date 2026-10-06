@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { chmod, copyFile, rm, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
 import { DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
@@ -21,6 +21,7 @@ import { NativeRollout } from '../../src/modules/harnesses/nativeRollout.js'
 import { PostgresOperatorRepository } from '../../src/modules/operators/postgres.js'
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 import type { OperatorNativeSessionStart } from '../../src/modules/harnesses/port.js'
+import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
 /** Real application authority and MCP routing; only the test's isolated database is disposable. */
 export async function createCodexLiveApplication(binary: string, directory: string, signal: AbortSignal) {
@@ -68,7 +69,7 @@ export async function createCodexLiveApplication(binary: string, directory: stri
   }
   try {
     await applyApplicationMigrations(pool)
-    profile = await mkdtemp(join(tmpdir(), 'codex-native-profile-'))
+    profile = await privateFixtureDirectory('codex-native-profile-')
     await writeFile(join(profile, 'config.toml'), '', { mode: 0o600, flag: 'wx' })
     try {
       await copyFile(join(originalProfile ?? join(homedir(), '.codex'), 'auth.json'), join(profile, 'auth.json'))
