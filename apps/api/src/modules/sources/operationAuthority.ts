@@ -66,7 +66,9 @@ export class PostgresSourceOperationAuthority {
       const receipt = request.operation === 'sources.prepare' ? null : request.record.receipt
       const attempt = request.operation === 'sources.prepare' ? request.attempt : { placementHash: receipt!.placementHash, executionId: receipt!.executionId,
         attemptId: receipt!.attemptId, keyRevision: receipt!.keyRevision, authorizationRevision: receipt!.authorizationRevision }
-      const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
+      const allocated = await this.allocation(sql, attempt)
+      const cleanup = request.operation === 'sources.release'
+      const principal = cleanup ? undefined : await readLiveManagementPrincipal(sql, allocated.principal_id)
       if (request.operation === 'sources.verify') await assertAcceptedSourceRelativeCwd(sql, attempt.executionId, request.relativeCwd)
       const requestedBinding = request.operation === 'sources.prepare' ? request.root.binding : receipt!.binding
       if (request.operation !== 'sources.release' && (await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [allocated.operation_id])).rowCount)
@@ -77,7 +79,7 @@ export class PostgresSourceOperationAuthority {
         || root.binding.mainId !== binding.mainId || root.binding.workerInstallationId !== binding.workerInstallationId || !root.registration
         || root.registration.keyRevision !== binding.keyRevision || root.registration.authorizationRevision !== binding.authorizationRevision)
         throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not bound to its original current authenticated device.', 409)
-      if (request.operation !== 'sources.release') await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
+      if (principal) await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
       const snapshot = (await sql.query<{ availability: string }>('select availability from source_snapshots where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share',
         [root.binding.workspaceId, root.source.approvedSourceId, root.source.snapshotId, root.source.manifestDigest])).rows[0]
       if (request.operation !== 'sources.release' && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
@@ -89,15 +91,26 @@ export class PostgresSourceOperationAuthority {
         if (!isDeepStrictEqual(record, request.record)) throw new DomainError('SOURCE_RECORD_CONFLICT', 'The submitted record is not the actual immutable Main materialization.', 409)
         if (request.operation !== 'sources.release' && !['prepared', 'running'].includes(stored!.state))
           throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original source materialization is no longer owned for execution.', 409)
-        if (request.operation !== 'sources.release' && record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal, record, record.finalDispatchBindingHash)
+        if (request.operation !== 'sources.release' && record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal!, record, record.finalDispatchBindingHash)
         if (request.operation === 'sources.release') {
           await authorizeClosedSourceRelease(sql, root, record, this.closure)
           physicalClosureConfirmed = true
         }
       }
-      const identity = request.operation === 'sources.prepare' ? request.identity : { operationId: allocated.operation_id, ownerPrincipalId: principal.id, expiresAt: principal.expiresAt }
-      if (identity.operationId !== allocated.operation_id || identity.ownerPrincipalId !== principal.id || Date.parse(identity.expiresAt) > Date.parse(principal.expiresAt)
-        || Date.parse(identity.expiresAt) <= Date.now()) throw new DomainError('SOURCE_OWNER_CONFLICT', 'Source ownership is expired or differs from the actual Main allocation.', 403)
+      let identity: SourceOperationOwner['identity']
+      if (cleanup) {
+        identity = { operationId: allocated.operation_id, ownerPrincipalId: allocated.principal_id,
+          expiresAt: new Date(Date.now() + 60_000).toISOString() }
+      } else {
+        const live = principal!
+        identity = request.operation === 'sources.prepare' ? request.identity
+          : { operationId: allocated.operation_id, ownerPrincipalId: live.id, expiresAt: live.expiresAt }
+        if (identity.operationId !== allocated.operation_id || identity.ownerPrincipalId !== live.id
+          || Date.parse(identity.expiresAt) > Date.parse(live.expiresAt) || Date.parse(identity.expiresAt) <= Date.now()) {
+          throw new DomainError('SOURCE_OWNER_CONFLICT',
+            'Source ownership is expired or differs from the actual Main allocation.', 403)
+        }
+      }
       const activeNativeSession = request.operation === 'sources.verify' && record?.receipt.binding.accessMode === 'exclusive-write'
         ? await this.activeNativeSession?.(sql, record) ?? null : null
       return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed, activeNativeSession,
