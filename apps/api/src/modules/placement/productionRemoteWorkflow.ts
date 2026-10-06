@@ -1,3 +1,6 @@
+import { NativeSessionReferenceSchema } from '@foreman-code/contracts'
+import { RemoteOperationStatusSchema } from '@foreman-code/contracts/remote-execution'
+import { readRemoteReceiptResponse } from '../runs/remote/installedWorkflowResponsePages.js'
 import type { CapturedRemoteTelemetryNativeOwner } from '../resource-telemetry/productionAuthority.js'
 import type pg from 'pg'
 import type { HarnessExecution } from '@foreman-code/contracts'
@@ -97,6 +100,29 @@ export function createProductionRemoteWorkflow(input: {
   const sourceKey = (source: WorkflowOriginalNativeSource) => remoteWorkflowSourceDigest(source)
   return {
     prepare,
+    async confirmClosedExecution(executionId: string, signal: AbortSignal): Promise<boolean> {
+      const binding = await prepare(executionId)
+      if (!binding || binding.placement.hostRef.kind !== 'device') return false
+      const captured = input.endpoint().captureRequest(binding.placement.hostRef.deviceId, 'execution-v1')
+      if (!captured) return false
+      const reply = await captured.request({ method: 'status', intent: binding.intent,
+        placement: binding.placement }, { signal })
+      if (reply.bytes !== undefined) throw new DomainError('REMOTE_CLOSURE_INVALID', 'Closure readback cannot contain binary data.', 409)
+      const raw = await readRemoteReceiptResponse(reply.payload, binding.intent, async continuation => {
+        const next = await captured.request({ method: 'receipt-continuation', intent: binding.intent,
+          placement: binding.placement, ...continuation }, { signal })
+        return next.payload
+      }, signal)
+      const status = RemoteOperationStatusSchema.parse(raw)
+      if (status.status !== 'known' || !sameWorkflowValue(status.receipt.intent, binding.intent)
+        || !status.receipt.native || !status.receipt.terminal) return false
+      const row = (await input.pool.query<{ reference: unknown }>(
+        'select reference from execution_native_sessions where execution_id=$1', [executionId])).rows[0]
+      if (!row) return false
+      const session = NativeSessionReferenceSchema.parse(row.reference)
+      const original = await physical.prefetch(status.receipt, binding.placement, { type: 'boundary' }, signal)
+      return physical.confirmedClosed(original, session)
+    },
     binding(executionId: string) { return bindings.get(executionId) },
     async prepareContext(context: NativeManagerResolutionContext): Promise<NativeManagerResolutionContext> {
       const binding = await prepare(context.executionId)

@@ -870,7 +870,8 @@ export function buildProductionApp(
       signal.throwIfAborted()
       const placement = await readExecutionPlacement(database.pool, executionId)
       const closed = placement?.hostRef.kind === 'device'
-        ? await remoteWorkflowPreparationClosed(database.pool, executionId)
+        ? await remoteWorkflow.confirmClosedExecution(executionId, signal)
+          || await remoteWorkflowPreparationClosed(database.pool, executionId)
         : await processRegistry.closeOwner(`execution:${executionId}`, signal)
       signal.throwIfAborted()
       return closed

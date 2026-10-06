@@ -267,6 +267,18 @@ async function closeTextOnlyFixture(f: Awaited<ReturnType<typeof physicalFixture
   }
 }
 
+it('recovers closure only from the captured closed original session', async () => {
+  const f = await physicalFixture()
+  const active = await f.producer.prefetch(f.readout.receipt, f.placement, f.source)
+  expect(f.producer.confirmedClosed(active, f.session)).toBe(false)
+  await closeTextOnlyFixture(f, 'stopped')
+  const closed = await f.producer.prefetch(f.readout.receipt, f.placement, f.source)
+  expect(f.producer.confirmedClosed(closed, f.session)).toBe(true)
+  expect(f.producer.confirmedClosed(closed, { ...f.session, nativeSessionId: 'different-session' })).toBe(false)
+  f.currentBinding.mockReturnValue(undefined)
+  expect(() => f.producer.confirmedClosed(closed, f.session)).toThrow()
+})
+
 describe('accepted physical session harness', () => {
   it.each(['codex', 'opencode'] as const)('verifies the installed %s session before its first turn', async harness => {
     const f = await physicalFixture({ harness, phase: 'session-created' })

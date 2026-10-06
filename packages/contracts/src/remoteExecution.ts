@@ -88,8 +88,11 @@ export function remoteActiveNative(receipt: RemoteOperationReceipt): RemoteNativ
   if (!turn.providerId) return { sessionId: receipt.native.sessionId, processIdentityDigest: receipt.native.processIdentityDigest }
   return { ...receipt.native, turnId: turn.providerId }
 }
-export type RemoteOperationStatus = { status: 'known'; receipt: RemoteOperationReceipt }
-  | { status: 'unknown'; reason: 'journal_absence_requires_reconciliation' }
+export const RemoteOperationStatusSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('known'), receipt: RemoteOperationReceiptSchema }).strict(),
+  z.object({ status: z.literal('unknown'), reason: z.literal('journal_absence_requires_reconciliation') }).strict(),
+])
+export type RemoteOperationStatus = z.infer<typeof RemoteOperationStatusSchema>
 /** Grant renewal is for this original physical execution, never another start. */
 export const RemoteOwnerReconciliationSchema = z.object({
   commandId: z.string().min(1), operationId: z.string().min(1),

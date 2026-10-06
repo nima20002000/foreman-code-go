@@ -7,7 +7,7 @@ import { DeviceHistoryPageSchema } from '@foreman-code/contracts/device-applicat
 import { RemoteNativeHistorySchema } from '@foreman-code/contracts/remote-workflow-physical'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
-import { RemoteOperationReceiptSchema, RemoteApplicationAccessSchema, remoteActiveNative, type RemoteReviewerRequest,
+import { RemoteOperationReceiptSchema, RemoteOperationStatusSchema as StatusSchema, RemoteApplicationAccessSchema, remoteActiveNative, type RemoteReviewerRequest,
   type RemoteOperationReceipt, type RemoteOwnerControl, type RemoteNativeIdentity, type RemoteOwnerReconciliation } from '@foreman-code/contracts/remote-execution'
 import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import type { ReviewJob } from '@foreman-code/contracts'
@@ -23,7 +23,6 @@ export interface RemoteNativeTransport {
     | 'status' | 'reconcile-response' | 'renew-owner' | 'receipt-continuation',
   payload: unknown, signal?: AbortSignal): Promise<unknown>
 }
-const StatusSchema = z.discriminatedUnion('status', [z.object({ status: z.literal('known'), receipt: RemoteOperationReceiptSchema }).strict(), z.object({ status: z.literal('unknown'), reason: z.literal('journal_absence_requires_reconciliation') }).strict()])
 const HistoryResponseSchema = z.object({
   history: RemoteNativeHistorySchema, status: StatusSchema, page: DeviceHistoryPageSchema,
 }).strict()

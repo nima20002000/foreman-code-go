@@ -47,7 +47,8 @@ export async function recoverInstalledWorkflowReply(input: {
   authorize(action: 'read' | 'stop' | 'control'): Promise<void>
 }) {
   const { frame, journal, binding } = input
-  if (await journal.isRetired(frame.intent.operationId)) return undefined
+  if (await journal.isRetired(frame.intent.operationId) && frame.method !== 'status'
+    && frame.method !== 'physical-readout') return undefined
   let state = await journal.status(frame.intent.operationId)
   let orphanedEntry = false
   if (state.status !== 'known') {

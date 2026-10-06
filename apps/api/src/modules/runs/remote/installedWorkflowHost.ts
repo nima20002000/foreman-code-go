@@ -865,6 +865,15 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     else if (frame.method === 'prepare' || frame.method === 'start-turn') action = 'start'
     await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, placement, action)
     current(context.binding)
+    if (frame.method === 'status' || frame.method === 'physical-readout') {
+      const recovered = await recoverInstalledWorkflowReply({ frame, binding: context.binding,
+        journal: log, recovery, registry, physical, signal: context.signal, lifetimeSignal: signal,
+        assertCurrent: () => current(context.binding),
+        authorize: async action => {
+          await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, placement, action)
+        } })
+      if (recovered) return recovered
+    }
     await releaseSettled(frame.intent)
     if (frame.method === 'status') return { payload: status }
     if (frame.method === 'control-delivery') {
