@@ -1,8 +1,47 @@
 import { describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { OwnedOCIContainer, parseOCIProcessStat, type OCIContainerOwnership } from './executorContainerOwner.js'
 
 const boot = '00000000-0000-4000-8000-000000000001'
 describe('original OCI owner identity checks, no container or PID signals', () => {
+  it.each([true, false])('removes only a confirmed closed container and recovers removal after restart (present %s)', async initiallyPresent => {
+    const containerId = 'd'.repeat(64)
+    const scope = { subject: { kind: 'job' as const, executionId: 'job', attemptId: 'attempt', operationId: 'operation', bindingHash: 'b'.repeat(64) },
+      leaseId: 'lease', owner: { grantId: 'grant', epoch: '1' }, observedDeviceId: 'device', observedInstallationId: 'installed', bootId: boot }
+    const certificate = { scope, containerId, process: { pid: 42, startTicks: '123', bootId: boot },
+      boundary: { kind: 'cgroup-v2' as const, path: `/sys/fs/cgroup/foreman-closed-test-${randomUUID()}`, device: '1', inode: '2' },
+      helpers: [], lifecycle: 'closed' as const }
+    const ownership: OCIContainerOwnership = { scope, assertCurrent: vi.fn(), reserveContainerIntent: vi.fn(),
+      bindContainer: vi.fn(), launchHelpers: async () => [], readCertificate: async () => certificate, publish: vi.fn() }
+    let present = initiallyPresent
+    let removals = 0
+    const commands = { run: async (argv: string[]) => {
+      if (argv[0] === 'rm') {
+        present = false
+        removals++
+        return { exitCode: 0, stdout: containerId }
+      }
+      if (!present || argv[1] === 'exists') return { exitCode: present ? 0 : 1, stdout: '' }
+      return { exitCode: 0, stdout: JSON.stringify([{ Id: containerId, Config: { Labels: { owner: 'original' } },
+        State: { Running: false, Pid: 0, Status: 'exited' } }]) }
+    } }
+    const restore = () => new OwnedOCIContainer({ identity: 'original', labels: { owner: 'original' },
+      originalContainerId: containerId }, commands, ownership)
+    await restore().remove()
+    expect(present).toBe(false)
+    expect(await restore().close(0)).toBe(true)
+    await restore().remove()
+    expect(removals).toBe(Number(initiallyPresent))
+  })
+
+  it('does not treat missing container storage as a closed process without the original certificate', async () => {
+    const ownership = { assertCurrent: vi.fn(), readCertificate: async () => null } as unknown as OCIContainerOwnership
+    const commands = { run: async () => ({ exitCode: 1, stdout: '' }) }
+    const owner = new OwnedOCIContainer({ identity: 'original', labels: { owner: 'original' },
+      originalContainerId: 'd'.repeat(64) }, commands, ownership)
+    await expect(owner.remove()).rejects.toThrow('closure is unconfirmed')
+  })
+
   it('parses start ticks with spaces/parentheses in the kernel command name', () => {
     const fields = ['S', ...Array(18).fill('0'), '12345', '0']
     expect(parseOCIProcessStat(42, `42 (command (nested) name) ${fields.join(' ')}`, boot)).toEqual({ pid: 42, startTicks: '12345', bootId: boot })

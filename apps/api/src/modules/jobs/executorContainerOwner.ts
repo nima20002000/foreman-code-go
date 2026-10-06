@@ -84,8 +84,13 @@ export class OwnedOCIContainer {
   private closing = false
   private containerId: string | null = null
   private certificate: OCIHostCertificate | null = null
-  constructor(private readonly intent: { identity: string; labels: Record<string, string> }, private readonly commands: Pick<PodmanCommandRunner, 'run'>,
-    private readonly ownership: OCIContainerOwnership) {}
+  constructor(private readonly intent: { identity: string; labels: Record<string, string>; originalContainerId?: string | null }, private readonly commands: Pick<PodmanCommandRunner, 'run'>,
+    private readonly ownership: OCIContainerOwnership) {
+    if (intent.originalContainerId && !/^[a-f0-9]{64}$/.test(intent.originalContainerId)) {
+      throw new Error('Original immutable container ID required.')
+    }
+    this.containerId = intent.originalContainerId ?? null
+  }
   private async inspect(target: string): Promise<OCIInspection | null> {
     if (this.closing && this.ownership.assertClosure) await this.ownership.assertClosure()
     else await this.ownership.assertCurrent()
@@ -140,7 +145,16 @@ export class OwnedOCIContainer {
   async close(graceMs: number): Promise<boolean> {
     this.closing = true
     let row = await this.inspect(this.containerId ?? this.intent.identity)
-    if (!row) return false // Missing receipt is uncertainty; never infer no launch.
+    if (!row) {
+      if (!this.containerId) return false
+      const retained = await this.ownership.readCertificate(this.containerId)
+      if (!retained || retained.lifecycle !== 'closed' || retained.containerId !== this.containerId
+        || retained.process.bootId !== this.ownership.scope.bootId
+        || canonicalGraphJson(retained.scope) !== canonicalGraphJson(this.ownership.scope)) return false
+      return await proveOCIBoundaryEmpty(retained.boundary)
+        && (await Promise.all(retained.helpers.map(helper =>
+          helper.boundary ? proveOCIBoundaryEmpty(helper.boundary) : Promise.resolve(false)))).every(Boolean)
+    }
     if (!this.containerId) await this.bind(row.Id)
     if (!this.certificate) {
       const previous = await this.ownership.readCertificate(row.Id)
@@ -163,5 +177,17 @@ export class OwnedOCIContainer {
       : await this.ownership.confirmUnreleasedClosure?.(row!.Id) ?? false)
     if (this.certificate) await this.ownership.publish({ ...this.certificate, lifecycle: closed ? 'closed' : 'closure-unconfirmed' })
     return closed
+  }
+
+  async remove(): Promise<void> {
+    if (!await this.close(0) || !this.containerId) throw new Error('Original container closure is unconfirmed before cleanup.')
+    const exists = () => this.commands.run(['container', 'exists', this.containerId!])
+    const present = await exists()
+    if (present.exitCode === 1) return
+    if (present.exitCode !== 0) throw new Error('Original container cleanup readback failed.')
+    const removed = await this.commands.run(['rm', '--volumes', this.containerId])
+    if (removed.exitCode !== 0 || (await exists()).exitCode !== 1) {
+      throw new Error('Original container removal is unconfirmed.')
+    }
   }
 }

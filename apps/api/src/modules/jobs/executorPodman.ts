@@ -324,20 +324,11 @@ export class PodmanJobSupervisor<Execution extends RuntimeJobExecution = JobExec
 
   /** Terminal evidence is persisted before removal; retries retain the original exit result. */
   async removeExecution(execution: Execution, containerId: string): Promise<void> {
-    if (!/^[a-f0-9]{64}$/.test(containerId)) throw new Error('Original container ID required for cleanup.')
-    const ownership = await this.ownership(execution)
-    await ownership.assertCurrent()
-    const exists = () => this.commands.run(['container', 'exists', containerId])
-    const present = await exists()
-    if (present.exitCode === 1) return
-    if (present.exitCode !== 0) throw new Error('Original container cleanup readback failed.')
-    if (!await this.stopExecution(execution, 0, containerId)) {
-      throw new Error('Original container closure is unconfirmed before cleanup.')
-    }
-    const removed = await this.commands.run(['rm', '--volumes', containerId])
-    if (removed.exitCode !== 0 || (await exists()).exitCode !== 1) {
-      throw new Error('Original container removal is unconfirmed.')
-    }
+    const owned = new OwnedOCIContainer({ identity: jobSupervisorIdentity(execution), originalContainerId: containerId,
+      labels: { 'graphql.job.identity': jobSupervisorIdentity(execution),
+        'graphql.job.spec': execution.acceptedSpec.specDigest, 'graphql.job.attempt': execution.attemptId } },
+    this.commands, await this.ownership(execution))
+    await owned.remove()
   }
 
   async launch(plan: JobLaunchPlan<Execution>) {

@@ -39,7 +39,7 @@ export interface QualificationNativeOwner {
   completedResult?: JobRuntimeQualificationResultRecord
   originalResult?: JobRuntimeQualificationResultRecord
   recoveryRequired?: boolean
-  originalContainer?: { identity: string; fingerprint: string }
+  originalContainer?: { identity: string; fingerprint: string; containerId?: string | null }
   reserveCleanupProcess?(binary: string, argv: string[]): Promise<string>
   spawnCleanupProcess?(reservationId: string, binary: string, argv: string[], options: SpawnOptions): ChildProcess
   recordQuotaClaim?(claim: { path: string; namespace: string; device: number; inode: number }): Promise<void>
@@ -85,11 +85,12 @@ export function createQualificationNativeOwner(candidate: JobQualificationCandid
     return runQualificationCommand(commandOwner, candidate.fingerprint.runtimeExecutable,
       ['--remote=false', ...argv], candidate.controllerEnvironment, AbortSignal.timeout(timeoutMs), timeoutMs)
   } }
-  const createContainer = (identity: string, fingerprint: string) => new OwnedOCIContainer({ identity,
+  const createContainer = (identity: string, fingerprint: string, containerId?: string | null) => new OwnedOCIContainer({ identity,
+    originalContainerId: containerId ?? null,
     labels: { 'graphql.qualification.identity': identity, 'graphql.qualification.fingerprint': fingerprint } },
   commands, ownership)
   let container = native.originalContainer
-    ? createContainer(native.originalContainer.identity, native.originalContainer.fingerprint) : null
+    ? createContainer(native.originalContainer.identity, native.originalContainer.fingerprint, native.originalContainer.containerId) : null
   let containerIdentity = native.originalContainer?.identity
   const composite: QualificationNativeOwner = {
     ...native,
@@ -118,6 +119,7 @@ export function createQualificationNativeOwner(candidate: JobQualificationCandid
       closing = true
       try {
         if (container && !await container.close(1000)) return false
+        await container?.remove()
         container = null
         containerIdentity = undefined
         return true
@@ -126,6 +128,7 @@ export function createQualificationNativeOwner(candidate: JobQualificationCandid
     async close() {
       closing = true
       if (container && !await container.close(1000)) return false
+      await container?.remove()
       return native.close()
     },
   }
