@@ -140,6 +140,7 @@ function observeEvents<T>(events: AsyncIterable<T>, signal: AbortSignal,
 
 export interface SessionWriteLease {
   fence: WriterFence
+  correlationId: string
   guard: LeaseGuard
   previous: NativeSessionLane
   observedStatus: NativeSessionLane['observedStatus']
@@ -182,9 +183,35 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   }
 
   capabilities: NativeHarnessSessionManager['capabilities'] = (signal) => this.manager.capabilities(signal)
+  get retainsReviewerSession() { return this.manager.retainsReviewerSession === true }
+  prepareReview: NonNullable<NativeHarnessSessionManager['prepareReview']> = async (session, job, signal) => {
+    await this.manager.prepareReview?.(session, job, signal)
+  }
+  originalApplicationAccess: NonNullable<NativeHarnessSessionManager['originalApplicationAccess']> = (session, signal) => {
+    if (!this.manager.originalApplicationAccess) throw new Error('Original application lease recovery is unavailable')
+    return this.manager.originalApplicationAccess(session, signal)
+  }
   inspectMcp: NativeHarnessSessionManager['inspectMcp'] = (signal) => this.manager.inspectMcp(signal)
   pending: NativeHarnessSessionManager['pending'] = (session, signal) => this.manager.pending(session, signal)
-  history: NativeHarnessSessionManager['history'] = (session, signal) => this.manager.history(session, signal)
+  history: NativeHarnessSessionManager['history'] = async (session, signal) => {
+    const lease = this.active.get(session.nativeSessionId)
+    const history = await this.manager.history(session, signal)
+    if (!lease || lease.providerId) return history
+    this.assertCapturedLease(session, lease)
+    await lease.guard.check()
+    const evidence = reviewTurnEvidence(session, history, lease.correlationId)
+    if (evidence.identityConflict) throw new DomainError('NATIVE_TURN_IDENTITY_CONFLICT',
+      'The observed history belongs to a different native turn.', 409)
+    // History may advance beyond the event batch currently being published.
+    // Bind its correlated provider identity before a caller captures that history.
+    if (evidence.providerId) {
+      await this.coordination.acknowledgeLaneTurn(lease.fence, lease.correlationId, evidence.providerId)
+      this.assertCapturedLease(session, lease)
+      lease.providerId = evidence.providerId
+      await lease.guard.check()
+    }
+    return history
+  }
   observeBoundary: NonNullable<NativeHarnessSessionManager['observeBoundary']> = async (session, signal) => {
     await this.manager.observeBoundary?.(session, signal)
   }
@@ -267,7 +294,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       let finish!: () => void
       const finished = new Promise<void>((resolve) => { finish = resolve })
       return {
-        finished, finish,
+        finished, finish, correlationId,
         fence: { id: lane.id, token }, guard, previous,
         observedStatus: previous.observedStatus,
         ...(previous.currentTurnOrMessageId ? { providerId: previous.currentTurnOrMessageId } : {}),

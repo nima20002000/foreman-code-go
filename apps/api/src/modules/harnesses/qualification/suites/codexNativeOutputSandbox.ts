@@ -15,7 +15,7 @@ export interface CodexNativeSandboxProbeObservation {
 export interface CodexNativeSandboxProbePort {
   /** Root composes exact owned diagnostic binary/schema/connection/generation fences. */
   assertCurrent(signal: AbortSignal): Promise<void>
-  capturePolicy(signal: AbortSignal): Promise<{
+  capturePolicy(signal: AbortSignal, command: string): Promise<{
     binarySha256: string; providerVersion: string; schemaIdentity: string
     nativeSessionId: string; nativeTurnId: string
     nativeShell: string
@@ -91,6 +91,7 @@ export async function runCodexNativeOutputSandboxChecks(input: NativeQualificati
   const witnessPath = join(input.workDirectory, `.native-witness-${marker}.json`)
   const hostPath = join(input.protectedDirectory, `.host-witness-${marker}`)
   const programPath = join(input.protectedDirectory, `.native-probe-${marker}.py`)
+  const command = codexNativeOutputSandboxProbeCommand(programPath)
   const evidence: Record<string, unknown> = { revision: CODEX_NATIVE_OUTPUT_SANDBOX_SUITE_REVISION,
     binarySha256: input.binarySha256, providerVersion: input.version, protectedDirectory: input.protectedDirectory }
   const assertCurrent = async () => {
@@ -104,7 +105,7 @@ export async function runCodexNativeOutputSandboxChecks(input: NativeQualificati
       await assertCurrent()
       requireCondition(await realpath(input.protectedDirectory) === input.protectedDirectory
         && await realpath(input.workDirectory) === input.workDirectory, 'Qualification roots must be canonical.')
-      const captured = await input.probe.capturePolicy(signal); await assertCurrent()
+      const captured = await input.probe.capturePolicy(signal, command); await assertCurrent()
       requireCondition(captured.binarySha256 === input.binarySha256 && captured.providerVersion === input.version
         && /^[a-f0-9]{64}$/.test(input.schemaIdentity) && captured.schemaIdentity === input.schemaIdentity
         && captured.nativeSessionId && captured.nativeTurnId && isAbsolute(captured.nativeShell)
@@ -130,7 +131,6 @@ export async function runCodexNativeOutputSandboxChecks(input: NativeQualificati
       const program = codexNativeOutputSandboxProbeProgram({ directPath, descendantPath, witnessPath, marker })
       await writeFile(programPath, program, { flag: 'wx', mode: 0o400 })
       requireCondition(await readFile(programPath, 'utf8') === program, 'The protected probe program changed.')
-      const command = codexNativeOutputSandboxProbeCommand(programPath)
       const observed = await input.probe.executeExactCommand(command, signal)
       await assertCurrent()
       requireCondition(await readFile(programPath, 'utf8') === program, 'The protected probe program changed.')

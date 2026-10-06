@@ -8,18 +8,20 @@ import { createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
 const roots: string[] = []
 const endpoints: Awaited<ReturnType<typeof createWorkerMcpEndpoint>>[] = []
 afterEach(async () => { await Promise.all(endpoints.splice(0).map(endpoint => endpoint.close())); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function setup() {
+async function setup(tokenName = 'GRAPHQL_MCP_TOKEN') {
   const root = await mkdtemp(join(tmpdir(), 'worker-private-mcp-')); roots.push(root)
   const token = 'actual-test-scoped-worker-token', expiresAt = new Date(Date.now() + 60_000).toISOString()
   const request = vi.fn(async () => ({ statusCode: 200, contentType: 'application/json' as const, body: '{"result":"Main grant checked"}' }))
+  const refresh = vi.fn(async () => expiresAt)
   const endpoint = await createWorkerMcpEndpoint({ launcher: join(root, 'graphql-mcp.mjs'), signal: new AbortController().signal,
-    relay: { environment: { agentId: 'admitted-agent', variables: { GRAPHQL_MCP_TOKEN: token } }, expiresAt, request } })
+    relay: { environment: { agentId: 'admitted-agent', variables: { [tokenName]: token } }, expiresAt, request, refresh } })
   endpoints.push(endpoint)
-  return { endpoint, token, expiresAt, request, route: join(root, 'routes', `${createHash('sha256').update(token).digest('hex')}.json`) }
+  return { endpoint, token, expiresAt, request, refresh,
+    route: join(root, 'routes', `${createHash('sha256').update(token).digest('hex')}.json`) }
 }
 describe('actual worker-private HTTP relay with Main authorization double, no paired/native proof', () => {
-  it('forwards only the exact scoped bearer and retains real authorized expiry in the existing route', async () => {
-    const f = await setup()
+  it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN'])('forwards the scoped %s bearer and retains authorized expiry', async tokenName => {
+    const f = await setup(tokenName)
     const route = JSON.parse(await readFile(f.route, 'utf8'))
     expect(route).toMatchObject({ endpoint: f.endpoint.endpoint, expiresAt: f.expiresAt })
     expect(JSON.stringify(route)).not.toContain(f.token)
@@ -37,5 +39,29 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
     const malformed = await fetch(f.endpoint.endpoint, { method: 'POST', headers: { authorization: `Bearer ${f.token}` }, body: '{' })
     expect(malformed.status).toBe(400)
     expect(f.request).not.toHaveBeenCalled()
+  })
+  it('refreshes the original private route expiry while keeping its token and endpoint', async () => {
+    const f = await setup()
+    const renewedExpiry = new Date(Date.now() + 30 * 60_000).toISOString()
+    f.refresh.mockResolvedValueOnce(renewedExpiry)
+    expect(await f.endpoint.refreshLease()).toBe(renewedExpiry)
+    expect(JSON.parse(await readFile(f.route, 'utf8'))).toMatchObject({
+      endpoint: f.endpoint.endpoint, expiresAt: renewedExpiry, pid: process.pid,
+    })
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 20 * 60_000)
+    try {
+      const response = await fetch(f.endpoint.endpoint, { method: 'POST',
+        headers: { authorization: `Bearer ${f.token}` }, body: '{"method":"tools/list"}' })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ result: 'Main grant checked' })
+    } finally {
+      clock.mockRestore()
+    }
+    f.refresh.mockRejectedValueOnce(new Error('Original lease revoked'))
+    await expect(f.endpoint.refreshLease()).rejects.toThrow('Original lease revoked')
+    expect(JSON.parse(await readFile(f.route, 'utf8')).expiresAt).toBe(renewedExpiry)
+    await f.endpoint.close()
+    await expect(f.endpoint.refreshLease()).rejects.toThrow('closing')
+    await expect(readFile(f.route)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

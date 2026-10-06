@@ -131,6 +131,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name.startsWith('device_connection_')) scope = 'global'
   if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'].includes(name)) scope = 'global'
   if (name === 'run_start') scope = 'workflow'
+  if (name === 'run_node_placement_get') scope = 'run'
   if (name.startsWith('agent_chat_')) scope = 'resource'
   if (name === 'operator_get_capabilities') scope = 'caller'
   if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'codex_plugins_list', 'codex_plugin_get'].includes(name)) scope = 'global'
@@ -162,6 +163,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['harness_mcp_change_request', 'harness_mcp_managed_request'].includes(name)) result.push({action:'harnesses:read',scope:'global'})
   if (name === 'opencode_models_cache_update') result.push({action:'harnesses:read',scope:'global'})
   if (['run_start','harness_mcp_detection_get','workspace_location_provision','run_resume','run_retry'].includes(name)) result.push({action:'workspace_locations:read',scope:'workspace'})
+  if (name === 'run_node_placement_get') result.push({action:'workspace_locations:read',scope:'workspace'})
   if (name === 'workspace_location_provision') result.push({action:'workspace_locations:update',scope:'workspace'})
   if (['agent_create','agent_update','agent_clone','agent_configuration_restore'].includes(name)) result.push({action:'agents:read',scope:name==='agent_clone'?'resource':'workspace'})
   if (['run_resume','run_retry'].includes(name)) result.push({action:'runs:read',scope:'run'})
@@ -215,6 +217,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (name.startsWith('device_connection_') && !service.trustedConnections) return false
   if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'].includes(name) && !service.devices) return false
   if (name.startsWith('run_') && !service.runs) return false
+  if (name === 'run_node_placement_get' && !service.runPlacements) return false
   if (name.startsWith('run_subagent') && !service.runs?.subagents) return false
   if (name.startsWith('workflow_') && !service.workflows) return false
   if (name === 'execution_readiness_get' && !service.executionReadiness) return false

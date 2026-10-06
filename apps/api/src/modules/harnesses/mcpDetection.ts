@@ -1,3 +1,5 @@
+import { endpointMatches } from './nativeMcpEndpoint.js'
+export { endpointMatches } from './nativeMcpEndpoint.js'
 import {
   McpDetectionSchema,
   ScopedMcpDetectionSchema,
@@ -69,18 +71,6 @@ export interface NativeMcpInspector {
     signal?: AbortSignal
     phase?: McpInspectionPhase
   }): Promise<NativeMcpInspectionEvidence>
-}
-
-export function endpointMatches(actual: string | undefined, expected: string): boolean {
-  if (!actual) return false
-  try {
-    const left = new URL(actual)
-    const right = new URL(expected)
-    return !left.username && !left.password && !right.username && !right.password
-      && (left.protocol === 'http:' || left.protocol === 'https:')
-      && left.protocol === right.protocol && left.host === right.host
-      && left.pathname === right.pathname && left.search === right.search && left.hash === right.hash
-  } catch { return false }
 }
 
 // Diagnostic text is never a raw provider response. Even perfectly valid JSON
@@ -304,6 +294,11 @@ export interface PreparedExecutionCredential {
 
 /** Provider-neutral lifecycle seam consumed by legacy and rich session execution paths. */
 export interface ExecutionCredentialProvider {
+  recoverRemote?(executionId: string, access: import('@foreman-code/contracts/remote-execution').RemoteApplicationAccess,
+    job?: import('@foreman-code/contracts').ReviewJob):
+    Promise<IssuedWorkerCredential>
+  bindReviewerJob?(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>,
+    job: import('@foreman-code/contracts').ReviewJob, lane: import('../interactions/sessionWriter.js').SessionWriteLease): Promise<void>
   /** New process only; never inject a replacement environment into a resident process. */
   prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential>
   /** Verify the retained original environment without issuing another process credential. */

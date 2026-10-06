@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
-import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { makeCurrentWorkflowFixture, RunGraphScopeSchema } from '@foreman-code/contracts/wave25'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { PostgresNativeGraphProjectionWriter } from '../src/modules/run-graph/nativeWriter.js'
@@ -46,7 +46,19 @@ function fixture(type: string, expiresBeforeCommit = false) {
     occurredAt: run.createdAt, type, payload: { text: 'original transcript', turnId: 'original-turn' } }
   const append = () => connection.transaction((sql) => appendWorkflowNativeGraphEventLocked(sql, owner, event,
     { id: 'original-lane', token: 'original-lease', providerId: 'original-turn', live: true }))
-  return { append, raw, semantic, correlation, statements, event }
+  const appendCaptured = (mismatch?: 'transaction' | 'run' | 'execution') => connection.transaction((sql) => {
+    const context = { sql, execution, scope: RunGraphScopeSchema.parse({
+      workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
+      workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3,
+    }) }
+    if (mismatch === 'transaction') context.sql = { ...sql }
+    if (mismatch === 'run') context.scope = { ...context.scope, runId: 'another-run' }
+    if (mismatch === 'execution') context.execution = { ...execution, id: 'another-execution' }
+    return appendWorkflowNativeGraphEventLocked(sql, owner, event,
+      { id: 'original-lane', token: 'original-lease', providerId: 'original-turn', live: true },
+      undefined, undefined, context)
+  })
+  return { append, appendCaptured, raw, semantic, correlation, statements, event }
 }
 
 it('retains the original transcript and correlation without redundant semantic ingestion', async () => {
@@ -68,4 +80,25 @@ it('still rejects an expired original lane before committing a transcript', asyn
   await expect(f.append()).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
   expect(f.statements).toContain('rollback')
   expect(f.statements).not.toContain('commit')
+})
+
+it('retains the same captured transcript and correlation when reusing its validated context', async () => {
+  const f = fixture('native.notification')
+  await f.appendCaptured()
+  expect(f.raw.mock.calls[0]![1].event).toEqual(f.event)
+  expect(f.correlation).toHaveBeenCalledOnce()
+  expect(f.semantic).not.toHaveBeenCalled()
+})
+
+it.each(['transaction', 'run', 'execution'] as const)('rejects reused context for another %s before persisting', async mismatch => {
+  const f = fixture('native.notification')
+  await expect(f.appendCaptured(mismatch)).rejects.toMatchObject({ code: 'GRAPH_SCOPE_MISMATCH' })
+  expect(f.raw).not.toHaveBeenCalled()
+  expect(f.correlation).not.toHaveBeenCalled()
+})
+
+it('revalidates lane expiry before commit after reusing a captured context', async () => {
+  const f = fixture('native.notification', true)
+  await expect(f.appendCaptured()).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+  expect(f.raw.mock.calls[0]![1].event).toEqual(f.event)
 })

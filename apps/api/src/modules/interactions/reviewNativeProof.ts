@@ -1,5 +1,6 @@
 import { HarnessExecutionSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type ReviewJob } from '@foreman-code/contracts'
 import { canonicalGraphJson, type NativeGraphObservation } from '@foreman-code/contracts/wave25'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { DomainError } from '../errors.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
 import { currentRunGraphPublication, hasRunGraphPublication, graphSourceDigest, type RunGraphPublication } from '../run-graph/publication.js'
@@ -10,6 +11,7 @@ import { readRepeatExecutionLocked } from '../runs/repeatPostgres.js'
 import { readAcceptedRepeatRunLocked } from '../runs/repeatStartRead.js'
 import { repeatDigest, repeatExecutionIdentity, sameRepeatValue, type RepeatNodeRef, type RepeatScope } from '../runs/repeatResolution.js'
 import type { CapturedReviewNativeSource, ReviewNativeCapture, ReviewNativeVerificationPort } from './reviewNativeCapture.js'
+import { readExecutionPlacement } from '../placement/persistence.js'
 import { ReviewEvidenceTracker } from './reviewerEvidence.js'
 import { requireLeaseAtCommit } from './wave25/context.js'
 import { readWorkflowClosure } from './workflowClosure.js'
@@ -66,11 +68,18 @@ export function reviewSourceReadiness(record: Pick<ReviewNativeProofRecord, 'ori
 
 /** Paired with the real coordinator channel during production construction. */
 export class ReviewNativeProofServices {
-  constructor(private readonly captures: ReviewNativeVerificationPort) {}
+  constructor(private readonly captures: ReviewNativeVerificationPort,
+    private readonly verifyRemote?: (sql: GraphTransactionSql, capture: CapturedReviewNativeSource) => Promise<void>) {}
 
   private async verifyLocked(publication: RunGraphPublication, job: ReviewJob, capture: CapturedReviewNativeSource) {
+    const sql = publication.sql
+    const placement = await readExecutionPlacement(sql, capture.execution.id)
+    if (placement?.hostRef.kind === 'device') {
+      if (!this.verifyRemote) return fail('REMOTE_REVIEW_PHYSICAL_COMPOSITION_REQUIRED')
+      await this.verifyRemote(sql, capture)
+    }
     capture.assertCurrent()
-    const sql = publication.sql, snapshot = await readAcceptedRepeatRunLocked(sql, publication.scope.runId)
+    const snapshot = await readAcceptedRepeatRunLocked(sql, publication.scope.runId)
     const stored = await readRepeatExecutionLocked(sql, snapshot, capture.execution.id)
     if (!sameRepeatValue(repeatExecutionIdentity(stored.execution), repeatExecutionIdentity(capture.execution))
       || !sameRepeatValue(jobIdentity(job), jobIdentity(capture.job)) || job.leaseToken !== capture.job.leaseToken) return fail()
@@ -108,7 +117,7 @@ export class ReviewNativeProofServices {
     const capture = this.captures.read(value), { stored, fence } = await this.verifyLocked(publication, job, capture)
     const originalKey = capture.source.type === 'event'
       ? ['event', capture.source.event.connectionId ?? null, capture.source.event.sequence, repeatDigest(capture.source.pending)]
-      : capture.source.type === 'history' ? ['history', repeatDigest(capture.source.history, 4 * 1024 * 1024)] : ['entry']
+      : capture.source.type === 'history' ? ['history', repeatDigest(capture.source.history, REMOTE_NATIVE_SOURCE_LIMIT)] : ['entry']
     const proofId = `review-original:${repeatDigest([publication.scope, jobIdentity(job), repeatExecutionIdentity(stored.execution), originalKey]).slice(7)}`
     let record: ReviewNativeProofRecord = { proofId, scope: publication.scope as RepeatScope, ref: stored.ref,
       execution: repeatExecutionIdentity(stored.execution), inputDigest: stored.inputDigest, job: jobIdentity(job), session: capture.session,
@@ -118,13 +127,15 @@ export class ReviewNativeProofServices {
     const previous = (await sql.query<{ record: ReviewNativeProofRecord; source_digest: string }>(
       'select record,source_digest from review_native_proofs where proof_id=$1 for share', [proofId])).rows[0]
     if (previous) {
-      if (graphSourceDigest(previous.record) !== previous.source_digest || !sameRepeatValue(sourceIdentity(previous.record), sourceIdentity(record))) return fail()
+      if (repeatDigest(previous.record, REMOTE_NATIVE_SOURCE_LIMIT) !== previous.source_digest
+        || canonicalGraphJson(sourceIdentity(previous.record), REMOTE_NATIVE_SOURCE_LIMIT)
+          !== canonicalGraphJson(sourceIdentity(record), REMOTE_NATIVE_SOURCE_LIMIT)) return fail()
       record = previous.record // retain first original generation/time/lease, never relabel it
     } else {
-      const recordJson = canonicalGraphJson(record, 4 * 1024 * 1024)
+      const recordJson = canonicalGraphJson(record, REMOTE_NATIVE_SOURCE_LIMIT)
       if ((await sql.query(`insert into review_native_proofs(proof_id,run_id,execution_id,job_id,record,source_digest,record_json)
         values($1,$2,$3,$4,$5::jsonb,$6,$7::text)`, [proofId, publication.scope.runId, stored.execution.id, job.id,
-        recordJson, graphSourceDigest(record), recordJson])).rowCount !== 1) return fail()
+        recordJson, repeatDigest(record, REMOTE_NATIVE_SOURCE_LIMIT), recordJson])).rowCount !== 1) return fail()
     }
     const receipt = await publication.retainReviewSource(job.id, job.leaseToken!, proofId)
     requireRepeatCanonicalReceiptBeforeCommit(sql, { scope: record.scope, ...receipt, effect: null })
@@ -140,7 +151,7 @@ export async function assertReviewOriginalProofLocked(sql: GraphTransactionSql, 
   const lock = hasRunGraphPublication(sql, observation.scope) ? ' for share' : ''
   const row = (await sql.query<{ record: ReviewNativeProofRecord; source_digest: string }>(
     `select record,source_digest from review_native_proofs where proof_id=$1 and job_id=$2${lock}`, [proofId, job.id])).rows[0]
-  if (!row || graphSourceDigest(row.record) !== row.source_digest || row.record.proofId !== proofId
+  if (!row || repeatDigest(row.record, REMOTE_NATIVE_SOURCE_LIMIT) !== row.source_digest || row.record.proofId !== proofId
     || !sameRepeatValue(row.record.job, jobIdentity(job)) || !sameRepeatValue(row.record.scope, observation.scope)
     || !sameRepeatValue(row.record.execution, observation.work.execution)
     || observation.work.workKind !== 'review' || observation.work.workId !== job.id

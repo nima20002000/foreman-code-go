@@ -1,16 +1,37 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { chmod, mkdtemp, mkdir, rm, symlink, writeFile, access,rename } from 'node:fs/promises'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type NativeSessionReference } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, CODEX_APPROVAL_OPTIONS_FIXTURE, withAdvancedDefaults, type AgentConfigurationVersion, type NativeSessionReference } from '@foreman-code/contracts'
+import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import type { NativeHistory } from '../../harnesses/port.js'
+import * as installedQualification from '../../harnesses/installedCodexQualification.js'
+import * as workerMcpEndpoint from './workerMcpEndpoint.js'
+import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAuthorityRequestSchema } from '@foreman-code/contracts/execution-authority'
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
+import { InstalledOpenCodeServer } from '../../harnesses/installedOpenCodeDependencies.js'
+import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
+import * as installedInspection from '../../harnesses/installedCodexInspection.js'
+import { harnessConnectionGeneration } from '../../harnesses/hostConnectionGeneration.js'
 import { NativeProcessRegistry, type NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
-import { bootIdentity } from '../../harnesses/recovery/linuxIdentity.js'
+import { bootIdentity, processIdentity } from '../../harnesses/recovery/linuxIdentity.js'
+import { writeRecord } from '../../harnesses/recovery/storage.js'
+import { InstalledWorkflowRecovery } from './installedWorkflowRecovery.js'
+import { remoteWorkflowProcessDigest } from './workflowPhysicalReadout.js'
+import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { RemoteOperationJournal } from './operationJournal.js'
 import { readInstalledWorkflowConfiguration } from './installedWorkflowConfiguration.js'
-import { captureInstalledWorkflowNativeOwner, settleInstalledWorkflowNativeOwner, createInstalledWorkflowHost, attestInstalledWorkflowRuntimeLeaf, type InstalledWorkflowHostOptions } from './installedWorkflowHost.js'
+import { captureInstalledWorkflowNativeOwner, settleInstalledWorkflowNativeOwner,
+  createInstalledWorkflowHost, attestInstalledWorkflowRuntimeLeaf, type InstalledWorkflowHostOptions } from './installedWorkflowHost.js'
 import { SourceOperationWorkerService } from '../../sources/operationWorker.js'
 import { PrivateSourceMaterializer } from '../../sources/materialization.js'
 import { createSourceManifest, sourceSha256 } from '../../sources/manifest.js'
@@ -24,18 +45,22 @@ import type { SourceOperationOwner } from '@foreman-code/contracts/source-operat
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
-import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
+import { DEVICE_APPLICATION_JSON_BYTES, negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import { EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import type { HarnessExecution } from '@foreman-code/contracts'
 import type pg from 'pg'
-import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch, remoteWorkflowSourceDigest,assertOriginalPhysicalDirectories } from './workflowPhysicalReadout.js'
+import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch, remoteWorkflowSourceDigest,
+  assertOriginalPhysicalDirectories, pagePhysicalReadout, readPhysicalReadout } from './workflowPhysicalReadout.js'
 import { createRemoteWorkflowPhysicalVerification, type RemoteWorkflowMainLifetime } from './workflowPhysicalVerification.js'
 import { RemoteWorkflowPhysicalReadoutSchema } from '@foreman-code/contracts/remote-workflow-physical'
 import { createRemoteNativeSourceChannel } from '../../placement/remoteNativeSource.js'
 import { VerifiedRemoteEvidence } from './resultBridge.js'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../repeatResolution.js'
+import { pageNativeHistory } from './nativeHistoryPage.js'
+import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
+import { adaptDeviceSocket } from '../../devices/deviceWire.js'
 
 const roots:string[]=[],journals:RemoteOperationJournal[]=[]
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
@@ -108,6 +133,41 @@ async function closureFixture() {
   return {...f,root,journal,captured,manager,close,closeOwner,closeRegistration,history}
 }
 describe('positive installed native closure consumption',()=>{
+  it('retains the original physical owner after the Orchestrator workflow turn settles', async () => {
+    const f = await closureFixture()
+    expect(await settleInstalledWorkflowNativeOwner({ ...f,
+      retainReviewer: { agentId: 'agent', expiresAt: new Date(Date.now() + 60_000).toISOString() } })).toBeNull()
+    expect(f.close).not.toHaveBeenCalled()
+    expect(f.closeOwner).not.toHaveBeenCalled()
+    const status = await f.journal.status(f.intent.operationId)
+    expect(status).toMatchObject({ status: 'known', receipt: {
+      retainedReviewer: { agentId: 'agent', workflowTurnId: 'original-turn', result: { outcome: 'succeeded' } },
+      native: { sessionId: f.session.nativeSessionId, processIdentityDigest: f.captured.native.processIdentityDigest },
+    } })
+    expect(status.status === 'known' && status.receipt.terminal).toBeUndefined()
+  })
+  it('closes the retained original owner on Run disposition without replacing its workflow result', async () => {
+    const f = await closureFixture()
+    await settleInstalledWorkflowNativeOwner({ ...f,
+      retainReviewer: { agentId: 'agent', expiresAt: new Date(Date.now() + 60_000).toISOString() } })
+    await f.journal.revokeFence(f.intent.operationId)
+    f.closeOwner.mockResolvedValue(true)
+    const result = await settleInstalledWorkflowNativeOwner({ ...f,
+      history: { events: [], pendingInteractions: [], terminalTurn: {
+        correlationId: 'assigned-review', providerId: 'review-turn', result: { outcome: 'succeeded' },
+      } } })
+    expect(result).toMatchObject({ kind: 'cancelled' })
+    expect(result?.result).toBeUndefined()
+    expect(f.close).toHaveBeenCalledExactlyOnceWith(f.session)
+    expect(f.closeOwner).toHaveBeenCalledExactlyOnceWith(`execution:${f.intent.executionId}`)
+  })
+  it('does not retain a closed physical owner or an expired reviewer lifetime', async () => {
+    const f = await closureFixture()
+    await expect(settleInstalledWorkflowNativeOwner({ ...f,
+      retainReviewer: { agentId: 'agent', expiresAt: new Date(Date.now() - 1).toISOString() } })).rejects.toThrow()
+    expect(f.close).not.toHaveBeenCalled()
+    expect(f.closeOwner).not.toHaveBeenCalled()
+  })
   it('does not promote provider success when the original physical owner closure is unconfirmed',async()=>{
     const f=await closureFixture()
     expect(await settleInstalledWorkflowNativeOwner(f)).toBeNull()
@@ -171,7 +231,10 @@ describe('positive installed native closure consumption',()=>{
     })
 })
 
-async function sourceFixture(relativeCwd='') {
+async function sourceFixture(relativeCwd='', options: {
+  harness?: 'codex' | 'opencode'; artifactOutputKeys?: string[]
+} = {}) {
+  const harness = options.harness ?? 'codex'
   const root=await directory(),runtime=join(root,'runtime'),project=join(root,'project'),namespace=join(runtime,'source-materializations',randomUUID())
   await mkdir(runtime,{mode:0o700});await mkdir(project,{mode:0o700});await mkdir(namespace,{recursive:true,mode:0o700})
   if(relativeCwd)await mkdir(join(project,relativeCwd),{recursive:true,mode:0o700})
@@ -192,7 +255,8 @@ async function sourceFixture(relativeCwd='') {
   const placement=freezePlacement({schemaVersion:1,mainId:binding.mainId,mainInstallationId:binding.mainId,runId:'run',nodeId:'node',hostRef:approvedRoots.hostRef,registration:sourceRoot.registration,
     destination:{canonicalProjectRoot:project,canonicalCwd:join(project,relativeCwd),managedRuntimeRoot:runtime,directoryIdentityHash:'a'.repeat(64),rootPolicyId,rootPolicyRevision:'1',locationRevision:'1',attestationId:'attestation',attestationHash:'a'.repeat(64)},
     source:{kind:'pending',...source,revisionId:'revision',rootId:sourceRoot.binding.rootId,bindingRevision:1,materializationId:null,materializationDigest:null},
-    payload:{kind:'agent',agentId:'agent',agentConfigurationVersionId:'configuration',driverId:'codex',driverRevision:'1',instanceId:randomUUID(),instanceRevision:'1',harnessInstallationId:'installed-codex',installationFingerprint:'a'.repeat(64),runtimeContractVersion:1,protocolRevision:'codex-native-adapter-v1',credentialScopeRefs:[]}})
+    payload:{kind:'agent',agentId:'agent',agentConfigurationVersionId:'configuration',driverId:harness,driverRevision:'1',instanceId:randomUUID(),instanceRevision:'1',harnessInstallationId:`installed-${harness}`,installationFingerprint:'a'.repeat(64),runtimeContractVersion:1,protocolRevision:`${harness}-native-adapter-v1`,credentialScopeRefs:[],
+      ...(options.artifactOutputKeys ? { artifactOutputs: { version: 1 as const, outputKeys: options.artifactOutputKeys } } : {})}})
   const intent=deriveDispatch(placement,{executionId:'execution',attemptId:'attempt',operationId:'operation',technicalAttempt:1,occurrenceId:null,occurrenceIndex:0,inputDigest:`sha256:${'b'.repeat(64)}`,owner:{grantId:'grant',epoch:'1'}})
   const attempt={executionId:intent.executionId,attemptId:intent.attemptId,keyRevision:1,authorizationRevision:1,placementHash:''}
   attempt.placementHash=sourceBindingHash(sourceRoot,attempt,intent.operationId)
@@ -204,11 +268,374 @@ async function sourceFixture(relativeCwd='') {
   const owner:SourceOperationOwner={identity:{operationId:intent.operationId,ownerPrincipalId:'owner',expiresAt:'2099-01-01T00:00:00.000Z'},root:sourceRoot,attempt,source,record:nativePlacement.materialization,physicalClosureConfirmed:false}
   const sources=new SourceOperationWorkerService({authenticate:async()=>undefined,approvedRoots:async()=>approvedRoots,currentOwner:async()=>owner,
     transfers:{resolveVerifiedReceipt:vi.fn().mockRejectedValue(new Error('Verify-only fixture')),openVerified:vi.fn().mockRejectedValue(new Error('Verify-only fixture'))},transferContext:vi.fn().mockRejectedValue(new Error('Verify-only fixture'))})
-  const configuration:AgentConfigurationVersion={id:'configuration',agentId:'agent',workspaceId:'workspace',version:1,prompt:{system:'Unit workflow instructions.'},assignedSkills:[],harness:DEFAULT_HARNESS_DEFAULTS.codex,contentHash:'fixture',createdAt:new Date().toISOString()}
+  const configuration:AgentConfigurationVersion={id:'configuration',agentId:'agent',workspaceId:'workspace',version:1,prompt:{system:'Unit workflow instructions.'},assignedSkills:[],harness:DEFAULT_HARNESS_DEFAULTS[harness],contentHash:'fixture',createdAt:new Date().toISOString()}
   const request={executionId:intent.executionId,runId:intent.runId,workspaceId:'workspace',workflowNodeId:intent.nodeId,workingDirectory:workingTree.canonicalCwd,
     runtimeDirectory:join(runtime,'workflow-runs',intent.executionId,intent.attemptId),configuration,input:{}}
   return {root,approvedRoots,sources,owner,nativePlacement,intent,placement,request,context:{binding,signal:new AbortController().signal}}
 }
+
+async function runningInstalledFixture(phase: 'generation' | 'approval wait' = 'generation') {
+  const f = await sourceFixture()
+  f.intent = { ...f.intent, inputDigest: commandInputHash(f.request.input) }
+  const file = join(f.root, 'workflow.json')
+  const binary = join(f.root, 'codex')
+  await writeFile(file, JSON.stringify({ schemaVersion: 1, codexBinary: binary,
+    appMcpLauncher: join(f.root, 'launcher.mjs'), expectedVersion: '0.132.0', payloadPaths: [] }), { mode: 0o600 })
+  const target = { hostRef: f.placement.hostRef, applicationInstallationId: f.context.binding.workerInstallationId,
+    harnessInstallationId: 'installed-codex', installationFingerprint: 'a'.repeat(64) }
+  const installation = { hostRef: f.placement.hostRef, harnessInstallationId: target.harnessInstallationId,
+    installationFingerprint: target.installationFingerprint, driverId: 'codex', driverRevision: '1',
+    protocolRevision: 'codex-native-adapter-v1', environmentGeneration: 'environment', connectionGeneration: 'generation',
+    installed: true, launcher: { status: 'installed', resolvedLauncher: binary, fingerprint: target.installationFingerprint,
+      payloadFingerprints: [{ path: binary, fingerprint: 'a'.repeat(64) }] } }
+  // Qualification and native provider doubles isolate installed-host transport/ownership behavior.
+  const capture = { binding: f.context.binding, qualification: { version: '0.132.0' },
+    inspection: { currentTarget: { installation } }, facts: { intent: f.intent, placement: f.placement,
+      executionPlacement: f.nativePlacement, configuration: f.request.configuration,
+      harness: { installation, override: { target, instanceId: f.placement.payload.kind === 'agent'
+        ? f.placement.payload.instanceId : '', instanceRevision: '1', driverId: 'codex', enabled: true,
+        configuration: f.request.configuration.harness } } },
+  } as unknown as Awaited<ReturnType<ReturnType<typeof installedQualification.createInstalledCodexQualificationReader>['capture']>>
+  vi.spyOn(installedQualification, 'createInstalledCodexQualificationReader').mockReturnValue({
+    capture: vi.fn(async () => capture), repository: { find: async () => null, list: async () => [] },
+  })
+  vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => {
+    let closed = false
+    return { endpoint: 'http://unit.invalid/mcp', close: vi.fn(async () => { closed = true }),
+      refreshLease: () => {
+        if (closed) throw new Error('MCP endpoint already closed')
+        return relay.refresh()
+      } }
+  })
+  const session: NativeSessionReference = { harness: 'codex', providerVersion: '0.132.0', nativeSessionId: 'original-session' }
+  const registry = new NativeProcessRegistry(join(f.root, 'native-processes'))
+  const log = await RemoteOperationJournal.open(join(f.root, 'workflow-journal'), { initializeNewInstallation: true })
+  journals.push(log)
+  let terminalRecorded!: () => void
+  const settled = new Promise<void>(resolve => { terminalRecorded = resolve })
+  const recordTerminal = log.terminal.bind(log)
+  vi.spyOn(log, 'terminal').mockImplementation(async (operationId, evidence) => {
+    const result = await recordTerminal(operationId, evidence)
+    terminalRecorded()
+    return result
+  })
+  const launch: NativeLaunchObservation = { owner: 'execution:execution', launchId: randomUUID(), bootId: f.context.binding.bootId,
+    guardian: { pid: 200, startTicks: '2000' }, provider: { pid: 201, startTicks: '2001' },
+    boundary: { kind: 'cgroup-v2', path: '/unit/boundary', device: '1', inode: '2' }, lifecycle: 'active' }
+  let observed = launch
+  vi.spyOn(registry, 'snapshot').mockImplementation(() => ({ revision: 'snapshot', launches: [observed] }))
+  vi.spyOn(registry, 'reserveLaunch').mockImplementation(owner => ({ ...registry.scope(owner), launchId: launch.launchId }))
+  vi.spyOn(registry, 'abandonReservedLaunch').mockResolvedValue(false)
+  vi.spyOn(registry, 'closeRegistration').mockResolvedValue(undefined)
+  const closeOwner = vi.spyOn(registry, 'closeOwner').mockImplementation(async () => {
+    observed = { ...launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }
+    return true
+  })
+  const history: NativeHistory = { events: [{ sequence: 1, type: 'native.notification',
+    occurredAt: new Date().toISOString(), payload: { text: 'original output' } }],
+    correlationId: 'execution:execution', nativeTurnId: 'original-turn', pendingInteractions: [],
+    firstRetainedSequence: 1, nextSequence: 2 }
+  if (phase === 'approval wait') history.pendingInteractions = [{ session, turn: { nativeTurnId: 'original-turn', nativeRequestId: 'question' },
+    nativeRequestType: 'question', request: {}, responseOptions: [CODEX_APPROVAL_OPTIONS_FIXTURE[0]!] }]
+  let release!: () => void
+  let entered!: () => void
+  const turnEnded = new Promise<void>(resolve => { release = resolve })
+  const turnEntered = new Promise<void>(resolve => { entered = resolve })
+  const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockResolvedValue(session)
+  const attach = vi.spyOn(CodexAppServerSessionManager.prototype, 'attachSession')
+  const turns = vi.spyOn(CodexAppServerSessionManager.prototype, 'startTurn').mockImplementation(async function* (_session, turn) {
+    await turn.onSubmitted?.('original-turn')
+    entered()
+    await turnEnded
+    yield history.events[0]!
+  })
+  vi.spyOn(CodexAppServerSessionManager.prototype, 'originalSessionLifetime').mockReturnValue({
+    residency: { session, connectionId: 'native-connection', runtimeGeneration: 1, nativeTurnId: undefined },
+    assertCurrent: () => {},
+  })
+  vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockImplementation(async () => structuredClone(history))
+  vi.spyOn(CodexAppServerSessionManager.prototype, 'pending').mockImplementation(async () => history.pendingInteractions[0])
+  vi.spyOn(CodexAppServerSessionManager.prototype, 'close').mockResolvedValue(undefined)
+  vi.spyOn(CodexAppServerSessionManager.prototype, 'dispose').mockResolvedValue(undefined)
+  const finish = (outcome: 'succeeded' | 'canceled') => {
+    history.pendingInteractions = []
+    history.terminalTurn = { correlationId: 'execution:execution', providerId: 'original-turn', result: { outcome } }
+    release()
+  }
+  const cancel = vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel').mockImplementation(async () => {
+    finish('canceled')
+    return true
+  })
+  let live: DeviceSessionBinding | undefined = f.context.binding
+  let expiresAt = new Date(Date.now() + 15 * 60_000).toISOString()
+  let launchDenied = false
+  let cleanupOnly = false
+  const requests: Array<{ namespace: string; payload: unknown; binding: DeviceSessionBinding }> = []
+  const options: InstalledWorkflowHostOptions = { stateDirectory: f.root, registry,
+    pairing: { formatVersion: 1, mainId: f.context.binding.mainId, deviceId: f.context.binding.deviceId,
+      workerInstallationId: f.context.binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
+      endpoint: 'wss://unit.invalid/device', mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64),
+      expiresAt: '2099-01-01T00:00:00.000Z' }, bootId: f.context.binding.bootId,
+    configuration: { path: file, ownerUid: process.getuid!() }, currentBinding: () => live,
+    captureRequest: namespace => {
+      if (!live) return undefined
+      const binding = structuredClone(live)
+      return { binding, request: async payload => {
+        requests.push({ namespace, payload, binding })
+        if (namespace === 'execution-authority-v1') {
+          const request = payload as { action: string }
+          if (launchDenied && request.action !== 'stop' && request.action !== 'read') throw new Error('Launch authority revoked')
+          return { payload: { version: 1, action: request.action, operationId: f.intent.operationId,
+            attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: f.intent.owner,
+            ...(cleanupOnly ? { cleanupOnly: true } : {}) } }
+        }
+        if (launchDenied) throw new Error('Original MCP lease revoked')
+        return { payload: { version: 1, mainId: f.intent.mainId, audience: 'worker', principalId: 'original-principal',
+          executionId: f.intent.executionId, agentId: 'agent', operationId: f.intent.operationId,
+          attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, expiresAt } }
+      } }
+    }, sources: f.sources, approvedRoots: async () => f.approvedRoots, codexSuiteRevision: 'codex-live-4',
+    signal: new AbortController().signal, journal: async () => log }
+  const host = await createInstalledWorkflowHost(options)
+  if (host.kind !== 'configured') throw new Error('Expected installed test host')
+  const handler = host.extensions[0]!.handle!
+  const call = async (method: string, fields: Record<string, unknown> = {}, binding = live) => {
+    if (!binding) throw new Error('Disconnected')
+    return handler({ method, intent: f.intent, placement: f.placement, ...fields },
+      { binding, signal: new AbortController().signal })
+  }
+  const applicationAccess = { kind: 'scoped-worker-mcp', token: 'original-token', executionId: f.intent.executionId,
+    agentId: 'agent', operationId: f.intent.operationId, attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash }
+  const prepared = await call('prepare', { request: f.request, executionPlacement: f.nativePlacement, applicationAccess })
+  await call('start-turn', { prompt: 'original prompt', correlationId: 'execution:execution' })
+  await turnEntered
+  const initialStatus = await log.status(f.intent.operationId)
+  if (initialStatus.status !== 'known') throw new Error('Missing original native status')
+  const stop = async () => {
+    return call('control', { command: { schemaVersion: 1, protocolVersion: 1, commandId: 'stop',
+      operationId: f.intent.operationId, attemptId: f.intent.attemptId, executionId: f.intent.executionId,
+      bindingHash: f.intent.bindingHash, owner: f.intent.owner, native: initialStatus.receipt.native, action: { kind: 'stop' } } })
+  }
+  return { ...f, host, journal: log, prepared, call, stop, finish, settled, history, create, attach, turns, cancel, closeOwner, requests,
+    disconnect: () => { live = undefined }, reconnect: (binding: DeviceSessionBinding) => { live = binding },
+    cleanup: () => { cleanupOnly = true; launchDenied = true },
+    renew: (expiry: string) => { expiresAt = expiry }, revoke: () => { launchDenied = true },
+    changeProcess: () => { observed = { ...launch, provider: { pid: 201, startTicks: 'changed' } } } }
+}
+
+describe('installed host resident execution continuity', () => {
+  it('reads the original native history during cleanup without renewing model-tool access', async () => {
+    const f = await runningInstalledFixture()
+    try {
+      f.cleanup()
+      const before = f.requests.filter(request => request.namespace !== 'execution-authority-v1').length
+      expect(await f.call('history')).toMatchObject({ payload: { history: {
+        correlationId: 'execution:execution', nativeTurnId: 'original-turn',
+      } } })
+      expect(f.requests.filter(request => request.namespace !== 'execution-authority-v1')).toHaveLength(before)
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.attach).not.toHaveBeenCalled()
+      await expect(f.call('start-turn', { prompt: 'replacement', correlationId: 'execution:execution' }))
+        .rejects.toThrow('Launch authority revoked')
+    } finally {
+      f.finish('canceled')
+      await f.host.close()
+    }
+  })
+
+  it('pages original large terminal receipts from the installed handler and its retired readback', async () => {
+    const f = await runningInstalledFixture()
+    const result = { outcome: 'succeeded' as const, output: { text: 'original 雪'.repeat(110_000) } }
+    const read = async (method: string, fields: Record<string, unknown> = {}) => {
+      const response = await f.call(method, fields)
+      expect(Buffer.byteLength(JSON.stringify(response.payload))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
+      return readRemoteReceiptResponse(response.payload, f.intent, async request =>
+        (await f.call('receipt-continuation', request)).payload)
+    }
+    try {
+      f.finish('succeeded')
+      f.history.terminalTurn!.result = result
+      await f.settled
+      expect(await read('status')).toMatchObject({ receipt: { terminal: { result } } })
+      const history = await read('history') as { status: { receipt: { sequence: number; terminal: { result: unknown } } } }
+      expect(history.status.receipt.terminal.result).toEqual(result)
+      // A status reply refreshes the boundary retained for the same receipt.
+      await read('status')
+      await f.call('physical-ack', { retire: true, receiptSequence: history.status.receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest({ type: 'boundary' }) })
+      expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
+      expect(await read('status')).toMatchObject({ receipt: { terminal: { result } } })
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.turns).toHaveBeenCalledOnce()
+    } finally { await f.host.close() }
+  })
+
+  it('keeps terminal history available after source acknowledgment until Main persists the execution result', async () => {
+    const f = await runningInstalledFixture()
+    try {
+      f.finish('succeeded')
+      await f.settled
+      const response = await f.call('history')
+      const value = response.payload as { history: NativeHistory; status: { receipt: { sequence: number } } }
+      const selector = { receiptSequence: value.status.receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest({ type: 'history', history: value.history }) }
+      await f.call('physical-ack', selector)
+      expect(await f.journal.isRetired(f.intent.operationId)).toBe(false)
+      expect(await f.call('history')).toMatchObject({ payload: { history: value.history } })
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.turns).toHaveBeenCalledOnce()
+    } finally { await f.host.close() }
+  })
+
+  it('retires a completed owner when Main acknowledges a bounded terminal history page', async () => {
+    const f = await runningInstalledFixture()
+    try {
+      f.history.events = Array.from({ length: 24 }, (_, sequence) => ({
+        sequence, type: 'native.notification', occurredAt: new Date().toISOString(),
+        payload: { text: 'x'.repeat(80_000) },
+      }))
+      f.history.firstRetainedSequence = 0
+      f.history.nextSequence = 24
+      f.finish('succeeded')
+      await f.settled
+      const response = await f.call('history')
+      const value = response.payload as { history: NativeHistory; status: { receipt: { sequence: number } } }
+      expect(value.history.events.length).toBeLessThan(f.history.events.length)
+      const selector = { receiptSequence: value.status.receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest({ type: 'history', history: value.history }) }
+      expect(await f.call('physical-ack', { ...selector, retire: true })).toMatchObject({ payload: { status: 'retired' } })
+      expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
+      expect(await f.call('status')).toMatchObject({ payload: { receipt: { terminal: { kind: 'completed' } } } })
+      expect(f.create).toHaveBeenCalledOnce()
+    } finally {
+      f.finish('canceled')
+      await f.host.close()
+    }
+  })
+
+  it.each(['generation', 'approval wait'] as const)('rebinds %s to the original resident before history and Stop', async phase => {
+    const f = await runningInstalledFixture(phase)
+    try {
+      const original = f.context.binding
+      const originalConnection = DeviceConnectionIdentitySchema.strip().parse(original)
+      f.disconnect()
+      await expect(f.call('history', {}, original)).rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
+      const replacement = { ...original, connectionGeneration: original.connectionGeneration + 1, connectionEpoch: randomUUID() }
+      f.reconnect(replacement)
+      const read = await f.call('history')
+      expect(read.payload).toMatchObject({ history: f.history, status: { receipt: {
+        connection: originalConnection, native: { sessionId: 'original-session', turnId: 'original-turn' },
+      } } })
+      if (phase === 'approval wait') expect(f.history.pendingInteractions).toHaveLength(1)
+      await expect(f.call('history', {}, original)).rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
+      await expect(f.stop()).resolves.toMatchObject({ payload: { receipt: { terminal: { kind: 'cancelled' } } } })
+      expect(f.cancel).toHaveBeenCalledWith(expect.objectContaining({ nativeSessionId: 'original-session' }), undefined, 'original-turn')
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.turns).toHaveBeenCalledOnce()
+      expect(f.attach).not.toHaveBeenCalled()
+      expect(f.requests.at(-1)?.binding).toEqual(replacement)
+    } finally {
+      f.finish('canceled')
+      await f.host.close()
+    }
+  })
+
+  it.each(['process', 'boot', 'device', 'authorization'])('rejects changed %s on resident reconnection', async defect => {
+    const f = await runningInstalledFixture()
+    try {
+      const replacement = { ...f.context.binding, connectionGeneration: 4, connectionEpoch: randomUUID() }
+      if (defect === 'process') f.changeProcess()
+      if (defect === 'boot') replacement.bootId = randomUUID()
+      if (defect === 'device') replacement.deviceId = randomUUID()
+      if (defect === 'authorization') replacement.authorizationRevision++
+      f.reconnect(replacement)
+      await expect(f.call('history')).rejects.toMatchObject({ code: defect === 'process'
+        ? 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' : 'WORKER_WORKFLOW_UNAVAILABLE' })
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.turns).toHaveBeenCalledOnce()
+      expect(f.cancel).not.toHaveBeenCalled()
+    } finally {
+      f.reconnect(f.context.binding)
+      f.finish('canceled')
+      await f.host.close()
+    }
+  })
+
+  it('reads completion produced offline after the original lease expiry without reopening the native or MCP process', async () => {
+    const f = await runningInstalledFixture()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 20 * 60_000)
+    try {
+      f.disconnect()
+      f.renew(new Date(Date.now() + 15 * 60_000).toISOString())
+      f.finish('succeeded')
+      await f.settled
+      f.reconnect({ ...f.context.binding, connectionGeneration: 4, connectionEpoch: randomUUID() })
+      const history = await f.call('history')
+      const receipt = (history.payload as { status: { receipt: { sequence: number } } }).status.receipt
+      expect((await f.call('physical-readout', { receiptSequence: receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest({ type: 'history', history: f.history }) })).payload).toMatchObject({
+        receipt: { terminal: { kind: 'completed' } }, closure: { ownerClosed: true },
+      })
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.turns).toHaveBeenCalledOnce()
+      expect(f.attach).not.toHaveBeenCalled()
+    } finally {
+      clock.mockRestore()
+      await f.host.close()
+    }
+  })
+
+  it.each(['completion', 'approval Stop'])('keeps physical readback after twenty minutes and %s', async ending => {
+    const f = await runningInstalledFixture(ending === 'approval Stop' ? 'approval wait' : 'generation')
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      for (const minute of [10, 20]) {
+        clock.mockReturnValue(now + minute * 60_000)
+        f.renew(new Date(Date.now() + 15 * 60_000).toISOString())
+        await expect(f.call('history')).resolves.toMatchObject({ payload: { history: f.history } })
+      }
+      if (ending === 'approval Stop') await f.stop()
+      else f.finish('succeeded')
+      await f.settled
+      const history = await f.call('history')
+      const receipt = (history.payload as { status: { receipt: { sequence: number; terminal?: { kind: string } } } }).status.receipt
+      const physical = await f.call('physical-readout', { receiptSequence: receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest({ type: 'history', history: f.history }) })
+      expect(physical.payload).toMatchObject({ receipt: { terminal: { kind: ending === 'completion' ? 'completed' : 'cancelled' } },
+        closure: { ownerClosed: true }, session: { nativeSessionId: 'original-session' } })
+      expect(Date.parse((physical.payload as { expiresAt: string }).expiresAt)).toBeGreaterThan(Date.now())
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.turns).toHaveBeenCalledOnce()
+    } finally {
+      clock.mockRestore()
+      f.finish('canceled')
+      await f.host.close()
+    }
+  })
+
+  it.each(['permission', 'root policy'])('confirms original physical closure after %s changes revoke launch authority', async defect => {
+    const f = await runningInstalledFixture('approval wait')
+    try {
+      f.revoke()
+      if (defect === 'root policy') f.approvedRoots.managedRuntimeRoot = join(f.root, 'replacement-runtime')
+      await expect(f.call('start-turn', { prompt: 'replacement', correlationId: 'execution:execution' })).rejects.toThrow('revoked')
+      await expect(f.stop()).resolves.toMatchObject({ payload: { receipt: { terminal: { kind: 'cancelled' } } } })
+      const history = await f.call('history')
+      const receipt = (history.payload as { status: { receipt: { sequence: number } } }).status.receipt
+      expect((await f.call('physical-readout', { receiptSequence: receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest({ type: 'history', history: f.history }) })).payload).toMatchObject({
+        closure: { ownerClosed: true }, receipt: { stopFence: true, terminal: { kind: 'cancelled' } },
+      })
+      expect(f.closeOwner).toHaveBeenCalledWith('execution:execution')
+      expect(f.cancel).toHaveBeenCalledOnce()
+      expect(f.create).toHaveBeenCalledOnce()
+    } finally {
+      f.finish('canceled')
+      await f.host.close()
+    }
+  })
+})
 describe('actual anchored runtime leaf filesystem',()=>{
   it('verifies retained source bytes and records its own sibling inode, with immutable retry readback',async()=>{
     const f=await sourceFixture(),proof=await attestInstalledWorkflowRuntimeLeaf(f)
@@ -223,6 +650,210 @@ describe('actual anchored runtime leaf filesystem',()=>{
     const f=await sourceFixture();f.owner.identity.expiresAt='2020-01-01T00:00:00.000Z'
     await expect(attestInstalledWorkflowRuntimeLeaf(f)).rejects.toThrow()
     await expect(access(f.request.runtimeDirectory)).rejects.toThrow()
+  })
+})
+
+async function restartedInstalledFixture(captureOptions: { accepted?: boolean; acknowledged?: boolean; sessionCaptured?: boolean } = {}) {
+  const f = await sourceFixture()
+  const runtimeLeaf = await attestInstalledWorkflowRuntimeLeaf(f)
+  const originalConnection = DeviceConnectionIdentitySchema.strip().parse({ ...f.context.binding, bootId: randomUUID() })
+  const registryRoot = join(f.root, 'workflow-native-processes')
+  const registry = new NativeProcessRegistry(registryRoot)
+  const owner = `execution:${f.intent.executionId}`
+  const launchId = randomUUID()
+  const parent = processIdentity(process.pid)!
+  const guardian = { pid: 50001, startTicks: '101', group: 50001, session: 50001, state: 'S' }
+  const provider = { pid: 50002, startTicks: '102' }
+  const boundary = { kind: 'cgroup-v2' as const, path: `/sys/fs/cgroup/graphql-native-${launchId}`, device: '1', inode: '2' }
+  const path = join(registryRoot, createHash('sha256').update(owner).digest('hex'), launchId)
+  const shared = { format: 1, id: launchId, owner, boot: originalConnection.bootId }
+  writeRecord(join(path, 'intent.json'), { ...shared, parent, controlKey: 'a'.repeat(64) })
+  if (captureOptions.accepted !== false) {
+    writeRecord(join(path, 'birth.json'), { ...shared, guardian, containment: boundary })
+    writeRecord(join(path, 'provider.json'), { ...shared, guardian, provider, capture: 'captured' })
+  }
+  const launch: NativeLaunchObservation = { owner, launchId, bootId: originalConnection.bootId,
+    guardian: { pid: guardian.pid, startTicks: guardian.startTicks }, provider, boundary, lifecycle: 'active' }
+  const session: NativeSessionReference = { harness: 'codex', nativeSessionId: 'original-session', providerVersion: '0.154.0' }
+  const native = { sessionId: session.nativeSessionId,
+    processIdentityDigest: remoteWorkflowProcessDigest(originalConnection, f.intent, launch) }
+  const journalPath = join(f.root, 'workflow-operations.json')
+  const journal = await RemoteOperationJournal.open(journalPath, { initializeNewInstallation: true })
+  journals.push(journal)
+  if (captureOptions.accepted !== false) {
+    await journal.accept(f.intent, originalConnection, randomUUID())
+    await journal.reserveEntry(f.intent.operationId)
+  }
+  if (captureOptions.accepted !== false && captureOptions.acknowledged !== false) {
+    await journal.acknowledgeStart(f.intent.operationId, native)
+    await journal.reserveTurn(f.intent.operationId, { correlationId: `execution:${f.intent.executionId}`, promptDigest: 'b'.repeat(64) })
+    await journal.acknowledgeTurn(f.intent.operationId, 'original-turn')
+    await journal.markRunning(f.intent.operationId)
+  }
+  const recovery = new InstalledWorkflowRecovery(join(f.root, 'workflow-recovery'), registry)
+  recovery.rememberEntry({ version: 1, intent: f.intent, connection: originalConnection, owner, initialLaunchId: launchId })
+  if (captureOptions.sessionCaptured !== false) {
+    recovery.remember({ version: 1, intent: f.intent, connection: originalConnection, native, session,
+      launch: RemoteWorkflowPhysicalReadoutSchema.shape.launch.parse(launch), runtimeLeaf,
+      approvedRoots: f.approvedRoots,
+      source: RemoteWorkflowPhysicalReadoutSchema.shape.source.parse({
+        record: f.nativePlacement.materialization, workingTree: f.nativePlacement.workingTree }) })
+  }
+  const file = join(f.root, 'workflow.json')
+  await writeFile(file, JSON.stringify({ schemaVersion: 1, codexBinary: '/unit/codex', appMcpLauncher: '/unit/launcher.mjs',
+    expectedVersion: '0.154.0', payloadPaths: [] }), { mode: 0o600 })
+  let authorized = true
+  const options: InstalledWorkflowHostOptions = { stateDirectory: f.root, bootId: f.context.binding.bootId,
+    pairing: { formatVersion: 1, mainId: f.context.binding.mainId, deviceId: f.context.binding.deviceId,
+      workerInstallationId: f.context.binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
+      endpoint: 'wss://unit.invalid/device', mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64),
+      expiresAt: '2099-01-01T00:00:00.000Z' }, configuration: { path: file, ownerUid: process.getuid!() },
+    currentBinding: () => f.context.binding, captureRequest: () => ({ binding: f.context.binding,
+      request: async payload => {
+        if (!authorized) throw new Error('Main denied recovery')
+        const request = ExecutionAuthorityRequestSchema.parse(payload)
+        return { payload: { version: 1, action: request.action, operationId: request.intent.operationId,
+          attemptId: request.intent.attemptId, bindingHash: request.intent.bindingHash, owner: request.intent.owner } }
+      } }), sources: f.sources, approvedRoots: async () => f.approvedRoots,
+    codexSuiteRevision: 'codex-live-4', signal: new AbortController().signal }
+  const startHost = async () => {
+    const host = await createInstalledWorkflowHost(options)
+    if (host.kind !== 'configured') throw new Error('Installed recovery host is unavailable')
+    return host
+  }
+  return { ...f, journal, journalPath, registry, recovery, native, launch, session, startHost,
+    deny: () => { authorized = false }, allow: () => { authorized = true } }
+}
+
+describe('installed worker cold recovery', () => {
+  it('settles an interrupted write-ahead registration before journal acceptance without a replacement launch', async () => {
+    const f = await restartedInstalledFixture({ accepted: false, acknowledged: false, sessionCaptured: false })
+    await f.journal.close()
+    const host = await f.startHost()
+    const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
+    try {
+      const reply = await host.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement }, f.context)
+      const receipt = RemoteOperationReceiptSchema.parse((reply.payload as { receipt: unknown }).receipt)
+      expect(hasPositiveRemoteNonEntryClosure(receipt)).toBe(true)
+      expect(f.registry.snapshot().launches[0]?.lifecycle).toBe('closed')
+      expect(create).not.toHaveBeenCalled()
+    } finally { await host.close() }
+  })
+  it('stops an unentered retained operation without qualification or a native launch', async () => {
+    const f = await restartedInstalledFixture()
+    const intent = { ...f.intent, executionId: 'unentered-execution', operationId: 'unentered-operation', attemptId: 'unentered-attempt' }
+    await f.journal.accept(intent, DeviceConnectionIdentitySchema.strip().parse(f.context.binding), randomUUID())
+    await f.journal.close()
+    const host = await f.startHost()
+    const reserve = vi.spyOn(NativeProcessRegistry.prototype, 'reserveLaunch')
+    const inspect = vi.spyOn(installedInspection, 'inspectInstalledCodex')
+    try {
+      const reply = await host.extensions[0]!.handle!({ method: 'control', intent, placement: f.placement,
+        command: { schemaVersion: 1, protocolVersion: 1, commandId: 'stop-unentered', operationId: intent.operationId,
+          attemptId: intent.attemptId, executionId: intent.executionId, bindingHash: intent.bindingHash,
+          owner: intent.owner, action: { kind: 'stop' } } }, f.context)
+      const receipt = RemoteOperationReceiptSchema.parse((reply.payload as { receipt: unknown }).receipt)
+      expect(hasPositiveRemoteNonEntryClosure(receipt)).toBe(true)
+      expect(reserve).not.toHaveBeenCalled()
+      expect(inspect).not.toHaveBeenCalled()
+    } finally { await host.close() }
+  })
+  it.each([false, true])('closes entry interrupted before ACK with session capture %s, retaining the same outcome after restart', async sessionCaptured => {
+    const f = await restartedInstalledFixture({ acknowledged: false, sessionCaptured })
+    await f.journal.close()
+    const host = await f.startHost()
+    let payload: unknown
+    try {
+      payload = (await host.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement }, f.context)).payload
+      expect(payload).toMatchObject({ status: 'known', receipt: { phase: 'confirmed_terminal', stopFence: true,
+        turnEntryAttempted: false, terminal: { kind: 'cancelled' } } })
+      const receipt = RemoteOperationReceiptSchema.parse((payload as { receipt: unknown }).receipt)
+      if (sessionCaptured) expect(receipt.native).toEqual(f.native)
+      else {
+        expect(receipt.native).toBeUndefined()
+        expect(hasPositiveRemoteEntryClosure(receipt)).toBe(true)
+        expect(receipt.terminal?.entryClosure?.launches).toEqual([{ ...f.launch, lifecycle: 'closed', closureEvidence: 'linux_boot_changed' }])
+        const prepare = await host.extensions[0]!.handle!({ method: 'prepare', intent: f.intent,
+          placement: f.placement, request: f.request, executionPlacement: f.nativePlacement }, f.context)
+        expect(prepare.payload).toEqual({ status: payload })
+        expect((await host.extensions[0]!.handle!({ method: 'pending', intent: f.intent,
+          placement: f.placement }, f.context)).payload).toBeNull()
+      }
+    } finally { await host.close() }
+    const restarted = await f.startHost()
+    try {
+      expect((await restarted.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement }, f.context)).payload)
+        .toEqual(payload)
+    } finally { await restarted.close() }
+  })
+  it('requires authenticated Main authority before closing the retained original owner', async () => {
+    const f = await restartedInstalledFixture()
+    await f.journal.close()
+    const host = await f.startHost()
+    const launch = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
+    const inspect = vi.spyOn(installedInspection, 'inspectInstalledCodex')
+    f.deny()
+    try {
+      await expect(host.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement }, f.context))
+        .rejects.toThrow('Main denied recovery')
+      expect(f.registry.snapshot().launches[0]?.lifecycle).toBe('closure-unconfirmed')
+      f.allow()
+      const completedRequest = new AbortController()
+      const reply = await host.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement },
+        { ...f.context, signal: completedRequest.signal })
+      completedRequest.abort(new Error('Carrier request completed'))
+      expect(reply.payload).toMatchObject({ status: 'known', receipt: { phase: 'confirmed_terminal', stopFence: true,
+        native: { ...f.native, turnId: 'original-turn' }, terminal: { kind: 'cancelled' } } })
+      const status = reply.payload as { receipt: { sequence: number } }
+      const physical = await host.extensions[0]!.handle!({ method: 'physical-readout', intent: f.intent, placement: f.placement,
+        receiptSequence: status.receipt.sequence, sourceDigest: remoteWorkflowSourceDigest({ type: 'boundary' }) }, f.context)
+      expect(physical.payload).toMatchObject({ session: f.session, launch: f.launch,
+        observation: { lifecycle: 'closed', closureEvidence: 'linux_boot_changed' },
+        closure: { ownerClosed: true }, launchIntent: f.intent })
+      expect(launch).not.toHaveBeenCalled()
+      expect(inspect).not.toHaveBeenCalled()
+      const registryModule = new URL('../../harnesses/recovery/processRegistry.ts', import.meta.url).href
+      const script = `
+        const { NativeProcessRegistry } = await import(${JSON.stringify(registryModule)});
+        process.stdout.write(JSON.stringify(new NativeProcessRegistry(process.argv[1]).snapshot()));
+      `
+      const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script,
+        f.registry.scope(f.launch.owner).root], { stdio: ['ignore', 'pipe', 'pipe'] })
+      let serialized = ''
+      let errors = ''
+      child.stdout.on('data', chunk => { serialized += String(chunk) })
+      child.stderr.on('data', chunk => { errors += String(chunk) })
+      const exitCode = await new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('close', resolve)
+      })
+      expect(exitCode, errors).toBe(0)
+      expect(JSON.parse(serialized).launches).toContainEqual({ ...f.launch,
+        lifecycle: 'closed', closureEvidence: 'linux_boot_changed' })
+      await host.close()
+      const restarted = await f.startHost()
+      try {
+        expect((await restarted.extensions[0]!.handle!({ method: 'status', intent: f.intent, placement: f.placement }, f.context)).payload)
+          .toEqual(reply.payload)
+      } finally { await restarted.close() }
+    } finally { await host.close() }
+  })
+  it('preserves the original completed result while reconciling registry closure after restart', async () => {
+    const f = await restartedInstalledFixture()
+    const result = { outcome: 'succeeded' as const, output: { text: 'original provider answer' } }
+    const terminal = { kind: 'completed' as const, result, resultDigest: commandInputHash(result).slice('sha256:'.length),
+      closureEvidenceDigest: commandInputHash({ intent: f.intent, native: { ...f.native, turnId: 'original-turn' },
+        launch: f.launch, physicalOwnerClosed: true }).slice('sha256:'.length) }
+    await f.recovery.rememberOutput(f.intent.operationId, { kind: 'text-only', result })
+    await f.journal.terminal(f.intent.operationId, terminal)
+    const before = await f.journal.status(f.intent.operationId)
+    await f.journal.close()
+    const host = await f.startHost()
+    try {
+      const reply = await host.extensions[0]!.handle!({ method: 'history', intent: f.intent, placement: f.placement }, f.context)
+      expect(reply.payload).toMatchObject({ status: before, history: { terminalResult: result,
+        terminalTurn: { correlationId: `execution:${f.intent.executionId}`, providerId: 'original-turn', result } } })
+    } finally { await host.close() }
   })
 })
 describe('lazy installed worker host qualification boundary',()=>{
@@ -258,15 +889,38 @@ describe('lazy installed worker host qualification boundary',()=>{
       await expect(access(join(f.root,'workflow-operations.json'))).rejects.toThrow()
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow' })).toBe(false)
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
-      const { mainId, deviceId, workerInstallationId, bootId, keyRevision,
-        authorizationRevision, connectionGeneration } = f.context.binding
-      const connection = { mainId, deviceId, workerInstallationId, bootId, keyRevision,
-        authorizationRevision, connectionGeneration }
+      const connection = DeviceConnectionIdentitySchema.strip().parse(f.context.binding)
       await retainedJournal!.accept(f.intent, connection, randomUUID())
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow', preparationClosed: true })).toBe(true)
       expect(await retainedJournal!.status(f.intent.operationId)).toMatchObject({
         status: 'known', receipt: { phase: 'confirmed_terminal', entryAttempted: false, terminal: { kind: 'not_started' } },
       })
+      expect(await retainedJournal!.isRetired(f.intent.operationId)).toBe(true)
+      readMain.mockImplementation(async input => {
+        const request = input as { action: string; intent: typeof f.intent }
+        return { payload: { version: 1, action: request.action, operationId: request.intent.operationId,
+          attemptId: request.intent.attemptId, bindingHash: request.intent.bindingHash, owner: request.intent.owner } }
+      })
+      const retiredStatus = await retainedJournal!.status(f.intent.operationId)
+      expect(await handler({ method: 'status', intent: f.intent, placement: f.placement }, f.context))
+        .toEqual({ payload: retiredStatus })
+      expect(await handler({ method: 'control', intent: f.intent, placement: f.placement,
+        command: { schemaVersion: 1, protocolVersion: 1, commandId: 'retired-stop',
+          operationId: f.intent.operationId, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+          bindingHash: f.intent.bindingHash, owner: f.intent.owner, action: { kind: 'stop' } } }, f.context))
+        .toEqual({ payload: retiredStatus })
+      await expect(handler({ method: 'control', intent: f.intent, placement: f.placement,
+        command: { schemaVersion: 1, protocolVersion: 1, commandId: 'foreign-stop',
+          operationId: 'foreign-operation', executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+          bindingHash: f.intent.bindingHash, owner: f.intent.owner, action: { kind: 'stop' } } }, f.context))
+        .rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE',
+          details: { reason: 'retired_control_ownership_changed' } })
+      readMain.mockRejectedValue(new Error('Original grant revoked'))
+      await expect(handler({ method: 'status', intent: f.intent, placement: f.placement }, f.context))
+        .rejects.toThrow('Original grant revoked')
+      expect(await retainedJournal!.status(f.intent.operationId)).toEqual(retiredStatus)
+      expect(reserve).not.toHaveBeenCalled()
+      expect(create).not.toHaveBeenCalled()
       const interrupted = { ...f.intent, executionId: 'interrupted-execution', attemptId: 'interrupted-attempt', operationId: 'interrupted-operation' }
       const cleanupOwner = { ...f.owner, preparationKind: 'workflow' as const, preparationClosed: true as const,
         identity: { ...f.owner.identity, operationId: interrupted.operationId },
@@ -289,6 +943,537 @@ describe('lazy installed worker host qualification boundary',()=>{
       currentBinding.mockReturnValue({...f.context.binding,connectionGeneration:4})
       await expect(handler({method:'status',intent:f.intent,placement:f.placement},f.context)).rejects.toMatchObject({code:'WORKER_WORKFLOW_UNAVAILABLE'})
     } finally {await host.close(); await retainedJournal?.close()}
+  })
+})
+
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+async function constructionFixture(fixtureOptions: {
+  harness?: 'codex' | 'opencode'; artifactOutputKeys?: string[]
+} = {}) {
+  const harness = fixtureOptions.harness ?? 'codex'
+  const version = harness === 'codex' ? '0.154.0' : '1.18.31'
+  const suiteRevision = harness === 'codex' ? 'codex-live-4' : 'opencode-live-1'
+  const binary = `/unit/${harness}`
+  const f = await sourceFixture('', fixtureOptions)
+  f.intent = { ...f.intent, inputDigest: commandInputHash(f.request.input) }
+  if (f.placement.payload.kind !== 'agent') throw new Error('Expected Agent placement')
+  const payload = f.placement.payload
+  const binding = f.context.binding
+  const timestamp = new Date().toISOString()
+  const target = { hostRef: f.placement.hostRef, applicationInstallationId: binding.workerInstallationId,
+    harnessInstallationId: payload.harnessInstallationId, installationFingerprint: payload.installationFingerprint }
+  const installation = { hostRef: target.hostRef, harnessInstallationId: target.harnessInstallationId,
+    installationFingerprint: target.installationFingerprint, driverId: harness, driverRevision: '1',
+    protocolRevision: payload.protocolRevision, environmentGeneration: 'unit-worker-environment',
+    connectionGeneration: harnessConnectionGeneration(binding),
+    launcher: { requested: binary, resolvedLauncher: binary, fingerprint: target.installationFingerprint,
+      payloadFingerprints: [{ path: binary, fingerprint: 'a'.repeat(64) }], status: 'installed', interpreter: null,
+      diagnostics: [], environment: { generation: 'unit-worker-environment', provenance: 'worker', cwd: f.root, path: '/usr/bin' },
+      checkedAt: timestamp }, observedVersion: version, installed: true, authenticated: true, compatible: true, qualified: true }
+  const override = { instanceId: payload.instanceId, revision: 1, instanceRevision: payload.instanceRevision,
+    target, presetId: 'unit-preset', enabled: true, driverId: harness, configuration: f.request.configuration.harness,
+    configurationFingerprint: commandInputHash(withAdvancedDefaults(f.request.configuration.harness)), qualification: 'qualified' }
+  const qualification = { harness, version, binarySha256: 'a'.repeat(64), status: 'qualified',
+    profile: harness === 'codex' ? 'codex-0.156' : 'opencode-1.18.31', suiteRevision, checks: [{ id: 'unit-native-check', passed: true, detail: null }],
+    failureReason: null, startedAt: timestamp, checkedAt: timestamp }
+  const facts = ExecutionFactsResultSchema.parse({ version: 1, intent: f.intent, placement: f.placement,
+    configuration: f.request.configuration, executionPlacement: f.nativePlacement,
+    harness: { installation, override, qualification, profileProof: {
+      target, instanceRevision: override.instanceRevision, configurationFingerprint: override.configurationFingerprint,
+      driverId: harness, driverRevision: '1', protocolRevision: payload.protocolRevision,
+      suiteRevision: `${harness}-profile-check-v1`, environmentGeneration: installation.environmentGeneration,
+      connectionGeneration: installation.connectionGeneration, authenticated: true, compatible: true,
+      qualified: true, checkedAt: timestamp,
+    } } })
+  // Main, installed-binary and native-process observations are unit doubles; the host, journal and source guards are real.
+  const inspect = vi.spyOn(installedInspection, harness === 'codex' ? 'inspectInstalledCodex' : 'inspectInstalledHarness').mockImplementation(async () => ({
+    inventory: { instances: [], installations: [facts.harness.installation] },
+    currentTarget: { binding, target, installation: facts.harness.installation,
+      binarySha256: 'a'.repeat(64), expectedVersion: version },
+  }))
+  let authorized = true
+  const readMain = vi.fn(async (raw: unknown): Promise<DeviceApplicationResult> => {
+    const read = ExecutionFactsRequestSchema.safeParse(raw)
+    if (read.success) {
+      const { intent, placement } = read.data.authorization
+      return { payload: { ...facts, intent, placement, executionPlacement: { ...facts.executionPlacement,
+        executionId: intent.executionId, attemptId: intent.attemptId, operationId: intent.operationId } } }
+    }
+    if (!authorized) throw new Error('Main denied original execution access')
+    const authority = ExecutionAuthorityRequestSchema.safeParse(raw)
+    if (authority.success) {
+      const { intent, action } = authority.data
+      return { payload: { version: 1, action, operationId: intent.operationId, attemptId: intent.attemptId,
+        bindingHash: intent.bindingHash, owner: intent.owner } }
+    }
+    return { payload: { version: 1, mainId: binding.mainId, audience: 'worker', principalId: 'unit-principal',
+      executionId: f.intent.executionId, agentId: f.request.configuration.agentId, operationId: f.intent.operationId,
+      attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, expiresAt: '2099-01-01T00:00:00.000Z' } }
+  })
+  const file = join(f.root, 'installed-workflow.json')
+  const selection = harness === 'codex' ? { codexBinary: binary, expectedVersion: version, payloadPaths: [] }
+    : { opencode: { binary, expectedVersion: version, payloadPaths: [] } }
+  await writeFile(file, JSON.stringify({ schemaVersion: 1, ...selection, appMcpLauncher: '/unit/launcher.mjs' }), { mode: 0o600 })
+  const journal = await RemoteOperationJournal.open(join(f.root, 'construction-journal'), { initializeNewInstallation: true })
+  journals.push(journal)
+  const n = nativeFixture()
+  const currentBinding = vi.fn(() => binding)
+  const openJournal = vi.fn(async () => journal)
+  let applicationChannel: DeviceApplicationChannel | undefined
+  const options: InstalledWorkflowHostOptions = { stateDirectory: f.root, bootId: binding.bootId,
+    pairing: { formatVersion: 1, mainId: binding.mainId, deviceId: binding.deviceId,
+      workerInstallationId: binding.workerInstallationId, keyRevision: binding.keyRevision,
+      authorizationRevision: binding.authorizationRevision, endpoint: 'wss://unit.invalid/device',
+      mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' },
+    configuration: { path: file, ownerUid: process.getuid!() }, currentBinding,
+    captureRequest: namespace => applicationChannel?.captureRequest(namespace) ?? { binding: currentBinding(), request: readMain },
+    sources: f.sources, approvedRoots: async () => f.approvedRoots,
+    codexSuiteRevision: 'codex-live-4', openCodeSuiteRevision: 'opencode-live-1',
+    signal: new AbortController().signal, registry: n.registry, journal: openJournal }
+  const host = await createInstalledWorkflowHost(options)
+  if (host.kind !== 'configured') throw new Error('Expected configured installed host')
+  const handler = host.extensions[0]!.handle!
+  return { ...f, registry: n.registry, session: n.session, launch: n.launch, snapshot: n.snapshot,
+    host, handler, journal, readMain, inspect, currentBinding, openJournal,
+    setApplicationChannel: (channel: DeviceApplicationChannel) => { applicationChannel = channel },
+    deny: () => { authorized = false } }
+}
+
+function delayedFacts(readMain: Awaited<ReturnType<typeof constructionFixture>>['readMain'], executionId: string) {
+  const entered = deferred()
+  const release = deferred()
+  const original = readMain.getMockImplementation()!
+  readMain.mockImplementation(async raw => {
+    const read = ExecutionFactsRequestSchema.safeParse(raw)
+    if (read.success && read.data.authorization.intent.executionId === executionId) {
+      entered.resolve()
+      await release.promise
+      throw new Error('Delayed qualification rejected')
+    }
+    return original(raw)
+  })
+  return { entered, release, restore: () => { readMain.mockImplementation(original) } }
+}
+
+describe('installed workflow construction concurrency', () => {
+  it('refuses declared installed OpenCode artifact outputs before starting a provider', async () => {
+    const ensure = vi.spyOn(InstalledOpenCodeServer.prototype, 'ensure')
+    vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
+      endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+    }))
+    const f = await constructionFixture({ harness: 'opencode', artifactOutputKeys: ['report'] })
+    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => ({ ...f.registry.scope(owner), launchId: f.launch.launchId }))
+    vi.spyOn(f.registry, 'abandonReservedLaunch').mockResolvedValue(false)
+    vi.spyOn(f.registry, 'closeRegistration').mockResolvedValue(undefined)
+    vi.spyOn(f.registry, 'closeOwner').mockImplementation(async () => {
+      f.snapshot.mockReturnValue({ revision: 'closed', launches: [{ ...f.launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }] })
+      return true
+    })
+    try {
+      await expect(f.handler({ method: 'prepare', intent: f.intent, placement: f.placement, request: f.request,
+        executionPlacement: f.nativePlacement, applicationAccess: { kind: 'scoped-worker-mcp', token: 'original-main-token',
+          agentId: f.request.configuration.agentId, executionId: f.intent.executionId, operationId: f.intent.operationId,
+          attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash } }, f.context))
+        .rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE', details: { reason: 'original_native_output_host_missing' } })
+      expect(ensure).not.toHaveBeenCalled()
+    } finally { await f.host.close() }
+  })
+
+  it.each(['qualification', 'thread acknowledgement'] as const)(
+    'closes an original pending %s on reconnect while the worker remains alive', async stage => {
+      const f = await constructionFixture()
+      const entered = deferred()
+      const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async (_input, signal) => {
+        entered.resolve()
+        if (!signal) throw new Error('Expected original preparation cancellation')
+        await new Promise<void>(resolve => {
+          if (signal.aborted) resolve()
+          else signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        if (stage === 'qualification') signal.throwIfAborted()
+        return f.session
+      })
+      const dispose = vi.spyOn(CodexAppServerSessionManager.prototype, 'dispose').mockResolvedValue(undefined)
+      const closed = { ...f.launch, lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }
+      vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => ({ ...f.registry.scope(owner), launchId: f.launch.launchId }))
+      vi.spyOn(f.registry, 'abandonReservedLaunch').mockResolvedValue(false)
+      const closeOwner = vi.spyOn(f.registry, 'closeOwner').mockImplementation(async () => {
+        f.snapshot.mockReturnValue({ revision: 'closed', launches: [closed] })
+        return true
+      })
+      vi.spyOn(f.registry, 'closedRegistration').mockReturnValue(closed)
+      vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
+        endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+      }))
+      const access = { kind: 'scoped-worker-mcp', token: 'original-token', executionId: f.intent.executionId,
+        agentId: f.request.configuration.agentId, operationId: f.intent.operationId, attemptId: f.intent.attemptId,
+        bindingHash: f.intent.bindingHash }
+      const pending = f.handler({ method: 'prepare', intent: f.intent, placement: f.placement,
+        request: f.request, executionPlacement: f.nativePlacement, applicationAccess: access }, f.context)
+      const rejected = expect(pending).rejects.toThrow()
+      try {
+        await entered.promise
+        const before = await f.journal.status(f.intent.operationId)
+        expect(before).toMatchObject({ status: 'known', receipt: { entryAttempted: true } })
+        if (before.status !== 'known') throw new Error('Expected registered preparation')
+        expect(before.receipt.native).toBeUndefined()
+        const binding = { ...f.context.binding, connectionGeneration: f.context.binding.connectionGeneration + 1,
+          connectionEpoch: randomUUID() }
+        f.currentBinding.mockReturnValue(binding)
+        const context = { binding, signal: new AbortController().signal }
+        const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop-original-preparation',
+          operationId: f.intent.operationId, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+          bindingHash: f.intent.bindingHash, owner: f.intent.owner, action: { kind: 'stop' } }
+        f.deny()
+        await expect(f.handler({ method: 'control', intent: f.intent, placement: f.placement, command }, context))
+          .rejects.toThrow('Main denied')
+        expect(closeOwner).not.toHaveBeenCalled()
+        const authority = f.readMain.getMockImplementation()!
+        f.readMain.mockImplementation(async raw => {
+          const parsed = ExecutionAuthorityRequestSchema.safeParse(raw)
+          if (!parsed.success) return authority(raw)
+          return { payload: { version: 1, action: parsed.data.action, operationId: f.intent.operationId,
+            attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: f.intent.owner } }
+        })
+        const response = await f.handler({ method: 'control', intent: f.intent, placement: f.placement, command }, context)
+        const receipt = RemoteOperationReceiptSchema.parse((response.payload as { receipt: unknown }).receipt)
+        expect(hasPositiveRemoteEntryClosure(receipt)).toBe(true)
+        expect(receipt.native).toBeUndefined()
+        expect(receipt.connection).toEqual(DeviceConnectionIdentitySchema.strip().parse(f.context.binding))
+        await rejected
+        expect(create).toHaveBeenCalledOnce()
+        expect(dispose).toHaveBeenCalled()
+        expect(closeOwner).toHaveBeenCalledWith(`execution:${f.intent.executionId}`, expect.any(AbortSignal))
+        const owner = { ...f.owner, preparationKind: 'workflow' as const, preparationClosed: true as const }
+        expect(await f.host.preparationClosed(owner)).toBe(true)
+        expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
+        expect((await f.handler({ method: 'status', intent: f.intent, placement: f.placement }, context)).payload)
+          .toMatchObject({ status: 'known', receipt: { terminal: { kind: 'cancelled' } } })
+        await f.host.close()
+        await f.journal.close()
+        const restored = await RemoteOperationJournal.open(join(f.root, 'construction-journal'))
+        journals.push(restored)
+        const persisted = await restored.status(f.intent.operationId)
+        expect(persisted.status === 'known' && hasPositiveRemoteEntryClosure(persisted.receipt)).toBe(true)
+        expect(await restored.isRetired(f.intent.operationId)).toBe(true)
+      } finally {
+        await f.host.close()
+        await rejected
+      }
+    })
+
+  it('authorizes and delivers Stop through the installed handler while all worker-to-Main ordinary slots are occupied', async () => {
+    const f = await constructionFixture()
+    class Socket extends EventEmitter {
+      bufferedAmount = 0
+      peer?: Socket
+      closed = false
+      send(text: string) {
+        queueMicrotask(() => { if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false) })
+      }
+      close() {
+        if (this.closed) return
+        this.closed = true
+        this.emit('close')
+        this.peer?.close()
+      }
+    }
+    const rawMain = new Socket()
+    const rawWorker = new Socket()
+    rawMain.peer = rawWorker
+    rawWorker.peer = rawMain
+    const mainSocket = adaptDeviceSocket(rawMain)
+    const workerSocket = adaptDeviceSocket(rawWorker)
+    const occupied = deferred()
+    const release = deferred()
+    let entered = 0
+    const authority = vi.fn(async (payload: unknown) => {
+      if (payload === 'occupied') {
+        if (++entered === 8) occupied.resolve()
+        await release.promise
+        return { payload: null }
+      }
+      return f.readMain(payload)
+    })
+    const mainRegistrations: DeviceExtensionRegistration[] = [
+      { namespace: 'execution-v1', version: 1, role: 'client', maxJsonBytes: DEVICE_APPLICATION_JSON_BYTES, maxBinaryBytes: 0 },
+      { ...EXECUTION_AUTHORITY_EXTENSION, role: 'server', handle: authority },
+      { ...WORKER_MCP_EXTENSION, role: 'server', handle: payload => f.readMain(payload) },
+    ]
+    const extensions = negotiateDeviceExtensions(extensionDescriptors(mainRegistrations), extensionDescriptors(f.host.extensions))
+    const parent = new AbortController()
+    const main = new DeviceApplicationChannel({ side: 'main', binding: f.context.binding, socket: mainSocket,
+      signal: parent.signal, extensions, registrations: mainRegistrations })
+    const worker = new DeviceApplicationChannel({ side: 'worker', binding: f.context.binding, socket: workerSocket,
+      signal: parent.signal, extensions, registrations: f.host.extensions })
+    f.setApplicationChannel(worker)
+    const readers = [main.run(mainSocket.messages[Symbol.asyncIterator](), 2000),
+      worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
+    for (const reader of readers) void reader.catch(() => {})
+    const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockResolvedValue(f.session)
+    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => f.registry.scope(owner))
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'originalSessionLifetime').mockReturnValue({
+      residency: { session: f.session, connectionId: 'unit-native-connection', runtimeGeneration: 1, nativeTurnId: undefined },
+      assertCurrent: () => {},
+    })
+    vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
+      endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+    }))
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockResolvedValue({ events: [], pendingInteractions: [],
+      correlationId: `execution:${f.intent.executionId}` })
+    const cancel = vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel').mockResolvedValue(true)
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'close').mockResolvedValue(undefined)
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'dispose').mockResolvedValue(undefined)
+    vi.spyOn(f.registry, 'closeRegistration').mockResolvedValue(undefined)
+    vi.spyOn(f.registry, 'closeOwner').mockImplementation(async () => {
+      f.snapshot.mockReturnValue({ revision: 'snapshot:closed', launches: [{ ...f.launch,
+        lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }] })
+      return true
+    })
+    const pending: Promise<unknown>[] = []
+    try {
+      await main.request('execution-v1', { method: 'prepare', intent: f.intent, placement: f.placement,
+        request: f.request, executionPlacement: f.nativePlacement, applicationAccess: { kind: 'scoped-worker-mcp',
+          token: 'unit-main-owned-token', executionId: f.intent.executionId, agentId: f.request.configuration.agentId,
+          operationId: f.intent.operationId, attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash } })
+      pending.push(...Array.from({ length: 8 }, () => worker.request(EXECUTION_AUTHORITY_EXTENSION.namespace, 'occupied')))
+      for (const request of pending) void request.catch(() => {})
+      await occupied.promise
+      await expect(worker.request(EXECUTION_AUTHORITY_EXTENSION.namespace, 'ordinary')).rejects.toThrow('backpressure')
+      const status = await f.journal.status(f.intent.operationId)
+      if (status.status !== 'known') throw new Error('Expected original operation')
+      const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop',
+        operationId: f.intent.operationId, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+        bindingHash: f.intent.bindingHash, owner: f.intent.owner, native: status.receipt.native, action: { kind: 'stop' } }
+      const frame = { method: 'control', intent: f.intent, placement: f.placement, command }
+      const originalAuthority = authority.getMockImplementation()!
+      authority.mockImplementation(async payload => {
+        const parsed = ExecutionAuthorityRequestSchema.safeParse(payload)
+        if (parsed.success && parsed.data.action === 'stop') throw new Error('Original grant revoked')
+        return originalAuthority(payload)
+      })
+      await expect(main.request('execution-v1', frame)).rejects.toThrow()
+      expect(cancel).not.toHaveBeenCalled()
+      authority.mockImplementation(originalAuthority)
+      await expect(main.request('execution-v1', frame)).resolves.toMatchObject({ payload: { status: 'known',
+        receipt: { phase: 'confirmed_terminal', terminal: { kind: 'cancelled' } } } })
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(create).toHaveBeenCalledOnce()
+      expect(authority.mock.calls.filter(([raw]) => {
+        const parsed = ExecutionAuthorityRequestSchema.safeParse(raw)
+        return parsed.success && parsed.data.action === 'stop'
+      }).length).toBeGreaterThan(1)
+    } finally {
+      release.resolve()
+      await Promise.allSettled(pending)
+      parent.abort()
+      await Promise.allSettled(readers)
+      await f.host.close()
+    }
+  })
+
+  it('delivers original history, ACK and Stop while another execution waits for Main facts', async () => {
+    const f = await constructionFixture()
+    const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockResolvedValue(f.session)
+    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => f.registry.scope(owner))
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'originalSessionLifetime').mockReturnValue({
+      residency: { session: f.session, connectionId: 'unit-native-connection', runtimeGeneration: 1, nativeTurnId: undefined },
+      assertCurrent: () => {},
+    })
+    vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
+      endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+    }))
+    const history = { events: [], pendingInteractions: [], correlationId: `execution:${f.intent.executionId}` }
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockResolvedValue(history)
+    const cancel = vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel').mockResolvedValue(true)
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'close').mockResolvedValue(undefined)
+    vi.spyOn(CodexAppServerSessionManager.prototype, 'dispose').mockResolvedValue(undefined)
+    vi.spyOn(f.registry, 'closeRegistration').mockResolvedValue(undefined)
+    const closeOwner = vi.spyOn(f.registry, 'closeOwner').mockImplementation(async () => {
+      f.snapshot.mockReturnValue({ revision: 'snapshot:closed', launches: [{ ...f.launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }] })
+      return true
+    })
+    const access = { kind: 'scoped-worker-mcp', token: 'unit-main-owned-token', executionId: f.intent.executionId,
+      agentId: f.request.configuration.agentId, operationId: f.intent.operationId, attemptId: f.intent.attemptId,
+      bindingHash: f.intent.bindingHash }
+    const delayed = delayedFacts(f.readMain, 'other-execution')
+    let pending: Promise<unknown> | undefined
+    let responsive: Promise<unknown> | undefined
+    try {
+      await f.handler({ method: 'prepare', intent: f.intent, placement: f.placement, request: f.request,
+        executionPlacement: f.nativePlacement, applicationAccess: access }, f.context)
+      const status = await f.journal.status(f.intent.operationId)
+      if (status.status !== 'known' || !status.receipt.native) throw new Error('Expected original native receipt')
+      f.readMain.mockClear()
+      await expect(f.handler({ method: 'physical-readout', intent: f.intent, placement: f.placement,
+        receiptSequence: status.receipt.sequence, sourceDigest: remoteWorkflowSourceDigest({ type: 'session_created', session: f.session }) }, f.context))
+        .resolves.toMatchObject({ payload: { session: f.session } })
+      expect(f.readMain).toHaveBeenCalledTimes(2)
+      const other = { ...f.intent, executionId: 'other-execution', attemptId: 'other-attempt', operationId: 'other-operation' }
+      pending = f.handler({ method: 'prepare', intent: other, placement: f.placement,
+        request: { ...f.request, executionId: other.executionId }, executionPlacement: f.nativePlacement }, f.context)
+      const rejected = expect(pending).rejects.toThrow('Delayed qualification rejected')
+      await delayed.entered.promise
+      responsive = (async () => {
+        expect(await f.handler({ method: 'history', intent: f.intent, placement: f.placement }, f.context))
+          .toMatchObject({ payload: { history } })
+        expect(await f.handler({ method: 'physical-ack', intent: f.intent, placement: f.placement,
+          receiptSequence: status.receipt.sequence, sourceDigest: remoteWorkflowSourceDigest({ type: 'session_created', session: f.session }) }, f.context))
+          .toMatchObject({ payload: { status: 'retired' } })
+        return f.handler({ method: 'control', intent: f.intent, placement: f.placement, command: {
+          schemaVersion: 1, protocolVersion: 1, commandId: 'original-stop', operationId: f.intent.operationId,
+          executionId: f.intent.executionId, attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash,
+          owner: f.intent.owner, native: status.receipt.native, action: { kind: 'stop' },
+        } }, f.context)
+      })()
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      try {
+        const result = await Promise.race([responsive, new Promise(resolve => { timeout = setTimeout(() => resolve('blocked'), 1000) })])
+        expect(result).toMatchObject({ payload: { status: 'known', receipt: { terminal: { kind: 'cancelled' } } } })
+        expect(cancel).toHaveBeenCalledOnce()
+        expect(cancel).toHaveBeenCalledWith(f.session, undefined, undefined)
+        expect(closeOwner).toHaveBeenCalledWith(`execution:${f.intent.executionId}`)
+        expect(create).toHaveBeenCalledOnce()
+      } finally { clearTimeout(timeout) }
+      delayed.release.resolve()
+      await rejected
+    } finally {
+      delayed.release.resolve()
+      await Promise.allSettled([pending, responsive])
+      await f.host.close()
+    }
+  })
+
+  it('coalesces only matching execution construction and releases a rejected lookup for retry', async () => {
+    const f = await constructionFixture()
+    const delayed = delayedFacts(f.readMain, f.intent.executionId)
+    const frame = { method: 'status', intent: f.intent, placement: f.placement }
+    const tasks: Promise<unknown>[] = []
+    try {
+      tasks.push(f.handler(frame, f.context))
+      const rejected = expect(tasks[0]).rejects.toThrow('Delayed qualification rejected')
+      await delayed.entered.promise
+      tasks.push(f.handler(frame, f.context))
+      const duplicateRejected = expect(tasks[1]).rejects.toThrow('Delayed qualification rejected')
+      await expect(f.handler({ ...frame, intent: { ...f.intent, owner: { grantId: 'foreign-grant', epoch: '2' } } }, f.context))
+        .rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
+      await expect(f.handler({ ...frame, placement: { ...f.placement,
+        destination: { ...f.placement.destination, canonicalCwd: '/foreign-cwd' } } }, f.context))
+        .rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
+      const replacement = { ...f.context.binding, connectionEpoch: randomUUID() }
+      f.currentBinding.mockReturnValue(replacement)
+      await expect(f.handler(frame, { ...f.context, binding: replacement }))
+        .rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
+      f.currentBinding.mockReturnValue(f.context.binding)
+      expect(f.readMain).toHaveBeenCalledOnce()
+      delayed.release.resolve()
+      await Promise.all([rejected, duplicateRejected])
+      delayed.restore()
+      await expect(f.handler(frame, f.context)).resolves.toMatchObject({ payload: { status: 'unknown' } })
+      expect(f.readMain.mock.calls.filter(([raw]) => ExecutionFactsRequestSchema.safeParse(raw).success)).toHaveLength(2)
+    } finally {
+      delayed.release.resolve()
+      await Promise.allSettled(tasks)
+      await f.host.close()
+    }
+  })
+
+  it('refuses aborted construction before inspection or Main requests', async () => {
+    const f = await constructionFixture()
+    const controller = new AbortController()
+    controller.abort(new Error('RPC already aborted'))
+    try {
+      await expect(f.handler({ method: 'status', intent: f.intent, placement: f.placement }, { ...f.context, signal: controller.signal }))
+        .rejects.toThrow('RPC already aborted')
+      expect(f.inspect).not.toHaveBeenCalled()
+      expect(f.readMain).not.toHaveBeenCalled()
+    } finally { await f.host.close() }
+  })
+
+  it('shares one generation host when separate constructions await the same journal', async () => {
+    const f = await constructionFixture()
+    const opened = deferred()
+    const release = deferred()
+    f.openJournal.mockImplementation(async () => { opened.resolve(); await release.promise; return f.journal })
+    const other = { ...f.intent, executionId: 'other-execution', attemptId: 'other-attempt', operationId: 'other-operation' }
+    const tasks = [f.intent, other].map(intent => f.handler({ method: 'status', intent, placement: f.placement }, f.context))
+    try {
+      await opened.promise
+      release.resolve()
+      await Promise.all(tasks)
+      expect(f.inspect).toHaveBeenCalledTimes(4)
+      expect(f.openJournal).toHaveBeenCalledOnce()
+      const receipts = []
+      for (const intent of [f.intent, other]) {
+        await f.handler({ method: 'control', intent, placement: f.placement, command: {
+          schemaVersion: 1, protocolVersion: 1, commandId: `stop:${intent.executionId}`,
+          operationId: intent.operationId, executionId: intent.executionId, attemptId: intent.attemptId,
+          bindingHash: intent.bindingHash, owner: intent.owner, action: { kind: 'stop' },
+        } }, f.context)
+        const status = await f.journal.status(intent.operationId)
+        if (status.status !== 'known') throw new Error('Expected retained Stop receipt')
+        receipts.push(status.receipt)
+      }
+      expect(receipts[0]!.workerIncarnationId).toBe(receipts[1]!.workerIncarnationId)
+      expect(receipts.every(receipt => receipt.stopFence && !receipt.entryAttempted)).toBe(true)
+    } finally {
+      release.resolve()
+      await Promise.allSettled(tasks)
+      await f.host.close()
+    }
+  })
+
+  it('joins only the cleanup target construction while unrelated facts are delayed', async () => {
+    const f = await constructionFixture()
+    f.snapshot.mockReturnValue({ revision: 'snapshot:empty', launches: [] })
+    const other = { ...f.intent, executionId: 'other-execution', attemptId: 'other-attempt', operationId: 'other-operation' }
+    const delayed = delayedFacts(f.readMain, other.executionId)
+    const pending = f.handler({ method: 'status', intent: other, placement: f.placement }, f.context)
+    const rejected = expect(pending).rejects.toThrow('Delayed qualification rejected')
+    try {
+      await delayed.entered.promise
+      const owner = { ...f.owner, preparationKind: 'workflow' as const, preparationClosed: true as const }
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      try {
+        const result = await Promise.race([f.host.preparationClosed(owner), new Promise(resolve => {
+          timeout = setTimeout(() => resolve('blocked'), 1000)
+        })])
+        expect(result).toBe(true)
+      } finally { clearTimeout(timeout) }
+      let targetClosed = false
+      const target = f.host.preparationClosed({ ...owner,
+        identity: { ...owner.identity, operationId: other.operationId },
+        attempt: { ...owner.attempt, executionId: other.executionId, attemptId: other.attemptId },
+      }).then(result => { targetClosed = true; return result })
+      await Promise.resolve()
+      expect(targetClosed).toBe(false)
+      delayed.release.resolve()
+      await rejected
+      expect(await target).toBe(true)
+    } finally {
+      delayed.release.resolve()
+      await Promise.allSettled([pending])
+      await f.host.close()
+    }
+  })
+
+  it('still requires Main control authorization for a constructed owner', async () => {
+    const f = await constructionFixture()
+    try {
+      await f.handler({ method: 'status', intent: f.intent, placement: f.placement }, f.context)
+      f.deny()
+      await expect(f.handler({ method: 'control', intent: f.intent, placement: f.placement, command: {
+        schemaVersion: 1, protocolVersion: 1, commandId: 'denied-stop', operationId: f.intent.operationId,
+        executionId: f.intent.executionId, attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash,
+        owner: f.intent.owner, action: { kind: 'stop' },
+      } }, f.context)).rejects.toThrow('Main denied original execution access')
+      expect(await f.journal.status(f.intent.operationId)).toMatchObject({ status: 'unknown' })
+    } finally { await f.host.close() }
   })
 })
 
@@ -364,6 +1549,262 @@ async function physicalFixture(relativeCwd='') {
     entry,lane,request,currentBinding,producer,query,sqlConnection,owner,originals,bind,canonicalProofs}
 }
 describe('original physical source selectors and Main SQL consumer',()=>{
+  it('transfers distinct large workflow and reviewer results with a bounded physical dictionary', async () => {
+    const f = await physicalFixture()
+    const workflowResult = { outcome: 'succeeded' as const, output: { text: 'w'.repeat(3 * 1024 * 1024) } }
+    const reviewerResult = { outcome: 'succeeded' as const, output: { text: 'r'.repeat(3 * 1024 * 1024) } }
+    await f.journal.retainReviewer(f.intent.operationId, { agentId: 'reviewer',
+      expiresAt: '2099-01-01T00:00:00.000Z' }, { ...f.source.history,
+      terminalTurn: { correlationId: f.source.history.correlationId, providerId: 'original-turn', result: workflowResult } })
+    const assignment = { jobId: 'large-review', interactionId: 'interaction', reviewerAgentId: 'reviewer',
+      correlationId: 'review:large-review', session: f.session }
+    await f.journal.reserveReviewTurn(f.intent.operationId, assignment, 'a'.repeat(64), -1)
+    await f.journal.enterReviewTurn(f.intent.operationId, assignment.correlationId)
+    await f.journal.acknowledgeReviewTurn(f.intent.operationId, assignment.correlationId, 'review-turn')
+    const history = { ...f.source.history, correlationId: assignment.correlationId, nativeTurnId: 'review-turn',
+      terminalResult: reviewerResult, terminalTurn: { correlationId: assignment.correlationId,
+        providerId: 'review-turn', result: reviewerResult } }
+    await f.journal.settleReviewTurn(f.intent.operationId, history)
+    const status = await f.journal.status(f.intent.operationId)
+    if (status.status !== 'known') throw new Error('Original reviewer receipt missing')
+    f.readout.receipt = status.receipt
+    f.readout.history = history
+    f.source.history = history
+    const readouts = new InstalledWorkflowPhysicalReadouts()
+    const observation = { readout: f.readout, placement: f.placement,
+      leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: async () => {}, assertCurrent: async () => {},
+      observe: () => f.captured.launch, closure: () => null }
+    try {
+      readouts.remember({ ...observation, source: { type: 'boundary' } })
+      readouts.remember({ ...observation, source: f.source })
+      const selector = { intent: f.intent, placement: f.placement, receiptSequence: status.receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest(f.source) }
+      const selected = await readouts.read(selector)
+      const first = pagePhysicalReadout(selected)
+      if (!('kind' in first)) throw new Error('Large physical dictionary needs bounded transfer')
+      expect(first.metadata.byteSize).toBeGreaterThan(4 * 1024 * 1024)
+      expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
+      const reconstructed = await readPhysicalReadout(first, async metadata =>
+        pagePhysicalReadout(await readouts.read(selector), metadata))
+      expect(reconstructed).toEqual(selected)
+      expect(reconstructed.receipt.retainedReviewer?.result).toEqual(workflowResult)
+      expect(reconstructed.history?.terminalResult).toEqual(reviewerResult)
+      expect((await readouts.ack(selector)).status).toBe('retired')
+      readouts.purge(f.intent.operationId)
+      readouts.remember({ ...observation, source: f.source })
+      expect((await readouts.read(selector)).history).toEqual(history)
+    } finally {
+      readouts.clear()
+      await f.sqlConnection.close()
+    }
+  }, 30_000)
+
+  it('retains and verifies a journal-sized terminal result across physical carrier continuations', async () => {
+    const f = await physicalFixture()
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(450_000) } }
+    const history = { ...f.source.history, terminalResult: result, terminalTurn: {
+      correlationId: `execution:${f.intent.executionId}`, providerId: 'original-turn', result } }
+    const closed = RemoteWorkflowPhysicalReadoutSchema.shape.observation.parse({ ...f.captured.launch,
+      lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' })
+    await f.journal.terminal(f.intent.operationId, { kind: 'completed', result,
+      resultDigest: commandInputHash(result).slice('sha256:'.length),
+      closureEvidenceDigest: commandInputHash({ intent: f.intent, native: f.readout.receipt.native,
+        launch: f.captured.launch, physicalOwnerClosed: true }).slice('sha256:'.length) })
+    const status = await f.journal.status(f.intent.operationId)
+    if (status.status !== 'known') throw new Error('Original terminal receipt missing')
+    f.source.history = history
+    f.readout.receipt = status.receipt
+    f.readout.history = history
+    f.readout.observation = closed
+    f.readout.closure = { ownerClosed: true, launch: closed }
+    f.readout.output = { kind: 'text-only', result }
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeGreaterThan(3 * 1024 * 1024)
+    expect(Buffer.byteLength(JSON.stringify(f.readout))).toBeGreaterThan(4 * 1024 * 1024)
+    const expectedDigest = createHash('sha256')
+      .update(canonicalGraphJson(f.source, REMOTE_NATIVE_SOURCE_LIMIT)).digest('hex')
+    expect(remoteWorkflowSourceDigest(f.source)).toBe(expectedDigest)
+    const readouts = new InstalledWorkflowPhysicalReadouts()
+    const observation = { readout: f.readout, placement: f.placement,
+      leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: async () => {}, assertCurrent: async () => {},
+      observe: () => closed, closure: () => closed }
+    readouts.remember({ ...observation, source: { type: 'boundary' } })
+    readouts.remember({ ...observation, source: f.source })
+    class Socket extends EventEmitter {
+      bufferedAmount = 0
+      peer?: Socket
+      closed = false
+      maxFrameBytes = 0
+      send(text: string) {
+        this.maxFrameBytes = Math.max(this.maxFrameBytes, Buffer.byteLength(text))
+        queueMicrotask(() => {
+          if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false)
+        })
+      }
+      close() {
+        if (this.closed) return
+        this.closed = true
+        this.emit('close')
+        this.peer?.close()
+      }
+    }
+    const rawMain = new Socket()
+    const rawWorker = new Socket()
+    rawMain.peer = rawWorker
+    rawWorker.peer = rawMain
+    const mainSocket = adaptDeviceSocket(rawMain)
+    const workerSocket = adaptDeviceSocket(rawWorker)
+    const client: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'client',
+      maxJsonBytes: DEVICE_APPLICATION_JSON_BYTES, maxBinaryBytes: 0 }
+    let pages = 0
+    const server: DeviceExtensionRegistration = { ...client, role: 'server', handle: async raw => {
+      const frame = RemoteExecutionRpcRequestSchema.parse(raw)
+      if (frame.method !== 'physical-readout') throw new Error('Only original physical observation is requested')
+      pages++
+      const payload = pagePhysicalReadout(await readouts.read(frame), frame.metadata)
+      expect(Buffer.byteLength(JSON.stringify(payload))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
+      return { payload }
+    } }
+    const extensions = negotiateDeviceExtensions(extensionDescriptors([client]), extensionDescriptors([server]))
+    const parent = new AbortController()
+    const main = new DeviceApplicationChannel({ side: 'main', binding: f.context.binding, socket: mainSocket,
+      signal: parent.signal, extensions, registrations: [client] })
+    const worker = new DeviceApplicationChannel({ side: 'worker', binding: f.context.binding, socket: workerSocket,
+      signal: parent.signal, extensions, registrations: [server] })
+    const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 1000),
+      worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
+    for (const task of tasks) void task.catch(() => {})
+    f.request.mockImplementation(payload => main.request('execution-v1', payload))
+    try {
+      const original = await f.bind()
+      expect(original.source).toEqual(f.source)
+      await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+      const selector = { intent: f.intent, placement: f.placement, receiptSequence: status.receipt.sequence,
+        sourceDigest: expectedDigest }
+      const selected = await readouts.read(selector)
+      const raw = pagePhysicalReadout(selected)
+      const reconstructed = await readPhysicalReadout(raw, async metadata =>
+        pagePhysicalReadout(await readouts.read(selector), metadata))
+      expect(reconstructed).toEqual(selected)
+      expect(pages).toBeGreaterThan(1)
+      expect(rawWorker.maxFrameBytes).toBeLessThanOrEqual(16_384)
+      expect(rawMain.closed).toBe(false)
+      await expect(readouts.read({ ...selector, sourceDigest: 'f'.repeat(64) }))
+        .rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+      expect((await readouts.ack(selector)).status).toBe('retired')
+      readouts.purge(f.intent.operationId)
+      readouts.remember({ ...observation, source: f.source })
+      expect((await readouts.read(selector)).history).toEqual(history)
+      expect(await f.journal.status(f.intent.operationId)).toEqual(status)
+    } finally {
+      parent.abort()
+      main.close()
+      worker.close()
+      await Promise.allSettled(tasks)
+      readouts.clear()
+      await f.sqlConnection.close()
+    }
+  }, 30_000)
+
+  it.each(['closed', 'live', 'wrong owner', 'different closure'] as const)(
+    'admits reboot readback only for original boot closure: %s', async state => {
+      const f = await physicalFixture()
+      if (state !== 'live') {
+        await f.journal.revokeFence(f.intent.operationId)
+        const original = await f.journal.status(f.intent.operationId)
+        if (original.status !== 'known') throw new Error('Expected original native owner')
+        await f.journal.terminal(f.intent.operationId, { kind: 'cancelled',
+          closureEvidenceDigest: commandInputHash({ intent: f.intent, native: original.receipt.native,
+            launch: f.captured.launch, physicalOwnerClosed: true }).slice('sha256:'.length) })
+        const terminal = await f.journal.status(f.intent.operationId)
+        if (terminal.status !== 'known') throw new Error('Expected terminal original owner')
+        f.readout.receipt = terminal.receipt
+        f.readout.observation = RemoteWorkflowPhysicalReadoutSchema.shape.observation.parse({ ...f.captured.launch,
+          lifecycle: 'closed', closureEvidence: state === 'different closure' ? 'cgroup_v2_empty' : 'linux_boot_changed' })
+        f.readout.closure = { ownerClosed: true, launch: f.readout.observation }
+      }
+      f.context.binding = { ...f.context.binding, bootId: randomUUID(), connectionGeneration: 10,
+        connectionEpoch: randomUUID() }
+      f.currentBinding.mockReturnValue(f.context.binding)
+      if (state === 'wrong owner') {
+        f.readout.observation = { ...f.readout.observation, owner: 'execution:foreign' }
+        f.readout.closure = { ownerClosed: true, launch: f.readout.observation }
+      }
+      try {
+        if (state === 'closed') {
+          const original = await f.bind()
+          await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+          expect(f.producer.passiveNativeOwner(original)).toBeUndefined()
+          expect(f.readout.receipt.connection.bootId).not.toBe(f.context.binding.bootId)
+          expect(f.readout.receipt.native).toMatchObject({ sessionId: f.session.nativeSessionId })
+        } else {
+          await expect(f.producer.prefetch(f.readout.receipt, f.placement, f.source))
+            .rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+        }
+        expect(f.request).toHaveBeenCalledOnce()
+      } finally {
+        await f.sqlConnection.close()
+      }
+    })
+  it('verifies the complete original terminal metadata after bounded physical readout continuation', async () => {
+    const f = await physicalFixture()
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(65_536) } }
+    Object.assign(f.source.history, { terminalResult: result, terminalTurn: {
+      correlationId: `execution:${f.intent.executionId}`, providerId: 'original-turn', result } })
+    f.readout.history = f.source.history
+    const offsets: number[] = []
+    f.request.mockImplementation(async payload => {
+      const frame = payload as { metadata?: { digest: string; offset: number } }
+      offsets.push(frame.metadata?.offset ?? 0)
+      const value = pagePhysicalReadout(f.readout, frame.metadata)
+      expect(Buffer.byteLength(JSON.stringify(value))).toBeLessThan(DEVICE_APPLICATION_JSON_BYTES)
+      return { payload: value }
+    })
+    const original = await f.bind()
+    expect(original.source).toEqual(f.source)
+    expect(offsets[0]).toBe(0)
+    expect(offsets.length).toBeGreaterThan(1)
+    expect(offsets.slice(1).every((offset, index) => offset > offsets[index]!)).toBe(true)
+    await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+    await f.sqlConnection.close()
+  })
+  it('retains byte-bounded page and event selectors without copying the entire native history', async () => {
+    const f = await physicalFixture()
+    const events = Array.from({ length: 80 }, (_, sequence) => ({ sequence, type: 'native.notification',
+      occurredAt: '2026-10-01T00:00:00.000Z', payload: { text: '漢'.repeat(6000) } }))
+    const full = { ...f.source.history, events, firstRetainedSequence: 0, nextSequence: events.length }
+    expect(Buffer.byteLength(JSON.stringify(full))).toBeGreaterThan(DEVICE_APPLICATION_JSON_BYTES)
+    const readouts = new InstalledWorkflowPhysicalReadouts()
+    const assertCurrent = vi.fn(async () => {})
+    const observed: number[] = []
+    let cursor = -1
+    try {
+      for (let count = 0; count < events.length; count++) {
+        const page = pageNativeHistory(full, cursor)
+        const source = { type: 'history' as const, history: page.history }
+        readouts.remember({ readout: RemoteWorkflowPhysicalReadoutSchema.parse({ ...f.readout, history: page.history }), placement: f.placement, source,
+          leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: assertCurrent, assertCurrent,
+          observe: () => f.captured.launch, closure: () => null })
+        const selector = { intent: f.intent, placement: f.placement, receiptSequence: f.readout.receipt.sequence,
+          sourceDigest: remoteWorkflowSourceDigest(source) }
+        const readout = await readouts.read(selector)
+        expect(Buffer.byteLength(JSON.stringify(readout))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
+        expect(readout.history).toEqual(page.history)
+        for (const event of page.history.events) {
+          const original = { type: 'event' as const, event: { ...event, executionId: f.intent.executionId } }
+          expect((await readouts.read({ ...selector, sourceDigest: remoteWorkflowSourceDigest(original) }))
+            .history?.events).toContainEqual(event)
+          observed.push(event.sequence)
+        }
+        await expect(readouts.read({ ...selector, intent: { ...f.intent, executionId: 'foreign-execution' } }))
+          .rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+        await readouts.ack(selector)
+        cursor = page.page.nextAfterSequence
+        if (!page.page.hasMore) break
+      }
+      expect(observed).toEqual(events.map(event => event.sequence))
+      expect(assertCurrent).toHaveBeenCalled()
+    } finally { await f.sqlConnection.close() }
+  })
   it('retains the exact earlier source, never reconstructs latest history, and expires/purges selectors',async()=>{
     const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts(),assertCurrent=vi.fn(async()=>{})
     const input={readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertOwnerCurrent:assertCurrent,assertCurrent,
@@ -474,7 +1915,8 @@ it('bounds the global original-source byte window and frees it only through expl
   const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts()
   let accepted=0
   for(let index=0;index<128;index++) {
-    const history={...f.source.history,nextSequence:index,terminalResult:{outcome:'succeeded' as const,output:{text:'x'.repeat(800_000)}}}
+    const history={...f.source.history,nextSequence:index,terminalResult:{outcome:'succeeded' as const,
+      output:{text:`${index}:${'x'.repeat(800_000)}`}}}
     try {
       readouts.remember({readout:{...f.readout,history},placement:f.placement,source:{type:'history',history},leaseExpiresAt:'2099-01-01T00:00:00.000Z',
         assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})
@@ -502,12 +1944,57 @@ it('cannot retain an expired original application lease or use prefetched proof 
 })
 
 describe('original physical directory revalidation after native closure',()=>{
+  it.each(['', 'src'])('bounds authorization requests and their injected latency for cwd %j', async relativeCwd => {
+    const f = await physicalFixture(relativeCwd)
+    let authorizationLatency = 0
+    const authorize = vi.fn(async () => {
+      authorizationLatency += 25
+      await new Promise(resolve => setTimeout(resolve, 25))
+    })
+    const assertCurrent = vi.fn(() => {})
+    const started = performance.now()
+    await assertOriginalPhysicalDirectories({ source: f.readout.source, runtimeLeaf: f.readout.runtimeLeaf,
+      placement: f.placement, approvedRoots: f.approvedRoots, signal: new AbortController().signal,
+      assertCurrent, authorize })
+    const elapsed = performance.now() - started
+    expect(authorize).toHaveBeenCalledTimes(2)
+    expect(authorizationLatency).toBe(50)
+    expect(elapsed).toBeGreaterThanOrEqual(45)
+    expect(assertCurrent.mock.calls.length).toBeGreaterThan(20)
+    await f.sqlConnection.close()
+  })
+  it.each(['connection', 'abort'] as const)('stops a physical inspection when its local %s fence changes', async defect => {
+    const f = await physicalFixture('src')
+    const controller = new AbortController()
+    const authorize = vi.fn(async () => {})
+    let checks = 0
+    const assertCurrent = () => {
+      if (++checks === 4) {
+        if (defect === 'abort') controller.abort(new Error('Original readout aborted'))
+        else throw new Error('Original connection changed during filesystem inspection')
+      }
+    }
+    await expect(assertOriginalPhysicalDirectories({ source: f.readout.source, runtimeLeaf: f.readout.runtimeLeaf,
+      placement: f.placement, approvedRoots: f.approvedRoots, signal: controller.signal,
+      assertCurrent, authorize })).rejects.toThrow()
+    expect(authorize).toHaveBeenCalledOnce()
+    await f.sqlConnection.close()
+  })
+  it('refuses the inspection when Main denies its initial authorization', async () => {
+    const f = await physicalFixture()
+    const authorize = vi.fn(async () => { throw new Error('Original Main read authority revoked') })
+    await expect(assertOriginalPhysicalDirectories({ source: f.readout.source, runtimeLeaf: f.readout.runtimeLeaf,
+      placement: f.placement, approvedRoots: f.approvedRoots, signal: new AbortController().signal,
+      assertCurrent: () => {}, authorize })).rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+    expect(authorize).toHaveBeenCalledOnce()
+    await f.sqlConnection.close()
+  })
   it('keeps original W09 identities while observing edited bytes without granting mutable continuation',async()=>{
     const f=await physicalFixture('src'),authorize=vi.fn(async()=>{})
     await writeFile(join(f.readout.source.workingTree.canonicalCwd,'source.ts'),'Actual allowed native-edited output bytes\n')
     await assertOriginalPhysicalDirectories({source:f.readout.source,runtimeLeaf:f.readout.runtimeLeaf,placement:f.placement,
-      approvedRoots:f.approvedRoots,signal:new AbortController().signal,authorize})
-    expect(authorize.mock.calls.length).toBeGreaterThan(2)
+      approvedRoots:f.approvedRoots,signal:new AbortController().signal,assertCurrent:()=>{},authorize})
+    expect(authorize).toHaveBeenCalledTimes(2)
     // The original strict-byte W09 mode remains fenced; physical directory readback never changes its ownership or byte policy.
     await expect(f.sources.handle({version:1,operation:'sources.verify',record:f.nativePlacement.materialization,relativeCwd:'src'},f.context)).rejects.toThrow()
     await f.sqlConnection.close()
@@ -524,14 +2011,15 @@ describe('original physical directory revalidation after native closure',()=>{
       await rename(path,`${path}-original`);await mkdir(path,{mode:0o700})
     }
     await expect(assertOriginalPhysicalDirectories({source:f.readout.source,runtimeLeaf:f.readout.runtimeLeaf,placement:f.placement,
-      approvedRoots:f.approvedRoots,signal:new AbortController().signal,authorize:async()=>{}})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
+      approvedRoots:f.approvedRoots,signal:new AbortController().signal,assertCurrent:()=>{},authorize:async()=>{}})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
     await f.sqlConnection.close()
   })
-  it('rechecks authority after opening original FDs and never turns lost authority into a readback capability',async()=>{
+  it('rechecks authority before releasing a physical readout',async()=>{
     const f=await physicalFixture('src'),authorize=vi.fn(async()=>{})
     authorize.mockImplementationOnce(async()=>{}).mockImplementationOnce(async()=>{throw new Error('Original Main read authority revoked after FD open')})
     await expect(assertOriginalPhysicalDirectories({source:f.readout.source,runtimeLeaf:f.readout.runtimeLeaf,placement:f.placement,
-      approvedRoots:f.approvedRoots,signal:new AbortController().signal,authorize})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
+      approvedRoots:f.approvedRoots,signal:new AbortController().signal,assertCurrent:()=>{},authorize})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
+    expect(authorize).toHaveBeenCalledTimes(2)
     await f.sqlConnection.close()
   })
 })

@@ -29,6 +29,7 @@ import { RunnerAdmission } from './runnerAdmission.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
 import type { WorkflowRestartApprovals } from './workflowRepositoryServices.js'
+import { readRunAcceptedPlacements } from '../placement/persistence.js'
 
 /** One engine, Run owner, checkpoint thread and repository for all current V3
  * graphs. Optional bounded blocks are compiled into this same LangGraph; an
@@ -171,6 +172,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     let stopObservingInterrupts: (() => void) | undefined
     try {
       owner.assertOwned(); controller.signal.throwIfAborted()
+      this.nativeExecutions.adoptRunOwner(owner)
       let snapshot = await this.runs.getRepeatSnapshot(runId, owner)
       if (snapshot.stopRequested || snapshot.cleanupPending || snapshot.run.executionState === 'completed') {
         await this.cleanupOwned(owner)
@@ -230,7 +232,20 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
             for (const configuration of current.configurations) assertNativeWorkflowConfiguration(configuration.harness, run.approval,
               run.approval.handler === 'orchestrator' && configuration.agentId === run.approval.designatedOrchestratorAgentId)
             await this.locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
-            await this.locations.revalidateSnapshot(run.workspaceId, run.executionLocation, requiredLocationAccess(current.configurations), controller.signal)
+            const nodes = current.version.definition.nodes
+            const expectsPlacements = nodes.some(node => node.kind !== 'job' && (node.placement || node.artifactOutputs))
+            const placements = expectsPlacements ? await readRunAcceptedPlacements(owner.client, run.id) : []
+            const allNodesPlaced = placements.length === nodes.length && nodes.every(node => node.kind !== 'job'
+              && placements.some(pin => pin.nodeId === node.id && pin.payload.kind === 'agent'
+                && pin.payload.agentId === node.agentId
+                && pin.payload.agentConfigurationVersionId === run.agentConfigurationVersionIds[node.agentId]))
+            if (expectsPlacements && nodes.every(node => node.kind !== 'job') && !allNodesPlaced) {
+              throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The Run is missing its accepted Agent placements.', 409)
+            }
+            if (!allNodesPlaced) {
+              await this.locations.revalidateSnapshot(run.workspaceId, run.executionLocation,
+                requiredLocationAccess(current.configurations), controller.signal)
+            }
             owner.assertOwned(); controller.signal.throwIfAborted()
           },
           markRunning: () => this.runs.updateState(runId, { executionState: 'running', outcome: 'pending',
@@ -375,7 +390,12 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
           if (this.activeTasks.has(candidate.id) || this.resumeTasks.has(candidate.id) || this.cleanupTasks.has(candidate.id)) { after = candidate.id; continue }
           if (this.activeTasks.size >= this.maximumActiveRuns) { this.reconcileCursor = after; return }
           after = candidate.id
-          void this.start(candidate.id).catch(onError)
+          void this.start(candidate.id).catch(error => {
+            // A retained reviewer can own the Run between engine passes; retry on the next sweep.
+            if (error instanceof DomainError && error.code === 'RUN_ALREADY_OWNED') return
+            if (this.closing && error instanceof DomainError && error.code === 'ENGINE_RESTART') return
+            onError(error)
+          })
         }
         if (page.length < 100) {
           if (wrapped) break

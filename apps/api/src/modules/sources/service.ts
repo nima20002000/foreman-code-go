@@ -34,7 +34,7 @@ export interface SourceExecutionHostPort {
    * owner and placement before source service can prepare a native directory. */
   authorize(sql: GraphSqlClient, principal: ManagementPrincipal,
     input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }): Promise<void>
-  prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceMaterializationRecord['receipt']>
+  prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt, options?: { sharedWritableTree?: true }): Promise<SourceMaterializationRecord['receipt']>
   verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree>
   verify(record: SourceMaterializationRecord): Promise<string>
   releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<number>
@@ -285,15 +285,19 @@ export class PostgresSourceService implements SourceAdmissionPort {
         const record = SourceMaterializationRecordSchema.parse({ ...(existing.record as object), state: existing.state })
         if (record.operationId !== input.operationId || !isDeepStrictEqual(record.receipt.binding, root.binding)
           || record.receipt.placementHash !== input.attempt.placementHash) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Source preparation belongs to another exact execution/attempt.', 409)
-        return { root, source, record, reservation: null }
+        return { root, source, record, reservation: null, sharedWritableTree: false }
       }
       const reservation = await this.reservations.reserve(sql, { scopeId: this.scope(root.binding.deviceId, root.binding.workerInstallationId, root.binding.filesystem),
         ownerKind: 'materialization', ownerId: input.operationId, reservedBytes: source.manifest.totalBytes * 3 + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024 })
-      return { root, source, record: null, reservation }
+      const workflow = await sql.query('select 1 from execution_dispatch_intents where execution_id=$1 and attempt_id=$2 and operation_id=$3',
+        [input.attempt.executionId, input.attempt.attemptId, input.operationId])
+      return { root, source, record: null, reservation,
+        sharedWritableTree: root.binding.accessMode === 'exclusive-write' && workflow.rowCount === 1 }
     })
     if (state.record) { await this.lifecycle.adopted?.(state.record); return state.record }
     // No main SQL transaction spans carrier/native filesystem I/O.
-    const receipt = await this.executions.prepare(state.source.manifest, state.root, input.attempt)
+    const receipt = await this.executions.prepare(state.source.manifest, state.root, input.attempt,
+      state.sharedWritableTree ? { sharedWritableTree: true } : undefined)
     if (!isDeepStrictEqual(receipt.binding, state.root.binding) || receipt.executionId !== input.attempt.executionId
       || receipt.attemptId !== input.attempt.attemptId || receipt.placementHash !== input.attempt.placementHash
       || receipt.keyRevision !== input.attempt.keyRevision || receipt.authorizationRevision !== input.attempt.authorizationRevision

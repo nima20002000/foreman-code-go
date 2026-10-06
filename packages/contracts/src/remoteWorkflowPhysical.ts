@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { NativeSessionReferenceSchema, NativeHarnessEventSchema, PendingNativeInteractionSchema,
   ExecutionResultSchema, AgentHarnessSchema, ApprovalResponseSemanticSchema } from './index.js'
 import { NativeMessageSubmissionSchema } from './claude.js'
-import { PlacementDigestSchema } from './nodePlacement.js'
+import { PlacementDigestSchema, DispatchIntentSchema } from './nodePlacement.js'
 import { RemoteOperationReceiptSchema, WorkflowArtifactValidationFailureSchema,
   type WorkflowArtifactValidationFailure } from './remoteExecution.js'
 import { SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema, SourceCwdAttestationSchema } from './sourceAdmission.js'
@@ -10,6 +10,22 @@ import { WorkflowArtifactResultV1Schema, type WorkflowArtifactOutputsV1 } from '
 import { WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema } from './workflowArtifactResult.js'
 import { canonicalGraphJson } from './wave25/json.js'
 import { WorkHandoffResultSchema } from './wave25/handoffs.js'
+import { DeviceHistoryGapSchema, DeviceJsonContinuationSchema, DEVICE_JSON_CONTINUATION_LIMIT } from './deviceApplication.js'
+
+export const REMOTE_PHYSICAL_CONTINUATION_LIMIT = DEVICE_JSON_CONTINUATION_LIMIT * 3
+/** A history repeats its journal-sized result in both terminal fields. */
+export const REMOTE_NATIVE_SOURCE_LIMIT = DEVICE_JSON_CONTINUATION_LIMIT * 3
+export const RemoteResultDictionarySchema = z.object({
+  kind: z.literal('execution-result-dictionary'), data: z.record(z.string(), z.unknown()),
+  results: z.array(z.lazy(() => ExecutionResultSchema)).max(64),
+  locations: z.array(z.object({ path: z.array(z.union([z.string().min(1).max(64),
+    z.number().int().nonnegative()])).min(1).max(8),
+    index: z.number().int().nonnegative().max(63) }).strict()).max(128),
+}).strict()
+export type RemoteResultDictionary = z.infer<typeof RemoteResultDictionarySchema>
+export const RemotePhysicalJsonContinuationSchema = DeviceJsonContinuationSchema.extend({
+  byteSize: z.number().int().safe().positive().max(REMOTE_PHYSICAL_CONTINUATION_LIMIT),
+})
 
 const ProcessIdentitySchema = z.object({ pid: z.number().int().safe().gt(1), startTicks: z.string().regex(/^\d+$/) }).strict()
 /** Internal original registry identities only; never a public process DTO. */
@@ -17,7 +33,8 @@ export const RemoteNativeLaunchObservationSchema = z.object({ owner: z.string().
   guardian: ProcessIdentitySchema, provider: ProcessIdentitySchema,
   boundary: z.object({ kind: z.literal('cgroup-v2'), path: z.string().startsWith('/'), device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/) }).strict(),
   lifecycle: z.enum(['active', 'ended', 'closure-unconfirmed', 'closed']),
-  closureEvidence: z.enum(['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty']).optional(),
+  closureEvidence: z.enum(['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty',
+    'native_exit_removed_cgroup', 'cgroup_v2_removed']).optional(),
 }).strict()
 export const RemoteRuntimeLeafAttestationSchema = z.object({ executionId: z.string().min(1), attemptId: z.string().min(1),
   operationId: z.string().min(1), bindingHash: PlacementDigestSchema, canonicalRuntimeDirectory: z.string().startsWith('/'),
@@ -26,6 +43,7 @@ export const RemoteRuntimeLeafAttestationSchema = z.object({ executionId: z.stri
 export const RemoteNativeHistorySchema = z.object({ nativeSubmission: z.lazy(() => NativeMessageSubmissionSchema).optional(),
   correlationId: z.string().optional(), nativeTurnId: z.string().optional(), nativeMessageId: z.string().optional(), nextCursor: z.string().optional(),
   firstRetainedSequence: z.number().int().nonnegative().optional(), nextSequence: z.number().int().nonnegative().optional(),
+  gap: DeviceHistoryGapSchema.optional(),
   events: z.array(z.lazy(() => NativeHarnessEventSchema)).max(1024), pendingInteractions: z.array(z.lazy(() => PendingNativeInteractionSchema)).max(128),
   pendingInteraction: z.lazy(() => PendingNativeInteractionSchema).optional(), terminalResult: z.lazy(() => ExecutionResultSchema).optional(),
   terminalTurn: z.object({ correlationId: z.string(), providerId: z.string(), result: z.lazy(() => ExecutionResultSchema) }).strict().optional(),
@@ -89,6 +107,7 @@ export function remoteWorkflowPhysicalOutput(result: z.infer<typeof ExecutionRes
 }
 
 export const RemoteWorkflowPhysicalReadoutSchema = z.object({ version: z.literal(1), expiresAt: z.string().datetime(), receipt: RemoteOperationReceiptSchema,
+  launchIntent: DispatchIntentSchema.optional(),
   session: z.lazy(() => NativeSessionReferenceSchema), launch: RemoteNativeLaunchObservationSchema,
   observation: RemoteNativeLaunchObservationSchema, runtimeLeaf: RemoteRuntimeLeafAttestationSchema,
   source: z.object({ record: SourceMaterializationRecordSchema, workingTree: VerifiedSourceWorkingTreeSchema.extend({ cwdAttestation: SourceCwdAttestationSchema }) }).strict(),
@@ -97,6 +116,11 @@ export const RemoteWorkflowPhysicalReadoutSchema = z.object({ version: z.literal
   output: RemoteWorkflowPhysicalOutputSchema.optional(),
 }).strict()
 export type RemoteWorkflowPhysicalReadout = z.infer<typeof RemoteWorkflowPhysicalReadoutSchema>
+export const RemoteWorkflowPhysicalReadoutTransferSchema = z.union([
+  RemoteWorkflowPhysicalReadoutSchema,
+  z.object({ kind: z.literal('json-continuation'), metadata: DeviceJsonContinuationSchema }).strict(),
+  z.object({ kind: z.literal('result-continuation'), metadata: RemotePhysicalJsonContinuationSchema }).strict(),
+])
 /** Cleanup acknowledgment, never evidence of native execution or success. */
 export const RemoteWorkflowPhysicalAckSchema=z.object({version:z.literal(1),operationId:z.string().min(1),
   receiptSequence:z.number().int().positive(),sourceDigest:PlacementDigestSchema,status:z.enum(['retired','not_retained']),

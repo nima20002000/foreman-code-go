@@ -2,13 +2,18 @@ import {
   DEFAULT_HARNESS_DEFAULTS,
   HarnessDefaultsSchema,
   withAdvancedDefaults,
+  type AgentHarness,
   type HarnessDefaults,
 } from '@foreman-code/contracts'
 import type pg from 'pg'
+import { UnavailableHarnessDefaultsSchema } from '@foreman-code/contracts/management'
+import { inTransaction } from '../../infrastructure/transaction.js'
 
 import { DomainError } from '../errors.js'
 
 const SETTINGS_KEY = 'harness-defaults'
+/** Stock templates do not prove that native discovery selected a default. */
+export const UNAVAILABLE_HARNESS_DEFAULTS_KEY = 'harness-default-model-unavailable'
 
 /** Complete legacy templates on read without changing their explicit permission choice. */
 export function normalizeHarnessDefaults(record: unknown): HarnessDefaults {
@@ -35,14 +40,20 @@ export class PostgresSettingsRepository {
     return normalizeHarnessDefaults(result.rows[0]?.record)
   }
 
-  async getManagedHarnessDefaults(client?: pg.ClientBase): Promise<{ defaults: HarnessDefaults; revision: number }> {
-    const result = await (client ?? this.pool).query<{ record: unknown; revision: string }>(
-      'select record, revision from application_settings where key = $1',
-      [SETTINGS_KEY],
+  async getManagedHarnessDefaults(client?: pg.ClientBase): Promise<{
+    defaults: HarnessDefaults; revision: number; unavailable?: AgentHarness[]
+  }> {
+    const result = await (client ?? this.pool).query<{ record: unknown; revision: string; unavailable: unknown }>(
+      `select record, revision,
+        (select record from application_settings where key = $2) as unavailable
+       from application_settings where key = $1`,
+      [SETTINGS_KEY, UNAVAILABLE_HARNESS_DEFAULTS_KEY],
     )
+    const unavailable = UnavailableHarnessDefaultsSchema.parse(result.rows[0]?.unavailable ?? [])
     return {
       defaults: normalizeHarnessDefaults(result.rows[0]?.record),
       revision: Number(result.rows[0]?.revision ?? 0),
+      ...(unavailable.length ? { unavailable } : {}),
     }
   }
 
@@ -50,8 +61,10 @@ export class PostgresSettingsRepository {
     client: pg.PoolClient,
     input: HarnessDefaults,
     expectedRevision: number,
+    options: { unavailable?: AgentHarness[] } = {},
   ): Promise<{ defaults: HarnessDefaults; revision: number }> {
     const defaults = HarnessDefaultsSchema.parse(input)
+    await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:harness-defaults'])
     const current = await client.query<{ revision: string }>(
       'select revision from application_settings where key = $1 for update', [SETTINGS_KEY],
     )
@@ -76,18 +89,30 @@ export class PostgresSettingsRepository {
         currentRevision: Number(latest.rows[0]?.revision ?? 0),
       })
     }
+    const unavailable = UnavailableHarnessDefaultsSchema.parse(options.unavailable ?? [])
+    if (unavailable.length) {
+      await client.query(`insert into application_settings (key,record,revision,updated_at) values($1,$2::jsonb,1,now())
+        on conflict(key) do update set record=excluded.record,revision=application_settings.revision+1,updated_at=excluded.updated_at`,
+      [UNAVAILABLE_HARNESS_DEFAULTS_KEY, JSON.stringify(unavailable)])
+    } else {
+      await client.query('delete from application_settings where key = $1', [UNAVAILABLE_HARNESS_DEFAULTS_KEY])
+    }
     return { defaults, revision: Number(result.rows[0].revision) }
   }
 
   async saveHarnessDefaults(input: HarnessDefaults): Promise<HarnessDefaults> {
     const defaults = HarnessDefaultsSchema.parse(input)
-    await this.pool.query(
-      `insert into application_settings (key, record, revision, updated_at)
-       values ($1, $2::jsonb, 1, now())
-       on conflict (key) do update set record = excluded.record,
-         revision = application_settings.revision + 1, updated_at = excluded.updated_at`,
-      [SETTINGS_KEY, JSON.stringify(defaults)],
-    )
+    await inTransaction(this.pool, undefined, async client => {
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:harness-defaults'])
+      await client.query(
+        `insert into application_settings (key, record, revision, updated_at)
+         values ($1, $2::jsonb, 1, now())
+         on conflict (key) do update set record = excluded.record,
+           revision = application_settings.revision + 1, updated_at = excluded.updated_at`,
+        [SETTINGS_KEY, JSON.stringify(defaults)],
+      )
+      await client.query('delete from application_settings where key = $1', [UNAVAILABLE_HARNESS_DEFAULTS_KEY])
+    })
     return defaults
   }
 }

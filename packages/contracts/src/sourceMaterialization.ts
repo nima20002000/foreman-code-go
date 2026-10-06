@@ -44,8 +44,14 @@ export const MaterializationReceiptSchema = z.object({
   keyRevision: z.number().int().positive().nullable(), authorizationRevision: z.number().int().positive().nullable(),
   verifiedManifestDigest: SourceHashSchema, verifiedEntries: z.number().int().nonnegative(),
   verifiedBytes: z.number().int().nonnegative(), verifiedAt: z.string().datetime(),
+  claimScope: z.literal('execution').optional(),
+  sharedTree: z.object({ id: z.uuid(), referenceIdentity: RootBindingSchema.shape.filesystem }).strict().optional(),
   localTreeIdentity: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
-}).strict()
+}).strict().superRefine((value, context) => {
+  if (value.sharedTree && (value.binding.accessMode !== 'exclusive-write' || value.claimScope !== 'execution')) {
+    context.addIssue({ code: 'custom', path: ['sharedTree'], message: 'Shared working trees require a writable execution claim.' })
+  }
+})
 export type MaterializationReceipt = z.infer<typeof MaterializationReceiptSchema>
 
 export function sourceMaterializationComponents(receipt: Pick<MaterializationReceipt, 'materializationId' | 'quota'>): string[] {

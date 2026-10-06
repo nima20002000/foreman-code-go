@@ -136,7 +136,7 @@ function fixture() {
     requestCleanup: async () => { control.cleanupPending = true },
     finishCleanup: async (_id: string, pending: boolean) => { control.cleanupPending = pending },
   }
-  const native = { cancelRun: async () => { calls.cancel++ }, finishRun: async () => { calls.finish++ },
+  const native = { adoptRunOwner: () => {}, cancelRun: async () => { calls.cancel++ }, finishRun: async () => { calls.finish++ },
     reconcileReviews: async () => undefined, closeForRestart: async () => undefined, requestColdRunCleanup: async () => false,
     nativeBoundaryEvidence: async () => { throw new Error('No native evidence is fabricated in engine port tests') } }
   const interactions = { list: async () => { throw new Error('Historical pagination must never select resume IDs') } }
@@ -354,6 +354,38 @@ it('approval waiting is not bounded by an active run timer', async () => {
   Object.assign(item, { status: 'delivered', deliveryState: 'delivered' }); f.control.work = async () => f.complete()
   await f.engine.resumeInteraction(item); assert.equal(f.run.outcome, 'succeeded')
 })
+it('does not report its own restart cancellation from background reconciliation', async () => {
+  const f = fixture(), entered = deferred(), item = f.addInteraction(1, true)
+  f.waiting(item)
+  const errors: unknown[] = []
+  f.control.work = async context => {
+    entered.resolve()
+    await new Promise<void>((_resolve, reject) => {
+      context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true })
+    })
+  }
+  await f.engine.reconcile(error => { errors.push(error) })
+  await entered.promise
+  await f.engine.shutdown()
+  await Promise.resolve()
+  assert.equal(errors.length, 0)
+  assert.equal(f.calls.owners, 0)
+})
+
+it('still reports an unexpected background error after shutdown begins', async () => {
+  const f = fixture(), release = deferred()
+  const errors: unknown[] = []
+  const failure = new DomainError('NATIVE_SESSION_START_UNCERTAIN', 'Unexpected native failure.', 409)
+  const start = vi.spyOn(f.engine, 'start').mockImplementation(async () => { await release.promise; throw failure })
+  try {
+    await f.engine.reconcile(error => { errors.push(error) })
+    await f.engine.shutdown()
+    release.resolve()
+    await delay(0)
+    assert.deepEqual(errors, [failure])
+  } finally { start.mockRestore() }
+})
+
 it('shutdown drains the active resume and rejects queued work without another owner or synthetic Stop', async () => {
   const f = fixture(), entered = deferred(), item = f.addInteraction(1, true); f.waiting(item)
   f.control.work = async (context) => { entered.resolve(); await new Promise<void>((_done, reject) => {

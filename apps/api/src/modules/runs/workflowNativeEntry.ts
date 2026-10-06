@@ -62,7 +62,7 @@ export async function readWorkflowNativeEntryLocked(sql: GraphTransactionSql, re
 export async function readWorkflowNativeEntry(sql: GraphSqlClient, reservation: WorkflowNativeReservation) {
   return readNativeEntry(sql, reservation, false)
 }
-interface NativeEntryRow {
+export interface NativeEntryRow {
   phase: 'reserved' | 'prepared' | 'entered' | 'not_submitted'
   reservation: unknown
   reservation_digest: string
@@ -75,6 +75,11 @@ async function readNativeEntry(sql: GraphSqlClient, reservation: WorkflowNativeR
     `select phase,reservation,reservation_digest,transition,source_id,source_digest
      from workflow_native_entries where execution_id=$1 and run_id=$2${locked ? ' for update' : ''}`,
     [reservation.execution.executionId, reservation.scope.runId])).rows[0]
+  return assertWorkflowNativeEntryRow(row, reservation)
+}
+
+export function assertWorkflowNativeEntryRow(row: NativeEntryRow | null | undefined,
+  reservation: WorkflowNativeReservation): NativeEntryRow {
   if (!row || !sameRepeatValue(row.reservation, reservation) || row.reservation_digest !== repeatDigest(reservation)) return conflict()
   return row
 }

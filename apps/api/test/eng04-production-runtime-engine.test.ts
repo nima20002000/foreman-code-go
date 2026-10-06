@@ -55,7 +55,7 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
   const owner = { runId: run.id, oneShotConnection: () => connection, assertOwned() { if (!state.owned) throw new Error('owner-lost') },
     release: async () => { state.released++; state.events.push('release') } } as unknown as RunOwnership
   const factory = {} as RepeatEngineStartContext['factory']
-  const runs = { acquireOwnership: async () => owner, getRepeatSnapshot: async () => {
+  const runs = { acquireOwnership: async (): Promise<RunOwnership | undefined> => owner, getRepeatSnapshot: async () => {
     AcceptedWorkflowRunV3Schema.parse(state.run); return snapshot()
   }, repeatRepositoryFactory() { state.factoryReads++; return factory },
     get: async (runId: string) => { assert.equal(runId, run.id); return structuredClone(state.run) },
@@ -65,7 +65,8 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
   const terminal = () => { state.run = { ...state.run, executionState: 'completed', outcome: 'canceled',
     result: { outcome: 'canceled' }, finishedAt: f.createdAt } }
   lifecycleCalls.settle = () => { state.events.push('settle'); terminal() }
-  const native = { cancelRun: async () => { state.nativeCancel++; if (!state.clean) throw new Error('native closure uncertain') },
+  const native = { adoptRunOwner: vi.fn(),
+    cancelRun: async () => { state.nativeCancel++; if (!state.clean) throw new Error('native closure uncertain') },
     finishRun: async () => { state.events.push('finish-native') },
     nativeBoundaryEvidence: async () => { throw new Error('No fake native evidence in registration tests') },
     closeForRestart: async () => { state.events.push('restart-close') }, reconcileReviews: async () => undefined, requestColdRunCleanup: async () => false }
@@ -95,6 +96,45 @@ test('ENG04 A1 simultaneous Start notifications allocate only one owner/runtime 
   const one = h.engine.start(h.run.id), two = h.engine.start(h.run.id)
   assert.equal(one, two); release(); await one
   assert.equal(calls.entries.length, 1); assert.equal(h.state.released, 1)
+})
+
+test('publishes the acquired Run owner to native managers before awaiting its snapshot', async () => {
+  const h = await fixture()
+  const snapshot = h.runs.getRepeatSnapshot
+  h.runs.getRepeatSnapshot = async () => {
+    assert.deepEqual(h.native.adoptRunOwner.mock.calls, [[h.owner]])
+    return snapshot()
+  }
+  await h.engine.start(h.run.id)
+  assert.equal(h.state.released, 1)
+})
+
+test('reconciliation defers a Run held by its reviewer and starts it after the owner is released', async () => {
+  const h = await fixture()
+  const acquire = vi.spyOn(h.runs, 'acquireOwnership').mockResolvedValueOnce(undefined)
+  const errors: unknown[] = []
+  await h.engine.reconcile(error => errors.push(error))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(acquire.mock.calls.length, 1)
+  assert.equal(calls.entries.length, 0)
+  assert.equal(errors.length, 0)
+
+  await h.engine.reconcile(error => errors.push(error))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls.entries.length, 1)
+  assert.equal(h.state.released, 1)
+  assert.equal(errors.length, 0)
+})
+
+test('reconciliation still reports ownership query failures', async () => {
+  const h = await fixture()
+  const failure = new Error('database disconnected')
+  vi.spyOn(h.runs, 'acquireOwnership').mockRejectedValueOnce(failure)
+  const errors: unknown[] = []
+  await h.engine.reconcile(error => errors.push(error))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(errors, [failure])
+  assert.equal(calls.entries.length, 0)
 })
 
 test('ENG04 A1 cold running recovery uses the same gate but requires authoritative continuation', async () => {

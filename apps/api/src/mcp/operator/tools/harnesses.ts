@@ -49,7 +49,9 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
   if (operatorToolAvailable(context, 'harness_list')) server.registerTool('harness_list', {
     description: 'List observed local harness versions, dynamic model catalogs, contract compatibility, '
       + 'saved defaults and application interactionSupport limits. Discovery errors identify unmet contracts. '
-      + 'Codex supports generic questions, MCP approvals, and schema-validated data-entry forms.',
+      + 'Codex supports generic questions, MCP approvals, and schema-validated data-entry forms. '
+      + 'When native discovery cannot select a default model, capability is null with HARNESS_MODEL_DEFAULT_UNAVAILABLE; '
+      + 'choose an explicit native model before using that preset.',
     inputSchema: z.object({}).strict(),
     outputSchema: HarnessCatalogResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -59,13 +61,14 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
       + 'and application interactionSupport limits. Compatible versions are accepted by contract behavior; '
       + 'authentication and host policy still apply. '
       + 'Read supported and unsupported descriptions before requesting native input; '
-      + 'Codex supports generic questions and schema-validated data-entry forms.',
+      + 'Codex supports generic questions and schema-validated data-entry forms. '
+      + 'An unavailable native default returns capability null and HARNESS_MODEL_DEFAULT_UNAVAILABLE; template values do not qualify execution.',
     inputSchema: HarnessGetInputSchema,
     outputSchema: HarnessCatalogEntrySchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_get', () => context.services.harnesses.get(context.principal, input.harness)))
   if (operatorToolAvailable(context, 'harness_defaults_update')) server.registerTool('harness_defaults_update', {
-    description: 'Revision-check and replace defaults copied into future board agents. Claude presets persist explicit configuration without native qualification; saving grants no execution or tool authority. Codex/OpenCode changes still require their model-free native checks.', inputSchema: HarnessDefaultsUpdateInputSchema,
+    description: 'Revision-check and replace defaults copied into future board agents. Use configure to explicitly select a preset even if its template values match. Other unavailable presets stay unavailable. Claude presets persist explicit configuration without native qualification; saving grants no execution or tool authority. Codex/OpenCode selections require their model-free native checks.', inputSchema: HarnessDefaultsUpdateInputSchema,
     outputSchema: HarnessDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_defaults_update', () => context.services.harnesses.updateDefaults(context.principal, 'mcp', input)))

@@ -1,6 +1,6 @@
 import { DurableInteractionSchema } from '@foreman-code/contracts'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
-import { RemoteOwnerControlSchema, RemoteOperationReceiptSchema, type RemoteOwnerControl } from '@foreman-code/contracts/remote-execution'
+import { RemoteOwnerControlSchema, RemoteOperationReceiptSchema, remoteActiveNative, type RemoteOwnerControl } from '@foreman-code/contracts/remote-execution'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import { assertGraphTransaction } from '../../run-graph/connection.js'
 import type { RunOwnership } from '../ownership.js'
@@ -21,7 +21,7 @@ export async function prepareRemoteOwnerControl(sql: GraphTransactionSql, owner:
   await owner.readOneShotFence(sql)
   const stored = (await sql.query<{ receipt: unknown }>('select receipt from remote_execution_receipts where operation_id=$1 for share', [binding.intent.operationId])).rows[0]
   const receipt = stored ? RemoteOperationReceiptSchema.parse(stored.receipt) : undefined
-  if (!receipt || !sameWorkflowValue(receipt.intent, binding.intent) || !sameWorkflowValue(receipt.native, command.native)
+  if (!receipt || !sameWorkflowValue(receipt.intent, binding.intent) || !sameWorkflowValue(remoteActiveNative(receipt), command.native)
     || receipt.terminal || binding.placement.bindingHash !== binding.intent.bindingHash) throw new DomainError('REMOTE_CONTROL_UNAVAILABLE', 'The exact committed original native ownership is required.', 409)
   let commandId: string, action: { kind: 'stop' } | { kind: 'respond'; interactionId: string; interactionRevision: string; nativeInteractionId: string; response: unknown }
   if (command.kind === 'stop') {

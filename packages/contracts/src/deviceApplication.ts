@@ -1,8 +1,13 @@
+import { z } from 'zod'
+
 /** Application namespaces share the authenticated W07 socket, never workflow authority. */
 export const DEVICE_APPLICATION_JSON_BYTES = 1_048_576
 export const DEVICE_APPLICATION_BINARY_BYTES = 1_048_576
 export const DEVICE_APPLICATION_CHUNK_BYTES = 8_192
+export const DEVICE_APPLICATION_CHUNK_WINDOW = 4
 export const DEVICE_APPLICATION_IN_FLIGHT = 8
+export const DEVICE_APPLICATION_STOP_IN_FLIGHT = 1
+export const DEVICE_APPLICATION_STOP_BYTES = DEVICE_APPLICATION_JSON_BYTES
 export const DEVICE_APPLICATION_BUFFER_BYTES = 4_194_304
 export type DeviceExtensionRole = 'client' | 'server' | 'duplex'
 export interface DeviceExtensionDescriptor {
@@ -21,11 +26,49 @@ export interface DeviceNegotiatedExtension {
   maxBinaryBytes: number
 }
 export type DeviceApplicationFrame =
-  | { type: 'application-open'; id: string; namespace: string; version: number; kind: 'request' | 'response' | 'error'; jsonBytes: number; binaryBytes: number }
+  | { type: 'application-open'; id: string; namespace: string; version: number; kind: 'request' | 'response' | 'error'; jsonBytes: number; binaryBytes: number; admission?: 'stop' }
   | { type: 'application-chunk'; id: string; offset: number; data: string }
   | { type: 'application-ack'; id: string; offset: number }
   | { type: 'application-cancel'; id: string }
+  | { type: 'application-reject'; id: string; code: 'backpressure' }
 export interface DeviceApplicationResult { payload: unknown; bytes?: Uint8Array }
+export interface DeviceApplicationFailure {
+  code: string
+  /** Availability hint; operation retries still require their owner and idempotency checks. */
+  retryable: boolean
+}
+
+/** Leaves room for the original receipt and physical readout in the same carrier. */
+export const DEVICE_HISTORY_PAGE_BYTES = 262_144
+export const DEVICE_JSON_CONTINUATION_BYTES = 65_536
+export const DEVICE_JSON_CONTINUATION_LIMIT = 4_194_304
+export const DeviceJsonContinuationRequestSchema = z.object({
+  digest: z.string().regex(/^[a-f0-9]{64}$/), offset: z.number().int().safe().nonnegative(),
+}).strict()
+export type DeviceJsonContinuationRequest = z.infer<typeof DeviceJsonContinuationRequestSchema>
+export const DeviceJsonContinuationSchema = z.object({
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  byteSize: z.number().int().safe().positive().max(DEVICE_JSON_CONTINUATION_LIMIT),
+  offset: z.number().int().safe().nonnegative(),
+  data: z.string().min(1).max(Math.ceil(DEVICE_JSON_CONTINUATION_BYTES / 3) * 4),
+}).strict()
+export type DeviceJsonContinuation = z.infer<typeof DeviceJsonContinuationSchema>
+export const DeviceHistoryRequestFields = {
+  afterSequence: z.number().int().safe().min(-1).optional(),
+  metadata: DeviceJsonContinuationRequestSchema.optional(),
+}
+export const DeviceHistoryGapSchema = z.object({
+  fromSequence: z.number().int().safe().nonnegative(),
+  toSequence: z.number().int().safe().nonnegative(),
+  reason: z.enum(['retention', 'event_too_large']),
+}).strict().refine(value => value.toSequence >= value.fromSequence)
+export type DeviceHistoryGap = z.infer<typeof DeviceHistoryGapSchema>
+export const DeviceHistoryPageSchema = z.object({
+  nextAfterSequence: z.number().int().safe().min(-1),
+  hasMore: z.boolean(),
+  metadata: DeviceJsonContinuationSchema.optional(),
+}).strict()
+export type DeviceHistoryPage = z.infer<typeof DeviceHistoryPageSchema>
 
 export function parseExtensionDescriptors(value: unknown): DeviceExtensionDescriptor[] {
   if (!Array.isArray(value) || value.length > 16) throw new Error('Invalid device extensions')

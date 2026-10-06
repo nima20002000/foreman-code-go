@@ -203,7 +203,7 @@ export class HarnessQualificationService {
       this.assertRunning()
       const saved = structuredClone(await this.settings.getManagedHarnessDefaults())
       this.assertRunning()
-      const model = saved.revision > 0 ? saved.defaults[harness].model : null
+      const model = saved.revision > 0 && !saved.unavailable?.includes(harness) ? saved.defaults[harness].model : null
       const result = await this.timed(240_000, (signal) => runAsQualificationCandidate(harness, sha256, binary,
         () => suite.run({ binary, version, binarySha256: sha256, profile, model, ...(harness === 'codex' ? { reasoningEffort: saved.defaults.codex.reasoningEffort } : {}), workDirectory: directory, signal, ownCleanup })))
       if (owned.size) throw new QualificationCleanupError([], 'Qualification resources are still owned.')

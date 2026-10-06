@@ -40,6 +40,17 @@ export async function readAcceptedPlacement(sql: Pick<GraphTransactionSql, 'quer
   if (pin.runId !== runId || pin.nodeId !== nodeId || rows.rows.length !== 1) conflict()
   return pin
 }
+
+export async function readRunAcceptedPlacements(sql: Pick<GraphTransactionSql, 'query'>,
+  runId: string): Promise<AcceptedNodePlacement[]> {
+  const rows = await sql.query<{ node_id: string; binding_hash: string; record: unknown }>(
+    'select node_id,binding_hash,record from run_node_placements where run_id=$1 order by node_id', [runId])
+  return rows.rows.map(row => {
+    const pin = readPlacement(row.record)
+    if (pin.runId !== runId || pin.nodeId !== row.node_id || pin.bindingHash !== row.binding_hash) conflict()
+    return pin
+  })
+}
 /** Called with execution admission on the existing Run owner transaction. Intent
  * membership is NOT the one-use native launch permission; existing launch guards
  * and live destination revalidation are still required before submission. */

@@ -17,6 +17,69 @@ const pool = databaseUrl ? new pg.Pool({ connectionString: databaseUrl, max: 3 }
 afterAll(async () => { await pool?.end() })
 
 describe.skipIf(!databaseUrl)('Agent 3 dedicated PostgreSQL publication ownership', () => {
+  it('joins an already-started release until the original database connection has drained', async () => {
+    const owner = (await RunOwnership.acquire(pool!, `release-drain-${randomUUID()}`, () => undefined))!
+    let entered!: () => void
+    let finish!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const paused = new Promise<void>(resolve => { finish = resolve })
+    const work = owner.oneShotConnection().transaction(async () => { entered(); await paused }).catch(error => error)
+    await started
+    const first = owner.release()
+    let duplicateFinished = false
+    const duplicate = owner.release().then(() => { duplicateFinished = true })
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      expect(duplicateFinished).toBe(false)
+    } finally {
+      finish()
+      await Promise.all([first, duplicate, work])
+    }
+  })
+
+  it('keeps the same PostgreSQL owner for a retained native review after the engine releases its use', async () => {
+    const runId = `retained-review-${randomUUID()}`
+    const owner = (await RunOwnership.acquire(pool!, runId, () => undefined))!
+    let releaseReview: (() => Promise<void>) | undefined
+    try {
+      const first = await owner.oneShotConnection().transaction(sql => owner.readOneShotFence(sql))
+      releaseReview = owner.retain(() => undefined)
+      await owner.release()
+      expect(await RunOwnership.acquire(pool!, runId, () => undefined)).toBeUndefined()
+      expect(await owner.oneShotConnection().transaction(sql => owner.readOneShotFence(sql))).toEqual(first)
+      await releaseReview()
+      expect(() => owner.assertOwned()).toThrow()
+      const replacement = (await RunOwnership.acquire(pool!, runId, () => undefined))!
+      try {
+        await releaseReview()
+        expect(await replacement.oneShotConnection().transaction(sql => replacement.readOneShotFence(sql))).toBeDefined()
+      } finally { await replacement.release() }
+    } finally {
+      await releaseReview?.()
+      await owner.release()
+    }
+  })
+
+  it('cancels a retained review when its original PostgreSQL owner connection is lost', async () => {
+    const runId = `retained-review-loss-${randomUUID()}`
+    const owner = (await RunOwnership.acquire(pool!, runId, () => undefined))!
+    let releaseReview: (() => Promise<void>) | undefined
+    try {
+      let notify!: () => void
+      const lost = new Promise<void>(resolve => { notify = resolve })
+      releaseReview = owner.retain(notify)
+      const fence = await owner.oneShotConnection().transaction(sql => owner.readOneShotFence(sql))
+      await owner.release()
+      await pool!.query('select pg_terminate_backend($1)', [Number(fence.ownerId)])
+      await lost
+      expect(() => owner.assertOwned()).toThrow()
+      await expect(owner.client.query('select 1')).rejects.toThrow()
+    } finally {
+      await releaseReview?.()
+      await owner.release()
+    }
+  })
+
   it('excludes a second independent owner and transfers only after session closure', async () => {
     const runId = `a3-owner-${randomUUID()}`
     const owner = await RunOwnership.acquire(pool!, runId, () => undefined)

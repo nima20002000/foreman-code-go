@@ -1,8 +1,10 @@
 import type { HarnessExecution, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction, ReviewJob } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import type { NativeHistory } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 import type { SessionWriteLease, SingleWriterSessionManager } from './sessionWriter.js'
+import type { RunOwnership } from '../runs/ownership.js'
 
 /** Private companion to the existing reviewer writer, not an HTTP/MCP proof
  * schema. Entry is command intent only. Event/history retain the original source
@@ -22,8 +24,10 @@ export interface ReviewNativeCaptureInput {
   closureGeneration: string
   source: ReviewOriginalNativeSource
   assertCurrent(): void
+  owner?: RunOwnership
 }
 export interface CapturedReviewNativeSource {
+  owner?: RunOwnership
   execution: HarnessExecution
   session: NativeSessionReference
   job: ReviewJob
@@ -43,7 +47,9 @@ function freeze<T>(value: T): T {
   if (value !== null && typeof value === 'object') { Object.freeze(value); for (const child of Object.values(value)) freeze(child) }
   return value
 }
-function immutable<T>(value: T): T { return freeze(JSON.parse(canonicalGraphJson(value, 4 * 1024 * 1024)) as T) }
+function immutable<T>(value: T, maxBytes = 4 * 1024 * 1024): T {
+  return freeze(JSON.parse(canonicalGraphJson(value, maxBytes)) as T)
+}
 export function createReviewNativeCaptureChannel(): { capture: ReviewNativeCapturePort; verify: ReviewNativeVerificationPort } {
   const values = new WeakMap<object, CapturedReviewNativeSource>()
   return {
@@ -56,7 +62,8 @@ export function createReviewNativeCaptureChannel(): { capture: ReviewNativeCaptu
         || input.job.nativeSessionId !== input.session.nativeSessionId || input.job.provider !== input.session.harness
         || input.manager.harness !== input.session.harness) return invalid()
       const execution = immutable(input.execution), session = immutable(input.session), job = immutable(input.job)
-      const source = immutable(input.source), manager = input.manager, lease = input.lease, assertCoordinator = input.assertCurrent
+      const source = immutable(input.source, REMOTE_NATIVE_SOURCE_LIMIT)
+      const manager = input.manager, lease = input.lease, assertCoordinator = input.assertCurrent
       const lane = immutable({ id: lease.fence.id, token: lease.fence.token,
         connectionGeneration: lease.previous.connectionGeneration, providerId: lease.providerId ?? null })
       const check = () => {
@@ -68,6 +75,7 @@ export function createReviewNativeCaptureChannel(): { capture: ReviewNativeCaptu
       check()
       const value = Object.freeze({ executionId: execution.id })
       values.set(value, Object.freeze({ execution, session, job, lane, source,
+        ...(input.owner ? { owner: input.owner } : {}),
         lifetimeGeneration: input.lifetimeGeneration, closureGeneration: input.closureGeneration,
         observedAt: new Date().toISOString(), assertCurrent: check }))
       return value

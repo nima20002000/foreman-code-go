@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { JobExecutionRecordSchema, ResolvedJobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
+import { ResolvedJobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
 import { isDeepStrictEqual } from 'node:util'
 import { SourceFilesystemOperationSchema, SourceOperationOwnerSchema, type SourceFilesystemOperation, type SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
@@ -25,10 +25,10 @@ export class PostgresSourceOperationAuthority {
     catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
   }
   private async allocation(sql: GraphSqlClient, attempt: MaterializationAttempt) {
-    const rows = await sql.query<{ operation_id: string; principal_id: string }>(`select operation_id,principal_id from job_preparations where execution_id=$1 and attempt_id=$2
-      union all select p.preparation->>'operationId',r.record->>'authorizationPrincipalId' from workflow_job_preparations p
+    const rows = await sql.query<{ operation_id: string; principal_id: string; preparation_kind: 'job' | 'workflow' }>(`select operation_id,principal_id,'job' preparation_kind from job_preparations where execution_id=$1 and attempt_id=$2
+      union all select p.preparation->>'operationId',r.record->>'authorizationPrincipalId','job' from workflow_job_preparations p
       join runs r on r.id=p.preparation->>'runId' where p.preparation->>'executionId'=$1 and p.preparation->>'attemptId'=$2
-      union all select i.operation_id,r.record->>'authorizationPrincipalId' from execution_dispatch_intents i
+      union all select i.operation_id,r.record->>'authorizationPrincipalId','workflow' from execution_dispatch_intents i
       join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id and e.workflow_node_id=i.node_id
       join runs r on r.id=i.run_id where i.execution_id=$1 and i.attempt_id=$2`, [attempt.executionId, attempt.attemptId])
     if (rows.rows.length !== 1) throw new DomainError('SOURCE_ALLOCATION_CONFLICT', 'The original actual Main preparation is missing or ambiguous.', 409)
@@ -67,7 +67,9 @@ export class PostgresSourceOperationAuthority {
       const receipt = request.operation === 'sources.prepare' ? null : request.record.receipt
       const attempt = request.operation === 'sources.prepare' ? request.attempt : { placementHash: receipt!.placementHash, executionId: receipt!.executionId,
         attemptId: receipt!.attemptId, keyRevision: receipt!.keyRevision, authorizationRevision: receipt!.authorizationRevision }
-      const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
+      const allocated = await this.allocation(sql, attempt)
+      const cleanup = request.operation === 'sources.release'
+      const principal = cleanup ? undefined : await readLiveManagementPrincipal(sql, allocated.principal_id)
       if (request.operation === 'sources.verify') await assertAcceptedSourceRelativeCwd(sql, attempt.executionId, request.relativeCwd)
       const requestedBinding = request.operation === 'sources.prepare' ? request.root.binding : receipt!.binding
       if (request.operation !== 'sources.release' && (await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [allocated.operation_id])).rowCount)
@@ -78,38 +80,45 @@ export class PostgresSourceOperationAuthority {
         || root.binding.mainId !== binding.mainId || root.binding.workerInstallationId !== binding.workerInstallationId || !root.registration
         || root.registration.keyRevision !== binding.keyRevision || root.registration.authorizationRevision !== binding.authorizationRevision)
         throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not bound to its original current authenticated device.', 409)
-      if (request.operation !== 'sources.release') await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
+      if (principal) await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
       const snapshot = (await sql.query<{ availability: string }>('select availability from source_snapshots where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share',
         [root.binding.workspaceId, root.source.approvedSourceId, root.source.snapshotId, root.source.manifestDigest])).rows[0]
       if ((request.operation !== 'sources.release' || receipt?.quota) && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
       let record: SourceMaterializationRecord | null = null, physicalClosureConfirmed = false
       if (request.operation !== 'sources.prepare') {
-        const stored = (await sql.query<{ record: unknown; state: string }>('select record,state from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 and operation_id=$4 for share',
+        const lock = cleanup ? 'for update' : 'for share'
+        const stored = (await sql.query<{ record: unknown; state: string }>(`select record,state from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 and operation_id=$4 ${lock}`,
           [receipt!.materializationId, attempt.executionId, attempt.attemptId, allocated.operation_id])).rows[0]
         record = SourceMaterializationRecordSchema.parse(stored?.record)
         if (!isDeepStrictEqual(record, request.record)) throw new DomainError('SOURCE_RECORD_CONFLICT', 'The submitted record is not the actual immutable Main materialization.', 409)
         if (request.operation !== 'sources.release' && !['prepared', 'running'].includes(stored!.state))
           throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original source materialization is no longer owned for execution.', 409)
-        if (request.operation !== 'sources.release' && record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal, record, record.finalDispatchBindingHash)
+        if (request.operation !== 'sources.release' && record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal!, record, record.finalDispatchBindingHash)
         if (request.operation === 'sources.release') {
           await authorizeClosedSourceRelease(sql, root, record, this.closure)
           physicalClosureConfirmed = true
         }
       }
-      let expiresAt = principal.expiresAt
-      if (request.operation === 'sources.release' && receipt?.quota) {
-        const row = (await sql.query<{ record: unknown }>('select record from job_executions where id=$1 for share',
-          [attempt.executionId])).rows[0]
-        if (row) {
-          const job = JobExecutionRecordSchema.parse(row.record)
-          if (job.schemaVersion === 2) expiresAt = new Date(Math.min(Date.parse(expiresAt),
-            Date.parse(job.acceptedSpec.lifecycle.cleanupDeadlineAt))).toISOString()
+      let identity: SourceOperationOwner['identity']
+      if (cleanup) {
+        const lease = (await sql.query<{ expires_at: Date }>(`update source_execution_materializations
+          set cleanup_lease_expires_at=case when cleanup_lease_expires_at>clock_timestamp()
+            then cleanup_lease_expires_at else clock_timestamp()+interval '60 seconds' end
+          where materialization_id=$1 and record=$2::jsonb returning cleanup_lease_expires_at as expires_at`,
+        [record!.receipt.materializationId, JSON.stringify(record)])).rows[0]
+        if (!lease) throw new DomainError('SOURCE_RECORD_CONFLICT', 'The original cleanup record changed.', 409)
+        identity = { operationId: allocated.operation_id, ownerPrincipalId: allocated.principal_id,
+          expiresAt: lease.expires_at.toISOString() }
+      } else {
+        const live = principal!
+        identity = request.operation === 'sources.prepare' ? request.identity
+          : { operationId: allocated.operation_id, ownerPrincipalId: live.id, expiresAt: live.expiresAt }
+        if (identity.operationId !== allocated.operation_id || identity.ownerPrincipalId !== live.id
+          || Date.parse(identity.expiresAt) > Date.parse(live.expiresAt) || Date.parse(identity.expiresAt) <= Date.now()) {
+          throw new DomainError('SOURCE_OWNER_CONFLICT',
+            'Source ownership is expired or differs from the actual Main allocation.', 403)
         }
       }
-      const identity = request.operation === 'sources.prepare' ? request.identity
-        : { operationId: allocated.operation_id, ownerPrincipalId: principal.id, expiresAt }
-      if (identity.operationId !== allocated.operation_id || identity.ownerPrincipalId !== principal.id || Date.parse(identity.expiresAt) > Date.parse(principal.expiresAt)
-        || Date.parse(identity.expiresAt) <= Date.now()) throw new DomainError('SOURCE_OWNER_CONFLICT', 'Source ownership is expired or differs from the actual Main allocation.', 403)
       const selected = (await sql.query<{ spec: unknown }>('select spec from job_computer_selections where execution_id=$1',
         [attempt.executionId])).rows[0]
       const quotaRequired = Boolean(record?.receipt.quota || selected && 'verification' in
@@ -117,7 +126,8 @@ export class PostgresSourceOperationAuthority {
       const activeNativeSession = request.operation === 'sources.verify' && record?.receipt.binding.accessMode === 'exclusive-write'
         ? await this.activeNativeSession?.(sql, record) ?? null : null
       return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed, activeNativeSession,
-        ...(quotaRequired ? { quotaRequired: true } : {}) })
+        ...(quotaRequired ? { quotaRequired: true } : {}),
+        ...(allocated.preparation_kind === 'workflow' ? { preparationKind: 'workflow' } : {}) })
     })
   }
 }

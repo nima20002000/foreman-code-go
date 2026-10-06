@@ -10,6 +10,12 @@ export function withOriginalInteractionDeliveryClaim<T>(claim: InteractionDelive
   Object.freeze(captured)
   return original.run(captured, action)
 }
+/** Recovery can read the admitted command, but cannot create a new admission. */
+export function withInteractionDeliveryReconciliation<T>(claim: InteractionDeliveryClaim, action: () => Promise<T>): Promise<T> {
+  if (claim.mode !== 'reconcile') throw new Error('A reconciliation delivery claim is required')
+  const captured = Object.freeze(structuredClone(claim))
+  return original.run(captured, action)
+}
 export function readOriginalInteractionDeliveryClaim(): Readonly<InteractionDeliveryClaim> | undefined {
   const claim = original.getStore()
   return claim ? structuredClone(claim) : undefined

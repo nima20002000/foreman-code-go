@@ -1,4 +1,5 @@
-import { withOriginalInteractionDeliveryClaim } from '../originalDeliveryClaim.js'
+import { componentLogger } from '../../../infrastructure/logger.js'
+import { withInteractionDeliveryReconciliation, withOriginalInteractionDeliveryClaim } from '../originalDeliveryClaim.js'
 import { randomUUID } from 'node:crypto'
 import { withInteractionResponse, type DurableInteraction, type InteractionResponseValue } from '@foreman-code/contracts'
 import { requireAuthorization } from '../../access/policy.js'
@@ -7,7 +8,7 @@ import type { InteractionNativeRuntime } from '../runtimePorts.js'
 import type { InteractionResponder } from '../service.js'
 import type { GraphResumeClaim } from '../deliveryPostgres.js'
 import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, selectedInteractionResponse,
-  type NativeDeliveryOutcome } from '../delivery.js'
+  type InteractionDeliveryClaim, type NativeDeliveryOutcome } from '../delivery.js'
 import type { Wave25InteractionRepository } from './repository.js'
 import { fail } from './context.js'
 import { SingleWriterSessionManager } from '../sessionWriter.js'
@@ -37,6 +38,12 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
   const claim = await deps.repository.delivery.claim(id, randomUUID(), reconcileOnly)
   if (!claim) return read(deps, id)
   const signal = AbortSignal.timeout(INTERACTION_DELIVERY_LEASE_MS)
+  return deps.nativeRuntime.withInteractionOwner(current, signal,
+    ownedSignal => deliverClaim(deps, current, claim, ownedSignal))
+}
+
+async function deliverClaim(deps: ApprovalRuntimeDependencies, current: DurableInteraction,
+  claim: InteractionDeliveryClaim, signal: AbortSignal): Promise<DurableInteraction> {
   const option = selectedInteractionResponse(current)
   if (!option) return fail('INTERACTION_OPTION_INVALID')
   const expectedSession = { harness: current.harness, providerVersion: current.providerVersion, nativeSessionId: current.nativeSessionId }
@@ -52,9 +59,9 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
         const attached = await deps.nativeRuntime.attachInteraction(current, signal)
         if (attached.manager.harness !== current.harness || attached.session.harness !== current.harness
           || attached.session.nativeSessionId !== current.nativeSessionId || attached.session.providerVersion !== current.providerVersion) return fail('APPROVAL_SESSION_MISMATCH')
-        const history = attached.manager.reconcileResponse
-          ? await attached.manager.reconcileResponse(attached.session, { nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType, option }, signal)
-          : await attached.manager.history(attached.session, signal)
+        const history = await withInteractionDeliveryReconciliation(claim, () => attached.manager.reconcileResponse
+          ? attached.manager.reconcileResponse(attached.session, { nativeRequestId: current.nativeRequestId, nativeRequestType: current.nativeRequestType, option }, signal)
+          : attached.manager.history(attached.session, signal))
         const proof = matchingDeliveryEvidence(current, attached.session, history)
         if (proof) result = { state: 'delivered', evidence: proof }
       }
@@ -78,6 +85,7 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
   const writer = attached.manager
   const dispatchSignal = attached.signal ? AbortSignal.any([signal, attached.signal]) : signal
   return deps.repository.delivery.finish(claim, (interaction, writeSignal) => withOriginalInteractionDeliveryClaim<NativeDeliveryOutcome>({ ...claim, interaction }, async () => {
+    let phase = 'respond'
     try {
       // Revalidate permission/location AFTER the writer's control queue, using
       // its owned cancellation signal. The final SQL fence check commits before
@@ -87,6 +95,7 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
         await deps.nativeRuntime.validateInteraction!(interaction, ownedSignal)
         await deps.repository.delivery.assertNativeDispatch(claim)
       }, writeSignal)
+      phase = 'read-receipt'
       const cached = deps.journal?.read(expectedSession, { nativeRequestId: interaction.nativeRequestId, nativeRequestType: interaction.nativeRequestType, option })
       if (cached) return { state: 'delivered', evidence: cached }
       const history = attached.manager.reconcileResponse
@@ -94,7 +103,14 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
         : await attached.manager.history(attached.session, writeSignal)
       const proof = matchingDeliveryEvidence(interaction, attached.session, history)
       return proof ? { state: 'delivered', evidence: proof } : { state: 'uncertain', error: 'APPROVAL_DELIVERY_RECEIPT_MISSING' }
-    } catch { return { state: 'uncertain', error: 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN' } }
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+      componentLogger('engine').warn({ runId: interaction.runId,
+        code: typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,100}$/.test(code) ? code : 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN',
+        phase, errorType: error instanceof Error ? error.name : 'UnknownError',
+        errorLocation: error instanceof Error ? error.stack?.split('\n')[1]?.trim() : undefined }, 'Native approval delivery is uncertain.')
+      return { state: 'uncertain', error: 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN' }
+    }
   }), dispatchSignal)
 }
 

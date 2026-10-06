@@ -58,6 +58,18 @@ export async function assertInteractionNativeDispatchLocked(sql: GraphTransactio
     || !await settled(sql, current)) return fail('GRAPH_SUBMISSION_NOT_REPLAYABLE')
   return { interaction: current, expiresAt }
 }
+/** Retries an existing remote reservation only after the worker proves non-entry. */
+export async function assertInteractionReservedRetryLocked(sql: GraphTransactionSql,
+  claim: InteractionDeliveryClaim): Promise<void> {
+  const { current, attempt, expiresAt } = await ownAttempt(sql, claim)
+  requireLeaseAtCommit(sql, expiresAt, 'DELIVERY_OWNER_LOST')
+  await readContext(sql, current, true)
+  await assertBudget(sql, current)
+  if (!attempt.approval_write_started_at || current.status !== 'delivery_pending'
+    || !['submitted', 'uncertain'].includes(current.deliveryState) || !await settled(sql, current)) {
+    return fail('GRAPH_SUBMISSION_NOT_REPLAYABLE')
+  }
+}
 export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeliveryRepository {
   constructor(private readonly approvalPool: pg.Pool) { super(approvalPool) }
   private async mode(id: string) { const runId = await runFor(this.approvalPool, 'interaction', id)

@@ -121,6 +121,14 @@
       "types": "./dist/remoteExecution.d.ts",
       "import": "./dist/remoteExecution.js"
     },
+    "./remote-execution-entry-closure": {
+      "types": "./dist/remoteExecutionEntryClosure.d.ts",
+      "import": "./dist/remoteExecutionEntryClosure.js"
+    },
+    "./remote-execution-entry-closure-node": {
+      "types": "./dist/remoteExecutionEntryClosureNode.d.ts",
+      "import": "./dist/remoteExecutionEntryClosureNode.js"
+    },
     "./build-computers": { "types": "./dist/buildComputers.d.ts", "import": "./dist/buildComputers.js" },
     "./jobs": {
       "types": "./dist/jobs.d.ts",

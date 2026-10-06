@@ -20,10 +20,16 @@ const SourceQuotaClaimSchema = z.object({
     keyRevision: MaterializationReceiptSchema.shape.keyRevision,
     authorizationRevision: MaterializationReceiptSchema.shape.authorizationRevision }).strict(),
 }).strict()
-export function sourceMaterializationClaimName(binding: RootBinding, attempt: MaterializationAttempt, quota?: unknown): string {
-  if (!quota) return `binding-${binding.rootId}.lock`
-  const owner = createHash('sha256').update(JSON.stringify([attempt.executionId, attempt.attemptId])).digest('hex')
-  return `binding-${binding.rootId}-${owner}.lock`
+/** Quota Jobs own one claim per attempt. New workflow executions own separate
+ * claims; old exclusive-write receipts retain their original cleanup path. */
+export function sourceMaterializationClaimName(binding: RootBinding,
+  attempt: Pick<MaterializationAttempt, 'executionId' | 'attemptId'>, quota?: unknown, scope?: 'execution'): string {
+  if (quota) {
+    const owner = createHash('sha256').update(JSON.stringify([attempt.executionId, attempt.attemptId])).digest('hex')
+    return `binding-${binding.rootId}-${owner}.lock`
+  }
+  if (!scope && binding.accessMode === 'exclusive-write') return `binding-${binding.rootId}.lock`
+  return `binding-${binding.rootId}-${createHash('sha256').update(attempt.executionId).digest('hex')}.lock`
 }
 
 /** An interrupted exclusive write removes only its own incomplete record. */

@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { open, readdir, type FileHandle } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
-import { SourceManifestSchema, type RootBinding } from '@foreman-code/contracts/source-materialization'
+import { SourceManifestSchema, type RootBinding, type MaterializationReceipt } from '@foreman-code/contracts/source-materialization'
 import { anchored, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import { SOURCE_LIMITS, SourceError } from './manifest.js'
 
@@ -63,4 +63,14 @@ export async function measureRetainedSourceDirectory(
     await snapshot.close()
     await root.close()
   }
+}
+
+export async function measureRetainedMaterialization(receipt: MaterializationReceipt): Promise<number> {
+  // Quota-owned Job trees are reclaimed with their project quota, not retained.
+  if (receipt.quota) return 0
+  const binding = receipt.binding
+  const reference = await measureRetainedSourceDirectory(binding.canonicalPath, receipt.materializationId, binding.filesystem)
+  if (!receipt.sharedTree) return reference
+  const working = await measureRetainedSourceDirectory(binding.canonicalPath, receipt.sharedTree.id, binding.filesystem)
+  return reference + working
 }

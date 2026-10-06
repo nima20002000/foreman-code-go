@@ -3,6 +3,7 @@ import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInstalledWorkerDomains } from '../../../apps/api/src/modules/devices/installedWorkerDomains.ts';
 import { codexQualificationSuite } from '../../../apps/api/src/modules/harnesses/qualification/suites/codex.ts';
+import { opencodeQualificationSuite } from '../../../apps/api/src/modules/harnesses/qualification/suites/opencode.ts';
 import { qualificationRevisionWithIdentity } from '../../../apps/api/src/modules/harnesses/qualification/identity.ts';
 import { loadApprovedRoots } from './approvedRoots.mjs';
 import { createWorkerExecutionDomains } from '../../../apps/api/src/modules/runs/remote/workerComposition.ts';
@@ -105,7 +106,8 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         jobConfiguration: jobSelection ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
         approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
         ...(rsync ? { rsync } : rsyncEntrypoint?.kind === 'configured' ? { rsync: rsyncEntrypoint.providers } : {}),
-        codexSuiteRevision: qualificationRevisionWithIdentity(codexQualificationSuite.revision) });
+        codexSuiteRevision: qualificationRevisionWithIdentity(codexQualificationSuite.revision),
+        openCodeSuiteRevision: qualificationRevisionWithIdentity(opencodeQualificationSuite.revision) });
       if (installed.rsync) {
         for (const intent of installed.rsyncOwnership.inventory()) {
           if (Date.parse(intent.expiresAt) <= Date.now()) await installed.rsync.retireExpired(intent);

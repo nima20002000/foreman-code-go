@@ -184,6 +184,7 @@ function deliveryService(attachError?: Error, graphError?: Error) {
   const budgets = { assertActive: async () => { throw new Error('Retired service budget path') },
     resume: async () => { throw new Error('Delivery is not checkpoint consumption') } } as unknown as PostgresApprovalBudgetRepository
   const runtime: InteractionNativeRuntime = {
+    withInteractionOwner: (_interaction, signal, work) => work(signal),
     validateInteraction: async () => undefined,
     attachOwnedSession: async () => {
       throw new Error('Unexpected owned-session attach')

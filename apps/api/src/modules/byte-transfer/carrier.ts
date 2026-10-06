@@ -135,7 +135,7 @@ function createClient(capture: () => Capture | undefined) {
 export function createEndpointTransferClient(endpoint: Pick<DeviceEndpoint, 'captureRequest'>, deviceId: string) {
   return createClient(() => endpoint.captureRequest(deviceId, BYTE_TRANSFER_NAMESPACE))
 }
-export function createChannelTransferClient(channel: Pick<DeviceApplicationChannel, 'captureRequest'>) {
+export function createChannelTransferClient(channel: { captureRequest(namespace: string): Capture | undefined }) {
   return createClient(() => channel.captureRequest(BYTE_TRANSFER_NAMESPACE))
 }
 export type { TransferOperation }

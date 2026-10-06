@@ -382,13 +382,13 @@ async function recoveryTarget(sql: GraphTransactionSql, owner: RunOwnership, exe
  * an empty registry returns false. No manager, credential, attach, turn or native
  * response is created here. SQL locks are never held over native IO. */
 export async function recoverWorkflowNativeClosure(owner: RunOwnership, execution: HarnessExecution,
-  closeProcesses: ((executionId: string, signal: AbortSignal) => Promise<boolean>) | undefined,
+  closeProcesses: ((executionId: string, signal: AbortSignal, owner: RunOwnership) => Promise<boolean>) | undefined,
   signal: AbortSignal, purpose: WorkflowRecoveryPurpose = 'cleanup'): Promise<void> {
   signal.throwIfAborted()
   const target = await owner.oneShotConnection().transaction((sql) => recoveryTarget(sql, owner, execution, purpose))
   if (!target) return
   owner.assertOwned(); signal.throwIfAborted()
-  if (!closeProcesses || !await closeProcesses(execution.id, signal)) throw new DomainError(
+  if (!closeProcesses || !await closeProcesses(execution.id, signal, owner)) throw new DomainError(
     'REPEAT_CLEANUP_PENDING', 'The original native process has no positive closure receipt. It was not resubmitted.', 409)
   owner.assertOwned(); signal.throwIfAborted()
   await owner.oneShotConnection().transaction(async (sql) => {

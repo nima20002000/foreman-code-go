@@ -17,6 +17,7 @@ import { ReviewNativeProofServices } from '../../src/modules/interactions/review
 import { PostgresRepeatReviewerBindings } from '../../src/modules/interactions/repeatReviewer.js'
 import { PostgresWorkflowClosureStore } from '../../src/modules/interactions/workflowClosure.js'
 import { createWorkflowRepositoryServices } from '../../src/modules/runs/workflowRepositoryServices.js'
+import type { RepeatRepositoryServices } from '../../src/modules/runs/repeatRepositoryHost.js'
 import { randomUUID } from 'node:crypto'
 import { vi } from 'vitest'
 import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
@@ -48,6 +49,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     nativeSourcePersisted?: Parameters<typeof createWorkflowRepositoryServices>[2];
     nativeCommitted?: ConstructorParameters<typeof PostgresRunRepository>[4];
     approvalNodeIds?: string[]; insertRun?: boolean; outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
+    admitPlacementExecutionLocked?: RepeatRepositoryServices['admitPlacementExecutionLocked'];
     /** Exact physical closure port; omitted unless a fixture supplies native lifetimes. */
     recoverNativeProcesses?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[11] } = {}) {
   const db = await agent3Database(options.databaseUrl)
@@ -99,9 +101,11 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
       vi.spyOn(locations, 'revalidateSnapshot').mockResolvedValue(undefined)
       const workflowCapture = createWorkflowNativeCaptureChannel()
       const reviewCapture = createReviewNativeCaptureChannel()
+      const repositoryServices = createWorkflowRepositoryServices(workflowCapture.verify, undefined, options.nativeSourcePersisted)
       const runs = new PostgresRunRepository(db.pool, workflows, locations,
-        { runtimeRoot: db.directory,
-          ...createWorkflowRepositoryServices(workflowCapture.verify, undefined, options.nativeSourcePersisted) },
+        { runtimeRoot: db.directory, ...repositoryServices, services: { ...repositoryServices.services,
+          ...(options.admitPlacementExecutionLocked
+            ? { admitPlacementExecutionLocked: options.admitPlacementExecutionLocked } : {}) } },
         options.nativeCommitted)
       const repository = new Wave25InteractionRepository(db.pool, new ReviewNativeProofServices(reviewCapture.verify)), budgets = new PostgresApprovalBudgetRepository(db.pool)
       const managers = new ExecutionScopedNativeSessionManagerResolver(() => provider.connection())

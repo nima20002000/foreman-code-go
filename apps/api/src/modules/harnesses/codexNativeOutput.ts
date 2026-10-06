@@ -51,6 +51,7 @@ export interface CodexNativeOutputBridge {
   close(): Promise<void>
 }
 export interface CodexNativeOutputs {
+  storageKind?: 'buffer'
   /** Genuine exact-binary protected-store qualification and current original grants;
    * required before declarations. No implementation or success fallback exists here. */
   assertQualified(input: CodexNativeOutputQualificationInput, signal: AbortSignal): Promise<void>
@@ -65,10 +66,13 @@ export const CODEX_NATIVE_OUTPUT_TOOL_ALIASES = Object.freeze(Object.fromEntries
   [WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation].replaceAll('.', '_'), operation])) as Record<string, typeof operations[number]>)
 const schemas = Object.fromEntries(WorkerNativeOutputCommandSchema.options.map(schema =>
   [schema.shape.operation.value, schema]))
-export function codexNativeOutputDeclarations(configuration: CodexHarnessConfiguration, providerVersion: string) {
+export function codexNativeOutputDeclarations(configuration: CodexHarnessConfiguration, providerVersion: string,
+  options: { storageKind?: 'buffer' } = {}) {
   const profile = harnessProfile('codex', providerVersion)
-  if (configuration.sandbox !== 'workspace-write' || !['codex-0.154', 'codex-0.156'].includes(profile ?? '')) {
-    throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native output requires qualified workspace-write; no sandbox promotion is permitted.')
+  if (configuration.sandbox === 'read-only'
+    || configuration.sandbox === 'danger-full-access' && options.storageKind !== 'buffer'
+    || !['codex-0.154', 'codex-0.156'].includes(profile ?? '')) {
+    throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native output requires a qualified writable configuration and compatible output storage.')
   }
   return Object.entries(CODEX_NATIVE_OUTPUT_TOOL_ALIASES).map(([name, operation]) => ({ type: 'function' as const,
     name, description: `${operation} an original turn-owned native output through the qualified host. No paths or caller-supplied scope.`,

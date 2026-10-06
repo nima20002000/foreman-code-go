@@ -39,6 +39,7 @@ export interface OperatorServices {
   fileReferences?: FileReferenceService
   executionReadiness?: import('../../modules/harnesses/executionReadiness.js').ExecutionReadinessService
   runGraph?: RunGraphReadApi
+  runPlacements?: import('../../modules/placement/readService.js').RunPlacementReadService
   operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'list' | 'get' | 'history' | 'activityPage' | 'send' | 'handoffHistory' | 'cancel' | 'respond'>
   agentChat?: AgentChatService
   fileRetention?: FileRetentionService

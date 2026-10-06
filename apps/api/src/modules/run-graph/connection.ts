@@ -72,6 +72,7 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
   readonly #assertOwner: () => void
   #tail: Promise<void> = Promise.resolve()
   #unusable = false
+  #unusableCause: unknown
   #closing = false
   constructor(client: pg.ClientBase, assertOwner: () => void,
     private readonly readPlans?: Map<string, string>) {
@@ -100,7 +101,7 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
       queued()
       const finished = beginRuntimeTiming('db', `connection.${operation}`)
       try {
-        if (this.#unusable) throw new RunGraphError('GRAPH_TRANSACTION_FAILED')
+        if (this.#unusable) throw new RunGraphError('GRAPH_TRANSACTION_FAILED', { cause: this.#unusableCause })
         this.#assertOwner()
         return await context.run(this, work)
       } finally { finished() }
@@ -156,9 +157,16 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
         return result
       } catch (error) {
         if (pending) await pending.catch(() => undefined)
-        if (committing) this.#unusable = true // COMMIT outcome can be unknown: do not retry the callback.
+        if (committing) {
+          // COMMIT outcome can be unknown: do not retry the callback.
+          this.#unusable = true
+          this.#unusableCause = error
+        }
         try { await timeRuntimeOperation('db', 'sql.rollback', () => this.#client.query('rollback')) }
-        catch { this.#unusable = true }
+        catch (rollbackError) {
+          if (!this.#unusable) this.#unusableCause = rollbackError
+          this.#unusable = true
+        }
         throw error
       } finally { state.live = false }
     }, 'transaction')

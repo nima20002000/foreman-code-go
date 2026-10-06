@@ -99,7 +99,7 @@ async function buildPrivateSourceRepository(input: {
   await importSnapshot(gitDirectory, (async function* () {
     yield Buffer.from(`commit refs/heads/source\ncommitter Foreman Code Source <source@graphql.invalid> 0 +0000\ndata ${message.length}\n`)
     yield message; yield Buffer.from('\n')
-    const tree = await openPrivateRoot(workTree)
+    const tree = await openPrivateRoot(join(receipt.binding.canonicalPath, receipt.materializationId, 'tree'))
     try {
       for (const entry of manifest.entries) {
         signal.throwIfAborted()

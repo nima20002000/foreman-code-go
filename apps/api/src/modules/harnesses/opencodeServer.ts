@@ -29,7 +29,8 @@ import {
 import { HarnessExecutionError, NativeDeliveryError } from './errors.js'
 import { nativeQualification } from './nativeQualification.js'
 import { openCodeOptions } from './operatorOptions.js'
-import { endpointMatches, type NativeMcpEntryEvidence } from './mcpDetection.js'
+import { endpointMatches } from './nativeMcpEndpoint.js'
+import type { NativeMcpEntryEvidence } from './mcpDetection.js'
 import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeOutputCallCapture,
   NativeSessionStart, NativeTurnInput } from './port.js'
 import {
@@ -1445,6 +1446,27 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (restart) this.restartClosures.set(session.nativeSessionId, structuredClone(session))
       this.sessions.delete(session.nativeSessionId)
     })
+  }
+
+  originalSessionLifetime(session: NativeSessionReference, source: NativeSessionStart) {
+    if (source.kind === 'operator') return undefined
+    const state = this.sessions.get(session.nativeSessionId)
+    const generation = this.generation
+    const fingerprint = this.options.server.credentialEnvironmentFingerprint
+    if (!state || !isDeepStrictEqual(source.request.configuration.harness, state.configuration)
+      || source.request.workingDirectory !== state.directory || session.harness !== 'opencode'
+      || session.providerVersion !== this.options.server.expectedVersion
+      || this.options.server.residentGeneration !== generation
+      || source.environment && childEnvironmentFingerprint(source.environment) !== fingerprint) return undefined
+    const assertCurrent = () => {
+      if (this.sessions.get(session.nativeSessionId) !== state || this.generation !== generation
+        || this.options.server.residentGeneration !== generation
+        || this.options.server.credentialEnvironmentFingerprint !== fingerprint || this.lifetime.signal.aborted) {
+        throw new HarnessExecutionError('OPENCODE_ORIGINAL_SESSION_UNAVAILABLE', 'The original OpenCode session changed.')
+      }
+    }
+    assertCurrent()
+    return { assertCurrent }
   }
 
   dispose(): Promise<void> {

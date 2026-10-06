@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { HarnessExecutionSchema, DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type HarnessExecution } from '@foreman-code/contracts'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
@@ -11,6 +11,12 @@ import { bindRepeatNodeInput, repeatDigest, repeatExecutionIdentity, repeatSlotI
 import { workflowNativeReservation, type WorkflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
 import { currentUnitSnapshot, currentUnitRunRow, currentUnitVersionRow, currentUnitConfigurationRows,
   type CurrentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
+
+// These local-owner cases use the real closure reader; remote retention is a separate domain boundary.
+vi.mock('../src/modules/interactions/retainedRemoteReviewer.js', () => ({
+  readRetainedRemoteReviewer: async () => undefined,
+  retainRemoteReviewerCredential: async () => { throw new Error('Local settlement cannot retain a remote credential') },
+}))
 
 /** A scripted pg-shaped transaction, NOT a PostgreSQL/native integration test.
  * It executes the real settlement and readWorkflowClosure functions. Unknown
@@ -123,6 +129,22 @@ class NativePgShape {
       const f = this.entryFixture, reservation = this.entryReservation
       if (q.startsWith('select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.execution_state,')) {
         expect(values).toEqual([f.run.id]); return rows([currentUnitRunRow(f)])
+      }
+      if (q.startsWith('with pinned_version')) {
+        expect(values).toEqual([f.version.id, f.run.workspaceId, f.run.workflowId,
+          Object.values(f.run.agentConfigurationVersionIds)])
+        return rows([{ versions: [currentUnitVersionRow(f)], configurations: currentUnitConfigurationRows(f) }])
+      }
+      if (q.startsWith('with pinned_head')) {
+        expect(values).toEqual([this.execution.id, f.run.id])
+        return rows([{ heads: [{ protocol_version: 1 }], effects: [{ payload_digest: this.bindingDigest }],
+          executions: [{ record: this.execution, accepted: false, identity: repeatExecutionIdentity(this.execution),
+            slot_id: repeatSlotId(f.run.id, reservation.ref), occurrence_id: null,
+            execution_occurrence_id: null, identity_occurrence_id: null, technical_attempt: this.execution.attempt,
+            execution_run_id: this.execution.runId, execution_node_id: this.execution.workflowNodeId,
+            execution_agent_id: this.execution.agentId, execution_attempt: this.execution.attempt,
+            workflow_node_id: this.execution.workflowNodeId, input_json: JSON.stringify(this.execution.input),
+            input_digest: reservation.inputDigest }] }])
       }
       if (q.startsWith('select id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record')) {
         expect(values).toEqual([f.version.id, f.run.workspaceId, f.run.workflowId])

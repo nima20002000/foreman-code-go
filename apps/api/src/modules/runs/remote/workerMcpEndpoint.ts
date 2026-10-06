@@ -1,3 +1,4 @@
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import { registerAppRoute } from '../../harnesses/appMcpLauncher.js'
@@ -38,11 +39,11 @@ export async function createWorkerMcpEndpoint(input: {
   onArtifactPublication?(input: { transferId: string; publication: AgentFilePublishInput }, result: AgentFilePublishResult): void
 }) {
   input.signal.throwIfAborted()
-  const expiresAt = input.relay.expiresAt
-  const token = input.relay.environment.variables.GRAPHQL_MCP_TOKEN
+  let expiresAt = input.relay.expiresAt
+  const token = readProductEnvironment(input.relay.environment.variables, 'MCP_TOKEN')
   if (!token || Date.parse(expiresAt) <= Date.now()) throw new Error('The original Main MCP lease is unavailable.')
   const digest = createHash('sha256').update(`Bearer ${token}`).digest()
-  const active = new Set<Promise<void>>()
+  const active = new Set<Promise<unknown>>()
   let closing = false, shutdown: Promise<void> | undefined
   const server = createServer((request, response) => {
     const task = (async () => {
@@ -100,5 +101,19 @@ export async function createWorkerMcpEndpoint(input: {
     unregister = await registerAppRoute(token, endpoint, expiresAt, input.launcher)
     input.signal.throwIfAborted()
   } catch (error) { await close(); throw error }
-  return { endpoint, close }
+  const refreshLease = () => {
+    const task = (async () => {
+      if (closing) throw new Error('The original worker MCP endpoint is closing.')
+      const renewedExpiry = await input.relay.refresh(input.signal)
+      input.signal.throwIfAborted()
+      if (closing) throw new Error('The original worker MCP endpoint is closing.')
+      unregister = await registerAppRoute(token, endpoint, renewedExpiry, input.launcher)
+      expiresAt = renewedExpiry
+      return expiresAt
+    })()
+    active.add(task)
+    void task.then(() => active.delete(task), () => active.delete(task))
+    return task
+  }
+  return { endpoint, close, refreshLease }
 }

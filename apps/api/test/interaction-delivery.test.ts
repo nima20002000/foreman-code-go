@@ -55,6 +55,7 @@ function harness() {
   let writeStarted = false
   const control = {
     stopped: false, completedRun: false, timeout: false, crashCommit: false, commitResume: true,
+    ownerHeld: false, ownerReleases: 0,
     reviewState: 'completed' as 'acknowledged' | 'completed',
     resumeState: 'absent' as 'absent' | 'required' | 'completed' | 'canceled',
     resumeError: undefined as string | undefined,
@@ -173,6 +174,13 @@ function harness() {
   } as unknown as NativeHarnessSessionManager
   const writer = new SingleWriterSessionManager(rawManager, nativeLanes(), record.requestingAgentId)
   const runtime: InteractionNativeRuntime = {
+    withInteractionOwner: async <T>(interaction: DurableInteraction, signal: AbortSignal,
+      work: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+      assert.equal(interaction.id, record.id)
+      control.ownerHeld = true
+      try { return await work(signal) }
+      finally { control.ownerHeld = false; control.ownerReleases++ }
+    },
     validateInteraction: async () => { await budgets.assertActive(record.executionId) },
     attachOwnedSession: async () => {
       throw new Error('Unexpected owned-session attach')
@@ -211,6 +219,25 @@ function harness() {
     abandonOwner: () => { claim = undefined },
   }
 }
+
+it('holds the original Run owner through native attachment and delivery, then releases it before graph resume', async () => {
+  const h = harness()
+  h.control.onAttach = async () => { assert.equal(h.control.ownerHeld, true) }
+  h.control.onSend = async () => { assert.equal(h.control.ownerHeld, true) }
+  h.control.onResume = async () => { assert.equal(h.control.ownerHeld, false) }
+  assert.equal((await h.respond()).interaction.deliveryState, 'delivered')
+  assert.equal(h.calls.sends, 1)
+  assert.equal(h.control.ownerHeld, false)
+  assert.equal(h.control.ownerReleases, 1)
+})
+
+it('releases the Run owner when native delivery becomes uncertain', async () => {
+  const h = harness()
+  h.control.onSend = async () => { throw new Error('native response acknowledgement lost') }
+  assert.equal((await h.respond()).interaction.deliveryState, 'uncertain')
+  assert.equal(h.control.ownerHeld, false)
+  assert.equal(h.control.ownerReleases, 1)
+})
 
 it('keeps native delivery proven when graph resume fails and recovers without another native send (#7)', async () => {
   const h = harness()

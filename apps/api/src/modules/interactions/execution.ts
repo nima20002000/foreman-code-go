@@ -56,6 +56,7 @@ import { readDetachedWorkflowSession, recoverWorkflowNativeClosure, type Workflo
 import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.js'
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
+import { readRetainedRemoteReviewer } from './retainedRemoteReviewer.js'
 import type { RepeatReviewerBindings } from './repeatReviewer.js'
 import { assertSameRepeatExecution, assertSameReviewJob, repeatPhysicalSettlementPending,
   reviewPhysicallySettled, type RepeatNativeObservationStore } from './repeatObservation.js'
@@ -80,6 +81,11 @@ interface OwnedNativeSession {
   cleanup?: Promise<Error[]>
   reviewFinalizer?: symbol
   reviewFinishing?: boolean
+  reviewOwner?: RunOwnership
+  releaseReviewOwner?: () => Promise<void>
+  runOwner?: RunOwnership
+  stopReviewerRenewal?: () => Promise<void>
+  retainedObservationError?: unknown
 }
 
 interface ApprovalObservationInput {
@@ -160,6 +166,23 @@ export class ApprovalExecutionCoordinator {
    * runtime disposal. This does not cancel the Run, stop its budget, retire its
    * approval, revoke execution authority or finalize its workflow lifetime. */
   private async closeWorkflowSession(owned: OwnedNativeSession, restart = false): Promise<void> {
+    if (owned.context.acceptedPlacement?.hostRef.kind !== 'device')
+      return this.closeWorkflowSessionOwned(owned, restart)
+    let owner = owned.reviewOwner ?? owned.runOwner
+    try { owner?.assertOwned() }
+    catch (error) {
+      if (!(error instanceof DomainError) || error.code !== 'RUN_OWNERSHIP_LOST') throw error
+      await owner?.release()
+      owner = undefined
+    }
+    const acquired = !owner
+    owner ??= await this.runs.acquireOwnership(owned.execution.runId, () => owned.controller.abort())
+    if (!owner) throw new DomainError('SESSION_LANE_BUSY', 'The Run is still draining its native owner.', 409)
+    this.adoptRunOwner(owner)
+    try { await this.closeWorkflowSessionOwned(owned, restart) }
+    finally { if (acquired) await owner.release() }
+  }
+  private async closeWorkflowSessionOwned(owned: OwnedNativeSession, restart: boolean): Promise<void> {
     const session = owned.session
     if (!session) throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT',
       'The native connection is not ready for an exact close receipt.', 409)
@@ -291,6 +314,10 @@ export class ApprovalExecutionCoordinator {
       if (credential) await this.credentials?.revoke({ principalId: credential.principalId })
       check()
       this.managerCredentials.delete(owned.manager)
+      await owned.stopReviewerRenewal?.()
+      await owned.releaseReviewOwner?.()
+      delete owned.reviewOwner
+      delete owned.releaseReviewOwner
       this.managers.release?.(owned.context, this.rawManagers.get(owned.manager) ?? owned.manager,
         owned.failed ? 'failed' : 'released')
       if (this.ownedSessions.get(owned.execution.id) === owned) this.ownedSessions.delete(owned.execution.id)
@@ -319,6 +346,16 @@ export class ApprovalExecutionCoordinator {
     check()
     if (execution.state !== 'completed' || !execution.result || !execution.finishedAt) throw new DomainError(
       'REPEAT_BOUNDARY_PENDING', 'Cleanup requires the exact durable terminal result.', 409)
+    const retained = this.ownedSessions.get(execution.id)
+    if (retained?.manager.retainsReviewerSession) {
+      retained.execution = execution
+      await this.budgets.finish(execution.id, execution.finishedAt)
+      await store.settleNativeExecution(execution.id)
+      check()
+      retained.context = { ...retained.context, purpose: 'reviewer' }
+      this.maintainRetainedReviewer(retained)
+      return
+    }
     try { await store.settleNativeExecution(execution.id); check(); return }
     catch (error) { if (!repeatPhysicalSettlementPending(error)) throw error; check() }
     const owned = this.ownedSessions.get(execution.id)
@@ -412,6 +449,10 @@ export class ApprovalExecutionCoordinator {
           // A sibling's queued/uncertain review remains responsible for this
           // session. It is not closed under an earlier job's callback.
           if (await this.interactions.coordination.hasUnsettledReview(executionId)) return
+          const currentRun = await this.runs.get(owned.execution.runId)
+          await guard()
+          if (owned.manager.retainsReviewerSession && currentRun && ['running', 'waiting'].includes(currentRun.executionState)
+            && currentRun.outcome === 'pending') return
           await guard()
           await this.closeRepeatLifetime(owned, check)
           lane.observedStatus = 'idle'
@@ -433,9 +474,10 @@ export class ApprovalExecutionCoordinator {
     private readonly repeatReviewerBindings?: RepeatReviewerBindings,
     private readonly nativeCaptures?: WorkflowNativeCapturePort,
     private readonly reviewNativeCaptures?: ReviewNativeCapturePort,
-    private readonly recoverNativeProcesses?: (executionId: string, signal: AbortSignal) => Promise<boolean>,
+    private readonly recoverNativeProcesses?: (executionId: string, signal: AbortSignal, owner: RunOwnership) => Promise<boolean>,
     private readonly reserveNativeLaunch?: (executionId: string, manager: NativeHarnessSessionManager) => void,
     private readonly prepareManagerContext?: (context: NativeManagerResolutionContext) => Promise<NativeManagerResolutionContext>,
+    private readonly commitReviewNative?: (executionId: string) => Promise<void>,
   ) {
     this.reviewers = new ReviewerDispatcher(interactions.coordination, this)
   }
@@ -471,8 +513,10 @@ export class ApprovalExecutionCoordinator {
   async nativeBoundaryEvidence(executionId: string, owner: RunOwnership): Promise<RepeatNativeEvidence> {
     const execution = await this.runs.getExecution(executionId, owner)
     if (!execution) throw new DomainError('EXECUTION_NOT_FOUND', 'The exact execution is unavailable.', 404)
+    await this.recoverRetainedReviewer(execution, owner)
     const owned = this.ownedSessions.get(executionId)
     if (owned?.session) {
+      owned.runOwner = owner
       this.managers.adoptOwner?.(executionId, this.rawManagers.get(owned.manager) ?? owned.manager, owner)
       await owned.manager.observeBoundary(owned.session, owned.controller.signal)
     }
@@ -702,6 +746,7 @@ export class ApprovalExecutionCoordinator {
     }
     check()
     return this.reviewNativeCaptures.capture({ execution: owned.execution, session, job, manager, lease: lane,
+      ...(owned.reviewOwner ? { owner: owned.reviewOwner } : {}),
       lifetimeGeneration: generation, closureGeneration: owned.closureGeneration, source, assertCurrent: check })
   }
 
@@ -874,6 +919,112 @@ export class ApprovalExecutionCoordinator {
     void error; void pending; void pendingRequests
   }
 
+  async prepareReviewTurn(executionId: string, session: NativeSessionReference, job: ReviewJob,
+    lane: SessionWriteLease, signal: AbortSignal): Promise<void> {
+    const owned = this.ownedSessions.get(executionId)
+    if (!owned?.manager.retainsReviewerSession) return
+    const credential = this.managerCredentials.get(owned.manager)
+    if (!credential || !this.credentials?.bindReviewerJob || !owned.reviewOwner)
+      throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The original reviewer process lease is unavailable.', 409)
+    owned.reviewOwner.assertOwned()
+    await this.credentials.bindReviewerJob(executionId, credential, job, lane)
+    await owned.manager.prepareReview(session, job, signal)
+    await lane.guard.check()
+  }
+
+  async releaseReviewSession(executionId: string): Promise<void> {
+    const owned = this.ownedSessions.get(executionId)
+    const release = owned?.releaseReviewOwner
+    try { await this.afterReviewCommit(executionId) }
+    finally {
+      if (owned) {
+        delete owned.reviewOwner
+        delete owned.releaseReviewOwner
+      }
+      await release?.()
+    }
+  }
+  afterReviewCommit(executionId: string): Promise<void> {
+    return this.commitReviewNative?.(executionId) ?? Promise.resolve()
+  }
+
+  private maintainRetainedReviewer(owned: OwnedNativeSession): void {
+    if (owned.stopReviewerRenewal || !this.credentials?.renew) return
+    owned.stopReviewerRenewal = maintainCredential({
+      signal: owned.controller.signal,
+      expiresAt: () => this.managerCredentials.get(owned.manager)?.expiresAt,
+      refresh: async () => {
+        const credential = this.managerCredentials.get(owned.manager)
+        if (!credential || this.ownedSessions.get(owned.execution.id) !== owned)
+          throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process lease changed.', 409)
+        const expiresAt = await this.credentials!.renew!(owned.execution.id, credential)
+        if (this.ownedSessions.get(owned.execution.id) !== owned || owned.controller.signal.aborted)
+          throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process no longer owns its lease.', 409)
+        this.managerCredentials.set(owned.manager, { ...credential, expiresAt })
+        if (!owned.reviewOwner && owned.session) {
+          try {
+            const retained = await this.retainRunOwner(owned.execution, () => {})
+            try {
+              this.adoptRunOwner(retained.owner)
+              await owned.manager.observeBoundary(owned.session, owned.controller.signal)
+              delete owned.retainedObservationError
+            } finally { await retained.release() }
+          } catch (error) { owned.retainedObservationError = error }
+        }
+      },
+      onFailure: error => owned.controller.abort(error),
+    })
+  }
+
+  private async recoverRetainedReviewer(execution: HarnessExecution, owner: RunOwnership,
+    parentSignal?: AbortSignal, job?: ReviewJob): Promise<boolean> {
+    const existing = this.ownedSessions.get(execution.id)
+    if (existing) return existing.manager.retainsReviewerSession
+    if (execution.state !== 'completed' || execution.result?.outcome !== 'succeeded' || !execution.nativeSessionId)
+      return false
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    if (!configuration || configuration.productRole !== 'orchestrator') return false
+    const context = await this.managerContext(execution, configuration)
+    if (context.acceptedPlacement?.hostRef.kind !== 'device') return false
+    const native = await this.interactions.coordination.workflowSession(execution.id)
+    if (!native?.finalized) return false
+    owner.assertOwned()
+    const run = await this.runs.get(execution.runId, owner)
+    if (!run || !['running', 'waiting'].includes(run.executionState) || !this.workflowClosures
+      || !this.credentials?.recoverRemote) return false
+    const resolved = this.resolveManager(context, owner)
+    resolved.beginStart?.()
+    const owned = this.ownSession(execution, { ...context, purpose: 'reviewer' }, resolved.manager)
+    owned.runOwner = owner
+    const signal = AbortSignal.any([owned.controller.signal, ...(parentSignal ? [parentSignal] : [])])
+    owned.closureRegistration = this.workflowClosures.begin(execution)
+    owned.closureGeneration = await owned.closureRegistration
+    try {
+      const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
+        workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
+        runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input })
+      const session = await this.openingSession(owned, resolved.manager.attachSession(native.session,
+        { request, correlationId: `execution:${execution.id}` }, signal))
+      this.assertSessionIdentity(native.session, session)
+      if (!resolved.manager.retainsReviewerSession) throw new DomainError('REVIEWER_AUTHORITY_LOST',
+        'The original remote reviewer lifetime has already closed.', 409)
+      const access = await resolved.manager.originalApplicationAccess(session, signal)
+      const credential = await this.credentials.recoverRemote(execution.id, access, job)
+      this.managerCredentials.set(owned.manager, credential)
+      resolved.markResident?.()
+      await owner.oneShotConnection().transaction(async sql => {
+        if (!await readRetainedRemoteReviewer(sql, execution)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
+          'The retained reviewer no longer matches its original terminal and process lease.', 409)
+      })
+      this.maintainRetainedReviewer(owned)
+      return true
+    } catch (error) {
+      resolved.markFailed?.()
+      owned.failed = true
+      throw error
+    }
+  }
+
   /** Production calls this AFTER stopping/draining producers and BEFORE raw
    * manager disposal. Waiting Workers and retained reviewers are not Stop: their
    * checkpoints, budgets, credentials and business records must survive restart.
@@ -968,6 +1119,23 @@ export class ApprovalExecutionCoordinator {
       && owned.session.providerVersion === interaction.providerVersion
   }
 
+  async withInteractionOwner<T>(interaction: DurableInteraction, signal: AbortSignal,
+    work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const owned = this.ownedSessions.get(interaction.executionId)
+    if (owned?.context.acceptedPlacement?.hostRef.kind !== 'device') return work(signal)
+    if (owned.execution.runId !== interaction.runId) throw new DomainError(
+      'INTERACTION_RUN_MISMATCH', 'The native interaction does not belong to this Run.', 409)
+    signal.throwIfAborted()
+    const controller = new AbortController()
+    const retained = await this.retainRunOwner(owned.execution, () => controller.abort())
+    try {
+      const ownedSignal = AbortSignal.any([signal, controller.signal])
+      ownedSignal.throwIfAborted()
+      this.adoptRunOwner(retained.owner)
+      return await work(ownedSignal)
+    } finally { await retained.release() }
+  }
+
   async attachInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<AttachedInteractionSession> {
     const execution = await this.runs.getExecution(interaction.executionId)
     if (!execution?.workingDirectory || !execution.runtimeDirectory) throw new Error('The durable execution cannot reconstruct its native session start input.')
@@ -1003,6 +1171,37 @@ export class ApprovalExecutionCoordinator {
       || execution.workingDirectory !== context.workingDirectory
       || execution.nativeSessionId !== sessionReference.nativeSessionId || sessionReference.harness !== context.harness) {
       throw new Error('The native session ownership context does not match its durable execution.')
+    }
+    if (context.purpose === 'reviewer') {
+      const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+      if (!configuration) throw new Error('The reviewer configuration is unavailable')
+      const placementContext = await this.managerContext(execution, configuration)
+      if (placementContext.acceptedPlacement?.hostRef.kind === 'device') {
+        const controller = new AbortController()
+        const { owner, release: releaseOwner } = await this.retainRunOwner(execution, () => controller.abort())
+        try {
+          await this.recoverRetainedReviewer(execution, owner, signal, context.reviewJob)
+          const owned = this.ownedSessions.get(execution.id)
+          if (!owned?.session || !owned.manager.retainsReviewerSession) throw new DomainError('REVIEWER_AUTHORITY_LOST',
+            'The original remote reviewer is no longer resident.', 409)
+          if (owned.reviewOwner) throw new DomainError('SESSION_LANE_BUSY', 'The reviewer already owns an active review.', 409)
+          this.assertSessionIdentity(owned.session, sessionReference)
+          owned.reviewOwner = owner
+          owned.releaseReviewOwner = releaseOwner
+          this.adoptRunOwner(owner)
+          const combined = AbortSignal.any([owned.controller.signal, controller.signal, ...(signal ? [signal] : [])])
+          await this.validateReviewer(owned, sessionReference, combined)
+          return { manager: owned.manager, session: sessionReference, signal: combined }
+        } catch (error) {
+          const owned = this.ownedSessions.get(execution.id)
+          if (owned?.releaseReviewOwner === releaseOwner) {
+            delete owned.reviewOwner
+            delete owned.releaseReviewOwner
+          }
+          await releaseOwner()
+          throw error
+        }
+      }
     }
     if (!this.ownedSessions.has(execution.id)) {
       const detached = options.restartOwner
@@ -1152,11 +1351,35 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
+  private async retainRunOwner(execution: HarnessExecution, onLost: () => void) {
+    let owner = this.ownedSessions.get(execution.id)?.runOwner
+    try { owner?.assertOwned() }
+    catch (error) {
+      if (!(error instanceof DomainError) || error.code !== 'RUN_OWNERSHIP_LOST') throw error
+      await owner?.release()
+      owner = undefined
+    }
+    if (owner) return { owner, release: owner.retain(onLost) }
+    const acquired = await this.runs.acquireOwnership(execution.runId, onLost)
+    if (!acquired) throw new DomainError('SESSION_LANE_BUSY', 'The Run is still completing its current native operation.', 409)
+    return { owner: acquired, release: () => acquired.release() }
+  }
+
+  adoptRunOwner(owner: RunOwnership): void {
+    owner.assertOwned()
+    for (const owned of this.ownedSessions.values()) {
+      if (owned.execution.runId !== owner.runId) continue
+      owned.runOwner = owner
+      this.managers.adoptOwner?.(owned.execution.id, this.rawManagers.get(owned.manager) ?? owned.manager, owner)
+    }
+  }
+
   /** Recover checkpoint-bound pending approvals after verified restart detachment.
    * Other cold nonterminal lifetimes require physical cleanup before settlement. */
   async requestColdRunCleanup(owner: RunOwnership, approvals: readonly DurableInteraction[] = [],
     signal?: AbortSignal): Promise<boolean> {
     owner.assertOwned()
+    this.adoptRunOwner(owner)
     for await (const executions of this.runs.executionPages(owner.runId, owner)) {
       for (const execution of executions) {
         if (this.ownedSessions.has(execution.id)) continue
@@ -1167,6 +1390,7 @@ export class ApprovalExecutionCoordinator {
           if (await this.restorePendingWorkflowApprovals(owner, execution, pending, signal)) continue
         }
         if (execution.state === 'completed') {
+          if (await this.recoverRetainedReviewer(execution, owner)) continue
           if (execution.nativeSessionId && !await this.workflowClosures?.read(execution)) {
             // A finalized workflow has already closed its original lifetime and
             // may have handed this session to a reviewer. Missing closure now
@@ -1219,10 +1443,8 @@ export class ApprovalExecutionCoordinator {
     this.stoppingRuns.add(runId)
     this.pendingCleanupRuns.add(runId)
     if (owner) {
-      for (const owned of this.ownedSessions.values()) {
-        if (owned.execution.runId !== runId) continue
-        this.managers.adoptOwner?.(owned.execution.id, this.rawManagers.get(owned.manager) ?? owned.manager, owner)
-      }
+      if (owner.runId !== runId) throw new DomainError('RUN_OWNERSHIP_LOST', 'The cancellation owner belongs to another Run.', 409)
+      this.adoptRunOwner(owner)
     }
     let task = this.cancellations.get(runId)
     if (!task) {
@@ -1430,6 +1652,7 @@ export class ApprovalExecutionCoordinator {
       if (resolved.processState === 'needs_start') resolved.beginStart?.()
       manager = resolved.manager
       ownedSession = this.ownSession(execution, context, manager)
+      ownedSession.runOwner = input.owner
       if (session && !ownedSession.session) ownedSession.session = session
       signal = AbortSignal.any([signal, ownedSession.controller.signal])
 

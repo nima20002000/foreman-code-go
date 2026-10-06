@@ -1,4 +1,5 @@
 import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
+import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import type { PostgresSourceRsyncLifecycle } from './rsyncTransferLifecycle.js'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -80,7 +81,7 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
   }
   async verify(record: SourceMaterializationRecord): Promise<string> {
     const root = await this.rootFor(record, 'sources.verify'), response = await this.call(root, { version: 1, operation: 'sources.verify', record, relativeCwd: '' })
-    if (response.operation !== 'sources.verify' || response.workTree !== join(sourceMaterializationParent(record.receipt), 'tree'))
+    if (response.operation !== 'sources.verify' || response.workTree !== sourceWorkingTreePath(record.receipt))
       throw new DomainError('SOURCE_RESPONSE_INVALID', 'Source reply is not the actual original private tree.', 409)
     return response.workTree
   }
@@ -89,7 +90,7 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
     const response = await this.call(root, { version: 1, operation: 'sources.verify', record, relativeCwd })
     if (response.operation !== 'sources.verify') throw new DomainError('SOURCE_RESPONSE_INVALID', 'Expected working directory verification.', 409)
     const proof = response.cwdAttestation
-    if (response.workTree !== join(sourceMaterializationParent(record.receipt), 'tree')
+    if (response.workTree !== sourceWorkingTreePath(record.receipt)
       || response.canonicalCwd !== join(response.workTree, relativeCwd) || proof.relativeCwd !== relativeCwd
       || proof.materializationId !== record.receipt.materializationId || proof.executionId !== record.receipt.executionId
       || proof.attemptId !== record.receipt.attemptId || proof.operationId !== record.operationId || proof.sourceBindingHash !== record.receipt.placementHash
@@ -102,7 +103,7 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
   }
   async privateRepository(record: SourceMaterializationRecord, _manifest: SourceManifest) {
     const root = await this.rootFor(record, 'sources.private-repository'), response = await this.call(root, { version: 1, operation: 'sources.private-repository', record })
-    if (response.operation !== 'sources.private-repository' || response.repository.workTree !== join(sourceMaterializationParent(record.receipt), 'tree')
+    if (response.operation !== 'sources.private-repository' || response.repository.workTree !== sourceWorkingTreePath(record.receipt)
       || response.repository.gitDirectory !== join(sourceMaterializationParent(record.receipt), 'repository'))
       throw new DomainError('SOURCE_RESPONSE_INVALID', 'Repository reply is not the actual detached original private Git store.', 409)
     if (_manifest.snapshotId !== record.receipt.binding.snapshotId || _manifest.manifestDigest !== record.receipt.verifiedManifestDigest)

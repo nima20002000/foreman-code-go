@@ -13,6 +13,8 @@ import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPor
 import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
 import { verifyJobQuotaOwnership, type JobQuotaReader } from '../jobs/quotaOwnership.js'
+import { prepareSharedWorkingTree, verifySharedWorkingTree } from './sharedWorkingTree.js'
+import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 
 const equal = isDeepStrictEqual
@@ -46,7 +48,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
   constructor(private readonly bytes: SourceByteReader | null,
     private readonly authorize: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<void>,
     private readonly quotaPool?: SourceQuotaPool) {}
-  async prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<MaterializationReceipt> {
+  async prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal; sharedWritableTree?: true }): Promise<MaterializationReceipt> {
     if (!this.bytes) throw new SourceError('SOURCE_READ_ONLY_VERIFIER', 'A verification-only materializer cannot prepare source bytes.')
     const manifest = verifySourceManifest(input.manifest), binding = RootBindingSchema.parse(input.binding)
     if (binding.snapshotId !== manifest.snapshotId || binding.manifestDigest !== manifest.manifestDigest)
@@ -73,7 +75,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     let slotDirectory: FileHandle | undefined
     let quota: SourceProjectQuotaSlot | undefined
     let root: FileHandle | undefined, reservation: FileHandle | undefined, tree: FileHandle | undefined
-    const id = randomUUID(), lockName = sourceMaterializationClaimName(binding, attempt, this.quotaPool)
+    const id = randomUUID(), lockName = sourceMaterializationClaimName(binding, attempt, this.quotaPool, 'execution')
     try {
       signal.throwIfAborted()
       root = await openPrivateRoot(binding.canonicalPath)
@@ -127,7 +129,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
         const { parent, leaf } = await entryParent(tree, entry.path, true)
         try {
           const file = await open(anchored(parent, leaf), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-          try { await file.writeFile(content); await file.chmod(binding.accessMode === 'read-only' ? (entry.executable ? 0o500 : 0o400) : (entry.executable ? 0o700 : 0o600)); await file.sync() }
+          try { await file.writeFile(content); await file.chmod(binding.accessMode === 'read-only' || input.sharedWritableTree ? (entry.executable ? 0o500 : 0o400) : (entry.executable ? 0o700 : 0o600)); await file.sync() }
           finally { await file.close() }
           await parent.sync()
         } finally { await parent.close() }
@@ -137,9 +139,15 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       const current = await openPrivateRoot(binding.canonicalPath)
       try { if (!equal(await identity(current), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root replaced before activation.') }
       finally { await current.close() }
+      const referenceIdentity = await identity(tree)
+      const shared = input.sharedWritableTree && binding.accessMode === 'exclusive-write'
+        ? await withClaimLock(root, () => prepareSharedWorkingTree({ root: root!, binding, manifest,
+          reference: tree!, signal, authorize: () => this.authorize(binding, attempt) })) : undefined
       const receipt = MaterializationReceiptSchema.parse({ version: 1, materializationId: id, binding, ...attempt, ...(quota ? { quota } : {}),
+        claimScope: 'execution',
+        ...(shared ? { sharedTree: { id: shared.id, referenceIdentity } } : {}),
         verifiedManifestDigest: manifest.manifestDigest, verifiedEntries: manifest.totalEntries,
-        verifiedBytes: manifest.totalBytes, verifiedAt: new Date().toISOString(), localTreeIdentity: await identity(tree) })
+        verifiedBytes: manifest.totalBytes, verifiedAt: new Date().toISOString(), localTreeIdentity: shared?.filesystem ?? referenceIdentity })
       const record = await open(anchored(reservation, 'receipt.json'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
       try { await record.writeFile(JSON.stringify({ receipt, manifest })); await record.sync() } finally { await record.close() }
       await tree.sync()
@@ -165,18 +173,18 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     const root = await openPrivateRoot(binding.canonicalPath)
     try {
       if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
-      let lock = await open(anchored(root, sourceMaterializationClaimName(binding, attempt, this.quotaPool)), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
+      const readClaim = (name: string) => open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
         if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
         throw error
       })
+      const claimPath = sourceMaterializationClaimName(binding, attempt, this.quotaPool, 'execution')
+      let lock = await readClaim(claimPath)
       if (!lock && this.quotaPool) {
         await withClaimLock(root, () => restoreQuotaMaterializationClaim(root, binding, attempt, this.quotaPool!.pool, signal), { signal })
-        lock = await open(anchored(root, sourceMaterializationClaimName(binding, attempt, this.quotaPool)), constants.O_RDONLY
-          | constants.O_NOFOLLOW).catch((error: unknown) => {
-          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-          throw error
-        })
+        lock = await readClaim(claimPath)
       }
+      const legacy = !lock && !this.quotaPool && binding.accessMode === 'exclusive-write'
+      if (legacy) lock = await readClaim(sourceMaterializationClaimName(binding, attempt))
       if (!lock) return null
       let claim: { materializationId: string; binding: RootBinding; attempt: MaterializationAttempt; quota?: SourceProjectQuotaSlot }
       try {
@@ -184,6 +192,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
         if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_CLAIM_INVALID', 'Invalid source ownership claim.')
         claim = JSON.parse(await lock.readFile('utf8')) as typeof claim
       } finally { await lock.close() }
+      if (legacy && claim.attempt.executionId !== attempt.executionId) return null
       MaterializationReceiptSchema.shape.materializationId.parse(claim.materializationId)
       if (!equal(claim.binding, binding) || !equal(claim.attempt, attempt)) throw new SourceError('SOURCE_ROOT_OWNED', 'The root belongs to another accepted execution/attempt.')
       const directory = await materializationDirectory(root, {
@@ -233,15 +242,16 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
           throw new SourceError('SOURCE_RECEIPT_INVALID', 'Stored source receipt changed.')
         const tree = await openChildDirectory(directory, 'tree')
         try {
-          if (!equal(await identity(tree), receipt.localTreeIdentity)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Materialized tree replaced.')
+          if (!equal(await identity(tree), receipt.sharedTree?.referenceIdentity ?? receipt.localTreeIdentity)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Materialized source reference replaced.')
           await verifyMaterializedSourceTree(tree, manifest, expected.signal)
+          await verifySharedWorkingTree(root, receipt)
         } finally { await tree.close() }
       } finally { await directory.close() }
     } finally { await root.close() }
   }
   async resolve(receipt: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<string> {
     await this.verify(receipt, expected)
-    return join(sourceMaterializationParent(receipt), 'tree')
+    return sourceWorkingTreePath(receipt)
   }
 }
 export async function verifyMaterializedSourceTree(tree: FileHandle, manifest: SourceManifest, signal?: AbortSignal): Promise<void> {
@@ -316,7 +326,7 @@ export async function archiveMaterializationClaim(receipt: MaterializationReceip
     await withClaimLock(root, async () => {
       if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution ownership is not reconciled.')
       signal?.throwIfAborted()
-      const name = sourceMaterializationClaimName(binding, { ...receipt }, receipt.quota)
+      const name = sourceMaterializationClaimName(binding, { ...receipt }, receipt.quota, receipt.claimScope)
       const releasedName = receipt.quota ? `released-binding-${receipt.materializationId}.json` : 'released-claim.json'
       const directory = await materializationDirectory(root, receipt)
       // Controller claims stay in their original project; ext4 forbids cross-project rename.
@@ -510,7 +520,8 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
           || !equal(proof.filesystem, binding.filesystem)) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Closure proof belongs to another original preparation.')
         await reauthorize(); return proof
       }
-      const lockName = sourceMaterializationClaimName(binding, owner.attempt, quotaPool ?? owner.record?.receipt.quota)
+      const lockName = sourceMaterializationClaimName(binding, owner.attempt, quotaPool ?? owner.record?.receipt.quota,
+        owner.record ? owner.record.receipt.claimScope : 'execution')
       const archive = await optionalRecord(archiveName)
       if (!archive && quotaPool) await restoreQuotaMaterializationClaim(root, binding, owner.attempt, quotaPool.pool, cleanupSignal)
       const current = archive ?? await optionalRecord(lockName)

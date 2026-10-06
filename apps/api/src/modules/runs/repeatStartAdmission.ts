@@ -128,7 +128,8 @@ async function readStartReceipt(sql: GraphTransactionSql, principalId: string, i
 }
 
 async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationService,
-  input: RunStartV3Input, signal: AbortSignal): Promise<PreparedRepeatStartLocation> {
+  input: RunStartV3Input, signal: AbortSignal,
+  placements?: PreparedRunPlacementAdmission): Promise<PreparedRepeatStartLocation> {
   signal.throwIfAborted()
   const client = await pool.connect()
   try {
@@ -162,8 +163,13 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
     if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', 'The workspace was not found.', 404)
     // The lease is idle. No G1 transaction or admission lock spans filesystem I/O.
     signal.throwIfAborted()
-    const location = await locations.snapshot(client, input.workspaceId, input.expectedLocationRevision,
-      requiredLocationAccess(configurations), signal)
+    // Placement insertion verifies every Agent/configuration and its current
+    // destination at commit. Jobs still execute in the workspace directory.
+    const allNodesPlaced = placements !== undefined && version.definition.nodes.every(node => node.kind !== 'job')
+    const location = allNodesPlaced
+      ? await locations.snapshotAssigned(client, input.workspaceId, input.expectedLocationRevision, signal)
+      : await locations.snapshot(client, input.workspaceId, input.expectedLocationRevision,
+        requiredLocationAccess(configurations), signal)
     signal.throwIfAborted()
     const after = await client.query<PreparedRepeatStartLocation['row']>(`select ${locationColumns} from workspaces where id=$1`, [input.workspaceId])
     if (!sameWorkflowValue(row, after.rows[0])) return conflict('LOCATION_REVISION_CONFLICT', 'The location changed during validation.')
@@ -183,7 +189,7 @@ async function prepareStart(pool: pg.Pool, locations: WorkspaceLocationService, 
   const value = await prepareRunStart(async (signal) => {
     const preparedPlacements = await publication.placementAdmission?.prepare(input, principal, signal)
     signal.throwIfAborted()
-    const prepared = await prepareLocation(pool, locations, input, signal)
+    const prepared = await prepareLocation(pool, locations, input, signal, preparedPlacements)
     signal.throwIfAborted()
     return { key, preparedPlacements, prepared }
   }, schedule?.signal)

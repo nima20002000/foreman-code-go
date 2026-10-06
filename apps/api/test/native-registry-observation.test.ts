@@ -23,7 +23,7 @@ function fixture() {
 
 describe.skipIf(process.platform !== 'linux')('passive native registry producer', () => {
   for (const evidence of ['native_exit_removed_cgroup', 'cgroup_v2_removed']) {
-    it(`reads persisted ${evidence} cleanup after reopening the registry`, () => {
+    it(`reads persisted ${evidence} cleanup after reopening and retiring the registry`, async () => {
       const f = fixture()
       try {
         const row = f.seed()
@@ -31,6 +31,11 @@ describe.skipIf(process.platform !== 'linux')('passive native registry producer'
         const reopened = new NativeProcessRegistry(f.root)
         expect(reopened.snapshot().launches).toEqual([{ owner: f.owner, launchId: row.id,
           bootId: row.intent.boot, lifecycle: 'closed', closureEvidence: evidence }])
+        await f.registry.closeRegistration(f.registry.scope(f.owner), row.id)
+        expect(f.registry.closedRegistration(f.owner, row.id)).toMatchObject({ lifecycle: 'closed',
+          closureEvidence: evidence })
+        expect(new NativeProcessRegistry(f.root).snapshot().launches).toEqual([{ owner: f.owner,
+          launchId: row.id, bootId: row.intent.boot, lifecycle: 'closed', closureEvidence: evidence }])
       } finally {
         rmSync(f.root, { recursive: true, force: true })
       }

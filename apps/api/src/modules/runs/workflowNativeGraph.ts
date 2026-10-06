@@ -1,6 +1,6 @@
-import { DurableInteractionSchema, HarnessExecutionSchema, type DurableInteraction, type HarnessNativeEvent,
+import { DurableInteractionSchema, HarnessExecutionSchema, type DurableInteraction, type HarnessExecution, type HarnessNativeEvent,
   type NativeSessionReference } from '@foreman-code/contracts'
-import { RunGraphScopeSchema, WorkflowRunV3Schema, type NativeGraphProjectionKey } from '@foreman-code/contracts/wave25'
+import { RunGraphScopeSchema, WorkflowRunV3Schema, type RunGraphScope, type NativeGraphProjectionKey } from '@foreman-code/contracts/wave25'
 import type { RunOwnership } from './ownership.js'
 import { currentRunGraphPublication } from '../run-graph/publication.js'
 import { appendNativeGraphEvent } from '../run-graph/nativeIngestion.js'
@@ -31,23 +31,41 @@ export interface WorkflowContinuationProof {
   historyEvents?: NativeHistory['events']
 }
 
+/** Validated by the private capture consumer for this frame in the same transaction. */
+interface WorkflowNativeEventContext {
+  sql: GraphTransactionSql
+  scope: RunGraphScope
+  execution: HarnessExecution
+}
+
 /** SQL composition used only AFTER the private native-capture verifier. The
  * original source, execution mutation and G1 receipts share this transaction. */
 export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransactionSql, owner: RunOwnership,
   input: HarnessNativeEvent, lease?: WorkflowNativeLease, approval?: WorkflowApprovalCorrelation,
-  _continuation?: WorkflowContinuationProof): Promise<void> {
+  _continuation?: WorkflowContinuationProof, context?: WorkflowNativeEventContext | undefined): Promise<void> {
   void _continuation
   assertGraphTransaction(sql)
   owner.assertOwned()
-  const found = (await sql.query<{ record: unknown }>('select record from runs where id=$1', [owner.runId])).rows[0]
-  const run = WorkflowRunV3Schema.parse(found?.record)
-  const scope = RunGraphScopeSchema.parse({ workspaceId: run.workspaceId, workflowId: run.workflowId,
-    runId: run.id, workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 })
-  const normalized = normalizeNativeProducerEvent(input)
-  const publication = currentRunGraphPublication(sql, scope)
+  let scope: RunGraphScope
+  let execution: HarnessExecution
+  if (context) {
+    if (context.sql !== sql || context.scope.runId !== owner.runId || context.execution.runId !== owner.runId
+      || context.execution.id !== input.executionId) {
+      throw new DomainError('GRAPH_SCOPE_MISMATCH', 'Native event context belongs to another frame or transaction.', 409)
+    }
+    scope = context.scope
+    execution = context.execution
+  } else {
+    const found = (await sql.query<{ record: unknown }>('select record from runs where id=$1', [owner.runId])).rows[0]
+    const run = WorkflowRunV3Schema.parse(found?.record)
+    scope = RunGraphScopeSchema.parse({ workspaceId: run.workspaceId, workflowId: run.workflowId,
+      runId: run.id, workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 })
     const stored = (await sql.query<{ record: unknown }>(
       'select record from harness_executions where id=$1 and run_id=$2 for update', [input.executionId, owner.runId])).rows[0]
-    const execution = HarnessExecutionSchema.parse(stored?.record)
+    execution = HarnessExecutionSchema.parse(stored?.record)
+  }
+  const normalized = normalizeNativeProducerEvent(input)
+  const publication = currentRunGraphPublication(sql, scope)
     const key: NativeGraphProjectionKey = { execution: { workflowNodeId: execution.workflowNodeId,
       executionId: execution.id, agentId: execution.agentId,
       agentConfigurationVersionId: execution.agentConfigurationVersionId!, attempt: execution.attempt },

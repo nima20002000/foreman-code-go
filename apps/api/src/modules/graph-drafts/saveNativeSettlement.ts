@@ -2,6 +2,7 @@ import { ZodError } from 'zod'
 import { HarnessExecutionSchema, NativeSessionReferenceSchema } from '@foreman-code/contracts'
 import { RepeatOccurrenceV1Schema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
+import { readExecutionPlacement, readNativePlacement } from '../placement/persistence.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { readWorkflowClosure, readUnboundWorkflowClosure } from '../interactions/workflowClosure.js'
 import { assertRepeatNativeClosure } from '../interactions/repeatNativeEvidence.js'
@@ -46,6 +47,12 @@ export async function hasSaveNativeSettlement(sql: GraphSqlClient, scope: Repeat
         const ref: RepeatNodeRef = { nodeId: execution.workflowNodeId, occurrence }
         assertRepeatExecution(version, scope, ref, execution)
         if (execution.nativeSessionId) {
+          const placement = await readNativePlacement(sql, execution.id)
+          if (placement) {
+            if (execution.workingDirectory !== placement.workingTree.canonicalCwd) return false
+          } else if (await readExecutionPlacement(sql, execution.id)) {
+            return false
+          }
           const session = NativeSessionReferenceSchema.parse(row.native_reference)
           // Includes exact latest generation, previous lifetimes and recovered
           // closure receipts. No timestamp-only shortcut or invented session.

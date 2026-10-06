@@ -1,12 +1,15 @@
 import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionSchema, NativeSessionReferenceSchema } from '@foreman-code/contracts'
 import { AcceptedNodePlacementSchema, DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
+import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { SourceMaterializationRecordSchema, SourcePreparationClosureSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { SourceOperationOwnerSchema } from '@foreman-code/contracts/source-operations'
 import { DomainError } from '../errors.js'
 import { readUnboundWorkflowClosure } from '../interactions/workflowClosure.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../runs/repeatResolution.js'
+import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { sourceBindingHash } from './bindingHash.js'
 import type { SourceReservation } from './reservations.js'
 
@@ -106,6 +109,15 @@ export async function remoteWorkflowPreparationClosed(sql: GraphSqlClient, execu
   const allocation = (await sql.query<{ operation_id: string; workspace_id: string }>(`select i.operation_id,r.workspace_id
     from execution_dispatch_intents i join runs r on r.id=i.run_id where i.execution_id=$1`, [executionId])).rows[0]
   if (!allocation) return false
+  const retained = (await sql.query<{ receipt: unknown; session_bound: boolean }>(
+    `select receipt,exists(select 1 from execution_native_sessions where execution_id=$2) as session_bound
+      from remote_execution_receipts where operation_id=$1`, [allocation.operation_id, executionId])).rows[0]
+  if (retained && !retained.session_bound) {
+    const receipt = RemoteOperationReceiptSchema.parse(retained.receipt)
+    const current = await readReconciledDispatchIntent(sql, allocation.operation_id)
+    if (receipt.intent.executionId === executionId && isDeepStrictEqual(current, receipt.intent)
+      && (hasPositiveRemoteEntryClosure(receipt) || hasPositiveRemoteNonEntryClosure(receipt))) return true
+  }
   const state = await loadWorkflowPreparation(sql, allocation.workspace_id, allocation.operation_id)
   if (state.status !== 'closed' || !state.closure || state.root.selection.hostRef.kind !== 'device') return false
   await assertWorkflowPreparationClosed(sql, state)

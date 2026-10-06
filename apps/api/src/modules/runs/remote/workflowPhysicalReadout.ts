@@ -1,4 +1,4 @@
-import { sourceMaterializationParent, sourceMaterializationComponents } from '@foreman-code/contracts/source-materialization'
+import { sourceWorkingTreeComponents, sourceWorkingTreePath } from '../../sources/sourceTreePaths.js'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { constants } from 'node:fs'
@@ -8,7 +8,12 @@ import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
-import { RemoteWorkflowPhysicalReadoutSchema,RemoteWorkflowPhysicalAckSchema, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
+import { RemoteWorkflowPhysicalReadoutSchema, RemoteWorkflowPhysicalReadoutTransferSchema,
+  RemoteWorkflowPhysicalAckSchema, REMOTE_PHYSICAL_CONTINUATION_LIMIT, REMOTE_NATIVE_SOURCE_LIMIT,
+  type RemoteResultDictionary, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
+import { DEVICE_HISTORY_PAGE_BYTES, DEVICE_JSON_CONTINUATION_LIMIT,
+  type DeviceJsonContinuationRequest } from '@foreman-code/contracts/device-application'
+import { pageJsonContinuation, readJsonContinuation } from './jsonContinuation.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { NativeLaunchObservation, NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
 import { DomainError } from '../../errors.js'
@@ -18,14 +23,40 @@ import { sourcePath } from '../../sources/manifest.js'
 import { sourceCwdAttestationDigest } from '../../sources/workingDirectory.js'
 import { RuntimeLeafAttestationSchema,assertRuntimeLeafPath } from './runtimeLeaf.js'
 import type { NativeHistory } from '../../harnesses/port.js'
+import { encodeResultCopies, decodeResultCopies, physicalResultPaths, historyResultPaths } from './executionResultCodec.js'
 
 const unavailable = (): never => { throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original installed native source and physical observations are unavailable.', 409) }
+const physicalRetentionLimit = DEVICE_JSON_CONTINUATION_LIMIT * 4
+export function pagePhysicalReadout(readout: RemoteWorkflowPhysicalReadout, metadata?: DeviceJsonContinuationRequest) {
+  if (!metadata && Buffer.byteLength(JSON.stringify(readout)) <= DEVICE_HISTORY_PAGE_BYTES) return readout
+  const dictionary = encodeResultCopies(readout, physicalResultPaths(readout))
+  return { kind: 'result-continuation' as const, metadata: pageJsonContinuation(dictionary, metadata,
+    { maxBytes: REMOTE_PHYSICAL_CONTINUATION_LIMIT }) }
+}
+export async function readPhysicalReadout(raw: unknown,
+  read: (metadata: DeviceJsonContinuationRequest) => Promise<unknown>, signal?: AbortSignal) {
+  const transfer = RemoteWorkflowPhysicalReadoutTransferSchema.parse(raw)
+  if (!('kind' in transfer)) return transfer
+  const kind = transfer.kind
+  const options = kind === 'result-continuation' ? { maxBytes: REMOTE_PHYSICAL_CONTINUATION_LIMIT } : {}
+  const value = await readJsonContinuation(transfer.metadata, async metadata => {
+    const next = RemoteWorkflowPhysicalReadoutTransferSchema.parse(await read(metadata))
+    if (!('kind' in next) || next.kind !== kind) throw new Error('Physical readout continuation changed')
+    return next.metadata
+  }, signal, options)
+  return RemoteWorkflowPhysicalReadoutSchema.parse(kind === 'result-continuation' ? decodeResultCopies(value) : value)
+}
+export function hasNativeClosure(observation: NativeLaunchObservation): boolean {
+  return observation.lifecycle === 'closed' && (observation.closureEvidence === 'cgroup_v2_empty'
+    || observation.closureEvidence === 'linux_boot_changed'
+    || observation.closureEvidence === 'native_exit_removed_cgroup')
+}
 function freezeTree<T>(value:T):T {
   if(value!==null&&typeof value==='object') {Object.freeze(value);for(const child of Object.values(value))freezeTree(child)}
   return value
 }
 export function remoteWorkflowSourceDigest(source: WorkflowOriginalNativeSource): string {
-  return createHash('sha256').update(canonicalGraphJson(source, 4 * 1024 * 1024)).digest('hex')
+  return createHash('sha256').update(canonicalGraphJson(source, REMOTE_NATIVE_SOURCE_LIMIT)).digest('hex')
 }
 export function remoteWorkflowNativeHistory(value:NonNullable<RemoteWorkflowPhysicalReadout['history']>):NativeHistory {
   return {events:value.events,pendingInteractions:value.pendingInteractions,
@@ -33,6 +64,7 @@ export function remoteWorkflowNativeHistory(value:NonNullable<RemoteWorkflowPhys
     ...(value.correlationId!==undefined?{correlationId:value.correlationId}:{}),...(value.nativeTurnId!==undefined?{nativeTurnId:value.nativeTurnId}:{}),
     ...(value.nativeMessageId!==undefined?{nativeMessageId:value.nativeMessageId}:{}),...(value.nextCursor!==undefined?{nextCursor:value.nextCursor}:{}),
     ...(value.firstRetainedSequence!==undefined?{firstRetainedSequence:value.firstRetainedSequence}:{}),...(value.nextSequence!==undefined?{nextSequence:value.nextSequence}:{}),
+    ...(value.gap!==undefined?{gap:value.gap}:{}),
     ...(value.pendingInteraction!==undefined?{pendingInteraction:value.pendingInteraction}:{}),...(value.terminalResult!==undefined?{terminalResult:value.terminalResult}:{}),
     ...(value.terminalTurn!==undefined?{terminalTurn:value.terminalTurn}:{}),...(value.canceledRequestIds!==undefined?{canceledRequestIds:value.canceledRequestIds}:{}),
     ...(value.interactionDeliveries!==undefined?{interactionDeliveries:value.interactionDeliveries.map(item=>({nativeRequestId:item.nativeRequestId,state:item.state,
@@ -55,61 +87,66 @@ export function matchingOriginalRegistryLaunch(registry: NativeProcessRegistry, 
 /** Physical readback only. It neither verifies mutable source bytes nor grants
  * continuation after closure; W09's original owner gate stays authoritative. */
 export async function assertOriginalPhysicalDirectories(input:{source:RemoteWorkflowPhysicalReadout['source'];runtimeLeaf:RemoteWorkflowPhysicalReadout['runtimeLeaf'];
-  placement:AcceptedNodePlacement;approvedRoots:ApprovedRootAllowlist;signal:AbortSignal;authorize():Promise<void>}):Promise<void> {
-  const check=async()=>{input.signal.throwIfAborted();await input.authorize();input.signal.throwIfAborted()}
+  placement:AcceptedNodePlacement;approvedRoots:ApprovedRootAllowlist;signal:AbortSignal;
+  assertCurrent():void;authorize():Promise<void>}):Promise<void> {
+  const check=()=>{input.signal.throwIfAborted();input.assertCurrent();input.signal.throwIfAborted()}
+  const authorize=async()=>{check();await input.authorize();check()}
   const {source,runtimeLeaf,approvedRoots,placement}=input,receipt=source.record.receipt,cwd=source.workingTree.cwdAttestation
   if(!isDeepStrictEqual(approvedRoots.hostRef,placement.hostRef)||approvedRoots.applicationInstallationId!==placement.registration?.workerInstallationId
     ||approvedRoots.managedRuntimeRoot!==placement.destination.managedRuntimeRoot
     ||!receipt.binding.canonicalPath.startsWith(`${approvedRoots.managedRuntimeRoot}/`)
-    ||source.workingTree.canonicalProjectRoot!==join(sourceMaterializationParent(receipt),'tree')
+    ||source.workingTree.canonicalProjectRoot!==sourceWorkingTreePath(receipt)
     ||source.workingTree.canonicalCwd!==cwd.canonicalCwd||cwd.canonicalCwd!==join(source.workingTree.canonicalProjectRoot,cwd.relativeCwd)
     ||cwd.attestationDigest!==sourceCwdAttestationDigest(cwd))return unavailable()
   const inspectSource=async()=>{
-    await check()
+    check()
     let directory=await openPrivateRoot(receipt.binding.canonicalPath)
     try {
-      await check()
+      check()
       if(await realpath(receipt.binding.canonicalPath)!==receipt.binding.canonicalPath
         ||!isDeepStrictEqual(await identity(directory),receipt.binding.filesystem))return unavailable()
       await check()
-      for(const [index,part] of [...sourceMaterializationComponents(receipt),'tree',...(cwd.relativeCwd?cwd.relativeCwd.split('/'):[])].entries()) {
+      for(const [index,part] of [...sourceWorkingTreeComponents(receipt),'tree',...(cwd.relativeCwd?cwd.relativeCwd.split('/'):[])].entries()) {
         const child=await openChildDirectory(directory,part)
         await directory.close();directory=child
         await check()
-        if(index===sourceMaterializationComponents(receipt).length&&!isDeepStrictEqual(await identity(directory),receipt.localTreeIdentity))return unavailable()
+        if(index===sourceWorkingTreeComponents(receipt).length&&!isDeepStrictEqual(await identity(directory),receipt.localTreeIdentity))return unavailable()
         await check()
       }
       if(!isDeepStrictEqual(await identity(directory),cwd.filesystem)||await realpath(cwd.canonicalCwd)!==cwd.canonicalCwd)return unavailable()
-      await check()
+      check()
     } finally {await directory.close()}
   }
   const inspectRuntime=async()=>{
-    await check()
+    check()
     const base=await openPrivateRoot(approvedRoots.managedRuntimeRoot)
     try {
-      await check()
+      check()
       if(!isDeepStrictEqual(await identity(base),approvedRoots.runtimeFilesystem))return unavailable()
-      await check()
+      check()
       const directory=await openPrivateRoot(runtimeLeaf.canonicalRuntimeDirectory)
       try {
-        await check()
+        check()
         if(await realpath(runtimeLeaf.canonicalRuntimeDirectory)!==runtimeLeaf.canonicalRuntimeDirectory
           ||commandInputHash(await identity(directory)).slice('sha256:'.length)!==runtimeLeaf.directoryIdentityHash)return unavailable()
-        await check()
+        check()
         const marker=await open(anchored(directory,'.graphql-workflow-runtime.json'),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK)
         try {
-          await check()
+          check()
           const stat=await marker.stat()
           if(!stat.isFile()||stat.nlink!==1||stat.size>4096||stat.mode&0o077||stat.uid!==process.getuid?.())return unavailable()
-          await check()
+          check()
           if(!isDeepStrictEqual(RuntimeLeafAttestationSchema.parse(JSON.parse((await marker.readFile()).toString('utf8'))),runtimeLeaf))return unavailable()
-          await check()
+          check()
         } finally {await marker.close()}
       } finally {await directory.close()}
     } finally {await base.close()}
   }
   try {if(cwd.relativeCwd)sourcePath(cwd.relativeCwd);assertRuntimeLeafPath(runtimeLeaf.canonicalRuntimeDirectory,placement)
-    await inspectSource();await inspectRuntime();await inspectSource();await inspectRuntime();await check()}
+    // Main authorizes the whole inspection; local fences guard each filesystem step.
+    await authorize()
+    await inspectSource();await inspectRuntime();await inspectSource();await inspectRuntime()
+    await authorize()}
   catch(error){if(error instanceof DomainError)throw error;input.signal.throwIfAborted();return unavailable()}
 }
 interface Retained {
@@ -119,6 +156,7 @@ interface Retained {
   readout: RemoteWorkflowPhysicalReadout
   expiresAt: number
   bytes: number
+  resultDigests: readonly string[]
   aliases: readonly {key:string;source:WorkflowOriginalNativeSource}[]
   assertOwnerCurrent(): Promise<void>
   assertCurrent(): Promise<void>
@@ -131,11 +169,27 @@ export class InstalledWorkflowPhysicalReadouts {
   private readonly originals = new Map<string, Map<string, Retained>>()
   private readonly events=new Map<string,Map<string,{retained:Retained;source:WorkflowOriginalNativeSource}>>()
   private byteSize = 0
+  private readonly results = new Map<string, {
+    value: RemoteResultDictionary['results'][number]
+    bytes: number
+    references: number
+  }>()
   private key(sequence: number, sourceDigest: string) { return `${sequence}:${sourceDigest}` }
+  private release(retained: Retained) {
+    this.byteSize -= retained.bytes
+    for (const digest of retained.resultDigests) {
+      const result = this.results.get(digest)!
+      result.references--
+      if (result.references === 0) {
+        this.byteSize -= result.bytes
+        this.results.delete(digest)
+      }
+    }
+  }
   private purgeExpired() {
     for (const [operation, entries] of this.originals) {
       for (const [key, retained] of entries) if (retained.expiresAt <= Date.now()) {
-        entries.delete(key);this.byteSize-=retained.bytes
+        entries.delete(key);this.release(retained)
         for(const alias of retained.aliases)if(this.events.get(operation)?.get(alias.key)?.retained===retained)this.events.get(operation)?.delete(alias.key)
       }
       if (!entries.size) this.originals.delete(operation)
@@ -144,18 +198,32 @@ export class InstalledWorkflowPhysicalReadouts {
   }
   purge(operationId: string) {
     const entries = this.originals.get(operationId)
-    if (entries) for (const retained of entries.values()) this.byteSize -= retained.bytes
+    if (entries) for (const retained of entries.values()) this.release(retained)
     this.originals.delete(operationId)
     this.events.delete(operationId)
   }
-  clear() { this.originals.clear();this.events.clear(); this.byteSize = 0 }
+  clear() { this.originals.clear();this.events.clear();this.results.clear(); this.byteSize = 0 }
   remember(input: { readout: RemoteWorkflowPhysicalReadout; placement: AcceptedNodePlacement; source: WorkflowOriginalNativeSource;
     leaseExpiresAt: string; assertOwnerCurrent(): Promise<void>; assertCurrent(): Promise<void>; observe(): NativeLaunchObservation; closure(): NativeLaunchObservation | null }): void {
     this.purgeExpired()
-    const readout = freezeTree(RemoteWorkflowPhysicalReadoutSchema.parse(input.readout)), receipt = readout.receipt
+    const parsed = RemoteWorkflowPhysicalReadoutSchema.parse(input.readout)
+    canonicalGraphJson(input.source, REMOTE_NATIVE_SOURCE_LIMIT)
+    const paths = physicalResultPaths(parsed, ['readout'])
+    if (input.source.type === 'history') paths.push(...historyResultPaths(['source', 'history']))
+    const dictionary = encodeResultCopies({ readout: parsed, source: input.source, placement: input.placement }, paths)
+    const payloads = dictionary.results.map(value => {
+      const serialized = canonicalGraphJson(value, DEVICE_JSON_CONTINUATION_LIMIT)
+      const digest = createHash('sha256').update(serialized).digest('hex')
+      return { digest, value: this.results.get(digest)?.value ?? value, bytes: Buffer.byteLength(serialized) }
+    })
+    dictionary.results = payloads.map(payload => payload.value)
+    const decoded = decodeResultCopies(dictionary) as {
+      readout: RemoteWorkflowPhysicalReadout; source: WorkflowOriginalNativeSource; placement: AcceptedNodePlacement
+    }
+    const readout = freezeTree(RemoteWorkflowPhysicalReadoutSchema.parse(decoded.readout)), receipt = readout.receipt
     if (!receipt.native || readout.session.nativeSessionId !== receipt.native.sessionId) return unavailable()
-    const source = freezeTree(JSON.parse(canonicalGraphJson(input.source, 4 * 1024 * 1024)) as WorkflowOriginalNativeSource)
-    const placement=freezeTree(structuredClone(input.placement))
+    const source = freezeTree(decoded.source)
+    const placement=freezeTree(decoded.placement)
     const expiresAt = Math.min(Date.parse(readout.expiresAt),Date.parse(input.leaseExpiresAt), Date.now() + 60_000)
     if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return unavailable()
     const key = this.key(receipt.sequence, remoteWorkflowSourceDigest(source)), entries = this.originals.get(receipt.intent.operationId) ?? new Map<string, Retained>()
@@ -170,10 +238,28 @@ export class InstalledWorkflowPhysicalReadouts {
       const source:WorkflowOriginalNativeSource=freezeTree({type:'event',event:{...event,executionId:receipt.intent.executionId}})
       return {key:this.key(receipt.sequence,remoteWorkflowSourceDigest(source)),source}
     }):[]
-    const bytes = Buffer.byteLength(canonicalGraphJson({ readout, source, placement,aliases }, 4 * 1024 * 1024))
-    const nextByteSize = this.byteSize - (previous?.bytes ?? 0) + bytes
-    if ((!previous && entries.size >= 128) || nextByteSize > 8 * 1024 * 1024) throw new DomainError('REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', 'Original physical source retention is full.', 503)
-    const retained:Retained={ receipt, placement, source, readout, expiresAt, bytes,aliases,
+    const resultDigests = payloads.map(payload => payload.digest)
+    const bytes = Buffer.byteLength(canonicalGraphJson({ ...dictionary, results: resultDigests, aliases },
+      REMOTE_PHYSICAL_CONTINUATION_LIMIT))
+    let nextByteSize = this.byteSize - (previous?.bytes ?? 0) + bytes
+    const changes = new Set([...(previous?.resultDigests ?? []), ...resultDigests])
+    for (const digest of changes) {
+      const original = this.results.get(digest)
+      const references = (original?.references ?? 0) - (previous?.resultDigests.includes(digest) ? 1 : 0)
+        + (resultDigests.includes(digest) ? 1 : 0)
+      if (original && references === 0) nextByteSize -= original.bytes
+      if (!original && references > 0) nextByteSize += payloads.find(payload => payload.digest === digest)!.bytes
+    }
+    if ((!previous && entries.size >= 128) || nextByteSize > physicalRetentionLimit) {
+      throw new DomainError('REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', 'Original physical source retention is full.', 503)
+    }
+    if (previous) this.release(previous)
+    for (const payload of payloads) {
+      const original = this.results.get(payload.digest)
+      if (original) original.references++
+      else this.results.set(payload.digest, { value: freezeTree(payload.value), bytes: payload.bytes, references: 1 })
+    }
+    const retained:Retained={ receipt, placement, source, readout, expiresAt, bytes,aliases,resultDigests,
       assertOwnerCurrent: input.assertOwnerCurrent, assertCurrent: input.assertCurrent, observe: input.observe, closure: input.closure }
     entries.set(key,retained)
     this.originals.set(receipt.intent.operationId, entries); this.byteSize = nextByteSize
@@ -183,14 +269,24 @@ export class InstalledWorkflowPhysicalReadouts {
     if(events.size)this.events.set(receipt.intent.operationId,events)
   }
   async read(input: { intent: DispatchIntent; placement: AcceptedNodePlacement; receiptSequence: number; sourceDigest: string }): Promise<RemoteWorkflowPhysicalReadout> {
-    this.purgeExpired()
     const key=this.key(input.receiptSequence,input.sourceDigest)
+    const previous = this.originals.get(input.intent.operationId)?.get(key)
+      ?? this.events.get(input.intent.operationId)?.get(key)?.retained
+    this.purgeExpired()
     const retained = this.originals.get(input.intent.operationId)?.get(key)??this.events.get(input.intent.operationId)?.get(key)?.retained
-    if (!retained || !isDeepStrictEqual(retained.receipt.intent, input.intent) || !isDeepStrictEqual(retained.placement, input.placement)) return unavailable()
+    if (!retained) throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE',
+      'The original physical reply is no longer retained.', 409,
+      { reason: previous && previous.expiresAt <= Date.now() ? 'expired_reply' : 'not_retained',
+        operationId: input.intent.operationId,
+        receiptSequence: input.receiptSequence, sourceDigest: input.sourceDigest })
+    if (!isDeepStrictEqual(retained.receipt.intent, input.intent)
+      || !isDeepStrictEqual(retained.placement, input.placement)) throw new DomainError(
+      'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original physical reply selector changed.', 409,
+      { reason: 'selector_changed', operationId: input.intent.operationId, receiptSequence: input.receiptSequence })
     try { await retained.assertCurrent() } catch (error) { this.purge(input.intent.operationId); throw error }
     const observation = retained.observe()
     const closure = retained.closure()
-    if (closure && (observation.lifecycle !== 'closed' || observation.closureEvidence !== 'cgroup_v2_empty' || !isDeepStrictEqual(observation,closure))) return unavailable()
+    if (closure && (!hasNativeClosure(observation) || !isDeepStrictEqual(observation,closure))) return unavailable()
     if (!closure && observation.lifecycle !== 'active') return unavailable()
     if (retained.expiresAt <= Date.now()) return unavailable()
     return RemoteWorkflowPhysicalReadoutSchema.parse({ ...retained.readout,expiresAt:new Date(retained.expiresAt).toISOString(), observation,
@@ -208,7 +304,7 @@ export class InstalledWorkflowPhysicalReadouts {
       // ACK only retires in-memory observations; physical checks still gate reads.
       try {await retained.assertOwnerCurrent()}catch(error){this.purge(input.intent.operationId);throw error}
       if(direct) {
-        entries!.delete(key);this.byteSize-=retained.bytes
+        entries!.delete(key);this.release(retained)
         for(const alias of retained.aliases)if(this.events.get(input.intent.operationId)?.get(alias.key)?.retained===retained)this.events.get(input.intent.operationId)?.delete(alias.key)
       } else this.events.get(input.intent.operationId)?.delete(key)
       if(!entries?.size)this.originals.delete(input.intent.operationId)

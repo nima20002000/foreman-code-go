@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
+import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { readWorkflowClosure } from '../src/modules/interactions/workflowClosure.js'
 import { recoveryDatabase, recoveryExecution } from './helpers/eng06Recovery.testSupport.js'
@@ -8,11 +9,18 @@ type CoordinatorArgs = ConstructorParameters<typeof ApprovalExecutionCoordinator
 
 function fixture(options: Parameters<typeof recoveryDatabase>[0] = {}) {
   const db = recoveryDatabase(options), calls: string[] = []
+  const recovery = { available: true }
   const snapshot = { run: { id: db.owner.runId, executionState: 'running', outcome: 'pending' },
     version: { definition: {} }, cleanupPending: false, stopRequested: false }
   const runs = {
     repeatRepositoryFactory: () => ({}),
     getExecution: async () => db.state.execution,
+    getExecutionConfiguration: async () => AgentConfigurationVersionSchema.parse({
+      id: db.state.execution.agentConfigurationVersionId, agentId: db.state.execution.agentId,
+      workspaceId: 'workspace', version: 1, productRole: 'orchestrator',
+      harness: DEFAULT_HARNESS_DEFAULTS.opencode, prompt: {}, assignedSkills: [],
+      contentHash: 'sha256:recovery-fixture', createdAt: db.state.execution.createdAt,
+    }),
     getRepeatSnapshot: async () => structuredClone(snapshot),
     requestCleanup: async () => { calls.push('request-cleanup'); db.state.fenced = true; snapshot.cleanupPending = true },
     async *executionPages() { yield structuredClone([db.state.execution, ...db.state.others.values()]) },
@@ -34,8 +42,11 @@ function fixture(options: Parameters<typeof recoveryDatabase>[0] = {}) {
     manager as unknown as CoordinatorArgs[3], 5_000,
     { revokeForExecution: async () => { calls.push('revoke-credential') } } as unknown as CoordinatorArgs[5],
     undefined, { read: (execution) => readWorkflowClosure(db.connection, execution) } as CoordinatorArgs[7], undefined, undefined, undefined,
-    async (id) => { assert.equal(id, db.state.execution.id); assert.equal(db.state.active, false); calls.push('close-processes'); return true })
-  return { ...db, calls, runs, snapshot, coordinator }
+    async (id) => {
+      if (!recovery.available) return false
+      assert.equal(id, db.state.execution.id); assert.equal(db.state.active, false); calls.push('close-processes'); return true
+    })
+  return { ...db, calls, runs, snapshot, coordinator, recovery }
 }
 
 describe('ENG06-A cold Run and Stop orchestration', () => {
@@ -68,8 +79,7 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
   it('leaves a completed terminal uncertain, not failed, when registry evidence is absent', async () => {
     const f = fixture(); f.state.execution = recoveryExecution('completed'); f.state.fenced = false
     const original = structuredClone(f.state.execution)
-    const internals = f.coordinator as unknown as { recoverNativeProcesses: () => Promise<boolean> }
-    internals.recoverNativeProcesses = async () => false
+    f.recovery.available = false
     await assert.rejects(f.coordinator.requestColdRunCleanup(f.owner), AggregateError)
     assert.deepEqual(f.state.execution, original)
     assert.deepEqual(f.calls, [])
@@ -82,7 +92,6 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
     const f = fixture({ detached }); f.state.execution = recoveryExecution('completed')
     f.state.finalized = true; f.state.fenced = false
     const original = structuredClone(f.state.execution)
-    const internals = f.coordinator as unknown as { recoverNativeProcesses: () => Promise<boolean> }
     try {
       // workflow_finalized_at separates a later reviewer from the original
       // terminal-before-close cut. Selection cannot itself produce a receipt.
@@ -91,13 +100,12 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
       assert.equal(f.snapshot.cleanupPending, true)
       assert.equal(f.state.proof, undefined)
       assert.deepEqual(f.state.execution, original)
-      const recover = internals.recoverNativeProcesses
-      internals.recoverNativeProcesses = async () => false
+      f.recovery.available = false
       await assert.rejects(f.coordinator.cancelRun(f.owner.runId, f.owner), AggregateError)
       assert.equal(f.state.proof, undefined)
       assert.equal(f.calls.includes('retire-reviews'), false)
       assert.equal(f.calls.includes('settle-interrupted'), false)
-      internals.recoverNativeProcesses = recover
+      f.recovery.available = true
       await f.coordinator.cancelRun(f.owner.runId, f.owner)
       assert.ok(await readWorkflowClosure(f.connection, original))
       assert.ok(f.calls.indexOf('retire-reviews') > f.calls.indexOf('close-processes'))

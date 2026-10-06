@@ -39,6 +39,63 @@ function fixture(onBindingLost: (binding: Readonly<DeviceSessionBinding>) => voi
 }
 
 describe('Main original binding-loss callback', () => {
+  it('stops new connection admission while keeping the resident binding and authorized heartbeat alive', async () => {
+    const lost = vi.fn()
+    const f = fixture(lost)
+    const resident = await f.connect()
+    const original = f.endpoint.currentBinding(f.identity.deviceId)!
+    try {
+      f.endpoint.stopAdmission()
+      f.endpoint.stopAdmission()
+      expect(resident.socket.closed).toBe(false)
+      expect(f.endpoint.currentBinding(f.identity.deviceId)).toEqual(original)
+      expect(lost).not.toHaveBeenCalled()
+      await expect(f.endpoint.authenticate({ authorization: 'Bearer original-device' })).rejects.toThrow()
+      const replacement = new Socket()
+      await f.endpoint.accept({ authorization: 'Bearer original-device' }, adaptDeviceSocket(replacement))
+      expect(replacement.closed).toBe(true)
+      expect(resident.socket.closed).toBe(false)
+      resident.socket.frame({ type: 'ping', connectionEpoch: original.connectionEpoch })
+      await flush()
+      expect(resident.socket.sent.at(-1)).toEqual({ type: 'pong', connectionEpoch: original.connectionEpoch })
+      expect(f.endpoint.currentBinding(f.identity.deviceId)).toEqual(original)
+      expect(lost).not.toHaveBeenCalled()
+    } finally {
+      f.endpoint.close()
+      await resident.task
+      await f.endpoint.join()
+    }
+    expect(lost).toHaveBeenCalledExactlyOnceWith(original)
+  })
+
+  it('rejects an authenticated connection ticket issued before admission stopped', async () => {
+    const f = fixture(vi.fn())
+    const ticket = await f.endpoint.authenticate({ authorization: 'Bearer original-device' })
+    f.endpoint.stopAdmission()
+    const socket = new Socket()
+    await f.endpoint.acceptAuthenticated(ticket, adaptDeviceSocket(socket))
+    expect(socket.closed).toBe(true)
+    expect(socket.sent).toEqual([{ type: 'blocked', code: 'authentication' }])
+    expect(f.endpoint.currentBinding(f.identity.deviceId)).toBeUndefined()
+    f.endpoint.close()
+    await f.endpoint.join()
+  })
+
+  it('still revokes the resident binding after admission stops', async () => {
+    const lost = vi.fn()
+    const f = fixture(lost)
+    const resident = await f.connect()
+    const original = f.endpoint.currentBinding(f.identity.deviceId)!
+    f.endpoint.stopAdmission()
+    f.endpoint.revoke(f.identity.deviceId, f.identity.authorizationRevision + 1)
+    expect(resident.socket.closed).toBe(true)
+    expect(f.endpoint.currentBinding(f.identity.deviceId)).toBeUndefined()
+    expect(lost).toHaveBeenCalledExactlyOnceWith(original)
+    await resident.task
+    f.endpoint.close()
+    await f.endpoint.join()
+  })
+
   it('notifies once with the immutable original binding after transport disconnect', async () => {
     const lost = vi.fn(), f = fixture(lost)
     const connection = await f.connect(), original = f.endpoint.currentBinding(f.identity.deviceId)!

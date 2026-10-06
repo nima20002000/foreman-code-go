@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { posix } from 'node:path'
 import type pg from 'pg'
 import { AgentConfigurationVersionSchema, withAdvancedDefaults,
-  type HarnessExecution, type CompatibilityHarness } from '@foreman-code/contracts'
+  type AgentConfigurationVersion, type HarnessExecution, type CompatibilityHarness } from '@foreman-code/contracts'
 import { HostHarnessOverrideSchema } from '@foreman-code/contracts/harness-registry'
-import { type AcceptedNodePlacement, type DispatchIntent } from '@foreman-code/contracts/node-placement'
+import { type AcceptedNodePlacement, type DispatchIntent, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { type RunStartV3Input, sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { readImmutableWorkflowVersion, IMMUTABLE_WORKFLOW_VERSION_COLUMNS, type ImmutableWorkflowVersionRow } from '../workflows/immutableRead.js'
@@ -25,6 +25,7 @@ import { readPlacementHarnessFacts } from './harnessFacts.js'
 import { freezePlacement, deriveDispatch, directoryIdentityHash, placementDigest } from './binding.js'
 import { readAcceptedPlacement, insertDispatchIntent } from './persistence.js'
 import type { RunPlacementAdmissionPort, PreparedRunPlacementAdmission } from './startPort.js'
+import { resolveLocalMainPlacement } from './localMainPlacement.js'
 
 /** Installed main-owned producer: saved immutable versions and W09/W07/HRT
  * authorities supply every pin. No request/Board JSON becomes a runtime grant. */
@@ -47,21 +48,25 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       signal?.throwIfAborted()
       if (!sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) this.conflict()
       const nodes = version.definition.nodes.filter(node => node.kind !== 'job')
-      // Unplaced local workflows keep the original path. Mixed placed/unplaced
-      // Agent nodes cannot fabricate evidence for the unplaced members.
-      if (!nodes.some(node => node.placement)) return undefined
-      const prepared: { pins: Omit<AcceptedNodePlacement, 'runId' | 'bindingHash'>; selection: RegistryHarnessSelection }[] = []
+      if (!nodes.some(node => node.placement || node.artifactOutputs)) return undefined
+      const resolveMain = (sql: GraphTransactionSql, principal: ManagementPrincipal, configuration: AgentConfigurationVersion) =>
+        resolveLocalMainPlacement({ sql, principal, configuration, mainId: this.mainId, workspaceId: input.workspaceId,
+          locationRevision: input.expectedLocationRevision, roots: this.roots, installations: this.registry.installations })
+      const prepared: { pins: Omit<AcceptedNodePlacement, 'runId' | 'bindingHash'>; selection: RegistryHarnessSelection;
+        saved: SavedNodePlacement; configuration: AgentConfigurationVersion; implicit: boolean }[] = []
       for (const node of nodes) {
         signal?.throwIfAborted()
-        const saved = node.placement
+        if (node.placement && (!node.placement.source || !node.placement.rootBinding
+          || node.placement.hostRef.mainId !== this.mainId)) this.conflict()
+        const configRow = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and workspace_id=$2 and agent_id=$3',
+          [version.agentConfigurationVersionIds[node.agentId], input.workspaceId, node.agentId])).rows[0]
+        const config = AgentConfigurationVersionSchema.parse(configRow?.record)
+        const saved = node.placement ?? await resolveMain(sql, principal, config)
         if (saved) this.workerExecution.requireEnabled(saved.hostRef)
         if (saved && (saved.relativeCwd.length > 1024 || saved.relativeCwd.includes('\0') || posix.isAbsolute(saved.relativeCwd)
           || saved.relativeCwd.split('/').some(component => component === '..' || component === '.' || component === '' && saved.relativeCwd !== '')
           || saved.cwdPolicy === 'project-root' && saved.relativeCwd !== '' || saved.cwdPolicy === 'project-subdirectory' && saved.relativeCwd === '')) this.conflict()
         if (!saved?.source || !saved.rootBinding || saved.hostRef.mainId !== this.mainId) this.conflict()
-        const configRow = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and workspace_id=$2 and agent_id=$3',
-          [version.agentConfigurationVersionIds[node.agentId], input.workspaceId, node.agentId])).rows[0]
-        const config = AgentConfigurationVersionSchema.parse(configRow?.record)
         const root = await this.sources.resolveRootBinding(sql, principal, { workspaceId: input.workspaceId, ...saved!.rootBinding!, source: saved!.source! })
         signal?.throwIfAborted()
         if (requiredLocationAccess([config]) === 'read-write' && root.binding.accessMode !== 'exclusive-write') this.conflict()
@@ -78,7 +83,8 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           || !sameWorkflowValue(withAdvancedDefaults(instance.configuration), withAdvancedDefaults(config.harness))
           || instance.driverId !== config.harness.harness) this.conflict()
         const selection = this.registry.pinOverride(instance)
-        prepared.push({ selection, pins: { schemaVersion: 1, mainId: this.mainId, mainInstallationId: this.mainId,
+        prepared.push({ selection, saved, configuration: config, implicit: !node.placement, pins: { schemaVersion: 1, mainId: this.mainId, mainInstallationId: this.mainId,
+          ...(!node.placement ? { labelAtAcceptance: 'Main' } : {}),
           nodeId: node.id, hostRef: saved!.hostRef, registration: root.registration,
           destination: { canonicalProjectRoot: policy.canonicalProjectRoot, canonicalCwd: posix.join(policy.canonicalProjectRoot, saved!.relativeCwd),
             managedRuntimeRoot: policy.managedRuntimeRoot,
@@ -106,15 +112,19 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           const saved = prepared.find(item => item.pins.nodeId === pin.nodeId)
           if (!saved || !sameWorkflowValue(freezePlacement({ ...saved.pins, runId: pin.runId }), pin)) this.conflict()
           this.registry.installations.assertCurrent(saved!.selection)
-          await this.assertPinsCurrent(transaction, pin, await readLiveManagementPrincipal(transaction, principal.id), input.workspaceId)
+          const live = await readLiveManagementPrincipal(transaction, principal.id)
+          if (saved.implicit && !sameWorkflowValue(saved.saved, await resolveMain(transaction, live, saved.configuration))) {
+            this.conflict()
+          }
+          await this.assertPinsCurrent(transaction, pin, live, input.workspaceId)
         } }) }
     }))
   }
-  harnessFacts(sql: GraphTransactionSql, pin: AcceptedNodePlacement) {
-    return readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites)
+  harnessFacts(sql: GraphTransactionSql, pin: AcceptedNodePlacement, options?: { purpose: 'resident' }) {
+    return readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites, options)
   }
   async assertPinsCurrent(sql: GraphSqlClient, pin: AcceptedNodePlacement,
-    principal: ManagementPrincipal, workspaceId: string): Promise<void> {
+    principal: ManagementPrincipal, workspaceId: string, options?: { purpose: 'resident' }): Promise<void> {
     if (!('kind' in pin.source) || pin.source.kind !== 'pending') this.conflict()
     const source = pin.source as Extract<AcceptedNodePlacement['source'], { kind: 'pending' }>
     const root = await this.sources.resolveRootBinding(sql, principal, { workspaceId, rootId: source.rootId,
@@ -123,9 +133,11 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     await this.roots.resolve(sql, principal, { workspaceId, hostRef: pin.hostRef, rootPolicyId: pin.destination.rootPolicyId,
       rootPolicyRevision: pin.destination.rootPolicyRevision, locationRevision: pin.destination.locationRevision })
     if (pin.payload.kind !== 'agent') this.conflict()
-    const instance = await this.readInstance(sql, pin.payload.instanceId)
-    if (!instance.enabled || instance.instanceRevision !== pin.payload.instanceRevision) this.conflict()
-    await readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites)
+    if (options?.purpose !== 'resident') {
+      const instance = await this.readInstance(sql, pin.payload.instanceId)
+      if (!instance.enabled || instance.instanceRevision !== pin.payload.instanceRevision) this.conflict()
+    }
+    await readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites, options)
     const registration = await assertDeviceHostInstallation(sql, pin.hostRef, pin.registration?.workerInstallationId ?? pin.mainInstallationId)
     if (!sameWorkflowValue(registration === null ? null : { workerInstallationId: registration.workerInstallationId,
       keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision }, pin.registration)) this.conflict()

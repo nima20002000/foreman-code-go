@@ -36,14 +36,28 @@ function fixture(host: 'main' | 'device', bound = true) {
   vi.mocked(readDispatchIntent).mockResolvedValue({ executionId: execution.id } as Awaited<ReturnType<typeof readDispatchIntent>>)
   vi.mocked(readNativePlacement).mockResolvedValue(native)
   vi.mocked(readLiveManagementPrincipal).mockResolvedValue({ id: 'principal' } as Awaited<ReturnType<typeof readLiveManagementPrincipal>>)
-  const owner = { assertOwned: vi.fn(), oneShotConnection: () => ({
-    transaction: async (work: (sql: object) => Promise<unknown>) => work({}),
-  }) } as unknown as RunOwnership
+  const state = { sessionVerified: bound, profileChanged: false }
+  const owner = {
+    assertOwned: vi.fn(),
+    runId: run.id,
+    readOneShotFence: vi.fn(async () => ({ ownerId: 'owner', fence: '1' })),
+    oneShotConnection: () => ({
+      transaction: async (work: (sql: object) => Promise<unknown>) => work({
+        query: async () => ({ rows: state.sessionVerified ? [{}] : [], rowCount: state.sessionVerified ? 1 : 0 }),
+      }),
+    }),
+  } as unknown as RunOwnership
   const verifyWorkingDirectory = vi.fn(async () => native.workingTree)
   const sources = { verifyWorkingDirectory, resolveRootBinding: vi.fn(async () => ({})) } as unknown as SourceAdmissionPort
-  const producer = { assertPinsCurrent: vi.fn(async () => {}) } as unknown as AgentPlacementProducer
+  const producer = {
+    assertPinsCurrent: vi.fn(async (...args: Parameters<AgentPlacementProducer['assertPinsCurrent']>) => {
+      if (state.profileChanged && args[4]?.purpose !== 'resident') {
+        throw new Error('Saved profile changed before native entry')
+      }
+    }),
+  } as unknown as AgentPlacementProducer
   const prepare = new AgentExecutionPreparation(sources as ConstructorParameters<typeof AgentExecutionPreparation>[0], producer)
-  return { prepare, owner, run, execution, producer, verifyWorkingDirectory }
+  return { prepare, owner, run, execution, producer, verifyWorkingDirectory, state }
 }
 
 it('can read a bound remote result after the original source process closes and still checks current permission', async () => {
@@ -68,4 +82,32 @@ it('keeps local source verification on continued native observation', async () =
   const prepared = await f.prepare.prepare(f.owner, f.run, f.execution)
   f.verifyWorkingDirectory.mockRejectedValue(new Error('source directory replaced'))
   await expect(prepared!.revalidate()).rejects.toThrow('source directory replaced')
+})
+
+it('continues an original verified remote session after the saved preset changes', async () => {
+  const f = fixture('device')
+  f.state.profileChanged = true
+  const prepared = await f.prepare.prepare(f.owner, f.run, f.execution)
+  await expect(prepared!.revalidate()).resolves.toBeUndefined()
+})
+
+it('does not treat a caller session ID as a verified original session', async () => {
+  const f = fixture('device')
+  f.state.sessionVerified = false
+  f.state.profileChanged = true
+  await expect(f.prepare.prepare(f.owner, f.run, f.execution)).rejects.toThrow('Saved profile changed')
+})
+
+it('requires the current Run owner before continuing a verified original session', async () => {
+  const f = fixture('device')
+  vi.mocked(f.owner.readOneShotFence).mockRejectedValue(new Error('Run owner lost'))
+  await expect(f.prepare.prepare(f.owner, f.run, f.execution)).rejects.toThrow('Run owner lost')
+})
+
+it('rechecks the original session established after initial preparation', async () => {
+  const f = fixture('device', false)
+  const prepared = await f.prepare.prepare(f.owner, f.run, f.execution)
+  f.state.sessionVerified = true
+  f.state.profileChanged = true
+  await expect(prepared!.revalidate()).resolves.toBeUndefined()
 })

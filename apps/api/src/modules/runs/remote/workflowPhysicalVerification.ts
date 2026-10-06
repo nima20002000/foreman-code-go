@@ -2,10 +2,11 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
 import { isDeepStrictEqual } from 'node:util'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
-import { RemoteWorkflowPhysicalReadoutSchema,RemoteWorkflowPhysicalAckSchema, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
+import { RemoteWorkflowPhysicalAckSchema, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
@@ -19,8 +20,11 @@ import type { RunOwnership } from '../ownership.js'
 import { readReconciledDispatchIntent } from './persistence.js'
 import { repeatExecutionIdentity,repeatDigest } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
-import { remoteWorkflowProcessDigest, remoteWorkflowSourceDigest,remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
+import { remoteWorkflowProcessDigest, remoteWorkflowSourceDigest, remoteWorkflowNativeHistory,
+  readPhysicalReadout, hasNativeClosure } from './workflowPhysicalReadout.js'
 import { DomainError } from '../../errors.js'
+import { assertRemoteReviewerReceipt } from '../../placement/remoteReviewerAuthority.js'
+import type { ReviewNativeProofRecord } from '../../interactions/reviewNativeProof.js'
 import { transferContextForBinding } from '../../byte-transfer/carrier.js'
 import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
 import { assertRepeatCanonicalReceiptLocked,requireRepeatCanonicalReceiptBeforeCommit } from '../../run-graph/repeatReceipts.js'
@@ -34,6 +38,7 @@ export interface RemoteWorkflowMainLifetime {
   lifetimeGeneration: number
   closureGeneration: string
   lane: { id: string; token: string; connectionGeneration: number; providerId: string | null } | null
+  review?: { jobId: string; correlationId: string }
   assertCurrent(): void
 }
 /** Descriptor only: the producer's private WeakMap is the authority. */
@@ -48,19 +53,26 @@ interface Prepared {
   placement: AcceptedNodePlacement
   source: WorkflowOriginalNativeSource
   assertCurrent(): void
-  acknowledge(sourceDigest:string):Promise<RemoteWorkflowPhysicalAck>
+  assertAcknowledgmentCurrent(): void
+  acknowledge(sourceDigest:string, options?: { retire: true }):Promise<RemoteWorkflowPhysicalAck>
 }
-interface Bound extends Prepared { owner: RunOwnership; lifetime: RemoteWorkflowMainLifetime;publications:Set<GraphTransactionSql>;replyPublications:Set<GraphTransactionSql>;terminalCapture?:WorkflowNativeCapture }
+interface Bound extends Prepared { owner: RunOwnership; lifetime: RemoteWorkflowMainLifetime;publications:Set<GraphTransactionSql>;replyPublications:Set<GraphTransactionSql>;terminalPublications:Set<GraphTransactionSql>;terminalCapture?:WorkflowNativeCapture }
 const unavailable = (reason: string): never => {
   throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE',
     `Remote native verification failed (${reason}).`, 409, { reason })
 }
 function same(left: unknown, right: unknown) { return isDeepStrictEqual(left, right) }
-function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOriginalNativeSource) {
+function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOriginalNativeSource,
+  placement: AcceptedNodePlacement) {
   const { receipt, session, launch, observation } = readout
-  if (!receipt.native || receipt.native.sessionId !== session.nativeSessionId || session.harness !== 'codex'
+  if (placement.payload.kind !== 'agent' || session.harness !== placement.payload.driverId) {
+    return unavailable('harness_binding')
+  }
+  const launchIntent = readout.launchIntent ?? receipt.intent
+  if (!same({ ...launchIntent, owner: receipt.intent.owner }, receipt.intent)) return unavailable('launch_binding')
+  if (!receipt.native || receipt.native.sessionId !== session.nativeSessionId
     || launch.owner !== `execution:${receipt.intent.executionId}` || launch.bootId !== receipt.connection.bootId
-    || launch.lifecycle !== 'active' || remoteWorkflowProcessDigest(receipt.connection, receipt.intent, launch) !== receipt.native.processIdentityDigest
+    || launch.lifecycle !== 'active' || remoteWorkflowProcessDigest(receipt.connection, launchIntent, launch) !== receipt.native.processIdentityDigest
     || observation.launchId !== launch.launchId || observation.owner !== launch.owner || observation.bootId !== launch.bootId
     || !same(observation.guardian, launch.guardian) || !same(observation.provider, launch.provider) || !same(observation.boundary, launch.boundary)) return unavailable('process_identity')
   if (source.type === 'session_created' && !same(source.session, session)) return unavailable('session_identity')
@@ -68,7 +80,7 @@ function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOr
   if (source.type === 'event' && (!readout.history || !readout.history.events.some(event => same({...event,executionId:receipt.intent.executionId}, source.event)))) return unavailable('event_identity')
   if (receipt.terminal) {
     const terminal = readout.history?.terminalTurn
-    if (!readout.closure || observation.lifecycle !== 'closed' || observation.closureEvidence !== 'cgroup_v2_empty'
+    if (!readout.closure || !hasNativeClosure(observation)
       || !same(readout.closure.launch, observation) || !readout.closure.ownerClosed
       || receipt.terminal.kind === 'not_started'
       || receipt.terminal.closureEvidenceDigest !== commandInputHash({ intent:receipt.intent,native:receipt.native,
@@ -87,7 +99,7 @@ function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOr
     } else if(receipt.terminal.kind!=='cancelled'||!receipt.stopFence||readout.output||(receipt.terminal.artifactDigests?.length??0)!==0)return unavailable('cancellation_closure')
   } else {
     if (readout.output || (readout.closure
-      ? observation.lifecycle !== 'closed' || observation.closureEvidence !== 'cgroup_v2_empty' || !same(readout.closure.launch,observation)
+      ? !hasNativeClosure(observation) || !same(readout.closure.launch,observation)
       : observation.lifecycle !== 'active')) return unavailable('running_process')
   }
 }
@@ -99,6 +111,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
   artifacts?: WorkflowPhysicalArtifactsPort
 }): RemoteNativePhysicalVerification & {
   passiveNativeOwner(original: VerifiedRemoteOriginalSource): PassiveRemoteNativeOwner | undefined
+  confirmedClosed(prepared: PreparedRemoteWorkflowPhysical, session: NativeSessionReference): boolean
   prefetch(receipt: RemoteOperationReceipt, placement: AcceptedNodePlacement, source: WorkflowOriginalNativeSource, signal?: AbortSignal): Promise<PreparedRemoteWorkflowPhysical>
   bind(original: VerifiedRemoteOriginalSource, prepared: PreparedRemoteWorkflowPhysical, owner: RunOwnership, lifetime: RemoteWorkflowMainLifetime): void
   /** Caller invokes only after durable canonical publication, outside G1. */
@@ -113,6 +126,14 @@ export function createRemoteWorkflowPhysicalVerification(input: {
   const histories = new Map<string, Prepared>()
   const terminals=new WeakMap<WorkflowNativeCapture,{original:VerifiedRemoteOriginalSource;capture:Bound;proof:WorkflowNativeProofRecord;sql:GraphTransactionSql}>()
   return {
+    confirmedClosed(value, session) {
+      const captured = prepared.get(value)
+      if (!captured) return unavailable('uncaptured_closure')
+      captured.assertCurrent()
+      const { readout } = captured
+      return same(readout.session, session) && readout.closure?.ownerClosed === true
+        && hasNativeClosure(readout.observation) && same(readout.closure.launch, readout.observation)
+    },
     async prefetch(receipt, placement, source, signal) {
       signal?.throwIfAborted()
       if (placement.hostRef.kind !== 'device' || !placement.registration || !receipt.native) return unavailable('remote_placement')
@@ -127,37 +148,60 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         && same(retained.placement, placement) && same(retained.binding, captured.binding)
         && retained.expiresAt > Date.now()) {
         retained.assertCurrent()
-        assertSource(retained.readout, source)
+        assertSource(retained.readout, source, placement)
         const result = Object.freeze({ kind: 'original-remote-physical' as const })
         prepared.set(result, { ...retained, source: structuredClone(source) })
         return result
       }
       let expiresAt=Date.now()+60_000
-      const assertCurrent = () => {
+      let rebootClosed = false
+      const assertRegisteredConnection = () => {
         signal?.throwIfAborted()
         const current = endpoint.currentBinding(placement.hostRef.kind === 'device' ? placement.hostRef.deviceId : '')
         if (expiresAt<=Date.now()||!current || !same(current, captured.binding)
           || !same(DeviceConnectionIdentitySchema.parse({mainId:current.mainId,deviceId:current.deviceId,
             workerInstallationId:current.workerInstallationId,keyRevision:current.keyRevision,authorizationRevision:current.authorizationRevision,
-            bootId:current.bootId,connectionGeneration:current.connectionGeneration}), receipt.connection)) return unavailable('connection_expired')
+            bootId:receipt.connection.bootId,connectionGeneration:receipt.connection.connectionGeneration}), receipt.connection)) return unavailable('connection_expired')
       }
-      assertCurrent()
+      const assertCurrent = () => {
+        assertRegisteredConnection()
+        if (captured.binding.bootId !== receipt.connection.bootId && !rebootClosed) return unavailable('boot_changed')
+      }
+      assertRegisteredConnection()
       const reply = await captured.request({ method: 'physical-readout', intent: receipt.intent, placement,
         receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source) }, signal ? { signal } : {})
       if (reply.bytes !== undefined) return unavailable('readout_binary')
-      const readout = RemoteWorkflowPhysicalReadoutSchema.parse(reply.payload)
+      const readout = await readPhysicalReadout(reply.payload, async metadata => {
+        assertRegisteredConnection()
+        const next = await captured.request({ method: 'physical-readout', intent: receipt.intent, placement,
+          receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source), metadata }, signal ? { signal } : {})
+        assertRegisteredConnection()
+        if (next.bytes !== undefined) return unavailable('readout_binary')
+        return next.payload
+      }, signal)
       expiresAt=Math.min(expiresAt,Date.parse(readout.expiresAt))
-      assertCurrent()
       if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
-      assertSource(readout, source)
+      assertSource(readout, source, placement)
+      rebootClosed = Boolean(receipt.terminal && readout.closure?.ownerClosed
+        && readout.observation.closureEvidence === 'linux_boot_changed'
+        && same(readout.closure.launch, readout.observation))
+      assertCurrent()
+      const assertAcknowledgmentCurrent = () => {
+        const current = endpoint.currentBinding(captured.binding.deviceId)
+        if (expiresAt <= Date.now() || signal?.aborted || current && !same(current, captured.binding)) {
+          throw new DomainError('REMOTE_NATIVE_ACK_OBSOLETE',
+            'The captured physical observation can no longer authorize an acknowledgment.', 409)
+        }
+        assertCurrent()
+      }
       const result = Object.freeze({ kind: 'original-remote-physical' as const })
-      const observation: Prepared = { expiresAt, binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent,
-        acknowledge:async(sourceDigest)=>{
-          assertCurrent()
-          const reply=await captured.request({method:'physical-ack',intent:receipt.intent,placement,receiptSequence:receipt.sequence,sourceDigest},signal?{signal}:{})
+      const observation: Prepared = { expiresAt, binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent, assertAcknowledgmentCurrent,
+        acknowledge:async(sourceDigest, options)=>{
+          assertAcknowledgmentCurrent()
+          const reply=await captured.request({method:'physical-ack',intent:receipt.intent,placement,receiptSequence:receipt.sequence,sourceDigest,...options},signal?{signal}:{})
           if(reply.bytes!==undefined)return unavailable('ack_binary')
           const ack=RemoteWorkflowPhysicalAckSchema.parse(reply.payload)
-          assertCurrent()
+          assertAcknowledgmentCurrent()
           if(ack.operationId!==receipt.intent.operationId||ack.receiptSequence!==receipt.sequence||ack.sourceDigest!==sourceDigest)return unavailable('ack_identity')
           return ack
         } }
@@ -188,7 +232,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         previous.lifetime.assertCurrent();return
       }
       bound.set(original, { ...capture, owner, lifetime:{...lifetime,execution:structuredClone(lifetime.execution),session:structuredClone(lifetime.session),
-        lane:lifetime.lane?structuredClone(lifetime.lane):null},publications:new Set(),replyPublications:new Set() })
+        lane:lifetime.lane?structuredClone(lifetime.lane):null},publications:new Set(),replyPublications:new Set(),terminalPublications:new Set() })
     },
     passiveNativeOwner(original) {
       const capture = bound.get(original)
@@ -197,7 +241,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       const assertCurrent = () => {
         if (bound.get(original) !== capture) return unavailable('passive_owner')
         capture.owner.assertOwned(); original.assertCurrent(); capture.assertCurrent(); capture.lifetime.assertCurrent()
-        assertSource(capture.readout, original.source)
+        assertSource(capture.readout, original.source, capture.placement)
       }
       try { assertCurrent() } catch { return undefined }
       return { nativeOwner: capture.readout.launch.owner, native: structuredClone(capture.readout.receipt.native),
@@ -206,14 +250,18 @@ export function createRemoteWorkflowPhysicalVerification(input: {
     async acknowledge(original) {
       const capture=bound.get(original)
       if(!capture||![...capture.publications].some(didGraphTransactionCommit))return unavailable('uncommitted_publication')
+      capture.assertAcknowledgmentCurrent()
       original.assertCurrent();capture.assertCurrent()
-      return capture.acknowledge(original.sourceDigest)
+      return capture.acknowledge(original.sourceDigest,
+        [...capture.terminalPublications].some(didGraphTransactionCommit) ? { retire: true } : undefined)
     },
     async acknowledgeReply(original) {
       const capture=bound.get(original)
       if(!capture?.readout.history||![...capture.replyPublications].some(didGraphTransactionCommit))return unavailable('uncommitted_history')
+      capture.assertAcknowledgmentCurrent()
       original.assertCurrent();capture.assertCurrent()
-      return capture.acknowledge(remoteWorkflowSourceDigest({type:'history',history:remoteWorkflowNativeHistory(capture.readout.history)}))
+      return capture.acknowledge(remoteWorkflowSourceDigest({type:'history',history:remoteWorkflowNativeHistory(capture.readout.history)}),
+        [...capture.terminalPublications].some(didGraphTransactionCommit) ? { retire: true } : undefined)
     },
     async artifactTerminalContext(sql,owner,original,capture,proof) {
       assertGraphTransaction(sql)
@@ -241,7 +289,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         terminals.set(capture,retained)
         actual.terminalCapture=capture
         requireRepeatCanonicalReceiptBeforeCommit(sql,{scope:proof.scope,evidence:{sourceKind:'native_event',sourceId:proof.proofId,sourceRevision:'1'},
-          sourceDigest:repeatDigest(proof,4*1024*1024),effect:null})
+          sourceDigest:repeatDigest(proof,REMOTE_NATIVE_SOURCE_LIMIT),effect:null})
         beforeGraphCommit(sql,()=>assertTerminal(sql,owner,capture,retained,false))
         return transferContextForBinding(actual.binding)
       }catch(error){poisonGraphTransaction(sql);throw error}
@@ -280,7 +328,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       const row=(await sql.query<{record:WorkflowNativeProofRecord;source_digest:string}>(
         'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 and execution_id=$3 for share',
         [proof.proofId,proof.scope.runId,captured.execution.id])).rows[0]
-      if(!row||!same(row.record,proof)||row.source_digest!==repeatDigest(proof,4*1024*1024))return unavailable('terminal_proof')
+      if(!row||!same(row.record,proof)||row.source_digest!==repeatDigest(proof,REMOTE_NATIVE_SOURCE_LIMIT))return unavailable('terminal_proof')
       await assertBound(sql,owner,retained.original,true)
       if(committed){
         const execution=(await sql.query<{record:unknown}>('select record from harness_executions where id=$1 and run_id=$2 for share',
@@ -306,10 +354,16 @@ export function createRemoteWorkflowPhysicalVerification(input: {
             ||!same(original.verified.receipt,receipt)||!same(original.source,capture.source)
             ||original.sourceDigest!==remoteWorkflowSourceDigest(capture.source))return unavailable('published_capture')
         }else{original.assertCurrent();capture.assertCurrent();lifetime.assertCurrent()}
-        assertSource(readout,original.source)
+        assertSource(readout,original.source,capture.placement)
       }
       check()
       const current = await readReconciledDispatchIntent(sql, intent.operationId, true)
+      if (readout.launchIntent) {
+        const originalDispatch = (await sql.query<{ record: unknown }>(
+          'select record from execution_dispatch_intents where operation_id=$1 for share', [intent.operationId])).rows[0]
+        if (!originalDispatch || !same(originalDispatch.record, readout.launchIntent)) return unavailable('launch_dispatch')
+      }
+      if (lifetime.review) await assertRemoteReviewerReceipt(sql, receipt)
       const placement = await readAcceptedPlacement(sql, intent.runId, intent.nodeId)
       const rawNative = await readNativePlacement(sql, intent.executionId)
       if (!current || !placement || !rawNative || !same(current, intent) || !same(placement, capture.placement)) return unavailable('dispatch_binding')
@@ -388,8 +442,11 @@ export function createRemoteWorkflowPhysicalVerification(input: {
           || lane.native_session_id !== readout.session.nativeSessionId) return unavailable('writer_lane_session')
         if (lane.token !== lifetime.lane.token && !releasedAfterClosure) return unavailable('writer_lane_token')
         if (lane.generation !== String(lifetime.lane.connectionGeneration)) return unavailable('writer_lane_generation')
-        if (lane.correlation !== `execution:${intent.executionId}`) return unavailable('writer_lane_correlation')
-        if (receipt.native?.turnId !== undefined && lane.provider_id !== receipt.native.turnId) {
+        const correlation = lifetime.review?.correlationId ?? `execution:${intent.executionId}`
+        const providerId = lifetime.review
+          ? receipt.reviewTurns?.find(turn => turn.assignment.jobId === lifetime.review!.jobId)?.providerId : receipt.native?.turnId
+        if (lane.correlation !== correlation) return unavailable('writer_lane_correlation')
+        if (providerId !== undefined && lane.provider_id !== providerId) {
           return unavailable('writer_lane_receipt_turn')
         }
         if (lifetime.lane.providerId !== null && lane.provider_id !== lifetime.lane.providerId) {
@@ -401,14 +458,34 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       // Publication is acknowledged only after this exact original was retained
       // by the existing canonical writer AND its owning transaction committed.
       const proofs=await sql.query<{record:WorkflowNativeProofRecord}>(`select record from workflow_native_proofs
-        where execution_id=$1 and run_id=$2 and record->'original'=$3::jsonb limit 1`, [intent.executionId,intent.runId,canonicalGraphJson(original.source,4*1024*1024)])
+        where execution_id=$1 and run_id=$2 and record->'original'=$3::jsonb limit 1`,
+        [intent.executionId,intent.runId,canonicalGraphJson(original.source,REMOTE_NATIVE_SOURCE_LIMIT)])
       if(proofs.rows.some(row=>row.record.execution.executionId===intent.executionId&&same(row.record.session,readout.session)
         &&same(row.record.original,original.source)))capture.publications.add(sql)
+      if (lifetime.review) {
+        const records = await sql.query<{ record: ReviewNativeProofRecord }>(`select record from review_native_proofs
+          where execution_id=$1 and run_id=$2 and job_id=$3`, [intent.executionId, intent.runId, lifetime.review.jobId])
+        const matches = records.rows.some(({ record }) => {
+          let source: WorkflowOriginalNativeSource = { type: 'boundary' }
+          if (record.original.type === 'event') source = { type: 'event', event: { ...record.original.event, executionId: intent.executionId } }
+          if (record.original.type === 'history') source = { type: 'history', history: record.original.history }
+          return record.job.correlationId === lifetime.review!.correlationId
+            && same(record.session, readout.session) && same(source, original.source)
+        })
+        if (matches) capture.publications.add(sql)
+      }
+      // Source publication may precede the execution's terminal update. Only
+      // the transaction that sees the matching saved result may retire the Worker.
+      if (capture.publications.has(sql) && execution.data.state === 'completed' && receipt.terminal
+        && (receipt.terminal.result ? same(execution.data.result, receipt.terminal.result)
+          : receipt.terminal.kind === 'cancelled' && execution.data.result?.outcome === 'canceled')) {
+        capture.terminalPublications.add(sql)
+      }
       if(readout.history) {
         const sources:WorkflowOriginalNativeSource[]=readout.history.events.map(event=>({type:'event',event:{...event,executionId:intent.executionId}}))
         const events=await sql.query<{original:WorkflowOriginalNativeSource}>(`select record->'original' as original from workflow_native_proofs
           where execution_id=$1 and run_id=$2 and record->'original'=any($3::jsonb[])`,
-          [intent.executionId,intent.runId,sources.map(source=>canonicalGraphJson(source,4*1024*1024))])
+          [intent.executionId,intent.runId,sources.map(source=>canonicalGraphJson(source,REMOTE_NATIVE_SOURCE_LIMIT))])
         if(sources.every(source=>events.rows.some(row=>same(row.original,source)))&&capture.publications.has(sql))capture.replyPublications.add(sql)
       }
       check()

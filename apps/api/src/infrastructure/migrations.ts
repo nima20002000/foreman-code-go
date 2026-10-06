@@ -30,6 +30,9 @@ import { jobRuntimeNativeAdmissionMigration } from './jobRuntimeNativeAdmissionM
 import { remoteNativeArtifactOutputMigration } from './remoteNativeArtifactOutputMigration.js'
 import { remoteNativeArtifactContextMigration } from './remoteNativeArtifactContextMigration.js'
 import { remoteOwnerControlAdmissionMigration } from './remoteOwnerControlAdmissionMigration.js'
+import { sourceCleanupLeaseMigration } from './sourceCleanupLeaseMigration.js'
+import { hostHarnessMeasurementsMigration } from './hostHarnessMeasurementsMigration.js'
+import { remoteControlGenerationMigration } from './remoteControlGenerationMigration.js'
 import { jobPreparationDeadlineMigration } from './jobPreparationDeadlineMigration.js'
 import { jobRunCleanupMigration } from './jobRunCleanupMigration.js'
 import { jobAcceptedIdentityMigration } from './jobAcceptedIdentityMigration.js'
@@ -829,6 +832,9 @@ export const migrations = [
   remoteNativeArtifactOutputMigration,
   remoteOwnerControlAdmissionMigration,
   remoteNativeArtifactContextMigration,
+  remoteControlGenerationMigration,
+  hostHarnessMeasurementsMigration,
+  sourceCleanupLeaseMigration,
   compactCommandActivityMigration,
   runSubagentsMigration,
   jobAdmissionQueueMigration,

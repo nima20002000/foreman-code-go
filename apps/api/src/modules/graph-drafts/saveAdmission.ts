@@ -72,7 +72,8 @@ const currentNative = `(
     or (e.record->>'nativeSessionId' is not null and not exists (
       select 1 from execution_native_sessions s
       where s.execution_id=e.id and s.reference->>'nativeSessionId'=e.record->>'nativeSessionId'
-        and e.record->>'workingDirectory'=r.working_directory
+        and e.record->>'workingDirectory'=coalesce((select placement.record#>>'{workingTree,canonicalCwd}'
+          from execution_native_placements placement where placement.execution_id=e.id),r.working_directory)
         and s.reference->>'harness'=(select cfg.record->'harness'->>'harness' from agent_configuration_versions cfg
           where cfg.id=e.record->>'agentConfigurationVersionId' and cfg.workspace_id=r.workspace_id and cfg.agent_id=e.agent_id)
         and jsonb_typeof(s.reference->'providerVersion')='string' and length(s.reference->>'providerVersion')>0

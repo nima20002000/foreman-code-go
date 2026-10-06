@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { CodexRuntimeNativeOutputTurn, codexNativeOutputDeclarations, type CodexNativeOutputs,
   type CodexNativeOutputCallback, type CodexNativeOutputTurnPin } from '../src/modules/harnesses/codexNativeOutput.js'
 import { ActivityProductionReplay } from './helpers/activityProductionReplay.js'
@@ -70,6 +71,35 @@ describe('separate Codex native output group alongside scoped App MCP', () => {
     } finally { await f.manager.dispose() }
   })
 
+  it('detects the recorded legacy MCP entry through named configuration reads', async () => {
+    const f = await fixture()
+    try {
+      const detection = await f.manager.inspectMcp()
+      assert.equal(detection.serverName, 'graphql')
+      assert.equal(detection.state, 'status_unavailable')
+      assert.equal(detection.endpointMatches, true)
+    } finally { await f.manager.dispose() }
+  })
+
+  it('reconciles an observed terminal after output cleanup closes its provider without starting a replacement', async () => {
+    const f = await fixture()
+    try {
+      const session = await f.manager.createSession(f.source)
+      const iterator = f.manager.startTurn(session, { prompt: 'Recorded output', clientCorrelationId: 'original-output',
+        onSubmitted: async () => {} })[Symbol.asyncIterator]()
+      await iterator.next()
+      const turn = f.replay.starts[0]!.nativeTurnId
+      f.replay.complete(session.nativeSessionId, turn, '{"original":true}')
+      f.replay.disconnect(session.nativeSessionId)
+      await iterator.return?.()
+      const starts = f.replay.calls.filter(call => call.method === 'thread/start' || call.method === 'thread/resume').length
+      const history = await f.manager.reconcile(session, 'original-output')
+      assert.equal(history.terminalTurn?.providerId, turn)
+      assert.deepEqual(history.terminalTurn?.result, { outcome: 'succeeded', output: { text: '{"original":true}' } })
+      assert.equal(f.replay.calls.filter(call => call.method === 'thread/start' || call.method === 'thread/resume').length, starts)
+      assert.equal(f.replay.starts.length, 1)
+    } finally { await f.manager.dispose() }
+  })
   it('requires genuine qualification before a native thread start or tool declaration', async () => {
     const f = await fixture({ qualified: false })
     try {
@@ -84,7 +114,8 @@ describe('separate Codex native output group alongside scoped App MCP', () => {
       for (const sandbox of ['read-only', 'danger-full-access'] as const) {
         f.config.sandbox = sandbox
         delete f.config.advanced!.workspaceWrite
-        await assert.rejects(f.manager.createSession(f.source), /no promotion/)
+        await assert.rejects(f.manager.createSession(f.source), (error: unknown) =>
+          error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_NATIVE_OUTPUT_UNQUALIFIED')
         assert.throws(() => codexNativeOutputDeclarations(f.config, 'codex-cli 0.154.0'))
       }
       assert.throws(() => new CodexAppServerSessionManager('/unused', undefined, undefined, undefined, 'scoped',

@@ -1,7 +1,15 @@
 import type pg from 'pg'
+import type { GraphSqlClient } from '../../run-graph/connection.js'
 import { type CompatibilityHarness } from '@foreman-code/contracts'
 import { HarnessQualificationSchema, type HarnessQualification } from '@foreman-code/contracts/harness-qualification'
 import { HostHarnessProfileEvidenceSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
+
+export async function readHostHarnessMeasurements(sql: GraphSqlClient, harness: CompatibilityHarness,
+  binarySha256: string, suiteRevision: string): Promise<{ qualification: HarnessQualification; evidence: unknown }[]> {
+  const result = await sql.query(`select qualification,evidence from host_harness_measurements
+    where harness=$1 and binary_sha256=$2 and suite_revision=$3 for share`, [harness, binarySha256, suiteRevision])
+  return result.rows.map(row => ({ qualification: HarnessQualificationSchema.parse(row.qualification), evidence: row.evidence }))
+}
 
 export class HarnessQualificationRepository {
   constructor(private readonly pool: pg.Pool) {}
@@ -34,15 +42,21 @@ export class HarnessQualificationRepository {
   }
 
   async save(record: HarnessQualification, evidence: Record<string, unknown> = {}, client?: pg.ClientBase): Promise<void> {
-    await (client ?? this.pool).query(`insert into harness_qualifications
+    await (client ?? this.pool).query(`with saved as (insert into harness_qualifications
       (harness, version, binary_sha256, suite_revision, profile, status, checks, evidence, failure_reason, started_at, checked_at)
       values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11)
       on conflict (harness, version, binary_sha256, suite_revision) do update set
       profile=excluded.profile, status=excluded.status, checks=excluded.checks, evidence=excluded.evidence,
-      failure_reason=excluded.failure_reason, started_at=excluded.started_at, checked_at=excluded.checked_at`, [
+      failure_reason=excluded.failure_reason, started_at=excluded.started_at, checked_at=excluded.checked_at
+      returning evidence)
+      insert into host_harness_measurements(identity_hash,harness,binary_sha256,suite_revision,qualification,evidence)
+      select encode(sha256(convert_to((evidence->'qualificationIdentity')::text,'utf8')),'hex'),
+        $1,$3,$4,$12::jsonb,evidence from saved
+      where jsonb_typeof(evidence->'qualificationIdentity')='object'
+      on conflict(identity_hash) do update set qualification=excluded.qualification,evidence=excluded.evidence`, [
       record.harness, record.version, record.binarySha256, record.suiteRevision, record.profile,
       record.status === 'qualified' ? 'passed' : record.status, JSON.stringify(record.checks), JSON.stringify(evidence),
-      record.failureReason, record.startedAt, record.checkedAt,
+      record.failureReason, record.startedAt, record.checkedAt, JSON.stringify(record),
     ])
   }
 

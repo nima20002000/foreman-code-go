@@ -23,7 +23,9 @@ import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-exe
 export interface SelectedMainMcpForward {
   /** Existing selected main's MCP transports, with this exact worker bearer;
    * never browser cookies, Operator secrets or another worker's loopback app. */
-  request(body: unknown, token: string, protocolVersion?: string): Promise<{ statusCode: number; contentType: 'application/json' | 'text/event-stream' | 'empty'; body: string }>
+  request(body: unknown, token: string, protocolVersion?: string, signal?: AbortSignal): Promise<{
+    statusCode: number; contentType: 'application/json' | 'text/event-stream' | 'empty'; body: string
+  }>
 }
 export type NativeOutputRequest = Extract<WorkerMcpRelayRequest, { operation: 'worker-mcp.authorize-native-output' }>
 export type NativeOutputDeclarationsRequest = Extract<WorkerMcpRelayRequest, { operation: 'worker-mcp.authorize-native-output-declarations' }>
@@ -69,7 +71,8 @@ export class MainWorkerMcpRelay {
   constructor(private readonly mainId: string, private readonly pool: pg.Pool,
     private readonly access: Pick<PostgresAccessService, 'authenticate'>, private readonly forward: SelectedMainMcpForward,
     private readonly nativeOutputs?: WorkerNativeOutputAuthorizationPort) {}
-  async handle(raw: unknown, connection: DeviceConnectionIdentity) {
+  async handle(raw: unknown, connection: DeviceConnectionIdentity, signal?: AbortSignal) {
+    signal?.throwIfAborted()
     const input = WorkerMcpRelayRequestSchema.parse(raw), app = input.applicationAccess
     const principal = await this.access.authenticate(app.token, 'worker')
     if (principal.audience !== 'worker' || principal.agentId !== app.agentId || input.placement.payload.kind !== 'agent'
@@ -160,6 +163,7 @@ export class MainWorkerMcpRelay {
           }
         }
       }
+      signal?.throwIfAborted()
       await client.query('commit')
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
     if (input.operation === 'worker-mcp.authorize') return authorization
@@ -170,7 +174,10 @@ export class MainWorkerMcpRelay {
     if (input.operation === 'worker-mcp.native-output-readiness') return WorkerNativeOutputReadinessSchema.parse({
       ...authorization, nativeSessionId: input.nativeSessionId, turnId: input.turnId, ready,
     })
-    return WorkerMcpRelayResponseSchema.parse(await this.forward.request(input.body, app.token, input.protocolVersion))
+    signal?.throwIfAborted()
+    return WorkerMcpRelayResponseSchema.parse(await this.forward.request(
+      input.body, app.token, input.protocolVersion, signal,
+    ))
   }
 }
 
@@ -183,7 +190,8 @@ const artifactToolPaths = new Map([
 /** Uses the existing selected main app instance and authentication path. It
  * exposes no new listener and never forwards cookies or an Operator bearer. */
 export function selectedMainMcpForward(app: import('fastify').FastifyInstance): SelectedMainMcpForward {
-  return { async request(body, token, protocolVersion) {
+  return { async request(body, token, protocolVersion, signal) {
+    signal?.throwIfAborted()
     const request = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : undefined
     const params = request?.params && typeof request.params === 'object' && !Array.isArray(request.params)
       ? request.params as Record<string, unknown> : undefined
@@ -198,7 +206,8 @@ export function selectedMainMcpForward(app: import('fastify').FastifyInstance): 
     else if (host === '::') host = '::1'
     const authority = `${host.includes(':') ? `[${host}]` : host}:${address.port}`
     const response = await fetch(`http://${authority}${url}`, {
-      method: 'POST', body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(30_000), headers: {
+      method: 'POST', body: JSON.stringify(body), redirect: 'error',
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000), headers: {
       authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json',
       ...(protocolVersion ? { 'mcp-protocol-version': protocolVersion } : {}),
     } })

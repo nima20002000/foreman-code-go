@@ -25,7 +25,9 @@ export class HarnessCatalogService {
   /** Run once after native runtime ownership is acquired. No model turn is created. */
   async warmup(): Promise<void> {
     const managed = await this.settings.getManagedHarnessDefaults()
-    await Promise.allSettled((['codex', 'opencode', 'claude'] as const).flatMap((harness) => managed.defaults[harness] ? [this.qualifyConfiguration(managed.defaults[harness]!)] : []))
+    const unavailable = new Set(managed.unavailable ?? [])
+    await Promise.allSettled((['codex', 'opencode', 'claude'] as const).flatMap((harness) =>
+      managed.defaults[harness] && !unavailable.has(harness) ? [this.qualifyConfiguration(managed.defaults[harness]!)] : []))
   }
 
   private async inspectConfiguration(value: HarnessConfiguration) {
@@ -57,13 +59,16 @@ export class HarnessCatalogService {
   async list(principal: ManagementPrincipal) {
     requireAuthorization(principal, 'harnesses:read')
     const managed = await this.settings.getManagedHarnessDefaults()
-    return Promise.all((['codex', 'opencode', 'claude'] as const).filter((harness) => managed.defaults[harness] !== undefined).map((harness) => this.describe(principal, harness, managed.defaults, managed.revision)))
+    const unavailable = new Set(managed.unavailable ?? [])
+    return Promise.all((['codex', 'opencode', 'claude'] as const).filter((harness) => managed.defaults[harness] !== undefined)
+      .map((harness) => this.describe(principal, harness, managed.defaults, managed.revision, unavailable)))
   }
 
   async get(principal: ManagementPrincipal, harness: AgentHarness) {
     requireAuthorization(principal, 'harnesses:read')
     const managed = await this.settings.getManagedHarnessDefaults()
-    return this.describe(principal, harness, managed.defaults, managed.revision)
+    const unavailable = new Set(managed.unavailable ?? [])
+    return this.describe(principal, harness, managed.defaults, managed.revision, unavailable)
   }
 
   /** Native model/variant/Agent qualification shared by every defaults writer. No turn is started. */
@@ -76,11 +81,17 @@ export class HarnessCatalogService {
     return { configuration, ...await this.inspectConfiguration(configuration) }
   }
 
-  private async describe(principal: ManagementPrincipal, harness: AgentHarness, defaults: HarnessDefaults, revision: number) {
+  private async describe(principal: ManagementPrincipal, harness: AgentHarness, defaults: HarnessDefaults, revision: number,
+    unavailable: ReadonlySet<AgentHarness>) {
     requireAuthorization(principal, 'harnesses:read')
     const configuration = defaults[harness]
     if (!configuration) throw new DomainError('HARNESS_PROFILE_REQUIRED', 'Save a Claude preset with an actual host-local profile, model, authentication and sandbox choice in Claude settings. Installation alone does not create this app configuration.', 409)
     const support = harness === 'codex' ? { interactionSupport: structuredClone(CODEX_INTERACTION_SUPPORT) } : {}
+    if (unavailable.has(harness)) {
+      return { harness, defaults: configuration, defaultsRevision: revision, capability: null, ...support,
+        discoveryError: { code: 'HARNESS_MODEL_DEFAULT_UNAVAILABLE',
+          message: 'No default model is configured. Choose a native model in Settings.' } }
+    }
     try {
       const capability = await this.qualifyConfiguration(configuration)
       return { harness, defaults: configuration, defaultsRevision: revision, capability, discoveryError: null, ...support }
@@ -93,7 +104,7 @@ export class HarnessCatalogService {
   }
 
   async updateDefaults(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
-    commandId: string; expectedRevision: number; defaults: HarnessDefaults
+    commandId: string; expectedRevision: number; defaults: HarnessDefaults; configure?: AgentHarness[] | undefined
   }) {
     requireAuthorization(principal, 'harnesses:update')
     const defaults = HarnessDefaultsSchema.parse(input.defaults)
@@ -102,17 +113,23 @@ export class HarnessCatalogService {
       targetKey: 'harness-defaults', payload: input,
       perform: async (client) => {
         const current = await this.settings.getManagedHarnessDefaults(client)
+        const unavailable = new Set(current.unavailable ?? [])
+        const configure = new Set(input.configure ?? [])
         if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409)
         for (const harness of ['codex', 'opencode', 'claude'] as const) {
           const next = defaults[harness], previous = current.defaults[harness]
-          if (!next || (previous && isDeepStrictEqual(withAdvancedDefaults(previous), withAdvancedDefaults(next)))) continue
+          if (!next && configure.has(harness)) throw new DomainError('HARNESS_PROFILE_REQUIRED',
+            'Choose a complete preset before selecting its default.', 409)
+          if (!next || (previous && !configure.has(harness)
+            && isDeepStrictEqual(withAdvancedDefaults(previous), withAdvancedDefaults(next)))) continue
           // Claude presets are configuration templates, like unqualified host
           // overrides. Exact-host proof is required separately at admission;
           // the model-free defaults checker cannot produce that native proof.
-          if (harness === 'claude') continue
-          await this.qualifyConfiguration(next)
+          if (harness !== 'claude') await this.qualifyConfiguration(next)
+          unavailable.delete(harness)
         }
-        return this.settings.updateManagedHarnessDefaults(client, defaults, input.expectedRevision)
+        return this.settings.updateManagedHarnessDefaults(client, defaults, input.expectedRevision,
+          { unavailable: [...unavailable].sort() })
       },
     })
   }

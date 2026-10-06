@@ -48,6 +48,11 @@ function fixture() {
   const query = vi.fn(async (sql: string) => {
     if (sql.includes('from harness_instance_settings')) return { rows: [{ record: override }] }
     if (sql.includes('from harness_instance_profile_evidence')) return { rows: [{ record: proof }] }
+    if (sql.includes('from host_harness_measurements')) return { rows: records.map(row => ({
+      evidence: row.evidence, qualification: { harness: row.harness, version: row.version, binarySha256: row.binary_sha256,
+        suiteRevision: row.suite_revision, profile: row.profile, status: 'qualified', checks: row.checks,
+        failureReason: row.failure_reason, startedAt: row.started_at.toISOString(), checkedAt: row.checked_at.toISOString() },
+    })) }
     return { rows: records }
   })
   const placement: Pick<AcceptedNodePlacement, 'hostRef' | 'payload'> = { hostRef, payload: {
@@ -55,9 +60,9 @@ function fixture() {
     instanceId, instanceRevision: '1', harnessInstallationId: installation.harnessInstallationId,
     installationFingerprint: fingerprint, runtimeContractVersion: 1, protocolRevision: installation.protocolRevision, credentialScopeRefs: [],
   } }
-  const read = () => readPlacementHarnessFacts({ query } as unknown as GraphSqlClient, placement, installations,
-    { codex: suiteRevision, opencode: 'unused' })
-  return { read, installations, records, proof, evidence }
+  const read = (options?: { purpose: 'resident' }) => readPlacementHarnessFacts(
+    { query } as unknown as GraphSqlClient, placement, installations, { codex: suiteRevision, opencode: 'unused' }, options)
+  return { read, installations, records, proof, evidence, override }
 }
 
 it('admits passive inventory only with its exact measured binary and qualified profile', async () => {
@@ -66,6 +71,13 @@ it('admits passive inventory only with its exact measured binary and qualified p
   expect(facts.installation.observedVersion).toBe('0.154.0')
   expect(facts.profileProof).toMatchObject({ authenticated: true, compatible: true, qualified: true })
   expect(f.installations.list()[0]?.observedVersion).toBeNull()
+})
+
+it('identifies a missing Main binary measurement without exposing private qualification data', async () => {
+  const f = fixture()
+  f.records.length = 0
+  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
+    details: { reason: 'main_qualification_identity_missing', hostKind: 'main' } })
 })
 
 it.each(['payload', 'generation', 'host', 'missing', 'profile', 'suite-check'] as const)(
@@ -84,3 +96,40 @@ it.each(['payload', 'generation', 'host', 'missing', 'profile', 'suite-check'] a
     await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
   },
 )
+
+it('retains original qualification for a surviving process across transport reconnection only', async () => {
+  const f = fixture()
+  f.installations.refresh(f.installations.list().map(installation => ({
+    ...installation, connectionGeneration: 'replacement-channel',
+  })))
+  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+  const facts = await f.read({ purpose: 'resident' })
+  expect(facts.installation.connectionGeneration).toBe('replacement-channel')
+  expect(facts.profileProof.connectionGeneration).toBe('connection')
+  expect(facts.qualification.status).toBe('qualified')
+})
+
+it.each(['environment', 'installation', 'payload', 'disabled'])('keeps %s checks for an existing process', async defect => {
+  const f = fixture()
+  const installation = { ...f.installations.list()[0]!, connectionGeneration: 'replacement-channel' }
+  if (defect === 'environment') installation.environmentGeneration = 'changed'
+  if (defect === 'installation') installation.installationFingerprint = 'changed'
+  if (defect === 'payload') installation.launcher = { ...installation.launcher,
+    payloadFingerprints: [{ path: '/installed/codex', fingerprint: 'b'.repeat(64) }] }
+  if (defect === 'disabled') f.override.enabled = false
+  f.installations.refresh([installation])
+  await expect(f.read({ purpose: 'resident' })).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+})
+
+it.each([true, false])('uses the latest measurement after a native instance revision changes, passed=%s', async passed => {
+  const f = fixture()
+  const newer = structuredClone(f.records[0]!)
+  newer.evidence.qualificationIdentity.selection = {
+    ...newer.evidence.qualificationIdentity.selection, instanceRevision: '2',
+  }
+  newer.checked_at = new Date(newer.checked_at.getTime() + 1_000)
+  newer.checks[0]!.passed = passed
+  f.records.push(newer)
+  if (passed) expect((await f.read()).qualification.checkedAt).toBe(newer.checked_at.toISOString())
+  else await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+})

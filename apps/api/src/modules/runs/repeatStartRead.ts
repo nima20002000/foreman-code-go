@@ -58,19 +58,24 @@ function readAcceptedRepeatRun(sql: GraphTransactionSql, runId: string,
       || typeof row.stopped !== 'boolean' || typeof row.cleanup_pending !== 'boolean') {
       throw new DomainError('RUN_PIN_CONFLICT', 'The accepted v3 Run differs from its physical scope/location/state.', 409)
     }
-    const versions = await sql.query<ImmutableWorkflowVersionRow>(
-      `select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS} from workflow_versions where id=$1 and workspace_id=$2 and workflow_id=$3 for share`,
-      [run.workflowVersionId, run.workspaceId, run.workflowId])
-    if (versions.rows.length !== 1 || !versions.rows[0]) throw new DomainError('RUN_PIN_CONFLICT', 'The immutable Run version is missing.', 409)
-    const version = readImmutableWorkflowVersion(versions.rows[0], { id: run.workflowVersionId, workspaceId: run.workspaceId, workflowId: run.workflowId })
+    const related = (await sql.query<{ versions: ImmutableWorkflowVersionRow[]; configurations: ImmutableAgentConfigurationRow[] }>(
+      `with pinned_version as materialized (
+        select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS} from workflow_versions
+        where id=$1 and workspace_id=$2 and workflow_id=$3 for share
+      ), pinned_configurations as materialized (
+        select id,workspace_id,agent_id,version,record from agent_configuration_versions
+        where workspace_id=$2 and id=any($4::text[]) and exists(select 1 from pinned_version)
+        order by id for share
+      ) select coalesce((select json_agg(v) from pinned_version v),'[]'::json) as versions,
+        coalesce((select json_agg(c order by c.id) from pinned_configurations c),'[]'::json) as configurations`,
+      [run.workflowVersionId, run.workspaceId, run.workflowId, Object.values(run.agentConfigurationVersionIds)])).rows[0]!
+    if (related.versions.length !== 1 || !related.versions[0]) throw new DomainError('RUN_PIN_CONFLICT', 'The immutable Run version is missing.', 409)
+    const version = readImmutableWorkflowVersion(related.versions[0], { id: run.workflowVersionId, workspaceId: run.workspaceId, workflowId: run.workflowId })
     if (!('executionSemanticsVersion' in version) || version.executionSemanticsVersion !== 3) {
       throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'A v3 Run cannot execute a legacy/one-shot version.', 409)
     }
     SavedRunVersionSnapshotSchema.parse({ run, version })
-    const rows = await sql.query<ImmutableAgentConfigurationRow>(
-      'select id,workspace_id,agent_id,version,record from agent_configuration_versions where workspace_id=$1 and id=any($2::text[]) order by id for share',
-      [run.workspaceId, Object.values(run.agentConfigurationVersionIds)])
-    const configurations = rows.rows.map((configuration) => readImmutableAgentConfiguration(configuration, {
+    const configurations = related.configurations.map((configuration) => readImmutableAgentConfiguration(configuration, {
       id: run.agentConfigurationVersionIds[configuration.agent_id]!, workspaceId: run.workspaceId, agentId: configuration.agent_id,
     }))
     ExecutableWorkflowV3Schema.parse({ version, configurations })

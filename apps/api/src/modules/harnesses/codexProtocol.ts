@@ -82,7 +82,7 @@ export async function codexBinaryIdentity(binary: string): Promise<string> {
   return canonical(await Promise.all(paths.map(codexExecutableIdentity)))
 }
 
-export async function assertCodexUnchanged(qualified: QualifiedCodex): Promise<void> {
+export async function assertCodexUnchanged(qualified: Pick<QualifiedCodex, 'binary' | 'identity'>): Promise<void> {
   if (await codexBinaryIdentity(qualified.binary) !== qualified.identity) {
     throw new HarnessExecutionError('CODEX_EXECUTABLE_CHANGED', 'Codex changed during qualification; qualify the replacement before launch.')
   }

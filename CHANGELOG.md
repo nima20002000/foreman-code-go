@@ -5,6 +5,44 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Claude and OpenCode workflows across two computers remain untested. The available laptop provider logins support Codex only.
+
+### Added
+
+- Remote Orchestrator review turns on the original native session, with authenticated assignment and decision readback.
+- Native artifact production, sealing, publication and Agent-to-Agent transfer for Main and installed Codex/OpenCode workers.
+- Worker build targets for Ubuntu 24.04 and 26.04 x64 with Node 22.23.2, retaining exact OS, libc and runtime checks.
+
+### Changed
+
+- Resolve unplaced Agents to authorized Main source, root and harness choices when a workflow has an explicit remote placement; retain every accepted node placement in the Run.
+- Match saved Agents and qualified host presets using their shared effective settings while preserving omitted Advanced fields in immutable Agent versions.
+- Page native history and large results, archive settled review payloads and rotate acknowledgment retries fairly.
+
+### Fixed
+
+- Keep each computer's native qualification independent when multiple hosts check the same installed binary.
+- Deliver approvals on the initial native connection and retain response history after the provider process closes.
+- Finish source cleanup after the original native finalizer and use cleanup read authority without renewing model-tool access.
+- Preserve original execution, process and journal ownership through reconnects, Main restart, worker crashes and credential renewal.
+- Continue verified original sessions after a host preset changes while retaining latest enabled settings for new launches.
+- Keep retained remote Orchestrator source claims active until the original process closes, preserving ownership and storage accounting during review turns.
+- Retain the original scoped Worker credential atomically when an Orchestrator finishes its initial turn, preserving authenticated review access through credential cleanup.
+- Start and recover fully placed Agent workflows using their accepted host directories while preserving the workspace selection and authorization checks.
+- Keep scoped cancellation available on saturated channels and retry original approval responses only when non-delivery is proven.
+- Initialize and recover worker output stores automatically; serialize budgets and reuse released reservation capacity.
+- Keep Main available when a native catalog cannot select an automatic default model, persist its unavailable state and expose it through Settings and Operator MCP.
+- Let an operator select one native preset while other harnesses remain unavailable, retaining native checks, revisions and idempotent retries.
+- Forward explicit native acceptance file selections through the queued root command.
+- Reduce native publication database reads by reusing validated records for one frame and combining fresh source, entry, receipt and lifetime queries; retain all ownership and commit checks.
+
+### Security
+
+- Retain sandbox permissions, scoped credentials, assignment checks and owner fences across local and remote artifact and review paths.
+- Preserve kernel-backed native closure evidence and revalidate authenticated reconnects without authorizing replacement launches.
+
 ## [0.0.46] - 2026-10-06
 
 ### Added

@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { test } from 'vitest'
-import { HarnessExecutionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type NativeHarnessEvent, type NativeSessionLane, type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
+import { test, vi } from 'vitest'
+import { DEFAULT_HARNESS_DEFAULTS, HarnessExecutionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type NativeHarnessEvent, type NativeSessionLane, type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { freezePlacement, deriveDispatch } from '../src/modules/placement/binding.js'
+import { RemoteExecutionHost, type RemoteExecutionHostPorts } from '../src/modules/runs/remote/executionHost.js'
+import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
+import { RemoteNativeSessionManager } from '../src/modules/runs/remote/nativeManagerProxy.js'
 
 import { DomainError } from '../src/modules/errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } from '../src/modules/harnesses/port.js'
@@ -95,12 +103,22 @@ class CoordinationFake {
   }
   async appendReviewNativeEvent(job: ReviewJob, event: NativeHarnessEvent,
     options: { writer?: WriterFence; nativeCapture?: ReviewNativeCapture }) {
+    this.publishEvents(job, [event], options)
+  }
+  async appendReviewNativeHistory(job: ReviewJob, events: NativeHarnessEvent[],
+    options: { writer?: WriterFence; nativeCapture?: ReviewNativeCapture }) {
+    this.publishEvents(job, events, options)
+  }
+  private publishEvents(job: ReviewJob, events: NativeHarnessEvent[],
+    options: { writer?: WriterFence; nativeCapture?: ReviewNativeCapture }) {
     const source = this.readCapture(options.nativeCapture, job, options.writer)
     const originals = source.type === 'event' ? [source.event] : source.type === 'history' ? source.history.events : []
-    assert.ok(originals.some((original) => isDeepStrictEqual(event,
-      normalizeNativeProducerEvent({ ...original, executionId: this.context.executionId }).event)),
-    'Projected event must come from the exact captured original event/history')
-    this.nativeEvents.push(clone(event))
+    for (const event of events) {
+      assert.ok(originals.some((original) => isDeepStrictEqual(event,
+        normalizeNativeProducerEvent({ ...original, executionId: this.context.executionId }).event)),
+      'Projected event must come from the exact captured original event/history')
+      this.nativeEvents.push(clone(event))
+    }
   }
 
   asRepository() { return this as unknown as PostgresInteractionCoordinationRepository }
@@ -233,6 +251,7 @@ function fixture(ms = 30_000) {
     close: async () => undefined,
   } as unknown as NativeHarnessSessionManager
   const runtime: ReviewerNativeRuntime = {
+    withInteractionOwner: (_interaction, signal, work) => work(signal),
     attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }),
     captureReviewNative: coordination.captureNative,
   }
@@ -242,6 +261,242 @@ function fixture(ms = 30_000) {
 async function enqueue(f: ReturnType<typeof fixture>) {
   return f.dispatcher.enqueue(interaction, 'reviewer', session, f.coordination.context)
 }
+
+for (const source of ['callback', 'event'] as const) test(`persists the reviewer turn from its ${source} before native proof capture`, async () => {
+  const f = fixture()
+  const capturedTurns: Array<string | undefined> = []
+  f.runtime.captureReviewNative = (executionId, reference, job, lane, original) => {
+    if (original.type === 'event' && original.event.type === 'turn.started') {
+      capturedTurns.push(f.coordination.lane.currentTurnOrMessageId)
+    }
+    return f.coordination.captureNative(executionId, reference, job, lane, original)
+  }
+  f.manager.startTurn = async function* (_reference, input) {
+    if (source === 'callback') await input.onSubmitted?.('native-turn')
+    yield startEvent(input.clientCorrelationId)
+    f.coordination.pending = false
+    yield endEvent()
+  }
+  await enqueue(f)
+  await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.deepEqual(capturedTurns, ['native-turn'])
+})
+
+test('publishes the reviewer acknowledgement after native proof becomes available', async () => {
+  const f = fixture()
+  const transition = f.coordination.transitionReviewJob.bind(f.coordination)
+  f.coordination.transitionReviewJob = async (id, token, state, fields) => {
+    const result = await transition(id, token, state, fields)
+    if (state === 'acknowledged' && f.coordination.nativeEvents.length === 0) {
+      // Production defers public acknowledgement until the original native event is committed.
+      f.coordination.job = { ...result, state: 'submitted' }
+      delete f.coordination.job.acknowledgedAt
+      return clone(f.coordination.job)
+    }
+    return result
+  }
+  f.manager.startTurn = async function* (_reference, input) {
+    await input.onSubmitted?.('native-turn')
+    yield startEvent(input.clientCorrelationId)
+    f.coordination.pending = false
+    yield endEvent()
+  }
+  await enqueue(f)
+  const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+  assert.ok(result?.acknowledgedAt)
+})
+
+async function remoteReviewerFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'remote-reviewer-'))
+  const path = join(root, 'journal')
+  let journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true })
+  const coordination = new CoordinationFake()
+  const digest = 'a'.repeat(64)
+  const mainId = randomUUID(), deviceId = randomUUID(), workerInstallationId = randomUUID()
+  const configuration = { id: 'reviewer-config', agentId: 'reviewer', workspaceId: interaction.workspaceId, version: 1,
+    productRole: 'orchestrator' as const, prompt: { system: 'Review assigned interactions' }, assignedSkills: [],
+    harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'read-only' as const },
+    contentHash: `sha256:${digest}`, createdAt: new Date().toISOString() }
+  const placement = freezePlacement({ schemaVersion: 1, mainId, mainInstallationId: mainId,
+    runId: interaction.runId, nodeId: 'orchestrator', hostRef: { kind: 'device', mainId, deviceId },
+    registration: { workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+    source: { revisionId: 'source', manifestDigest: digest, materializationId: 'source-tree', materializationDigest: digest },
+    destination: { canonicalProjectRoot: '/accepted', canonicalCwd: '/accepted', managedRuntimeRoot: '/runtime',
+      directoryIdentityHash: digest, rootPolicyId: 'root', rootPolicyRevision: '1', locationRevision: '1',
+      attestationId: 'attestation', attestationHash: digest },
+    payload: { kind: 'agent', agentId: 'reviewer', agentConfigurationVersionId: configuration.id,
+      driverId: 'codex', driverRevision: '1', instanceId: 'instance', instanceRevision: '1',
+      harnessInstallationId: 'codex', installationFingerprint: digest, protocolRevision: '1',
+      runtimeContractVersion: 1, credentialScopeRefs: [] } })
+  const intent = deriveDispatch(placement, { executionId: coordination.context.executionId,
+    occurrenceId: null, occurrenceIndex: 0, technicalAttempt: 1, attemptId: 'attempt', operationId: 'operation',
+    inputDigest: `sha256:${createHash('sha256').update(canonicalGraphJson({})).digest('hex')}`,
+    owner: { grantId: 'grant', epoch: '1' } })
+  const request = { executionId: intent.executionId, runId: intent.runId, workspaceId: interaction.workspaceId,
+    workflowNodeId: intent.nodeId, workingDirectory: '/accepted', runtimeDirectory: `/runtime/${intent.executionId}`, configuration, input: {} }
+  const state = { workflows: 0, reviews: 0, decisions: 0, creates: 0, closed: false, disconnect: false, parked: false }
+  let release!: () => void
+  const resumed = new Promise<void>(resolve => { release = resolve })
+  const histories = new Map<string, NativeHistory>()
+  const events: NativeHarnessEvent[] = []
+  let activeCorrelation = `execution:${intent.executionId}`
+  const native: NativeHarnessSessionManager = {
+    harness: 'codex', capabilities: async () => { throw new Error('Unused discovery') },
+    inspectMcp: async () => { throw new Error('Unused inspection') },
+    createSession: async () => { state.creates++; return session }, attachSession: async () => session,
+    startTurn: async function* (_session, input) {
+      activeCorrelation = input.clientCorrelationId
+      const workflow = input.clientCorrelationId === `execution:${intent.executionId}`
+      if (workflow) state.workflows++; else state.reviews++
+      const providerId = workflow ? 'workflow-turn' : 'native-turn'
+      await input.onSubmitted?.(providerId)
+      const started = { ...event('turn.started', { threadId: session.nativeSessionId, turnId: providerId,
+        clientCorrelationId: input.clientCorrelationId }), sequence: events.length }
+      events.push(started)
+      histories.set(activeCorrelation, { events, pendingInteractions: [], correlationId: activeCorrelation, nativeTurnId: providerId })
+      yield started
+      if (!workflow) {
+        if (state.parked) await resumed
+        state.decisions++
+        coordination.pending = false
+        coordination.delivered = true
+      }
+      const ended = { ...event('turn/completed', { threadId: session.nativeSessionId,
+        turn: { id: providerId, status: 'completed' } }), sequence: events.length }
+      events.push(ended)
+      histories.set(activeCorrelation, { events, pendingInteractions: [], correlationId: activeCorrelation,
+        nativeTurnId: providerId, nextSequence: events.length,
+        terminalTurn: { correlationId: activeCorrelation, providerId, result: { outcome: 'succeeded', output: { reviewed: !workflow } } } })
+      yield ended
+    },
+    history: async () => histories.get(activeCorrelation) ?? history(),
+    reconcile: async (_session, correlation) => clone(histories.get(correlation) ?? history()),
+    pending: async () => undefined, respond: async () => { throw new Error('Reviewer cannot approve its own native request') },
+    cancel: async () => { release(); return false }, close: async () => { state.closed = true }, dispose: async () => {},
+  }
+  const { ExecutionScopedNativeSessionManagerResolver } = await import('../src/modules/interactions/runtimePorts.js')
+  const managers = new ExecutionScopedNativeSessionManagerResolver(() => native)
+  const ports: RemoteExecutionHostPorts = { journal, managers, incarnationId: randomUUID(),
+    connection: { mainId, deviceId, workerInstallationId, bootId: randomUUID(), keyRevision: 1,
+      authorizationRevision: 1, connectionGeneration: 1 },
+    authorize: async (pin, saved) => { assert.deepEqual(pin, intent); assert.deepEqual(saved, placement) },
+    authorizeReview: async (_intent, _placement, review) => {
+      await coordination.assertReviewConnection()
+      await coordination.assertReviewJobLease(review.jobId, review.leaseToken)
+      assert.equal(coordination.lane.correlationId, review.correlationId)
+      assert.equal(review.correlationId, coordination.job!.correlationId)
+      assert.equal(review.interactionId, coordination.job!.interactionId)
+      assert.equal(review.reviewerAgentId, 'reviewer')
+      assert.deepEqual(review.session, session)
+    },
+    attestRuntimeLeaf: async () => ({ executionId: intent.executionId, attemptId: intent.attemptId,
+      operationId: intent.operationId, bindingHash: intent.bindingHash, canonicalRuntimeDirectory: request.runtimeDirectory,
+      directoryIdentityHash: digest, materializationId: 'source-tree', materializationDigest: digest }),
+    preflight: async () => {}, nativeEvidence: async () => ({ sessionId: session.nativeSessionId, processIdentityDigest: digest }),
+    verifyRecovery: async (receipt, reference, proof) => {
+      assert.equal(proof, digest)
+      assert.equal(receipt.native?.sessionId, reference.nativeSessionId)
+      assert.equal(state.closed, false)
+    },
+    settle: async (_intent, observed) => {
+      const status = await journal.status(intent.operationId)
+      if (status.status !== 'known') throw new Error('Original journal unavailable')
+      if (status.receipt.stopFence) { await native.close(session); return { kind: 'cancelled', closureEvidenceDigest: digest } }
+      await journal.retainReviewer(intent.operationId, { agentId: 'reviewer', expiresAt: new Date(Date.now() + 60_000).toISOString() }, observed)
+      return null
+    },
+  }
+  let host = new RemoteExecutionHost(ports)
+  const proxy = () => new RemoteNativeSessionManager({ intent, placement, harness: 'codex', configuration,
+    transport: { request: (method, frame) => {
+      if (state.disconnect && method === 'history' && state.reviews) throw new Error('Review channel disconnected')
+      return host.handle(frame)
+    } }, observeReceipt: async () => {},
+    controlFor: async ({ native: target }) => ({ schemaVersion: 1, protocolVersion: 1, commandId: 'run-end',
+      operationId: intent.operationId, attemptId: intent.attemptId, executionId: intent.executionId,
+      bindingHash: intent.bindingHash, owner: intent.owner, native: target, action: { kind: 'stop' } }) })
+  let manager = proxy()
+  await manager.createSession({ request, correlationId: activeCorrelation })
+  for await (const _event of manager.startTurn(session, { prompt: 'Initialize the Orchestrator', clientCorrelationId: activeCorrelation })) { void _event }
+  await host.drain()
+  const runtime: ReviewerNativeRuntime = { captureReviewNative: coordination.captureNative,
+    withInteractionOwner: (_interaction, signal, work) => work(signal),
+    attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }),
+    prepareReviewTurn: async (_executionId, reference, job) => manager.prepareReview(reference, job) }
+  const dispatcher = new ReviewerDispatcher(coordination.asRepository(), runtime)
+  return { state, coordination, dispatcher, get manager() { return manager }, get journal() { return journal },
+    request, intent, placement, release,
+    async restart() {
+      await host.drain()
+      await journal.close()
+      journal = await RemoteOperationJournal.open(path)
+      ports.journal = journal
+      host = new RemoteExecutionHost(ports)
+      await host.recover({ intent, placement, request, session, evidenceDigest: digest })
+      manager = proxy()
+      await manager.attachSession(session, { request, correlationId: `execution:${intent.executionId}` })
+    },
+    async close() {
+      release()
+      await dispatcher.shutdown()
+      await host.drain()
+      await journal.close()
+      await rm(root, { recursive: true, force: true })
+    } }
+}
+
+test('remote workflow settlement retains its Orchestrator for an assigned review and delivered decision', async () => {
+  const f = await remoteReviewerFixture()
+  try {
+    assert.equal(f.state.closed, false)
+    assert.deepEqual([f.state.workflows, f.state.reviews, f.state.decisions], [1, 0, 0])
+    await f.dispatcher.enqueue(interaction, 'reviewer', session, f.coordination.context)
+    const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+    assert.equal(result?.state, 'completed')
+    assert.equal(f.coordination.delivered, true)
+    assert.deepEqual([f.state.creates, f.state.workflows, f.state.reviews, f.state.decisions], [1, 1, 1, 1])
+    assert.equal(f.state.closed, false)
+    await f.manager.close(session)
+    assert.equal(f.state.closed, true)
+    const status = await f.journal.status(f.intent.operationId)
+    assert.equal(status.status === 'known' && status.receipt.phase, 'confirmed_terminal')
+  } finally { await f.close() }
+})
+
+test('review reconnect and host restart observe the original submitted turn without another native submission', async () => {
+  const f = await remoteReviewerFixture()
+  try {
+    await f.dispatcher.enqueue(interaction, 'reviewer', session, f.coordination.context)
+    f.state.parked = true
+    f.state.disconnect = true
+    const first = await f.dispatcher.dispatchNext('reviewer', 'before-reconnect')
+    assert.equal(first?.state, 'uncertain')
+    assert.equal(f.state.reviews, 1)
+    f.state.disconnect = false
+    f.release()
+    await f.restart()
+    delete f.coordination.job!.retryAfter
+    const recovered = await f.dispatcher.dispatchNext('reviewer', 'after-restart')
+    assert.equal(recovered?.state, 'completed')
+    assert.equal(f.state.creates, 1)
+    assert.equal(f.state.reviews, 1)
+    assert.equal(f.state.decisions, 1)
+    await assert.rejects(f.manager.reconcile(session, 'unassigned-correlation'))
+  } finally { await f.close() }
+})
+
+test('denied remote review authority leaves the retained owner unchanged and starts no review', async () => {
+  const f = await remoteReviewerFixture()
+  try {
+    await f.dispatcher.enqueue(interaction, 'reviewer', session, f.coordination.context)
+    f.coordination.graphAllowed = false
+    await assert.rejects(f.dispatcher.dispatchNext('reviewer', 'denied'), { code: 'INTERACTION_ACCESS_DENIED' })
+    assert.equal(f.state.reviews, 0)
+    assert.equal(f.state.decisions, 0)
+    assert.equal(f.state.closed, false)
+    assert.equal(f.request.configuration.harness.sandbox, 'read-only')
+  } finally { await f.close() }
+})
 
 test('rejects an unconnected request before persisting or dispatching a review', async () => {
   const f = fixture(); f.coordination.graphAllowed = false
@@ -258,6 +513,43 @@ test('rechecks topology on recovery before claiming an older queued review', asy
   assert.equal(f.counts().attached, 0)
 })
 
+
+test('settles terminal review history before repeated publication expires its physical observation', async () => {
+  let now = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+  try {
+    const f = fixture(900_000)
+    const events = Array.from({ length: 8 }, (_, sequence) => ({ ...event('item/started'), sequence }))
+    events.push({ ...endEvent(), sequence: 8 })
+    f.manager.reconcile = async () => history(events)
+    const capturedAt = new Map<ReviewNativeCapture, number>()
+    const capture = f.runtime.captureReviewNative
+    f.runtime.captureReviewNative = (...args) => {
+      const value = capture(...args)
+      if (args[4].type === 'history') capturedAt.set(value, now)
+      return value
+    }
+    const append = f.coordination.appendReviewNativeEvent.bind(f.coordination)
+    f.coordination.appendReviewNativeEvent = async (job, event, options) => {
+      const observedAt = options.nativeCapture && capturedAt.get(options.nativeCapture)
+      if (observedAt !== undefined) {
+        now += 10_000
+        if (now - observedAt >= 60_000) throw new Error('Original physical observation expired')
+      }
+      await append(job, event, options)
+    }
+    await enqueue(f)
+    const completed = await f.dispatcher.dispatchNext('reviewer', 'worker')
+    assert.equal(completed?.state, 'completed')
+    assert.equal(f.counts().started, 1)
+    for (const event of events) {
+      assert.ok(f.coordination.nativeEvents.some(projected => projected.sequence === event.sequence
+        && projected.type === normalizeNativeProducerEvent({ ...event, executionId: f.coordination.context.executionId }).event.type))
+    }
+  } finally {
+    clock.mockRestore()
+  }
+})
 
 test('post-delivery disconnect remains recoverable and only matching terminal history completes it', async () => {
   const f = fixture(); await enqueue(f)
@@ -558,6 +850,7 @@ for (const state of ['submitted', 'acknowledged', 'uncertain', 'blocked_disconne
       leaseExpiresAt: new Date(Date.now() - 100).toISOString(), leaseToken: 'old' }
     f.coordination.pending = false
     f.coordination.lane.observedStatus = 'uncertain'
+    f.coordination.lane.correlationId = job.correlationId
     f.manager.reconcile = async (_session, correlation) => {
       assert.equal(correlation, job.correlationId)
       return history([startEvent(job.correlationId), endEvent()])

@@ -31,6 +31,14 @@ describe('actual Agent admission contracts and private upstream authorizer',()=>
   it('rejects forged entry permits in an authority request',()=>{expect(ExecutionAuthorityRequestSchema.safeParse({version:1,action:'start',intent,placement:pin,permit:true}).success).toBe(false)})
   it('saves explicit approved source/root pins',()=>{expect(SavedNodePlacementSchema.parse({schemaVersion:1,hostRef:pin.hostRef,rootPolicyId:'policy',rootPolicyRevision:'1',locationRevision:'1',projectRoot:'/project',cwdPolicy:'project-root',relativeCwd:'',instanceId:'instance',instanceRevision:'1',harnessInstallationId:'harness',source:{approvedSourceId:mainId,snapshotId:mainId,manifestDigest:digest},rootBinding:{rootId:mainId,bindingRevision:1}}).source?.snapshotId).toBe(mainId)})
   it('uses only the authenticated namespace with exact echoed identities',async()=>{const authorize=workerExecutionAuthorizer(async(namespace,input)=>{expect(namespace).toBe('execution-authority-v1');expect(ExecutionAuthorityRequestSchema.parse(input).intent).toEqual(intent);return{payload:{version:1,action:'read',operationId:intent.operationId,attemptId:intent.attemptId,bindingHash:intent.bindingHash,owner:intent.owner}}});await authorize(intent,pin,'read')})
+  it.each(['read', 'stop', 'start', 'control'] as const)('keeps cleanup-only authority limited to observations and Stop: %s', async action => {
+    const authorize = workerExecutionAuthorizer(async () => ({ payload: { version: 1, action,
+      operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash,
+      owner: intent.owner, cleanupOnly: true } }))
+    if (action === 'read' || action === 'stop') {
+      await expect(authorize(intent, pin, action)).resolves.toEqual({ cleanupOnly: true })
+    } else await expect(authorize(intent, pin, action)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+  })
   it('rejects mismatched owner and binary authority responses',async()=>{const response={version:1,action:'start',operationId:intent.operationId,attemptId:intent.attemptId,bindingHash:intent.bindingHash,owner:intent.owner};await expect(workerExecutionAuthorizer(async()=>({payload:{...response,owner:{grantId:'forged',epoch:'1'}}}))(intent,pin,'start')).rejects.toThrow();await expect(workerExecutionAuthorizer(async()=>({payload:response,bytes:new Uint8Array([1])}))(intent,pin,'start')).rejects.toThrow()})
 })
 
@@ -58,4 +66,9 @@ function producerFixture(placed: boolean) {
   return {producer,input:RunStartV3InputSchema.parse({workspaceId:version.workspaceId,workflowId:version.workflowId,workflowVersionId:version.id,expectedAgentConfigurationVersionIds:version.agentConfigurationVersionIds,commandId:'command-one',executionSemanticsVersion:3,expectedWorkflowRevision:1,expectedLocationRevision:1,input:{}}),principal:{id:'principal',name:'test',audience:'operator' as const,grants:[],expiresAt:'2099-01-01T00:00:00Z',revokedAt:null}}
 }
 it('real producer preserves unplaced local admission without source/resource allocation',async()=>{const f=producerFixture(false);expect(await f.producer.prepare(f.input,f.principal)).toBeUndefined()})
-it('real producer rejects a placed node without explicit retained source/root pins',async()=>{const f=producerFixture(true);await expect(f.producer.prepare(f.input,f.principal)).rejects.toMatchObject({code:'PLACEMENT_ADMISSION_CONFLICT'})})
+it('rejects an explicitly placed node without an approved source and root', async () => {
+  const f = producerFixture(true)
+  await expect(f.producer.prepare(f.input, f.principal)).rejects.toMatchObject({
+    code: 'PLACEMENT_ADMISSION_CONFLICT',
+  })
+})

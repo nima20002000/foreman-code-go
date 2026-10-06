@@ -86,9 +86,13 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
     const f = fixture()
     let child: ChildProcessWithoutNullStreams | undefined
     try {
-      for (let index = 0; index < 10_005; index += 1) seedClosed(f.directory, randomUUID(), index < 3)
+      const ids = Array.from({ length: 10_005 }, () => randomUUID())
+      for (const [index, id] of ids.entries()) seedClosed(f.directory, id, index < 3)
       assert.equal(await f.registry.closeOwner(owner), true)
-      assert.deepEqual(readdirSync(f.directory), ['retired.json'])
+      const reopened = new NativeProcessRegistry(f.root)
+      for (const id of [ids[0]!, ids.at(-1)!]) {
+        assert.equal(reopened.closedRegistration(owner, id)?.lifecycle, 'closed')
+      }
       assert.equal(await f.registry.closeOwner(owner), true)
       child = spawnNativeProcess(process.execPath, ['-e', 'process.exit(0)'], { cwd: f.root, env: {}, recovery: f.scope })
       child.stdout.resume(); child.stderr.resume()

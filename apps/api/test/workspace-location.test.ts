@@ -97,4 +97,28 @@ describe('local runner workspace location validation', () => {
       workspaceId: 'workspace-1', runnerId: 'runner-local', rootPath: runtime, accessMode: 'read-only',
     })).rejects.toMatchObject({ code: 'WORKSPACE_LOCATION_RUNTIME_OVERLAP' })
   })
+
+  it('records a placed Run location without treating a remote path as a local directory', async () => {
+    const { locations } = service()
+    const row = {
+      execution_location: { runnerId: 'runner-remote', rootPath: '/remote/project' },
+      execution_location_identity: { device: '1', inode: '2' },
+      location_revision: '3', archived_at: null,
+    }
+    const client = { query: async () => ({ rows: [row] }) } as unknown as pg.PoolClient
+    await expect(locations.snapshotAssigned(client, 'workspace-1', 3)).resolves.toMatchObject({
+      ...row.execution_location, locationRevision: 3,
+    })
+    await expect(locations.snapshot(client, 'workspace-1', 3, 'read-only'))
+      .rejects.toMatchObject({ code: 'RUNNER_UNSUPPORTED' })
+    await expect(locations.snapshotAssigned(client, 'workspace-1', 2))
+      .rejects.toMatchObject({ code: 'LOCATION_REVISION_CONFLICT' })
+  })
+
+  it('rejects an archived workspace even when all execution directories are placed', async () => {
+    const { locations } = service()
+    const client = { query: async () => ({ rows: [{ archived_at: new Date() }] }) } as unknown as pg.PoolClient
+    await expect(locations.snapshotAssigned(client, 'workspace-1', 1))
+      .rejects.toMatchObject({ code: 'PARENT_ARCHIVED' })
+  })
 })

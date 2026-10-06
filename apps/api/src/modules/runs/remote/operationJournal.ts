@@ -1,11 +1,16 @@
 import { open, readFile, rename, mkdir, unlink, stat } from 'node:fs/promises'
-import type { FileHandle } from 'node:fs/promises'
-import { constants, openSync, closeSync, fstatSync, lstatSync, readFileSync, unlinkSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { randomUUID } from 'node:crypto'
-import { bootIdentity, identityAlive, processIdentity } from '../../harnesses/recovery/linuxIdentity.js'
+import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { remoteActiveNative, RemoteReviewerAssignmentSchema, RemoteReviewerTurnSchema,
+  type RemoteReviewerAssignment } from '@foreman-code/contracts/remote-execution'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { RemoteNativeHistorySchema, REMOTE_NATIVE_SOURCE_LIMIT,
+  REMOTE_PHYSICAL_CONTINUATION_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
+import { encodeResultCopies, decodeResultCopies, historyResultPaths } from './executionResultCodec.js'
+import { remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
+import type { NativeHistory } from '../../harnesses/port.js'
 import { DispatchIntentSchema, type DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { JobLogChunkSchema, type JobLogChunk } from '@foreman-code/contracts/jobs'
 import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
@@ -25,79 +30,86 @@ import { jobSupervisorIdentity } from '../../jobs/executor.js'
 import { QualificationReceiptSchema, QualificationOCICertificateSchema, qualificationCleanupCommandAllowed, qualificationCreationFailed, qualificationCreationStopped,
   QUALIFICATION_COMMAND_LIMIT, QUALIFICATION_CLEANUP_COMMAND_LIMIT,
   type QualificationReceipt } from '../../jobs/qualificationJournal.js'
+import { acquireJournalOwner } from './journalOwner.js'
+import { hasPositiveRemoteEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 
-const JournalSchema = z.object({ schemaVersion: z.literal(1), jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptRecordSchema])),
-  reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobOutputs: z.array(z.object({ operationId: z.string(), commandId: z.uuid(), path: z.string(), mediaType: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().nonnegative() }).strict()).default([]), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
+const ControlDeliverySchema = z.object({
+  operationId: z.string(), commandId: z.string(), phase: z.enum(['reserved', 'entered', 'acknowledged']),
+}).strict()
+const ArchivedWorkflowSchema = z.object({
+  operationId: z.string(), executionId: z.string(), attemptId: z.string(), receiptDigest: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict()
+const JournalSchema = z.object({
+  schemaVersion: z.literal(1),
+  archivedWorkflows: z.array(ArchivedWorkflowSchema).default([]),
+  controlDeliveries: z.array(ControlDeliverySchema).default([]),
+  jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]),
+  qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]),
+  receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptRecordSchema])),
+  reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128),
+  jobOutputs: z.array(z.object({
+    operationId: z.string(), commandId: z.uuid(), path: z.string(), mediaType: z.string(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().nonnegative(),
+  }).strict()).default([]),
+  jobLogs: z.array(z.object({
+    operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(),
+    chunks: z.array(JobLogChunkSchema).max(4096),
+  }).strict()).default([]),
+}).strict()
 const same = isDeepStrictEqual
-const JournalOwnerSchema = z.object({ schemaVersion: z.literal(1), token: z.uuid(),
-  pid: z.number().int().positive(), startTicks: z.string().regex(/^\d+$/), bootId: z.uuid() }).strict()
-
-function recoverJournalOwnerLock(path: string, assertExclusiveOwner: () => void, conflict: unknown) {
-  assertExclusiveOwner()
-  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-  try {
-    const file = fstatSync(descriptor)
-    if (!file.isFile() || file.nlink !== 1 || file.mode & 0o077 || file.uid !== process.getuid!()
-      || file.size < 1 || file.size > 4096) throw new Error('Journal owner lock is not private.')
-    const contents = readFileSync(descriptor, 'utf8')
-    let owner: unknown
-    try { owner = JSON.parse(contents) } catch { owner = undefined }
-    const recorded = JournalOwnerSchema.safeParse(owner)
-    if (recorded.success) {
-      if (recorded.data.bootId === bootIdentity() && identityAlive(recorded.data)) throw conflict
-    } else if (!z.uuid().safeParse(contents).success) throw new Error('Journal owner lock requires recovery.')
-    assertExclusiveOwner()
-    const named = lstatSync(path)
-    if (named.dev !== file.dev || named.ino !== file.ino || named.ctimeMs !== file.ctimeMs) {
-      throw new Error('Journal owner lock changed during recovery.')
-    }
-    unlinkSync(path)
-  } finally { closeSync(descriptor) }
-}
+const journalByteLimit = 4 * 1024 * 1024
+const controlReserveBytes = 4096
+const retainedReviewTurns = 16
+const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 
 /** Single worker owner; the caller must hold the worker installation's exclusive service lock.
  * Every mutating method fsyncs before returning authority to the native adapter.
- * No eviction: full journals reject new work, preserving unresolved ownership and terminal tombstones.
+ * Settled workflow payloads move to cold storage; unresolved ownership and deduplication records remain.
  */
 export class RemoteOperationJournal {
   private closed = false
   private faulted = false
   private tail: Promise<unknown> = Promise.resolve()
-  private constructor(private readonly path: string, private data: z.infer<typeof JournalSchema>, private readonly capacity: number, private readonly lock: FileHandle) {}
-  static async open(path: string, options: { initializeNewInstallation?: boolean; capacity?: number;
-    assertExclusiveOwner?: () => void } = {}) {
+  private constructor(
+    private readonly path: string,
+    private data: z.infer<typeof JournalSchema>,
+    private readonly capacity: number,
+    private readonly byteLimit: number,
+    private readonly lock: Awaited<ReturnType<typeof acquireJournalOwner>>,
+  ) {}
+  static async open(path: string,
+    options: { initializeNewInstallation?: boolean; capacity?: number; byteLimit?: number;
+      /** The packaged Worker's exclusive state socket must still be held. */
+      assertExclusiveOwner?: () => void } = {}) {
     const capacity = options.capacity ?? 1000
+    const byteLimit = options.byteLimit ?? journalByteLimit
+    if (!Number.isSafeInteger(byteLimit) || byteLimit < 16 * 1024 || byteLimit > journalByteLimit) {
+      throw new Error('Invalid journal byte limit')
+    }
     if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('Invalid journal capacity')
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    const lockPath = `${path}.owner-lock`
-    let lock: FileHandle
-    try { lock = await open(lockPath, 'wx', 0o600) }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || !options.assertExclusiveOwner) throw error
-      recoverJournalOwnerLock(lockPath, options.assertExclusiveOwner, error)
-      lock = await open(lockPath, 'wx', 0o600)
-    }
+    options.assertExclusiveOwner?.()
+    const lock = await acquireJournalOwner(path)
     try {
-      const identity = process.platform === 'linux' ? processIdentity(process.pid) : undefined
-      const owner = identity ? { schemaVersion: 1, token: randomUUID(), pid: identity.pid,
-        startTicks: identity.startTicks, bootId: bootIdentity() } : randomUUID()
-      await lock.writeFile(typeof owner === 'string' ? owner : JSON.stringify(owner))
-      await lock.sync()
       let data: z.infer<typeof JournalSchema>
       try {
-        if ((await stat(path)).size > 4 * 1024 * 1024) throw new Error('Journal byte limit reached')
+        if ((await stat(path)).size > byteLimit) throw new Error('Journal byte limit reached')
         const serialized = await readFile(path, 'utf8')
-        if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) throw new Error('Journal byte limit reached')
+        if (Buffer.byteLength(serialized) > byteLimit) throw new Error('Journal byte limit reached')
         data = JournalSchema.parse(JSON.parse(serialized))
       } catch (error) {
-        if (!options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
-        data = { schemaVersion: 1, receipts: [], qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
+        if (lock.recovered || !options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw new Error('Journal unavailable: recovery required', { cause: error })
+        }
+        data = { schemaVersion: 1, archivedWorkflows: [], controlDeliveries: [], receipts: [],
+          qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
       }
       if (data.receipts.length + data.qualificationReceipts.length > capacity) throw new Error('Journal exceeds capacity')
-      const journal = new RemoteOperationJournal(path, data, capacity, lock)
-      await journal.persist(data)
+      const journal = new RemoteOperationJournal(path, data, capacity, byteLimit, lock)
+      await journal.persist(journal.serialize(data, { skipControlReserve: true }))
+      await journal.compactReviewResults()
       return journal
-    } catch (error) { await lock.close(); await unlink(`${path}.owner-lock`); throw error }
+    } catch (error) { await lock.close(); throw error }
   }
   async close() {
     if (this.closed) return
@@ -105,26 +117,194 @@ export class RemoteOperationJournal {
     await this.tail
     this.faulted = true
     await this.lock.close()
-    await unlink(`${this.path}.owner-lock`)
   }
-  private async persist(data: z.infer<typeof JournalSchema>) {
+  private serialize(data: z.infer<typeof JournalSchema>,
+    options: { controlOperationId?: string; skipControlReserve?: boolean } = {}) {
     const serialized = JSON.stringify(JournalSchema.parse(data))
-    if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) throw new Error('Journal byte limit reached')
-    await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
-    const temporary = `${this.path}.${randomUUID()}.tmp`
+    const active = data.receipts.filter(receipt => !receipt.terminal
+      && receipt.intent.operationId !== options.controlOperationId).length
+      + data.qualificationReceipts.filter(receipt => receipt.phase !== 'closed').length
+    const reserved = options.skipControlReserve ? 0 : active * controlReserveBytes
+    if (Buffer.byteLength(serialized) > this.byteLimit - reserved) throw new Error('Journal byte limit reached')
+    return serialized
+  }
+  private async writeSnapshot(path: string, serialized: string) {
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    const temporary = `${path}.${randomUUID()}.tmp`
     const file = await open(temporary, 'wx', 0o600)
-    try { await file.writeFile(serialized); await file.sync() } catch (error) { await unlink(temporary); throw error } finally { await file.close() }
-    await rename(temporary, this.path)
-    const directory = await open(dirname(this.path), 'r')
+    try {
+      await file.writeFile(serialized)
+      await file.sync()
+    } catch (error) {
+      await unlink(temporary)
+      throw error
+    } finally {
+      await file.close()
+    }
+    await rename(temporary, path)
+    const directory = await open(dirname(path), 'r')
     try { await directory.sync() } finally { await directory.close() }
   }
-  private change<T>(apply: (data: z.infer<typeof JournalSchema>) => T): Promise<T> {
+  private persist(serialized: string) { return this.writeSnapshot(this.path, serialized) }
+  private archivePath(operationId: string) { return `${this.path}.settled/${hash(operationId)}.json` }
+  private reviewPath(operationId: string, correlationId: string) {
+    return `${this.path}.reviews/${hash(operationId)}/${hash(correlationId)}.json`
+  }
+  private reviewJobPath(operationId: string, jobId: string) {
+    return `${this.path}.reviews/${hash(operationId)}/jobs/${hash(jobId)}.json`
+  }
+  private async archiveReviewResult(operationId: string, turn: z.infer<typeof RemoteReviewerTurnSchema>, history?: NativeHistory) {
+    if (!turn.result) throw new Error('Settled review result required')
+    const resultDigest = hash(canonicalGraphJson(turn.result, journalByteLimit))
+    if (history) turn.historyDigest = hash(canonicalGraphJson(history, REMOTE_NATIVE_SOURCE_LIMIT))
+    const archived = { operationId, turn: { ...turn, resultDigest }, ...(history ? { history } : {}) }
+    const dictionary = encodeResultCopies(archived, [['turn', 'result'], ...historyResultPaths(['history'])])
+    await this.writeSnapshot(this.reviewPath(operationId, turn.assignment.correlationId),
+      canonicalGraphJson(dictionary, REMOTE_PHYSICAL_CONTINUATION_LIMIT))
+    await this.writeSnapshot(this.reviewJobPath(operationId, turn.assignment.jobId),
+      JSON.stringify({ operationId, correlationId: turn.assignment.correlationId, jobId: turn.assignment.jobId }))
+    turn.resultDigest = resultDigest
+    delete turn.result
+  }
+  private compactReviewResults() {
+    return this.change(async data => {
+      for (const receipt of data.receipts) {
+        if ('kind' in receipt) continue
+        let compacted = false
+        for (const turn of receipt.reviewTurns ?? []) {
+          if (turn.settled && turn.result) {
+            await this.archiveReviewResult(receipt.intent.operationId, turn)
+            compacted = true
+          }
+        }
+        if ((receipt.reviewTurns?.length ?? 0) > retainedReviewTurns) {
+          receipt.reviewTurns = receipt.reviewTurns!.slice(-retainedReviewTurns)
+          compacted = true
+        }
+        if (compacted) receipt.sequence++
+      }
+    })
+  }
+  private async readArchivedReview(receipt: RemoteOperationReceipt, correlationId: string) {
+    const path = this.reviewPath(receipt.intent.operationId, correlationId)
+    try {
+      if ((await stat(path)).size > REMOTE_PHYSICAL_CONTINUATION_LIMIT) throw new Error('Review archive byte limit reached')
+      const archived = z.object({ operationId: z.string(), turn: RemoteReviewerTurnSchema,
+        history: RemoteNativeHistorySchema.optional() }).strict()
+        .parse(decodeResultCopies(JSON.parse(await readFile(path, 'utf8'))))
+      const turn = archived.turn
+      if (archived.operationId !== receipt.intent.operationId || !turn.settled || !turn.result
+        || turn.assignment.correlationId !== correlationId
+        || turn.assignment.session.nativeSessionId !== receipt.native?.sessionId
+        || turn.assignment.reviewerAgentId !== receipt.retainedReviewer?.agentId
+        || hash(canonicalGraphJson(turn.result, journalByteLimit)) !== turn.resultDigest)
+        throw new Error('Review archive changed: recovery required')
+      if (turn.historyDigest && (!archived.history
+        || hash(canonicalGraphJson(archived.history, REMOTE_NATIVE_SOURCE_LIMIT)) !== turn.historyDigest
+        || archived.history.terminalTurn?.correlationId !== correlationId
+        || archived.history.terminalTurn.providerId !== turn.providerId
+        || !same(archived.history.terminalTurn.result, turn.result)))
+        throw new Error('Review history archive changed: recovery required')
+      return archived
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    }
+  }
+  private async archivedReviewJob(receipt: RemoteOperationReceipt, jobId: string) {
+    try {
+      const value = z.object({ operationId: z.string(), correlationId: z.string(), jobId: z.string() }).strict()
+        .parse(JSON.parse(await readFile(this.reviewJobPath(receipt.intent.operationId, jobId), 'utf8')))
+      if (value.operationId !== receipt.intent.operationId || value.jobId !== jobId)
+        throw new Error('Review job archive changed: recovery required')
+      const turn = await this.readArchivedReview(receipt, value.correlationId)
+      if (!turn || turn.turn.assignment.jobId !== jobId) throw new Error('Review job archive unavailable')
+      return turn.turn
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    }
+  }
+  private selectArchivedReview(receipt: RemoteOperationReceipt, archived: z.infer<typeof RemoteReviewerTurnSchema>) {
+    const turn = { ...archived }
+    delete turn.result
+    receipt.reviewTurns = [turn, ...(receipt.reviewTurns ?? []).slice(-(retainedReviewTurns - 1))]
+    receipt.sequence++
+    return turn
+  }
+  loadReviewTurn(operationId: string, correlationId: string) {
+    return this.change(async data => {
+      const receipt = this.receipt(data, operationId)
+      const existing = receipt.reviewTurns?.find(turn => turn.assignment.correlationId === correlationId)
+      if (existing) return existing
+      const archived = await this.readArchivedReview(receipt, correlationId)
+      return archived ? this.selectArchivedReview(receipt, archived.turn) : undefined
+    })
+  }
+  async reviewResult(operationId: string, correlationId: string) {
+    const status = await this.status(operationId)
+    if (status.status !== 'known') throw new Error('Unknown review operation')
+    const archived = await this.readArchivedReview(status.receipt, correlationId)
+    if (!archived?.turn.result) throw new Error('Settled review result unavailable')
+    const turn = status.receipt.reviewTurns?.find(value => value.assignment.correlationId === correlationId)
+    if (turn && !same({ ...archived.turn, result: undefined }, { ...turn, result: undefined }))
+      throw new Error('Review archive changed: recovery required')
+    return structuredClone(archived.turn.result)
+  }
+  async reviewHistory(operationId: string, correlationId: string): Promise<NativeHistory | undefined> {
+    const status = await this.status(operationId)
+    if (status.status !== 'known') throw new Error('Unknown review operation')
+    const archived = await this.readArchivedReview(status.receipt, correlationId)
+    return archived?.history ? remoteWorkflowNativeHistory(archived.history) : undefined
+  }
+  private async archivedReceipt(data: z.infer<typeof JournalSchema>, operationId: string) {
+    const archived = data.archivedWorkflows.find(value => value.operationId === operationId)
+    if (!archived) return undefined
+    const path = this.archivePath(operationId)
+    if ((await stat(path)).size > this.byteLimit) throw new Error('Archived receipt byte limit reached')
+    const serialized = await readFile(path, 'utf8')
+    if (hash(serialized) !== archived.receiptDigest) throw new Error('Archived receipt changed: recovery required')
+    const receipt = RemoteOperationReceiptSchema.parse(JSON.parse(serialized))
+    if (!receipt.terminal || receipt.intent.operationId !== operationId || receipt.intent.executionId !== archived.executionId
+      || receipt.intent.attemptId !== archived.attemptId) throw new Error('Archived ownership changed: recovery required')
+    return receipt
+  }
+  async isRetired(operationId: string) {
+    await this.tail
+    if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
+    return this.data.archivedWorkflows.some(value => value.operationId === operationId)
+  }
+  retireSettled(intent: DispatchIntent, sequence: number) {
+    return this.change(async data => {
+      const archived = await this.archivedReceipt(data, intent.operationId)
+      if (archived) {
+        if (!same(archived.intent, intent) || archived.sequence !== sequence) throw new Error('Retirement ownership conflict')
+        return archived
+      }
+      const receipt = this.receipt(data, intent.operationId)
+      if (!same(receipt.intent, intent) || receipt.sequence !== sequence || !receipt.terminal) {
+        throw new Error('Confirmed terminal retirement required')
+      }
+      const serialized = JSON.stringify(receipt)
+      await this.writeSnapshot(this.archivePath(intent.operationId), serialized)
+      data.archivedWorkflows.push({ operationId: intent.operationId, executionId: intent.executionId,
+        attemptId: intent.attemptId, receiptDigest: hash(serialized) })
+      data.receipts = data.receipts.filter(value => value.intent.operationId !== intent.operationId)
+      data.controlDeliveries = data.controlDeliveries.filter(value => value.operationId !== intent.operationId)
+      data.reconciliations = data.reconciliations.filter(value => value.operationId !== intent.operationId)
+      return receipt
+    })
+  }
+  private change<T>(apply: (data: z.infer<typeof JournalSchema>) => T | Promise<T>,
+    options: { controlOperationId?: string; skipControlReserve?: boolean } = {}): Promise<T> {
     if (this.closed) return Promise.reject(new Error('Journal closed: recovery required'))
     const task = this.tail.then(async () => {
       if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
       const next = structuredClone(this.data)
-      const result = apply(next)
-      try { await this.persist(next) } catch (error) { this.faulted = true; throw error }
+      const result = await apply(next)
+      if (same(next, this.data)) return structuredClone(result)
+      const serialized = this.serialize(next, options)
+      try { await this.persist(serialized) } catch (error) { this.faulted = true; throw error }
       this.data = next
       return structuredClone(result)
     })
@@ -140,18 +320,25 @@ export class RemoteOperationJournal {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     const receipt = this.data.receipts.find((value): value is RemoteOperationReceipt => !('kind' in value) && value.intent.operationId === operationId)
-    return receipt ? { status: 'known', receipt: structuredClone(receipt) } : { status: 'unknown', reason: 'journal_absence_requires_reconciliation' }
+    const retained = receipt ?? await this.archivedReceipt(this.data, operationId)
+    return retained ? { status: 'known', receipt: structuredClone(retained) } : { status: 'unknown', reason: 'journal_absence_requires_reconciliation' }
   }
   accept(intent: DispatchIntent, connection: DeviceConnectionIdentity, workerIncarnationId: string) {
-    return this.change(data => {
+    return this.change(async data => {
       intent = DispatchIntentSchema.parse(intent)
+      const archived = await this.archivedReceipt(data, intent.operationId)
+      if (archived) {
+        if (!same(archived.intent, intent)) throw new Error('Operation binding conflict')
+        return archived
+      }
       const existing = data.receipts.find(value => value.intent.operationId === intent.operationId)
       if (existing) {
         if ('kind' in existing) throw new Error('Operation subject conflict')
         if (!same(existing.intent, intent)) throw new Error('Operation binding conflict')
         return existing
       }
-      if (data.receipts.some(value => value.intent.executionId === intent.executionId || value.intent.attemptId === intent.attemptId)) throw new Error('Execution attempt already bound to another operation')
+      if (data.archivedWorkflows.some(value => value.executionId === intent.executionId || value.attemptId === intent.attemptId)
+        || data.receipts.some(value => value.intent.executionId === intent.executionId || value.intent.attemptId === intent.attemptId)) throw new Error('Execution attempt already bound to another operation')
       if (data.qualificationReceipts.some(value => value.admission.operationId === intent.operationId)) throw new Error('Operation already bound to a qualification')
       if (data.receipts.length + data.qualificationReceipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
       if (connection.mainId !== intent.mainId) throw new Error('Wrong main identity')
@@ -162,7 +349,9 @@ export class RemoteOperationJournal {
     })
   }
   reserveEntry(operationId: string) {
-    return this.change(data => {
+    return this.change(async data => {
+      const archived = await this.archivedReceipt(data, operationId)
+      if (archived) return { reserved: false, receipt: archived }
       const receipt = this.receipt(data, operationId)
       if (receipt.stopFence || receipt.phase !== 'received') return { reserved: false, receipt }
       receipt.entryAttempted = true; receipt.phase = 'native_entry_attempted'; receipt.sequence++
@@ -181,7 +370,12 @@ export class RemoteOperationJournal {
     })
   }
   reserveTurn(operationId: string, input: { correlationId: string; promptDigest: string }) {
-    return this.change(data => {
+    return this.change(async data => {
+      const archived = await this.archivedReceipt(data, operationId)
+      if (archived) {
+        if (archived.turnInput && !same(archived.turnInput, input)) throw new Error('Turn input binding conflict')
+        return { reserved: false, receipt: archived }
+      }
       const receipt = this.receipt(data, operationId)
       if (receipt.turnInput && !same(receipt.turnInput, input)) throw new Error('Turn input binding conflict')
       if (receipt.stopFence || receipt.turnEntryAttempted || receipt.phase !== 'start_acknowledged') return { reserved: false, receipt }
@@ -194,6 +388,99 @@ export class RemoteOperationJournal {
       if (!receipt.native || !receipt.turnEntryAttempted || !turnId) throw new Error('Turn entry reservation required')
       if (receipt.native.turnId && receipt.native.turnId !== turnId) throw new Error('Native turn ownership conflict')
       receipt.native.turnId = turnId; receipt.sequence++; return receipt
+    })
+  }
+  retainReviewer(operationId: string, policy: { agentId: string; expiresAt: string }, history: NativeHistory) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      const terminal = history.terminalTurn
+      if (receipt.stopFence || receipt.terminal || !receipt.native?.turnId || !terminal
+        || terminal.correlationId !== receipt.turnInput?.correlationId || terminal.providerId !== receipt.native.turnId
+        || terminal.result.outcome !== 'succeeded' || history.pendingInteractions.length || history.pendingInteraction
+        || Date.parse(policy.expiresAt) <= Date.now()) throw new Error('Reviewer workflow settlement mismatch')
+      const retained = { ...policy, workflowTurnId: terminal.providerId, result: terminal.result }
+      if (receipt.retainedReviewer && !same({ ...receipt.retainedReviewer, expiresAt: policy.expiresAt }, retained))
+        throw new Error('Retained reviewer identity changed')
+      receipt.retainedReviewer = retained
+      receipt.sequence++
+      return receipt
+    })
+  }
+  renewReviewer(operationId: string, policy: { agentId: string; expiresAt: string }) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      if (!receipt.retainedReviewer || receipt.retainedReviewer.agentId !== policy.agentId
+        || receipt.stopFence || receipt.terminal || Date.parse(policy.expiresAt) <= Date.now())
+        throw new Error('Retained reviewer renewal mismatch')
+      receipt.retainedReviewer.expiresAt = policy.expiresAt
+      receipt.sequence++
+      return receipt
+    })
+  }
+  reserveReviewTurn(operationId: string, assignment: RemoteReviewerAssignment, promptDigest: string, afterSequence: number) {
+    return this.change(async data => {
+      const receipt = this.receipt(data, operationId)
+      assignment = RemoteReviewerAssignmentSchema.parse(assignment)
+      if (!receipt.retainedReviewer || receipt.retainedReviewer.agentId !== assignment.reviewerAgentId
+        || receipt.native?.sessionId !== assignment.session.nativeSessionId || receipt.stopFence || receipt.terminal
+        || Date.parse(receipt.retainedReviewer.expiresAt) <= Date.now()) throw new Error('Reviewer lifetime unavailable')
+      const turns = receipt.reviewTurns ??= []
+      const known = turns.find(turn => turn.assignment.correlationId === assignment.correlationId
+        || turn.assignment.jobId === assignment.jobId)
+      const prior = known ?? (await this.readArchivedReview(receipt, assignment.correlationId))?.turn
+        ?? await this.archivedReviewJob(receipt, assignment.jobId)
+      if (prior) {
+        if (!same(prior.assignment, assignment) || prior.promptDigest !== promptDigest) throw new Error('Review turn input conflict')
+        if (!known) this.selectArchivedReview(receipt, prior)
+        return { reserved: !prior.entered, receipt }
+      }
+      if (turns.some(turn => !turn.settled)) throw new Error('Reviewer turn capacity unavailable')
+      receipt.reviewTurns = [...turns.slice(-(retainedReviewTurns - 1)),
+        { assignment, promptDigest, afterSequence, entered: false, settled: false }]
+      receipt.sequence++
+      return { reserved: true, receipt }
+    })
+  }
+  enterReviewTurn(operationId: string, correlationId: string) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      const turn = receipt.reviewTurns?.find(turn => turn.assignment.correlationId === correlationId)
+      if (!turn || receipt.stopFence || receipt.terminal) throw new Error('Reviewer entry unavailable')
+      if (turn.entered) return false
+      turn.entered = true
+      receipt.sequence++
+      return true
+    })
+  }
+  acknowledgeReviewTurn(operationId: string, correlationId: string, providerId: string) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      const turn = receipt.reviewTurns?.find(turn => turn.assignment.correlationId === correlationId)
+      if (!turn || !providerId || turn.providerId && turn.providerId !== providerId)
+        throw new Error('Review turn acknowledgement mismatch')
+      if (turn.providerId === providerId) return receipt
+      turn.providerId = providerId
+      receipt.sequence++
+      return receipt
+    })
+  }
+  settleReviewTurn(operationId: string, history: NativeHistory) {
+    return this.change(async data => {
+      const receipt = this.receipt(data, operationId)
+      const terminal = history.terminalTurn
+      const turn = receipt.reviewTurns?.find(turn => turn.assignment.correlationId === terminal?.correlationId)
+      if (!turn || !terminal || turn.providerId !== terminal.providerId
+        || history.pendingInteraction || history.pendingInteractions.length) throw new Error('Review turn settlement mismatch')
+      const resultDigest = hash(canonicalGraphJson(terminal.result, journalByteLimit))
+      if (turn.settled && (turn.resultDigest ? turn.resultDigest !== resultDigest : !same(turn.result, terminal.result)))
+        throw new Error('Review result conflict')
+      if (!turn.settled || !turn.historyDigest) {
+        turn.settled = true
+        turn.result = terminal.result
+        await this.archiveReviewResult(operationId, turn, history)
+        receipt.sequence++
+      }
+      return receipt
     })
   }
   confirmRecovered(operationId: string, native: RemoteNativeIdentity) {
@@ -224,16 +511,17 @@ export class RemoteOperationJournal {
     })
   }
   control(command: RemoteOwnerControl) {
-    return this.change(data => {
+    return this.change(async data => {
       command = RemoteOwnerControlSchema.parse(command)
-      const receipt = this.receipt(data, command.operationId)
+      const archived = await this.archivedReceipt(data, command.operationId)
+      const receipt = archived ?? this.receipt(data, command.operationId)
       const prior = receipt.controls.find(value => value.commandId === command.commandId)
       if (prior) { if (!same(prior, command)) throw new Error('Control command conflict'); return { dispatch: false, receipt } }
       if (receipt.intent.attemptId !== command.attemptId || receipt.intent.executionId !== command.executionId
         || receipt.intent.bindingHash !== command.bindingHash || !same(receipt.intent.owner, command.owner)) throw new Error('Stale control ownership')
       if (command.nativeTarget && (command.nativeTarget.kind !== 'session' || command.nativeTarget.sessionId !== receipt.native?.sessionId
-        || (command.nativeTarget.turnId && command.nativeTarget.turnId !== receipt.native?.turnId))) throw new Error('Wrong explicit native target')
-      if (command.native && !same(command.native, receipt.native)) throw new Error('Wrong native control target')
+        || (command.nativeTarget.turnId && command.nativeTarget.turnId !== remoteActiveNative(receipt)?.turnId))) throw new Error('Wrong explicit native target')
+      if (command.native && !same(command.native, remoteActiveNative(receipt))) throw new Error('Wrong native control target')
       if (command.action.kind === 'respond') {
         const target = receipt.interaction
         if (receipt.stopFence || receipt.phase !== 'running' || !target || target.interactionId !== command.action.interactionId
@@ -241,12 +529,61 @@ export class RemoteOperationJournal {
         if (receipt.controls.some(value => value.action.kind === 'respond' && value.action.nativeInteractionId === target.nativeInteractionId
           && value.native?.sessionId === target.native.sessionId && value.native?.turnId === target.native.turnId)) throw new Error('Interaction response already reserved')
       }
+      if (archived) return { dispatch: false, receipt }
       if (receipt.controls.length >= 128) throw new Error('Control journal full')
       receipt.controls.push(command)
+      data.controlDeliveries.push({ operationId: command.operationId, commandId: command.commandId, phase: 'reserved' })
       if (command.action.kind === 'stop') { receipt.stopFence = true; if (receipt.phase !== 'confirmed_terminal') receipt.phase = 'stop_requested' }
       receipt.sequence++
       return { dispatch: receipt.phase !== 'confirmed_terminal' && receipt.native !== undefined, receipt }
-    })
+    }, { controlOperationId: command.operationId })
+  }
+  async controlDelivery(command: RemoteOwnerControl) {
+    await this.tail
+    if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
+    const receipt = await this.archivedReceipt(this.data, command.operationId) ?? this.receipt(this.data, command.operationId)
+    const prior = receipt.controls.find(value => value.commandId === command.commandId)
+    if (!prior) return undefined
+    if (!same(prior, command)) throw new Error('Control command conflict')
+    // Older records reserved and entered in one step; their native effects may have happened.
+    return this.data.controlDeliveries.find(value => value.operationId === command.operationId
+      && value.commandId === command.commandId)?.phase ?? 'entered'
+  }
+  enterControlDelivery(command: RemoteOwnerControl) {
+    return this.change(data => {
+      const receipt = this.receipt(data, command.operationId)
+      const prior = receipt.controls.find(value => value.commandId === command.commandId)
+      if (!prior || !same(prior, command)) throw new Error('Original control reservation required')
+      const active = remoteActiveNative(receipt)
+      let deliveryOwner = command.owner
+      if (command.action.kind === 'respond') {
+        for (const transition of data.reconciliations) {
+          if (transition.operationId === command.operationId && same(transition.previousOwner, deliveryOwner))
+            deliveryOwner = transition.nextOwner
+        }
+      }
+      if (!same(receipt.intent.owner, deliveryOwner)
+        || command.native && !same(command.native, active)) throw new Error('Stale control ownership')
+      if (command.nativeTarget && (command.nativeTarget.kind !== 'session'
+        || command.nativeTarget.sessionId !== receipt.native?.sessionId
+        || command.nativeTarget.turnId && command.nativeTarget.turnId !== active?.turnId)) {
+        throw new Error('Wrong explicit native target')
+      }
+      const delivery = data.controlDeliveries.find(value => value.operationId === command.operationId
+        && value.commandId === command.commandId)
+      if (!delivery || delivery.phase !== 'reserved' || receipt.terminal || !receipt.native
+        || command.action.kind === 'respond' && receipt.stopFence) return false
+      delivery.phase = 'entered'
+      return true
+    }, { controlOperationId: command.operationId })
+  }
+  acknowledgeControl(command: RemoteOwnerControl) {
+    return this.change(data => {
+      const delivery = data.controlDeliveries.find(value => value.operationId === command.operationId
+        && value.commandId === command.commandId)
+      if (!delivery || delivery.phase === 'reserved') throw new Error('Control delivery entry required')
+      delivery.phase = 'acknowledged'
+    }, { controlOperationId: command.operationId })
   }
   revokeFence(operationId: string) {
     return this.change(data => {
@@ -255,21 +592,23 @@ export class RemoteOperationJournal {
         receipt.stopFence = true; receipt.phase = 'stop_requested'; receipt.uncertainty = 'Authority revoked; physical closure pending'; receipt.sequence++
       }
       return receipt
-    })
+    }, { controlOperationId: operationId })
   }
   uncertain(operationId: string, reason: string) {
     return this.change(data => {
       const receipt = this.receipt(data, operationId)
       if (receipt.phase !== 'confirmed_terminal') { receipt.phase = 'uncertain'; receipt.uncertainty = reason.slice(0, 500); receipt.sequence++ }
       return receipt
-    })
+    }, { controlOperationId: operationId })
   }
   terminal(operationId: string, evidence: RemoteTerminalEvidence) {
-    return this.change(data => {
-      const receipt = this.receipt(data, operationId)
+    return this.change(async data => {
+      const receipt = await this.archivedReceipt(data, operationId) ?? this.receipt(data, operationId)
       evidence = RemoteTerminalEvidenceSchema.parse(evidence)
       if (receipt.terminal) { if (!same(receipt.terminal, evidence)) throw new Error('Conflicting terminal evidence'); return receipt }
-      if (evidence.kind !== 'not_started' && !receipt.native) throw new Error('Native ownership evidence required')
+      const entryClosed = hasPositiveRemoteEntryClosure({ ...receipt, terminal: evidence })
+      if (evidence.entryClosure && !entryClosed) throw new Error('Original native entry closure evidence required')
+      if (evidence.kind !== 'not_started' && !receipt.native && !entryClosed) throw new Error('Native ownership evidence required')
       if (evidence.kind === 'not_started' && (receipt.entryAttempted || receipt.native || !receipt.stopFence || !['received', 'stop_requested'].includes(receipt.phase))) throw new Error('Non-entry not proven')
       receipt.terminal = evidence; receipt.phase = 'confirmed_terminal'; receipt.sequence++; return receipt
     })
@@ -326,7 +665,8 @@ export class RemoteOperationJournal {
       if (candidate.operationId !== admission.operationId || candidate.approvalId !== admission.approvalId || candidate.qualificationId !== admission.qualificationId) throw new Error('Qualification candidate subject changed')
       const existing = data.qualificationReceipts.find(value => value.admission.operationId === admission.operationId)
       if (existing) { if (!same(existing.admission, admission) || !same(existing.candidate, candidate)) throw new Error('Qualification admission conflict'); return existing }
-      if (data.receipts.some(value => value.intent.operationId === admission.operationId) || data.qualificationReceipts.some(value =>
+      if (data.archivedWorkflows.some(value => value.operationId === admission.operationId)
+        || data.receipts.some(value => value.intent.operationId === admission.operationId) || data.qualificationReceipts.some(value =>
         value.admission.approvalId === admission.approvalId || value.admission.leaseId === admission.leaseId)) throw new Error('Original qualification identity already bound')
       if (data.qualificationReceipts.length >= 1000 || data.receipts.length + data.qualificationReceipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
       if (Date.parse(admission.expiresAt) <= Date.now()) throw new Error('Qualification admission expired')
@@ -611,12 +951,14 @@ export class RemoteOperationJournal {
   private acceptJob(data: z.infer<typeof JournalSchema>, raw: RemoteJobDispatchIntent, execution: JobExecutionRecord,
     connection: RemoteJobConnectionIdentity, workerIncarnationId: string) {
       const intent = RemoteJobDispatchIntentSchema.parse(raw)
+      if (data.archivedWorkflows.some(value => value.operationId === intent.operationId)) throw new Error('Operation subject conflict')
       const existing = data.receipts.find(value => value.intent.operationId === intent.operationId)
       if (existing) {
         if (!('kind' in existing) || !same(existing.intent, intent)) throw new Error('Job operation binding conflict')
         return existing
       }
-      if (data.receipts.some(value => value.intent.executionId === intent.executionId || value.intent.attemptId === intent.attemptId)) throw new Error('Execution attempt already bound to another operation')
+      if (data.archivedWorkflows.some(value => value.executionId === intent.executionId || value.attemptId === intent.attemptId)
+        || data.receipts.some(value => value.intent.executionId === intent.executionId || value.intent.attemptId === intent.attemptId)) throw new Error('Execution attempt already bound to another operation')
       if (data.qualificationReceipts.some(value => value.admission.operationId === intent.operationId)) throw new Error('Operation already bound to a qualification')
       if (data.receipts.length + data.qualificationReceipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
       if (connection.mainId !== intent.mainId) throw new Error('Wrong main identity')
@@ -641,7 +983,7 @@ export class RemoteOperationJournal {
     })
   }
   jobControl(raw: RemoteJobOwnerControl) {
-    return this.change(data => this.recordJobControl(data, raw))
+    return this.change(data => this.recordJobControl(data, raw), { controlOperationId: raw.operationId })
   }
   private recordJobControl(data: z.infer<typeof JournalSchema>, raw: RemoteJobOwnerControl) {
       const command = RemoteJobOwnerControlSchema.parse(raw), receipt = this.jobReceipt(data, command.operationId)

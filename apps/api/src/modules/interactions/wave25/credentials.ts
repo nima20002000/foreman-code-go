@@ -3,6 +3,11 @@ import { WorkerCredentialService, type IssuedWorkerCredential, APP_MCP_TOKEN_ENV
 import type { PostgresAccessService } from '../../access/postgres.js'
 import { fail, isCurrentApprovalRun, runFor } from './context.js'
 import { credentialAuthority, assertWave25WorkerBinding } from './credentialAuthority.js'
+import { ReviewJobSchema, type ReviewJob } from '@foreman-code/contracts'
+import type { SessionWriteLease } from '../sessionWriter.js'
+import { requireReviewerCredential } from '../reviewerCredential.js'
+import { readRetainedRemoteReviewer } from '../retainedRemoteReviewer.js'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 type Purpose = 'workflow' | 'reviewer'
 
 export class Wave25WorkerCredentialService extends WorkerCredentialService {
@@ -45,12 +50,42 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
   }
   override async issueForExecution(id: string): Promise<IssuedWorkerCredential> { return await this.subject(id) ? this.issueV2(id, 'workflow') : super.issueForExecution(id) }
   override async issueForReviewer(id: string): Promise<IssuedWorkerCredential> { return await this.subject(id) ? this.issueV2(id, 'reviewer') : super.issueForReviewer(id) }
+  async bindReviewerJob(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>,
+    supplied: ReviewJob, lane?: SessionWriteLease): Promise<void> {
+    await this.locked(executionId, async client => {
+      const authority = await credentialAuthority(client, executionId, 'reviewer')
+      await requireReviewerCredential(client, credential.principalId, { agentId: authority.execution.agentId,
+        workspaceId: authority.run.workspaceId, workflowId: authority.run.workflowId, runId: authority.run.id })
+      const row = (await client.query<{ record: unknown; lease_fence: string; execution_id: string; live: boolean }>(
+        `select record,lease_fence::text,execution_id,lease_expires_at>clock_timestamp() as live
+         from review_jobs where id=$1 for update`, [supplied.id])).rows[0]
+      const job = ReviewJobSchema.parse(row?.record)
+      if (!row?.live || row.execution_id !== executionId || job.leaseToken !== supplied.leaseToken
+        || job.correlationId !== supplied.correlationId || job.nativeSessionId !== authority.nativeSessionId
+        || job.reviewerAgentId !== authority.execution.agentId) return fail('REVIEWER_AUTHORITY_LOST')
+      await lane?.guard.check()
+      const updated = await client.query(`update worker_credential_bindings b set purpose='reviewer',
+        approval_review_job_id=$3,approval_review_lease_fence=$4::bigint,approval_connection_generation=$5::bigint
+        from management_principals p where b.principal_id=$1 and b.execution_id=$2 and p.id=b.principal_id
+        and b.revoked_at is null and p.revoked_at is null and p.expires_at>clock_timestamp()
+        and b.approval_native_session_id=$6 and b.agent_id=$7 returning b.principal_id`,
+      [credential.principalId, executionId, job.id, row.lease_fence, authority.generation,
+        authority.nativeSessionId, authority.execution.agentId])
+      if (updated.rowCount !== 1) return fail('REVIEWER_CREDENTIAL_LOST')
+    })
+  }
   override async renewForExecution(id: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string> {
     if (!await this.subject(id)) return super.renewForExecution(id, credential)
     return this.locked(id, async (client) => {
       await client.query('select id from management_principals where id=$1 for update', [credential.principalId])
       await client.query('select principal_id from worker_credential_bindings where principal_id=$1 for update', [credential.principalId])
-      await assertWave25WorkerBinding(client, credential.principalId)
+      try { await assertWave25WorkerBinding(client, credential.principalId) }
+      catch (error) {
+        if (!(error instanceof Error) || !('code' in error) || error.code !== 'REVIEWER_BINDING_REBIND_REQUIRED') throw error
+        const row = (await client.query<{ record: unknown }>('select record from harness_executions where id=$1', [id])).rows[0]
+        const retained = row && await readRetainedRemoteReviewer(client, HarnessExecutionSchema.parse(row.record))
+        if (retained?.principalId !== credential.principalId) throw error
+      }
       const result = await client.query<{ expires_at: Date }>(`update management_principals p
         set expires_at=greatest(p.expires_at,clock_timestamp()+($3::integer*interval '1 millisecond'))
         from worker_credential_bindings b where p.id=$1 and b.principal_id=p.id and b.execution_id=$2
@@ -72,6 +107,7 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
         await client.query('select principal_id from worker_credential_bindings where principal_id=$1 for update', [row.principal_id])
         try { await assertWave25WorkerBinding(client, row.principal_id) }
         catch (error) {
+          if (error instanceof Error && 'code' in error && error.code === 'REVIEWER_BINDING_REBIND_REQUIRED') return
           if (!(error instanceof Error) || !('code' in error) || ![
             'AUTH_REVOKED', 'REVIEWER_EXECUTION_NOT_READY', 'APPROVAL_REVIEWER_BOOTSTRAP_INTERACTIVE',
             'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED', 'APPROVAL_REVIEWER_APP_MCP_REQUIRED',

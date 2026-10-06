@@ -3,10 +3,12 @@ import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import { AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, HarnessDefaultsSchema, operatorHarnessDefaults,
   type HarnessDefaults, type AgentHarness } from '@foreman-code/contracts'
-import type { HarnessOptions } from '@foreman-code/contracts/management'
+import { UnavailableHarnessDefaultsSchema, type HarnessOptions } from '@foreman-code/contracts/management'
 import { inTransaction } from '../../infrastructure/transaction.js'
-import { nativeModelDefaults } from './modelDefaults.js'
+import { latestNativeModel, nativeModelDefaults } from './modelDefaults.js'
+import { DomainError } from '../errors.js'
 import { detectedClaudeProfilePath } from './claudeSdk/productionMetadata.js'
+import { UNAVAILABLE_HARNESS_DEFAULTS_KEY } from '../settings/postgres.js'
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const missingModel = (value: unknown) => typeof object(value).model !== 'string' || !String(object(value).model).trim()
@@ -17,10 +19,14 @@ export async function initializeNativeDefaults(input: {
   pool: pg.Pool; options(harness: AgentHarness): Promise<HarnessOptions>; appMcpEndpoint: string
 }) {
   const initial = await input.pool.query<{ key: string; record: unknown }>(
-    "select key,record from application_settings where key in ('harness-defaults','agent-defaults-v1')")
+    'select key,record from application_settings where key=any($1::text[])',
+    [['harness-defaults', 'agent-defaults-v1', UNAVAILABLE_HARNESS_DEFAULTS_KEY]])
   const prior = new Map(initial.rows.map(row => [row.key, row.record]))
   const priorHarnesses = object(prior.get('harness-defaults'))
   const required = new Set<AgentHarness>((['codex', 'opencode', 'claude'] as const).filter(harness => missingModel(priorHarnesses[harness])))
+  for (const harness of UnavailableHarnessDefaultsSchema.parse(prior.get(UNAVAILABLE_HARNESS_DEFAULTS_KEY) ?? [])) {
+    required.add(harness)
+  }
   const priorAgents = object(prior.get('agent-defaults-v1'))
   for (const role of ['orchestrator', 'coder', 'operator'] as const) {
     const configuration = object(object(priorAgents[role]).harness)
@@ -29,25 +35,45 @@ export async function initializeNativeDefaults(input: {
   const pending = [...required]
   const available = new Map<AgentHarness, HarnessOptions>()
   await Promise.all(pending.map(async harness => {
-    try { const options = await input.options(harness); if (options.authenticated && options.models.length) available.set(harness, options) }
-    catch { /* An absent or unauthenticated installation remains unconfigured. */ }
+    let options: HarnessOptions
+    try {
+      options = await input.options(harness)
+    } catch {
+      // An absent or unauthenticated installation remains unconfigured.
+      return
+    }
+    if (!options.authenticated || !options.models.length) return
+    try {
+      latestNativeModel(options)
+    } catch (error) {
+      if (error instanceof DomainError && error.code === 'HARNESS_MODEL_DEFAULT_UNAVAILABLE') return
+      throw error
+    }
+    available.set(harness, options)
   }))
   return inTransaction(input.pool, undefined, async client => {
     await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:harness-defaults'])
     await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:agent-defaults-v1'])
     const current = await client.query<{ key: string; record: unknown; revision: string }>(
-      "select key,record,revision from application_settings where key in ('harness-defaults','agent-defaults-v1') for update")
+      'select key,record,revision from application_settings where key=any($1::text[]) for update',
+      [['harness-defaults', 'agent-defaults-v1', UNAVAILABLE_HARNESS_DEFAULTS_KEY]])
     const rows = new Map(current.rows.map(row => [row.key, row]))
     const raw = rows.get('harness-defaults')?.record
+    const priorUnavailable = UnavailableHarnessDefaultsSchema.parse(rows.get(UNAVAILABLE_HARNESS_DEFAULTS_KEY)?.record ?? [])
+    const unavailable = new Set<AgentHarness>(priorUnavailable)
     const next = { ...DEFAULT_HARNESS_DEFAULTS, ...object(raw) } as HarnessDefaults
     for (const harness of pending) {
+      if (!missingModel(object(raw)[harness]) && !unavailable.has(harness)) continue
       const options = available.get(harness)
-      if (!options) continue
-      if (!missingModel(object(raw)[harness])) continue
+      if (!options) {
+        if (harness !== 'claude' || object(raw).claude) unavailable.add(harness)
+        continue
+      }
       const base = harness === 'claude' ? { harness: 'claude' as const, model: 'default', configDirectory: detectedClaudeProfilePath(), authMode: 'subscription' as const,
         permissionMode: 'default' as const, sandbox: 'read-only' as const, tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'AskUserQuestion'], permissionRules: [], instructions: '',
         mcpServers: { 'foreman-code': { type: 'http' as const, url: input.appMcpEndpoint } } } : DEFAULT_HARNESS_DEFAULTS[harness]
       next[harness] = nativeModelDefaults({ ...base, ...object(object(raw)[harness]) } as typeof base, options) as never
+      unavailable.delete(harness)
     }
     const defaults = HarnessDefaultsSchema.parse(next)
     const save = async (key: string, value: unknown, versioned: boolean) => {
@@ -59,9 +85,14 @@ export async function initializeNativeDefaults(input: {
         on conflict(key) do update set record=excluded.record,revision=excluded.revision,current_version_id=excluded.current_version_id,updated_at=excluded.updated_at`,
       [key, JSON.stringify(value), revision, versionId])
       await client.query("insert into management_audit(principal_id,source,action,target_key,outcome,details) values(null,'system','harness.defaults.initialize',$1,'allowed',$2::jsonb)",
-        [key, JSON.stringify({ revision, initializedHarnesses: [...available.keys()] })])
+        [key, JSON.stringify({ revision, initializedHarnesses: [...available.keys()], unavailableHarnesses: [...unavailable] })])
     }
-    if (!isDeepStrictEqual(raw ?? DEFAULT_HARNESS_DEFAULTS, defaults)) await save('harness-defaults', defaults, false)
+    const unavailableDefaults = UnavailableHarnessDefaultsSchema.parse([...unavailable].sort())
+    const availabilityChanged = !isDeepStrictEqual(priorUnavailable, unavailableDefaults)
+    if (!isDeepStrictEqual(raw ?? DEFAULT_HARNESS_DEFAULTS, defaults) || availabilityChanged) {
+      await save('harness-defaults', defaults, false)
+    }
+    if (availabilityChanged) await save(UNAVAILABLE_HARNESS_DEFAULTS_KEY, unavailableDefaults, false)
     const rawAgents = rows.get('agent-defaults-v1')?.record
     const agents = { ...DEFAULT_AGENT_DEFAULTS, ...object(rawAgents) }
     let changed = false

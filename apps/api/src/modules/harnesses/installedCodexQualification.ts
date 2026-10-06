@@ -6,37 +6,56 @@ import { ExecutionFactsResultSchema } from '@foreman-code/contracts/execution-au
 import type { HarnessQualificationRepository } from './qualification/repository.js'
 import { QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
 import { DomainError } from '../errors.js'
-import type { InstalledCodexInspection } from './installedCodexInspection.js'
+import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
+import type { InstalledHarnessInspection } from './installedCodexInspection.js'
 
-const unavailable = (): never => { throw new DomainError('HARNESS_UNQUALIFIED', 'Current authenticated Main proof and exact installed Codex identity are required.', 409) }
+const unavailable = (): never => { throw new DomainError('HARNESS_UNQUALIFIED', 'Current authenticated Main proof and installed harness identity are required.', 409) }
 const same = (left: unknown, right: unknown) => commandInputHash(left) === commandInputHash(right)
 
 /** This capability is constructed by the installed host from actual W07 read
  * callbacks. It accepts no stored proof/config JSON and has no durable ledger. */
-export function createInstalledCodexQualificationReader(input: {
+export function createInstalledHarnessQualificationReader(input: {
+  harness: 'codex' | 'opencode'
   intent: DispatchIntent
   placement: AcceptedNodePlacement
   trustedCurrentBinding(): Readonly<DeviceSessionBinding> | null
-  inspect(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<InstalledCodexInspection>
+  trustedCurrentIntent?(): DispatchIntent
+  inspect(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<InstalledHarnessInspection>
   readFacts(): Promise<unknown>
+  assertResident?(original: Readonly<DeviceSessionBinding>, current: Readonly<DeviceSessionBinding>): Promise<void>
   suiteRevision: string
   signal: AbortSignal
 }) {
+  const harness = input.harness
   const initial = input.trustedCurrentBinding()
   const originalBinding = initial ? DeviceSessionBindingSchema.parse(initial) : null
+  const verifyBinding = async (binding: Readonly<DeviceSessionBinding>) => {
+    if (!originalBinding) return unavailable()
+    if (same(binding, originalBinding)) return false
+    if (!input.assertResident || binding.mainId !== originalBinding.mainId
+      || binding.deviceId !== originalBinding.deviceId || binding.bootId !== originalBinding.bootId
+      || binding.workerInstallationId !== originalBinding.workerInstallationId
+      || binding.keyRevision !== originalBinding.keyRevision
+      || binding.authorizationRevision !== originalBinding.authorizationRevision) return unavailable()
+    await input.assertResident(originalBinding, binding)
+    return true
+  }
   const originalIntent = structuredClone(input.intent), originalPlacement = structuredClone(input.placement)
   const capture = async () => {
     input.signal.throwIfAborted()
+    const expectedIntent = structuredClone(input.trustedCurrentIntent?.() ?? originalIntent)
+    if (!same({ ...expectedIntent, owner: originalIntent.owner }, originalIntent)) return unavailable()
     const live = input.trustedCurrentBinding()
-    if (!live || !originalBinding || !same(live, originalBinding)) return unavailable()
+    if (!live || !originalBinding) return unavailable()
     const binding = DeviceSessionBindingSchema.parse(live)
+    const resident = await verifyBinding(binding)
     const inspection = await input.inspect(binding, input.signal)
     const current = inspection.currentTarget
     if (!current || !same(current.binding, binding)) return unavailable()
     const facts = ExecutionFactsResultSchema.parse(await input.readFacts())
     input.signal.throwIfAborted()
     const afterBinding = input.trustedCurrentBinding()
-    if (!afterBinding || !same(afterBinding, binding) || !same(facts.intent, originalIntent) || !same(facts.placement, originalPlacement)) return unavailable()
+    if (!afterBinding || !same(afterBinding, binding) || !same(facts.intent, expectedIntent) || !same(facts.placement, originalPlacement)) return unavailable()
     const after = (await input.inspect(binding, input.signal)).currentTarget
     input.signal.throwIfAborted()
     const finalBinding = input.trustedCurrentBinding()
@@ -54,14 +73,14 @@ export function createInstalledCodexQualificationReader(input: {
       || !same(installation.hostRef, current.target.hostRef) || !same(override.target, current.target)
       || installation.harnessInstallationId !== current.target.harnessInstallationId
       || installation.installationFingerprint !== current.target.installationFingerprint
-      || installation.driverId !== 'codex' || !installation.installed || installation.launcher.status !== 'installed'
+      || installation.driverId !== harness || !installation.installed || installation.launcher.status !== 'installed'
       || installation.driverRevision !== current.installation.driverRevision || installation.protocolRevision !== current.installation.protocolRevision
       || installation.environmentGeneration !== current.installation.environmentGeneration
       || installation.connectionGeneration !== current.installation.connectionGeneration
       || installation.launcher.resolvedLauncher !== current.installation.launcher.resolvedLauncher
       || installation.launcher.fingerprint !== current.target.installationFingerprint
       || !same(installation.launcher.payloadFingerprints, current.installation.launcher.payloadFingerprints)
-      || !override.enabled || override.driverId !== 'codex' || override.configuration.harness !== 'codex'
+      || !override.enabled || override.driverId !== harness || override.configuration.harness !== harness
       || override.instanceId !== placement.payload.instanceId || override.instanceRevision !== placement.payload.instanceRevision
       || placement.payload.harnessInstallationId !== current.target.harnessInstallationId
       || placement.payload.installationFingerprint !== current.target.installationFingerprint
@@ -70,14 +89,15 @@ export function createInstalledCodexQualificationReader(input: {
       || !same(profileProof.target, current.target) || profileProof.instanceRevision !== override.instanceRevision
       || profileProof.configurationFingerprint !== override.configurationFingerprint
       || override.configurationFingerprint !== commandInputHash(withAdvancedDefaults(override.configuration))
-      || facts.configuration.harness.harness !== 'codex' || !same(withAdvancedDefaults(facts.configuration.harness), withAdvancedDefaults(override.configuration))
-      || profileProof.driverId !== 'codex' || profileProof.driverRevision !== installation.driverRevision
-      || profileProof.protocolRevision !== installation.protocolRevision || profileProof.suiteRevision !== 'codex-profile-check-v1'
-      || profileProof.environmentGeneration !== installation.environmentGeneration || profileProof.connectionGeneration !== installation.connectionGeneration
+      || facts.configuration.harness.harness !== harness || !same(withAdvancedDefaults(facts.configuration.harness), withAdvancedDefaults(override.configuration))
+      || profileProof.driverId !== harness || profileProof.driverRevision !== installation.driverRevision
+      || profileProof.protocolRevision !== installation.protocolRevision || profileProof.suiteRevision !== `${harness}-profile-check-v1`
+      || profileProof.environmentGeneration !== installation.environmentGeneration || profileProof.connectionGeneration !== (resident
+        ? harnessConnectionGeneration(originalBinding) : installation.connectionGeneration)
       || profileProof.authenticated !== true || profileProof.compatible !== true || !profileProof.qualified
-      || qualification.harness !== 'codex' || installation.observedVersion !== qualification.version
+      || qualification.harness !== harness || installation.observedVersion !== qualification.version
       || qualification.binarySha256 !== current.binarySha256 || qualification.suiteRevision !== input.suiteRevision
-      || qualification.status !== 'qualified' || qualification.profile !== QUALIFICATION_TARGET_PROFILE.codex
+      || qualification.status !== 'qualified' || qualification.profile !== QUALIFICATION_TARGET_PROFILE[harness]
       || !qualification.checkedAt || !qualification.checks.length || qualification.checks.some(check => !check.passed)) return unavailable()
     // Correlated facts come from the existing W08 RPC reader; preserve the exact
     // accepted operation/attempt rather than turning this into a free-standing permit.
@@ -86,6 +106,9 @@ export function createInstalledCodexQualificationReader(input: {
       || facts.executionPlacement.executionId !== facts.intent.executionId || facts.executionPlacement.attemptId !== facts.intent.attemptId
       || facts.executionPlacement.operationId !== facts.intent.operationId
       || facts.configuration.id !== placement.payload.agentConfigurationVersionId || facts.configuration.agentId !== placement.payload.agentId) return unavailable()
+    await verifyBinding(binding)
+    if (!same(input.trustedCurrentBinding(), binding)
+      || !same(input.trustedCurrentIntent?.() ?? originalIntent, expectedIntent)) return unavailable()
     return Object.freeze({ binding: Object.freeze(binding), inspection, facts, qualification })
   }
   const repository: Pick<HarnessQualificationRepository, 'find' | 'list'> = {
@@ -97,4 +120,9 @@ export function createInstalledCodexQualificationReader(input: {
     },
   }
   return Object.freeze({ capture, repository: Object.freeze(repository) })
+}
+
+export function createInstalledCodexQualificationReader(
+  input: Omit<Parameters<typeof createInstalledHarnessQualificationReader>[0], 'harness'>) {
+  return createInstalledHarnessQualificationReader({ ...input, harness: 'codex' })
 }

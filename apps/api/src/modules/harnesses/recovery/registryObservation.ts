@@ -13,7 +13,7 @@ export interface NativeLaunchObservation {
   readonly boundary?: Readonly<NativeCgroupBoundary>
   readonly lifecycle: 'active' | 'ended' | 'closure-unconfirmed' | 'closed'
   readonly closureEvidence?: 'linux_boot_changed' | 'native_not_started' | 'cgroup_v2_empty'
-    | 'native_exit_removed_cgroup' | 'cgroup_v2_removed'
+    | 'native_exit_removed_cgroup' | 'cgroup_v2_removed' | undefined
 }
 export interface NativeRegistrySnapshot { readonly revision: string; readonly launches: readonly NativeLaunchObservation[] }
 export interface NativeRegistryChange extends NativeRegistrySnapshot { readonly gap: boolean }
@@ -113,6 +113,26 @@ function readLaunch(root: string, ownerKey: string, id: string): NativeLaunchObs
   return Object.freeze(launch)
 }
 
+function retiredObservation(root: string, ownerKey: string): NativeLaunchObservation | undefined {
+  const value = readRecord(join(root, ownerKey, 'retired.json'))
+  if (value === undefined) return undefined
+  const retired = recordObject(value)
+  if (retired.observation === undefined) return undefined
+  const row = recordObject(retired.observation)
+  if (retired.format !== 2 || row.owner !== retired.owner || row.launchId !== retired.id
+    || typeof row.owner !== 'string' || createHash('sha256').update(row.owner).digest('hex') !== ownerKey
+    || typeof row.launchId !== 'string' || !/^[0-9a-f-]{36}$/.test(row.launchId)
+    || typeof row.bootId !== 'string' || row.lifecycle !== 'closed'
+    || !['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty', 'native_exit_removed_cgroup',
+      'cgroup_v2_removed'].includes(String(row.closureEvidence))) {
+    throw new Error('Invalid retired native observation.')
+  }
+  if (row.guardian !== undefined) identity(row.guardian)
+  if (row.provider !== undefined) identity(row.provider)
+  if (row.boundary !== undefined) cgroupBoundary(row.boundary, row.launchId)
+  return Object.freeze(row as unknown as NativeLaunchObservation)
+}
+
 /** Bounded, ephemeral derived projection. Durable ownership remains the registry. */
 class Projection {
   private epoch = randomUUID()
@@ -122,6 +142,14 @@ class Projection {
   private retiring: { rows: Map<string, NativeLaunchObservation>; closed: Set<string>; eviction: Iterator<string>; truncated: boolean } | undefined
 
   revision(): string { return this.current.revision }
+  retirementObservation(path: string): NativeLaunchObservation | undefined {
+    const absolute = resolve(path)
+    const ownerKey = basename(dirname(absolute))
+    const launchId = basename(absolute)
+    if (dirname(dirname(absolute)) !== this.root || !/^[0-9a-f]{64}$/.test(ownerKey)
+      || !/^[0-9a-f-]{36}$/.test(launchId)) throw new Error('Invalid native retirement observation path.')
+    return readLaunch(this.root, ownerKey, launchId)
+  }
   private current: NativeRegistrySnapshot = Object.freeze({ revision: `${this.epoch}:0`, launches: Object.freeze([]) })
   constructor(private readonly root: string) {}
   snapshot(): NativeRegistrySnapshot {
@@ -132,6 +160,11 @@ class Projection {
       if (!/^[0-9a-f]{64}$/.test(ownerKey)) throw new Error('Unexpected native owner inventory entry.')
       const ownerDirectory = join(this.root, ownerKey)
       if (!directory(ownerDirectory)) continue
+      const retired = retiredObservation(this.root, ownerKey)
+      if (retired) {
+        seen.add(retired.launchId)
+        next.set(retired.launchId, retired)
+      }
       for (const id of entries(ownerDirectory)) {
         // Compact retirement receipts and GC tombstones are not registrations.
         if (!/^[0-9a-f-]{36}$/.test(id)) continue

@@ -5,10 +5,33 @@ import { DomainError } from '../../errors.js'
 
 const path=z.string().startsWith('/').refine(value=>!value.includes('\0')&&!value.includes('\n'))
 /** Installer selection only. Qualification, login, source and launch authority are read from their actual producers. */
-export const InstalledWorkflowConfigurationSchema=z.object({schemaVersion:z.literal(1),
-  codexBinary:path,appMcpLauncher:path,expectedVersion:z.string().trim().min(1).max(64),payloadPaths:z.array(path).max(16),
-}).strict()
+const version = z.string().trim().min(1).max(64)
+const payloadPaths = z.array(path).max(16)
+export const InstalledWorkflowConfigurationSchema = z.object({
+  schemaVersion: z.literal(1),
+  codexBinary: path.optional(),
+  appMcpLauncher: path,
+  expectedVersion: version.optional(),
+  payloadPaths: payloadPaths.optional(),
+  opencode: z.object({ binary: path, expectedVersion: version, payloadPaths }).strict().optional(),
+}).strict().superRefine((value, context) => {
+  const codexSelected = value.codexBinary !== undefined || value.expectedVersion !== undefined
+    || value.payloadPaths !== undefined
+  if (codexSelected && (!value.codexBinary || !value.expectedVersion || !value.payloadPaths)) {
+    context.addIssue({ code: 'custom', message: 'The Codex selection requires its binary, version and payload paths.' })
+  }
+  if (!codexSelected && !value.opencode) {
+    context.addIssue({ code: 'custom', message: 'Select at least one installed workflow harness.' })
+  }
+})
 export type InstalledWorkflowConfiguration=z.infer<typeof InstalledWorkflowConfigurationSchema>
+export function installedHarnessSelection(configuration: InstalledWorkflowConfiguration,
+  harness: 'codex' | 'opencode') {
+  if (harness === 'opencode') return configuration.opencode ?? null
+  if (!configuration.codexBinary || !configuration.expectedVersion || !configuration.payloadPaths) return null
+  return { binary: configuration.codexBinary, expectedVersion: configuration.expectedVersion,
+    payloadPaths: configuration.payloadPaths }
+}
 export interface InstalledWorkflowConfigurationLocation {path:string;ownerUid:number}
 function unavailable(reason:string):never {
   throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The installed workflow selection is unavailable.',409,{reason})

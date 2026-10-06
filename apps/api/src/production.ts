@@ -33,9 +33,12 @@ import type { SourceActiveNativeSessionReader, SourceNativeSessionCaptureReader 
 import { EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
+import { RunPlacementReadService } from './modules/placement/readService.js'
+import { readRemoteObservations } from './modules/runs/remote/persistence.js'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
 import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
-import { createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
+import { assertRemoteExecutionAuthority, createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
 import { MainWorkerMcpRelay, selectedMainMcpForward, createWorkerNativeOutputAuthorizationPort } from './modules/placement/workerMcpRelay.js'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { recoverWorkflowArtifactOutputs } from './modules/runs/remote/workflowArtifactRecovery.js'
@@ -43,7 +46,7 @@ import { readAcceptedPlacement } from './modules/placement/persistence.js'
 import type { RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
 import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
 import { BYTE_TRANSFER_NAMESPACE } from './modules/byte-transfer/carrier.js'
-import { retainInstalledCodexInventory } from './modules/harnesses/installedCodexInspection.js'
+import { retainInstalledHarnessInventory } from './modules/harnesses/installedCodexInspection.js'
 import { readFile } from 'node:fs/promises'
 import { RESOURCE_TELEMETRY_CAPABILITY, type TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
 import { createResourceTelemetryRuntime, type ResourceTelemetryRuntime } from './modules/resource-telemetry/runtime.js'
@@ -94,6 +97,7 @@ import { randomUUID } from 'node:crypto'
 import { createWorkflowNativeCaptureChannel } from './modules/interactions/workflowNativeCapture.js'
 import { createReviewNativeCaptureChannel } from './modules/interactions/reviewNativeCapture.js'
 import { ReviewNativeProofServices } from './modules/interactions/reviewNativeProof.js'
+import { readRetainedRemoteReviewer } from './modules/interactions/retainedRemoteReviewer.js'
 import { PostgresRepeatReviewerBindings } from './modules/interactions/repeatReviewer.js'
 import { createWorkflowRepositoryServices } from './modules/runs/workflowRepositoryServices.js'
 import { createProductionWorkflowArtifactResultSource } from './modules/runs/remote/workflowArtifactResultProduction.js'
@@ -218,7 +222,7 @@ import { ProductionHostHarnessProfileQualifier } from './modules/harnesses/produ
 import { HarnessInstanceSettingsRepository } from './modules/harnesses/instanceSettings/repository.js'
 import { HostHarnessProfileEvidenceRepository } from './modules/harnesses/instanceSettings/profileRepository.js'
 import { HostHarnessInstanceProfileChecks } from './modules/harnesses/instanceSettings/profileChecks.js'
-import { createInstalledCodexQualificationRetention } from './modules/harnesses/installedCodexQualificationRetention.js'
+import { createInstalledHarnessQualificationRetention } from './modules/harnesses/installedCodexQualificationRetention.js'
 import { HostHarnessOverrideService, type HostHarnessOverrideAuthority } from './modules/harnesses/instanceSettings/service.js'
 import { commandInputHash } from './modules/commands/postgres.js'
 import { authorizeDeviceHost, assertDeviceHostInstallation } from './modules/devices/hostAuthorization.js'
@@ -340,7 +344,7 @@ export function buildProductionApp(
         maxJsonBytes: WORKER_MCP_EXTENSION.maxJsonBytes, maxBinaryBytes: 0, async handle(payload, context) {
           if (!mainWorkerMcp) throw new DomainError('WORKER_MCP_UNAVAILABLE', 'The original Main worker MCP authority has not initialized.', 503)
           context.signal.throwIfAborted()
-          const result = await mainWorkerMcp.handle(payload, context.binding)
+          const result = await mainWorkerMcp.handle(payload, context.binding, context.signal)
           context.signal.throwIfAborted()
           return { payload: result }
         } },
@@ -395,8 +399,10 @@ export function buildProductionApp(
         const result = await endpoint.request(binding.deviceId, 'harness-discovery-v1',
           { operation: 'discover', refreshId: randomUUID() }, { signal })
         signal.throwIfAborted()
-        if (selectedSuites) await retainInstalledCodexInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
-          binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision })
+        if (selectedSuites) await retainInstalledHarnessInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
+          binding, inventory: result.payload, suiteRevisions: {
+            codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
+          } })
         else harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
       }
       if (infrastructure?.deviceDomains) await infrastructure.deviceDomains.reconcile(binding, signal, endpoint)
@@ -476,7 +482,8 @@ export function buildProductionApp(
       return undefined
     },
   }
-  const reviewNativeProofs = new ReviewNativeProofServices(reviewCapture.verify)
+  const reviewNativeProofs = new ReviewNativeProofServices(reviewCapture.verify,
+    (sql, capture) => remoteWorkflow.assertReviewPhysical(sql, capture))
   const repository = new PostgresInteractionRepository(database.pool, reviewNativeProofs)
   const budgets = new PostgresApprovalBudgetRepository(database.pool)
   const projectRoot = config.workspaceStorageRoot ?? workspaceStorageRoot()
@@ -652,8 +659,10 @@ export function buildProductionApp(
           directory: resolve(config.harnesses.workspaceRoot, 'claude-native-qualification'), recovery, signal: input.signal,
           assertCurrent: async () => { await nativeFactories.assertInstallationUnchanged(binding, input.signal); harnessRegistry.installations.assertCurrent(binding) } }) }
         finally { await close() }
-      } }, workerExecution), selectedSuites ? createInstalledCodexQualificationRetention({
-      repository: qualificationRepository, suiteRevision: selectedSuites.codex.revision,
+      } }, workerExecution), selectedSuites ? createInstalledHarnessQualificationRetention({
+      repository: qualificationRepository, suiteRevisions: {
+        codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
+      },
       currentBinding: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, 'host-harness-check-v1')?.binding ?? null,
       currentInstallation: value => harnessRegistry.pinOverride(value).installation,
       async refreshInstallation(value, signal) {
@@ -663,8 +672,10 @@ export function buildProductionApp(
         const bounded = AbortSignal.any([signal, AbortSignal.timeout(30000)])
         const result = await captured.request({ operation: 'discover', refreshId: randomUUID() }, { signal: bounded })
         bounded.throwIfAborted()
-        await retainInstalledCodexInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
-          binding: captured.binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision })
+        await retainInstalledHarnessInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
+          binding: captured.binding, inventory: result.payload, suiteRevisions: {
+            codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
+          } })
       },
     }) : undefined)
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
@@ -787,8 +798,31 @@ export function buildProductionApp(
     async assertCurrent(binding, signal) {
       signal?.throwIfAborted()
       const sql = interactionConnection.getStore() ?? database.pool
+      if (!agentPlacement) {
+        throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The current accepted placement authority is unavailable.', 503)
+      }
+      if (binding.placement.hostRef.kind === 'device') {
+        const stored = (await sql.query<{ receipt: unknown }>(
+          'select receipt from remote_execution_receipts where operation_id=$1',
+          [binding.intent.operationId])).rows[0]
+        const receipt = stored && RemoteOperationReceiptSchema.parse(stored.receipt)
+        if (receipt?.native) {
+          const authenticated = deviceRuntime.endpointForDomains().currentBinding(binding.placement.hostRef.deviceId)
+          if (!authenticated) {
+            throw new DomainError('REMOTE_DISPATCH_UNAVAILABLE', 'The authenticated execution connection is unavailable.', 503)
+          }
+          if (authenticated.bootId !== receipt.connection.bootId) {
+            throw new DomainError('REMOTE_NATIVE_OWNER_CLOSED', 'The connected computer restarted during the run.', 409)
+          }
+          await assertRemoteExecutionAuthority(sql, locations, {
+            version: 1, intent: binding.intent, placement: binding.placement, action: 'read',
+          }, authenticated, agentPlacement)
+          signal?.throwIfAborted()
+          return
+        }
+      }
       const row = (await sql.query<{ principal_id: string; workspace_id: string }>("select record->>'authorizationPrincipalId' as principal_id,workspace_id from runs where id=$1", [binding.intent.runId])).rows[0]
-      if (!row || !agentPlacement) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The current accepted placement authority is unavailable.', 503)
+      if (!row) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The current accepted placement authority is unavailable.', 503)
       await agentPlacement.assertPinsCurrent(sql, binding.placement, await readLiveManagementPrincipal(sql, row.principal_id), row.workspace_id)
       signal?.throwIfAborted()
     },
@@ -813,6 +847,25 @@ export function buildProductionApp(
       await appRoutes.refresh()
       return credential
     },
+    async recoverRemote(executionId, applicationAccess, job) {
+      const execution = await runs.getExecution(executionId)
+      const binding = remoteWorkflow.binding(executionId)
+      const retained = execution && await readRetainedRemoteReviewer(database.pool, execution)
+      if (!execution || !binding || !retained || applicationAccess.executionId !== executionId
+        || applicationAccess.operationId !== binding.intent.operationId || applicationAccess.attemptId !== binding.intent.attemptId
+        || applicationAccess.bindingHash !== binding.intent.bindingHash || applicationAccess.agentId !== execution.agentId)
+        throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The original process credential cannot be recovered.', 409)
+      if (job) await credentials.bindReviewerJob(executionId, { principalId: retained.principalId }, job)
+      const principal = await access.authenticate(applicationAccess.token, 'worker')
+      if (principal.id !== retained.principalId || principal.agentId !== execution.agentId)
+        throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The original process credential changed.', 409)
+      return { principalId: principal.id, expiresAt: principal.expiresAt,
+        environment: { agentId: execution.agentId, variables: { GRAPHQL_MCP_TOKEN: applicationAccess.token } } }
+    },
+    async bindReviewerJob(executionId, credential, job, lane) {
+      await credentials.bindReviewerJob(executionId, credential, job, lane)
+      await appRoutes.refresh()
+    },
     async prepare(input) {
       await validateContinuation(input.executionId, input.signal)
       const execution = await runs.getExecution(input.executionId)
@@ -823,8 +876,8 @@ export function buildProductionApp(
       const run = await runs.get(execution.runId)
       if (!configuration || configuration.id !== execution.agentConfigurationVersionId
         || configuration.agentId !== execution.agentId || configuration.harness.harness !== input.harness
-        || !run?.executionLocation || run.executionLocation.runnerId !== 'runner-local') {
-        throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'Credential preflight requires the pinned local execution identity.', 409)
+        || !run?.executionLocation) {
+        throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'Credential preflight requires the pinned execution identity.', 409)
       }
       const context = {
         executionId: execution.id, agentId: execution.agentId, harness: input.harness,
@@ -832,6 +885,13 @@ export function buildProductionApp(
         ...(input.purpose ? { purpose: input.purpose } : {}),
       }
       const preparedContext = await prepareWorkflowManagerContext(context)
+      const placement = preparedContext.acceptedPlacement
+      if (!placement && run.executionLocation.runnerId !== locations.runnerId) {
+        throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'An unplaced execution requires the local workspace runner.', 409)
+      }
+      let runnerId = run.executionLocation.runnerId
+      if (placement?.hostRef.kind === 'main') runnerId = locations.runnerId
+      if (placement?.hostRef.kind === 'device') runnerId = placement.registration!.workerInstallationId
       const { manager } = managers.resolve(preparedContext)
       const detection = remoteWorkflow.isRemote(input.executionId)
         ? remoteMcpPreflight(manager, preparedContext)
@@ -839,7 +899,7 @@ export function buildProductionApp(
       if (input.harness === 'claude') {
         const claude = claudeLaunches.get(manager)
         if (!claude || configuration.harness.harness !== 'claude') throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The exact Claude launch is unavailable.', 409)
-        const inspected = await nativeFactories.inspector(manager).inspect({ harness: 'claude', runnerId: run.executionLocation.runnerId,
+        const inspected = await nativeFactories.inspector(manager).inspect({ harness: 'claude', runnerId,
           workingDirectory: input.workingDirectory, serverName: PRODUCT_SLUG, phase: 'configuration', ...(input.signal ? { signal: input.signal } : {}) })
         const entry = inspected.entry
         if (!entry || !isSupportedAppMcpServerName(entry.name) || entry.transport !== 'streamable-http' || entry.endpoint !== appMcpEndpoint
@@ -857,14 +917,14 @@ export function buildProductionApp(
           const start = { ...await claude.inspectionStart(), environment: credential.environment }
           await claude.manager.refreshInspectionCredentials(start, { ...configuration.harness.mcpServers,
             [serverName]: { ...configured, headers: { Authorization: `Bearer ${token}` } } }, input.signal)
-          const checked = await detection.preflight({ harness: 'claude', runnerId: run.executionLocation.runnerId,
+          const checked = await detection.preflight({ harness: 'claude', runnerId,
             workingDirectory: input.workingDirectory, ...(input.signal ? { signal: input.signal } : {}) })
           if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'Claude did not acknowledge the scoped HTTP credential on its current query.', 409)
           await appRoutes.refresh()
           return { credential, detection: checked }
         } catch (error) { await credentials.revoke(credential); throw error }
       }
-      const launch = new WorkerLaunchCredentialService(detection, credentials, run.executionLocation.runnerId)
+      const launch = new WorkerLaunchCredentialService(detection, credentials, runnerId)
       // The coordinator reserved and retained this exact manager lifetime
       // BEFORE preflight. It owns disposal + durable closure on every failure;
       // releasing an empty resolver here would destroy the only positive proof.
@@ -889,12 +949,17 @@ export function buildProductionApp(
       const evidence = workflowCapture.capture.capture(input)
       remoteWorkflow!.capture(input, workflowCapture.verify.read(evidence))
       return evidence
-    } }, reviewCapture.capture,
-    async (executionId, signal) => {
+    } }, { capture(input) {
+      const evidence = reviewCapture.capture.capture(input)
+      remoteWorkflow.captureReview(reviewCapture.verify.read(evidence))
+      return evidence
+    } },
+    async (executionId, signal, owner) => {
       signal.throwIfAborted()
       const placement = await readExecutionPlacement(database.pool, executionId)
       const closed = placement?.hostRef.kind === 'device'
-        ? await remoteWorkflowPreparationClosed(database.pool, executionId)
+        ? await remoteWorkflow.confirmClosedExecution(executionId, signal, owner)
+          || await remoteWorkflowPreparationClosed(database.pool, executionId)
         : await processRegistry.closeOwner(`execution:${executionId}`, signal)
       signal.throwIfAborted()
       return closed
@@ -907,6 +972,7 @@ export function buildProductionApp(
       Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
     },
     prepareWorkflowManagerContext,
+    executionId => remoteWorkflow.afterReviewCommit(executionId),
   )
   const captureLocalNativeOutputCall = async (executionId: string, toolName: string,
     args: unknown, signal: AbortSignal): Promise<NativeOutputCallCapture> => {
@@ -1204,6 +1270,7 @@ export function buildProductionApp(
     interactions: new OperatorInteractionService(interactions),
     // Reads and lifecycle mutations share the same canonical V3 journal.
     runGraph: new RunGraphReadService(database.pool, { qualifiedReads: true }),
+    runPlacements: new RunPlacementReadService(database.pool, readRemoteObservations),
   }
   const detection = new McpDetectionService({
     async inspect(input) {
@@ -1285,14 +1352,8 @@ export function buildProductionApp(
   const lifecycle = new RuntimeShutdown({
     stop: [
       { name: 'passive resource telemetry admission', run: async () => { telemetryLifetime.abort() } },
+      { name: 'device admission', run: () => deviceRuntime.stopAdmission() },
       { name: 'original rsync byte ownership', run: () => rsync.kind === 'configured' ? rsync.rsyncWriters.close() : undefined },
-      { name: 'device admission and channels', run: async () => {
-        try {
-          if (rsync.kind === 'configured') await rsync.rsyncWriters.close()
-        } finally {
-          deviceRuntime.stop()
-        }
-      } },
       { name: 'canonical harness inventory and profile checks', run: async () => { harnessRegistry.stop(); await harnessInstances.closeChecks() } },
       { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
       { name: 'live harness qualification admission', run: async () => { harnessQualifications?.stop() } },
@@ -1306,7 +1367,6 @@ export function buildProductionApp(
       { name: 'workflow engine', run: () => engine.shutdown() },
     ],
     drain: [
-      { name: 'device listener and admitted work', run: () => deviceRuntime.drain() },
       { name: 'live harness qualification', run: () => harnessQualifications?.join() },
       // Initialization errors belong to initialize()'s caller, not to cleanup.
       // Wait for its last DB/filesystem operation even if startup was canceled.
@@ -1330,6 +1390,8 @@ export function buildProductionApp(
         const errors: unknown[] = []
         try { await approvals.closeForRestart() } catch (error) { errors.push(error) }
         try { await managers.dispose() } catch (error) { errors.push(error) }
+        // Remote session disposition still needs the authenticated device channels.
+        try { await deviceRuntime.drain() } catch (error) { errors.push(error) }
         if (errors.length) throw new AggregateError(errors, 'Execution native manager disposal was incomplete.')
       } },
       { name: 'remaining Operator native managers', run: async () => {

@@ -1,12 +1,18 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Socket } from 'node:net'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { freezePlacement, deriveDispatch } from './binding.js'
 import Fastify from 'fastify'
-import { MainWorkerMcpRelay, selectedMainMcpForward } from './workerMcpRelay.js'
+import { MainWorkerMcpRelay, selectedMainMcpForward, type SelectedMainMcpForward } from './workerMcpRelay.js'
 import { isAuthorized } from '../access/policy.js'
+import { deferred } from '../../../test/helpers/wave25Agent3.js'
+import { createWorkerMcpEndpoint } from '../runs/remote/workerMcpEndpoint.js'
+import { prepareWorkerApplicationAccess } from '../runs/remote/workerApplicationAccess.js'
 
 const ports = vi.hoisted(() => ({ intent: vi.fn(), placement: vi.fn(), host: vi.fn(), owner: vi.fn() }))
 vi.mock('../runs/remote/persistence.js', () => ({ readReconciledDispatchIntent: ports.intent }))
@@ -46,13 +52,17 @@ function fixture(nativeOutputs?: import('./workerMcpRelay.js').WorkerNativeOutpu
   ports.intent.mockResolvedValue(intent); ports.placement.mockResolvedValue(placement)
   ports.host.mockResolvedValue({ keyRevision: 1, authorizationRevision: 1 })
   ports.owner.mockResolvedValue({ principal: { id: 'owner', name: 'Owner', audience: 'operator', grants: [{ actions: ['runs:start'], scope: { workspaceIds: ['workspace'], workflowIds: ['workflow'] } }], expiresAt: principal.expiresAt, revokedAt: null } })
-  const forward = vi.fn(async () => ({ statusCode: 200, contentType: 'application/json' as const, body: '{"ok":true}' }))
-  const relay = new MainWorkerMcpRelay(mainId, pool, { authenticate: async () => principal }, { request: forward }, nativeOutputs)
+  const forward = vi.fn<SelectedMainMcpForward['request']>(async () => ({
+    statusCode: 200, contentType: 'application/json', body: '{"ok":true}',
+  }))
+  const createRelay = () => new MainWorkerMcpRelay(mainId, pool,
+    { authenticate: async () => principal }, { request: forward }, nativeOutputs)
+  const relay = createRelay()
   const applicationAccess = { kind: 'scoped-worker-mcp' as const, token: 'original-worker-bearer', executionId: intent.executionId,
     agentId: 'agent', operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash }
   const request = { version: 1, operation: 'worker-mcp.authorize', intent, placement, applicationAccess }
   const connection = { mainId, deviceId, workerInstallationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
-  return { relay, principal, binding, request, connection, forward, query, state }
+  return { relay, createRelay, principal, binding, request, connection, forward, query, state }
 }
 describe('Main worker MCP relay with original binding doubles and real worker scope policy', () => {
   it('waits for the original native ACK and admitted file context without granting a mutation', async () => {
@@ -75,6 +85,71 @@ describe('Main worker MCP relay with original binding doubles and real worker sc
     f.binding.revoked_at = new Date()
     await expect(f.relay.handle(request, f.connection)).rejects.toMatchObject({ code: 'WORKER_MCP_LEASE_UNAVAILABLE' })
   })
+
+  it('keeps the original authenticated worker endpoint through Main restart and owner reconciliation', async () => {
+    const f = fixture()
+    const root = await mkdtemp(join(tmpdir(), 'worker-mcp-restart-'))
+    let intent = f.request.intent
+    let selectedMain = f.relay
+    let main = Fastify()
+    let endpoint: Awaited<ReturnType<typeof createWorkerMcpEndpoint>> | undefined
+    const openMain = async () => {
+      main.post('/mcp', (request, reply) => {
+        if (request.headers.authorization !== `Bearer ${f.request.applicationAccess.token}`) {
+          return reply.code(401).send({ error: 'Worker credential denied' })
+        }
+        return { jsonrpc: '2.0', id: 1, result: { tools: [] } }
+      })
+      await main.listen({ host: '127.0.0.1', port: 0 })
+      f.forward.mockImplementation(selectedMainMcpForward(main).request)
+    }
+    try {
+      await openMain()
+      const relay = await prepareWorkerApplicationAccess({ request: async (_namespace, raw, options) => ({
+        payload: await selectedMain.handle(raw, f.connection, options?.signal),
+      }) }, f.request.intent, f.request.placement, f.request.applicationAccess,
+      new AbortController().signal, { currentIntent: () => intent })
+      const environment = relay.environment
+      endpoint = await createWorkerMcpEndpoint({ relay, launcher: join(root, 'graphql-mcp.mjs'),
+        signal: new AbortController().signal })
+      const route = join(root, 'routes', `${createHash('sha256').update(f.request.applicationAccess.token).digest('hex')}.json`)
+      const originalRoute = JSON.parse(await readFile(route, 'utf8'))
+      const requestWorker = (token = f.request.applicationAccess.token) => fetch(endpoint!.endpoint, {
+        method: 'POST', headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      })
+      expect((await requestWorker()).status).toBe(200)
+
+      await main.close()
+      const renewed = { ...intent, owner: { grantId: 'replacement-owner-grant', epoch: '2' } }
+      ports.intent.mockResolvedValue(renewed)
+      selectedMain = f.createRelay()
+      main = Fastify()
+      await openMain()
+      await expect(endpoint.refreshLease()).rejects.toMatchObject({ code: 'WORKER_MCP_SCOPE_CONFLICT' })
+      intent = renewed
+      await endpoint.refreshLease()
+      const recovered = await requestWorker()
+      expect(recovered.status).toBe(200)
+      expect(await recovered.json()).toMatchObject({ result: { tools: [] } })
+      expect(relay.environment).toBe(environment)
+      expect(environment.variables.GRAPHQL_MCP_TOKEN).toBe(f.request.applicationAccess.token)
+      expect(JSON.parse(await readFile(route, 'utf8'))).toEqual(originalRoute)
+
+      f.forward.mockClear()
+      expect((await requestWorker('foreign-worker-token')).status).toBe(401)
+      expect(f.forward).not.toHaveBeenCalled()
+      f.principal.grants = []
+      await expect(endpoint.refreshLease()).rejects.toMatchObject({ status: 403 })
+      expect((await requestWorker()).status).toBe(502)
+      expect(f.forward).not.toHaveBeenCalled()
+    } finally {
+      await endpoint?.close()
+      await main.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('does not infer native mutation permission from a valid application lease', async () => {
     const f = fixture()
     await expect(f.relay.handle({ ...f.request, operation: 'worker-mcp.authorize-native-output', outputOperation: 'create',
@@ -132,7 +207,7 @@ describe('Main worker MCP relay with original binding doubles and real worker sc
     expect(f.forward).not.toHaveBeenCalled()
     expect(f.query.mock.calls.some(([sql]) => sql.includes("he.record->>'state' as execution_state"))).toBe(true)
     expect(await f.relay.handle({ ...f.request, operation: 'worker-mcp.request', body: { method: 'tools/list' } }, f.connection)).toMatchObject({ statusCode: 200 })
-    expect(f.forward).toHaveBeenCalledWith({ method: 'tools/list' }, 'original-worker-bearer', undefined)
+    expect(f.forward).toHaveBeenCalledWith({ method: 'tools/list' }, 'original-worker-bearer', undefined, undefined)
   })
   it.each(['foreign-workspace', 'foreign-workflow', 'foreign-run', 'split-grants', 'expired', 'revoked'] as const)('denies %s without forwarding', async reason => {
     const f = fixture()
@@ -161,7 +236,61 @@ describe('Main worker MCP relay with original binding doubles and real worker sc
   })
 })
 
+it('passes cancellation of the authenticated worker request to the original Main call', async () => {
+  const f = fixture()
+  const entered = deferred<AbortSignal>()
+  f.forward.mockImplementation(async (_body, _token, _protocol, signal) => new Promise<never>((_resolve, reject) => {
+    if (!signal) throw new Error('Missing original request signal')
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    entered.resolve(signal)
+  }))
+  const controller = new AbortController()
+  const cause = new Error('Worker request cancelled')
+  const pending = f.relay.handle({ ...f.request, operation: 'worker-mcp.request', body: { method: 'tools/list' } },
+    f.connection, controller.signal)
+  const rejected = expect(pending).rejects.toBe(cause)
+  expect(await entered.promise).toBe(controller.signal)
+  controller.abort(cause)
+  await rejected
+  expect(f.forward).toHaveBeenCalledWith({ method: 'tools/list' }, 'original-worker-bearer', undefined, controller.signal)
+})
+
+it('rejects an already cancelled request before forwarding any worker effect', async () => {
+  const f = fixture()
+  const cause = new Error('Worker request cancelled')
+  await expect(f.relay.handle({ ...f.request, operation: 'worker-mcp.request', body: {} },
+    f.connection, AbortSignal.abort(cause))).rejects.toBe(cause)
+  expect(f.forward).not.toHaveBeenCalled()
+})
+
 describe('selected Main fixed artifact tool routing', () => {
+  it('closes the authenticated Main HTTP request when its worker request is cancelled', async () => {
+    const app = Fastify()
+    const entered = deferred<void>()
+    const disconnected = deferred<void>()
+    app.post('/mcp', (request, reply) => {
+      expect(request.headers.authorization).toBe('Bearer original-worker-bearer')
+      reply.hijack()
+      reply.raw.once('close', () => disconnected.resolve())
+      entered.resolve()
+    })
+    const controller = new AbortController()
+    const cause = new Error('Worker request cancelled')
+    try {
+      await app.listen({ host: '127.0.0.1', port: 0 })
+      const pending = selectedMainMcpForward(app).request({ method: 'tools/list' },
+        'original-worker-bearer', '2025-03-26', controller.signal)
+      const rejected = expect(pending).rejects.toBe(cause)
+      await entered.promise
+      controller.abort(cause)
+      await rejected
+      await disconnected.promise
+    } finally {
+      controller.abort(cause)
+      app.server.closeAllConnections()
+      await app.close()
+    }
+  })
   it.each([
     ['files.admit_transferred_result', '/mcp/artifact-transfers'],
     ['files.read_edge_input', '/mcp/artifact-inputs'],

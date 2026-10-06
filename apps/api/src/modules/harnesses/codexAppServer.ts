@@ -614,7 +614,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         // turn and its durable ACK, never the credentialed text-mode process.
         ...(!creation.source && (this.chatFiles || prepared.input.kind === 'operator')
           ? { dynamicTools: codexChatFileDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) }
-          : !creation.source && this.nativeOutputs ? { dynamicTools: codexNativeOutputDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
+          : !creation.source && this.nativeOutputs ? { dynamicTools: codexNativeOutputDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion, this.nativeOutputs) } : {}),
       }
       creationAttempted = true
       const result = await candidate.transport.request(method, params, signal, (value, error) => {
@@ -1381,12 +1381,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (rejected) return { ...await this.history(session), correlationId,
         nonSubmission: { nativeSessionId: session.nativeSessionId, clientCorrelationId: correlationId,
           result: structuredClone(rejected) } }
-      const restarted = runtime.closed
-      if (runtime.closed) await this.restart(runtime, signal)
-      const locallyIdle = !runtime.attached && runtime.phase === 'idle' && runtime.activeCorrelationId === undefined
-        && runtime.activeTurnId === undefined && runtime.interactions.size === 0
       const observedTerminal = runtime.activeCorrelationId === correlationId
         && runtime.activeTurnId !== undefined && runtime.terminalResult !== undefined
+      const restarted = runtime.closed && !observedTerminal
+      if (restarted) await this.restart(runtime, signal)
+      const locallyIdle = !runtime.attached && runtime.phase === 'idle' && runtime.activeCorrelationId === undefined
+        && runtime.activeTurnId === undefined && runtime.interactions.size === 0
       if (!locallyIdle && !observedTerminal) await this.synchronize(runtime, correlationId, signal)
       const lateRejection = runtime.rejectedStarts.get(correlationId)
         ?? this.responseJournal?.readTurnRejection(session, correlationId)
@@ -1748,10 +1748,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         runCommand: io.runCommand,
         transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
     if (this.nativeOutputs) {
-      if (input.kind === 'operator' || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox !== 'workspace-write') {
-        throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native outputs require original workflow workspace-write and scoped App MCP; no promotion is permitted.')
+      if (input.kind === 'operator' || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox === 'read-only'
+        || harnessConfiguration.sandbox === 'danger-full-access' && this.nativeOutputs.storageKind !== 'buffer') {
+        throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native outputs require an original writable workflow, scoped App MCP and compatible output storage.')
       }
-      codexNativeOutputDeclarations(harnessConfiguration, qualified.providerVersion)
+      codexNativeOutputDeclarations(harnessConfiguration, qualified.providerVersion, this.nativeOutputs)
       await this.nativeOutputs.assertQualified(this.nativeOutputQualification(harnessConfiguration, qualified, workingDirectory, scopedEnvironment.TMPDIR), signal)
       signal.throwIfAborted()
     }
@@ -1877,6 +1878,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       cwd: String(response.cwd), writableRoots: stringArray(sandbox.writableRoots) ?? [],
       networkAccess: sandbox.networkAccess === true, excludeTmpdirEnvVar: sandbox.excludeTmpdirEnvVar === true,
       excludeSlashTmp: sandbox.excludeSlashTmp === true, tmpdir: prepared.environment.TMPDIR,
+    }
+    if (value.sandbox === 'danger-full-access' && this.nativeOutputs?.storageKind === 'buffer') {
+      prepared.effectiveSandbox = { cwd: String(response.cwd), writableRoots: ['/'], networkAccess: true,
+        excludeTmpdirEnvVar: false, excludeSlashTmp: false, tmpdir: prepared.environment.TMPDIR }
     }
     return thread
   }

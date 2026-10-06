@@ -2,19 +2,38 @@ import { z } from 'zod'
 import { DeviceExecutionAdmissionFields } from './deviceResources.js'
 import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, ApprovalResponseOptionSchema, NativeSessionReferenceSchema } from './index.js'
 import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema, CurrentAcceptedNodePlacementSchema, CurrentDispatchIntentSchema } from './nodePlacement.js'
-import { RemoteOwnerControlSchema, RemoteOwnerReconciliationSchema, RemoteApplicationAccessSchema } from './remoteExecution.js'
+import { RemoteOwnerControlSchema, RemoteOwnerReconciliationSchema, RemoteApplicationAccessSchema,
+  RemoteReviewerRequestSchema } from './remoteExecution.js'
+import { DeviceHistoryRequestFields, DeviceJsonContinuationRequestSchema, DeviceJsonContinuationSchema } from './deviceApplication.js'
 const binding = { intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, executionPlacement: NativeExecutionPlacementSchema.optional() }
+export const RemoteReceiptPageSchema = z.object({
+  kind: z.literal('receipt-page'), transferId: z.uuid(), receiptSequence: z.number().int().positive(),
+  metadata: DeviceJsonContinuationSchema,
+}).strict()
+export type RemoteReceiptPage = z.infer<typeof RemoteReceiptPageSchema>
 export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
-  z.object({ method: z.enum(['physical-readout','physical-ack']), ...binding, receiptSequence: z.number().int().positive(),
-    sourceDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  z.object({ method: z.literal('receipt-continuation'), ...binding, transferId: z.uuid(),
+    receiptSequence: z.number().int().positive(), metadata: DeviceJsonContinuationRequestSchema }).strict(),
+  z.object({ method: z.literal('physical-readout'), ...binding, receiptSequence: z.number().int().positive(),
+    sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), metadata: DeviceJsonContinuationRequestSchema.optional() }).strict(),
+  z.object({ method: z.literal('physical-ack'), ...binding, receiptSequence: z.number().int().positive(),
+    sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), metadata: DeviceJsonContinuationRequestSchema.optional(),
+    // Main has committed this execution's matching terminal result, beyond retaining its source.
+    retire: z.literal(true).optional() }).strict(),
   z.object({ method: z.literal('prepare'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), applicationAccess: RemoteApplicationAccessSchema.optional() }).strict(),
   z.object({ method: z.literal('reattach'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), session: z.lazy(() => NativeSessionReferenceSchema) }).strict(),
-  z.object({ method: z.literal('start-turn'), ...binding, prompt: z.string().min(1).max(1_000_000), correlationId: z.string().min(1) }).strict(),
-  z.object({ method: z.enum(['history', 'pending', 'status']), ...binding }).strict(),
+  z.object({ method: z.literal('prepare-review'), ...binding, review: RemoteReviewerRequestSchema }).strict(),
+  z.object({ method: z.literal('get-application-access'), ...binding, session: z.lazy(() => NativeSessionReferenceSchema) }).strict(),
+  z.object({ method: z.literal('start-turn'), ...binding, prompt: z.string().min(1).max(1_000_000),
+    correlationId: z.string().min(1), review: RemoteReviewerRequestSchema.optional() }).strict(),
+  z.object({ method: z.literal('history'), ...binding, ...DeviceHistoryRequestFields,
+    correlationId: z.string().min(1).optional() }).strict(),
+  z.object({ method: z.enum(['pending', 'status']), ...binding }).strict(),
   z.object({ method: z.enum(['capabilities', 'inspect-mcp']), ...binding, configuration: z.lazy(() => AgentConfigurationVersionSchema) }).strict(),
   z.object({ method: z.literal('reconcile-response'), ...binding, response: z.object({ nativeRequestId: z.string().min(1), nativeRequestType: z.string().min(1), option: z.lazy(() => ApprovalResponseOptionSchema) }).strict() }).strict(),
   z.object({ method: z.literal('renew-owner'), ...binding, transition: RemoteOwnerReconciliationSchema }).strict(),
   z.object({ method: z.literal('control'), ...binding, command: RemoteOwnerControlSchema }).strict(),
+  z.object({ method: z.literal('control-delivery'), ...binding, command: RemoteOwnerControlSchema }).strict(),
 ])
 export type RemoteExecutionRpcRequest = z.infer<typeof RemoteExecutionRpcRequestSchema>
 /** W07 authenticated extension kind. Frame bounds/operation grant remain carrier-owned. */

@@ -76,6 +76,35 @@ it('batches ready output independently of database lease-check latency', async (
   expect((await coordination.getLane('codex', session.nativeSessionId))?.leaseToken).toBeUndefined()
 })
 
+it.each(['stream-turn', 'foreign-turn'])('binds earlier history only to its active correlation: %s', async correlationId => {
+  const provider = silentProvider()
+  const coordination = nativeLanes()
+  const history = { events: [], pendingInteractions: [], correlationId, nativeTurnId: 'provider-turn' }
+  provider.manager.history = async () => history
+  const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent')
+  await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
+  const iterator = writer.startTurnBatches(session, { prompt: 'stream', clientCorrelationId: 'stream-turn' })[Symbol.asyncIterator]()
+  try {
+    expect((await iterator.next()).value).toEqual([frame])
+    expect(writer.capturedLease(session)?.providerId).toBeUndefined()
+    if (correlationId === 'stream-turn') {
+      expect(await writer.history(session)).toEqual(history)
+      expect(writer.capturedLease(session)?.providerId).toBe('provider-turn')
+      expect(await coordination.getLane('codex', session.nativeSessionId)).toMatchObject({
+        correlationId: 'stream-turn', currentTurnOrMessageId: 'provider-turn',
+      })
+    } else {
+      await expect(writer.history(session)).rejects.toMatchObject({ code: 'NATIVE_TURN_IDENTITY_CONFLICT' })
+      expect(writer.capturedLease(session)?.providerId).toBeUndefined()
+      expect((await coordination.getLane('codex', session.nativeSessionId))?.currentTurnOrMessageId).toBeUndefined()
+    }
+  } finally {
+    provider.release.resolve()
+    await iterator.return?.()
+    await provider.detached.promise
+  }
+})
+
 it('rejects a collected batch when its writer lease is lost during collection', async () => {
   const provider = silentProvider()
   let lost = false

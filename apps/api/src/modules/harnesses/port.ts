@@ -1,4 +1,5 @@
 import type { NativeMessageSubmission } from '@foreman-code/contracts'
+import type { DeviceHistoryGap } from '@foreman-code/contracts/device-application'
 export type { NativeMessageSubmission } from '@foreman-code/contracts'
 import type {
   AgentHarness,
@@ -13,6 +14,7 @@ import type {
   NativeSessionReference,
   PendingNativeInteraction,
   OperatorConfigurationVersion,
+  ReviewJob,
 } from '@foreman-code/contracts'
 
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
@@ -118,6 +120,8 @@ export interface NativeHistory {
   /** This is a bounded live window; callers persist streamed events at the durable boundary. */
   firstRetainedSequence?: number
   nextSequence?: number
+  /** Events omitted from this bounded observation; terminal metadata remains original. */
+  gap?: DeviceHistoryGap
   interactionDeliveries?: readonly {
     nativeRequestId: string
     state: 'pending' | 'submitting' | 'submitted' | 'uncertain'
@@ -173,6 +177,10 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
     signal?: AbortSignal): Promise<NativeOutputCallCapture>
   /** True after native query dispatch; false proves this manager never launched work. */
   requiresRuntimeClosure?(): boolean
+  readonly retainsReviewerSession?: boolean
+  prepareReview?(session: NativeSessionReference, job: ReviewJob, signal?: AbortSignal): Promise<void>
+  originalApplicationAccess?(session: NativeSessionReference, signal?: AbortSignal):
+    Promise<import('@foreman-code/contracts/remote-execution').RemoteApplicationAccess>
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>

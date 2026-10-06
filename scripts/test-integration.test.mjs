@@ -5,6 +5,19 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationReport, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, options, parseVitestCases, reservedIntegrationShards, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
+import { integrationVitestArguments } from './test-integration.mjs'
+
+test('diagnostic case selection preserves file and worker limits and passes the pattern as one argument', () => {
+  const file = 'apps/api/test/remote-review-production.integration.test.ts'
+  const unfiltered = ['run', 'test/remote-review-production.integration.test.ts', '--no-file-parallelism',
+    '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--fsModuleCache']
+  assert.deepEqual(integrationVitestArguments(file), unfiltered)
+  const pattern = 'delivered remote decision|reserved decision'
+  assert.deepEqual(integrationVitestArguments(file, pattern), [...unfiltered, '--testNamePattern', pattern])
+  assert.equal(failForSkippedCases({ skipped: 5 }, false), true)
+  assert.equal(failForSkippedCases({ skipped: 5 }, true), false)
+  assert.deepEqual(autoRetestFiles([file], { diagnostic: true, interrupted: null }), [])
+})
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()

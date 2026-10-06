@@ -21,7 +21,8 @@ interface LocationRow {
   id: string; execution_location: unknown; execution_location_identity: unknown
   location_revision: string; archived_at: Date | null
 }
-/** Prepared by WorkspaceLocationService.snapshot OUTSIDE the graph transaction.
+/** Prepared from the configured workspace location outside the graph transaction.
+ * Placed Agent directories are validated by their complete placement admission.
  * Internal-only: these are not request fields or a client supplied capability. */
 export interface PreparedRepeatStartLocation {
   location: RunExecutionLocation
