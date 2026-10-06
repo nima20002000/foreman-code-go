@@ -134,6 +134,30 @@ it('A2 Codex cold history can prove only its actual pinned completed turn', () =
   } } } as never]
   assertOriginalWorkflowTerminal(f.execution as never, f.session as never, f.history as NativeHistory)
 })
+function claude() {
+  const f = fixture(), session = { harness: 'claude' as const, providerVersion: '2.1.284', nativeSessionId: 'claude-a2' }
+  const completed = { ...f.event, type: 'turn.completed', payload: { nativeSessionId: session.nativeSessionId,
+    nativeMessageId: f.lease.providerId, clientCorrelationId: f.history.correlationId, result: f.history.terminalTurn!.result } }
+  const history = { ...f.history, events: [completed], nativeSubmission: { kind: 'message', nativeSessionId: session.nativeSessionId,
+    nativeMessageId: f.lease.providerId, clientCorrelationId: f.history.correlationId } } as NativeHistory
+  delete history.nativeTurnId
+  return { f, session, history }
+}
+it('A2 Claude terminal requires its exact original turn.completed frame', () => {
+  const c = claude(); assertOriginalWorkflowTerminal(c.f.execution as never, c.session as never, c.history)
+})
+for (const invalid of ['empty', 'wrong-message', 'wrong-session', 'wrong-command', 'wrong-outcome', 'wrong-submission'] as const) {
+  it(`A2 Claude terminal rejects ${invalid}`, () => {
+    const c = claude(), payload = c.history.events[0]?.payload as Record<string, unknown>
+    if (invalid === 'empty') c.history.events = []
+    if (invalid === 'wrong-submission') c.history.nativeSubmission = { ...c.history.nativeSubmission!, nativeMessageId: 'different' } as never
+    if (invalid === 'wrong-message') payload.nativeMessageId = 'different'
+    if (invalid === 'wrong-session') payload.nativeSessionId = 'different'
+    if (invalid === 'wrong-command') payload.clientCorrelationId = 'different'
+    if (invalid === 'wrong-outcome') payload.result = { outcome: 'failed' }
+    assert.throws(() => assertOriginalWorkflowTerminal(c.f.execution as never, c.session as never, c.history), { code: 'NATIVE_TERMINAL_SOURCE_REQUIRED' })
+  })
+}
 function openCode() {
   const f = fixture(), session = { harness: 'opencode' as const, providerVersion: '1.18.31', nativeSessionId: 'opencode-a2' }
   const raw = { ...f.event, type: 'message.updated', connectionId: 'history-assistant-a2', sequence: 0,

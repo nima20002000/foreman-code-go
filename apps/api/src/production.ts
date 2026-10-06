@@ -3,7 +3,8 @@ import { WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root
 import { PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
-import { appMcpServerName, isSupportedAppMcpServerName } from './modules/harnesses/appMcpLauncher.js'
+import { appMcpServerName } from './modules/harnesses/appMcpLauncher.js'
+import { acceptsClaudePreCredentialEntry } from './modules/harnesses/claudeSdk/appMcpPreflight.js'
 import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
 import {
@@ -764,7 +765,9 @@ export function buildProductionApp(
           const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
             workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
             runtimeDirectory: execution.runtimeDirectory, configuration: context.configuration, input: execution.input })
-          return execution.nativeSessionId ? { kind: 'workflow', correlationId: `execution:${execution.id}`, request } : { request }
+          // The engine starts every workflow turn with this correlation; inspection must match it exactly.
+          return execution.nativeSessionId ? { kind: 'workflow', correlationId: `execution:${execution.id}`, request }
+            : { request, correlationId: `execution:${execution.id}` }
         },
       })
       claudeLaunches.set(claude.manager, claude)
@@ -902,9 +905,11 @@ export function buildProductionApp(
         const inspected = await nativeFactories.inspector(manager).inspect({ harness: 'claude', runnerId,
           workingDirectory: input.workingDirectory, serverName: PRODUCT_SLUG, phase: 'configuration', ...(input.signal ? { signal: input.signal } : {}) })
         const entry = inspected.entry
-        if (!entry || !isSupportedAppMcpServerName(entry.name) || entry.transport !== 'streamable-http' || entry.endpoint !== appMcpEndpoint
-          || entry.enabled === false || !['connected', 'authentication_required', 'status_unavailable'].includes(entry.status ?? '')) {
-          throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The owned Claude query has no accepted Foreman Code HTTP endpoint.', 409)
+        if (!acceptsClaudePreCredentialEntry(entry, appMcpEndpoint)) {
+          const observed = entry ? { name: entry.name, transport: entry.transport, endpointMatches: entry.endpoint === appMcpEndpoint,
+            enabled: entry.enabled ?? null, status: entry.status ?? null } : null
+          componentLogger('harness').warn({ executionId: input.executionId, entry: observed }, 'Claude Foreman Code MCP preflight rejected')
+          throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The owned Claude query has no accepted Foreman Code HTTP endpoint.', 409, { entry: observed })
         }
         await credentials.revokeSupersededForExecution(input.executionId)
         input.signal?.throwIfAborted()
@@ -919,10 +924,18 @@ export function buildProductionApp(
             [serverName]: { ...configured, headers: { Authorization: `Bearer ${token}` } } }, input.signal)
           const checked = await detection.preflight({ harness: 'claude', runnerId,
             workingDirectory: input.workingDirectory, ...(input.signal ? { signal: input.signal } : {}) })
-          if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'Claude did not acknowledge the scoped HTTP credential on its current query.', 409)
+          if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') {
+            componentLogger('harness').warn({ executionId: input.executionId, state: checked.detection.state,
+              arrangement: checked.detection.credentialArrangement?.kind ?? null }, 'Claude scoped MCP credential preflight rejected')
+            throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'Claude did not acknowledge the scoped HTTP credential on its current query.', 409)
+          }
           await appRoutes.refresh()
           return { credential, detection: checked }
-        } catch (error) { await credentials.revoke(credential); throw error }
+        } catch (error) {
+          componentLogger('harness').warn({ executionId: input.executionId, code: error instanceof DomainError ? error.code
+            : error instanceof Error ? error.constructor.name : typeof error }, 'Claude workflow credential preflight failed')
+          await credentials.revoke(credential); throw error
+        }
       }
       const launch = new WorkerLaunchCredentialService(detection, credentials, runnerId)
       // The coordinator reserved and retained this exact manager lifetime

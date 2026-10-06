@@ -1,3 +1,5 @@
+import { agentInstructionBundle } from '../../skills/instructions.js'
+import { componentLogger } from '../../../infrastructure/logger.js'
 import { claudeNativeEvent } from './nativeEvents.js'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
@@ -162,7 +164,11 @@ export function createClaudeNativeSessionManager(options: {
       throw new HarnessExecutionError('CLAUDE_ENVIRONMENT_INVALID',
         'The Claude environment cannot contain database credentials.')
     }
-    return { ...options.sdkOptions, env: appMcpTokenEnvironment(environment) }
+    // Native-v1 Agents receive persistent instructions and skills through the harness, as Codex/OpenCode do.
+    const bundle = agentInstructionBundle(start.kind === 'operator' ? start.configuration : start.request.configuration)?.text
+    const base = typeof options.sdkOptions.systemPrompt === 'string' ? options.sdkOptions.systemPrompt : ''
+    return { ...options.sdkOptions, ...(bundle ? { systemPrompt: [base, bundle].filter(Boolean).join('\n\n') } : {}),
+      env: appMcpTokenEnvironment(environment) }
   }
   function qualified(capability: 'basicTurns' | 'resume' | 'fork' | 'history') {
     if (!options.qualification[capability]) throw new HarnessExecutionError('CLAUDE_CAPABILITY_UNQUALIFIED', `Claude ${capability} has not been qualified on the selected installation.`)
@@ -373,7 +379,11 @@ export function createClaudeNativeSessionManager(options: {
     const nativeOptions = queryOptions(start)
     const identity = JSON.stringify(canonicalStart(start))
     const inspected = prepared
-    if (inspected && inspected.identity !== identity) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Input differs from the exact inspected owner/configuration/environment.')
+    if (inspected && inspected.identity !== identity) {
+      componentLogger('harness').warn({ differences: valueDifferences(JSON.parse(inspected.identity), JSON.parse(identity)) },
+        'Claude input differs from its inspected context')
+      throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Input differs from the exact inspected owner/configuration/environment.')
+    }
     const previous = inspected ? await inspected.opening : undefined
     if (previous?.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'Model input cannot be offered while an owned SDK control operation is pending.')
     if (previous?.closed) throw new HarnessExecutionError('CLAUDE_SESSION_CLOSED', 'The owned SDK query is closed.')
@@ -1086,4 +1096,12 @@ export function createClaudeNativeSessionManager(options: {
     },
   }
   return manager
+}
+
+/** Paths only, never values: inspected starts can contain credentials and prompts. */
+function valueDifferences(left: unknown, right: unknown, path = ''): string[] {
+  if (JSON.stringify(left) === JSON.stringify(right)) return []
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object' || Array.isArray(left) !== Array.isArray(right)) return [path || '$']
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)])
+  return [...keys].flatMap(key => valueDifferences((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key], `${path}.${key}`)).slice(0, 20)
 }
