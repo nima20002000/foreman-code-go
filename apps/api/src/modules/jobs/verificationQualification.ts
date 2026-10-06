@@ -190,7 +190,7 @@ export async function qualifyVerificationRuntime(input: {
       JSON.stringify({ phase: 'bytes', bytes: pool.slots[0]!.hardLimitBytes })],
     Math.min(600000, Date.parse(approval.expiresAt) - Date.now())))
     if (quotaResult.byteError !== 'EDQUOT') {
-      throw new Error('Per-Job byte and inode limits did not deny physical writes.')
+      throw new Error(`Per-Job byte pressure did not report quota denial: ${JSON.stringify(quotaResult)}`)
     }
     const independence = []
     for (const claim of claims.slice(1)) {
@@ -201,7 +201,9 @@ export async function qualifyVerificationRuntime(input: {
     const quotaInodes = JSON.parse(await checked(['exec', containerId, 'node', '-e', quotaProbe,
       JSON.stringify({ phase: 'inodes', inodes: pool.slots[0]!.hardInodes })],
     Math.min(600000, Date.parse(approval.expiresAt) - Date.now())))
-    if (quotaInodes.inodeError !== 'EDQUOT') throw new Error('Per-Job inode limit did not deny physical file creation.')
+    if (quotaInodes.inodeError !== 'EDQUOT') {
+      throw new Error(`Per-Job inode pressure did not report quota denial: ${JSON.stringify(quotaInodes)}`)
+    }
     const seedBytes = await readProtectedRuntimeFile({ path: configuration.seedReceiptPath,
       ownerUid: input.configuration!.ownerUid }, 16 * 1024 * 1024)
     const seed = JobVerificationOfflineSeedReceiptSchema.parse(JSON.parse(seedBytes.toString('utf8')))
