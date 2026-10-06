@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.25] - 2026-10-06
+
+### Fixed
+
+- Verify Codex MCP absence through the requested named CLI lookup instead of an obsolete empty catalog fixture.
+- Cover definite missing names, failed lookups, contradictory output and malformed named configuration through the public inspection API and real subprocess runner.
+
+### Security
+
+- Preserve failure classification: unreadable or malformed MCP configuration cannot be mistaken for a definitely absent entry.
+
 ## [0.0.24] - 2026-10-06
 
 ### Fixed
