@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { it } from 'vitest'
-import { deleteSession, listSessions } from '@anthropic-ai/claude-agent-sdk'
 import { ClaudeHarnessConfigurationSchema } from '@foreman-code/contracts/claude'
 import { claudeQualificationCapabilities } from '@foreman-code/contracts/claude-qualification'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -17,10 +16,28 @@ import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/har
 import { runCommand } from '../src/modules/harnesses/process.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
+import { withClaudeNativeHome } from './helpers/claudeNativeHome.js'
+
+it.skipIf(process.env.RUN_CLAUDE_NATIVE_PROFILE_TESTS !== '1').each(['success', 'failure'] as const)(
+  'cleans Claude native storage after scenario %s', async outcome => {
+    const previous = process.env.CLAUDE_CONFIG_DIR
+    let home: string | undefined
+    const failure = new Error('Scenario failed.')
+    const operation = withClaudeNativeHome(async directory => {
+      home = directory
+      await writeFile(join(directory, 'test-session'), 'owned test data')
+      if (outcome === 'failure') throw failure
+    })
+    if (outcome === 'failure') await assert.rejects(operation, error => error === failure)
+    else await operation
+    assert(home)
+    assert.equal(process.env.CLAUDE_CONFIG_DIR, previous)
+    await assert.rejects(stat(home), { code: 'ENOENT' })
+  })
 
 // Explicit full-access qualification authorizes only its disposable Write fixtures.
 it.skipIf(process.env.RUN_CLAUDE_NATIVE_PROFILE_TESTS !== '1' || process.platform !== 'linux')(
-  'verifies the installed Claude SDK and CLI with Haiku native receipts, resume and policy checks', async () => {
+  'verifies the installed Claude SDK and CLI with Haiku native receipts, resume and policy checks', () => withClaudeNativeHome(async () => {
     const selected = process.env.CLAUDE_LIVE_BINARY
     assert(selected && isAbsolute(selected), 'Select the actual installed Claude executable with CLAUDE_LIVE_BINARY.')
     const binary = await realpath(selected)
@@ -28,22 +45,9 @@ it.skipIf(process.env.RUN_CLAUDE_NATIVE_PROFILE_TESTS !== '1' || process.platfor
     try {
       await verifyInstalledClaude(root, binary)
     } finally {
-      try {
-        for (const directory of await readdir(root)) {
-          if (!directory.startsWith('claude-profile-')) continue
-          const cwd = join(root, directory, 'work')
-          const sessions = await listSessions({ dir: cwd, includeWorktrees: false })
-          for (const session of sessions) {
-            assert.equal(session.cwd, cwd)
-            await deleteSession(session.sessionId, { dir: cwd })
-          }
-          assert.deepEqual(await listSessions({ dir: cwd, includeWorktrees: false }), [])
-        }
-      } finally {
-        await rm(root, { recursive: true, force: true })
-      }
+      await rm(root, { recursive: true, force: true })
     }
-  }, 360_000)
+  }), 360_000)
 
 async function verifyInstalledClaude(root: string, binary: string) {
   const processRegistry = new NativeProcessRegistry(join(root, 'native-process-registry'))
