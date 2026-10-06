@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.27] - 2026-10-06
+
+### Fixed
+
+- Give PostgreSQL responses a bounded delivery grace after the server's unchanged SQL deadline, avoiding false client timeouts while a completed write acknowledges durable WAL. Preserve synchronous commit, query cancellation, transaction locks and execution ownership.
+- Report Run inspection read deadlines, cancellation, lock timeouts and deadlocks consistently through HTTP and Operator MCP, with safe reasons and SQLSTATE instead of private database text.
+- Verify completed queries with delayed responses, server cancellation of slow SQL and bounded failure when the response is withheld, with proxy sockets cleaned on success and failure.
+
 ## [0.0.26] - 2026-10-06
 
 ### Fixed
