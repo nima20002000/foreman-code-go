@@ -10,6 +10,7 @@ import type { WorkerConversationJournal } from './workerJournal.js'
 import { DomainError } from '../errors.js'
 
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT'
+type RecoverVersions = (root: WorkerOpenCodeFileRoot, directory: FileHandle, signal: AbortSignal) => Promise<void>
 function changed(): never {
   throw new DomainError('WORKER_FILE_CLEANUP_REQUIRED', 'The recorded native file directory changed; cleanup needs review.', 409)
 }
@@ -67,7 +68,7 @@ export class WorkerOpenCodeDirectories {
   }
 
   async release(binding: WorkerConversationBinding, root: WorkerOpenCodeFileRoot,
-    options: { closedProcess: boolean; signal: AbortSignal }) {
+    options: { closedProcess: boolean; signal: AbortSignal; recoverVersions?: RecoverVersions | undefined }) {
     options.signal.throwIfAborted()
     let parent: FileHandle
     try { parent = await openPrivateRoot(this.parent) }
@@ -89,7 +90,13 @@ export class WorkerOpenCodeDirectories {
         // A reserved directory has no materialized bytes; only its empty mkdir can survive this crash cut.
         if (!root.filesystem && (await readdir(anchored(child))).length) changed()
         if (options.closedProcess && root.filesystem) {
-          await assertVersionsRecovered(child, options.signal)
+          try { await assertVersionsRecovered(child, options.signal) }
+          catch (error) {
+            if (!(error instanceof DomainError) || error.code !== 'WORKER_FILE_VERSION_RECOVERY_REQUIRED'
+              || !options.recoverVersions) throw error
+            await options.recoverVersions(root, child, options.signal)
+            await assertVersionsRecovered(child, options.signal)
+          }
           await removeContents(child, options.signal)
         }
       } finally { await child.close() }
@@ -100,7 +107,7 @@ export class WorkerOpenCodeDirectories {
   }
 
   async cleanupClosed(record: WorkerConversationReceipt,
-    registry: Pick<NativeProcessRegistry, 'snapshot'>, signal: AbortSignal) {
+    registry: Pick<NativeProcessRegistry, 'snapshot'>, signal: AbortSignal, recoverVersions?: RecoverVersions) {
     if (!record.openCodeFileRoots?.length) return
     const owner = record.nativeOwner
     const launches = registry.snapshot().launches.filter(launch => launch.owner === `conversation:${record.binding.owner.conversationId}`)
@@ -110,7 +117,7 @@ export class WorkerOpenCodeDirectories {
       || launches.some(launch => launch.lifecycle !== 'closed' || !launch.closureEvidence)) changed()
     for (const root of record.openCodeFileRoots) {
       if (root.nativeSessionId !== owner.sessionId) changed()
-      await this.release(record.binding, root, { closedProcess: true, signal })
+      await this.release(record.binding, root, { closedProcess: true, signal, recoverVersions })
     }
   }
 }

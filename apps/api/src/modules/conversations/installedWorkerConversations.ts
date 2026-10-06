@@ -42,6 +42,7 @@ import { join } from 'node:path'
 import { createWorkerOpenCodeFiles } from './workerOpenCodeFiles.js'
 import { assertWorkerOpenCodeFileHost } from './workerOpenCodeFileHost.js'
 import { WorkerOpenCodeDirectories } from './workerOpenCodeDirectories.js'
+import { workerOpenCodeVersionRecovery } from './recoverWorkerOpenCodeFiles.js'
 
 function unavailable(message: string): never {
   throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE', message, 409)
@@ -244,7 +245,8 @@ export async function createInstalledWorkerConversations(input: {
       allocate: () => allocate(request.method === 'conversation.open' && request.previousBinding
         ? request.binding : record.binding, configuration, connection, 'chat'),
       assertCurrent: () => callbacks.authorize(request, connection, signal),
-      cleanupFiles: (record, cleanupSignal) => openCodeDirectories.cleanupClosed(record, input.registry, cleanupSignal),
+      cleanupFiles: (record, cleanupSignal) => openCodeDirectories.cleanupClosed(record, input.registry, cleanupSignal,
+        workerOpenCodeVersionRecovery({ record, request, configuration, callbacks })),
     }),
     readCompaction: async (request, _record, connection, signal) => {
       const observer = await allocate(request.binding, request.configuration, connection, 'compaction-read')

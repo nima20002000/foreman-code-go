@@ -19,12 +19,13 @@ async function fixture() {
     resolve: async () => ({ context, attachments: [ref] }), adopt })
   let acknowledgedTurnId: string | undefined
   let readOnly = false
+  let recovering = false
   const call = (action: WorkerOpenCodeFileAction) => proxy.handle(identity, action, {
-    readOnly, acknowledgedTurnId, signal: AbortSignal.timeout(5000),
+    readOnly, acknowledgedTurnId, recovering, signal: AbortSignal.timeout(5000),
   })
   return { files, ref, context, identity, proxy, adopt, call,
     acknowledge() { acknowledgedTurnId = identity.nativeTurnId },
-    plan() { readOnly = true } }
+    plan() { readOnly = true }, recover() { recovering = true } }
 }
 
 // The file service is real; its memory persistence and recorded acknowledgement do not qualify a native worker.
@@ -97,6 +98,26 @@ it('keeps Plan tools read-only even when the saved configuration permits writes'
     await expect(f.call({ phase: 'service', token: issued.token, operation: 'createWorkingCopy',
       input: { commandId: randomUUID(), source: f.ref, destination: f.files.scope } }))
       .rejects.toMatchObject({ code: 'FILE_TOOL_DENIED' })
+  } finally { await f.proxy.close() }
+})
+
+it('reads retained artifact metadata only through acknowledged recovery and current publication grants', async () => {
+  const f = await fixture()
+  try {
+    const prepared = WorkerOpenCodeFilePreparationSchema.parse(await f.call({ phase: 'prepare' }))
+    f.acknowledge()
+    const { token } = await f.call({ phase: 'issue', context: prepared.context,
+      expiresAt: prepared.expiresAt }) as { token: string }
+    const copied = AgentFileCreateWorkingCopyResultSchema.parse(await f.call({ phase: 'service', token,
+      operation: 'createWorkingCopy', input: { commandId: randomUUID(), source: f.ref, destination: f.files.scope } }))
+    await f.call({ phase: 'revoke', token })
+    const action = { phase: 'recovery-artifact' as const, artifactId: copied.value.artifactId }
+    await expect(f.call(action)).rejects.toMatchObject({ status: 403 })
+    f.recover()
+    expect(await f.call(action)).toMatchObject({ artifactId: copied.value.artifactId, filename: 'source.md' })
+    await expect(f.call({ ...action, artifactId: randomUUID() })).rejects.toMatchObject({ status: 404 })
+    f.files.revoke()
+    await expect(f.call(action)).rejects.toMatchObject({ status: 401 })
   } finally { await f.proxy.close() }
 })
 

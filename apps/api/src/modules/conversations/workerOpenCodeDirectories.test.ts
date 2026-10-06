@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { expect, it, onTestFinished } from 'vitest'
+import { expect, it, onTestFinished, vi } from 'vitest'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { NativeLaunchObservation } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
@@ -9,6 +9,12 @@ import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDir
 import { workerConversationFixture } from './workerFixtures.test-support.js'
 import { workerConversationProcessDigest } from './workerNativeOwner.js'
 import { WorkerOpenCodeDirectories } from './workerOpenCodeDirectories.js'
+import { workerOpenCodeVersionRecovery } from './recoverWorkerOpenCodeFiles.js'
+import { MainWorkerOpenCodeFiles } from './mainWorkerOpenCodeFiles.js'
+import { fileToolFixture } from '../../../test/support/fileTools.js'
+import { AgentFileCreateWorkingCopyResultSchema } from '@foreman-code/contracts/files'
+import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
+import { nativeMessageId } from '../harnesses/opencodeProtocol.js'
 
 async function fixture() {
   const state = await privateFixtureDirectory('worker-file-directories-')
@@ -38,10 +44,13 @@ async function fixture() {
       journal = await RemoteOperationJournal.open(file)
       directories = new WorkerOpenCodeDirectories(state, journal.conversations)
     },
-    async cleanup() {
+    submitted: () => journal!.conversations.submitted(f.binding, 'accepted-input', {
+      nativeTurnId: nativeMessageId('accepted-input'),
+    }),
+    async cleanup(recoverVersions?: Parameters<WorkerOpenCodeDirectories['cleanupClosed']>[3]) {
       const record = (await journal!.conversations.read(f.binding))!
       await directories.cleanupClosed(record, { snapshot: () => ({ revision: 'recorded', launches: [launch] }) },
-        AbortSignal.timeout(5000))
+        AbortSignal.timeout(5000), recoverVersions)
     },
     closed() { launch = { ...launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' } },
   }
@@ -113,4 +122,75 @@ it('fences directory materialization from another native session or an unadmitte
   expect((await f.create()).record).toEqual(root.record)
   f.closed()
   await f.cleanup()
+})
+
+it('persists cold native, file-tool and current versions before removing scratch, with current Main grants', async () => {
+  const f = await fixture()
+  const files = await fileToolFixture()
+  const ref = await files.upload()
+  const context = { ...files.context, nativeSessionId: f.session.nativeSessionId,
+    turnId: nativeMessageId('accepted-input'), messageId: 'accepted-message' }
+  const token = await files.issue(context)
+  const copied = AgentFileCreateWorkingCopyResultSchema.parse(await files.service.createWorkingCopy(token, {
+    commandId: randomUUID(), source: ref, destination: files.scope,
+  }))
+  await files.sessions.revoke(token)
+  const root = await f.create()
+  const child = join(root.path, copied.value.artifactId)
+  const versions = join(child, `.versions-${randomUUID()}`)
+  await mkdir(versions, { recursive: true, mode: 0o700 })
+  await writeFile(join(child, 'source.md'), '# current\n')
+  await writeFile(join(versions, 'native'), '# displaced native\n')
+  await writeFile(join(versions, 'edited'), '# file-tool edit\n')
+  await f.submitted()
+  f.closed()
+  await f.reopen()
+  const before = await f.record()
+  if (!before) throw new Error('The original Worker journal is unavailable.')
+  const request: WorkerConversationRpcRequest = { method: 'conversation.reconcile', admissionId: randomUUID(),
+    binding: f.binding, session: f.session, correlationId: 'accepted-input' }
+  const adopt = vi.fn(async () => {})
+  const main = new MainWorkerOpenCodeFiles({ service: () => files.service,
+    sourceHost: () => ({ bootId: f.connection.bootId, storageRoot: '/recorded-main-vault' }),
+    resolve: async () => ({ context, attachments: [ref] }), adopt })
+  onTestFinished(() => main.close())
+  const issue = vi.spyOn(files.sessions, 'issueForAcceptedSession')
+  onTestFinished(() => issue.mockRestore())
+  let allowed = false
+  const callbacks = { openCodeFiles: async (_request: WorkerConversationRpcRequest,
+    identity: Parameters<MainWorkerOpenCodeFiles['handle']>[0],
+    action: Parameters<MainWorkerOpenCodeFiles['handle']>[1], signal: AbortSignal) => {
+    expect(_request).toEqual(request)
+    if (!allowed) throw new Error('Original sender revoked')
+    return main.handle(identity, action, { acknowledgedTurnId: context.turnId, readOnly: false,
+      recovering: true, signal })
+  } }
+  const recover = workerOpenCodeVersionRecovery({ record: before, request, configuration: f.configuration, callbacks })
+  await expect(f.cleanup(recover)).rejects.toThrow('Original sender revoked')
+  expect(await readFile(join(versions, 'native'), 'utf8')).toBe('# displaced native\n')
+  expect((await f.record())?.openCodeFileRoots).toEqual(before.openCodeFileRoots)
+  allowed = true
+  const adoptFailure = new Error('Publication adoption interrupted')
+  adopt.mockRejectedValueOnce(adoptFailure)
+  await expect(f.cleanup(recover)).rejects.toThrow('Publication adoption interrupted')
+  expect(await readFile(join(versions, 'edited'), 'utf8')).toBe('# file-tool edit\n')
+  await f.cleanup(recover)
+  expect(issue).not.toHaveBeenCalled()
+  expect(await readdir(join(f.state, 'opencode-chat-files'))).toEqual([])
+  const after = await f.record()
+  expect(after?.openCodeFileRoots).toEqual([])
+  expect(after?.session).toEqual(before.session)
+  expect(after?.nativeOwner).toEqual(before.nativeOwner)
+  expect(after?.turns).toEqual(before.turns)
+  const reader = await files.issue(context)
+  const saved = await files.service.list(reader, { scope: files.scope, limit: 100 })
+  const recovered = saved.items.filter(value => value.revision.filename.includes('-recovered-'))
+  expect(recovered).toHaveLength(3)
+  const bytes = await Promise.all(recovered.map(async value => {
+    const read = await files.service.read(reader, { fileId: value.file.fileId,
+      revisionId: value.revision.revisionId, offset: 0, length: 65536 })
+    if (read.status !== 'ready') throw new Error('The recovered version is unavailable.')
+    return Buffer.from(read.contentBase64, 'base64').toString('utf8')
+  }))
+  expect(bytes.sort()).toEqual(['# current\n', '# displaced native\n', '# file-tool edit\n'].sort())
 })

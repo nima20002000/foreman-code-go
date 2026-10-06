@@ -11,6 +11,10 @@ import { checkFileCondition } from './types.js'
 const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
 const at = (directory: FileHandle, name: string) => `/proc/self/fd/${directory.fd}/${name}`
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT'
+export type OpenCodeVersionRecoveryService = Pick<AgentFileToolService, 'preserveAccepted'> & {
+  sessions: Pick<AgentFileToolService['sessions'], 'authorizeAccepted'>
+  artifacts: Pick<AgentFileToolService['artifacts'], 'get'>
+}
 
 export async function recoverOpenCodeVersions(service: AgentFileToolService, context: FileToolContext,
   owned: OpenCodeDirectoryOwnership, maxFileBytes: number, signal: AbortSignal): Promise<void> {
@@ -33,7 +37,7 @@ export async function recoverOpenCodeVersions(service: AgentFileToolService, con
       if (!(await lstat(at(root, handle))).isDirectory()) continue
       const directory = await open(at(root, handle), flags)
       try {
-        await recoverHandleVersions(service, context, handle, directory, maxFileBytes, signal)
+        await recoverOpenCodeHandleVersions(service, context, handle, directory, maxFileBytes, signal)
       } finally {
         await directory.close()
       }
@@ -43,10 +47,10 @@ export async function recoverOpenCodeVersions(service: AgentFileToolService, con
   }
 }
 
-async function recoverHandleVersions(service: AgentFileToolService, context: FileToolContext,
-  handle: string, directory: FileHandle, maxFileBytes: number, signal: AbortSignal): Promise<void> {
+export async function recoverOpenCodeHandleVersions(service: OpenCodeVersionRecoveryService, context: FileToolContext,
+  handle: string, directory: FileHandle, maxFileBytes: number, signal: AbortSignal): Promise<string[]> {
   const names = (await readdir(at(directory, '.'))).filter(name => /^\.versions-[0-9a-f-]{36}$/.test(name))
-  if (!names.length) return
+  if (!names.length) return []
   const caller = await service.sessions.authorizeAccepted(context, 'files.publish_result')
   const artifact = await service.artifacts.get(caller, handle)
   const filename = Buffer.byteLength(artifact.filename, 'utf8') <= 200 ? artifact.filename
@@ -77,6 +81,7 @@ async function recoverHandleVersions(service: AgentFileToolService, context: Fil
   }
   try { await preserve('current', 'working-copy', directory, filename) }
   catch (error) { if (!missing(error)) throw error }
+  return names
 }
 
 async function removeDuplicateVersion(versions: FileHandle, label: string,

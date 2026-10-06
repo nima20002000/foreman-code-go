@@ -66,6 +66,7 @@ export const WorkerOpenCodeFileActionSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('service'), token, operation: z.enum(['list', 'read', 'createWorkingCopy',
     'writeWorkingCopy', 'applyFormatEdit', 'publish', 'publishedForTurn']), input: z.unknown().optional() }).strict(),
   z.object({ phase: z.literal('artifact-get'), ...artifact }).strict(),
+  z.object({ phase: z.literal('recovery-artifact'), artifactId: z.uuid() }).strict(),
   z.object({ phase: z.literal('artifact-read'), ...artifact,
     offset: z.number().int().nonnegative().max(MAX_FILE_BYTES), length: z.number().int().min(1).max(65536) }).strict(),
   z.object({ phase: z.literal('artifact-begin'), ...artifact, baseRevisionId: id.optional() }).strict(),

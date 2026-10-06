@@ -23,6 +23,7 @@ export function createWorkerOpenCodeFileService(input: {
   identity: WorkerOpenCodeFileIdentity
   callbacks: Pick<ReturnType<typeof workerConversationCallbacks>, 'openCodeFiles'>
   signal: AbortSignal
+  recovering?: boolean
 }) {
   let issuedToken: string | undefined
   const call = (action: WorkerOpenCodeFileAction, signal = input.signal) =>
@@ -80,7 +81,10 @@ export function createWorkerOpenCodeFileService(input: {
     artifacts: {
       get: async (caller, artifactId) => {
         assertContext(caller.context)
-        const artifact = WorkerOpenCodeArtifactSchema.parse(await call({ phase: 'artifact-get', token: token(), artifactId }))
+        const action: WorkerOpenCodeFileAction = input.recovering
+          ? { phase: 'recovery-artifact', artifactId }
+          : { phase: 'artifact-get', token: token(), artifactId }
+        const artifact = WorkerOpenCodeArtifactSchema.parse(await call(action))
         const { source, sourceSha256, snapshot, storageKeys, retiredAt, ...required } = artifact
         return { ...required,
           ...(source !== undefined ? { source } : {}),

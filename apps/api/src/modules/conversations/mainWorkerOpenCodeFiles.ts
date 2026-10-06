@@ -117,6 +117,11 @@ export class MainWorkerOpenCodeFiles {
       return { acknowledged: true }
     }
     if (input.acknowledgedTurnId !== context.turnId) this.denied()
+    if (action.phase === 'recovery-artifact') {
+      if (!input.recovering) this.denied()
+      const caller = await service.sessions.authorizeAccepted(context, 'files.publish_result')
+      return service.artifacts.get(caller, action.artifactId)
+    }
     if (action.phase === 'preserve-begin' || action.phase === 'preserve-chunk' || action.phase === 'preserve-finish') {
       await service.sessions.authorizeAccepted(context, 'files.publish_result')
       return this.preserve(action, context, input.signal)
