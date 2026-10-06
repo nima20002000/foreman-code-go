@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import { AcceptedJobSpecSchema, JobExecutionSchema, type AcceptedJobSpec, type PreparedJobSpec, type JobExecution } from '@foreman-code/contracts'
 import { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { isDeepStrictEqual } from 'node:util'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema, JobExecutionRecordSchema,
