@@ -42,6 +42,7 @@ import { recoverWorkerConversation } from './recoverWorkerConversation.js'
 import { join } from 'node:path'
 import { createWorkerOpenCodeFiles } from './workerOpenCodeFiles.js'
 import { assertWorkerOpenCodeFileHost } from './workerOpenCodeFileHost.js'
+import { workerOpenCodeStorageRoot } from './workerOpenCodeStorage.js'
 import { WorkerOpenCodeDirectories } from './workerOpenCodeDirectories.js'
 import { workerOpenCodeVersionRecovery } from './recoverWorkerOpenCodeFiles.js'
 
@@ -117,7 +118,10 @@ export async function createInstalledWorkerConversations(input: {
     const scope = input.registry.scope(scopeOwner)
     const before = async (signal?: AbortSignal) => {
       await directory.assertCurrent(signal)
-      await reader.capture()
+      const refreshed = await reader.capture()
+      if (harness === 'opencode' && !isDeepStrictEqual(refreshed.fileSourceHost, original.fileSourceHost)) {
+        unavailable('Main file storage changed while this native chat was allocated.')
+      }
       signal?.throwIfAborted()
     }
     let manager: NativeHarnessSessionManager
@@ -173,8 +177,16 @@ export async function createInstalledWorkerConversations(input: {
       if (configuration.harness.harness !== 'opencode') unavailable('The selected OpenCode configuration changed.')
       const ownerId = binding.owner.kind === 'operator' ? binding.owner.operatorId : binding.owner.agentId
       const registry = new HarnessQualificationRegistry(reader.repository, { opencode: suiteRevision })
+      const protectedRoot = await workerOpenCodeStorageRoot(input.stateDirectory, original.fileSourceHost)
+      const fileDirectory = purpose === 'chat' && appMcpAccess === 'none'
+        ? await openCodeDirectories.reserveDirectory(binding) : undefined
       const server = new ManagedOpenCodeServer({ binary, workingDirectory: binding.workingDirectory,
         ownerAgentId: ownerId, processRecovery: scope, appMcpAccess,
+        protectedFileStorageRoot: protectedRoot,
+        nativeStorage: { root: join(input.stateDirectory, 'opencode-sessions'), owner: binding.owner.conversationId },
+        ...(fileDirectory ? { managedFileRoot: fileDirectory.root,
+          managedFileOwner: { id: fileDirectory.id, prepareDirectory: (root: string, signal: AbortSignal) =>
+            openCodeDirectories.prepareDirectory(binding, fileDirectory.id, root, signal) } } : {}),
         ...(appMcpAccess === 'scoped' ? { credentialEnvironmentVariable: APP_MCP_TOKEN } : {}),
         ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
         assertInstallation: before })
@@ -184,7 +196,10 @@ export async function createInstalledWorkerConversations(input: {
         openCodeFiles = createWorkerOpenCodeFiles({ directories: openCodeDirectories,
           source, callbacks, server,
           assertCurrent: (request, signal) => operations.run(request, () => before(signal)),
-          assertSourceIsolation: assertWorkerOpenCodeFileHost, signal: input.signal })
+          assertSourceIsolation: async (sourceHost, signal) => {
+            if (!isDeepStrictEqual(sourceHost, original.fileSourceHost)) unavailable('The file source differs from Main’s admitted vault.')
+            await assertWorkerOpenCodeFileHost(server, protectedRoot, sourceHost, signal)
+          }, signal: input.signal })
       }
       const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: ownerId, appMcpAccess,
         ...(openCodeFiles ? { chatFiles: openCodeFiles.adapter } : {}) })
@@ -237,6 +252,7 @@ export async function createInstalledWorkerConversations(input: {
         codexDiagnostics?.stop()
         try { await manager.dispose?.() } catch (error) { errors.push(error) }
         try { await codexDiagnostics?.dispose() } catch (error) { errors.push(error) }
+        if (scope.launchId) await input.registry.abandonReservedLaunch(scope)
         if (!await input.registry.closeOwner(scope.owner)) unavailable('Native chat closure is unconfirmed.')
         if (purpose === 'chat') {
           try {

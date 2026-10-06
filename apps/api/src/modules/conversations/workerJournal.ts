@@ -50,7 +50,56 @@ export class WorkerConversationJournal {
   }
 
   async fileRecords() {
-    return (await this.store.read()).filter(record => record.openCodeFileRoots?.length)
+    return (await this.store.read()).filter(record => record.openCodeFileDirectory || record.openCodeFileRoots?.length)
+  }
+
+  reserveFileDirectory(binding: WorkerConversationBinding) {
+    return this.changeFileDirectory(binding, record => {
+      if (binding.harness !== 'opencode') conflict('Only OpenCode conversations allocate native file directories.')
+      record.openCodeFileDirectory ??= { id: randomUUID() }
+      return record.openCodeFileDirectory
+    })
+  }
+
+  fileDirectoryCreated(binding: WorkerConversationBinding, id: string,
+    filesystem: NonNullable<WorkerOpenCodeFileRoot['filesystem']>) {
+    return this.changeFileDirectory(binding, record => {
+      const directory = record.openCodeFileDirectory
+      if (!directory || directory.id !== id
+        || directory.filesystem && !isDeepStrictEqual(directory.filesystem, filesystem)) {
+        conflict('The reserved conversation file directory changed.')
+      }
+      directory.filesystem = filesystem
+      return directory
+    })
+  }
+
+  fileDirectoryRemoved(binding: WorkerConversationBinding, id: string) {
+    return this.change(binding, record => {
+      if (record.openCodeFileDirectory?.id !== id || record.openCodeFileRoots?.length) {
+        conflict('Remove only the empty original conversation file directory.')
+      }
+      delete record.openCodeFileDirectory
+    })
+  }
+
+  private changeFileDirectory<T>(binding: WorkerConversationBinding, change: (record: WorkerConversationReceipt) => T) {
+    return this.store.change(records => {
+      const record = records.find(value => value.binding.owner.conversationId === binding.owner.conversationId)
+      if (!record || record.closed || record.closing) conflict('The native conversation is closing or closed.')
+      if (isDeepStrictEqual(record.binding, binding)) writable(record)
+      else {
+        const access = record.applicationAccessChange
+        if (access?.state !== 'reserved' || access.next !== binding.appMcpAccess
+          || !sameConversationForAppAccess(record.binding, binding)
+          || access.inputHash !== commandInputHash({ previous: record.binding, next: binding })) {
+          conflict('The conversation file directory requires its original owner or reserved access change.')
+        }
+      }
+      const result = change(record)
+      record.revision++
+      return result
+    })
   }
 
   reserveFileRoot(binding: WorkerConversationBinding, correlationId: string, nativeSessionId: string) {
@@ -67,7 +116,10 @@ export class WorkerConversationJournal {
         return original
       }
       if (roots.length >= 1000) conflict('The conversation file directory journal is full.')
-      const root = { id: randomUUID(), correlationId, nativeSessionId }
+      const directory = record.openCodeFileDirectory
+      if (directory && !directory.filesystem) conflict('The conversation file directory is not prepared.')
+      const root = { id: randomUUID(), correlationId, nativeSessionId,
+        ...(directory ? { directoryId: directory.id } : {}) }
       roots.push(root)
       return root
     })

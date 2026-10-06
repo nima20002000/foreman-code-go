@@ -288,7 +288,8 @@ export function createProductionWorkerConversations(input: {
             qualification = await input.qualifications.find(harness, installation.observedVersion, sha256, revision)
           }
           return WorkerConversationProfileFactsSchema.parse({ installation, override: accepted.override,
-            profile: accepted.persistedProof, qualification })
+            profile: accepted.persistedProof, qualification,
+            fileSourceHost: { bootId: bootIdentity(), storageRoot: input.fileStorageRoot } })
         },
         observeSession: async session => {
           const saved = await input.pool.query(`update operator_conversations set worker_conversation_binding=$2::jsonb

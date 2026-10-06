@@ -281,6 +281,15 @@ it('deduplicates concurrent native session creation and refuses mismatched confi
   expect(f.manager.creates).toBe(1)
 })
 
+it('rejects a changed configuration before persisting a new conversation owner', async () => {
+  const f = await setup('opencode')
+  const allocate = vi.spyOn(f.ports, 'allocate')
+  await expect(f.request({ ...f.open, configuration: { ...f.configuration, version: 2 } }))
+    .rejects.toThrow('configuration differs')
+  expect(allocate).not.toHaveBeenCalled()
+  expect(await f.journal.conversations.read(f.binding)).toBeUndefined()
+})
+
 it('reauthorizes controls and rejects a foreign native session or replaced channel', async () => {
   const f = await setup()
   await f.request(f.open)

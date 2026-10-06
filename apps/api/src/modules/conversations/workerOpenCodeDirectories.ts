@@ -51,10 +51,48 @@ export class WorkerOpenCodeDirectories {
     this.parent = join(stateDirectory, 'opencode-chat-files')
   }
 
+  async reserveDirectory(binding: WorkerConversationBinding) {
+    const reserved = await this.journal.reserveFileDirectory(binding)
+    return { id: reserved.id, root: this.parent }
+  }
+
+  async prepareDirectory(binding: WorkerConversationBinding, id: string, path: string, signal: AbortSignal) {
+    signal.throwIfAborted()
+    const reserved = await this.journal.reserveFileDirectory(binding)
+    if (reserved.id !== id || path !== join(this.parent, id)) changed()
+    await mkdir(this.parent, { recursive: true, mode: 0o700 })
+    const parent = await openPrivateRoot(this.parent)
+    try {
+      const child = await openChildDirectory(parent, id, true)
+      try {
+        await this.journal.fileDirectoryCreated(binding, id, await identity(child))
+        await child.sync()
+        await parent.sync()
+      } finally { await child.close() }
+    } finally { await parent.close() }
+  }
+
+  private async turnParent(binding: WorkerConversationBinding, directoryId?: string) {
+    const parent = await openPrivateRoot(this.parent)
+    if (!directoryId) return parent
+    try {
+      const expected = (await this.journal.read(binding))?.openCodeFileDirectory
+      if (expected?.id !== directoryId || !expected.filesystem) changed()
+      const directory = await openChildDirectory(parent, directoryId)
+      try {
+        if (!isDeepStrictEqual(expected.filesystem, await identity(directory))) changed()
+        return directory
+      } catch (error) {
+        await directory.close()
+        throw error
+      }
+    } finally { await parent.close() }
+  }
+
   async create(binding: WorkerConversationBinding, correlationId: string, nativeSessionId: string) {
     const reserved = await this.journal.reserveFileRoot(binding, correlationId, nativeSessionId)
     await mkdir(this.parent, { recursive: true, mode: 0o700 })
-    const parent = await openPrivateRoot(this.parent)
+    const parent = await this.turnParent(binding, reserved.directoryId)
     try {
       const child = await openChildDirectory(parent, reserved.id, true)
       try {
@@ -62,7 +100,7 @@ export class WorkerOpenCodeDirectories {
         const root = await this.journal.fileRootCreated(binding, reserved.id, filesystem)
         await child.sync()
         await parent.sync()
-        return { path: join(this.parent, reserved.id), record: root }
+        return { path: join(this.parent, ...(reserved.directoryId ? [reserved.directoryId] : []), reserved.id), record: root }
       } finally { await child.close() }
     } finally { await parent.close() }
   }
@@ -71,7 +109,7 @@ export class WorkerOpenCodeDirectories {
     options: { closedProcess: boolean; signal: AbortSignal; recoverVersions?: RecoverVersions | undefined }) {
     options.signal.throwIfAborted()
     let parent: FileHandle
-    try { parent = await openPrivateRoot(this.parent) }
+    try { parent = await this.turnParent(binding, root.directoryId) }
     catch (error) {
       if (!missing(error)) throw error
       await this.journal.fileRootRemoved(binding, root.id)
@@ -108,16 +146,47 @@ export class WorkerOpenCodeDirectories {
 
   async cleanupClosed(record: WorkerConversationReceipt,
     registry: Pick<NativeProcessRegistry, 'snapshot'>, signal: AbortSignal, recoverVersions?: RecoverVersions) {
-    if (!record.openCodeFileRoots?.length) return
+    if (!record.openCodeFileDirectory && !record.openCodeFileRoots?.length) return
     const owner = record.nativeOwner
     const launches = registry.snapshot().launches.filter(launch => launch.owner === `conversation:${record.binding.owner.conversationId}`)
     const original = owner && launches.filter(launch => launch.guardian && launch.provider && launch.boundary
       && workerConversationProcessDigest(record.binding, launch) === owner.processIdentityDigest)
-    if (!owner || original?.length !== 1 || !launches.length
+    if ((record.openCodeFileRoots?.length && !owner) || (owner && original?.length !== 1) || !launches.length
       || launches.some(launch => launch.lifecycle !== 'closed' || !launch.closureEvidence)) changed()
-    for (const root of record.openCodeFileRoots) {
-      if (root.nativeSessionId !== owner.sessionId) changed()
+    for (const root of record.openCodeFileRoots ?? []) {
+      if (root.nativeSessionId !== owner?.sessionId) changed()
       await this.release(record.binding, root, { closedProcess: true, signal, recoverVersions })
     }
+    const directory = record.openCodeFileDirectory
+    if (!directory) return
+    if ((await this.journal.read(record.binding))?.openCodeFileRoots?.length) return
+    await this.removeDirectory(record.binding, directory)
+  }
+
+  private async removeDirectory(binding: WorkerConversationBinding,
+    directory: NonNullable<WorkerConversationReceipt['openCodeFileDirectory']>) {
+    let parent: FileHandle
+    try { parent = await openPrivateRoot(this.parent) }
+    catch (error) {
+      if (!missing(error)) throw error
+      await this.journal.fileDirectoryRemoved(binding, directory.id)
+      return
+    }
+    try {
+      let child: FileHandle
+      try { child = await openChildDirectory(parent, directory.id) }
+      catch (error) {
+        if (!missing(error)) throw error
+        await this.journal.fileDirectoryRemoved(binding, directory.id)
+        return
+      }
+      try {
+        if (directory.filesystem && !isDeepStrictEqual(directory.filesystem, await identity(child))) changed()
+        if ((await readdir(anchored(child))).length) changed()
+      } finally { await child.close() }
+      await rmdir(anchored(parent, directory.id))
+      await parent.sync()
+      await this.journal.fileDirectoryRemoved(binding, directory.id)
+    } finally { await parent.close() }
   }
 }

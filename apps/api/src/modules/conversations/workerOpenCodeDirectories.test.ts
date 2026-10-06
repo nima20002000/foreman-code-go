@@ -13,6 +13,7 @@ import { workerOpenCodeVersionRecovery } from './recoverWorkerOpenCodeFiles.js'
 import { MainWorkerOpenCodeFiles } from './mainWorkerOpenCodeFiles.js'
 import { fileToolFixture } from '../../../test/support/fileTools.js'
 import { AgentFileCreateWorkingCopyResultSchema } from '@foreman-code/contracts/files'
+import { ManagedOpenCodeServer } from '../harnesses/opencodeTransport.js'
 import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import { nativeMessageId } from '../harnesses/opencodeProtocol.js'
 
@@ -36,6 +37,18 @@ async function fixture() {
   await journal.conversations.reserveTurn(f.binding, 'accepted-input', commandInputHash('input'))
   let directories = new WorkerOpenCodeDirectories(state, journal.conversations)
   return { ...f, state, launch, owner,
+    async prepareDirectory() {
+      const directory = await directories.reserveDirectory(f.binding)
+      const server = new ManagedOpenCodeServer({ binary: '/recorded-not-launched', workingDirectory: state,
+        ownerAgentId: 'agent', managedFileRoot: directory.root,
+        managedFileOwner: { id: directory.id, prepareDirectory: (path, signal) =>
+          directories.prepareDirectory(f.binding, directory.id, path, signal) } })
+      const path = server.ownedFileRoot!
+      await directories.prepareDirectory(f.binding, directory.id, path, AbortSignal.timeout(5000))
+      return path
+    },
+    reserveDirectory: () => directories.reserveDirectory(f.binding),
+    reserveTurn: (correlationId: string) => journal!.conversations.reserveTurn(f.binding, correlationId, commandInputHash(correlationId)),
     create: (correlationId = 'accepted-input', nativeSessionId: string = f.session.nativeSessionId) =>
       directories.create(f.binding, correlationId, nativeSessionId),
     record: () => journal!.conversations.read(f.binding),
@@ -52,9 +65,95 @@ async function fixture() {
       await directories.cleanupClosed(record, { snapshot: () => ({ revision: 'recorded', launches: [launch] }) },
         AbortSignal.timeout(5000), recoverVersions)
     },
+    async cleanupTurn(correlationId: string) {
+      const record = (await journal!.conversations.read(f.binding))!
+      await directories.cleanupClosed({ ...record,
+        openCodeFileRoots: record.openCodeFileRoots?.filter(root => root.correlationId === correlationId) ?? [],
+      }, { snapshot: () => ({ revision: 'recorded', launches: [launch] }) }, AbortSignal.timeout(5000))
+    },
     closed() { launch = { ...launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' } },
   }
 }
+
+it('rejects a traversal owner before allocating a native file mount', () => {
+  expect(() => new ManagedOpenCodeServer({ binary: '/recorded-not-launched', workingDirectory: '/recorded-project',
+    ownerAgentId: 'agent', managedFileRoot: '/recorded-files',
+    managedFileOwner: { id: '../foreign', prepareDirectory: async () => {} } }))
+    .toThrow(expect.objectContaining({ result: { error: expect.objectContaining({ code: 'FILE_SOURCE_ISOLATION_REQUIRED' }) } }))
+})
+
+it('keeps two file turns in one owned conversation mount until the native process is closed', async () => {
+  const f = await fixture()
+  const directory = await f.prepareDirectory()
+  const first = await f.create()
+  await f.reserveTurn('second-input')
+  const second = await f.create('second-input')
+  await writeFile(join(first.path, 'first.md'), '# first turn\n')
+  await writeFile(join(second.path, 'second.md'), '# second turn\n')
+  const before = await f.record()
+  expect(first.record.directoryId).toBe(before?.openCodeFileDirectory?.id)
+  expect(second.record.directoryId).toBe(first.record.directoryId)
+  await f.reopen()
+  await expect(f.cleanup()).rejects.toMatchObject({ code: 'WORKER_FILE_CLEANUP_REQUIRED' })
+  expect(await readFile(join(first.path, 'first.md'), 'utf8')).toBe('# first turn\n')
+  expect(await readFile(join(second.path, 'second.md'), 'utf8')).toBe('# second turn\n')
+  f.closed()
+  await f.cleanup()
+  await expect(readdir(directory)).rejects.toMatchObject({ code: 'ENOENT' })
+  const after = await f.record()
+  expect(after?.openCodeFileDirectory).toBeUndefined()
+  expect(after?.openCodeFileRoots).toEqual([])
+  expect(after?.nativeOwner).toEqual(before?.nativeOwner)
+  expect(after?.session).toEqual(before?.session)
+  expect(after?.turns).toEqual(before?.turns)
+})
+
+it('retains a replaced conversation mount and its original journal after closure', async () => {
+  const f = await fixture()
+  const directory = await f.prepareDirectory()
+  const root = await f.create()
+  const before = await f.record()
+  await rename(directory, `${directory}-original`)
+  await mkdir(directory, { mode: 0o700 })
+  await writeFile(join(directory, 'foreign.md'), '# replacement directory\n')
+  f.closed()
+  await f.reopen()
+  await expect(f.cleanup()).rejects.toMatchObject({ code: 'WORKER_FILE_CLEANUP_REQUIRED' })
+  expect(await readFile(join(directory, 'foreign.md'), 'utf8')).toBe('# replacement directory\n')
+  expect((await f.record())?.openCodeFileDirectory).toEqual(before?.openCodeFileDirectory)
+  expect((await f.record())?.openCodeFileRoots).toEqual([root.record])
+})
+
+it('keeps the mount and another turn’s bytes when only one closed turn is recovered', async () => {
+  const f = await fixture()
+  const directory = await f.prepareDirectory()
+  await f.create()
+  await f.reserveTurn('other-turn')
+  const other = await f.create('other-turn')
+  await writeFile(join(other.path, 'other.md'), '# another admitted turn\n')
+  f.closed()
+  await f.cleanupTurn('accepted-input')
+  expect(await readFile(join(other.path, 'other.md'), 'utf8')).toBe('# another admitted turn\n')
+  expect((await f.record())?.openCodeFileDirectory).toBeDefined()
+  expect((await f.record())?.openCodeFileRoots).toEqual([other.record])
+  await f.cleanupTurn('other-turn')
+  await expect(readdir(directory)).rejects.toMatchObject({ code: 'ENOENT' })
+  expect((await f.record())?.openCodeFileDirectory).toBeUndefined()
+})
+
+it('reclaims a reserved empty mount after a crash before materializing any turn', async () => {
+  const f = await fixture()
+  await f.reserveDirectory()
+  const before = await f.record()
+  expect(before?.openCodeFileDirectory).toBeDefined()
+  expect(before?.openCodeFileDirectory?.filesystem).toBeUndefined()
+  await f.reopen()
+  await expect(f.cleanup()).rejects.toMatchObject({ code: 'WORKER_FILE_CLEANUP_REQUIRED' })
+  f.closed()
+  await f.cleanup()
+  expect((await f.record())?.openCodeFileDirectory).toBeUndefined()
+  expect((await f.record())?.nativeOwner).toEqual(before?.nativeOwner)
+})
 
 // Process closure is recorded; journal persistence and descriptor-anchored filesystem cleanup are real.
 it('recovers owned scratch after a worker restart only after its original native owner is positively closed', async () => {

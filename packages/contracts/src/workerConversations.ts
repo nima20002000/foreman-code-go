@@ -59,6 +59,7 @@ export const WorkerConversationTurnSchema = z.object({
 }).strict()
 export const WorkerOpenCodeFileRootSchema = z.object({
   id: z.uuid(), correlationId: id, nativeSessionId: id,
+  directoryId: z.uuid().optional(),
   filesystem: RootFilesystemIdentitySchema.optional(),
 }).strict()
 export type WorkerOpenCodeFileRoot = z.infer<typeof WorkerOpenCodeFileRootSchema>
@@ -78,6 +79,7 @@ export const WorkerConversationReceiptSchema = z.object({
   desiredPreferences: SessionPreferencesSchema.nullable(),
   appliedPreferences: SessionPreferencesSchema.nullable(),
   openCodeFileRoots: z.array(WorkerOpenCodeFileRootSchema).max(1000).optional(),
+  openCodeFileDirectory: z.object({ id: z.uuid(), filesystem: RootFilesystemIdentitySchema.optional() }).strict().optional(),
 }).strict()
 export type WorkerConversationReceipt = z.infer<typeof WorkerConversationReceiptSchema>
 
@@ -226,6 +228,7 @@ export const WorkerConversationProfileFactsSchema = z.object({
   override: z.lazy(() => HostHarnessOverrideSchema),
   profile: z.lazy(() => HostHarnessProfileEvidenceSchema),
   qualification: HarnessQualificationSchema.nullable(),
+  fileSourceHost: z.object({ bootId: id, storageRoot: directory }).strict().optional(),
 }).strict()
 export type WorkerConversationProfileFacts = z.infer<typeof WorkerConversationProfileFactsSchema>
 

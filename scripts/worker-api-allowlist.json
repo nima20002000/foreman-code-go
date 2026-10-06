@@ -37,6 +37,7 @@
   "apps/api/src/modules/conversations/workerOpenCodeFileHost.ts",
   "apps/api/src/modules/conversations/workerOpenCodeFileService.ts",
   "apps/api/src/modules/conversations/workerOpenCodeFiles.ts",
+  "apps/api/src/modules/conversations/workerOpenCodeStorage.ts",
   "apps/api/src/modules/conversations/workerOperatorDirectory.ts",
   "apps/api/src/modules/devices/connectionSupervisor.ts",
   "apps/api/src/modules/devices/deviceApplicationChannel.ts",

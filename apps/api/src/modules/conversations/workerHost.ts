@@ -222,13 +222,14 @@ export class WorkerConversationHost {
 
   private async open(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.open' }>,
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
+    validateConfiguration(request.binding, request.configuration)
     if (request.mode !== 'create' && !request.source) unavailable('Native attachment or fork requires its source session.')
     if (request.previousBinding) return this.changeApplicationAccess(request, connection, signal)
+    const record = await this.ports.journal.receive(request.binding, connection)
     const resident = await this.allocate(request, connection, signal)
     if (request.mode === 'fork' && !resident.allocation.manager.forkSession) {
       unavailable('The selected native driver cannot fork a chat session.')
     }
-    const record = await this.ports.journal.receive(request.binding, connection)
     if (request.mode === 'attach') {
       if (!record.session || !isDeepStrictEqual(record.session, request.source)) unavailable('A different session cannot replace this chat.')
       await this.ports.journal.rebind(request.binding, connection,

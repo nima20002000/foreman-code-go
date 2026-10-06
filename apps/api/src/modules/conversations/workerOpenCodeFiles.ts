@@ -11,7 +11,6 @@ import { checkFileCondition } from '../harnesses/opencodeFiles/types.js'
 import type { OpenCodeServerController } from '../harnesses/opencodeTransport.js'
 import type { workerConversationCallbacks } from './workerCallbacks.js'
 import { createWorkerOpenCodeFileService } from './workerOpenCodeFileService.js'
-import type { assertWorkerOpenCodeFileHost } from './workerOpenCodeFileHost.js'
 import type { WorkerOpenCodeDirectories } from './workerOpenCodeDirectories.js'
 
 const acknowledged = z.object({ acknowledged: z.literal(true) }).strict()
@@ -30,7 +29,7 @@ export function createWorkerOpenCodeFiles(input: {
   callbacks: Pick<ReturnType<typeof workerConversationCallbacks>, 'openCodeFiles'>
   server: OpenCodeServerController
   assertCurrent(source: WorkerConversationRpcRequest, signal: AbortSignal): Promise<void>
-  assertSourceIsolation: typeof assertWorkerOpenCodeFileHost
+  assertSourceIsolation(source: z.infer<typeof WorkerOpenCodeFilePreparationSchema>['sourceHost'], signal: AbortSignal): Promise<void>
   signal: AbortSignal
 }) {
   const cleanups = new Set<() => Promise<void>>()
@@ -71,7 +70,7 @@ export function createWorkerOpenCodeFiles(input: {
         preserveVersion: proxy.preserveVersion,
         assertSourceIsolation: async checkSignal => {
           await input.assertCurrent(delivery.source, checkSignal)
-          await input.assertSourceIsolation(input.server.nativePid ?? 0, delivery.prepared.sourceHost, checkSignal)
+          await input.assertSourceIsolation(delivery.prepared.sourceHost, checkSignal)
         } })
       delivery.host = host
       deliveries.set(key(identity), delivery)

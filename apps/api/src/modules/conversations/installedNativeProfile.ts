@@ -77,7 +77,8 @@ export function createInstalledConversationNativeReader(input: {
       || qualification.suiteRevision !== input.suiteRevision || qualification.status !== 'qualified'
       || qualification.profile !== QUALIFICATION_TARGET_PROFILE[harness] || !qualification.checkedAt
       || !qualification.checks.length || qualification.checks.some(check => !check.passed)) unavailable()
-    return { inspection: before, qualification }
+    return { inspection: before, qualification,
+      ...(facts.fileSourceHost ? { fileSourceHost: facts.fileSourceHost } : {}) }
   }
   const repository: Pick<HarnessQualificationRepository, 'find' | 'list'> = {
     async list() { return [(await capture()).qualification] },
