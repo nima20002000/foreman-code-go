@@ -22,14 +22,14 @@ export function createWorkerOpenCodeFiles(input: {
   source(): WorkerConversationRpcRequest
   callbacks: Pick<ReturnType<typeof workerConversationCallbacks>, 'openCodeFiles'>
   server: OpenCodeServerController
-  assertCurrent(signal: AbortSignal): Promise<void>
+  assertCurrent(source: WorkerConversationRpcRequest, signal: AbortSignal): Promise<void>
   assertSourceIsolation: typeof assertWorkerOpenCodeFileHost
   signal: AbortSignal
 }) {
   const cleanups = new Set<() => Promise<void>>()
   const adapter: OpenCodeChatFiles = { async resolve(identity, signal) {
-    await input.assertCurrent(signal)
     const source = input.source()
+    await input.assertCurrent(source, signal)
     const proxy = createWorkerOpenCodeFileService({ ...input, source: () => source, identity })
     const raw = await proxy.call({ phase: 'prepare' }, signal)
     if (raw === null) return undefined
@@ -61,7 +61,7 @@ export function createWorkerOpenCodeFiles(input: {
       const host = new LocalOpenCodeExecutionFiles({ root, executionHostId: `worker:${randomUUID()}`,
         maxFileBytes: MAX_FILE_BYTES,
         assertSourceIsolation: async checkSignal => {
-          await input.assertCurrent(checkSignal)
+          await input.assertCurrent(source, checkSignal)
           await input.assertSourceIsolation(input.server.nativePid ?? 0, prepared.sourceHost, checkSignal)
         } })
       return {

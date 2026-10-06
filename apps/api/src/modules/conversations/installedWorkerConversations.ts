@@ -154,7 +154,8 @@ export async function createInstalledWorkerConversations(input: {
       server.ensure = signal => runWithReadOnlyQualification(registry, () => ensure(signal))
       if (purpose === 'chat' && appMcpAccess === 'none') {
         openCodeFiles = createWorkerOpenCodeFiles({ stateDirectory: input.stateDirectory,
-          source, callbacks, server, assertCurrent: before,
+          source, callbacks, server,
+          assertCurrent: (request, signal) => operations.run(request, () => before(signal)),
           assertSourceIsolation: assertWorkerOpenCodeFileHost, signal: input.signal })
       }
       const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: ownerId, appMcpAccess,
