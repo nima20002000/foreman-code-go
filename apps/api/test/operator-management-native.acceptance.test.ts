@@ -29,7 +29,7 @@ import { WorkflowManagementService } from '../src/modules/workflows/management.j
 import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.js'
 
 const enabled = process.env.RUN_REAL_HARNESS_TESTS === '1'
-const connectionString = process.env.OPERATOR_NATIVE_TEST_DATABASE_URL
+const connectionString = process.env.OPERATOR_NATIVE_TEST_DATABASE_URL ?? process.env.ENG03_A_TEST_DATABASE_URL
 const binaries = harnessBinaries(process.env)
 
 function nativeCallCompleted(event: NativeHarnessEvent, harness: 'codex' | 'opencode', name: string) {
@@ -66,7 +66,7 @@ async function availablePort() {
 describe.skipIf(!enabled)('installed native Operator management MCP', () => {
   for (const harness of ['codex', 'opencode'] as const) {
     it.each([false, true])(`${harness}: reads an attached spec and applies live management scope (denied: %s)`, async denied => {
-      if (!connectionString) throw new Error('OPERATOR_NATIVE_TEST_DATABASE_URL must name a disposable test database.')
+      if (!connectionString) throw new Error('The root acceptance runner must supply a disposable test database.')
       const home = await mkdtemp(join(homedir(), '.operator-management-native-'))
       let f: Awaited<ReturnType<typeof workspaceMcpFixture>> | undefined
       const nativeEvents: NativeHarnessEvent[] = []
@@ -74,6 +74,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
       const configurationReadbacks: unknown[] = []
       let state: ReturnType<typeof GetOperatorConversationResponseSchema.parse> | undefined
       const evidenceDirectory = process.env.OPERATOR_NATIVE_EVIDENCE_DIR
+        ?? process.env.ENG03_A_EVIDENCE_DIR
         ?? join(process.cwd(), '.logs', 'operator-management-native')
       const evidencePath = join(evidenceDirectory, `${harness}-${denied ? 'denied' : 'allowed'}-${randomUUID()}.json`)
       try {
