@@ -758,6 +758,38 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     await expect(chat.activityPage(conversation.id, other, {})).rejects.toMatchObject({ code: 'CONVERSATION_NOT_FOUND' })
   })
 
+  it('settles a completed native turn after authoritative tool history corrects its streamed result', async () => {
+    const turnId = 'reconciled-turn'
+    const toolEvent = (session: NativeSessionReference, type: string, output: string) => NativeHarnessEventSchema.parse({
+      connectionId: 'native-connection', sequence: type === 'item.completed' ? 12 : 0,
+      occurredAt: '2026-10-01T00:00:00Z', type,
+      payload: { threadId: session.nativeSessionId, turnId, item: {
+        id: 'completed-tool', type: 'commandExecution', status: 'completed',
+        command: 'read fixture', aggregatedOutput: output,
+      } },
+    })
+    const start = vi.spyOn(manager, 'startTurn').mockImplementation(async function* (session, input) {
+      await input.onSubmitted?.(turnId)
+      yield toolEvent(session, 'item.completed', 'streamed result')
+    })
+    vi.spyOn(manager, 'reconcile').mockImplementation(async (session, correlationId) => ({
+      correlationId, nativeTurnId: turnId,
+      events: [toolEvent(session, 'item.snapshot', 'saved result')], pendingInteractions: [],
+      terminalResult: { outcome: 'succeeded', output: 'Native result' },
+    }))
+    const conversation = await chat.create(owner)
+    await chat.send(conversation.id, { requestId: 'reconciled-tool', content: 'Read the fixture' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    const state = await chat.get(conversation.id, owner)
+    expect(state.activeRequestId).toBeNull()
+    expect(state.lastResult).toEqual({ outcome: 'succeeded', output: 'Native result' })
+    expect(state.activities).toContainEqual(expect.objectContaining({ id: 'completed-tool',
+      status: 'completed', output: 'saved result' }))
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(manager.disposals).toBe(1)
+    expect((await repository.terminal(conversation.id, 'reconciled-tool'))?.closureState).toBe('closed')
+  })
+
   it('lists chats only after the first message and supports owner-scoped deletion and Undo', async () => {
     const conversation = await chat.create(owner)
     expect(await chat.summaries(owner)).toEqual([])

@@ -27,6 +27,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Retain split native fixture notifications through complete JSONL records and avoid saved-thread reads for stateless events, preserving burst delivery, bounded history and cursor coverage.
 - Join already active Job preparations when draining queue work, so closure failures and recovery remain observable after an automatic rescan.
 - Preserve process-closure refusal causes in source recovery diagnostics and archive requested native acceptance evidence before disposable storage is removed.
+- Reconcile completed current-turn tool activity through its original native owner so saved Codex results can settle without conflicting with late-child activity guards.
 
 ### Security
 

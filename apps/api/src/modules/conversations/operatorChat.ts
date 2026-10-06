@@ -341,10 +341,11 @@ export class OperatorChatService {
   private async recordActivity(id: string, requestId: string, runtime: HistoryContext, event: NativeHarnessEvent, nativeTurnId: string | null, authoritativeReconciliation = false, nativeSubmission?: NativeMessageSubmission) {
     const redact = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {}))
     const known = knownNativeActivity(event, runtime.harness)
-    if (known) {
+    if (known && (known.native.sessionId !== runtime.session?.nativeSessionId
+      || known.native.turnId !== nativeTurnId)) {
       const settled = await this.repository.activity.settleKnownByNative(id, known.change, known.native, redact)
-      if (settled) { this.events.publish(id, 'activity', settled); return }
-      if (known.native.sessionId !== runtime.session?.nativeSessionId || known.native.turnId !== nativeTurnId) return
+      if (settled) this.events.publish(id, 'activity', settled)
+      return
     }
     const change = operatorActivity(event, runtime.harness, requestId)
     if (!change) return
