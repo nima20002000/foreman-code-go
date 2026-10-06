@@ -13,7 +13,7 @@ import type { RemoteOperationJournal } from './operationJournal.js'
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 type RuntimeSupervisor = JobSupervisor<JobExecutionRecord>
-  & Pick<PodmanJobSupervisor<JobExecutionRecord>, 'reconcile' | 'stopExecution'>
+  & Pick<PodmanJobSupervisor<JobExecutionRecord>, 'reconcile' | 'stopExecution' | 'removeExecution'>
 export interface RemoteJobExecutionHostPorts {
   journal: RemoteOperationJournal
   connection: RemoteJobConnectionIdentity
@@ -164,6 +164,9 @@ export class RemoteJobExecutionHost {
   /** Each transition is fsynced before transport IO. Lost ACKs resume the same output commands. */
   private async publish(original: RemoteJobOperationReceiptRecord) {
     let receipt = original
+    if (receipt.native && receipt.terminal?.processStopped) {
+      await (await this.supervisor(receipt.execution)).removeExecution(receipt.execution, receipt.native.containerId)
+    }
     await this.ports.observeReceipt(receipt)
     if (receipt.publication === 'complete' || receipt.publication === 'failed') return
     if (receipt.publication === 'pending') {

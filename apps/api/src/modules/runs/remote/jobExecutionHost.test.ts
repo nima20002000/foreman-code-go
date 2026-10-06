@@ -38,6 +38,7 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
     subject:{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId},executionId:execution.id,
     attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner }
   const state = { loseClosureAck, loseCollectionAck, creates:0, collected:0, closureAccepted:false, reports:[] as string[], allowed:true,
+    containerPresent: false, removals: 0, removalFailures: 0,
     collectionError: null as Error | null }
   let started = false, released = false
   const waiting: Array<() => void> = []
@@ -45,7 +46,25 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   const profile: QualifiedJobProfile = {workspaceLayout:JOB_PRIVATE_GIT_LAYOUT, policyId:policy.isolationPolicyId,policyRevision:policy.isolationPolicyRevision,imageDigest:policy.imageDigest,toolchainDigest:policy.toolchainDigest,
     runtimeVersion:'unit',ociRuntimeVersion:'unit',kernelVersion:'unit',qualificationId:'unit-qualified',rootless:true,cgroupV2:true,filesystemBounded:true,descendantContainment:true,network:'none',cpuLimit:1,memoryBytes:1048576,pidsLimit:64,diskBytes:1048576 }
   const runner: PodmanCommandRunner = { run:async argv => {
-    if(argv.includes('create')){state.creates++;return{exitCode:0,stdout:cid}}
+    if(argv.includes('create')){state.creates++;state.containerPresent=true;return{exitCode:0,stdout:cid}}
+    if (argv[0] === 'rm') {
+      expect(await journal.jobStatus(intent.operationId)).toMatchObject({
+        status: 'known', receipt: { terminal: { processStopped: true, exitCode: 7 } },
+      })
+      if (state.removalFailures > 0) {
+        state.removalFailures--
+        return { exitCode: 1, stdout: '' }
+      }
+      state.removals++
+      state.containerPresent = false
+      return { exitCode: 0, stdout: cid }
+    }
+    if (argv[0] === 'container' && argv[1] === 'exists') {
+      return { exitCode: state.containerPresent ? 0 : 1, stdout: '' }
+    }
+    if (argv[0] === 'container' && argv[1] === 'inspect' && !state.containerPresent) {
+      return { exitCode: 1, stdout: '' }
+    }
     if(argv[0]==='wait')return new Promise(resolve => { waiting.push(() => resolve({exitCode:0,stdout:'7'})) })
     if(argv[0]==='exec'){released=true;for(const finish of waiting.splice(0))finish();return{exitCode:0,stdout:''}}
     return{exitCode:0,stdout:JSON.stringify([{Id:cid,Config:{Labels:{'graphql.job.identity':jobSupervisorIdentity(execution),'graphql.job.spec':execution.acceptedSpec.specDigest,'graphql.job.attempt':execution.attemptId}},State:{Running:started&&!released,Pid:started&&!released?100:0,ExitCode:7,Status:released?'exited':started?'running':'created'}}])}
@@ -69,6 +88,34 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   return {root,journal,execution,intent,state,host,supervisor}
 }
 describe('actual OCI job adapter with command doubles, no installed runtime claim',()=>{
+  it.each([false, true])('removes the owned container after its terminal result, including publication denial %s', async denied => {
+    const f = await fixture(false, denied)
+    await f.host.deliver(f.intent, f.execution)
+    await f.host.drain()
+    expect(f.state.containerPresent).toBe(false)
+    expect(f.state.removals).toBe(1)
+    await f.host.deliver(f.intent, f.execution)
+    expect(f.state.removals).toBe(1)
+    expect(f.state.creates).toBe(1)
+  })
+
+  it('retries failed container removal without publishing completion or rerunning the Job', async () => {
+    const f = await fixture()
+    f.state.removalFailures = 1
+    await f.host.deliver(f.intent, f.execution)
+    await f.host.drain()
+    expect(f.state.containerPresent).toBe(true)
+    expect(f.state.collected).toBe(0)
+    expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({
+      status: 'known', receipt: { publication: 'pending', terminal: { exitCode: 7 } },
+    })
+    await f.host.deliver(f.intent, f.execution)
+    expect(f.state.containerPresent).toBe(false)
+    expect(f.state.removals).toBe(1)
+    expect(f.state.creates).toBe(1)
+    expect(f.state.collected).toBe(1)
+  })
+
   it('records expired publication as failed without changing native outcome or rerunning it', async () => {
     const f = await fixture()
     f.state.collectionError = new JobOutputCollectionError('The output transfer expired before publication.')
