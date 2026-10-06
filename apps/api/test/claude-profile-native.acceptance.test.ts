@@ -35,12 +35,13 @@ it.runIf(process.env.RUN_CLAUDE_PROFILE_NATIVE_TESTS === '1')(
         for (const child of await readdir(directory, { withFileTypes: true })) {
           if (!child.isDirectory() || !child.name.startsWith('claude-profile-')) continue
           const cwd = join(directory, child.name, 'work')
-          const sessions = await listSessions({ dir: cwd })
+          // SDK listings include sibling Git worktrees unless explicitly scoped.
+          const sessions = await listSessions({ dir: cwd, includeWorktrees: false })
           for (const session of sessions) {
             if (session.cwd !== cwd) throw new Error('Qualification cleanup found another project session.')
             await deleteSession(session.sessionId, { dir: cwd })
           }
-          expect(await listSessions({ dir: cwd })).toEqual([])
+          expect(await listSessions({ dir: cwd, includeWorktrees: false })).toEqual([])
           const projects = join(configuration.configDirectory, 'projects')
           const folders = await readdir(projects, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
             if (error.code === 'ENOENT') return []
