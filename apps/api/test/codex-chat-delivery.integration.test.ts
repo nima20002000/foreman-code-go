@@ -318,7 +318,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       if (kind === 'operator') await sendOperator(id, 'retained', 'wait')
       const nativeRequest = await until(async () => (await native.wire('turn/start'))[0])
       const sessionId = String((nativeRequest.params as { threadId: string }).threadId)
-      const turn = (await state(native.directory, sessionId)).turns[0]!
+      const turn = await until(async () => (await state(native.directory, sessionId)).turns[0])
       const commentary = agentMessage('commentary', 'Before the final answer', 'commentary')
       const answer = agentMessage('answer', 'The final answer')
       const params = { threadId: sessionId, turnId: turn.id }
