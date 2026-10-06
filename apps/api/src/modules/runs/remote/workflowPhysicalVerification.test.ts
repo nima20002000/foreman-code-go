@@ -500,6 +500,34 @@ async function publishPhysicalObservation(f: Awaited<ReturnType<typeof physicalF
 }
 
 describe('physical acknowledgment retry eligibility', () => {
+  it.each(['running', 'rolled-back', 'completed'] as const)(
+    'retires terminal history only after its matching execution result commits: %s', async state => {
+      const f = await physicalFixture()
+      try {
+        await closeTextOnlyFixture(f, 'completed')
+        const original = await publishPhysicalObservation(f)
+        if (state !== 'running') {
+          f.execution.state = 'completed'
+          f.execution.result = f.readout.output!.result
+          f.execution.finishedAt = new Date().toISOString()
+          const transaction = f.sqlConnection.transaction(async sql => {
+            await f.producer.assertOriginal(sql, f.owner, original)
+            if (state === 'rolled-back') throw new Error('Terminal update rolled back')
+          })
+          if (state === 'rolled-back') await expect(transaction).rejects.toThrow('Terminal update rolled back')
+          else await transaction
+        }
+        const ack = { version: 1, operationId: f.intent.operationId,
+          receiptSequence: f.readout.receipt.sequence, sourceDigest: original.sourceDigest, status: 'retired' }
+        f.request.mockResolvedValueOnce({ payload: ack })
+        await expect(f.producer.acknowledge(original)).resolves.toEqual(ack)
+        expect(f.request).toHaveBeenLastCalledWith({ method: 'physical-ack', intent: f.readout.receipt.intent,
+          placement: f.placement, receiptSequence: f.readout.receipt.sequence, sourceDigest: original.sourceDigest,
+          ...(state === 'completed' ? { retire: true } : {}) }, {})
+      } finally { await f.sqlConnection.close() }
+    },
+  )
+
   it.each(['expired', 'replaced-connection'] as const)('retires an %s observation without sending an ACK', async reason => {
     const f = await physicalFixture()
     try {

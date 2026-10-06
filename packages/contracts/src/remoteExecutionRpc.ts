@@ -14,8 +14,12 @@ export type RemoteReceiptPage = z.infer<typeof RemoteReceiptPageSchema>
 export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('receipt-continuation'), ...binding, transferId: z.uuid(),
     receiptSequence: z.number().int().positive(), metadata: DeviceJsonContinuationRequestSchema }).strict(),
-  z.object({ method: z.enum(['physical-readout','physical-ack']), ...binding, receiptSequence: z.number().int().positive(),
+  z.object({ method: z.literal('physical-readout'), ...binding, receiptSequence: z.number().int().positive(),
     sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), metadata: DeviceJsonContinuationRequestSchema.optional() }).strict(),
+  z.object({ method: z.literal('physical-ack'), ...binding, receiptSequence: z.number().int().positive(),
+    sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), metadata: DeviceJsonContinuationRequestSchema.optional(),
+    // Main has committed this execution's matching terminal result, beyond retaining its source.
+    retire: z.literal(true).optional() }).strict(),
   z.object({ method: z.literal('prepare'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), applicationAccess: RemoteApplicationAccessSchema.optional() }).strict(),
   z.object({ method: z.literal('reattach'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), session: z.lazy(() => NativeSessionReferenceSchema) }).strict(),
   z.object({ method: z.literal('prepare-review'), ...binding, review: RemoteReviewerRequestSchema }).strict(),

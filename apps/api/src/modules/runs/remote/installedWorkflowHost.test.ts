@@ -481,10 +481,27 @@ describe('installed host resident execution continuity', () => {
       expect(history.status.receipt.terminal.result).toEqual(result)
       // A status reply refreshes the boundary retained for the same receipt.
       await read('status')
-      await f.call('physical-ack', { receiptSequence: history.status.receipt.sequence,
+      await f.call('physical-ack', { retire: true, receiptSequence: history.status.receipt.sequence,
         sourceDigest: remoteWorkflowSourceDigest({ type: 'boundary' }) })
       expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
       expect(await read('status')).toMatchObject({ receipt: { terminal: { result } } })
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.turns).toHaveBeenCalledOnce()
+    } finally { await f.host.close() }
+  })
+
+  it('keeps terminal history available after source acknowledgment until Main persists the execution result', async () => {
+    const f = await runningInstalledFixture()
+    try {
+      f.finish('succeeded')
+      await f.settled
+      const response = await f.call('history')
+      const value = response.payload as { history: NativeHistory; status: { receipt: { sequence: number } } }
+      const selector = { receiptSequence: value.status.receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest({ type: 'history', history: value.history }) }
+      await f.call('physical-ack', selector)
+      expect(await f.journal.isRetired(f.intent.operationId)).toBe(false)
+      expect(await f.call('history')).toMatchObject({ payload: { history: value.history } })
       expect(f.create).toHaveBeenCalledOnce()
       expect(f.turns).toHaveBeenCalledOnce()
     } finally { await f.host.close() }
@@ -506,7 +523,7 @@ describe('installed host resident execution continuity', () => {
       expect(value.history.events.length).toBeLessThan(f.history.events.length)
       const selector = { receiptSequence: value.status.receipt.sequence,
         sourceDigest: remoteWorkflowSourceDigest({ type: 'history', history: value.history }) }
-      expect(await f.call('physical-ack', selector)).toMatchObject({ payload: { status: 'retired' } })
+      expect(await f.call('physical-ack', { ...selector, retire: true })).toMatchObject({ payload: { status: 'retired' } })
       expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
       expect(await f.call('status')).toMatchObject({ payload: { receipt: { terminal: { kind: 'completed' } } } })
       expect(f.create).toHaveBeenCalledOnce()

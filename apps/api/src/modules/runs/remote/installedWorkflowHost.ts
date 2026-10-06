@@ -946,7 +946,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         if(frame.method==='physical-ack') {
           const resident = operation(frame.intent)
           const status = await log.status(frame.intent.operationId)
-          if (resident.physicalClosure
+          if (frame.retire && resident.physicalClosure
             && status.status === 'known' && status.receipt.terminal && status.receipt.sequence === frame.receiptSequence) {
             const readout = await physical.read(frame)
             const terminalSource = frame.sourceDigest === remoteWorkflowSourceDigest({ type: 'boundary' })

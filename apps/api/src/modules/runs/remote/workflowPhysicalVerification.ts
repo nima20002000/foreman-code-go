@@ -54,9 +54,9 @@ interface Prepared {
   source: WorkflowOriginalNativeSource
   assertCurrent(): void
   assertAcknowledgmentCurrent(): void
-  acknowledge(sourceDigest:string):Promise<RemoteWorkflowPhysicalAck>
+  acknowledge(sourceDigest:string, options?: { retire: true }):Promise<RemoteWorkflowPhysicalAck>
 }
-interface Bound extends Prepared { owner: RunOwnership; lifetime: RemoteWorkflowMainLifetime;publications:Set<GraphTransactionSql>;replyPublications:Set<GraphTransactionSql>;terminalCapture?:WorkflowNativeCapture }
+interface Bound extends Prepared { owner: RunOwnership; lifetime: RemoteWorkflowMainLifetime;publications:Set<GraphTransactionSql>;replyPublications:Set<GraphTransactionSql>;terminalPublications:Set<GraphTransactionSql>;terminalCapture?:WorkflowNativeCapture }
 const unavailable = (reason: string): never => {
   throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE',
     `Remote native verification failed (${reason}).`, 409, { reason })
@@ -183,9 +183,9 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       }
       const result = Object.freeze({ kind: 'original-remote-physical' as const })
       const observation: Prepared = { expiresAt, binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent, assertAcknowledgmentCurrent,
-        acknowledge:async(sourceDigest)=>{
+        acknowledge:async(sourceDigest, options)=>{
           assertAcknowledgmentCurrent()
-          const reply=await captured.request({method:'physical-ack',intent:receipt.intent,placement,receiptSequence:receipt.sequence,sourceDigest},signal?{signal}:{})
+          const reply=await captured.request({method:'physical-ack',intent:receipt.intent,placement,receiptSequence:receipt.sequence,sourceDigest,...options},signal?{signal}:{})
           if(reply.bytes!==undefined)return unavailable('ack_binary')
           const ack=RemoteWorkflowPhysicalAckSchema.parse(reply.payload)
           assertAcknowledgmentCurrent()
@@ -219,7 +219,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         previous.lifetime.assertCurrent();return
       }
       bound.set(original, { ...capture, owner, lifetime:{...lifetime,execution:structuredClone(lifetime.execution),session:structuredClone(lifetime.session),
-        lane:lifetime.lane?structuredClone(lifetime.lane):null},publications:new Set(),replyPublications:new Set() })
+        lane:lifetime.lane?structuredClone(lifetime.lane):null},publications:new Set(),replyPublications:new Set(),terminalPublications:new Set() })
     },
     passiveNativeOwner(original) {
       const capture = bound.get(original)
@@ -239,14 +239,16 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       if(!capture||![...capture.publications].some(didGraphTransactionCommit))return unavailable('uncommitted_publication')
       capture.assertAcknowledgmentCurrent()
       original.assertCurrent();capture.assertCurrent()
-      return capture.acknowledge(original.sourceDigest)
+      return capture.acknowledge(original.sourceDigest,
+        [...capture.terminalPublications].some(didGraphTransactionCommit) ? { retire: true } : undefined)
     },
     async acknowledgeReply(original) {
       const capture=bound.get(original)
       if(!capture?.readout.history||![...capture.replyPublications].some(didGraphTransactionCommit))return unavailable('uncommitted_history')
       capture.assertAcknowledgmentCurrent()
       original.assertCurrent();capture.assertCurrent()
-      return capture.acknowledge(remoteWorkflowSourceDigest({type:'history',history:remoteWorkflowNativeHistory(capture.readout.history)}))
+      return capture.acknowledge(remoteWorkflowSourceDigest({type:'history',history:remoteWorkflowNativeHistory(capture.readout.history)}),
+        [...capture.terminalPublications].some(didGraphTransactionCommit) ? { retire: true } : undefined)
     },
     async artifactTerminalContext(sql,owner,original,capture,proof) {
       assertGraphTransaction(sql)
@@ -457,6 +459,13 @@ export function createRemoteWorkflowPhysicalVerification(input: {
             && same(record.session, readout.session) && same(source, original.source)
         })
         if (matches) capture.publications.add(sql)
+      }
+      // Source publication may precede the execution's terminal update. Only
+      // the transaction that sees the matching saved result may retire the Worker.
+      if (capture.publications.has(sql) && execution.data.state === 'completed' && receipt.terminal
+        && (receipt.terminal.result ? same(execution.data.result, receipt.terminal.result)
+          : receipt.terminal.kind === 'cancelled' && execution.data.result?.outcome === 'canceled')) {
+        capture.terminalPublications.add(sql)
       }
       if(readout.history) {
         const sources:WorkflowOriginalNativeSource[]=readout.history.events.map(event=>({type:'event',event:{...event,executionId:intent.executionId}}))
