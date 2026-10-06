@@ -38,6 +38,7 @@ import type {
   NativeTerminalObservation,
 } from '../harnesses/port.js'
 import { NativeDeliveryError } from '../harnesses/errors.js'
+import { componentLogger } from '../../infrastructure/logger.js'
 import { primeInitialNativeStream } from '../harnesses/claudeSdk/initialStream.js'
 import type { PostgresOperatorRepository } from '../operators/postgres.js'
 import { withFilesystemDeadline } from '../workspaces/filesystem.js'
@@ -791,6 +792,13 @@ export class OperatorChatService {
       submitted = true
       await this.control(id, () => this.observe(id, input.requestId, runtime))
     } catch (error) {
+      const code = failure(error).error?.code
+      componentLogger('harness').error({
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
+        ...(code && /^[A-Za-z0-9_-]{1,64}$/.test(code) ? { errorCode: code } : {}),
+        stackFrames: error instanceof Error
+          ? error.stack?.split('\n').filter(frame => /^\s+at\s/.test(frame)).slice(0, 8) ?? [] : [],
+      }, 'Operator native turn failed')
       if (signal.aborted) textStream?.dispose(); else textStream?.flush()
       if (submitted || (submitting && !definitePromptRejection(error)) || (creating && !definiteCreationFailure(error))) {
         await this.repository.uncertain(id, input.requestId, error instanceof Error ? error.message : 'Native delivery is uncertain.')

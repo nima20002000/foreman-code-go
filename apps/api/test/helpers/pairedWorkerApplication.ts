@@ -53,11 +53,11 @@ function observeWorkerErrors(stream: Readable) {
     if (Buffer.byteLength(line) > 65536) return
     let value: unknown
     try { value = JSON.parse(line) } catch { return }
-    const parsed = z.object({ level: z.number(), err: z.object({
+    const parsed = z.object({ level: z.union([z.number(), z.enum(['error', 'fatal'])]), err: z.object({
       type: z.string().optional(), code: z.string().optional(), stack: z.string().optional(),
       result: z.object({ error: z.object({ code: z.string().optional() }).optional() }).optional(),
     }).optional() }).safeParse(value)
-    if (!parsed.success || parsed.data.level < 50 || !parsed.data.err) return
+    if (!parsed.success || typeof parsed.data.level === 'number' && parsed.data.level < 50 || !parsed.data.err) return
     const error = parsed.data.err
     const code = error.code ?? error.result?.error?.code
     fixtureLogger.error({
