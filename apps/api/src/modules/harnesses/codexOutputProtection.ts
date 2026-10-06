@@ -14,7 +14,7 @@ import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeComma
   matchesCodexNativeProbeCommand, parseCodexNativeProbeOutput } from './qualification/suites/codexNativeOutputSandbox.js'
 import { DomainError } from '../errors.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
-import { CodexCommandOutput } from './codexCommandOutput.js'
+import { CodexCommandOutput, recordedCodexCommandOutput } from './codexCommandOutput.js'
 
 const unavailable = () => new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',
   'The selected native sandbox did not prove protection of its output store.', 409)
@@ -168,9 +168,14 @@ export async function qualifyCodexOutputProtection(input: {
         })
     }
     const originalCommand = observed[0]!
-    const output = typeof originalCommand.item.id === 'string'
+    let output = typeof originalCommand.item.id === 'string'
       ? commandOutput.read({ threadId, turnId, itemId: originalCommand.item.id }, originalCommand.item.aggregatedOutput)
       : undefined
+    if (output === undefined) {
+      const page = object(await transport.request('thread/items/list', { threadId, turnId, limit: 16 }, signal))
+      if (typeof originalCommand.item.id === 'string') output = recordedCodexCommandOutput(page.data,
+        { turnId, itemId: originalCommand.item.id, command: originalCommand.item.command })
+    }
     const result = parseCodexNativeProbeOutput(output, marker)
     if (!result) {
       throw new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',

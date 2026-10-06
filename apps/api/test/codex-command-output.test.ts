@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { CodexCommandOutput } from '../src/modules/harnesses/codexCommandOutput.js'
+import { CodexCommandOutput, recordedCodexCommandOutput } from '../src/modules/harnesses/codexCommandOutput.js'
 
 const command = { threadId: 'thread', turnId: 'turn', itemId: 'command' }
 
@@ -30,4 +30,18 @@ it('fails oversized diagnostic capture without truncating it into acceptable evi
   output.append({ ...command, delta: 'a'.repeat(64 * 1024) })
   expect(() => output.append({ ...command, delta: 'b' })).toThrow('exceeds its bound')
   expect(output.read(command, null)).toHaveLength(64 * 1024)
+})
+
+it('reads only the matching completed command from authoritative item history', () => {
+  const expected = { turnId: 'turn', itemId: 'command', command: '/usr/bin/python3 original.py' }
+  const row = { turnId: expected.turnId, item: { id: expected.itemId, type: 'commandExecution',
+    command: expected.command, status: 'completed', exitCode: 0, aggregatedOutput: 'original stdout' } }
+  expect(recordedCodexCommandOutput([row], expected)).toBe('original stdout')
+  for (const foreign of [{ ...row, turnId: 'foreign' },
+    ...[{ id: 'foreign' }, { command: 'different command' }, { type: 'agentMessage' },
+      { status: 'inProgress' }, { exitCode: 1 }, { aggregatedOutput: null }]
+      .map(fields => ({ ...row, item: { ...row.item, ...fields } }))]) {
+    expect(recordedCodexCommandOutput([foreign], expected)).toBeUndefined()
+  }
+  expect(recordedCodexCommandOutput([row, row], expected)).toBeUndefined()
 })

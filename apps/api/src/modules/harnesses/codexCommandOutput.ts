@@ -1,9 +1,25 @@
 import { HarnessExecutionError } from './errors.js'
+import { object } from './codexStdioTransport.js'
 
 interface CommandIdentity {
   threadId: string
   turnId: string
   itemId: string
+}
+
+export function recordedCodexCommandOutput(entries: unknown,
+  expected: { turnId: string; itemId: string; command: unknown }): string | undefined {
+  if (!Array.isArray(entries)) return undefined
+  const matching = entries.filter(entry => {
+    const row = object(entry)
+    const item = object(row.item)
+    return row.turnId === expected.turnId && item.id === expected.itemId && item.type === 'commandExecution'
+  })
+  if (matching.length !== 1) return undefined
+  const item = object(object(matching[0]).item)
+  if (item.command !== expected.command || item.status !== 'completed' || item.exitCode !== 0
+    || typeof item.aggregatedOutput !== 'string') return undefined
+  return item.aggregatedOutput
 }
 
 /** One qualified transport's command stdout, separated by native thread, turn and item. */

@@ -90,7 +90,7 @@ interface OwnedTurn {
   questionFailure?: NonNullable<NativeHistory['terminalResult']>
   terminalResult: NativeHistory['terminalResult']
   nativeMessageId?: string
-  reconciliationEvents?: readonly NativeHarnessEvent[]
+  reconciliation?: { generation: number; events: readonly NativeHarnessEvent[] }
   /** The native turn owns file inputs/tools across observer detach and retry. */
   files?: OpenCodeManagedFileTurn
   fileIdentity?: string
@@ -1284,7 +1284,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       ...(pendingInteractions[0] ? { pendingInteraction: pendingInteractions[0] } : {}),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     }
-    if (turn?.terminalResult) {
+    if (turn?.terminalResult && (!turn.reconciliation || turn.reconciliation.generation === this.generation)) {
       await this.finishFiles(turn, 'terminal')
       return historyWithOwnedTerminal(result, turn, this.generation)
     }
@@ -1324,7 +1324,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       || (usesOpenCodeNativeAuto(state.configuration) && !state.autoReplies.stopped && state.autoReplies.hasPending)) return result
     // Another observation may have finished while this scan awaited provider I/O.
     // Reuse its complete result/source pair; do not mint a competing receipt.
-    if (turn?.terminalResult) {
+    if (turn?.terminalResult && (!turn.reconciliation || turn.reconciliation.generation === this.generation)) {
       await this.finishFiles(turn, 'terminal')
       return historyWithOwnedTerminal(result, turn, this.generation)
     }
@@ -1353,8 +1353,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       // Only the actual rooted scan above, after both idle checks and the pending
       // checks, may produce this observation. Generic interrupted/error fallbacks
       // have no selected assistant and must NOT acknowledge Worker continuation.
-      if (terminalMessage && turn?.generation === this.generation
-        && ['succeeded', 'failed'].includes(terminalResult.outcome)) {
+      if (terminalMessage && ['succeeded', 'failed'].includes(terminalResult.outcome)) {
         const source = normalizedHistory([terminalMessage], state.configuration.thinking)[0]!
         const payload = openCodeReconciliationPayload(session, this.options.ownerAgentId,
           correlationId, messageID, source, terminalResult.outcome as 'succeeded' | 'failed')
@@ -1363,7 +1362,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           // The selected answer may be on an older page (e.g. native compaction).
           // Preserve its original source ID, then append the distinct observation.
           const events = [source, marker]
-          if (turn) turn.reconciliationEvents = events
+          if (turn) turn.reconciliation = { generation: this.generation, events }
           result.events = [...result.events, ...events.filter((event) => !result.events.some(
             (raw) => raw.connectionId === event.connectionId && raw.sequence === event.sequence))]
         }
@@ -1965,7 +1964,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
  * A replacement native producer generation must not reuse its positive receipt. */
 function historyWithOwnedTerminal(history: NativeHistory, turn: OwnedTurn, generation: number): NativeHistory {
   if (!turn.terminalResult) return history
-  const events = turn.generation === generation ? turn.reconciliationEvents ?? [] : []
+  const events = turn.reconciliation?.generation === generation ? turn.reconciliation.events : []
   return { ...history,
     events: [...history.events, ...events.filter((event) => !history.events.some(
       (raw) => raw.connectionId === event.connectionId && raw.sequence === event.sequence))],
