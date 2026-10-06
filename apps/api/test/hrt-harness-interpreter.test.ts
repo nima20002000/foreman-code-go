@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { mkdtemp, mkdir, writeFile, symlink, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -12,7 +13,7 @@ const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 describe('exact installed shebang interpreter revalidation', () => {
   it.each(['env', 'direct'] as const)('rejects an atomic %s interpreter retarget even when old payload fingerprints are unchanged', async kind => {
-    const root = await mkdtemp('/var/tmp/hrt-interpreter-'); roots.push(root)
+    const root = await mkdtemp(join(persistentFixtureRoot, 'hrt-interpreter-')); roots.push(root)
     const bin = join(root, 'bin'); await mkdir(bin, { mode: 0o700 })
     const launcher = join(root, 'launcher'), first = join(root, 'node-A'), second = join(root, 'node-B')
     const interpreter = kind === 'env' ? join(bin, 'node') : join(root, 'interpreter')

@@ -3,12 +3,18 @@ import { open, readdir, type FileHandle } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
 import { JobInputAdmissionSchema, JobInputDeliveryReceiptSchema, type JobInputAdmission } from '@foreman-code/contracts/job-inputs'
-import { TransferIntentSchema, VerifiedTransferReceiptSchema, BYTE_TRANSFER_POLICY, type TransferIntent, type TransferContext } from '@foreman-code/contracts/byte-transfer'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import {
+  TransferIntentSchema,
+  VerifiedTransferReceiptSchema,
+  BYTE_TRANSFER_POLICY,
+  type TransferIntent,
+  type TransferContext,
+} from '@foreman-code/contracts/byte-transfer'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { JobSourcePort } from '../../jobs/executor.js'
 import type { JobInputWorkerChannel } from '../../files/jobInputs/channel.js'
-import { ReadonlyJobInputDelivery, type JobInputDeliverySource } from '../../files/jobInputs/delivery.js'
-import { recipient, inputHash, snapshotDigest, manifestBytes } from '../../files/jobInputs/manifest.js'
+import { ReadonlyJobInputDelivery, type JobInputDeliverySource, type JobSystemInput } from '../../files/jobInputs/delivery.js'
+import { recipient, inputHash, snapshotDigest, manifestBytes, verificationContextPin } from '../../files/jobInputs/manifest.js'
 import { JOB_INPUT_NAMESPACE } from '../../files/jobInputs/protocol.js'
 import { byteRange } from '../../files/tools/transfers.js'
 import { ResumableByteTransferService } from '../../byte-transfer/service.js'
@@ -28,11 +34,11 @@ const recordLimit = 2 * 1024 * 1024 // original admission plus verified-source m
  * The shared canonical receiver remains the sole staging/quota authority. */
 export function createInstalledJobInputRsync(input: {
   receiver: ResumableByteTransferService; journal: RemoteOperationJournal; channel: JobInputWorkerChannel
-  receiptRoot: string; admissionRoot: string
+  receiptRoot: string; admissionRoot: string; systemInput?: JobSystemInput
 }) {
   const lifetime = new AbortController(), active = new Set<Promise<unknown>>()
   const context = () => transferContextForBinding(input.channel.currentBinding())
-  const fileName = (execution: JobExecution) => `${inputHash([recipient(execution), snapshotDigest(execution)])}.json`
+  const fileName = (execution: JobExecutionRecord) => `${inputHash([recipient(execution), snapshotDigest(execution)])}.json`
   const readRecord = async (directory: FileHandle, name: string): Promise<RetainedInput> => {
     const file = await open(anchored(directory, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     try {
@@ -63,7 +69,7 @@ export function createInstalledJobInputRsync(input: {
       return result
     } finally { await directory.close() }
   }
-  const retained = async (execution: JobExecution) => {
+  const retained = async (execution: JobExecutionRecord) => {
     const directory = await openPrivateRoot(input.admissionRoot)
     try {
       const record = await readRecord(directory, fileName(execution))
@@ -77,13 +83,14 @@ export function createInstalledJobInputRsync(input: {
     if (status.status !== 'known' || !isDeepStrictEqual(recipient(status.receipt.execution), record.admission.manifest.recipient)) throw new Error('Original Job input journal owner unavailable')
     return status.receipt.execution
   }
-  const validateAdmission = (execution: JobExecution, admission: JobInputAdmission) => {
+  const validateAdmission = (execution: JobExecutionRecord, admission: JobInputAdmission) => {
     const manifest = admission.manifest
     if (!isDeepStrictEqual(manifest.recipient, recipient(execution)) || manifest.bindingId !== fileName(execution).slice(0, -5)
       || manifest.inputSnapshotDigest !== snapshotDigest(execution) || hash(manifestBytes(manifest)) !== manifest.manifestSha256) throw new Error('Original canonical Job input admission changed')
     const expected = [{ relativePath: 'manifest.json', sha256: manifest.manifestSha256, byteSize: manifest.manifestByteSize },
       { relativePath: 'workflow-input.json', sha256: hash(Buffer.from(JSON.stringify(manifest.workflowInput))), byteSize: Buffer.byteLength(JSON.stringify(manifest.workflowInput)) },
-      ...manifest.entries.map(entry => ({ relativePath: entry.relativePath, sha256: entry.pin.sha256, byteSize: entry.pin.byteSize }))]
+      ...manifest.entries.map(entry => ({ relativePath: entry.relativePath, sha256: entry.pin.sha256, byteSize: entry.pin.byteSize })),
+      ...(verificationContextPin(manifest) ? [verificationContextPin(manifest)!] : [])]
     if (admission.transfers.length !== expected.length || new Set(admission.transfers.map(item => item.intent.transferId)).size !== expected.length) throw new Error('Original Job input transfer inventory incomplete')
     for (const pin of expected) {
       const matches = admission.transfers.filter(item => item.relativePath === pin.relativePath)
@@ -93,7 +100,7 @@ export function createInstalledJobInputRsync(input: {
         || intent.manifestDigest !== manifest.manifestSha256) throw new Error('Original Job input transfer pin changed')
     }
   }
-  const recheck = async (execution: JobExecution, admission: JobInputAdmission, signal: AbortSignal) => {
+  const recheck = async (execution: JobExecutionRecord, admission: JobInputAdmission, signal: AbortSignal) => {
     signal.throwIfAborted(); validateAdmission(execution, admission)
     const record = await retained(execution), actual = await executionFor(record)
     if (!isDeepStrictEqual(actual, execution) || !isDeepStrictEqual(record.admission, admission)) throw new Error('Original Job input execution changed')
@@ -109,15 +116,20 @@ export function createInstalledJobInputRsync(input: {
     }
     signal.throwIfAborted()
   }
-  const preparations = new Map<string, { execution: JobExecution; source: VerifiedSource }>()
+  const preparations = new Map<string, { execution: JobExecutionRecord; source: VerifiedSource }>()
   const source: JobInputDeliverySource = {
-    async admit(execution, signal) {
+    async admit(execution, signal, verificationContext) {
       signal.throwIfAborted()
       const preparing = preparations.get(execution.operationId)
       if (!preparing || !isDeepStrictEqual(preparing.execution, execution)) throw new Error('Original Job input preparation context missing')
-      const binding = context(), reply = await input.channel.request(JOB_INPUT_NAMESPACE, { method: 'bind', recipient: recipient(execution) }, { signal })
+      const binding = context(), reply = await input.channel.request(JOB_INPUT_NAMESPACE, {
+        method: 'bind', recipient: recipient(execution), ...(verificationContext ? { verificationContext } : {}),
+      }, { signal })
       if (reply.bytes !== undefined || !isDeepStrictEqual(context(), binding)) throw new Error('Original Job input binding changed')
       const admission = JobInputAdmissionSchema.parse(reply.payload); validateAdmission(execution, admission)
+      if (!isDeepStrictEqual(admission.manifest.verificationContext, verificationContext)) {
+        throw new Error('Canonical verification context differs from the protected worker input')
+      }
       const original: RetainedInput = { operationId: execution.operationId, admission, source: structuredClone(preparing.source) }
       const status = await input.journal.jobStatus(execution.operationId)
       if (status.status !== 'known' || !isDeepStrictEqual(status.receipt.execution, execution)) throw new Error('Original Job input journal owner changed')
@@ -164,7 +176,7 @@ export function createInstalledJobInputRsync(input: {
       return byteRange(await input.receiver.openVerified(receipt, context()), offset, length)
     },
   }
-  const delivery = new ReadonlyJobInputDelivery(source, input.receiptRoot)
+  const delivery = new ReadonlyJobInputDelivery(source, input.receiptRoot, input.systemInput)
   const find = async (id: string) => {
     const matches = (await records()).filter(record => record.admission.transfers.some(item => item.intent.transferId === id))
     if (matches.length !== 1) throw new Error('Unique original Job input admission unavailable')
@@ -183,7 +195,7 @@ export function createInstalledJobInputRsync(input: {
       await delivery.verifyPrepared(execution, record.source, JobInputDeliveryReceiptSchema.parse(reply.payload), signal)
       if (!isDeepStrictEqual(context(), actualContext)) throw new Error('Original Job input ACK binding changed')
     },
-    prepare(execution: JobExecution, verified: VerifiedSource, signal: AbortSignal) {
+    prepare(execution: JobExecutionRecord, verified: VerifiedSource, signal: AbortSignal) {
       signal = AbortSignal.any([signal, lifetime.signal]); signal.throwIfAborted()
       if (preparations.has(execution.operationId)) throw new DomainError('JOB_INPUT_BUSY', 'Original Job input delivery is already preparing.', 409)
       requireJobGitMounts(execution, verified)

@@ -1,3 +1,4 @@
+import { JobRuntimeMeasurementRecordSchema } from '@foreman-code/contracts/job-verification-runtime'
 import { createHash, createPublicKey, randomUUID, sign, verify } from 'node:crypto'
 import { isDeepStrictEqual as same } from 'node:util'
 import type pg from 'pg'
@@ -10,13 +11,13 @@ import { JobCancellationProposalInputSchema, JobCancellationRecoveryGetSchema, J
   JOB_CANCELLATION_GRANT_TTL_MS, jobCancellationGrantMessage, jobCancellationClosureMessage,
   type SignedJobCancellationClosure } from '@foreman-code/contracts/job-cancellation-recovery'
 import { RemoteJobDispatchIntentSchema } from '@foreman-code/contracts/remote-job-execution'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { requireLocalHuman, requirePrincipal } from '../access/http.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
 import { PostgresCommandCoordinator, commandInputHash } from '../commands/postgres.js'
-import { readAcceptedJobSource } from '../runs/remote/jobAcceptedSource.js'
+import { readAcceptedJobCleanupSource } from '../runs/remote/jobAcceptedSource.js'
 import { PostgresSourceReservations, type SourceReservation } from '../sources/reservations.js'
 import { DomainError } from '../errors.js'
 import { JobRepository, type JobSql } from './repository.js'
@@ -77,9 +78,23 @@ export class PostgresJobCancellationRecovery {
       perform: async sql => {
         const { execution, registration } = await this.current(sql, input.workspaceId, input.executionId)
         if (execution.process.phase === 'terminal') deny('This Job already has a terminal result.')
-        const accepted = await readAcceptedJobSource(sql, execution)
+        const accepted = await readAcceptedJobCleanupSource(sql, execution)
         if (input.filesystemRecovery && input.filesystemRecovery.filesystem.inode !== accepted.root.binding.filesystem.inode) {
           deny('Restored-volume cleanup cannot adopt a different original source root inode.')
+        }
+        if (input.filesystemRecovery?.kind === 'restored-original-project-quota') {
+          if (execution.schemaVersion !== 2 || !accepted.materialization.receipt.quota) {
+            deny('Project-quota recovery requires the original verification quota ownership.')
+          }
+          const qualification = (await sql.query<{ measurement: unknown }>(
+            'select measurement from job_runtime_qualification_approvals where id=$1 and qualification_id=$2',
+            [execution.acceptedSpec.profile.approvalId, execution.acceptedSpec.profile.qualificationId])).rows[0]
+          const measurement = JobRuntimeMeasurementRecordSchema.parse(qualification?.measurement)
+          if (measurement.schemaVersion !== 2
+            || measurement.fingerprint.quota.volumeId !== input.filesystemRecovery.volumeId
+            || measurement.fingerprint.quotaPool?.filesystemUuid !== input.filesystemRecovery.filesystemUuid) {
+            deny('Project-quota recovery must retain its measured original filesystem and volume identity.')
+          }
         }
         return JobCancellationRecoveryReadSchema.parse({ id: randomUUID(), workspaceId: input.workspaceId,
           executionId: execution.id, principalId: principal.id, state: 'pending', requestedAt: new Date().toISOString(),
@@ -164,7 +179,7 @@ export class PostgresJobCancellationRecovery {
           signature: sign(null, Buffer.from(jobCancellationGrantMessage(grant)), identity!.privateKey).toString('base64url') })
       } })).value
   }
-  private async requireClosure(sql: JobSql, principal: ManagementPrincipal, execution: JobExecution,
+  private async requireClosure(sql: JobSql, principal: ManagementPrincipal, execution: JobExecutionRecord,
     recoveryId: string, signed: SignedJobCancellationClosure) {
     await this.authorize(sql, principal, execution.workspaceId)
     const proposal = await this.proposal(sql, execution.workspaceId, execution.id, recoveryId)
@@ -193,6 +208,8 @@ export class PostgresJobCancellationRecovery {
       || !receipt.stopFence || receipt.phase !== 'confirmed_terminal' || receipt.publication !== 'complete'
       || !terminal || terminal.outcome !== 'cancelled' || !terminal.processStopped
       || terminal.exitCode !== null || terminal.signal !== null
+      || Date.parse(terminal.finishedAt) < Date.parse(grant.approvedAt)
+      || Date.parse(receipt.observedAt) > Date.parse(grant.expiresAt)
       || terminal.closureEvidenceDigest !== createHash('sha256')
         .update(jobCancellationGrantMessage(grant)).digest('hex')
       || !receipt.controls.some(command => command.commandId === grant.cancelCommandId && command.action.kind === 'stop')
@@ -203,6 +220,7 @@ export class PostgresJobCancellationRecovery {
       || connection.authorizationRevision !== target.registration.authorizationRevision
       || closure.sourceClaim.materializationId !== grant.materialization.receipt.materializationId
       || closure.sourceClaim.reservationId !== grant.materialization.reservationId
+      || Boolean(closure.sourceClaim.quotaReclaimed) !== Boolean(grant.materialization.receipt.quota)
       || !verify(null, Buffer.from(jobCancellationClosureMessage(closure)), publicKey, Buffer.from(signed.signature, 'base64url'))) {
       deny('The original signed no-entry and source-claim closure is invalid.')
     }
@@ -245,7 +263,14 @@ export class PostgresJobCancellationRecovery {
             if (!materialization || !same(materialization.record, grant.materialization)) {
               deny('The original source materialization changed.')
             }
-            await new PostgresSourceReservations().retain(sql, row.record, 'retained')
+            const reservations = new PostgresSourceReservations()
+            if (input.closure.closure.sourceClaim.quotaReclaimed) {
+              await reservations.reclaimed(sql, row.record, async () => input.closure.closure.sourceClaim.quotaReclaimed === true
+                && Boolean(grant.materialization.receipt.quota) && !input.closure.closure.receipt.entryAttempted
+                && input.closure.closure.receipt.terminal?.processStopped === true)
+            } else {
+              await reservations.retain(sql, row.record, 'retained')
+            }
             await sql.query("update source_execution_materializations set state='closed' where materialization_id=$1",
               [grant.materialization.receipt.materializationId])
             beforeGraphCommit(sql, async () => { await this.requireClosure(sql, principal, execution,

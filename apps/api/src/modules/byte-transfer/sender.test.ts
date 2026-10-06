@@ -32,3 +32,40 @@ it('resumes the same immutable intent after lost chunk/final ACK and keeps reads
   expect(await sender.send(intent)).toEqual(receipt); expect(starts).toBe(1); expect(offset).toBe(8)
   expect(contexts.map(c => c.connectionEpoch)).toEqual([context.connectionEpoch, replacementEpoch])
 })
+
+
+it('cancels and joins a pending range before reporting deadline failure', async () => {
+  const bytes = Buffer.from('range')
+  const context = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
+    keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID() }
+  const intent: TransferIntent = { ...context, version: 1, transferId: randomUUID(), operationId: randomUUID(),
+    executionId: randomUUID(), attemptId: randomUUID(), placementHash: hash(bytes), rootId: randomUUID(),
+    rootBindingRevision: 1, direction: 'to-main', byteClass: 'artifact', sha256: hash(bytes), byteSize: bytes.length,
+    manifestDigest: hash(bytes), chunkBytes: bytes.length, expiresAt: new Date(Date.now() + 60000).toISOString() }
+  const progress: TransferProgress = { version: 1, transferId: intent.transferId, state: 'transferring',
+    durableOffset: 0, verifiedBytes: 0, receivedInMemoryBytes: 0, updatedAt: new Date().toISOString() }
+  let closed = false
+  let entered!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const receiver: ByteTransferPort = {
+    start: async () => progress, status: async () => progress, cancel: async () => progress,
+    append: async (_id, _context, _chunk, signal) => {
+      if (!signal) throw new Error('Bounded range signal required')
+      entered()
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+      await new Promise(resolve => setTimeout(resolve, 10))
+      closed = true
+      signal.throwIfAborted()
+      return progress
+    },
+    finish: async () => { throw new Error('Cancelled bytes must not be finalized') },
+  }
+  const sender = new ResumableByteTransferSender(receiver, { read: async () => bytes },
+    { current: async () => context, retryable: () => true })
+  const controller = new AbortController()
+  const pending = sender.send(intent, controller.signal)
+  await started
+  controller.abort(new Error('Original publication deadline'))
+  await expect(pending).rejects.toThrow('Original publication deadline')
+  expect(closed).toBe(true)
+})

@@ -15,9 +15,32 @@ function fixture() {
   const pool={connect:async()=>sql} as unknown as pg.Pool
   const dispatch={requireLaunch:vi.fn(),require:vi.fn(async()=>{throw new Error('cleanup is stop-only')}),requireControl:vi.fn(async()=>{}),requireEvidence:vi.fn(async()=>{}),observeReceipt:vi.fn(async()=>{})}
   const bridge=new JobApplicationBridge(pool,dispatch,{appendLog:vi.fn()},{authorizePublication:vi.fn()})
-  return {bridge,intent,binding,dispatch,sql}
+  return {bridge,intent,binding,dispatch,sql,execution}
 }
 describe('job application action-sensitive authority routing with memory ports',()=>{
+  it('routes installed Main read/control through the same owner fence and denies another installation', async () => {
+    const f = fixture()
+    const connection = { kind: 'main' as const, mainId: f.execution.acceptedSpec.target.mainId,
+      mainInstallationId: f.execution.acceptedSpec.target.mainId, bootId: randomUUID() }
+    f.execution.acceptedSpec.target.hostRef = { kind: 'main', mainId: connection.mainId }
+    f.execution.acceptedSpec.target.registration = null
+    f.execution.acceptedSpec.target.mainInstallationId = connection.mainInstallationId
+    const frame = { method: 'job-authorize', intent: f.intent, action: 'control' }
+    expect(await f.bridge.handle(frame, connection)).toMatchObject({ authorized: true })
+    expect(f.dispatch.requireControl).toHaveBeenCalledOnce()
+    await expect(f.bridge.handle(frame, { ...connection, mainInstallationId: randomUUID() }))
+      .rejects.toThrow('Installed Main does not own')
+    expect(f.dispatch.requireControl).toHaveBeenCalledOnce()
+    await expect(f.bridge.handle({ ...frame, action: 'start' }, connection)).rejects.toThrow('starter revoked')
+    expect(f.dispatch.requireLaunch).not.toHaveBeenCalled()
+  })
+  it('cannot use an installed Main connection for a saved device target', async () => {
+    const f = fixture()
+    await expect(f.bridge.handle({ method: 'job-authorize', intent: f.intent, action: 'read' }, {
+      kind: 'main', mainId: f.binding.mainId, mainInstallationId: f.binding.mainId, bootId: randomUUID(),
+    })).rejects.toThrow('Authenticated worker does not own')
+    expect(f.dispatch.requireEvidence).not.toHaveBeenCalled()
+  })
   it('routes source metadata through its original read transaction before report handling', async () => {
     const f = fixture(), resolve = vi.spyOn(f.bridge, 'resolveAcceptedSource').mockRejectedValue(new Error('original source unavailable'))
     await expect(f.bridge.handle({ method: 'job-source', intent: f.intent }, f.binding)).rejects.toThrow('original source unavailable')

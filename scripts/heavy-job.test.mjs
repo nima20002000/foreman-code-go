@@ -65,6 +65,17 @@ function fixture() {
   const tempRoot = join(home, `graphql-heavy-${createHash('sha256').update(common).digest('hex').slice(0, 16)}`)
   return { home, first, second, common, state, tempRoot }
 }
+test('temporary directories exclude other writers under a shared group umask', t => {
+  const f = fixture()
+  t.after(() => rmSync(f.home, { recursive: true, force: true }))
+  const command = 'const fs=require("node:fs"),path=require("node:path");console.log(JSON.stringify([process.env.TMPDIR,path.dirname(process.env.TMPDIR)].map(value=>fs.statSync(value).mode&0o777)))'
+  const entry = `process.umask(0o002);process.argv=[process.execPath,${JSON.stringify(join(f.first, 'scripts/heavy-job.mjs'))},'--',process.execPath,'-e',${JSON.stringify(command)}];await import(${JSON.stringify(pathToFileURL(join(f.first, 'scripts/heavy-job.mjs')).href)})`
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', entry],
+    { cwd: f.first, env: jobEnv(f.first), encoding: 'utf8', timeout: 10000 })
+  assert.equal(result.status, 0, result.stderr)
+  const modes = JSON.parse(result.stdout.trim().split('\n').at(-1))
+  assert.deepEqual(modes, [0o700, 0o700])
+})
 function mockProc(f, declarations) {
   // Change only the disposable script's read functions to model visibility errors.
   const path = join(f.first, 'scripts/heavy-job.mjs')
@@ -756,5 +767,40 @@ for (const [name, contents] of [
     assert.match(result.output, /queued .*waiting/)
     assert.equal(result.ran, false)
     assert.equal(readFileSync(path, 'utf8'), contents)
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})
+
+test('verification builds execute each time and return machine-readable command results', async () => {
+  const f = fixture()
+  try {
+    copyFileSync(new URL('./verification-reports.mjs', import.meta.url), join(f.first, 'scripts/verification-reports.mjs'))
+    const reports = join(f.first, '.logs', 'verification')
+    const environment = { ...jobEnv(f.first), FOREMAN_CODE_VERIFICATION_ROOT: f.first,
+      FOREMAN_CODE_VERIFICATION_REPORT_DIR: reports, FOREMAN_CODE_VERIFICATION_LOG_BYTES: '8192',
+      FOREMAN_CODE_VERIFICATION_REPORT_BYTES: '65536', npm_lifecycle_event: 'build' }
+    const script = "const fs = require('fs'); const n = fs.existsSync('count') ? +fs.readFileSync('count') : 0; fs.writeFileSync('count', String(n+1)); fs.mkdirSync('packages/contracts/dist', {recursive:true}); fs.writeFileSync('packages/contracts/dist/index.js', 'export {}');"
+    const argumentsList = ['--build', 'contracts', '--', process.execPath, '-e', script]
+    assert.equal((await run(f.first, argumentsList)).code, 0)
+    const cached = await run(f.first, argumentsList)
+    assert.equal(cached.code, 0, cached.output)
+    assert.match(cached.output, /build is current/)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await new Promise((done) => {
+        const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--build', 'contracts', '--',
+          process.execPath, '-e', script], { cwd: f.first, env: environment, stdio: ['ignore', 'pipe', 'pipe'] })
+        let output = ''
+        child.stdout.on('data', (chunk) => { output += chunk })
+        child.stderr.on('data', (chunk) => { output += chunk })
+        child.once('exit', (code) => done({ code, output }))
+      })
+      assert.equal(result.code, 0, result.output)
+      const receipt = JSON.parse(readFileSync(join(reports, 'parts', 'root_build.command.json'), 'utf8'))
+      assert.equal(receipt.key, 'root:build')
+      assert.equal(receipt.code, 0)
+      assert.ok(Date.parse(receipt.finishedAt) >= Date.parse(receipt.startedAt))
+      // Each invocation is a separate command execution, with a fresh report destination.
+      rmSync(reports, { recursive: true, force: true })
+    }
+    assert.equal(readFileSync(join(f.first, 'count'), 'utf8'), '3')
   } finally { rmSync(f.home, { recursive: true, force: true }) }
 })

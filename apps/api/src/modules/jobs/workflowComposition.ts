@@ -3,7 +3,8 @@ import { readRunJobCleanup } from './runCleanup.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import { AcceptedWorkflowRunV3Schema, canonicalGraphJson, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { JobWorkflowNodeSchema } from '@foreman-code/contracts/job-workflow'
-import type { PreparedJobSpec, JobArtifact, JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobArtifact } from '@foreman-code/contracts/jobs'
+import type { PreparedJobSpecRecord, JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
@@ -13,11 +14,11 @@ import type { WorkflowJobLockedPort, WorkflowJobDriver } from './workflowRuntime
 import type { WorkflowJobPreparation } from './workflowPreparation.js'
 import type { JobService } from './service.js'
 import type { PostgresJobDispatch } from './dispatch.js'
-import { RemoteJobOperationReceiptSchema } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobOperationReceiptRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 
 export interface WorkflowJobOutputs {
-  listCanonicalOutputs(sql:GraphTransactionSql,execution:JobExecution):Promise<JobArtifact[]>
-  verifyRequiredOutputs(sql:GraphTransactionSql,execution:JobExecution):Promise<void>
+  listCanonicalOutputs(sql:GraphTransactionSql,execution:JobExecutionRecord):Promise<JobArtifact[]>
+  verifyRequiredOutputs(sql:GraphTransactionSql,execution:JobExecutionRecord):Promise<void>
 }
 export function createWorkflowJobComposition(input:{jobs:JobService;dispatch:PostgresJobDispatch;outputs:WorkflowJobOutputs}) {
   const forOwner=(owner:RunOwnership,version:WorkflowVersionV3)=>{
@@ -67,7 +68,7 @@ export function createWorkflowJobComposition(input:{jobs:JobService;dispatch:Pos
           }
           return // Durable main cancellation before delivery is positive no-launch evidence, not a fabricated worker receipt.
         }
-        const receipt=RemoteJobOperationReceiptSchema.parse(row?.last_receipt)
+        const receipt=RemoteJobOperationReceiptRecordSchema.parse(row?.last_receipt)
         if(!receipt.terminal||receipt.intent.executionId!==execution.id||receipt.intent.attemptId!==execution.attemptId||receipt.intent.bindingHash!==execution.acceptedSpec.bindingHash||!execution.process.processStopped||execution.process.phase!=='terminal'||['pending','collecting'].includes(execution.publication))throw new DomainError('JOB_RESULT_PENDING','The original durable process/output result is not settled.',409)
         if(execution.publication==='complete'&&execution.process.outcome==='succeeded')await input.outputs.verifyRequiredOutputs(sql,execution)
       },
@@ -81,7 +82,7 @@ export function createWorkflowJobComposition(input:{jobs:JobService;dispatch:Pos
           return captured
         })
         // Only source/byte preparation crosses this gap. The final writer rereads exact Run, input and authority.
-        let spec: PreparedJobSpec
+        let spec: PreparedJobSpecRecord
         try { spec=await input.jobs.prepareDefinition(owner.oneShotConnection(),captured.principal,captured.definition,preparation) }
         catch (error) {
           await owner.oneShotConnection().transaction(sql => releaseUnstartedJobComputer(sql, preparation))

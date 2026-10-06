@@ -1,3 +1,7 @@
+import type { JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
+import { ResolvedJobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
+import { readJobRuntimeProfileVersion } from '../jobs/runtimeProfileVersion.js'
+import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import { randomUUID } from 'node:crypto'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -6,6 +10,35 @@ import type { SourcePreparationClosure } from '@foreman-code/contracts/source-ad
 
 export type SourceReservation = { reservationId: string; scopeId: string; ownerKind: 'capture' | 'transfer' | 'materialization'; ownerId: string; reservedBytes: number }
 export const SOURCE_AGGREGATE_LIMITS = Object.freeze({ bytes: 1024 * 1024 * 1024, preparing: 4, materializations: 2 })
+export function verificationSourceStorageBytes(profile: JobVerificationProfile): number {
+  const fingerprint = profile.measurement?.fingerprint
+  const pool = fingerprint?.quotaPool
+  if (!fingerprint || !pool) return 0
+  return Math.min(pool.slots.reduce((total, slot) => total + slot.hardLimitBytes, 0),
+    fingerprint.deviceLimits.diskBytes - fingerprint.quota.controlHardLimitBytes,
+    fingerprint.quota.volumeCapacityBytes - fingerprint.quota.controlHardLimitBytes)
+}
+async function materializationCapacity(sql: GraphSqlClient, request: Omit<SourceReservation, 'reservationId'>) {
+  const legacy = { verification: false, bytes: SOURCE_AGGREGATE_LIMITS.bytes,
+    materializations: SOURCE_AGGREGATE_LIMITS.materializations }
+  if (request.ownerKind !== 'materialization') return legacy
+  const row = (await sql.query<{ workspace_id: string; spec: unknown }>(
+    `select workspace_id,spec from job_computer_selections
+      where operation_id=$1 and released_at is null`, [request.ownerId])).rows[0]
+  if (!row) return legacy
+  const spec = ResolvedJobDefinitionSpecRecordSchema.parse(row.spec)
+  if (!('verification' in spec)) return legacy
+  const profile = await readJobRuntimeProfileVersion(sql, row.workspace_id,
+    spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision)
+  if (profile.schemaVersion !== 2) throw new DomainError('SOURCE_QUOTA_MISSING', 'Verification source requires its saved verification profile.', 409)
+  const measured = profile.measurement
+  const pool = measured?.fingerprint.quotaPool
+  if (!pool || !measured) throw new DomainError('SOURCE_QUOTA_MISSING', 'Verification source requires its qualified quota pool.', 409)
+  const approved = profile.root.selection.hostRef.kind === 'main'
+    ? JOB_VERIFICATION_OWNER_CONFIGURATION.mainConcurrentJobs : JOB_VERIFICATION_OWNER_CONFIGURATION.laptopConcurrentJobs
+  return { verification: true, bytes: verificationSourceStorageBytes(profile),
+    materializations: Math.min(approved, pool.slots.length, ...measured.suites.map(suite => suite.maxConcurrentHeavyJobs)) }
+}
 /** All main processes serialize reservations for one attested host/filesystem.
  * Staging and retained copies remain charged until physical reclamation proof.
  * Expiry/disconnect never frees an execution reservation or a pending capture.
@@ -16,6 +49,10 @@ export class PostgresSourceReservations {
     if (reservation.ownerKind !== 'materialization' || reservation.ownerId !== closure.operationId) {
       throw new DomainError('SOURCE_RESERVATION_CONFLICT', 'Preparation closure belongs to another reservation.', 409)
     }
+    if (closure.quotaReclaimed) {
+      await this.reclaimed(sql, reservation, async () => closure.childrenClosed && closure.claimReleased)
+      return
+    }
     // Without a materialization, only the bounded 16 KiB closure record remains.
     const retainedBytes = closure.materializationId === null ? Math.min(currentBytes, 16 * 1024) : currentBytes
     await this.retain(sql, reservation, 'retained', retainedBytes)
@@ -24,6 +61,7 @@ export class PostgresSourceReservations {
     if (!Number.isSafeInteger(request.reservedBytes) || request.reservedBytes < 0 || request.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes)
       throw new DomainError('SOURCE_CAPACITY', 'Invalid source disk reservation.', 409)
     await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${request.scopeId}`])
+    const capacity = await materializationCapacity(sql, request)
     const existing = (await sql.query<{ record: SourceReservation; state: string }>(
       'select record,state from source_storage_reservations where owner_kind=$1 and owner_id=$2 for update', [request.ownerKind, request.ownerId])).rows[0]
     if (existing) {
@@ -31,13 +69,17 @@ export class PostgresSourceReservations {
         throw new DomainError('SOURCE_RESERVATION_CONFLICT', 'The source reservation identity or retained bytes changed.', 409)
       return existing.record
     }
-    const totals = (await sql.query<{ bytes: string; preparing: string; materializations: string }>(`select
-      coalesce(sum(reserved_bytes),0) as bytes,
+    const totals = (await sql.query<{ bytes: string; verification_bytes: string; preparing: string; materializations: string }>(`select
+      coalesce(sum(reserved_bytes) filter(where not verification),0) as bytes,
+      coalesce(sum(reserved_bytes) filter(where verification),0) as verification_bytes,
       count(*) filter(where state='preparing') as preparing,
       count(*) filter(where owner_kind='materialization' and state in ('preparing','owned','uncertain')) as materializations
-      from source_storage_reservations where scope_id=$1 and state<>'reclaimed'`, [request.scopeId])).rows[0]!
-    if (Number(totals.bytes) + request.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes || Number(totals.preparing) >= SOURCE_AGGREGATE_LIMITS.preparing
-      || (request.ownerKind === 'materialization' && Number(totals.materializations) >= SOURCE_AGGREGATE_LIMITS.materializations))
+      from (select r.*,exists(select 1 from job_computer_selections s
+        where r.owner_kind='materialization' and s.operation_id=r.owner_id and s.spec ? 'verification') as verification
+        from source_storage_reservations r where r.scope_id=$1 and r.state<>'reclaimed') usage`, [request.scopeId])).rows[0]!
+    const usedBytes = capacity.verification ? Number(totals.verification_bytes) : Number(totals.bytes)
+    if (usedBytes + request.reservedBytes > capacity.bytes || Number(totals.preparing) >= SOURCE_AGGREGATE_LIMITS.preparing
+      || (request.ownerKind === 'materialization' && Number(totals.materializations) >= capacity.materializations))
       throw new DomainError('SOURCE_CAPACITY', 'Aggregate source staging, retained copies or active materializations exhaust this host/filesystem budget.', 409)
     const reservation = { ...request, reservationId: randomUUID() }
     await sql.query(`insert into source_storage_reservations(reservation_id,scope_id,owner_kind,owner_id,reserved_bytes,state,record)

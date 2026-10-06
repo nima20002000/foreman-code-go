@@ -3,6 +3,7 @@ import { JobExecutionSchema, JobInputRevisionSchema } from './jobs.js'
 import { RunInputSchema } from './schemaPrimitives.js'
 import { FileScopeSchema, FileSha256Schema } from './files.js'
 import { TransferIntentSchema } from './byteTransfer.js'
+import { JobVerificationRepositoryContextSchema } from './jobVerificationRuntime.js'
 const Relative=z.string().min(1).max(2048).refine(path=>!path.startsWith('/')&&!path.includes('\\')&&!path.includes('\0')&&!path.split('/').some(part=>!part||part==='.'||part==='..'),'Safe relative input path required.')
 export const JOB_INPUT_DIRECTORY='.graphql-job-inputs' as const
 export const JobInputRecipientSchema=z.object({workspaceId:JobExecutionSchema.shape.workspaceId,executionId:JobExecutionSchema.shape.id,
@@ -14,14 +15,17 @@ export const JobInputEntrySchema=z.object({relativePath:Relative,pin:JobInputRev
 export const JobInputManifestSchema=z.object({version:z.literal(1),bindingId:FileSha256Schema,recipient:JobInputRecipientSchema,
   inputSnapshotDigest:FileSha256Schema,workflowInput:RunInputSchema.nullable(),entries:z.array(JobInputEntrySchema).max(256),
   manifestSha256:FileSha256Schema,manifestByteSize:z.number().int().nonnegative().max(4*1024*1024),
-  totalBytes:z.number().int().nonnegative().max(128*1024*1024)}).strict()
+  totalBytes:z.number().int().nonnegative().max(128*1024*1024),
+  verificationContext: z.lazy(() => JobVerificationRepositoryContextSchema).optional() }).strict()
 export const JobInputAdmissionSchema=z.object({version:z.literal(1),manifest:JobInputManifestSchema,
   principalId:z.string().min(1),principalGrantsDigest:FileSha256Schema,issuedAt:z.string().datetime(),
-  transfers:z.array(z.object({relativePath:Relative,intent:TransferIntentSchema}).strict()).max(258)}).strict()
+  transfers:z.array(z.object({relativePath:Relative,intent:TransferIntentSchema}).strict()).max(259)}).strict()
 export const JobInputDeliveryReceiptSchema=z.object({version:z.literal(1),recipient:JobInputRecipientSchema,
   bindingId:FileSha256Schema,inputSnapshotDigest:FileSha256Schema,manifestSha256:FileSha256Schema,manifestByteSize:z.number().int().nonnegative(),
   directory:z.object({relativePath:z.literal('.graphql-job-inputs'),device:z.string().regex(/^\d+$/),inode:z.string().regex(/^\d+$/),mountId:z.string().regex(/^\d+$/)}).strict(),
   files:z.array(z.object({relativePath:Relative,sha256:FileSha256Schema,byteSize:z.number().int().nonnegative()}).strict()).max(258),
+  verificationContext: z.object({ relativePath: z.literal('verification.json'), sha256: FileSha256Schema,
+    byteSize: z.number().int().positive().max(1024*1024) }).strict().optional(),
   readonlyMountRequired:z.literal(true)}).strict()
 export type JobInputRecipient=z.infer<typeof JobInputRecipientSchema>
 export type JobInputEntry=z.infer<typeof JobInputEntrySchema>
@@ -30,10 +34,12 @@ export type JobInputAdmission=z.infer<typeof JobInputAdmissionSchema>
 export type JobInputDeliveryReceipt=z.infer<typeof JobInputDeliveryReceiptSchema>
 
 export const JobBuildInputManifestSchema=z.object({version:z.literal(1),inputSnapshotDigest:FileSha256Schema,workflowInput:RunInputSchema.nullable(),
-  files:z.array(z.object({relativePath:Relative,...JobInputRevisionSchema.omit({path:true}).shape}).strict()).max(256)}).strict()
+  files:z.array(z.object({relativePath:Relative,...JobInputRevisionSchema.omit({path:true}).shape}).strict()).max(256),
+  verificationContext: JobInputDeliveryReceiptSchema.shape.verificationContext }).strict()
 export type JobBuildInputManifest=z.infer<typeof JobBuildInputManifestSchema>
 export const JobInputDeviceRequestSchema=z.discriminatedUnion('method',[
- z.object({method:z.literal('bind'),recipient:JobInputRecipientSchema}).strict(),
+ z.object({method:z.literal('bind'),recipient:JobInputRecipientSchema,
+   verificationContext: z.lazy(() => JobVerificationRepositoryContextSchema).optional() }).strict(),
  z.object({method:z.literal('authorize'),executionId:z.string().min(1),transferId:z.uuid()}).strict(),
  z.object({method:z.literal('range'),executionId:z.string().min(1),transferId:z.uuid(),offset:z.number().int().nonnegative(),length:z.number().int().min(1).max(8192)}).strict(),
 ])

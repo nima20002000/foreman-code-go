@@ -1,6 +1,7 @@
 import { JobWorkflowExecutionReferenceSchema, type JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
 import { z } from 'zod'
-import { JobDefinitionSchema, JobDefinitionSaveSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobArtifactSchema, JobValidationSchema, JobAuthoringChoicesSchema, type JobDefinitionSave, type JobDefinitionSpec } from '@foreman-code/contracts/jobs'
+import { JobLogPageSchema, JobArtifactSchema, JobValidationSchema } from '@foreman-code/contracts/jobs'
+import { JobDefinitionRecordSchema, JobDefinitionSaveRecordSchema, JobDefinitionSpecRecordSchema, JobExecutionRecordSchema, JobAuthoringChoicesRecordSchema, type JobDefinitionSaveRecord, type JobDefinitionSpecRecord } from '@foreman-code/contracts/job-verification'
 import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
   JobQueueTicketSchema, JobQueueListInputSchema, JobQueuePageSchema,
   type JobQueueTicket } from '@foreman-code/contracts/job-admission'
@@ -16,29 +17,29 @@ export const jobsClient = {
     for (const key of ['workspaceId', 'workflowId', 'runId', 'workflowVersionId', 'nodeId', 'nodeExecutionId', 'occurrenceId', 'occurrenceIndex'] as const) if (reference[key] !== input[key]) mismatch()
     return reference
   },
-  choices(workspaceId: string, options?: RequestOptions) { return apiClient.request(`${root(workspaceId)}/choices`, JobAuthoringChoicesSchema, options) },
+  choices(workspaceId: string, options?: RequestOptions) { return apiClient.request(`${root(workspaceId)}/choices`, JobAuthoringChoicesRecordSchema, options) },
   async definitions(workspaceId: string, options?: RequestOptions) {
-    const { definitions } = await apiClient.request(`${root(workspaceId)}/definitions`, z.object({ definitions: z.array(JobDefinitionSchema) }), options)
+    const { definitions } = await apiClient.request(`${root(workspaceId)}/definitions`, z.object({ definitions: z.array(JobDefinitionRecordSchema) }), options)
     if (definitions.some(item => item.workspaceId !== workspaceId)) mismatch()
     return definitions
   },
   async definition(workspaceId: string, id: string, options?: RequestOptions) {
-    const { definition } = await apiClient.request(`${root(workspaceId)}/definitions/${encodeURIComponent(id)}`, z.object({ definition: JobDefinitionSchema }), options)
+    const { definition } = await apiClient.request(`${root(workspaceId)}/definitions/${encodeURIComponent(id)}`, z.object({ definition: JobDefinitionRecordSchema }), options)
     if (definition.workspaceId !== workspaceId || definition.id !== id) mismatch()
     return definition
   },
   async definitionVersion(workspaceId:string,id:string,versionId:string,options?:RequestOptions) {
-    const {definition}=await apiClient.request(`${root(workspaceId)}/definitions/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}`,z.object({definition:JobDefinitionSchema}),options)
+    const {definition}=await apiClient.request(`${root(workspaceId)}/definitions/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}`,z.object({definition:JobDefinitionRecordSchema}),options)
     if(definition.workspaceId!==workspaceId||definition.id!==id||definition.versionId!==versionId)mismatch()
     return definition
   },
-  async save(workspaceId: string, input: JobDefinitionSave) {
-    const { definition } = await apiClient.request(`${root(workspaceId)}/definitions`, z.object({ definition: JobDefinitionSchema }), { method: 'POST', body: JobDefinitionSaveSchema.parse(input) })
+  async save(workspaceId: string, input: JobDefinitionSaveRecord) {
+    const { definition } = await apiClient.request(`${root(workspaceId)}/definitions`, z.object({ definition: JobDefinitionRecordSchema }), { method: 'POST', body: JobDefinitionSaveRecordSchema.parse(input) })
     if (definition.workspaceId !== workspaceId || (input.id && definition.id !== input.id)) mismatch()
     return definition
   },
-  validate(workspaceId: string, spec: JobDefinitionSpec) {
-    return apiClient.request(`${root(workspaceId)}/validate`, JobValidationSchema, { method: 'POST', body: { spec: JobDefinitionSpecSchema.parse(spec) } })
+  validate(workspaceId: string, spec: JobDefinitionSpecRecord) {
+    return apiClient.request(`${root(workspaceId)}/validate`, JobValidationSchema, { method: 'POST', body: { spec: JobDefinitionSpecRecordSchema.parse(spec) } })
   },
   async start(workspaceId: string, input: z.infer<typeof JobQueuedStartSchema>) {
     const { admission } = await apiClient.request(`${root(workspaceId)}/executions`,
@@ -80,17 +81,17 @@ export const jobsClient = {
     return ticket
   },
   async executions(workspaceId: string, options?: RequestOptions) {
-    const { executions } = await apiClient.request(`${root(workspaceId)}/executions`, z.object({ executions: z.array(JobExecutionSchema) }), options)
+    const { executions } = await apiClient.request(`${root(workspaceId)}/executions`, z.object({ executions: z.array(JobExecutionRecordSchema) }), options)
     if (executions.some(item => item.workspaceId !== workspaceId)) mismatch()
     return executions
   },
   async execution(workspaceId: string, id: string, options?: RequestOptions) {
-    const { execution } = await apiClient.request(executionPath(workspaceId, id), z.object({ execution: JobExecutionSchema }), options)
+    const { execution } = await apiClient.request(executionPath(workspaceId, id), z.object({ execution: JobExecutionRecordSchema }), options)
     if (execution.workspaceId !== workspaceId || execution.id !== id) mismatch()
     return execution
   },
   async cancel(workspaceId: string, id: string, commandId: string) {
-    const { execution } = await apiClient.request(`${executionPath(workspaceId, id)}/cancel`, z.object({ execution: JobExecutionSchema }), { method: 'POST', body: { commandId } })
+    const { execution } = await apiClient.request(`${executionPath(workspaceId, id)}/cancel`, z.object({ execution: JobExecutionRecordSchema }), { method: 'POST', body: { commandId } })
     if (execution.workspaceId !== workspaceId || execution.id !== id) mismatch()
     return execution
   },

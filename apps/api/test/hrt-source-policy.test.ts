@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -20,7 +21,7 @@ const roots: string[] = []
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function filesystem(path: string) { const handle = await openPrivateRoot(path); try { return await identity(handle) } finally { await handle.close() } }
 async function fixture(device = false) {
-  const root = await mkdtemp('/var/tmp/hrt-source-policy-'); roots.push(root)
+  const root = await mkdtemp(join(persistentFixtureRoot, 'hrt-source-policy-')); roots.push(root)
   const mainId = randomUUID(), workspaceId = randomUUID(), rootPolicyId = randomUUID(), deviceId = randomUUID(), workerInstallationId = randomUUID()
   const runtimeRoot = join(root, 'runtime'), base = join(root, 'base'), namespace = join(runtimeRoot, 'source-materializations', rootPolicyId)
   await mkdir(runtimeRoot, { mode: 0o700 }); await mkdir(base, { mode: 0o700 }); await mkdir(join(runtimeRoot, 'source-materializations'), { mode: 0o700 }); await mkdir(namespace, { mode: 0o700 })
@@ -78,6 +79,7 @@ async function fixture(device = false) {
     else if (text.startsWith('select record,state from source_execution_materializations')) rows = record ? [{ record, state: 'prepared' }] : []
     else if (text.startsWith('select record,availability from source_snapshots')) rows = [{ record: approved, availability: 'retained' }]
     else if (text.startsWith('select availability from source_snapshots')) rows = [{ availability: 'retained' }]
+    else if (text.startsWith('select spec from job_computer_selections')) rows = [{ spec }]
     else throw new Error(`Unexpected source policy SQL: ${text}`)
     return { rows, rowCount: rows.length, command: 'SELECT', oid: 0, fields: [] }
   })

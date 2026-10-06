@@ -1,8 +1,12 @@
+import { jobLifecycleSignal } from '../../jobs/lifecycle.js'
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import type pg from 'pg'
 import type { Readable } from 'node:stream'
-import { JobArtifactSchema, type JobArtifact, type JobExecution } from '@foreman-code/contracts/jobs'
+import { JobArtifactSchema, type JobArtifact } from '@foreman-code/contracts/jobs'
+import { JobVerificationReportSchema, JobVerificationPassSchema, type JobExecutionRecord }
+  from '@foreman-code/contracts/job-verification'
+import { isDeepStrictEqual } from 'node:util'
 import { JobArtifactFileWithRevisionSchema, JobArtifactMediaTypeSchema, type JobExecutionFileScope } from '@foreman-code/contracts/job-artifacts'
 import { fileStateAt, type FileWithRevision } from '@foreman-code/contracts/files'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -22,11 +26,11 @@ export type { JobOutputPublicationInput } from '@foreman-code/contracts/job-outp
 export interface TrustedJobOutputReader {
   /** Main verifies receipt/exact ownership, or opens an immutable collected output after proven closure.
    * No caller path is opened by this adapter. The declared relative path is metadata, not a main disk path. */
-  open(input: JobOutputPublicationInput, execution: JobExecution): Promise<Readable>
+  open(input: JobOutputPublicationInput, execution: JobExecutionRecord): Promise<Readable>
 }
 interface JobPublicationLink {
   kind: 'job_execution'; ownerPrincipalId: string; requestId: string; binding: string
-  executionId: string; workspaceId: string; attemptId: string; owner: JobExecution['owner']
+  executionId: string; workspaceId: string; attemptId: string; owner: JobExecutionRecord['owner']
   outputSpecDigest: string; specDigest: string; path: string; inputHash: string
   ref: { fileId: string; revisionId: string }; createdAt: string
 }
@@ -64,7 +68,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     return live
   }
   /** Main-only Run result projection, after its caller proves actual Run ownership. No bearer enters a build. */
-  async listCanonicalOutputs(query: JobSql, execution: JobExecution): Promise<JobArtifact[]> {
+  async listCanonicalOutputs(query: JobSql, execution: JobExecutionRecord): Promise<JobArtifact[]> {
     const current=await new JobRepository().execution(query,execution.workspaceId,execution.id)
     if (!current.workflow || current.process.phase!=='terminal' || !current.process.processStopped
       || current.attemptId!==execution.attemptId || current.acceptedSpec.specDigest!==execution.acceptedSpec.specDigest
@@ -103,13 +107,18 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       values ($1,$2,'job_artifact.read',$3,'succeeded',$4::jsonb)`,[principal.id,source,`job:${executionId}`,JSON.stringify({fileId,revisionId,sha256:artifact.sha256})])
     return {artifact,bytes}
   }
+  private outputLimit(execution: JobExecutionRecord, path: string): number {
+    if (execution.schemaVersion === 1) return execution.acceptedSpec.policy.maxOutputBytes
+    return execution.acceptedSpec.outputs.find(output => output.path === path)?.maxBytes ?? 0
+  }
   private async reserve(input: JobOutputPublicationInput, source: FileMutationSource) {
     input = JobOutputPublicationInputSchema.parse(input)
     const initial = await this.transaction(sql=>this.authority.authorizePublication(sql,input))
     const execution = initial.execution
     const output = execution.acceptedSpec.outputs.find(value=>value.path===input.path)
     if (!output || output.mediaType !== JobArtifactMediaTypeSchema.parse(input.mediaType)
-      || !Number.isSafeInteger(input.byteSize) || input.byteSize < 0 || input.byteSize > execution.acceptedSpec.policy.maxOutputBytes) {
+      || !Number.isSafeInteger(input.byteSize) || input.byteSize < 0 || input.byteSize > execution.acceptedSpec.policy.maxOutputBytes
+      || input.byteSize > this.outputLimit(execution, output.path)) {
       throw new DomainError('JOB_OUTPUT_SPEC_MISMATCH','The output does not match its accepted declaration or byte budget.',422)
     }
     const requestId = `ci:publish:${digest(input.commandId)}`
@@ -117,10 +126,19 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       execution.acceptedSpec.specDigest,execution.acceptedSpec.outputSpecDigest,input.path,input.mediaType,input.byteSize,input.sha256])
     const check = async (sql: JobSql) => {
       const current = await this.authority.authorizePublication(sql,input)
+      if (execution.schemaVersion === 2
+        && Date.parse(execution.acceptedSpec.lifecycle.publicationDeadlineAt) <= this.clock().getTime()) {
+        const completed = await sql.query(`select 1 from file_allocations a join files f on f.file_id=a.file_id
+          where a.owner_principal_id=$1 and a.request_id=$2 and a.state='finalized' and f.state='ready'`,
+        [initial.principal.id, requestId])
+        if (!completed.rowCount) throw new DomainError('JOB_PUBLICATION_DEADLINE_EXPIRED',
+          'The original Job publication deadline expired.', 409)
+      }
       const reserved = await sql.query<{total:string}>(`select coalesce(sum(r.byte_size),0)::text as total
         from files f join file_revisions r on r.file_id=f.file_id join file_allocations a on a.file_id=r.file_id and a.revision_id=r.revision_id
         where f.scope_kind='job_execution' and f.workspace_id=$1 and f.job_execution_id=$2 and a.request_id<>$3 and a.state<>'canceled'`,[input.workspaceId,input.executionId,requestId])
-      if (Number(reserved.rows[0]?.total ?? '0') + input.byteSize > execution.acceptedSpec.policy.maxOutputBytes) throw new DomainError('JOB_OUTPUT_BUDGET_EXCEEDED','All declared outputs exceed the accepted aggregate byte budget.',413)
+      if (Number(reserved.rows[0]?.total ?? '0') + input.byteSize > execution.acceptedSpec.policy.maxOutputBytes
+      || input.byteSize > this.outputLimit(execution, output.path)) throw new DomainError('JOB_OUTPUT_BUDGET_EXCEEDED','All declared outputs exceed the accepted aggregate byte budget.',413)
       if (current.principal.id !== initial.principal.id || current.execution.acceptedSpec.specDigest !== execution.acceptedSpec.specDigest
         || current.execution.acceptedSpec.outputSpecDigest !== execution.acceptedSpec.outputSpecDigest) throw new DomainError('JOB_PUBLICATION_CONFLICT','Accepted job publication ownership changed.',409)
     }
@@ -146,7 +164,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     if (allocated.value.file.state !== 'ready') {
       const bytes = await this.reader.open(input,execution)
       try { await this.files.upload(initial.principal,scope(input.workspaceId,input.executionId),requestId,bytes,{commitAuthorization:guard,
-        source,signal:AbortSignal.timeout(120_000),reauthorize:async()=>{await this.transaction(check);return initial.principal}}) }
+        source,signal:jobLifecycleSignal(execution, 'publication'),reauthorize:async()=>{await this.transaction(check);return initial.principal}}) }
       finally {bytes.destroy()}
     }
     const finalized = await this.files.finalize(initial.principal,scope(input.workspaceId,input.executionId),requestId,source,guard)
@@ -156,9 +174,16 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     return {artifact:this.artifact(record.link,finalized.value),replayed:allocated.replayed}
   }
   /** CI worker authority invokes this inside its complete-publication transaction. */
-  async verifyRequiredOutputs(query: JobSql, execution: JobExecution): Promise<void> {
+  async verifyRequiredOutputs(query: JobSql, execution: JobExecutionRecord): Promise<void> {
     if (execution.process.phase !== 'terminal' || !execution.process.processStopped) throw new DomainError('JOB_OUTPUT_NOT_QUIESCENT','Publication requires proven closure.',409)
     const rows = await this.ledger.list(query,execution.workspaceId,execution.id)
+    for (const { link, value } of rows) {
+      const declaration = execution.acceptedSpec.outputs.find(output => output.path === link.path)
+      if (declaration && value.revision.byteSize > this.outputLimit(execution, declaration.path)) {
+        throw new DomainError('JOB_REQUIRED_OUTPUT_CORRUPT', 'Artifact exceeds its declared byte limit.', 410)
+      }
+    }
+    let summary: unknown
     for (const output of execution.acceptedSpec.outputs.filter(value=>value.required)) {
       const selected = rows.find(({link,value})=>link.path===output.path && link.attemptId===execution.attemptId
         && link.owner.grantId===execution.owner.grantId && link.owner.epoch===execution.owner.epoch
@@ -167,15 +192,45 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       if (!selected) throw new DomainError('JOB_REQUIRED_OUTPUT_MISSING','Required exact canonical outputs are unavailable.',409)
       const stored = await this.files.repository.read(selected.link.ref.fileId,selected.link.ref.revisionId)
       if (!stored) throw new DomainError('JOB_REQUIRED_OUTPUT_CORRUPT','Expected canonical artifact metadata is missing.',410)
-      try { const stream=await this.files.bytes.download(stored.storageKey,stored.value.revision);stream.destroy() }
+      try {
+        const stream = await this.files.bytes.download(stored.storageKey, stored.value.revision)
+        try {
+          if ('kind' in output && output.kind === 'suite-summary') {
+            const bytes = await completedBytes(stream, Math.max(1, selected.value.revision.byteSize))
+            if (bytes.length !== selected.value.revision.byteSize
+              || createHash('sha256').update(bytes).digest('hex') !== selected.value.revision.sha256) {
+              throw new DomainError('FILE_HASH_MISMATCH', 'Summary bytes changed.', 410)
+            }
+            summary = JSON.parse(bytes.toString('utf8'))
+          }
+        } finally { stream.destroy() }
+      }
       catch (error) {
-        if (error instanceof DomainError && ['FILE_BYTES_UNAVAILABLE','FILE_SIZE_MISMATCH','FILE_HASH_MISMATCH','FILE_TYPE_INVALID'].includes(error.code)) {
+        if (error instanceof SyntaxError || error instanceof DomainError && ['FILE_BYTES_UNAVAILABLE','FILE_SIZE_MISMATCH','FILE_HASH_MISMATCH','FILE_TYPE_INVALID'].includes(error.code)) {
           throw new DomainError('JOB_REQUIRED_OUTPUT_CORRUPT','Expected canonical artifact bytes are missing or corrupt.',410)
         }
         throw error
       }
       const current=await this.files.repository.read(selected.link.ref.fileId,selected.link.ref.revisionId)
       if (!current || fileStateAt(current.value.file,this.clock().toISOString())!=='ready') throw new DomainError('JOB_REQUIRED_OUTPUT_MISSING','The required artifact expired during verification.',410)
+    }
+    if (execution.schemaVersion === 2) {
+      const spec = execution.acceptedSpec
+      const expected = { commit: spec.source.commit, manifestDigest: spec.source.manifestDigest,
+        definitionVersionId: spec.definitionVersionId, suite: spec.verification.suite,
+        executionId: execution.id, attemptId: execution.attemptId, target: spec.target,
+        profile: spec.profile, resources: spec.verification.resources, parameters: spec.verification.parameters }
+      const parsed = JobVerificationReportSchema.safeParse(summary)
+      if (!parsed.success || Object.entries(expected).some(([key, value]) =>
+        !isDeepStrictEqual(Reflect.get(parsed.data, key), value))) {
+        throw new DomainError('JOB_REQUIRED_OUTPUT_CORRUPT', 'Verification report differs from the accepted attempt.', 410)
+      }
+      if (execution.process.outcome === 'succeeded' && !JobVerificationPassSchema.safeParse({
+        report: parsed.data, expected, process: execution.process,
+        publication: 'complete', requiredOutputsVerified: true,
+      }).success) {
+        throw new DomainError('JOB_REQUIRED_OUTPUT_CORRUPT', 'Verification reports do not establish a complete pass.', 410)
+      }
     }
   }
 }

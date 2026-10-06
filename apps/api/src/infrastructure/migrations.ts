@@ -21,6 +21,7 @@ import { harnessInstanceProfileEvidenceMigration } from '../modules/harnesses/in
 import { buildComputersMigration } from './buildComputersMigration.js'
 import { jobAdmissionQueueMigration } from './jobAdmissionQueueMigration.js'
 import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
+import { jobSelectionTimeMigration } from './jobSelectionTimeMigration.js'
 import { jobsMigration } from './jobsMigration.js'
 import { currentMultiNodeAgentMigration } from './currentMultiNodeAgentMigration.js'
 import { workflowJobsMigration } from './workflowJobsMigration.js'
@@ -38,6 +39,7 @@ import { remoteExecutionMigration } from './remoteExecutionMigration.js'
 import { remoteDispatchOriginsMigration } from './remoteDispatchOriginsMigration.js'
 import { artifactEdgeMigration } from './artifactEdgeMigration.js'
 import { jobArtifactStorageMigration } from './jobArtifactStorageMigration.js'
+import { jobArtifactXmlMigration } from './jobArtifactXmlMigration.js'
 import { jobOutputAdmissionMigration } from './jobOutputAdmissionMigration.js'
 import { jobInputAdmissionMigration } from './jobInputAdmissionMigration.js'
 import { agentPlacementProducerMigration } from './agentPlacementProducerMigration.js'
@@ -834,6 +836,7 @@ export const migrations = [
   runPresentationMigration,
   workflowPresentationMigration,
   workspaceProvisioningMigration,
+  jobSelectionTimeMigration,
   workParentRequestMigration,
   workJoinRoundMigration,
   workExhaustedRouteMigration,
@@ -846,6 +849,7 @@ export const migrations = [
   localWorkflowNativeOutputMigration,
   localHumanMigration,
   claudeCallbackMigration,
+  jobArtifactXmlMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

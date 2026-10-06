@@ -8,17 +8,20 @@ import { release, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { CurrentJobRuntimeFingerprintSchema, CurrentJobRuntimeMeasurementSchema, JobQualificationCandidateSchema, JobRuntimeQualificationSpoolBytesSchema, type InstalledJobRuntimeDescriptor, type JobQualificationCandidate, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
+import { JobQualificationCandidateRecordSchema, type JobQualificationCandidateRecord, type JobRuntimeQualificationResultRecord }
+  from '@foreman-code/contracts/job-verification-runtime'
 import type { JobSql } from './repository.js'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/contracts/job-inputs'
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
 import type { QualifiedJobProfile } from './executor.js'
+import { JobResourceRequestSchema, type JobResourceRequest } from '@foreman-code/contracts/job-verification-policy'
 
 export const CI_QUALIFICATION_SUITE = 'rootless-podman-ext4-private-git-v2' as const
 export { JobQualificationCandidateSchema } from '@foreman-code/contracts/job-runtime'
 export type { JobQualificationCandidate, InstalledJobRuntimeDescriptor } from '@foreman-code/contracts/job-runtime'
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
-export function jobQualificationFingerprint(candidate: JobQualificationCandidate): string { return hash(candidate.fingerprint) }
+export function jobQualificationFingerprint(candidate: JobQualificationCandidateRecord): string { return hash(candidate.fingerprint) }
 export interface JobQualificationRecord {
   suite: typeof CI_QUALIFICATION_SUITE
   candidate: JobQualificationCandidate
@@ -33,6 +36,15 @@ export interface JobQualificationRecord {
   profile: QualifiedJobProfile | null
 }
 export interface QualificationNativeOwner {
+  completedResult?: JobRuntimeQualificationResultRecord
+  originalResult?: JobRuntimeQualificationResultRecord
+  recoveryRequired?: boolean
+  originalContainer?: { identity: string; fingerprint: string; containerId?: string | null }
+  reserveCleanupProcess?(binary: string, argv: string[]): Promise<string>
+  spawnCleanupProcess?(reservationId: string, binary: string, argv: string[], options: SpawnOptions): ChildProcess
+  recordQuotaClaim?(claim: { path: string; namespace: string; device: number; inode: number }): Promise<void>
+  recordResult?(result: JobRuntimeQualificationResultRecord): Promise<void>
+  readClosure?(): Promise<import('@foreman-code/contracts/job-verification-runtime').JobQualificationReport['closure']>
   /** Existing admission journals the exact native launch before the physical Node spawn. */
   reserveProcess(binary: string, argv: string[]): Promise<string>
   /** HRT's guarded spawn primitive receives original reserved scope BEFORE native entry. */
@@ -44,45 +56,80 @@ export interface QualificationNativeOwner {
   observeContainer(identity: string, containerId: string): Promise<void>
   enterContainer(identity: string, containerId: string): Promise<void>
   /** True only after all registered controller processes AND owned container descendants stopped. */
+  closeContainer?(): Promise<boolean>
   close(): Promise<boolean>
 }
 export interface JobQualificationAuthority {
   readApproval(id: string): Promise<{ status: 'approved' | 'denied' | 'revoked'; fingerprint: string; expiresAt: string } | null>
-  assertCurrent(candidate: JobQualificationCandidate): Promise<void>
-  reserve(candidate: JobQualificationCandidate, signal: AbortSignal): Promise<QualificationNativeOwner>
+  assertCurrent(candidate: JobQualificationCandidateRecord): Promise<void>
+  reserve(candidate: JobQualificationCandidateRecord, signal: AbortSignal): Promise<QualificationNativeOwner>
 }
 
 /** Compose real existing guarded process ownership with exact OCI/cgroup ownership. */
-export function createQualificationNativeOwner(candidate: JobQualificationCandidate,
-  native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'>,
+export function createQualificationNativeOwner(candidate: JobQualificationCandidateRecord,
+  native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'
+    | 'completedResult' | 'originalResult' | 'recordResult' | 'recoveryRequired' | 'originalContainer'
+    | 'reserveCleanupProcess' | 'spawnCleanupProcess' | 'recordQuotaClaim' | 'readClosure'>,
   ownership: OCIContainerOwnership, authority: JobQualificationAuthority): QualificationNativeOwner {
-  let container: OwnedOCIContainer | null = null
+  let closing = false
+  const commands = { run: async (argv: string[], timeoutMs = 30000) => {
+    if (!closing) {
+      await authority.assertCurrent(candidate)
+      await assertJobRuntimeEntryContext(candidate)
+    }
+    const commandOwner = closing ? { ...composite,
+      reserveProcess: native.reserveCleanupProcess!, spawnProcess: native.spawnCleanupProcess! } : composite
+    if (closing && (!native.reserveCleanupProcess || !native.spawnCleanupProcess)) {
+      throw new Error('Original qualification cleanup authority is unavailable.')
+    }
+    return runQualificationCommand(commandOwner, candidate.fingerprint.runtimeExecutable,
+      ['--remote=false', ...argv], candidate.controllerEnvironment, AbortSignal.timeout(timeoutMs), timeoutMs)
+  } }
+  const createContainer = (identity: string, fingerprint: string, containerId?: string | null) => new OwnedOCIContainer({ identity,
+    originalContainerId: containerId ?? null,
+    labels: { 'graphql.qualification.identity': identity, 'graphql.qualification.fingerprint': fingerprint } },
+  commands, ownership)
+  let container = native.originalContainer
+    ? createContainer(native.originalContainer.identity, native.originalContainer.fingerprint, native.originalContainer.containerId) : null
+  let containerIdentity = native.originalContainer?.identity
   const composite: QualificationNativeOwner = {
-    reserveProcess: (binary, argv) => native.reserveProcess(binary, argv),
-    spawnProcess: (reservation, binary, argv, options) => native.spawnProcess(reservation, binary, argv, options),
-    readNativeExit: (reservation, child, wrapper) => native.readNativeExit(reservation, child, wrapper),
-    stopProcess: reservation => native.stopProcess(reservation),
+    ...native,
     async registerContainer(identity, fingerprint) {
-      if (container || identity !== `graphql-ci-qualification-${candidate.qualificationId}` || fingerprint !== jobQualificationFingerprint(candidate)) throw new Error('Original qualification container intent changed.')
+      if (container || !(identity === `graphql-ci-qualification-${candidate.qualificationId}`
+        || candidate.fingerprint.schemaVersion === 3 && identity.startsWith(`graphql-ci-qualification-${candidate.qualificationId}-`))
+        || fingerprint !== jobQualificationFingerprint(candidate)) throw new Error('Original qualification container intent changed.')
       await ownership.reserveContainerIntent(identity, fingerprint)
-      const commands = { run: async (argv: string[], timeoutMs = 30000) => {
-        await authority.assertCurrent(candidate); await assertJobRuntimeEntryContext(candidate)
-        return runQualificationCommand(composite, candidate.fingerprint.runtimeExecutable, ['--remote=false', ...argv], candidate.controllerEnvironment, AbortSignal.timeout(timeoutMs))
-      } }
-      container = new OwnedOCIContainer({ identity, labels: { 'graphql.qualification.identity': identity, 'graphql.qualification.fingerprint': fingerprint } }, commands, ownership)
+      containerIdentity = identity
+      container = createContainer(identity, fingerprint)
     },
     async observeContainer(identity, id) {
-      if (!container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`) throw new Error('Qualification container has no original reservation.')
+      if (!container || identity !== containerIdentity) {
+        throw new Error('Qualification container has no original reservation.')
+      }
       await container.bind(id)
     },
     async enterContainer(identity, id) {
-      if (!container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`) throw new Error('Qualification container has no original reservation.')
-      await container.bind(id); await container.entered()
+      if (!container || identity !== containerIdentity) {
+        throw new Error('Qualification container has no original reservation.')
+      }
+      await container.bind(id)
+      await container.entered()
+    },
+    async closeContainer() {
+      closing = true
+      try {
+        if (container && !await container.close(1000)) return false
+        await container?.remove()
+        container = null
+        containerIdentity = undefined
+        return true
+      } finally { closing = false }
     },
     async close() {
-      const closed = container ? await container.close(1000).catch(() => false) : true
-      const nativeClosed = await native.close()
-      return closed && nativeClosed
+      closing = true
+      if (container && !await container.close(1000)) return false
+      await container?.remove()
+      return native.close()
     },
   }
   return composite
@@ -149,14 +196,20 @@ export function createPhysicalJobRuntimeProducer(dependencies: PhysicalJobRuntim
 }
 
 /** Concrete physical command runner, never a caller-supplied observation/ready result. */
-export async function runQualificationCommand(owner: QualificationNativeOwner, binary: string, argv: string[], environment: Record<string, string>, signal: AbortSignal) {
+export async function runQualificationCommand(owner: QualificationNativeOwner, binary: string, argv: string[],
+  environment: Record<string, string>, signal: AbortSignal, timeoutMs = 30000) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 86400000) {
+    throw new Error('Bounded qualification command deadline required.')
+  }
   const reservation = await owner.reserveProcess(binary, argv)
   signal.throwIfAborted()
   const child = owner.spawnProcess(reservation, binary, argv, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: environment })
   const { stdout, stderr } = child
   if (!stdout || !stderr) throw new Error('Admitted diagnostic requires stdout/stderr pipes.')
-  const completed = new Promise<{ exitCode: number; stdout: string }>((resolve, reject) => {
-    let output = ''; let bytes = 0
+  const completed = new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve, reject) => {
+    let output = ''
+    let diagnostics = ''
+    let bytes = 0
     let interrupted = false
     const interrupt = () => {
       if (interrupted) return
@@ -164,11 +217,12 @@ export async function runQualificationCommand(owner: QualificationNativeOwner, b
       void owner.stopProcess(reservation).then(stopped => reject(new Error(stopped ? 'Diagnostic interrupted.' : 'Diagnostic physical stop unconfirmed.')), reject)
     }
     signal.addEventListener('abort', interrupt, { once: true })
-    const timeout = setTimeout(interrupt, 30000)
+    const timeout = setTimeout(interrupt, timeoutMs)
     const read = (chunk: Buffer, stdout: boolean) => {
       bytes += chunk.length
       if (bytes > 65536) interrupt()
       else if (stdout) output += chunk.toString('utf8')
+      else diagnostics += chunk.toString('utf8')
     }
     stdout.on('data', chunk => read(chunk, true)); stderr.on('data', chunk => read(chunk, false))
     child.once('error', reject)
@@ -176,7 +230,7 @@ export async function runQualificationCommand(owner: QualificationNativeOwner, b
       clearTimeout(timeout); signal.removeEventListener('abort', interrupt)
       if (!interrupted) void owner.readNativeExit(reservation, child, { exitCode, signal: exitSignal }).then(native => {
         if (!native.confirmed || native.exitCode === null) reject(new Error('Exact native exit receipt unavailable.'))
-        else resolve({ exitCode: native.exitCode, stdout: output })
+        else resolve({ exitCode: native.exitCode, stdout: output, stderr: diagnostics })
       }, reject)
     })
   })
@@ -227,13 +281,33 @@ export async function fingerprintQualificationPath(path: string, executable = fa
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     const before = await handle.stat({ bigint: true })
-    if (executable && (!before.isFile() || before.size > 67108864n || (before.mode & 0o022n) || !(before.mode & 0o111n))) throw new Error('Executable trust boundary rejected.')
+    if (executable && (!before.isFile() || before.size > 268435456n || (before.mode & 0o022n) || !(before.mode & 0o111n))) throw new Error('Executable trust boundary rejected.')
     if (!executable && !before.isDirectory()) throw new Error('Canonical directory required.')
-    const digest = executable ? createHash('sha256').update(await boundedFile(handle, 67108864)).digest('hex') : null
+    const digest = executable ? await fingerprintExecutableBytes(handle, 268435456) : null
     const after = await handle.stat({ bigint: true })
     if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new Error('Path changed during qualification.')
     return { path: canonical, device: String(before.dev), inode: String(before.ino), mode: String(before.mode), uid: String(before.uid), gid: String(before.gid), sha256: digest }
   } finally { await handle.close() }
+}
+
+async function fingerprintExecutableBytes(handle: Awaited<ReturnType<typeof open>>, maximum: number) {
+  const before = await handle.stat({ bigint: true })
+  if (!before.isFile() || before.size > BigInt(maximum)) throw new Error('Fingerprint file exceeds its bound.')
+  const digest = createHash('sha256')
+  const buffer = Buffer.alloc(Math.min(Number(before.size), 1048576))
+  let offset = 0
+  while (offset < Number(before.size)) {
+    const read = await handle.read(buffer, 0, Math.min(buffer.length, Number(before.size) - offset), offset)
+    if (!read.bytesRead) throw new Error('Fingerprint file changed during read.')
+    digest.update(buffer.subarray(0, read.bytesRead))
+    offset += read.bytesRead
+  }
+  const after = await handle.stat({ bigint: true })
+  if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+    || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+    throw new Error('Fingerprint file changed during read.')
+  }
+  return digest.digest('hex')
 }
 
 /** Geometry proof is actual kernel/file metadata, not a caller ready/limit declaration. */
@@ -257,6 +331,13 @@ async function measureBackingFile(path: string, bytes: number) {
     return { path, device: String(details.dev), inode: String(details.ino), bytes: String(details.size), allocatedBytes: String(details.blocks * 512n),
       mode: String(details.mode), uid: String(details.uid), links: String(details.nlink) }
   } finally { await file.close() }
+}
+
+export function backingFileConfigurationIdentity(backing: Awaited<ReturnType<typeof measureBackingFile>>) {
+  const { allocatedBytes, ...identity } = backing
+  if (BigInt(allocatedBytes) < BigInt(backing.bytes)) throw new Error('Backing file must remain fully allocated.')
+  // Loop writes can grow extent metadata without changing the reserved volume.
+  return { ...identity, reservedBytes: backing.bytes }
 }
 
 async function measureBoundedExt4Volume(candidate: JobQualificationCandidate, mount: { filesystems?: Array<{ target: string; source: string; fstype: string; options: string; 'maj:min': string }> }) {
@@ -296,7 +377,7 @@ async function boundedFile(handle: Awaited<ReturnType<typeof open>>, maximum: nu
 
 /** Explicit POST capture may read metadata; GET never calls this helper. No native probe. */
 export async function captureJobRuntimeConfiguration(runtimeRoot: string, environment: JobQualificationCandidate['controllerEnvironment'],
-  diagnostics: Pick<JobQualificationCandidate, 'findmntBinary' | 'findmntBinarySha256' | 'backingFile' | 'backingBytes'>) {
+  diagnostics: Pick<JobQualificationCandidateRecord, 'findmntBinary' | 'findmntBinarySha256' | 'backingFile' | 'backingBytes'>) {
   const userConfig = join(userInfo().homedir, '.config/containers')
   const files = ['/usr/share/containers/containers.conf', '/etc/containers/containers.conf', join(userConfig, 'containers.conf'),
     '/etc/containers/storage.conf', join(userConfig, 'storage.conf'), '/usr/share/containers/mounts.conf', '/etc/containers/mounts.conf', join(userConfig, 'mounts.conf')]
@@ -323,7 +404,8 @@ export async function captureJobRuntimeConfiguration(runtimeRoot: string, enviro
   if (binary.sha256 !== diagnostics.findmntBinarySha256) throw new Error('Approved diagnostic binary changed.')
   return { suite: CI_QUALIFICATION_SUITE,workspaceLayout:JOB_PRIVATE_GIT_LAYOUT, probeDigest: hash(QUALIFICATION_PROBE), environment,
     runtimeRoot: await fingerprintQualificationPath(runtimeRoot), hooksDirectory: join(runtimeRoot, 'ci-empty-oci-hooks'), configuration,
-    diagnosticBinary: binary, backingFile: await measureBackingFile(diagnostics.backingFile, diagnostics.backingBytes) }
+    diagnosticBinary: binary, backingFile: diagnostics.backingFile === null || diagnostics.backingBytes === null
+      ? null : backingFileConfigurationIdentity(await measureBackingFile(diagnostics.backingFile, diagnostics.backingBytes)) }
 
 }
 
@@ -355,6 +437,10 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
   let owner: QualificationNativeOwner
   try { owner = await authority.reserve(candidate, signal) }
   catch { return { ...record, closure: 'unconfirmed', reasons: ['admission_recovery_required'] } }
+  if (owner.recoveryRequired) {
+    const closed = await owner.close()
+    return { ...record, closure: closed ? 'confirmed' : 'unconfirmed', reasons: ['original_qualification_interrupted'] }
+  }
   const identity = `graphql-ci-qualification-${candidate.qualificationId}`
   let scratch: string | undefined
   let physicallyClosed = false
@@ -471,7 +557,15 @@ async function measureContext(candidate: JobQualificationCandidate) {
 }
 
 /** Actual entry recheck outside SQL. GET never invokes this function. */
-export async function assertJobRuntimeEntryContext(candidate: JobQualificationCandidate): Promise<void> { await measureContext(JobQualificationCandidateSchema.parse(candidate)) }
+export async function assertJobRuntimeEntryContext(raw: JobQualificationCandidateRecord): Promise<void> {
+  const candidate = JobQualificationCandidateRecordSchema.parse(raw)
+  if (candidate.fingerprint.schemaVersion === 3) {
+    const { assertVerificationRuntimeEntryContext } = await import('./installedVerificationRuntime.js')
+    await assertVerificationRuntimeEntryContext(candidate)
+    return
+  }
+  await measureContext(JobQualificationCandidateSchema.parse(candidate))
+}
 
 export function validateIsolationMeasurement(probe: Record<string, unknown>, candidate: JobQualificationCandidate, host: { hostPidNamespace: string; hostNetworkNamespace: string; containerId?: string; containerHostname?: string|undefined }) {
   const toolchain = probe.toolchain as Record<string, unknown> | undefined
@@ -496,6 +590,56 @@ export function validateIsolationMeasurement(probe: Record<string, unknown>, can
 }
 
 export interface QualificationMount {Type:string;Source:string;Destination:string;RW:boolean}
+
+/** Only physical probe output from the original admitted container can satisfy these checks. */
+export function validateVerificationIsolationObservation(input: {
+  observation: Record<string, unknown>
+  resources: JobResourceRequest
+  hostPidNamespace: string
+  hostNetworkNamespace: string
+  ownerSentinelPaths: readonly string[]
+}): void {
+  const resources = JobResourceRequestSchema.parse(input.resources)
+  const observed = input.observation
+  const denied = (reason = 'runtime observations') => {
+    const fields = ['schemaVersion', 'node', 'pidNamespace', 'networkNamespace', 'capabilities',
+      'noNewPrivileges', 'interfaces', 'ownerSentinels']
+    const details = Object.fromEntries(fields.map(key => [key, observed[key]]))
+    throw new Error(`Measured verification isolation rejected (${reason}): ${JSON.stringify(details).slice(0, 400)}`)
+  }
+  const sentinels = observed.ownerSentinels
+  if (observed.schemaVersion !== 1 || observed.node !== 'v22.23.3'
+    || observed.pidNamespace === input.hostPidNamespace || observed.networkNamespace === input.hostNetworkNamespace
+    || typeof observed.pidNamespace !== 'string' || !/^pid:\[\d+\]$/.test(observed.pidNamespace)
+    || typeof observed.networkNamespace !== 'string' || !/^net:\[\d+\]$/.test(observed.networkNamespace)
+    || JSON.stringify(observed.interfaces) !== '["lo"]' || observed.memoryMax !== String(resources.limits.memoryBytes)
+    || observed.swapMax !== '0' || observed.pidsMax !== String(resources.limits.pidsLimit)
+    || observed.cpuRatio !== resources.limits.cpuLimit || observed.capabilities !== '0000000000000000'
+    || observed.noNewPrivileges !== '1' || observed.controlExecution !== 'EACCES'
+    || observed.scratchExecution !== (resources.scratchExecutable ? 0 : 'EACCES')
+    || observed.shmType !== 0x01021994 || observed.controlTempType !== 0x01021994
+    || typeof observed.shmCapacityBytes !== 'number' || observed.shmCapacityBytes <= 0
+    || observed.shmCapacityBytes > resources.shmBytes || typeof observed.controlTempCapacityBytes !== 'number'
+    || observed.controlTempCapacityBytes <= 0 || observed.controlTempCapacityBytes > resources.controlTempBytes
+    || canonicalGraphJson(observed.packagePolicy) !== canonicalGraphJson({
+      minimumReleaseAge: 2880, minimumReleaseAgeStrict: true, minimumReleaseAgeIgnoreMissingTime: false,
+    }) || !input.ownerSentinelPaths.length || !Array.isArray(sentinels)
+    || sentinels.length !== input.ownerSentinelPaths.length
+    || input.ownerSentinelPaths.some(path => sentinels.filter(value => value?.path === path && value.result === 'ENOENT').length !== 1)) {
+    denied()
+  }
+  if (typeof observed.mountInfo !== 'string') denied('mount information missing')
+  const mounts = (observed.mountInfo as string).split('\n').map(line => line.split(' '))
+  for (const path of ['/tmp', '/dev/shm', '/job-scratch']) {
+    const matching = mounts.filter(columns => columns[4] === path)
+    if (matching.length !== 1) denied(`mount count ${path}: ${matching.length}`)
+    const options = new Set(matching[0]![5]?.split(','))
+    const noexec = path !== '/job-scratch' || !resources.scratchExecutable
+    if (!['rw', 'nosuid', 'nodev'].every(option => options.has(option)) || options.has('noexec') !== noexec) {
+      denied(`mount flags ${path}: ${matching[0]![5]}`)
+    }
+  }
+}
 /** Pure exact-layout verifier, reused only after genuine original OCI inspection. */
 export function validateJobQualificationMounts(mounts:QualificationMount[],paths:{sourceRoot:string;inputRoot:string;gitDirectory:string;schedulerDirectory:string},tmpfs:unknown,spoolBytes:number) {
   const expected=[{source:paths.sourceRoot,destination:'/workspace',rw:true},

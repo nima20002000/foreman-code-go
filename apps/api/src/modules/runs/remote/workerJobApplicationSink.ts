@@ -1,5 +1,9 @@
 import { isDeepStrictEqual } from 'node:util'
-import { RemoteJobAcceptedSourceReadoutSchema, type RemoteJobDispatchIntent, type RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
+import {
+  RemoteJobAcceptedSourceReadoutRecordSchema,
+  type RemoteJobDispatchIntent,
+  type RemoteJobOperationReceiptRecord,
+} from '@foreman-code/contracts/remote-job-execution'
 import type { JobWorkerService } from '../../jobs/worker.js'
 
 export interface WorkerJobApplicationChannel { request(namespace: 'execution-v1', payload: unknown): Promise<{ payload: unknown }> }
@@ -7,7 +11,7 @@ export interface WorkerJobApplicationChannel { request(namespace: 'execution-v1'
 export class WorkerJobApplicationSink {
   constructor(private readonly channel: WorkerJobApplicationChannel) {}
   async resolveAcceptedSource(intent: RemoteJobDispatchIntent) {
-    const result = RemoteJobAcceptedSourceReadoutSchema.parse((await this.channel.request('execution-v1', { method: 'job-source', intent })).payload)
+    const result = RemoteJobAcceptedSourceReadoutRecordSchema.parse((await this.channel.request('execution-v1', { method: 'job-source', intent })).payload)
     if (result.execution.id !== intent.executionId || result.execution.operationId !== intent.operationId
       || result.execution.attemptId !== intent.attemptId || result.execution.acceptedSpec.bindingHash !== intent.bindingHash
       || `sha256:${result.execution.acceptedSpec.specDigest}` !== intent.inputDigest || !isDeepStrictEqual(result.execution.owner, intent.owner))
@@ -20,7 +24,7 @@ export class WorkerJobApplicationSink {
       || !('operationId' in result) || result.operationId !== intent.operationId || !('attemptId' in result) || result.attemptId !== intent.attemptId
       || !('bindingHash' in result) || result.bindingHash !== intent.bindingHash || !('owner' in result) || !isDeepStrictEqual(result.owner, intent.owner)) throw new Error('Main did not authorize this exact job operation')
   }
-  async observeReceipt(receipt: RemoteJobOperationReceipt) {
+  async observeReceipt(receipt: RemoteJobOperationReceiptRecord) {
     const result = (await this.channel.request('execution-v1', { method: 'job-report', receipt })).payload
     if (!result || typeof result !== 'object' || !('persistedSequence' in result) || result.persistedSequence !== receipt.sequence) throw new Error('Main job receipt acknowledgment uncertain')
   }

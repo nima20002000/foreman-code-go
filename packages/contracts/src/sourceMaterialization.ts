@@ -31,8 +31,15 @@ export const RootBindingSchema = z.object({
   accessMode: z.enum(['read-only', 'exclusive-write']), snapshotId: z.uuid(), manifestDigest: SourceHashSchema,
 }).strict()
 export type RootBinding = z.infer<typeof RootBindingSchema>
+export const SourceProjectQuotaSlotSchema = z.object({
+  namespace: z.uuid(), projectId: z.number().int().min(1).max(4294967295),
+  hardLimitBytes: z.number().int().positive(), hardInodes: z.number().int().positive(),
+  filesystem: RootBindingSchema.shape.filesystem,
+}).strict()
+export type SourceProjectQuotaSlot = z.infer<typeof SourceProjectQuotaSlotSchema>
 export const MaterializationReceiptSchema = z.object({
   version: z.literal(1), materializationId: z.uuid(), binding: RootBindingSchema,
+  quota: SourceProjectQuotaSlotSchema.optional(),
   placementHash: SourceHashSchema, executionId: IdSchema, attemptId: IdSchema,
   keyRevision: z.number().int().positive().nullable(), authorizationRevision: z.number().int().positive().nullable(),
   verifiedManifestDigest: SourceHashSchema, verifiedEntries: z.number().int().nonnegative(),
@@ -40,3 +47,10 @@ export const MaterializationReceiptSchema = z.object({
   localTreeIdentity: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
 }).strict()
 export type MaterializationReceipt = z.infer<typeof MaterializationReceiptSchema>
+
+export function sourceMaterializationComponents(receipt: Pick<MaterializationReceipt, 'materializationId' | 'quota'>): string[] {
+  return [...(receipt.quota ? [receipt.quota.namespace] : []), receipt.materializationId]
+}
+export function sourceMaterializationParent(receipt: MaterializationReceipt): string {
+  return [receipt.binding.canonicalPath.replace(/\/$/, ''), ...sourceMaterializationComponents(receipt)].join('/')
+}

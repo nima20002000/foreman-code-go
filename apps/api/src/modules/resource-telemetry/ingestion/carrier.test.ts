@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
+import { randomUUID } from 'node:crypto'
 import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { CollectionChallenge, TelemetryCollectedBatch, TelemetryIdentity } from '@foreman-code/contracts/resource-telemetry'
-import { createWorkerResourceTelemetryExtension, mainResourceTelemetryExtension, remoteTelemetryContext, startRemoteTelemetrySession } from './carrier.js'
+import { createMainResourceTelemetryBindings, createWorkerResourceTelemetryExtension, mainResourceTelemetryExtension, remoteTelemetryContext, startRemoteTelemetrySession } from './carrier.js'
+import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import { ResourceTelemetryService } from './service.js'
 import { DeviceApplicationChannel, extensionDescriptors } from '../../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../../devices/deviceWire.js'
@@ -57,6 +59,29 @@ function setup() {
 }
 afterEach(() => vi.useRealTimers())
 describe('authenticated W07 passive telemetry carrier', () => {
+  it('starts fresh computer memory on the synchronized Main binding and joins it on loss', async () => {
+    const s = setup()
+    const mounted = createMainResourceTelemetryBindings(() => s.service)
+    const endpoint = { captureRequest: () => ({ binding, request: s.request }) } as unknown as DeviceEndpoint
+    try {
+      expect(await mounted.ready({ ...binding, connectionEpoch: randomUUID() }, s.lifetime.signal, endpoint)).toBeUndefined()
+      const session = await mounted.ready(binding, s.lifetime.signal, endpoint)
+      expect(session).toBeDefined()
+      const expected = { hostRef: { kind: 'device' as const, mainId: binding.mainId, deviceId: binding.deviceId },
+        applicationInstallationId: binding.workerInstallationId, bootId: binding.bootId,
+        keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision }
+      await vi.waitFor(async () => expect(await s.service.availableComputerMemory(expected, s.lifetime.signal)).toBe(1))
+      s.revoke()
+      expect(await s.service.availableComputerMemory(expected, s.lifetime.signal)).toBeNull()
+      await mounted.lost(binding)
+      await session!.completion
+    } finally {
+      s.lifetime.abort()
+      await mounted.lost(binding)
+      await s.worker.close()
+      await s.service.close()
+    }
+  })
   it('carries bounded challenge samples over negotiated W07 chunks with current authorization rechecks', async () => {
     const s = setup(), mainRaw = new Socket(), workerRaw = new Socket()
     mainRaw.peer = workerRaw; workerRaw.peer = mainRaw

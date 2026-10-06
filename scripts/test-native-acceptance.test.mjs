@@ -7,7 +7,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { archiveNativeAcceptanceEvidence, nativeAcceptanceConfiguration, nativeAcceptanceEnvironment, nativeAcceptanceFiles,
-  nativeAcceptanceVitestArguments } from './test-native-acceptance.mjs'
+  nativeAcceptanceOpenCodeBinary, nativeAcceptanceVitestArguments } from './test-native-acceptance.mjs'
 import { createTestRoot, removeTestRoot } from './test-resources.mjs'
 
 test('native results survive disposable cleanup without exporting provider authentication', async () => {
@@ -111,6 +111,18 @@ test('acceptance keeps executable lookup deferred and respects explicit provider
     ENG03_A_OPENCODE_BINARY: '/qualified/opencode' }).opencodeBinary, '/qualified/opencode')
 })
 
+test('Codex-only acceptance does not require an unrelated OpenCode installation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-acceptance-discovery-'))
+  try {
+    await symlink('/usr/bin/which', join(directory, 'which'))
+    const environment = { PATH: directory }
+    assert.equal(nativeAcceptanceOpenCodeBinary(environment), undefined)
+    assert.equal(nativeAcceptanceOpenCodeBinary({ ...environment,
+      ENG03_A_OPENCODE_BINARY: '/approved/pinned/opencode' }), '/approved/pinned/opencode')
+    assert.deepEqual(environment, { PATH: directory })
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
 test('the native gate includes local-human isolation and production recovery by default', () => {
   assert.deepEqual(nativeAcceptanceFiles([]), [
     'test/eng03-c-native.acceptance.test.ts',
@@ -160,4 +172,10 @@ test('the root acceptance command forwards file selection and rejects invalid pa
   assert.ifError(result.error)
   assert.notEqual(result.status, 0)
   assert.match(result.stdout + result.stderr, /Invalid acceptance test file:/)
+})
+
+test('physical transfer and provider cases are selected explicitly as acceptance suites', () => {
+  const files = ['src/modules/byte-transfer/rsync.physical.acceptance.test.ts',
+    'test/codex-app-server.acceptance.test.ts']
+  assert.deepEqual(nativeAcceptanceFiles(['--files', ...files]), files)
 })

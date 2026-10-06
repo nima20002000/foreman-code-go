@@ -28,6 +28,17 @@ export function nativeAcceptanceConfiguration(environment) {
   }
 }
 
+export function nativeAcceptanceOpenCodeBinary(environment) {
+  if (environment.ENG03_A_OPENCODE_BINARY) return environment.ENG03_A_OPENCODE_BINARY
+  const discovered = spawnSync('which', ['opencode'], { env: environment, encoding: 'utf8' })
+  if (discovered.error) throw discovered.error
+  if (discovered.status === 1) return undefined
+  if (discovered.status !== 0 || !discovered.stdout.trim()) {
+    throw new Error('OpenCode executable discovery failed.')
+  }
+  return discovered.stdout.trim()
+}
+
 export function nativeAcceptanceFiles(arguments_) {
   if (!arguments_.length) return [
     'test/eng03-c-native.acceptance.test.ts',
@@ -40,7 +51,7 @@ export function nativeAcceptanceFiles(arguments_) {
   const files = [...new Set(arguments_.slice(1).map(file =>
     file.startsWith('apps/api/') ? file.slice('apps/api/'.length) : file))]
   for (const file of files) {
-    if (!/^test\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.acceptance\.test\.ts$/.test(file)
+    if (!/^(?:test|src\/modules)\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.acceptance\.test\.ts$/.test(file)
       || posix.normalize(file) !== file || !statSync(join(root, 'apps/api', file)).isFile()) {
       throw new Error(`Invalid acceptance test file: ${file}`)
     }
@@ -213,14 +224,14 @@ async function main() {
     return
   }
   const configuration = nativeAcceptanceConfiguration(process.env)
-  const opencode = configuration.opencodeBinary ?? process.env.OPENCODE_BINARY ?? 'opencode'
+  const opencode = nativeAcceptanceOpenCodeBinary(process.env)
   const record = await withNativeAcceptanceDatabase(configuration.databaseUrl,
     configuration.evidenceRoot, async ({ environment: isolated, evidence }) => {
       const environment = nativeAcceptanceEnvironment(isolated)
       console.log(`[acceptance] Native evidence: ${evidence}`)
       return runNativeAcceptance({ ...environment, RUN_ENG03_C_NATIVE_TESTS: '1',
         RUN_REAL_HARNESS_TESTS: '1', NIM2691_REAL_NATIVE: '1', NIM2691_POSTGRES: '1',
-        ENG03_A_OPENCODE_BINARY: opencode }, files)
+        ...(opencode ? { ENG03_A_OPENCODE_BINARY: opencode } : {}) }, files)
     })
   process.exitCode = record.exitCode
 }

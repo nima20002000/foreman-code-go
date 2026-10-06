@@ -1,9 +1,16 @@
+import { AutoVerificationJobSpecSchema } from '@foreman-code/contracts/job-verification'
+import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord, type JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
+import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
+import { AutoJobDefinitionSpecSchema, JobComputerSelectionSchema } from '@foreman-code/contracts/jobs'
 import {
-  isAutoJobSpec, AutoJobDefinitionSpecSchema, ResolvedJobDefinitionSpecSchema, JobComputerSelectionSchema,
-  jobPolicyRequirements,
-  type JobDefinition, type JobDefinitionSpec, type ResolvedJobDefinitionSpec,
-  type PreparedJobSpec,
-} from '@foreman-code/contracts/jobs'
+  isAutoJobSpecRecord,
+  ResolvedJobDefinitionSpecRecordSchema,
+  jobPolicyRequirementsRecord,
+  type JobDefinitionRecord,
+  type JobDefinitionSpecRecord,
+  type ResolvedJobDefinitionSpecRecord,
+  type PreparedJobSpecRecord,
+} from '@foreman-code/contracts/job-verification'
 import type { JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
 import { DEVICE_RESOURCE_CONTROL_RESERVE } from '@foreman-code/contracts/device-resources'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -12,13 +19,13 @@ import { type BuildComputerSettings, buildComputerKey, buildComputerTarget } fro
 import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
-import { SOURCE_AGGREGATE_LIMITS } from '../sources/reservations.js'
+import { SOURCE_AGGREGATE_LIMITS, verificationSourceStorageBytes } from '../sources/reservations.js'
 import { JobComputerEligibilityReasonSchema, type JobComputerEligibility, type JobPlacementIntent } from '@foreman-code/contracts/job-admission'
 
 export interface JobPreparationIdentity { executionId: string; attemptId: string; operationId: string }
 export interface JobComputerCandidate {
-  spec: ResolvedJobDefinitionSpec
-  profile: JobRuntimeProfile
+  spec: ResolvedJobDefinitionSpecRecord
+  profile: JobRuntimeProfileRecord
   ready: boolean
   reasons: string[]
   sourceReservation: { scopeId: string; reservedBytes: number }
@@ -29,11 +36,11 @@ export interface JobComputerDiscovery {
 }
 export interface JobComputerInventory {
   candidates(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
-    spec: JobDefinitionSpec, placement?: JobPlacementIntent): Promise<JobComputerDiscovery>
+    spec: JobDefinitionSpecRecord, placement?: JobPlacementIntent): Promise<JobComputerDiscovery>
 }
 type EnrolledCandidate = JobComputerCandidate & { preference: BuildComputerPreference }
 export interface JobComputerClaim {
-  spec: ResolvedJobDefinitionSpec | null
+  spec: ResolvedJobDefinitionSpecRecord | null
   compatibleTargetCount: number
   reasons: JobComputerEligibility['reasons']
   diagnosticCodes: string[]
@@ -55,13 +62,14 @@ export function jobEligibilityReason(code: string): JobComputerEligibility['reas
   if (code === 'JOB_RUNTIME_CONTEXT_CHANGED') return 'runtime_unqualified'
   return 'eligibility_check_failed'
 }
-export function compatibleJobComputer(candidate: JobComputerCandidate, request: JobDefinitionSpec): boolean {
-  const common = (spec: JobDefinitionSpec) => ({ source: spec.source, argv: spec.argv,
-    inputs: spec.inputs, outputs: spec.outputs, relativeCwd: spec.relativeCwd ?? null })
+export function compatibleJobComputer(candidate: JobComputerCandidate, request: JobDefinitionSpecRecord): boolean {
+  const common = (spec: JobDefinitionSpecRecord) => ({ source: spec.source, argv: spec.argv,
+    inputs: spec.inputs, outputs: spec.outputs, relativeCwd: spec.relativeCwd ?? null,
+    ...('verification' in spec ? { verification: spec.verification } : {}) })
   if (canonical(common(candidate.spec)) !== canonical(common(request))) return false
-  if (!isAutoJobSpec(request)) return canonical(candidate.spec) === canonical(request)
-  return canonical(jobPolicyRequirements(candidate.spec.policy)) === canonical(request.policy)
-    && canonical(candidate.profile.limits) === canonical(request.limits)
+  if (!isAutoJobSpecRecord(request)) return canonical(candidate.spec) === canonical(request)
+  return canonical(jobPolicyRequirementsRecord(candidate.spec.policy)) === canonical(request.policy)
+    && canonical(jobRuntimeProfileLimits(candidate.profile)) === canonical(request.limits)
 }
 export function orderBuildComputers(candidates: EnrolledCandidate[]): EnrolledCandidate[] {
   return candidates.filter(candidate => candidate.ready && candidate.preference.buildEnabled).sort((left, right) => {
@@ -74,25 +82,42 @@ export function orderBuildComputers(candidates: EnrolledCandidate[]): EnrolledCa
     return 0
   })
 }
-export function jobComputerCapacity(profile: JobRuntimeProfile): JobRuntimeProfile['limits'] {
-  const runtime = profile.measurement?.runtime
-  if (!runtime?.deviceLimits || !runtime.quota) return profile.limits
+export function jobComputerCapacity(profile: JobRuntimeProfileRecord): JobRuntimeProfile['limits'] {
+  const runtime = profile.schemaVersion === 1 ? profile.measurement?.runtime : profile.measurement?.fingerprint
+  if (!runtime?.deviceLimits || !runtime.quota) return jobRuntimeProfileLimits(profile)
   const allowance = runtime.deviceLimits
   const reserve = DEVICE_RESOURCE_CONTROL_RESERVE
+  let quotaBytes = runtime.quota.workloadHardLimitBytes
+  if (profile.schemaVersion === 2 && profile.measurement) {
+    quotaBytes = Math.min(runtime.quota.volumeCapacityBytes - runtime.quota.controlHardLimitBytes,
+      profile.measurement.fingerprint.quotaPool?.slots.reduce((bytes, slot) => bytes + slot.hardLimitBytes, 0) ?? 0)
+  }
   return { cpuLimit: allowance.cpuLimit - reserve.cpuLimit,
     memoryBytes: allowance.memoryBytes - reserve.memoryBytes,
     pidsLimit: allowance.pidsLimit - reserve.pidsLimit,
-    diskBytes: Math.min(allowance.diskBytes - reserve.diskBytes, runtime.quota.workloadHardLimitBytes) }
+    diskBytes: Math.min(allowance.diskBytes - reserve.diskBytes, quotaBytes) }
 }
+
+export type VerificationMemoryReader = (profile: JobVerificationProfile) => Promise<number | null>
+export type JobComputerCapacityDecision = { fits: true } | { fits: false;
+  reason: 'busy' | 'memory_unavailable' | 'memory_headroom_required' }
 
 const closedJobExecutionSql = `(e.record #>> '{process,phase}'='terminal'
       and e.record #> '{process,processStopped}'='true'::jsonb
       and e.record->>'publication' not in ('pending','collecting')
-      and exists(select 1 from source_execution_materializations m
-        where m.operation_id=e.operation_id and m.execution_id=e.id and m.state='closed')
-      and not exists(select 1 from source_storage_reservations r
-        where r.owner_kind='materialization' and r.owner_id=e.operation_id
-          and r.state in ('preparing','owned','uncertain')))`
+      and (
+        (exists(select 1 from source_execution_materializations m
+          where m.operation_id=e.operation_id and m.execution_id=e.id and m.state='closed')
+        and not exists(select 1 from source_storage_reservations r
+          where r.owner_kind='materialization' and r.owner_id=e.operation_id
+            and r.state in ('preparing','owned','uncertain')))
+        or exists(select 1 from job_runtime_qualification_approvals q
+          where e.record #>> '{owner,grantId}'='qualification:'||q.id
+            and e.accepted_spec #>> '{profile,qualificationId}'=q.record->>'qualificationId'
+            and e.accepted_by=q.run_principal_id
+            and (q.run_result->>'outcome'='qualified'
+              or q.run_result #>> '{closure}'='confirmed'))))`
+
 
 const closedJobComputerSql = `(
       exists(select 1 from job_executions e where e.id=s.execution_id and ${closedJobExecutionSql})
@@ -105,13 +130,13 @@ export async function releaseClosedJobComputers(sql: JobSql): Promise<void> {
   await sql.query(`update job_computer_selections s set released_at=clock_timestamp()
     where s.released_at is null and ${closedJobComputerSql}`)
 }
-export async function readJobComputerSelection(sql: JobSql, definition: JobDefinition,
-  identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpec> {
+export async function readJobComputerSelection(sql: JobSql, definition: JobDefinitionRecord,
+  identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
   const row = (await sql.query<{ spec: unknown; definition_version_id: string; attempt_id: string; operation_id: string }>(
     'select spec,definition_version_id,attempt_id,operation_id from job_computer_selections where execution_id=$1 and workspace_id=$2 for share',
     [identity.executionId, definition.workspaceId])).rows[0]
   if (!row) {
-    if (isAutoJobSpec(definition.spec)) {
+    if (isAutoJobSpecRecord(definition.spec)) {
       throw new DomainError('JOB_COMPUTER_SELECTION_MISSING', 'The original Auto computer selection is missing.', 409)
     }
     return definition.spec
@@ -120,23 +145,23 @@ export async function readJobComputerSelection(sql: JobSql, definition: JobDefin
     || row.operation_id !== identity.operationId) {
     throw new DomainError('JOB_COMPUTER_SELECTION_CONFLICT', 'This selection belongs to another Job preparation.', 409)
   }
-  return ResolvedJobDefinitionSpecSchema.parse(row.spec)
+  return ResolvedJobDefinitionSpecRecordSchema.parse(row.spec)
 }
 
 export class JobComputerSelection {
   constructor(private readonly settings: BuildComputerSettings, private readonly inventory: JobComputerInventory,
-    private readonly workerExecution: WorkerExecutionPolicy) {}
+    private readonly workerExecution: WorkerExecutionPolicy, private readonly availableMemory?: VerificationMemoryReader) {}
 
-  async reserve(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
-    identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpec> {
+  async reserve(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinitionRecord,
+    identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
     const claim = await this.claim(sql, principal, definition, identity)
     if (claim.spec) return claim.spec
-    const code = isAutoJobSpec(definition.spec) ? 'JOB_NO_BUILD_COMPUTER' : 'JOB_BUILD_COMPUTER_UNAVAILABLE'
+    const code = isAutoJobSpecRecord(definition.spec) ? 'JOB_NO_BUILD_COMPUTER' : 'JOB_BUILD_COMPUTER_UNAVAILABLE'
     throw new DomainError(code, 'No eligible build computer. Enable builds and check connection, runtime setup and capacity.',
       409, { reasons: claim.reasons, diagnosticCodes: claim.diagnosticCodes })
   }
 
-  async claim(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinition,
+  async claim(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinitionRecord,
     identity: JobPreparationIdentity, options: {
       excludedHosts?: ReadonlySet<string>
       placementOverride?: JobPlacementIntent | null
@@ -150,8 +175,9 @@ export class JobComputerSelection {
     }
     let request = definition.spec
     if (options.placementOverride) {
-      request = AutoJobDefinitionSpecSchema.parse({ ...request, target: { kind: 'auto' },
-        policy: isAutoJobSpec(request) ? request.policy : jobPolicyRequirements(request.policy), limits: options.limits })
+      const schema = 'verification' in request ? AutoVerificationJobSpecSchema : AutoJobDefinitionSpecSchema
+      request = schema.parse({ ...request, target: { kind: 'auto' },
+        policy: isAutoJobSpecRecord(request) ? request.policy : jobPolicyRequirementsRecord(request.policy), limits: options.limits })
     }
     const discovery = await this.inventory.candidates(sql, principal, definition.workspaceId, request,
       options.placementOverride ?? undefined)
@@ -172,6 +198,7 @@ export class JobComputerSelection {
     const compatibleTargetCount = new Set(enrolled.map(candidate => buildComputerKey(candidate.preference.target))).size
     const maximumCandidates = enrolled.filter(candidate => this.fitsEmptyComputer(candidate))
     const exceedsMaximum = enrolled.length > 0 && maximumCandidates.length === 0
+      && enrolled.every(candidate => candidate.profile.schemaVersion !== 2 || candidate.profile.measurement !== null)
     const waitingHosts: string[] = []
     for (const candidate of orderBuildComputers(enrolled)) {
       if (!this.fitsEmptyComputer(candidate)) {
@@ -193,11 +220,12 @@ export class JobComputerSelection {
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`job-capacity:${hostKey}`])
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${candidate.sourceReservation.scopeId}`])
       await releaseClosedJobComputers(sql)
-      if (!await this.fits(sql, candidate)) {
-        reasons.push('busy')
+      const capacity = await this.fits(sql, candidate)
+      if (!capacity.fits) {
+        reasons.push(capacity.reason)
         continue
       }
-      let mode: 'auto' | 'fixed' = isAutoJobSpec(request) ? 'auto' : 'fixed'
+      let mode: 'auto' | 'fixed' = isAutoJobSpecRecord(request) ? 'auto' : 'fixed'
       if (options.placementOverride?.kind === 'explicit') mode = 'fixed'
       const selection = { mode,
         buildPriority: preference.buildPriority, settingsRevision: preference.revision }
@@ -205,7 +233,7 @@ export class JobComputerSelection {
         (execution_id,workspace_id,definition_version_id,attempt_id,operation_id,host_key,spec,limits,selection,source_scope,source_bytes)
         values($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10,$11)`,
       [identity.executionId, definition.workspaceId, definition.versionId, identity.attemptId, identity.operationId,
-        hostKey, JSON.stringify(candidate.spec), JSON.stringify(candidate.profile.limits), JSON.stringify(selection),
+        hostKey, JSON.stringify(candidate.spec), JSON.stringify(jobRuntimeProfileLimits(candidate.profile)), JSON.stringify(selection),
         candidate.sourceReservation.scopeId, candidate.sourceReservation.reservedBytes])
       return { spec: candidate.spec, compatibleTargetCount, reasons: [], diagnosticCodes: [], waitingHosts: [],
         selectedHost: hostKey, exceedsMaximum: false }
@@ -215,30 +243,45 @@ export class JobComputerSelection {
       !candidate.reasons.some(code => jobEligibilityReason(code) === 'authorization_revoked'))
     const normalized = diagnosticCodes.map(jobEligibilityReason)
       .filter(reason => reason !== 'request_exceeds_maximum' || exceedsMaximum)
-      .filter(reason => reason !== 'authorization_revoked' || !isAutoJobSpec(request) || !authorizedCandidate)
+      .filter(reason => reason !== 'authorization_revoked' || !isAutoJobSpecRecord(request) || !authorizedCandidate)
     return { spec: null, compatibleTargetCount, diagnosticCodes, waitingHosts: [...new Set(waitingHosts)],
       selectedHost: null, exceedsMaximum, reasons: [...new Set(normalized)] }
   }
   private fitsEmptyComputer(candidate: JobComputerCandidate): boolean {
     const capacity = jobComputerCapacity(candidate.profile)
-    if (candidate.sourceReservation.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes) return false
+    const sourceBytes = candidate.profile.schemaVersion === 2
+      ? verificationSourceStorageBytes(candidate.profile) : SOURCE_AGGREGATE_LIMITS.bytes
+    if (candidate.sourceReservation.reservedBytes > sourceBytes) return false
     return (Object.keys(capacity) as (keyof typeof capacity)[])
-      .every(field => candidate.profile.limits[field] <= capacity[field])
+      .every(field => jobRuntimeProfileLimits(candidate.profile)[field] <= capacity[field])
   }
-  private async fits(sql: JobSql, candidate: JobComputerCandidate): Promise<boolean> {
-    const storage = (await sql.query<{ bytes: string; materializations: string }>(`select coalesce(sum(bytes),0)::text as bytes,
+  private async fits(sql: JobSql, candidate: JobComputerCandidate): Promise<JobComputerCapacityDecision> {
+    const storage = (await sql.query<{ bytes: string; verification_bytes: string; materializations: string }>(`select
+      coalesce(sum(bytes) filter(where not verification),0)::text as bytes,
+      coalesce(sum(bytes) filter(where verification),0)::text as verification_bytes,
       coalesce(sum(materializations),0)::text as materializations from (
-        select reserved_bytes as bytes, case when owner_kind='materialization' and state in ('preparing','owned','uncertain')
-          then 1 else 0 end as materializations from source_storage_reservations where scope_id=$1 and state<>'reclaimed'
-        union all select source_bytes,1 from job_computer_selections s where s.source_scope=$1 and s.released_at is null
+        select r.reserved_bytes as bytes,case when r.owner_kind='materialization' and r.state in ('preparing','owned','uncertain')
+          then 1 else 0 end as materializations,exists(select 1 from job_computer_selections owner
+            where r.owner_kind='materialization' and owner.operation_id=r.owner_id and owner.spec ? 'verification') as verification
+          from source_storage_reservations r where r.scope_id=$1 and r.state<>'reclaimed'
+        union all select source_bytes,1,s.spec ? 'verification' from job_computer_selections s
+          where s.source_scope=$1 and s.released_at is null
           and not exists(select 1 from source_storage_reservations r where r.owner_kind='materialization' and r.owner_id=s.operation_id)
       ) usage`, [candidate.sourceReservation.scopeId])).rows[0]!
-    if (Number(storage.bytes) + candidate.sourceReservation.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes
-      || Number(storage.materializations) >= SOURCE_AGGREGATE_LIMITS.materializations) return false
-    return jobComputerHasCapacity(sql, candidate.spec.target, candidate.profile)
+    let sourceSlots: number = SOURCE_AGGREGATE_LIMITS.materializations
+    if (candidate.profile.schemaVersion === 2) {
+      sourceSlots = candidate.profile.root.selection.hostRef.kind === 'main'
+        ? JOB_VERIFICATION_OWNER_CONFIGURATION.mainConcurrentJobs : JOB_VERIFICATION_OWNER_CONFIGURATION.laptopConcurrentJobs
+    }
+    const sourceBytes = candidate.profile.schemaVersion === 2
+      ? verificationSourceStorageBytes(candidate.profile) : SOURCE_AGGREGATE_LIMITS.bytes
+    const usedBytes = candidate.profile.schemaVersion === 2 ? Number(storage.verification_bytes) : Number(storage.bytes)
+    if (usedBytes + candidate.sourceReservation.reservedBytes > sourceBytes
+      || Number(storage.materializations) >= sourceSlots) return { fits: false, reason: 'busy' }
+    return jobComputerCapacityDecision(sql, candidate.spec.target, candidate.profile, this.availableMemory)
   }
 
-  async prepare(sql: JobSql, definition: JobDefinition, identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpec> {
+  async prepare(sql: JobSql, definition: JobDefinitionRecord, identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
     const spec = await readJobComputerSelection(sql, definition, identity)
     this.workerExecution.requireEnabled(spec.target.hostRef)
     await this.settings.requireEnabled(sql, buildComputerTarget(spec.target))
@@ -247,13 +290,13 @@ export class JobComputerSelection {
     if (!row || row.released_at) throw new DomainError('JOB_PREPARATION_CLOSED', 'This preparation was closed; create a new Start command.', 409)
     return spec
   }
-  async selection(sql: JobSql, identity: JobPreparationIdentity): Promise<PreparedJobSpec['computerSelection']> {
+  async selection(sql: JobSql, identity: JobPreparationIdentity): Promise<PreparedJobSpecRecord['computerSelection']> {
     const row = (await sql.query<{ selection: unknown }>(
       'select selection from job_computer_selections where execution_id=$1 and attempt_id=$2 and operation_id=$3',
       [identity.executionId, identity.attemptId, identity.operationId])).rows[0]
     return row ? JobComputerSelectionSchema.parse(row.selection) : undefined
   }
-  async validateFixed(sql: JobSql, spec: ResolvedJobDefinitionSpec) {
+  async validateFixed(sql: JobSql, spec: ResolvedJobDefinitionSpecRecord) {
     try {
       this.workerExecution.requireEnabled(spec.target.hostRef)
       await this.settings.requireEnabled(sql, buildComputerTarget(spec.target))
@@ -267,24 +310,71 @@ export class JobComputerSelection {
 }
 
 export async function jobComputerHasCapacity(sql: JobSql,
-  target: Pick<ResolvedJobDefinitionSpec['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfile): Promise<boolean> {
+  target: Pick<ResolvedJobDefinitionSpecRecord['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfileRecord,
+  availableMemory?: VerificationMemoryReader): Promise<boolean> {
+  return (await jobComputerCapacityDecision(sql, target, profile, availableMemory)).fits
+}
+
+export async function jobComputerCapacityDecision(sql: JobSql,
+  target: Pick<ResolvedJobDefinitionSpecRecord['target'], 'mainId' | 'hostRef'>, profile: JobRuntimeProfileRecord,
+  availableMemory?: VerificationMemoryReader): Promise<JobComputerCapacityDecision> {
   const hostKey = buildComputerKey({ hostRef: target.hostRef })
-  const rows = (await sql.query<{ limits: JobRuntimeProfile['limits'] }>(`select limits from job_computer_selections s
+  const rows = (await sql.query<{ limits: JobRuntimeProfile['limits']; compute_closed: boolean; inodes?: number }>(`select s.limits,
+    coalesce(p.record #>> '{spec,resources,mutableInodes}','0')::bigint as inodes,
+    exists(select 1 from job_executions e where e.id=s.execution_id
+      and e.record #>> '{process,phase}'='terminal' and e.record #> '{process,processStopped}'='true'::jsonb) as compute_closed
+    from job_computer_selections s
+    join job_runtime_profile_versions p on p.profile_id=s.spec #>> '{policy,isolationPolicyId}'
+      and p.revision=(s.spec #>> '{policy,isolationPolicyRevision}')::bigint
     where host_key=$1 and released_at is null and not ${closedJobComputerSql}
-    union all select (p.record->'limits') as limits from job_executions e
+    union all select coalesce(p.record->'limits',p.record #> '{spec,resources,limits}') as limits,
+      coalesce(p.record #>> '{spec,resources,mutableInodes}','0')::bigint as inodes,
+      (e.record #>> '{process,phase}'='terminal' and e.record #> '{process,processStopped}'='true'::jsonb) as compute_closed
+    from job_executions e
     join job_runtime_profile_versions p on p.profile_id=e.accepted_spec #>> '{policy,isolationPolicyId}'
       and p.revision=(e.accepted_spec #>> '{policy,isolationPolicyRevision}')::bigint
     where not exists(select 1 from job_computer_selections s where s.execution_id=e.id)
       and e.accepted_spec #>> '{target,hostRef,mainId}'=$2
       and coalesce(e.accepted_spec #>> '{target,hostRef,deviceId}','main')=$3
-      and not ${closedJobExecutionSql}`,
+      and not ${closedJobExecutionSql}
+    union all select s.limits,
+      coalesce(p.record #>> '{spec,resources,mutableInodes}','0')::bigint as inodes, true as compute_closed
+    from job_computer_selections s
+    join job_runtime_profile_versions p on p.profile_id=s.spec #>> '{policy,isolationPolicyId}'
+      and p.revision=(s.spec #>> '{policy,isolationPolicyRevision}')::bigint
+    join source_storage_reservations r on r.owner_kind='materialization' and r.owner_id=s.operation_id
+    join source_execution_materializations m on m.operation_id=s.operation_id
+    where s.host_key=$1 and s.released_at is not null and r.state<>'reclaimed'
+      and m.record #> '{receipt,quota}' is not null`,
   [hostKey, target.mainId,
     target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'main'])).rows
   const capacity = jobComputerCapacity(profile)
-  // Build qualification starts with one heavy slot; storage stays charged through publication and cleanup.
-  if (rows.length >= 1) return false
-  return (Object.keys(capacity) as (keyof typeof capacity)[]).every(field =>
-    rows.reduce((total, row) => total + row.limits[field], profile.limits[field]) <= capacity[field])
+  const computing = rows.filter(row => !row.compute_closed)
+  let slots = 1
+  if (profile.schemaVersion === 2) {
+    const approved = target.hostRef.kind === 'main' ? JOB_VERIFICATION_OWNER_CONFIGURATION.mainConcurrentJobs
+      : JOB_VERIFICATION_OWNER_CONFIGURATION.laptopConcurrentJobs
+    const measured = profile.measurement?.suites.map(suite => suite.maxConcurrentHeavyJobs) ?? []
+    const pool = profile.measurement?.fingerprint.quotaPool
+    slots = measured.length && pool ? Math.min(approved, pool.slots.length, ...measured) : 0
+    if (!pool || rows.length >= pool.slots.length
+      || rows.reduce((total, row) => total + Number(row.inodes ?? profile.spec.resources.mutableInodes),
+        profile.spec.resources.mutableInodes) > pool.slots.reduce((total, slot) => total + slot.hardInodes, 0)) {
+      return { fits: false, reason: 'busy' }
+    }
+    if (target.hostRef.kind === 'device') {
+      const bytes = await availableMemory?.(profile)
+      if (bytes === null || bytes === undefined) return { fits: false, reason: 'memory_unavailable' }
+      const minimum = JOB_VERIFICATION_OWNER_CONFIGURATION.laptopMinimumAvailableBytes
+        + JOB_VERIFICATION_OWNER_CONFIGURATION.laptopPerRunningJobBytes * (computing.length + 1)
+      if (bytes < minimum) return { fits: false, reason: 'memory_headroom_required' }
+    }
+  }
+  if (computing.length >= slots) return { fits: false, reason: 'busy' }
+  const fits = (Object.keys(capacity) as (keyof typeof capacity)[]).every(field =>
+    (field === 'diskBytes' ? rows : computing).reduce((total, row) => total + row.limits[field],
+      jobRuntimeProfileLimits(profile)[field]) <= capacity[field])
+  return fits ? { fits: true } : { fits: false, reason: 'busy' }
 }
 
 export async function releaseUnstartedJobComputer(sql: JobSql, identity: JobPreparationIdentity): Promise<void> {

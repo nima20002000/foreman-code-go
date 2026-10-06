@@ -7,6 +7,9 @@ import { jobExecution } from './helpers/jobFixture.js'
 import { ReadonlyJobInputDelivery, type JobInputDeliverySource } from '../src/modules/files/jobInputs/delivery.js'
 import { makeManifest, manifestBytes, snapshotDigest } from '../src/modules/files/jobInputs/manifest.js'
 import { JobBuildInputManifestSchema, JobInputAdmissionSchema } from '@foreman-code/contracts/job-inputs'
+import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
+import { JobVerificationRepositoryContextSchema } from '@foreman-code/contracts/job-verification-runtime'
+import { verificationFixture } from './helpers/jobVerificationFixture.js'
 const digest=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex')
 const roots:string[]=[]
 afterEach(async()=>{for(const root of roots.splice(0)){await chmod(join(root,'project/.graphql-job-inputs'),0o700).catch(()=>{});await rm(root,{recursive:true,force:true})}})
@@ -22,6 +25,56 @@ async function fixture(){
  return {root,project,execution,manifest,verified,source,deny:()=>{denied=true},delivery:new ReadonlyJobInputDelivery(source,join(root,'receipts'))}
 }
 describe('immutable job input copies',()=>{
+ it('delivers protected verification context before sealing inputs and detects retained tampering',async()=>{
+  const f = await fixture()
+  const facts = verificationFixture()
+  const acceptedSpec = AcceptedVerificationJobSpecSchema.parse({ ...facts.acceptedBuild, ...facts.spec,
+    source: facts.acceptedBuild.source, target: f.execution.acceptedSpec.target, schemaVersion: 2,
+    profile: facts.profile, reservationId: '11111111-1111-4111-8111-111111111111', lifecycle: facts.lifecycle,
+    resourcePolicyRevision: 1, resourcePolicyDigest: 'a'.repeat(64),
+    runtimeApprovalId: '11111111-1111-4111-8111-111111111111', runtimeApprovalRevision: 1 })
+  const execution = VerificationJobExecutionSchema.parse({ ...f.execution, schemaVersion: 2, acceptedSpec })
+  const context = JobVerificationRepositoryContextSchema.parse({
+    requiredPortions: [{ key: 'root:install', kind: 'command' }],
+    identity: { commit: acceptedSpec.source.commit, manifestDigest: acceptedSpec.source.manifestDigest,
+      definitionVersionId: acceptedSpec.definitionVersionId, suite: acceptedSpec.verification.suite,
+      executionId: execution.id, attemptId: execution.attemptId, target: acceptedSpec.target,
+      profile: acceptedSpec.profile, resources: acceptedSpec.verification.resources,
+      parameters: acceptedSpec.verification.parameters },
+    privateGit: { sourceCommit: acceptedSpec.source.commit, generatedCommit: 'c'.repeat(40),
+      repositoryReceiptDigest: 'a'.repeat(64), configDigest: 'a'.repeat(64), indexDigest: 'a'.repeat(64) },
+    executionTimeoutMs: acceptedSpec.policy.executionTimeoutMs,
+    cancellationTimeoutMs: acceptedSpec.policy.cancellationGraceMs, qualifiedUnitWorkers: 1,
+    limits: { summaryBytes: 1024, junitBytes: 1024, vitestBytes: 1024, logsArchiveBytes: 1024, logBytes: 1024 },
+    mutableDirectory: '/job-scratch', storeDirectory: '/job-scratch/pnpm-store',
+    preseedReceipt: { lockfileSha256: 'a'.repeat(64), pnpmVersion: '11.27.0', platform: 'linux',
+      architecture: 'x64', provenanceDigest: 'a'.repeat(64), minimumReleaseAgeMinutes: 2880, releaseAgeVerified: true },
+  })
+  const manifest = makeManifest(execution, [], context)
+  const admission = JobInputAdmissionSchema.parse({ version: 1, manifest, principalId: 'actor',
+    principalGrantsDigest: '1'.repeat(64), issuedAt: '2026-10-01T00:00:00.000Z', transfers: [] })
+  const admit = vi.fn<JobInputDeliverySource['admit']>(async (_execution, _signal, received) => {
+    expect(received).toEqual(context)
+    return admission
+  })
+  const source: JobInputDeliverySource = { ...f.source, admit, accepted: async () => admission,
+    read: async (_execution, _admission, path, offset, length) => {
+      const bytes = path === 'manifest.json' ? manifestBytes(manifest)
+        : Buffer.from(path === 'verification.json' ? JSON.stringify(context) : 'null')
+      return bytes.subarray(offset, offset + length)
+    } }
+  const delivery = new ReadonlyJobInputDelivery(source, join(f.root, 'receipts'), async () => context)
+  const signal = new AbortController().signal
+  const receipt = await delivery.prepare(execution, f.verified, signal)
+  const path = join(f.project, '.graphql-job-inputs/verification.json')
+  expect(receipt.verificationContext?.sha256).toBe(digest(Buffer.from(JSON.stringify(context))))
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(context)
+  expect((await stat(join(f.project, '.graphql-job-inputs'))).mode & 0o777).toBe(0o500)
+  expect(await delivery.verifyPrepared(execution, f.verified, receipt, signal)).toEqual(receipt)
+  await chmod(path, 0o600)
+  await writeFile(path, Buffer.alloc(receipt.verificationContext!.byteSize))
+  await expect(delivery.verifyPrepared(execution, f.verified, receipt, signal)).rejects.toThrow('hash differs')
+ })
  it('delivers empty/manual-null supported inputs with a private receipt and required readonly mount',async()=>{
   const f=await fixture(),receipt=await f.delivery.prepare(f.execution,f.verified,new AbortController().signal)
   expect(receipt.files.map(file=>file.relativePath)).toEqual(['manifest.json','workflow-input.json']);expect(receipt.readonlyMountRequired).toBe(true)

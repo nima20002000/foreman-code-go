@@ -5,7 +5,14 @@ import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
   JobQueueTicketSchema, JobQueueListInputSchema, JobQueuePageSchema } from '@foreman-code/contracts/job-admission'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { JobArtifactSchema, JobAuthoringChoicesSchema, JobDefinitionSaveSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobValidationSchema } from '@foreman-code/contracts/jobs'
+import { JobArtifactSchema, JobLogPageSchema, JobValidationSchema } from '@foreman-code/contracts/jobs'
+import {
+  JobAuthoringChoicesRecordSchema,
+  JobDefinitionSaveRecordSchema,
+  JobDefinitionRecordSchema,
+  JobDefinitionSpecRecordSchema,
+  JobExecutionRecordSchema,
+} from '@foreman-code/contracts/job-verification'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../../modules/access/policy.js'
 import { DomainError } from '../../../modules/errors.js'
@@ -61,13 +68,30 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   const execution=scope.extend({executionId:z.string().min(1)}).strict()
   const read={readOnlyHint:true,idempotentHint:true,openWorldHint:false}
   const write={readOnlyHint:false,idempotentHint:true,openWorldHint:false}
-  if(jobToolAvailable(context,'job_choices_get')) server.registerTool('job_choices_get',{description:'Read authorized CI sources, fixed computer/root choices and saved host-independent Auto policy/limit requirements, including offline profile metadata. No installation or provider login.',inputSchema:scope,outputSchema:JobAuthoringChoicesSchema,annotations:read},input=>invoke(context,'job_choices_get',()=>service.choices(context.principal,input.workspaceId,'mcp')))
-  if(jobToolAvailable(context,'job_workflow_execution_get')) server.registerTool('job_workflow_execution_get',{description:'Read the authoritative persisted relationship from an exact Run node execution to its JobExecution. IDs are never inferred or borrowed from another Run.',inputSchema:scope.extend({runId:z.string().min(1),nodeExecutionId:z.string().min(1)}),outputSchema:z.object({reference:JobWorkflowExecutionReferenceSchema}),annotations:read},input=>invoke(context,'job_workflow_execution_get',async()=>({reference:await service.getWorkflowExecutionReference(context.principal,input.workspaceId,input.runId,input.nodeExecutionId,'mcp')})))
-  if(jobToolAvailable(context,'job_definition_list')) server.registerTool('job_definition_list',{description:'List workspace job definitions.',inputSchema:scope,outputSchema:z.object({definitions:z.array(JobDefinitionSchema)}),annotations:read},input=>invoke(context,'job_definition_list',async()=>({definitions:await service.listDefinitions(context.principal,input.workspaceId,'mcp')})))
-  if(jobToolAvailable(context,'job_definition_get')) server.registerTool('job_definition_get',{description:'Read an exact workspace job definition and revision.',inputSchema:scope.extend({definitionId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionSchema}),annotations:read},input=>invoke(context,'job_definition_get',async()=>({definition:await service.getDefinition(context.principal,input.workspaceId,input.definitionId,'mcp')})))
-  if(jobToolAvailable(context,'job_definition_version_get')) server.registerTool('job_definition_version_get',{description:'Read one exact immutable saved job version. Current definition edits never substitute its source, target, command or policy.',inputSchema:scope.extend({definitionId:z.string().min(1),versionId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionSchema}),annotations:read},input=>invoke(context,'job_definition_version_get',async()=>({definition:await service.getDefinitionVersion(context.principal,input.workspaceId,input.definitionId,input.versionId,'mcp')})))
-  if(jobToolAvailable(context,'job_definition_save')) server.registerTool('job_definition_save',{description:'Create or edit an Auto or fixed Job definition with command receipt and optimistic revision. Auto saves exact source, command, input/output revisions and host-independent runtime policy/limits without requiring an online computer. Selection and capacity are checked when the queued request is claimed. No execution or installation.',inputSchema:JobDefinitionSaveSchema.extend({workspaceId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionSchema}),annotations:write},input=>invoke(context,'job_definition_save',async()=>{const {workspaceId,...body}=input;return {definition:await service.saveDefinition(context.principal,'mcp',workspaceId,body)}}))
-  if(jobToolAvailable(context,'job_validate')) server.registerTool('job_validate',{description:'Validate static Auto source/configuration authority or fixed-target readiness without installation. Computer eligibility and capacity are rechecked when the queued request is claimed; unavailable computers can wait.',inputSchema:scope.extend({spec:JobDefinitionSpecSchema}),outputSchema:JobValidationSchema,annotations:read},input=>invoke(context,'job_validate',()=>service.validate(context.principal,input.workspaceId,input.spec,'mcp')))
+  if (jobToolAvailable(context, 'job_choices_get')) server.registerTool('job_choices_get', {
+    description: 'Read authorized CI sources, fixed computer/root choices, Auto runtime requirements and repository '
+      + 'verification templates. Templates retain the saved resource envelope, qualified worker allowance, wrapper '
+      + 'command and four required reports. Unqualified or offline profiles remain authorable; readiness is checked '
+      + 'at Start. No installation or provider login.',
+    inputSchema: scope, outputSchema: JobAuthoringChoicesRecordSchema, annotations: read,
+  }, input => invoke(context, 'job_choices_get', () => service.choices(context.principal, input.workspaceId, 'mcp')))
+  if(jobToolAvailable(context,'job_workflow_execution_get')) server.registerTool('job_workflow_execution_get',{description:'Read the authoritative persisted relationship from an exact Run node execution to its JobExecutionRecord. IDs are never inferred or borrowed from another Run.',inputSchema:scope.extend({runId:z.string().min(1),nodeExecutionId:z.string().min(1)}),outputSchema:z.object({reference:JobWorkflowExecutionReferenceSchema}),annotations:read},input=>invoke(context,'job_workflow_execution_get',async()=>({reference:await service.getWorkflowExecutionReference(context.principal,input.workspaceId,input.runId,input.nodeExecutionId,'mcp')})))
+  if(jobToolAvailable(context,'job_definition_list')) server.registerTool('job_definition_list',{description:'List workspace job definitions.',inputSchema:scope,outputSchema:z.object({definitions:z.array(JobDefinitionRecordSchema)}),annotations:read},input=>invoke(context,'job_definition_list',async()=>({definitions:await service.listDefinitions(context.principal,input.workspaceId,'mcp')})))
+  if(jobToolAvailable(context,'job_definition_get')) server.registerTool('job_definition_get',{description:'Read an exact workspace job definition and revision.',inputSchema:scope.extend({definitionId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionRecordSchema}),annotations:read},input=>invoke(context,'job_definition_get',async()=>({definition:await service.getDefinition(context.principal,input.workspaceId,input.definitionId,'mcp')})))
+  if(jobToolAvailable(context,'job_definition_version_get')) server.registerTool('job_definition_version_get',{description:'Read one exact immutable saved job version. Current definition edits never substitute its source, target, command or policy.',inputSchema:scope.extend({definitionId:z.string().min(1),versionId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionRecordSchema}),annotations:read},input=>invoke(context,'job_definition_version_get',async()=>({definition:await service.getDefinitionVersion(context.principal,input.workspaceId,input.definitionId,input.versionId,'mcp')})))
+  if (jobToolAvailable(context, 'job_definition_save')) server.registerTool('job_definition_save', {
+    description: 'Create or edit an Auto or fixed build or verification Job with command receipt and optimistic '
+      + 'revision. Verification retains its suite, parameters, resource request and report declarations from '
+      + 'job_choices_get templates. Auto saves source, command, inputs, outputs and runtime requirements without '
+      + 'an online computer. Selection and capacity are checked when the queued request is claimed. '
+      + 'No execution or installation.',
+    inputSchema: JobDefinitionSaveRecordSchema.extend({ workspaceId: z.string().min(1) }),
+    outputSchema: z.object({ definition: JobDefinitionRecordSchema }), annotations: write,
+  }, input => invoke(context, 'job_definition_save', async () => {
+    const { workspaceId, ...body } = input
+    return { definition: await service.saveDefinition(context.principal, 'mcp', workspaceId, body) }
+  }))
+  if(jobToolAvailable(context,'job_validate')) server.registerTool('job_validate',{description:'Validate static Auto source/configuration authority or fixed-target readiness without installation. Computer eligibility and capacity are rechecked when the queued request is claimed; unavailable computers can wait.',inputSchema:scope.extend({spec:JobDefinitionSpecRecordSchema}),outputSchema:JobValidationSchema,annotations:read},input=>invoke(context,'job_validate',()=>service.validate(context.principal,input.workspaceId,input.spec,'mcp')))
   if (jobToolAvailable(context, 'job_start')) server.registerTool('job_start', {
     description: JOB_QUEUE_CAPABILITY_DETAIL + ' Persist a request using the saved definition revision. '
       + 'The admission result is pending with a ticket or accepted with the original executionId. Retrying a retained pre-queue command returns its original execution without creating a ticket. '
@@ -107,12 +131,12 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
     const { workspaceId, ...body } = input
     return { ticket: await service.cancelQueued(context.principal, 'mcp', workspaceId, body) }
   }))
-  if(jobToolAvailable(context,'job_get')) server.registerTool('job_get',{description:'Read exact accepted job and separate process, transport and publication facts.',inputSchema:execution,outputSchema:z.object({execution:JobExecutionSchema}),annotations:read},input=>invoke(context,'job_get',async()=>({execution:await service.getExecution(context.principal,input.workspaceId,input.executionId,'mcp')})))
-  if(jobToolAvailable(context,'job_list')) server.registerTool('job_list',{description:'List workspace job executions.',inputSchema:scope,outputSchema:z.object({executions:z.array(JobExecutionSchema)}),annotations:read},input=>invoke(context,'job_list',async()=>({executions:await service.listExecutions(context.principal,input.workspaceId,'mcp')})))
+  if(jobToolAvailable(context,'job_get')) server.registerTool('job_get',{description:'Read exact accepted job and separate process, transport and publication facts.',inputSchema:execution,outputSchema:z.object({execution:JobExecutionRecordSchema}),annotations:read},input=>invoke(context,'job_get',async()=>({execution:await service.getExecution(context.principal,input.workspaceId,input.executionId,'mcp')})))
+  if(jobToolAvailable(context,'job_list')) server.registerTool('job_list',{description:'List workspace job executions.',inputSchema:scope,outputSchema:z.object({executions:z.array(JobExecutionRecordSchema)}),annotations:read},input=>invoke(context,'job_list',async()=>({executions:await service.listExecutions(context.principal,input.workspaceId,'mcp')})))
   if (jobToolAvailable(context, 'job_cancel')) server.registerTool('job_cancel', {
     description: 'Request cancellation of the original Job. Pending journal state does not prove physical closure. For a revoked Worker, recovery requires a fresh browser-owner-approved grant and the original installation signed no-entry/source-claim closure. Recovery never authorizes execution or publication.',
     inputSchema: JobCancelInputSchema.extend({ workspaceId: z.string().min(1), executionId: z.string().min(1) }),
-    outputSchema: z.object({ execution: JobExecutionSchema }), annotations: write,
+    outputSchema: z.object({ execution: JobExecutionRecordSchema }), annotations: write,
   }, input => invoke(context, 'job_cancel', async () => ({ execution: await service.cancel(context.principal,
     'mcp', input.workspaceId, input.executionId, input.commandId, input.recovery) })))
   if (jobToolAvailable(context, 'job_cancellation_recovery_propose')) server.registerTool('job_cancellation_recovery_propose', {

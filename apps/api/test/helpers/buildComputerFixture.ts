@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
-import { JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
+import { JobRuntimeProfileSchema, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
-import { AutoJobDefinitionSpecSchema, jobPolicyRequirements, isAutoJobSpec } from '@foreman-code/contracts/jobs'
+import { JobDefinitionSchema, AutoJobDefinitionSpecSchema, jobPolicyRequirements, isAutoJobSpec } from '@foreman-code/contracts/jobs'
 import type { JobComputerCandidate } from '../../src/modules/jobs/computerSelection.js'
 import { buildComputerTarget } from '../../src/modules/settings/buildComputers.js'
 import { jobSpec } from './jobFixture.js'
@@ -22,7 +22,7 @@ import { JobWorkerService } from '../../src/modules/jobs/worker.js'
 import type { JobQueueConfiguration } from '../../src/modules/jobs/ports.js'
 
 export function buildQueueConfigurationFixture(principal: ManagementPrincipal,
-  limits: JobComputerCandidate['profile']['limits']): JobQueueConfiguration {
+  limits: JobRuntimeProfile['limits']): JobQueueConfiguration {
   return { revision: 1,
     review: { reviewedByPrincipalId: principal.id, reviewedAt: new Date().toISOString(), decisionDigest: '1'.repeat(64) },
     limits: { maxPendingPerPrincipal: 20, maxPendingPerWorkspace: 40, maxBackfillClaims: 0 },
@@ -60,7 +60,7 @@ export function buildComputerFixture(mainId: string, workspaceId: string, device
     limits: { cpuLimit: 1, memoryBytes: 67108864, pidsLimit: 32, diskBytes: 8388608 },
     specDigest: '1'.repeat(64), status: 'unqualified', measurement: null,
     createdAt: root.boundAt, updatedAt: root.boundAt })
-  const candidate: JobComputerCandidate = { spec, profile, ready: true, reasons: [],
+  const candidate: JobComputerCandidate & { spec: ResolvedJobDefinitionSpec; profile: JobRuntimeProfile } = { spec, profile, ready: true, reasons: [],
     sourceReservation: { scopeId: `${mainId}:${deviceId}:${registration.workerInstallationId}:1:3`, reservedBytes: 2097152 } }
   const auto = AutoJobDefinitionSpecSchema.parse({ ...spec, target: { kind: 'auto' },
     policy: jobPolicyRequirements(spec.policy), limits: profile.limits })
@@ -192,8 +192,8 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
     await releaseClosedJobComputers(pool)
   }
   async function save(spec: import('@foreman-code/contracts/jobs').JobDefinitionSpec = computers[0]!.auto) {
-    return jobs.saveDefinition(principal, 'http', workspaceId, { commandId: randomUUID(),
-      expectedRevision: null, name: 'Queued build', spec })
+    return JobDefinitionSchema.parse(await jobs.saveDefinition(principal, 'http', workspaceId, {
+      commandId: randomUUID(), expectedRevision: null, name: 'Queued build', spec }))
   }
   function online(index = 0) {
     computers[index]!.candidate.ready = true

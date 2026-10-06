@@ -3,6 +3,8 @@ import {
   AcceptedVerificationJobSpecSchema, AutoVerificationJobSpecSchema, JobAcceptedSpecRecordSchema,
   JobDefinitionRecordSchema, JobVerificationOutputsSchema, JobVerificationPassSchema, JobVerificationReportSchema,
   ResolvedVerificationJobSpecSchema,
+  JobVerificationReportReadSchema, JobAuthoringChoicesRecordSchema, jobPolicyRequirementsRecord,
+  jobVerificationTemplate,
 } from './jobVerification.js'
 import {
   JOB_VERIFICATION_APPROVAL_LIFETIME_MS, JobNetworkPolicySchema, JobResourceRequestSchema,
@@ -12,15 +14,51 @@ import { JobVerificationGateResultSchema } from './jobVerificationGate.js'
 import { verificationFixture, verificationId, verificationTime, verificationDigest } from '../tests/helpers/jobVerification.js'
 
 describe('verification placement and policy', () => {
+  it('authors every ordinary suite from the saved resource envelope with the actual wrapper and four bounded reports', () => {
+    const { spec, resources } = verificationFixture()
+    const policy = jobPolicyRequirementsRecord(spec.policy)
+    for (const suite of ['install', 'typecheck', 'lint', 'unit', 'build'] as const) {
+      const template = jobVerificationTemplate({ profileId: spec.policy.isolationPolicyId,
+        profileRevision: spec.policy.isolationPolicyRevision, suite, ready: false,
+        policy, resources, maxUnitWorkers: 12 })
+      expect(template.argv).toEqual(['node', 'scripts/verify-repository.mjs', '--context',
+        '.graphql-job-inputs/verification.json'])
+      expect(template.outputs).not.toBeNull()
+      if (!template.outputs) throw new Error('A sufficient saved budget requires its report configuration.')
+      expect(template.outputs.map(output => [output.path, output.required])).toEqual([
+        ['.logs/verification/summary.json', true], ['.logs/verification/junit.xml', true],
+        ['.logs/verification/vitest.json', true], ['.logs/verification/logs.tar.gz', true],
+      ])
+      expect(template.outputs.reduce((bytes, output) => bytes + output.maxBytes, 0)).toBeLessThanOrEqual(policy.maxOutputBytes)
+      const authored = { ...spec, target: { kind: 'auto' }, policy, limits: resources.limits,
+        argv: template.argv, outputs: template.outputs, verification: { suite,
+          parameters: template.parameters, resources: template.resources, credentialRefs: [] } }
+      expect(AutoVerificationJobSpecSchema.parse(authored).verification.resources).toEqual(resources)
+      expect(JobAuthoringChoicesRecordSchema.parse({ sources: [], policies: [spec.policy], targets: [],
+        autoPolicies: [{ policy, limits: resources.limits }], verificationTemplates: [template] }).verificationTemplates)
+        .toEqual([template])
+    }
+  })
+  it('keeps all choices readable when a saved unqualified report allowance cannot fit four declarations', () => {
+    const { spec, resources, build } = verificationFixture()
+    const policy = { ...jobPolicyRequirementsRecord(spec.policy), maxOutputBytes: 3 }
+    const template = jobVerificationTemplate({ profileId: spec.policy.isolationPolicyId,
+      profileRevision: spec.policy.isolationPolicyRevision, suite: 'unit', ready: false,
+      policy, resources, maxUnitWorkers: 1 })
+    expect(template).toMatchObject({ ready: false, setupIssue: 'report_budget_insufficient', outputs: null, policy })
+    const choices = { sources: [build.source], targets: [], policies: [build.policy],
+      autoPolicies: [{ policy, limits: resources.limits }], verificationTemplates: [template] }
+    expect(JobAuthoringChoicesRecordSchema.parse(choices)).toEqual(choices)
+  })
   it('keeps Auto requests separate from concrete immutable acceptance and preserves build history unchanged', () => {
-    const { spec, acceptedBuild, definition, profile, resources } = verificationFixture()
+    const { spec, acceptedBuild, definition, profile, resources, lifecycle } = verificationFixture()
     const { isolationPolicyId, isolationPolicyRevision, ...policy } = spec.policy
     expect(isolationPolicyId).toBe(profile.profileId)
     expect(isolationPolicyRevision).toBe(profile.profileRevision)
     const auto = { ...spec, target: { kind: 'auto' }, policy, limits: resources.limits }
     expect(AutoVerificationJobSpecSchema.parse(auto)).toEqual(auto)
     const accepted = { ...acceptedBuild, ...spec, source: acceptedBuild.source,
-      schemaVersion: 2, profile, reservationId: verificationId,
+      schemaVersion: 2, profile, reservationId: verificationId, lifecycle,
       resourcePolicyRevision: 1, resourcePolicyDigest: verificationDigest,
       runtimeApprovalId: verificationId, runtimeApprovalRevision: 1 }
     expect(AcceptedVerificationJobSpecSchema.parse(accepted)).toEqual(accepted)
@@ -65,7 +103,8 @@ describe('verification placement and policy', () => {
 })
 
 describe('reviewed bounded approval lifetime', () => {
-  it('defaults conservatively, admits no caller review, and blocks dispatch until owner review', () => {
+  it('defaults to 24 hours, rejects caller review and preserves unreviewed historical configuration', () => {
+    expect(JOB_VERIFICATION_APPROVAL_LIFETIME_MS).toBe(86_400_000)
     expect(JobVerificationApprovalConfigInputSchema.parse({})).toEqual({
       approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS,
     })
@@ -73,6 +112,8 @@ describe('reviewed bounded approval lifetime', () => {
     expect(JobVerificationApprovalConfigInputSchema.safeParse({ review }).success).toBe(false)
     const config = { schemaVersion: 1, revision: 1, approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS, review: null }
     expect(JobVerificationApprovalConfigSchema.parse(config)).toEqual(config)
+    expect(JobVerificationApprovalConfigSchema.parse({ ...config, approvalLifetimeMs: 3_600_000 }))
+      .toEqual({ ...config, approvalLifetimeMs: 3_600_000 })
     expect(JobVerificationApprovalConfigSchema.safeParse({ ...config, approvalLifetimeMs: 9_000_000 }).success).toBe(false)
     expect(JobVerificationApprovalConfigSchema.parse({ ...config, approvalLifetimeMs: 9_000_000, review }).review).toEqual(review)
     const { profile, spec } = verificationFixture()
@@ -108,10 +149,14 @@ describe('verification reports and commit gates', () => {
     } }).success).toBe(false)
   })
   it('keeps an honest partial failure report readable and never erases first-pass failures with a retest', () => {
-    const { report } = verificationFixture()
+    const { report, pass } = verificationFixture()
     expect(JobVerificationReportSchema.parse({ ...report, firstPassFailed: 1, outcome: 'failed',
       completeness: 'partial', completedPortions: 0 }).outcome).toBe('failed')
     expect(JobVerificationReportSchema.safeParse({ ...report, totals: { ...report.totals, total: 5 } }).success).toBe(false)
+    const failed = { ...report, firstPassFailed: 1, outcome: 'failed', completeness: 'partial', completedPortions: 0 }
+    expect(JobVerificationReportReadSchema.parse({ report: failed, expected: pass.expected }).report.outcome).toBe('failed')
+    expect(JobVerificationReportReadSchema.safeParse({ report: { ...failed, attemptId: 'other' },
+      expected: pass.expected }).success).toBe(false)
   })
   it('requires every pinned child including native acceptance and rejects cross-commit/attempt aggregation', () => {
     const { pass, build } = verificationFixture()

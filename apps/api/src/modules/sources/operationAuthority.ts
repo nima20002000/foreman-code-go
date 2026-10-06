@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { JobExecutionRecordSchema, ResolvedJobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
 import { isDeepStrictEqual } from 'node:util'
 import { SourceFilesystemOperationSchema, SourceOperationOwnerSchema, type SourceFilesystemOperation, type SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
@@ -80,7 +81,7 @@ export class PostgresSourceOperationAuthority {
       if (request.operation !== 'sources.release') await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
       const snapshot = (await sql.query<{ availability: string }>('select availability from source_snapshots where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share',
         [root.binding.workspaceId, root.source.approvedSourceId, root.source.snapshotId, root.source.manifestDigest])).rows[0]
-      if (request.operation !== 'sources.release' && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
+      if ((request.operation !== 'sources.release' || receipt?.quota) && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
       let record: SourceMaterializationRecord | null = null, physicalClosureConfirmed = false
       if (request.operation !== 'sources.prepare') {
         const stored = (await sql.query<{ record: unknown; state: string }>('select record,state from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 and operation_id=$4 for share',
@@ -95,12 +96,28 @@ export class PostgresSourceOperationAuthority {
           physicalClosureConfirmed = true
         }
       }
-      const identity = request.operation === 'sources.prepare' ? request.identity : { operationId: allocated.operation_id, ownerPrincipalId: principal.id, expiresAt: principal.expiresAt }
+      let expiresAt = principal.expiresAt
+      if (request.operation === 'sources.release' && receipt?.quota) {
+        const row = (await sql.query<{ record: unknown }>('select record from job_executions where id=$1 for share',
+          [attempt.executionId])).rows[0]
+        if (row) {
+          const job = JobExecutionRecordSchema.parse(row.record)
+          if (job.schemaVersion === 2) expiresAt = new Date(Math.min(Date.parse(expiresAt),
+            Date.parse(job.acceptedSpec.lifecycle.cleanupDeadlineAt))).toISOString()
+        }
+      }
+      const identity = request.operation === 'sources.prepare' ? request.identity
+        : { operationId: allocated.operation_id, ownerPrincipalId: principal.id, expiresAt }
       if (identity.operationId !== allocated.operation_id || identity.ownerPrincipalId !== principal.id || Date.parse(identity.expiresAt) > Date.parse(principal.expiresAt)
         || Date.parse(identity.expiresAt) <= Date.now()) throw new DomainError('SOURCE_OWNER_CONFLICT', 'Source ownership is expired or differs from the actual Main allocation.', 403)
+      const selected = (await sql.query<{ spec: unknown }>('select spec from job_computer_selections where execution_id=$1',
+        [attempt.executionId])).rows[0]
+      const quotaRequired = Boolean(record?.receipt.quota || selected && 'verification' in
+        ResolvedJobDefinitionSpecRecordSchema.parse(selected.spec))
       const activeNativeSession = request.operation === 'sources.verify' && record?.receipt.binding.accessMode === 'exclusive-write'
         ? await this.activeNativeSession?.(sql, record) ?? null : null
-      return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed, activeNativeSession })
+      return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed, activeNativeSession,
+        ...(quotaRequired ? { quotaRequired: true } : {}) })
     })
   }
 }

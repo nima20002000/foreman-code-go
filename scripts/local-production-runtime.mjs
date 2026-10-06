@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { chmod, cp, mkdir, mkdtemp, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, cp, mkdir, mkdtemp, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
@@ -258,4 +258,11 @@ export async function waitForProductionReady({ origin, expected, timeoutMs = 90_
     await delay(Math.min(500, Math.max(0, deadline - Date.now())))
   }
   throw new Error(`${failure} Inspect journalctl --user -u graphql-operator-api.service.`)
+}
+
+export async function copyVerificationRuntime(source, release) {
+  await mkdir(join(release, 'scripts'), { recursive: true })
+  for (const name of ['verification-runner.mjs', 'verification-reports.mjs', 'integration-process.mjs']) {
+    await copyFile(join(source, 'scripts', name), join(release, 'scripts', name))
+  }
 }

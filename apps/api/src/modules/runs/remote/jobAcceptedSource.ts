@@ -1,19 +1,30 @@
+import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import { isDeepStrictEqual as same } from 'node:util'
 import { join } from 'node:path'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { ApprovedSourceSchema, SourceMaterializationRecordSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
-import type { RemoteJobAcceptedSourceReadout } from '@foreman-code/contracts/remote-job-execution'
-import { JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
+import type { RemoteJobAcceptedSourceReadoutRecord } from '@foreman-code/contracts/remote-job-execution'
+import { JobRuntimeProfileRecordSchema, JobVerificationRuntimeMeasurementSchema, jobRuntimeProfilePolicy, jobRuntimeProfileLimits }
+  from '@foreman-code/contracts/job-verification-runtime'
 import type { JobSql } from '../../jobs/repository.js'
 import { sourceBindingHash, sourceMaterializationDigest } from '../../sources/bindingHash.js'
 import { sourceSha256, verifySourceManifest } from '../../sources/manifest.js'
 import { DomainError } from '../../errors.js'
 
-export type AcceptedJobSourceReadout = RemoteJobAcceptedSourceReadout
+export type AcceptedJobSourceReadout = RemoteJobAcceptedSourceReadoutRecord
 function conflict(): never { throw new DomainError('JOB_ACCEPTED_SOURCE_CONFLICT', 'The original accepted Job source/root/runtime binding is unavailable or changed.', 409) }
 /** Call after the exact current Job read fence, in the same transaction. This
  * returns immutable Main metadata, never a physical source/qualification claim. */
-export async function readAcceptedJobSource(sql: JobSql, execution: JobExecution): Promise<AcceptedJobSourceReadout> {
+export function readAcceptedJobSource(sql: JobSql, execution: JobExecutionRecord): Promise<AcceptedJobSourceReadout> {
+  return readJobSource(sql, execution, 'execution')
+}
+
+export function readAcceptedJobCleanupSource(sql: JobSql, execution: JobExecutionRecord): Promise<AcceptedJobSourceReadout> {
+  return readJobSource(sql, execution, 'before-entry-cleanup')
+}
+
+async function readJobSource(sql: JobSql, execution: JobExecutionRecord, purpose: 'execution' | 'before-entry-cleanup')
+  : Promise<AcceptedJobSourceReadout> {
   const spec = execution.acceptedSpec, target = spec.target, destination = target.destination
   const row = (await sql.query<{ record: unknown; state: string }>(`select record,state from source_execution_materializations
     where materialization_id=$1 and workspace_id=$2 and execution_id=$3 and attempt_id=$4 for share`,
@@ -35,7 +46,7 @@ export async function readAcceptedJobSource(sql: JobSql, execution: JobExecution
   if (!rootRow) conflict()
   const root = SourceRootRecordSchema.parse(rootRow.record)
   const source = { approvedSourceId: spec.source.approvedSourceId, snapshotId: spec.source.snapshotId, manifestDigest: spec.source.manifestDigest }
-  const projectRoot = join(binding.canonicalPath, receipt.materializationId, 'tree')
+  const projectRoot = join(sourceMaterializationParent(receipt), 'tree')
   if (!same(root.binding, binding) || !same(root.source, source) || !same(root.selection.hostRef, target.hostRef) || !same(root.registration, target.registration) ||
     root.attestationId !== destination.attestationId || root.attestationDigest !== destination.attestationHash ||
     root.selection.rootPolicyId !== destination.rootPolicyId || root.selection.rootPolicyRevision !== destination.rootPolicyRevision ||
@@ -56,10 +67,28 @@ export async function readAcceptedJobSource(sql: JobSql, execution: JobExecution
   const version = (await sql.query<{ record: unknown }>('select record from job_runtime_profile_versions where profile_id=$1 and revision=$2 for share',
     [spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision])).rows[0]
   if (!version) conflict()
-  const profile = JobRuntimeProfileSchema.parse(version.record), original = profile.root
+  const profile = JobRuntimeProfileRecordSchema.parse(version.record), original = profile.root
+  const policy = jobRuntimeProfilePolicy(profile)
+  const limits = jobRuntimeProfileLimits(profile)
   if (profile.id !== spec.policy.isolationPolicyId || profile.revision !== spec.policy.isolationPolicyRevision || profile.workspaceId !== execution.workspaceId ||
-    !same(profile.policy, spec.policy) || !same(original.selection, root.selection) || !same(original.registration, root.registration) ||
+    !same(policy, spec.policy) || !same(original.selection, root.selection) || !same(original.registration, root.registration) ||
     original.binding.workspaceId !== execution.workspaceId || original.binding.canonicalPath !== binding.canonicalPath || !same(original.binding.filesystem, binding.filesystem) ||
-    !Number.isSafeInteger(profile.limits.diskBytes) || profile.limits.diskBytes <= 0 || receipt.verifiedBytes > profile.limits.diskBytes) conflict()
-  return { execution, materialization, root, diskQuotaBytes: profile.limits.diskBytes }
+    !Number.isSafeInteger(limits.diskBytes) || limits.diskBytes <= 0 || receipt.verifiedBytes > limits.diskBytes) conflict()
+  if (execution.schemaVersion === 2) {
+    const accepted = execution.acceptedSpec
+    const qualified = (await sql.query<{ measurement: unknown }>(`select measurement
+      from job_runtime_qualification_approvals where id=$1 and qualification_id=$2
+        and profile_id=$3 and profile_revision=$4 and workspace_id=$5 and record->>'status'='complete' for share`,
+    [accepted.profile.approvalId, accepted.profile.qualificationId, profile.id, profile.revision, execution.workspaceId])).rows[0]
+    if (!qualified || profile.schemaVersion !== 2) conflict()
+    const measured = JobVerificationRuntimeMeasurementSchema.parse(qualified.measurement)
+    if (!same(measured.identity, accepted.profile) || !same(measured.fingerprint.root, original)) conflict()
+    if (receipt.quota) {
+      const slot = measured.fingerprint.quotaPool?.slots.find(value => value.namespace === receipt.quota!.namespace)
+      if (!slot || !same(slot, receipt.quota)
+        || slot.hardLimitBytes !== accepted.verification.resources.limits.diskBytes
+        || slot.hardInodes !== accepted.verification.resources.mutableInodes) conflict()
+    } else if (purpose === 'execution') conflict()
+  }
+  return { execution, materialization, root, diskQuotaBytes: limits.diskBytes }
 }

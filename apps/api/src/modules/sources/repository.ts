@@ -1,3 +1,5 @@
+import { materializationDirectory } from './materialization.js'
+import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import { isDeepStrictEqual } from 'node:util'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -8,7 +10,7 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { MaterializationReceipt, SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { z } from 'zod'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { JOB_RUNTIME_WORKSPACE_LAYOUT } from '@foreman-code/contracts/job-runtime'
 import type { SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { sourceMaterializationDigest } from './bindingHash.js'
@@ -71,7 +73,7 @@ async function buildPrivateSourceRepository(input: {
   let gitDirectory: string
   try {
     if (JSON.stringify(await identity(root)) !== JSON.stringify(receipt.binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
-    const reservation = await openChildDirectory(root, receipt.materializationId)
+    const reservation = await materializationDirectory(root, receipt)
     try {
       const prior = await open(anchored(reservation, 'repository-receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
         if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
@@ -87,7 +89,7 @@ async function buildPrivateSourceRepository(input: {
       })
     }
     finally { await reservation.close() }
-    gitDirectory = join(receipt.binding.canonicalPath, receipt.materializationId, 'repository')
+    gitDirectory = join(sourceMaterializationParent(receipt), 'repository')
   } finally { await root.close() }
   // Every Git subprocess uses only this new store, qualified system Git, no
   // global/system config, no replace refs, no hooks and no interactive prompts.
@@ -134,11 +136,12 @@ async function buildPrivateSourceRepository(input: {
   await input.materializer.verify(receipt, expected)
   const owner = await openPrivateRoot(receipt.binding.canonicalPath)
   try {
-    const reservation = await openChildDirectory(owner, receipt.materializationId)
+    const reservation = await materializationDirectory(owner, receipt)
     try {
       const repository = await openChildDirectory(reservation, 'repository')
       let configDigest: string
       try {
+        await protectGeneratedRepositoryEntries(repository, ['config', 'index', 'HEAD', 'refs'], signal)
         const config = await open(anchored(repository, 'config'), constants.O_RDONLY | constants.O_NOFOLLOW)
         try { configDigest = sourceSha256(await config.readFile()) } finally { await config.close() }
       } finally { await repository.close() }
@@ -153,6 +156,31 @@ async function buildPrivateSourceRepository(input: {
   return { workTree, gitDirectory, generatedCommit, sourceCommit: manifest.git?.commit ?? null }
 }
 
+/** Git inherits the host umask; protect fresh metadata before publishing its receipt. */
+async function protectGeneratedRepositoryEntries(directory: FileHandle, names: readonly string[], signal: AbortSignal) {
+  const parent = await identity(directory)
+  for (const name of names) {
+    signal.throwIfAborted()
+    const entry = await open(anchored(directory, name),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    try {
+      const metadata = await entry.stat()
+      const filesystem = await identity(entry)
+      if (metadata.uid !== process.getuid?.() || filesystem.device !== parent.device
+        || filesystem.mountId !== parent.mountId
+        || (!metadata.isDirectory() && (!metadata.isFile() || metadata.nlink !== 1))) {
+        throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Generated private Git metadata changed.')
+      }
+      await entry.chmod(metadata.isDirectory() ? 0o700 : 0o600)
+      if (metadata.isDirectory()) {
+        await protectGeneratedRepositoryEntries(entry, await readdir(anchored(entry)), signal)
+      }
+      await entry.sync()
+    } finally { await entry.close() }
+  }
+  await directory.sync()
+}
+
 /** Verify only the retained original repository. Missing receipts fail closed;
  * this path cannot initialize Git, write objects or replace source state. */
 export async function verifyPrivateSourceRepository(input: {
@@ -163,7 +191,7 @@ export async function verifyPrivateSourceRepository(input: {
   const root = await openPrivateRoot(receipt.binding.canonicalPath)
   try {
     if (JSON.stringify(await identity(root)) !== JSON.stringify(receipt.binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
-    const reservation = await openChildDirectory(root, receipt.materializationId)
+    const reservation = await materializationDirectory(root, receipt)
     try {
       const record = await open(anchored(reservation, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
       let manifest: SourceManifest
@@ -196,7 +224,7 @@ async function readPrivateRepository(prior: FileHandle, reservation: FileHandle,
           throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Private repository configuration changed.')
       } finally { await config.close() }
     } finally { await repository.close() }
-    const gitDirectory = join(receipt.binding.canonicalPath, receipt.materializationId, 'repository')
+    const gitDirectory = join(sourceMaterializationParent(receipt), 'repository')
     const head = () => signal ? qualifiedGit(gitDirectory, ['rev-parse', 'HEAD'], 2 * 1024 * 1024, signal) : qualifiedGit(gitDirectory, ['rev-parse', 'HEAD'])
     if (saved.materializationId !== receipt.materializationId || saved.manifestDigest !== manifest.manifestDigest
       || saved.receiptDigest !== sourceSha256(Buffer.from(JSON.stringify(receipt))) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(saved.generatedCommit)
@@ -243,12 +271,12 @@ async function privateFile(directory:FileHandle,name:string,maxBytes:number):Pro
     return await handle.readFile()
   } finally {await handle.close()}
 }
-function jobRepositoryOwner(execution:JobExecution) {
+function jobRepositoryOwner(execution:JobExecutionRecord) {
   return {workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,
     owner:execution.owner,specDigest:execution.acceptedSpec.specDigest,bindingHash:execution.acceptedSpec.bindingHash,
     materializationId:execution.acceptedSpec.source.materializationId,materializationDigest:execution.acceptedSpec.source.materializationDigest}
 }
-function requireJobRepositoryOwner(execution:JobExecution,mounts:PrivateJobRepositoryMounts) {
+function requireJobRepositoryOwner(execution:JobExecutionRecord,mounts:PrivateJobRepositoryMounts) {
   const expected=jobRepositoryOwner(execution),parent=dirname(execution.acceptedSpec.target.destination.canonicalProjectRoot)
   if(!isDeepStrictEqual(expected,{workspaceId:mounts.workspaceId,executionId:mounts.executionId,attemptId:mounts.attemptId,
     operationId:mounts.operationId,owner:mounts.owner,specDigest:mounts.specDigest,bindingHash:mounts.bindingHash,
@@ -261,7 +289,7 @@ function requireJobRepositoryOwner(execution:JobExecution,mounts:PrivateJobRepos
 }
 /** Creates only exact app-owned mountpoint/state metadata under an already verified
  * original materialization. Incomplete claims persist; no aged-lock deletion or cleanup. */
-export async function preparePrivateJobRepositoryMounts(input:{record:SourceMaterializationRecord;execution:JobExecution;
+export async function preparePrivateJobRepositoryMounts(input:{record:SourceMaterializationRecord;execution:JobExecutionRecord;
   attempt:MaterializationAttempt;materializer:SourceMaterializationPort;reauthorize:()=>Promise<void>}):Promise<PrivateJobRepositoryMounts> {
   const {record,execution}=input,receipt=record.receipt
   if(record.operationId!==execution.operationId||receipt.executionId!==execution.id||receipt.attemptId!==execution.attemptId
@@ -275,7 +303,7 @@ export async function preparePrivateJobRepositoryMounts(input:{record:SourceMate
   const root=await openPrivateRoot(receipt.binding.canonicalPath)
   try {
     if(!isDeepStrictEqual(await identity(root),receipt.binding.filesystem))throw new SourceError('SOURCE_ROOT_CHANGED','Original Job root changed.')
-    const reservation=await openChildDirectory(root,receipt.materializationId)
+    const reservation=await materializationDirectory(root,receipt)
     try {
       try {
         const claim=JSON.parse((await privateFile(reservation,'job-heavy-jobs-claim.json',16384)).toString())
@@ -300,7 +328,7 @@ export async function preparePrivateJobRepositoryMounts(input:{record:SourceMate
             git:{directory:original.gitDirectory,filesystem:await identity(git),generatedCommit:original.generatedCommit,sourceCommit:original.sourceCommit,
               repositoryReceiptDigest:sourceSha256(await privateFile(reservation,'repository-receipt.json',16384)),
               configDigest:sourceSha256(await privateFile(git,'config',16384)),indexDigest:sourceSha256(await privateFile(git,'index',4*1024*1024)),mountpoint:await identity(mountpoint)},
-            scheduler:{directory:join(receipt.binding.canonicalPath,receipt.materializationId,'job-heavy-jobs'),filesystem:await identity(scheduler)}})
+            scheduler:{directory:join(sourceMaterializationParent(receipt),'job-heavy-jobs'),filesystem:await identity(scheduler)}})
           await input.reauthorize()
           const bytes=Buffer.from(JSON.stringify(saved)),file=await open(anchored(reservation,schedulerReceipt),constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600)
           try {await file.writeFile(bytes);await file.sync()} finally {await file.close()}
@@ -315,7 +343,7 @@ export async function preparePrivateJobRepositoryMounts(input:{record:SourceMate
 }
 /** Read-only original-record check before native create. Does not initialize Git,
  * reopen arbitrary paths, drop held state, or reverify an already mutable Job tree. */
-export async function verifyPrivateJobRepositoryMounts(execution:JobExecution,raw:PrivateJobRepositoryMounts):Promise<void> {
+export async function verifyPrivateJobRepositoryMounts(execution:JobExecutionRecord,raw:PrivateJobRepositoryMounts):Promise<void> {
   const mounts={...mountBody(raw),receiptDigest:raw.receiptDigest}
   requireJobRepositoryOwner(execution,mounts)
   const reservation=await openPrivateRoot(dirname(mounts.git.directory))

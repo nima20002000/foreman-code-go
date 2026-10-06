@@ -1,3 +1,6 @@
+import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
+import { dirname } from 'node:path'
+import type { SourceQuotaPool } from './materialization.js'
 /** Worker-safe actual source filesystem operations: Node/shared contracts only. */
 import { constants } from 'node:fs'
 import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
@@ -14,9 +17,9 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import type { SourceManifest, MaterializationReceipt } from '@foreman-code/contracts/source-materialization'
 import type { SourcePreparationClosure, SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { SourceError, verifySourceManifest } from './manifest.js'
-import { anchored, openPrivateRoot, openChildDirectory } from './privateFilesystem.js'
+import { anchored, openPrivateRoot } from './privateFilesystem.js'
 import { verifyApprovedRootAllowlist } from './rootAttestation.js'
-import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation } from './materialization.js'
+import { PrivateSourceMaterializer, materializationDirectory, releaseMaterializationClaim, reconcileSourcePreparation } from './materialization.js'
 import { createPrivateSourceRepository } from './repository.js'
 import { sourceOperationSelectionHash } from './operationDigests.js'
 import { assertSourceNativeSession, sourceNativeSessionContinues, verifyMaterializedWorkingDirectory } from './workingDirectory.js'
@@ -32,6 +35,7 @@ export interface SourceOperationWorkerOptions {
   /** Existing actual paired-main/current boot/key/auth root authentication. */
   authenticate(context: SourceOperationWorkerContext): Promise<void>
   approvedRoots(): Promise<ApprovedRootAllowlist>
+  quotaPoolFor?(binding: MaterializationReceipt['binding']): Promise<SourceQuotaPool | undefined>
   /** Real sources.authorize on the sole authenticated W07 Main channel. */
   currentOwner(request: SourceFilesystemOperation, context: SourceOperationWorkerContext): Promise<SourceOperationOwner>
   transfers: VerifiedSourceTransfers
@@ -41,6 +45,7 @@ export interface SourceOperationWorkerOptions {
   /** Original protected installed Job journal. Missing evidence fails closed. */
   preparationNativeClosed?(operationId: string, owner: SourceOperationOwner): Promise<boolean>
   preparationTransfersClosed?(closure: SourcePreparationClosure, signal: AbortSignal): Promise<void>
+  preparationReconciled?(closure: SourcePreparationClosure): Promise<void>
   executionTransfersClosed?(record: SourceMaterializationRecord, signal: AbortSignal): Promise<void>
 }
 function attemptOf(record: NonNullable<SourceOperationOwner['record']>) {
@@ -72,7 +77,7 @@ function checkOwner(request: SourceFilesystemOperation, raw: SourceOperationOwne
 async function localManifest(receipt: MaterializationReceipt): Promise<SourceManifest> {
   const root = await openPrivateRoot(receipt.binding.canonicalPath)
   try {
-    const reservation = await openChildDirectory(root, receipt.materializationId)
+    const reservation = await materializationDirectory(root, receipt)
     try {
       const record = await open(anchored(reservation, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
       try {
@@ -128,16 +133,23 @@ export class SourceOperationWorkerService {
         owner = current
       }
       const reader = null
+      const quotaPool = owner.quotaRequired || owner.record?.receipt.quota
+        ? await this.options.quotaPoolFor?.(owner.root.binding) : undefined
+      if (owner.quotaRequired && !quotaPool) {
+        throw new SourceError('SOURCE_QUOTA_MISSING', 'The original verification Job requires its installed quota pool.')
+      }
       if (request.operation === 'sources.reconcile-preparation') {
         if (!this.options.preparationNativeClosed) throw new SourceError('source-reconciliation-unconfirmed', 'Original native closure evidence is unavailable.')
         const closure = await reconcileSourcePreparation(request.reconciliationId, owner,
-          () => this.options.preparationNativeClosed!(owner.identity.operationId, owner), reauthorize)
+          () => this.options.preparationNativeClosed!(owner.identity.operationId, owner), reauthorize, quotaPool, context.signal)
         await this.options.preparationTransfersClosed?.(closure, context.signal)
-        await reauthorize(); return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, closure })
+        await reauthorize()
+        await this.options.preparationReconciled?.(closure)
+        return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, closure })
       }
       if (request.operation === 'sources.prepare') {
-        const materializer = new PrivateSourceMaterializer(reader, reauthorize)
-        const recovered = await materializer.recover(owner.root.binding, owner.attempt)
+        const materializer = new PrivateSourceMaterializer(reader, reauthorize, quotaPool)
+        const recovered = await materializer.recover(owner.root.binding, owner.attempt, context.signal)
         if (recovered) { await reauthorize(); return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, receipt: recovered }) }
         const transferContext = await this.options.transferContext(context)
         for (const key of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId'] as const)
@@ -156,12 +168,12 @@ export class SourceOperationWorkerService {
           // Complete framing is checked BEFORE activation in the materializer's
           // final authorization callback, not after a partial ready receipt.
           if (packageReader!.readyToComplete) await packageReader!.complete()
-        }).prepare({ manifest, binding: owner.root.binding, attempt: owner.attempt, signal: context.signal })
+        }, quotaPool).prepare({ manifest, binding: owner.root.binding, attempt: owner.attempt, signal: context.signal })
         await packageReader.complete(); await reauthorize()
         return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, receipt: receiptValue })
       }
       const record = request.record
-      const materializer = new PrivateSourceMaterializer(reader, reauthorize)
+      const materializer = new PrivateSourceMaterializer(reader, reauthorize, quotaPool)
       if (request.operation === 'sources.verify') {
         let capture: SourceNativeSessionCapture | undefined
         if (owner.activeNativeSession) {
@@ -202,12 +214,13 @@ export class SourceOperationWorkerService {
       await releaseMaterializationClaim(record.receipt, async () => {
         const current = await this.authority(request, context)
         return current.physicalClosureConfirmed ? 'released' : 'uncertain'
-      })
+      }, quotaPool, context.signal)
       await this.options.executionTransfersClosed?.(record, context.signal)
       await reauthorize()
       const binding = record.receipt.binding
-      const retainedBytes = await measureRetainedSourceDirectory(
-        binding.canonicalPath, record.receipt.materializationId, binding.filesystem,
+      const retainedBytes = record.receipt.quota ? 0 : await measureRetainedSourceDirectory(
+        dirname(sourceMaterializationParent(record.receipt)), record.receipt.materializationId,
+        binding.filesystem,
       )
       await reauthorize()
       return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation,

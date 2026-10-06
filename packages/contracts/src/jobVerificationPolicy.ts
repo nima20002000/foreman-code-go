@@ -5,7 +5,14 @@ import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 
 const PositiveInteger = DeviceSafeIntegerSchema.positive()
 export const JOB_VERIFICATION_POLICY_VERSION = 2 as const
-export const JOB_VERIFICATION_APPROVAL_LIFETIME_MS = 3_600_000
+export const JOB_VERIFICATION_APPROVAL_LIFETIME_MS = 24 * 60 * 60 * 1000
+export const JOB_VERIFICATION_OWNER_CONFIGURATION = Object.freeze({
+  schemaVersion: 1, revision: 1, id: 'offline-verification', reviewedOn: '2026-10-05',
+  network: 'none', approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS,
+  mainConcurrentJobs: 4, laptopConcurrentJobs: 2, unitWorkers: 12, integrationShards: 12,
+  laptopMinimumAvailableBytes: 4 * 2 ** 30, laptopPerRunningJobBytes: 2 * 2 ** 30,
+  credentialDelivery: 'local-only',
+})
 export const JOB_VERIFICATION_INITIAL_CONCURRENCY = Object.freeze({
   heavyJobs: 1,
   integrationShards: 1,
@@ -65,6 +72,22 @@ export const JobVerificationPolicyRequirementsSchema = JobVerificationPolicySche
 })
 export type JobVerificationPolicy = z.infer<typeof JobVerificationPolicySchema>
 
+export const JobVerificationLifecycleSchema = z.object({
+  dispatchAt: TimestampSchema,
+  executionDeadlineAt: TimestampSchema,
+  publicationDeadlineAt: TimestampSchema,
+  cleanupDeadlineAt: TimestampSchema,
+}).strict()
+export function verificationJobLifecycle(dispatchAt: string, policy: JobVerificationPolicy) {
+  const execution = Date.parse(dispatchAt) + policy.preparationTimeoutMs
+    + policy.serviceStartupTimeoutMs + policy.executionTimeoutMs
+  const publication = execution + policy.cancellationGraceMs + policy.publicationTimeoutMs
+  return JobVerificationLifecycleSchema.parse({ dispatchAt,
+    executionDeadlineAt: new Date(execution).toISOString(),
+    publicationDeadlineAt: new Date(publication).toISOString(),
+    cleanupDeadlineAt: new Date(publication + policy.cleanupTimeoutMs).toISOString() })
+}
+
 /** Save input cannot declare review, approval or measured readiness. */
 export const JobVerificationApprovalConfigInputSchema = z.object({
   approvalLifetimeMs: PositiveInteger.default(JOB_VERIFICATION_APPROVAL_LIFETIME_MS),
@@ -73,13 +96,17 @@ export const JobVerificationApprovalConfigSchema = z.object({
   schemaVersion: z.literal(1),
   revision: PositiveInteger,
   approvalLifetimeMs: PositiveInteger,
-  review: z.object({
+  review: z.union([z.object({
     reviewedByPrincipalId: IdSchema,
     reviewedAt: TimestampSchema,
     decisionDigest: DeviceDigestSchema,
-  }).strict().nullable(),
+  }).strict(), z.object({
+    authority: z.literal('repository-owner'), decisionId: IdSchema,
+    reviewedOn: z.iso.date(), decisionDigest: DeviceDigestSchema,
+  }).strict()]).nullable(),
 }).strict().superRefine((value, context) => {
-  if (value.review === null && value.approvalLifetimeMs !== JOB_VERIFICATION_APPROVAL_LIFETIME_MS) {
+  if (value.review === null && value.approvalLifetimeMs !== 3_600_000
+    && value.approvalLifetimeMs !== JOB_VERIFICATION_APPROVAL_LIFETIME_MS) {
     context.addIssue({ code: 'custom', message: 'Changing approval lifetime requires an owner-reviewed configuration.' })
   }
 })

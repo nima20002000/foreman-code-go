@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -7,11 +8,25 @@ import { startWorker, acquireWorkerLock } from '../src/runtime.mjs';
 
 const runtimeUrl = new URL('../src/runtime.mjs', import.meta.url).href;
 async function state(t) {
-  const directory = await mkdtemp(join('/var/tmp', 'worker-drain-'));
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'worker-drain-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
 const connection = () => ({ start: async () => {}, stop: async () => {} });
+
+test('journal recovery ownership is available only while the original Worker state socket is held', async t => {
+  const stateDirectory = await state(t);
+  let assertStateOwnership;
+  const worker = await startWorker({ stateDirectory, loadIdentity: async () => ({}),
+    createConnection: async input => {
+      assertStateOwnership = input.assertStateOwnership;
+      assertStateOwnership();
+      await assert.rejects(acquireWorkerLock(stateDirectory), /worker_already_running/);
+      return connection();
+    } });
+  await worker.stop();
+  assert.throws(assertStateOwnership, /worker_ownership_lost/);
+});
 
 test('worker retains its actual lock until transport and domain drain finish', async t => {
   const stateDirectory = await state(t), events = [];

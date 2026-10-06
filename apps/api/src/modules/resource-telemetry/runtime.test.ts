@@ -51,6 +51,36 @@ function setup() {
   return { input, controller, read, snapshot, stat, renewOwner() { owned = { ...owned, attributionRevision: String(Number(owned.attributionRevision) + 1) } }, getOwned: () => structuredClone(owned), advance(ms: number) { mono += ms }, active(value: boolean) { active = value } }
 }
 describe('passive telemetry runtime composition', () => {
+  it('keeps missing samples unavailable under collector backpressure and resumes fresh collection', async () => {
+    vi.useFakeTimers()
+    const s = setup()
+    const create = s.input.createCollector!
+    let offers = 0
+    s.input.createCollector = async options => {
+      const collector = await create(options)
+      return { ...collector, offer: challenge => ++offers === 1 ? 'rejected' : collector.offer(challenge) }
+    }
+    const runtime = await createResourceTelemetryRuntime(s.input)
+    try {
+      const discovered = await runtime.selectors.resolve(principal, target, new AbortController().signal)
+      if (discovered.kind !== 'selector') throw new Error('selector')
+      await vi.advanceTimersByTimeAsync(1)
+      expect((await runtime.service.read(principal, discovered.selector, new AbortController().signal)).kind)
+        .toBe('no-sample')
+      s.advance(2000)
+      await vi.advanceTimersByTimeAsync(2001)
+      const result = await runtime.service.read(principal, discovered.selector, new AbortController().signal)
+      expect(result.kind).toBe('sample')
+      if (result.kind !== 'sample') throw new Error('sample')
+      expect(result.sample.memory.state).toBe('fresh')
+      expect(result.sample.memory.value?.bytes).toBe(4096)
+      expect(offers).toBe(2)
+    } finally {
+      await runtime.close()
+      vi.useRealTimers()
+    }
+    expect(await runtime.completion).toEqual({ kind: 'closed' })
+  })
   it('handshakes actual identity, exposes a selector before sample, and pumps the real collector into shared readback', async () => {
     vi.useFakeTimers()
     const s = setup(), runtime = await createResourceTelemetryRuntime(s.input)

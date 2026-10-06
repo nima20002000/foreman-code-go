@@ -91,8 +91,8 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
         expectedRevision: current.preference.revision, buildEnabled: enabled, buildPriority: priority })
     }
     async function save(spec = computers[0]!.auto): Promise<JobDefinition> {
-      return jobs.saveDefinition(writer.principal, 'http', workspaceId, { commandId: randomUUID(),
-        expectedRevision: null, name: 'Automatic build', spec })
+      return JobDefinitionSchema.parse(await jobs.saveDefinition(writer.principal, 'http', workspaceId, {
+        commandId: randomUUID(), expectedRevision: null, name: 'Automatic build', spec }))
     }
     return { workspaceId, computers, settings, inventory, placement, jobs, accept, app, connect, enroll, save }
   }

@@ -220,24 +220,26 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
       hold.released = true; await this.save(j)
     }))
   }
-  private async hash(handle: FileHandle, size: number) {
+  private async hash(handle: FileHandle, size: number, signal?: AbortSignal) {
     const hash = createHash('sha256'), buffer = Buffer.alloc(Math.min(POLICY.maxChunkBytes, Math.max(size, 1)))
     let offset = 0
     while (offset < size) {
+      signal?.throwIfAborted()
       const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - offset), offset)
       if (!bytesRead) throw new Error('Missing committed transfer bytes')
       hash.update(buffer.subarray(0, bytesRead)); offset += bytesRead
     }
     return hash.digest('hex')
   }
-  private async reconcile(j: Journal, handle: FileHandle) {
+  private async reconcile(j: Journal, handle: FileHandle, signal?: AbortSignal) {
     const size = (await handle.stat()).size
-    if (size < j.progress.durableOffset || await this.hash(handle, j.progress.durableOffset) !== j.prefixHash) {
+    if (size < j.progress.durableOffset || await this.hash(handle, j.progress.durableOffset, signal) !== j.prefixHash) {
       throw new Error('Committed transfer bytes missing or corrupt; restart byte attempt explicitly')
     }
     if (size > j.progress.durableOffset) { await handle.truncate(j.progress.durableOffset); await handle.sync() }
   }
-  async start(input: TransferIntent, context: TransferContext): Promise<TransferProgress> {
+  async start(input: TransferIntent, context: TransferContext, signal?: AbortSignal): Promise<TransferProgress> {
+    signal?.throwIfAborted()
     const intent = TransferIntentSchema.parse(input)
     context = TransferContextSchema.parse(context)
     for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) {
@@ -246,13 +248,14 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
     await this.authority.authorize(intent, context, 'start')
     if (this.now() >= Date.parse(intent.expiresAt) || Date.parse(intent.expiresAt) - this.now() > POLICY.maxLifetimeMs) throw new Error('Transfer expiry exceeds policy')
     return this.locked(intent.transferId, () => this.allocated(async () => {
+      signal?.throwIfAborted()
       const existing = await this.load(intent.transferId).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
       const j = existing ?? this.journal(intent)
       this.sameIntent(j, intent); await this.authorize(j, context, 'start')
       if (Date.parse(intent.expiresAt) - this.now() > POLICY.maxLifetimeMs) throw new Error('Transfer lifetime exceeds policy')
       if (existing && existing.canonical !== false) {
         const data = await this.regular(this.path(intent.transferId, 'part'), constants.O_RDWR)
-        try { await this.reconcile(existing, data) } finally { await data.close() }
+        try { await this.reconcile(existing, data, signal) } finally { await data.close() }
         // A visible journal may follow a rename whose directory sync failed before ACK.
         await this.syncDirectory()
         await this.authorize(existing, context, 'start'); return existing.progress
@@ -262,32 +265,39 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
       // A missing canonical journal has committed no bytes. Recover only this private part.
       const data = await this.regular(this.path(intent.transferId, 'part'), constants.O_CREAT | constants.O_EXCL | constants.O_RDWR)
         .catch(error => { if (error.code === 'EEXIST') return this.regular(this.path(intent.transferId, 'part'), constants.O_RDWR); throw error })
-      try { await this.reconcile(j, data); await data.sync() } finally { await data.close() }
-      await this.authorize(j, context, 'start'); await this.save(j); return j.progress
+      try { await this.reconcile(j, data, signal); await data.sync() } finally { await data.close() }
+      await this.authorize(j, context, 'start')
+      signal?.throwIfAborted()
+      await this.save(j)
+      return j.progress
     }))
   }
-  async status(id: string, context: TransferContext) {
+  async status(id: string, context: TransferContext, signal?: AbortSignal) {
     return this.locked(id, async () => {
+      signal?.throwIfAborted()
       const j = await this.load(id); this.canonical(j); await this.authorize(j, context, 'status')
+      signal?.throwIfAborted()
       const handle = await this.regular(this.path(id, 'part'), constants.O_RDWR)
-      try { await this.reconcile(j, handle) } finally { await handle.close() }
+      try { await this.reconcile(j, handle, signal) } finally { await handle.close() }
       await this.syncDirectory()
       await this.authorize(j, context, 'status')
       return j.progress
     })
   }
-  async append(id: string, context: TransferContext, chunk: { offset: number; sha256: string; bytes: Uint8Array }) {
+  async append(id: string, context: TransferContext, chunk: { offset: number; sha256: string; bytes: Uint8Array }, signal?: AbortSignal) {
     // Validate before copying or retaining network data; no queue of whole objects.
     if (!Number.isSafeInteger(chunk.offset) || chunk.offset < 0 || !chunk.bytes.byteLength
       || chunk.bytes.byteLength > POLICY.maxChunkBytes || digest(chunk.bytes) !== chunk.sha256) throw new Error('Invalid transfer chunk')
     return this.locked(id, async () => {
+      signal?.throwIfAborted()
       const j = await this.load(id); this.canonical(j); await this.authorize(j, context, 'append')
       if (chunk.bytes.byteLength > j.intent.chunkBytes || chunk.offset + chunk.bytes.byteLength > j.intent.byteSize) throw new Error('Chunk exceeds allocation')
       const bytes = Buffer.from(chunk.bytes)
       if (digest(bytes) !== chunk.sha256) throw new Error('Chunk changed during authorization')
+      signal?.throwIfAborted()
       const handle = await this.regular(this.path(id, 'part'), constants.O_RDWR)
       try {
-        await this.reconcile(j, handle)
+        await this.reconcile(j, handle, signal)
         if (chunk.offset < j.progress.durableOffset) {
           if (chunk.offset + bytes.length > j.progress.durableOffset) throw new Error('Chunk offset conflict')
           const previous = Buffer.alloc(bytes.length)
@@ -300,6 +310,7 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
         if (chunk.offset !== j.progress.durableOffset || j.progress.state === 'verified') throw new Error('Chunk offset conflict')
         let written = 0
         while (written < bytes.length) {
+          signal?.throwIfAborted()
           const result = await handle.write(bytes, written, bytes.length - written, chunk.offset + written)
           if (!result.bytesWritten) throw new Error('Transfer write made no progress')
           written += result.bytesWritten
@@ -308,36 +319,51 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
         await this.authorize(j, context, 'append')
         j.progress.durableOffset += bytes.length; j.progress.state = 'transferring'
         j.progress.updatedAt = new Date(this.now()).toISOString()
-        j.prefixHash = await this.hash(handle, j.progress.durableOffset)
+        j.prefixHash = await this.hash(handle, j.progress.durableOffset, signal)
+        signal?.throwIfAborted()
         await this.save(j)
         return j.progress
       } finally { await handle.close() }
     })
   }
-  async finish(id: string, context: TransferContext): Promise<VerifiedTransferReceipt> {
+  async finish(id: string, context: TransferContext, signal?: AbortSignal): Promise<VerifiedTransferReceipt> {
     return this.locked(id, async () => {
+      signal?.throwIfAborted()
       const j = await this.load(id); this.canonical(j); await this.authorize(j, context, 'finish')
+      signal?.throwIfAborted()
       const handle = await this.regular(this.path(id, 'part'), constants.O_RDWR)
       try {
-        await this.reconcile(j, handle)
-        if (j.progress.durableOffset !== j.intent.byteSize || await this.hash(handle, j.intent.byteSize) !== j.intent.sha256) throw new Error('Whole transfer integrity mismatch')
+        await this.reconcile(j, handle, signal)
+        if (j.progress.durableOffset !== j.intent.byteSize || await this.hash(handle, j.intent.byteSize, signal) !== j.intent.sha256) throw new Error('Whole transfer integrity mismatch')
         if (j.receipt) await this.syncDirectory()
         await this.authorize(j, context, 'finish')
         if (j.receipt) return j.receipt
         j.receipt = { version: 1, receiptId: randomUUID(), transferId: id, intent: j.intent,
           sha256: j.intent.sha256, byteSize: j.intent.byteSize, verifiedAt: new Date(this.now()).toISOString() }
         j.progress.state = 'verified'; j.progress.verifiedBytes = j.intent.byteSize
+        signal?.throwIfAborted()
         await this.save(j); return j.receipt
       } finally { await handle.close() }
     })
   }
-  async cancel(id: string, context: TransferContext) {
+  async cancel(id: string, context: TransferContext, signal?: AbortSignal) {
     return this.locked(id, async () => {
-      const j = await this.load(id); await this.authorize(j, context, 'cancel')
-      j.progress.state = 'cancelled'; delete j.receipt; await this.save(j)
-      await unlink(this.path(id, 'part')).catch(error => { if (error.code !== 'ENOENT') throw error })
+      signal?.throwIfAborted()
+      const j = await this.load(id)
+      await this.authorize(j, context, 'cancel')
+      j.progress.state = 'cancelled'
+      delete j.receipt
+      signal?.throwIfAborted()
+      await this.save(j)
+      await unlink(this.path(id, 'part')).catch(error => {
+        if (error.code !== 'ENOENT') throw error
+      })
       await this.syncDirectory()
-      if (!await this.hasReaders(id)) { j.canonicalReclaimed = true; await this.save(j) }
+      if (!await this.hasReaders(id)) {
+        j.canonicalReclaimed = true
+        signal?.throwIfAborted()
+        await this.save(j)
+      }
       return j.progress
     })
   }

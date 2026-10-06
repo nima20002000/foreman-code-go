@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { z } from 'zod'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { JobWorkflowExecutionReferenceSchema } from '@foreman-code/contracts/job-workflow'
 import {
   RUN_INSPECTION_LIMITS, RunAcceptedInputValueSchema, RunExecutionBindingSchema,
@@ -52,7 +52,7 @@ function runSummary(snapshot: AcceptedRepeatRunSnapshot) {
     ...(run.stopCause === undefined ? {} : { stopCause: run.stopCause }), cleanupPending: snapshot.cleanupPending })
 }
 type StoredInspectionExecution = StoredRepeatExecution & { executorKind: 'agent' } | {
-  executorKind: 'job'; execution: JobExecution; identity: Extract<GraphExecutionIdentity, { kind: 'job' }>;
+  executorKind: 'job'; execution: JobExecutionRecord; identity: Extract<GraphExecutionIdentity, { kind: 'job' }>;
   ref: StoredRepeatExecution['ref']; accepted: boolean; terminalProcessed: boolean;
   slotId: string; input: StoredRepeatExecution['input']; inputDigest: string;
 }

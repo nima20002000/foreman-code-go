@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, realpath } from 'node:fs/promises'

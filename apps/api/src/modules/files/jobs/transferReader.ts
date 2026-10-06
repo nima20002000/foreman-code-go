@@ -1,5 +1,5 @@
 import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { VerifiedArtifactReader } from '../distributed/publication.js'
 import { DomainError } from '../../errors.js'
 import type { JobOutputPublicationInput, TrustedJobOutputReader } from './port.js'
@@ -7,11 +7,11 @@ import type { JobOutputPublicationInput, TrustedJobOutputReader } from './port.j
 export interface AcceptedJobTransferResolver {
   /** Main resolves a durable admitted output intent and current W07 connection authority.
    * Worker/tool arguments cannot supply transfer IDs, root bindings or stronger principals. */
-  resolve(input: JobOutputPublicationInput, execution: JobExecution): Promise<{transferId:string;context:TransferContext}>
+  resolve(input: JobOutputPublicationInput, execution: JobExecutionRecord): Promise<{transferId:string;context:TransferContext}>
 }
 export class VerifiedJobOutputReader implements TrustedJobOutputReader {
   constructor(private readonly transfers: VerifiedArtifactReader, private readonly accepted: AcceptedJobTransferResolver) {}
-  async open(input: JobOutputPublicationInput, execution: JobExecution) {
+  async open(input: JobOutputPublicationInput, execution: JobExecutionRecord) {
     const accepted = await this.accepted.resolve(input,execution)
     const receipt = await this.transfers.resolveVerifiedReceipt(accepted.transferId,accepted.context)
     const i = receipt.intent, target = execution.acceptedSpec.target

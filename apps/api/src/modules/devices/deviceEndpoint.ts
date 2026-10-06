@@ -39,6 +39,7 @@ export class DeviceEndpoint {
     /** Revoke original domain admission synchronously; join() awaits physical
      * cleanup and reports failure. This binding never follows a replacement. */
     onBindingLost?(binding: Readonly<DeviceSessionBinding>): void | Promise<void>
+    onBindingReady?(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): void | Promise<void>
     handshakeMs?: number; heartbeatMs?: number; extensions?: DeviceExtensionRegistration[]
   }) { extensionDescriptors(options.extensions ?? []) }
 
@@ -152,6 +153,7 @@ export class DeviceEndpoint {
       session.ready = true
       session.presence = Object.freeze({ ...session.presence, phase: 'ready', dispatch: welcome.capabilities.dispatch, transfer: welcome.capabilities.transfer })
       this.options.presence(session.presence)
+      if (this.options.onBindingReady) await this.track(Promise.resolve(this.options.onBindingReady(binding, abort.signal)))
       await channelTask
     } catch (error) {
       try { sendFrame(socket, { type: 'blocked', code: error instanceof DeviceConnectionError ? error.code : 'transport' }) } catch { /* socket already unavailable */ }

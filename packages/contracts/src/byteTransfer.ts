@@ -91,9 +91,9 @@ export const RsyncControlResponseSchema = z.discriminatedUnion('method', [
 export type RsyncControlResponse = z.infer<typeof RsyncControlResponseSchema>
 
 export interface ByteTransferPort {
-  start(intent: TransferIntent, context: TransferContext): Promise<TransferProgress>
-  status(id: string, context: TransferContext): Promise<TransferProgress>
-  append(id: string, context: TransferContext, chunk: { offset: number; sha256: string; bytes: Uint8Array }): Promise<TransferProgress>
-  finish(id: string, context: TransferContext): Promise<VerifiedTransferReceipt>
-  cancel(id: string, context: TransferContext): Promise<TransferProgress>
+  start(intent: TransferIntent, context: TransferContext, signal?: AbortSignal): Promise<TransferProgress>
+  status(id: string, context: TransferContext, signal?: AbortSignal): Promise<TransferProgress>
+  append(id: string, context: TransferContext, chunk: { offset: number; sha256: string; bytes: Uint8Array }, signal?: AbortSignal): Promise<TransferProgress>
+  finish(id: string, context: TransferContext, signal?: AbortSignal): Promise<VerifiedTransferReceipt>
+  cancel(id: string, context: TransferContext, signal?: AbortSignal): Promise<TransferProgress>
 }

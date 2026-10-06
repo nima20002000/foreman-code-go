@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { JobWorkflowExecutionReference } from '@foreman-code/contracts/job-workflow'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { Alert, Badge, Button, Card, CardBody, PageHeader } from '../../shared/ui/nocturne'
 import { jobsClient } from './client'
 import { useJobArtifacts, useJobExecution, jobKeys } from './query'
@@ -8,8 +8,9 @@ import { jobError, processLabel } from './model'
 import { JobLogs } from './JobLogs'
 import { ArtifactDownload } from './ArtifactDownload'
 import { JobSpecFacts } from './JobSpecFacts'
+import { JobVerificationResult } from './JobVerificationResult'
 
-export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow, expectedDefinitionVersionId }: { workspaceId: string; executionId: string; onRerun?: (execution: JobExecution) => void; expectedWorkflow?: JobWorkflowExecutionReference; expectedDefinitionVersionId?: string }) {
+export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow, expectedDefinitionVersionId }: { workspaceId: string; executionId: string; onRerun?: (execution: JobExecutionRecord) => void; expectedWorkflow?: JobWorkflowExecutionReference; expectedDefinitionVersionId?: string }) {
   const result = useJobExecution(workspaceId, executionId)
   const artifacts = useJobArtifacts(workspaceId, executionId, Boolean(result.data))
   const cache = useQueryClient()
@@ -31,6 +32,8 @@ export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow,
       <Badge tone={execution.transport === 'offline' ? 'warning' : 'neutral'}>Transport: {execution.transport}</Badge>
       <Badge tone={execution.publication === 'failed' ? 'danger' : 'neutral'}>Artifacts: {execution.publication}</Badge>
     </div>
+    {execution.schemaVersion === 2 && <JobVerificationResult execution={execution}
+      artifacts={artifacts.data ?? []} artifactsUnavailable={artifacts.isError} />}
     {execution.launchIssue === 'build_disabled' && <Alert title="Builds disabled before launch" tone="warning">
       This Job kept its selected computer and did not start. Enable builds on that computer before creating a new Start request.
     </Alert>}

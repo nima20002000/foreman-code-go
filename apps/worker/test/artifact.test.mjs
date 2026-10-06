@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,15 +10,25 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { workerPath } from '../src/harnessPath.mjs';
 
 const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
-test('packaged worker help identifies Foreman Code without starting runtime services', { skip: !artifact }, () => {
+test('packaged worker help and native initialization load current contracts without execution authority', { skip: !artifact }, async t => {
   const output = execFileSync(process.execPath, [join(artifact, 'src/cli.mjs'), '--help'], { encoding: 'utf8', timeout: 5000 });
   assert.match(output, /^Foreman Code worker\n/);
   assert.match(output, /Pairing retries reuse the original enrollment file/);
+  const state = await mkdtemp(join(persistentFixtureRoot, 'worker-native-initialization-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const initialized = JSON.parse(execFileSync(process.execPath,
+    [join(artifact, 'src/cli.mjs'), 'initialize-native-runtime', '--state', state],
+    { encoding: 'utf8', timeout: 10000 }));
+  assert.deepEqual(initialized, { nativeRuntime: 'initialized', executionAuthorized: false });
+  const status = JSON.parse(execFileSync(process.execPath,
+    [join(artifact, 'src/cli.mjs'), 'doctor', '--state', state], { encoding: 'utf8', timeout: 5000 }));
+  assert.equal(status.pairing, 'unpaired');
+  assert.equal(status.service.active, false);
 });
 test('packaged schema checker accepts the actual pinned Codex export', {
   skip: !artifact || !readProductEnvironment(process.env, 'WORKER_CODEX_BINARY'),
 }, async (t) => {
-  const directory = await mkdtemp('/var/tmp/worker-schema-check-');
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'worker-schema-check-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const environment = { PATH: workerPath(directory, process.execPath), HOME: directory, CODEX_HOME: join(directory, 'codex') };
   const exported = spawnSync(readProductEnvironment(process.env, 'WORKER_CODEX_BINARY'),
@@ -57,6 +68,19 @@ test('built worker factory accepts supplied real registration and rejects placeh
   await assert.rejects(connection.request(registration.namespace, { probe: true }), /unavailable/);
   await connection.stop();
   assert.throws(() => createWorkerConnection({ pairing, bootId: randomUUID(), appVersion: '0.1.0', extensions: [{ ...registration, handle: undefined }] }), /actual domain handler/);
+});
+
+test('packaged Worker entry loads installed domains and releases an unpaired installation', { skip: !artifact }, async t => {
+  const { startConfiguredWorker } = await import(pathToFileURL(join(artifact, 'src/worker.mjs')).href);
+  const state = await mkdtemp(join(persistentFixtureRoot, 'worker-unpaired-entry-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(startConfiguredWorker({ stateDirectory: state }), { code: 'ENOENT' });
+    const status = JSON.parse(execFileSync(process.execPath,
+      [join(artifact, 'src/cli.mjs'), 'doctor', '--state', state], { encoding: 'utf8', timeout: 5000 }));
+    assert.equal(status.pairing, 'unpaired');
+    assert.equal(status.service.active, false);
+  }
 });
 
 test('packaged bytes match manifest and doctor import creates no worker authority', { skip: !artifact }, async (t) => {

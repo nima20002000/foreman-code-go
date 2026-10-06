@@ -7,11 +7,45 @@ import type { JobStart } from '@foreman-code/contracts/jobs'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { server } from '../../mocks/server'
 import { JobLaunch } from './JobLaunch'
-import { definition, execution, queueTicket } from './fixtures'
+import { definition, execution, queueTicket, verificationDefinition, verificationExecution,
+  verificationTemplate, verificationQueueTicket } from './fixtures'
 import { jobKeys } from './query'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
 beforeEach(() => {
   server.use(http.get(`${root}/choices`, () => HttpResponse.json({ sources: [], policies: [], targets: [] })))
+})
+
+it('launches a saved ordinary-suite revision and reads its accepted verification execution', async () => {
+  const accepted = vi.fn()
+  const requests: unknown[] = []
+  let ticket = verificationQueueTicket
+  server.use(
+    http.get(`${root}/choices`, () => HttpResponse.json({ sources: [], policies: [], targets: [],
+      autoPolicies: [{ policy: verificationTemplate.policy, limits: verificationTemplate.resources.limits }],
+      verificationTemplates: [verificationTemplate] })),
+    http.post(`${root}/validate`, async ({ request }) => {
+      requests.push(await request.json())
+      return HttpResponse.json({ valid: true, reasons: [], sideEffects: false })
+    }),
+    http.post(`${root}/executions`, async ({ request }) => {
+      const command = await request.json() as { commandId: string }
+      requests.push(command)
+      ticket = { ...verificationQueueTicket, commandId: command.commandId }
+      return HttpResponse.json({ admission: { kind: 'pending-admission', ticket } })
+    }),
+    http.get(`${root}/queue/:id`, () => HttpResponse.json({ ticket: { ...ticket,
+      state: 'accepted', reservationId: verificationExecution.acceptedSpec.reservationId } })),
+    http.get(`${root}/executions/:id`, () => HttpResponse.json({ execution: verificationExecution })),
+  )
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <JobLaunch workspaceId={definition.workspaceId} definition={verificationDefinition}
+      onClose={vi.fn()} onAccepted={accepted} />
+  </QueryClientProvider>)
+  await screen.findByText('Configuration valid')
+  await userEvent.click(screen.getByRole('button', { name: 'Start job' }))
+  await waitFor(() => expect(accepted).toHaveBeenCalledWith(verificationExecution))
+  expect(requests[0]).toEqual({ spec: verificationDefinition.spec })
+  expect(requests[1]).toMatchObject({ definitionId: verificationDefinition.id, expectedRevision: 1 })
 })
 
 it('sends a Start placement override and retains it across an uncertain retry without editing the definition', async () => {

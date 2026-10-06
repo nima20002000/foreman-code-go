@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { open, readFile, realpath, statfs } from 'node:fs/promises'
 import { normalize } from 'node:path'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
-import type { JobRuntimeNativeAdmission } from '@foreman-code/contracts/job-runtime'
+import type { JobRuntimeNativeAdmissionRecord } from '@foreman-code/contracts/job-verification-runtime'
 import type { PodmanCommandRunner } from './executorPodman.js'
 
 export interface OCIProcessIdentity { pid: number; startTicks: string; bootId: string }
@@ -17,7 +17,7 @@ export type OCIOwnerScope = {
 } | {
   subject: { kind: 'qualification'; qualificationId: string; profileId: string; profileRevision: number; operationId: string; fingerprint: string }
   /** Actual persisted diagnostic admission; qualification never borrows a Job grant. */
-  admission: JobRuntimeNativeAdmission
+  admission: JobRuntimeNativeAdmissionRecord
   bootId: string
 }
 export interface OCIHostCertificate {
@@ -31,6 +31,7 @@ export interface OCIHostCertificate {
 export interface OCIContainerOwnership {
   scope: OCIOwnerScope
   assertCurrent(): Promise<void>
+  assertClosure?(): Promise<void>
   /** Persist the original container intent before create can enter native IO. */
   reserveContainerIntent(identity: string, fingerprint: string): Promise<void>
   /** Existing HRT/W08 journal receives exact ID before start; no second ledger. */
@@ -39,6 +40,7 @@ export interface OCIContainerOwnership {
   launchHelpers(): Promise<OCIHostCertificate['helpers']>
   closeHelpers?(): Promise<boolean>
   confirmUnreleasedClosure?(containerId: string): Promise<boolean>
+  confirmFailedCreation?(identity: string): Promise<boolean>
   readCertificate(containerId: string): Promise<OCIHostCertificate | null>
   publish(certificate: OCIHostCertificate): Promise<void>
 }
@@ -80,12 +82,20 @@ export async function proveOCIBoundaryEmpty(boundary: OCICgroupBoundary): Promis
 interface OCIInspection { Id: string; Config: { Labels: Record<string, string> }; State: { Pid: number; ConmonPid?: number; Running: boolean; Status: string } }
 /** One existing admitted OCI owner. It neither allocates a lease nor creates a registry. */
 export class OwnedOCIContainer {
+  private closing = false
   private containerId: string | null = null
   private certificate: OCIHostCertificate | null = null
-  constructor(private readonly intent: { identity: string; labels: Record<string, string> }, private readonly commands: Pick<PodmanCommandRunner, 'run'>,
-    private readonly ownership: OCIContainerOwnership) {}
+  private creationAbsent = false
+  constructor(private readonly intent: { identity: string; labels: Record<string, string>; originalContainerId?: string | null }, private readonly commands: Pick<PodmanCommandRunner, 'run'>,
+    private readonly ownership: OCIContainerOwnership) {
+    if (intent.originalContainerId && !/^[a-f0-9]{64}$/.test(intent.originalContainerId)) {
+      throw new Error('Original immutable container ID required.')
+    }
+    this.containerId = intent.originalContainerId ?? null
+  }
   private async inspect(target: string): Promise<OCIInspection | null> {
-    await this.ownership.assertCurrent()
+    if (this.closing && this.ownership.assertClosure) await this.ownership.assertClosure()
+    else await this.ownership.assertCurrent()
     const response = await this.commands.run(['container', 'inspect', target])
     if (response.exitCode !== 0) return null
     const rows: OCIInspection[] = JSON.parse(response.stdout)
@@ -135,8 +145,23 @@ export class OwnedOCIContainer {
     return this.certificate
   }
   async close(graceMs: number): Promise<boolean> {
+    this.closing = true
     let row = await this.inspect(this.containerId ?? this.intent.identity)
-    if (!row) return false // Missing receipt is uncertainty; never infer no launch.
+    if (!row) {
+      if (!this.containerId) {
+        if (!this.ownership.confirmFailedCreation) return false
+        const exists = await this.commands.run(['container', 'exists', this.intent.identity])
+        this.creationAbsent = exists.exitCode === 1 && await this.ownership.confirmFailedCreation(this.intent.identity)
+        return this.creationAbsent
+      }
+      const retained = await this.ownership.readCertificate(this.containerId)
+      if (!retained || retained.lifecycle !== 'closed' || retained.containerId !== this.containerId
+        || retained.process.bootId !== this.ownership.scope.bootId
+        || canonicalGraphJson(retained.scope) !== canonicalGraphJson(this.ownership.scope)) return false
+      return await proveOCIBoundaryEmpty(retained.boundary)
+        && (await Promise.all(retained.helpers.map(helper =>
+          helper.boundary ? proveOCIBoundaryEmpty(helper.boundary) : Promise.resolve(false)))).every(Boolean)
+    }
     if (!this.containerId) await this.bind(row.Id)
     if (!this.certificate) {
       const previous = await this.ownership.readCertificate(row.Id)
@@ -159,5 +184,19 @@ export class OwnedOCIContainer {
       : await this.ownership.confirmUnreleasedClosure?.(row!.Id) ?? false)
     if (this.certificate) await this.ownership.publish({ ...this.certificate, lifecycle: closed ? 'closed' : 'closure-unconfirmed' })
     return closed
+  }
+
+  async remove(): Promise<void> {
+    if (!await this.close(0)) throw new Error('Original container closure is unconfirmed before cleanup.')
+    if (this.creationAbsent && !this.containerId) return
+    if (!this.containerId) throw new Error('Original container closure is unconfirmed before cleanup.')
+    const exists = () => this.commands.run(['container', 'exists', this.containerId!])
+    const present = await exists()
+    if (present.exitCode === 1) return
+    if (present.exitCode !== 0) throw new Error('Original container cleanup readback failed.')
+    const removed = await this.commands.run(['rm', '--volumes', this.containerId])
+    if (removed.exitCode !== 0 || (await exists()).exitCode !== 1) {
+      throw new Error('Original container removal is unconfirmed.')
+    }
   }
 }

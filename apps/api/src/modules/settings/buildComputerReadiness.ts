@@ -1,4 +1,4 @@
-import { JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
+import { JobRuntimeProfileRecordSchema } from '@foreman-code/contracts/job-verification-runtime'
 import type { BuildComputerStatus } from '@foreman-code/contracts/build-computers'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { sameDeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -33,7 +33,7 @@ export function buildComputerReadiness(input: { endpoint(): DeviceEndpoint; prof
     } else if (!input.localExecutor) return result('setup-required', ['Job execution is not installed on Main.'])
     const profiles = (await sql.query<{ record: unknown }>(
       'select record from job_runtime_profiles order by id',
-    )).rows.map(row => JobRuntimeProfileSchema.parse(row.record)).filter(profile => sameDeviceProvisioningTarget(
+    )).rows.map(row => JobRuntimeProfileRecordSchema.parse(row.record)).filter(profile => sameDeviceProvisioningTarget(
       buildComputerTarget({ hostRef: profile.root.selection.hostRef, registration: profile.root.registration,
         mainInstallationId: profile.root.binding.mainId }), target,
     ))

@@ -5,11 +5,14 @@ import {
 import {
   AcceptedJobSpecSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobDefinitionSaveSchema, JobOutputSpecSchema,
   JobProcessStateSchema, JobTargetSchema, ResolvedJobDefinitionSpecSchema, AutoJobDefinitionSpecSchema, JobExecutionSchema,
+  PreparedJobSpecSchema, JobAuthoringChoicesSchema, JobPolicySchema, JobPolicyRequirementsSchema,
   validateJobDefinitionPaths,
 } from './jobs.js'
 import {
   JobResourceRequestSchema, JobVerificationPolicySchema, JobVerificationPolicyRequirementsSchema,
   JobVerificationProfileIdentitySchema,
+  JobVerificationLifecycleSchema, verificationJobLifecycle,
+  JOB_VERIFICATION_INITIAL_CONCURRENCY, JOB_VERIFICATION_OWNER_CONFIGURATION,
 } from './jobVerificationPolicy.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 
@@ -53,6 +56,53 @@ export const JobVerificationRequestSchema = z.object({
   }
 })
 
+export const JobOrdinaryVerificationSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'build'])
+export const JobVerificationTemplateSchema = z.object({
+  profileId: IdSchema,
+  profileRevision: DeviceSafeIntegerSchema.positive(),
+  suite: JobOrdinaryVerificationSuiteSchema,
+  ready: z.boolean(),
+  policy: JobVerificationPolicyRequirementsSchema,
+  resources: JobResourceRequestSchema,
+  parameters: JobVerificationParametersSchema,
+  maxUnitWorkers: DeviceSafeIntegerSchema.min(1).max(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers),
+  argv: z.tuple([z.literal('node'), z.literal('scripts/verify-repository.mjs'),
+    z.literal('--context'), z.literal('.graphql-job-inputs/verification.json')]),
+  outputs: JobVerificationOutputsSchema.nullable(),
+  setupIssue: z.literal('report_budget_insufficient').optional(),
+}).strict().superRefine((value, context) => {
+  const insufficient = value.policy.maxOutputBytes < 4
+  if (insufficient !== (value.setupIssue === 'report_budget_insufficient')
+    || insufficient !== (value.outputs === null) || (insufficient && value.ready)) {
+    context.addIssue({ code: 'custom', message: 'An insufficient report budget retains its setup issue and no report configuration.' })
+  }
+  if (value.outputs && value.outputs.reduce((bytes, output) => bytes + output.maxBytes, 0) > value.policy.maxOutputBytes) {
+    context.addIssue({ code: 'custom', message: 'Template reports must fit the saved output budget.' })
+  }
+  if (value.parameters.unitWorkers > value.maxUnitWorkers) {
+    context.addIssue({ code: 'custom', message: 'Template parameters must fit the qualified worker allowance.' })
+  }
+})
+export type JobVerificationTemplate = z.infer<typeof JobVerificationTemplateSchema>
+
+export function jobVerificationTemplate(input: Omit<JobVerificationTemplate, 'argv' | 'outputs' | 'parameters' | 'setupIssue'>) {
+  const reportBytes = Math.floor(input.policy.maxOutputBytes / 4)
+  const parameters = { unitWorkers: JOB_VERIFICATION_INITIAL_CONCURRENCY.unitWorkers,
+    integrationShards: JOB_VERIFICATION_INITIAL_CONCURRENCY.integrationShards }
+  const argv = ['node', 'scripts/verify-repository.mjs', '--context', '.graphql-job-inputs/verification.json']
+  if (!reportBytes) return JobVerificationTemplateSchema.parse({ ...input, ready: false,
+    setupIssue: 'report_budget_insufficient', parameters, argv, outputs: null })
+  return JobVerificationTemplateSchema.parse({
+    ...input, parameters, argv,
+    outputs: [
+      { path: '.logs/verification/summary.json', kind: 'suite-summary', mediaType: 'application/json' },
+      { path: '.logs/verification/junit.xml', kind: 'junit', mediaType: 'application/xml' },
+      { path: '.logs/verification/vitest.json', kind: 'vitest-json', mediaType: 'application/json' },
+      { path: '.logs/verification/logs.tar.gz', kind: 'logs-archive', mediaType: 'application/gzip' },
+    ].map(output => ({ ...output, required: true, maxBytes: reportBytes })),
+  })
+}
+
 const ResolvedVerificationSpec = z.object({
   ...ResolvedJobDefinitionSpecSchema.shape,
   outputs: JobVerificationOutputsSchema,
@@ -95,6 +145,24 @@ export const VerificationJobDefinitionSchema = JobDefinitionSchema.extend({
 export const JobDefinitionRecordSchema = z.union([JobDefinitionSchema, VerificationJobDefinitionSchema])
 export const JobDefinitionSpecRecordSchema = z.union([JobDefinitionSpecSchema, VerificationJobSpecSchema])
 export const JobDefinitionSaveRecordSchema = JobDefinitionSaveSchema.extend({ spec: JobDefinitionSpecRecordSchema }).strict()
+export const ResolvedJobDefinitionSpecRecordSchema = z.union([
+  ResolvedJobDefinitionSpecSchema, ResolvedVerificationJobSpecSchema,
+])
+export const PreparedVerificationJobSpecSchema = z.object({
+  ...ResolvedVerificationSpec.shape,
+  source: PreparedJobSpecSchema.shape.source,
+  computerSelection: PreparedJobSpecSchema.shape.computerSelection,
+}).strict().superRefine(validateJobDefinitionPaths).superRefine(validateVerificationPolicy)
+export const PreparedJobSpecRecordSchema = z.union([PreparedJobSpecSchema, PreparedVerificationJobSpecSchema])
+export const JobAuthoringChoicesRecordSchema = JobAuthoringChoicesSchema.extend({
+  policies: z.array(z.union([JobPolicySchema, JobVerificationPolicySchema])),
+  autoPolicies: z.array(z.object({
+    policy: z.union([JobPolicyRequirementsSchema, JobVerificationPolicyRequirementsSchema]),
+    limits: AutoJobDefinitionSpecSchema.shape.limits,
+  }).strict()).optional(),
+  verificationTemplates: z.array(JobVerificationTemplateSchema).optional(),
+}).strict()
+export type JobAuthoringChoicesRecord = z.infer<typeof JobAuthoringChoicesRecordSchema>
 
 export const AcceptedVerificationJobSpecSchema = z.object({
   ...AcceptedJobSpecSchema.shape,
@@ -105,10 +173,14 @@ export const AcceptedVerificationJobSpecSchema = z.object({
   verification: JobVerificationRequestSchema,
   profile: JobVerificationProfileIdentitySchema,
   reservationId: z.uuid(),
+  lifecycle: JobVerificationLifecycleSchema,
 }).strict().superRefine(validateHistoricalDeviceExecutionAdmission).superRefine((value, context) => {
   validateJobDefinitionPaths(value, context)
   validateVerificationPolicy(value, context)
   const { profile, policy } = value
+  if (JSON.stringify(value.lifecycle) !== JSON.stringify(verificationJobLifecycle(value.lifecycle.dispatchAt, policy))) {
+    context.addIssue({ code: 'custom', message: 'Verification deadlines retain the original dispatch budget.' })
+  }
   if (profile.profileId !== policy.isolationPolicyId || profile.profileRevision !== policy.isolationPolicyRevision
     || profile.imageDigest !== policy.imageDigest || profile.toolchainDigest !== policy.toolchainDigest
     || JSON.stringify(profile.network) !== JSON.stringify(policy.network)) {
@@ -159,15 +231,28 @@ export const JobVerificationReportSchema = z.object({
   }
 })
 
-/** Exit zero alone cannot satisfy a suite or a commit gate. */
-export const JobVerificationPassSchema = z.object({
-  report: JobVerificationReportSchema,
-  expected: z.object({
+export const JobVerificationReportIdentitySchema = z.object({
     commit: JobVerificationReportSchema.shape.commit, manifestDigest: DeviceDigestSchema,
     definitionVersionId: IdSchema, suite: JobVerificationSuiteSchema, executionId: IdSchema, attemptId: IdSchema,
     target: JobTargetSchema, profile: JobVerificationProfileIdentitySchema,
     resources: JobResourceRequestSchema, parameters: JobVerificationParametersSchema,
-  }).strict(),
+}).strict()
+function validateReportIdentity(value: { report: z.infer<typeof JobVerificationReportSchema>;
+  expected: z.infer<typeof JobVerificationReportIdentitySchema> }, context: z.RefinementCtx) {
+  for (const field of Object.keys(value.expected) as (keyof typeof value.expected)[]) {
+    if (JSON.stringify(value.report[field]) !== JSON.stringify(value.expected[field])) {
+      context.addIssue({ code: 'custom', path: ['report', field], message: 'Report differs from accepted execution facts.' })
+    }
+  }
+}
+export const JobVerificationReportReadSchema = z.object({
+  report: JobVerificationReportSchema, expected: JobVerificationReportIdentitySchema,
+}).strict().superRefine(validateReportIdentity)
+
+/** Exit zero alone cannot satisfy a suite or a commit gate. */
+export const JobVerificationPassSchema = z.object({
+  report: JobVerificationReportSchema,
+  expected: JobVerificationReportIdentitySchema,
   process: JobProcessStateSchema,
   publication: z.literal('complete'),
   requiredOutputsVerified: z.literal(true),
@@ -176,17 +261,33 @@ export const JobVerificationPassSchema = z.object({
     || !value.process.processStopped || value.report.outcome !== 'passed') {
     context.addIssue({ code: 'custom', message: 'Passing verification requires a confirmed closed successful process.' })
   }
-  for (const field of ['commit', 'manifestDigest', 'definitionVersionId', 'suite', 'executionId', 'attemptId'] as const) {
-    if (value.report[field] !== value.expected[field]) {
-      context.addIssue({ code: 'custom', path: ['report', field], message: 'Report belongs to another source or attempt.' })
-    }
-  }
-  for (const field of ['target', 'profile', 'resources', 'parameters'] as const) {
-    if (JSON.stringify(value.report[field]) !== JSON.stringify(value.expected[field])) {
-      context.addIssue({ code: 'custom', path: ['report', field], message: 'Report differs from accepted execution facts.' })
-    }
-  }
+  validateReportIdentity(value, context)
 })
 export type JobVerificationReport = z.infer<typeof JobVerificationReportSchema>
 export type VerificationJobSpec = z.infer<typeof VerificationJobSpecSchema>
 export type AcceptedVerificationJobSpec = z.infer<typeof AcceptedVerificationJobSpecSchema>
+export type JobDefinitionRecord = z.infer<typeof JobDefinitionRecordSchema>
+export type JobDefinitionSpecRecord = z.infer<typeof JobDefinitionSpecRecordSchema>
+export type JobDefinitionSaveRecord = z.infer<typeof JobDefinitionSaveRecordSchema>
+export type ResolvedJobDefinitionSpecRecord = z.infer<typeof ResolvedJobDefinitionSpecRecordSchema>
+export type PreparedJobSpecRecord = z.infer<typeof PreparedJobSpecRecordSchema>
+export type JobExecutionRecord = z.infer<typeof JobExecutionRecordSchema>
+export type JobAcceptedSpecRecord = z.infer<typeof JobAcceptedSpecRecordSchema>
+
+export function isAutoJobSpecRecord(spec: JobDefinitionSpecRecord): spec is
+  z.infer<typeof AutoJobDefinitionSpecSchema> | z.infer<typeof AutoVerificationJobSpecSchema> {
+  return 'kind' in spec.target && spec.target.kind === 'auto'
+}
+
+export function jobPolicyRequirementsRecord(policy: AcceptedVerificationJobSpec['policy']):
+  z.infer<typeof JobVerificationPolicyRequirementsSchema>
+export function jobPolicyRequirementsRecord(policy: z.infer<typeof AcceptedJobSpecSchema>['policy']):
+  z.infer<typeof JobPolicyRequirementsSchema>
+export function jobPolicyRequirementsRecord(policy: JobAcceptedSpecRecord['policy']):
+  z.infer<typeof JobVerificationPolicyRequirementsSchema> | z.infer<typeof JobPolicyRequirementsSchema>
+export function jobPolicyRequirementsRecord(policy: JobAcceptedSpecRecord['policy']) {
+  const { isolationPolicyId, isolationPolicyRevision, ...requirements } = policy
+  void isolationPolicyId
+  void isolationPolicyRevision
+  return requirements
+}

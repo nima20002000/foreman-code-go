@@ -10,8 +10,8 @@ import { readProductEnvironment } from '../packages/contracts/src/productEnviron
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
 import {
-  deployProductionApi, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment, removeUninstalledRelease,
-  readProductionIdentity, renderEnvironment, waitForProductionReady, withInstallationLock,
+  copyVerificationRuntime, deployProductionApi, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
+  removeUninstalledRelease, readProductionIdentity, renderEnvironment, waitForProductionReady, withInstallationLock,
 } from './local-production-runtime.mjs'
 
 const source = fileURLToPath(new URL('../', import.meta.url))
@@ -79,6 +79,7 @@ async function stageRelease() {
     for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs']) {
       await copyFile(join(source, 'scripts', name), join(release, 'scripts', name))
     }
+    await copyVerificationRuntime(source, release)
     const contractsSource = join(release, 'packages/contracts/src')
     await mkdir(contractsSource, { recursive: true })
     await copyFile(join(source, 'packages/contracts/src/productEnvironment.mjs'),

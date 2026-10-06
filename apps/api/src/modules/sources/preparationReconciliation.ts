@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import { readJobComputerSelection } from '../jobs/computerSelection.js'
-import { JobDefinitionSchema, isAutoJobSpec } from '@foreman-code/contracts/jobs'
+import { JobDefinitionRecordSchema, JobExecutionRecordSchema, isAutoJobSpecRecord } from '@foreman-code/contracts/job-verification'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { SourcePreparationGetInputSchema, SourcePreparationReconcileInputSchema, SourcePreparationSchema,
   SourcePreparationClosureSchema, SourceRootRecordSchema, SourceMaterializationRecordSchema,
@@ -40,8 +40,8 @@ export async function loadSourcePreparation(sql: GraphSqlClient, workspaceId: st
     left join source_preparation_reconciliations c on c.operation_id=j.operation_id
     where j.workspace_id=$1 and j.operation_id=$2 for share of r`, [workspaceId, operationId])).rows[0]
   if (!row) return loadWorkflowPreparation(sql, workspaceId, operationId)
-  const saved = JobDefinitionSchema.parse(row.definition)
-  const spec = isAutoJobSpec(saved.spec) ? await readJobComputerSelection(sql, saved, {
+  const saved = JobDefinitionRecordSchema.parse(row.definition)
+  const spec = isAutoJobSpecRecord(saved.spec) ? await readJobComputerSelection(sql, saved, {
     executionId: row.execution_id, attemptId: row.attempt_id, operationId,
   }) : saved.spec
   const definition = { ...saved, spec }
@@ -105,6 +105,18 @@ function metadata(state: State) {
 }
 async function admissionClosed(sql: GraphSqlClient, state: State) {
   if (state.kind === 'workflow') return assertWorkflowPreparationClosed(sql, state)
+  const job = (await sql.query<{ record: unknown }>('select record from job_executions where id=$1 or operation_id=$2 for share',
+    [state.attempt.executionId, state.operationId])).rows[0]
+  if (job) {
+    const execution = JobExecutionRecordSchema.parse(job.record)
+    if (execution.id !== state.attempt.executionId || execution.operationId !== state.operationId
+      || execution.attemptId !== state.attempt.attemptId || execution.workspaceId !== state.workspaceId
+      || execution.process.phase !== 'terminal' || !execution.process.processStopped
+      || !['complete', 'failed'].includes(execution.publication)) {
+      throw new DomainError('SOURCE_PREPARATION_ACTIVE', 'The original Job must have confirmed closure and settled publication before data recovery.', 409)
+    }
+    return execution
+  }
   if (state.workflow_run_id) {
     const run = (await sql.query<{ closed: boolean }>(`select (stop_requested_at is not null
       or execution_state in ('completed','interrupted') or exists(select 1 from run_cleanup_intents c
@@ -177,7 +189,9 @@ export async function resolvePreparationReconciliationOwner(sql: GraphSqlClient,
   const state = await loadSourcePreparation(sql, row.workspace_id, row.operation_id)
   if (row.queue_ticket_id) {
     validateQueuedSourcePreparation(await requireQueuedPreparationClosed(sql, row.queue_ticket_id), state)
-  } else await admissionClosed(sql, state)
+  } else if (await admissionClosed(sql, state)) {
+    requireAuthorization(await readLiveManagementPrincipal(sql, principalId), 'jobs:cancel', { workspaceId: state.workspaceId })
+  }
   await requireSourcePreparationHost(sql, state)
   const owner = SourceOperationOwnerSchema.parse(row.owner)
   if ((owner.preparationKind === 'workflow') !== (state.kind === 'workflow')
@@ -226,20 +240,27 @@ export class PostgresSourcePreparationReconciliation {
           if (state.root.selection.hostRef.kind !== 'device' && state.kind !== 'workflow') {
             throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'Job preparation cleanup requires its original worker journal.', 409)
           }
-          await admissionClosed(sql, state); await requireSourcePreparationHost(sql, state)
-          if (state.status === 'closed') { closure = SourcePreparationClosureSchema.parse(state.closure); return null }
-          if (state.owner) {
+          const closedJob = await admissionClosed(sql, state)
+          if (closedJob) requireAuthorization(live, 'jobs:cancel', { workspaceId: state.workspaceId })
+          await requireSourcePreparationHost(sql, state)
+          if (state.status === 'closed' && closedJob?.schemaVersion !== 2) { closure = SourcePreparationClosureSchema.parse(state.closure); return null }
+          if (state.owner && state.status !== 'closed') {
             const owner = SourceOperationOwnerSchema.parse(state.owner)
             if (owner.identity.ownerPrincipalId !== live.id || state.command_id !== input.commandId) throw new DomainError('SOURCE_RECONCILIATION_CONFLICT', 'Retry the original pending cleanup command and principal.', 409)
             return { reconciliationId: state.reconciliation_id!, owner }
           }
           const reconciliationId = randomUUID(), owner: SourceOperationOwner = { identity: { operationId: input.operationId,
-            ownerPrincipalId: live.id, expiresAt: live.expiresAt }, root: state.root, attempt: state.attempt,
+            ownerPrincipalId: live.id, expiresAt: closedJob ? new Date(Math.min(Date.parse(live.expiresAt),
+              Date.now() + (closedJob.schemaVersion === 2 ? closedJob.acceptedSpec.policy.cleanupTimeoutMs : 60_000))).toISOString() : live.expiresAt }, root: state.root, attempt: state.attempt,
             source: state.root.source, record: state.record, physicalClosureConfirmed: false, preparationClosed: true,
+            ...(state.kind === 'job' && state.definition.schemaVersion === 2 ? { quotaRequired: true as const } : {}),
             ...(state.kind === 'workflow' ? { preparationKind: 'workflow' as const,
               preparationNativeSession: state.nativeSession } : {}) }
           await sql.query(`insert into source_preparation_reconciliations(operation_id,reconciliation_id,workspace_id,principal_id,command_id,status,owner)
-            values($1,$2,$3,$4,$5,'reconciling',$6::jsonb)`, [input.operationId,reconciliationId,input.workspaceId,live.id,input.commandId,JSON.stringify(owner)])
+            values($1,$2,$3,$4,$5,'reconciling',$6::jsonb)
+            on conflict(operation_id) do update set reconciliation_id=excluded.reconciliation_id,
+              principal_id=excluded.principal_id,command_id=excluded.command_id,status='reconciling',owner=excluded.owner,closure=null`,
+          [input.operationId,reconciliationId,input.workspaceId,live.id,input.commandId,JSON.stringify(owner)])
           return { reconciliationId, owner }
         })
         if (pending) {
@@ -250,9 +271,10 @@ export class PostgresSourcePreparationReconciliation {
         if (closure) await this.options.retireTransfers?.(closure)
       },
       perform: async sql => {
-        await authorize(sql, principal, input.workspaceId, true)
+        const live = await authorize(sql, principal, input.workspaceId, true)
         const state = await loadSourcePreparation(sql, input.workspaceId, input.operationId)
-        await admissionClosed(sql, state); await requireSourcePreparationHost(sql, state)
+        if (await admissionClosed(sql, state)) requireAuthorization(live, 'jobs:cancel', { workspaceId: state.workspaceId })
+        await requireSourcePreparationHost(sql, state)
         if (!closure || closure.reconciliationId !== state.reconciliation_id) throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'Worker closure was not positively confirmed.', 409)
         await new PostgresSourceReservations().retainClosedPreparation(
           sql, state.reservation, closure, Number(state.reserved_bytes),

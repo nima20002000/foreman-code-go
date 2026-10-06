@@ -80,7 +80,8 @@ export async function createResourceTelemetryRuntime(input: ResourceTelemetryRun
   const cadence = run(async () => {
     while (!controller.signal.aborted) {
       const challenge = await service.challenge(input.localContext, controller.signal)
-      if (challenge && activeCollector.offer(challenge) === 'rejected') throw new Error('Telemetry collector rejected its authenticated challenge.')
+      // A full bounded collector queue leaves this challenge unsampled; a later cadence retries.
+      if (challenge) activeCollector.offer(challenge)
       await wait()
     }
   })

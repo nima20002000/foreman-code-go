@@ -23,7 +23,7 @@ import type { SingleWriterSessionManager } from '../src/modules/interactions/ses
 import { repeatDigest, type RepeatNodeInput, type RepeatInputBinding } from '../src/modules/runs/repeatResolution.js'
 import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCheckpointRegistration.js'
 import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
-import { runEng03NativeScenario, type Eng03NativeControl } from './helpers/eng03NativeAcceptance.js'
+import { nativeAcceptanceBinaries, runEng03NativeScenario, type Eng03NativeControl } from './helpers/eng03NativeAcceptance.js'
 import { qualifyEng03OpenCode } from './helpers/eng03OpenCodeQualification.js'
 import { configureNativeWorkflowMcp } from './helpers/nativeWorkflowMcp.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
@@ -42,6 +42,24 @@ function waitForOwnerBeforeWork(release: string, work: string): string {
     + `This reads an owner-controlled fixture; do not create or modify it, and do not finish before the command returns. `
     + `If the tool returns a running command session, poll that same native session until it finishes; do not start another command. Then ${work}`
 }
+
+describe('acceptance Job binary configuration', () => {
+  it('denies missing in-image binaries instead of selecting owner installations', () => {
+    for (const environment of [
+      { FOREMAN_CODE_VERIFICATION_ROOT: '/source' },
+      { FOREMAN_CODE_VERIFICATION_ROOT: '/source', ENG03_A_CODEX_BINARY: '/opt/codex' },
+      { FOREMAN_CODE_VERIFICATION_ROOT: '/source', ENG03_A_OPENCODE_BINARY: '/opt/opencode' },
+    ]) {
+      expect(() => nativeAcceptanceBinaries(environment)).toThrow('explicitly qualified in-image')
+    }
+  })
+
+  it('retains both explicitly qualified binary paths', () => {
+    expect(nativeAcceptanceBinaries({ FOREMAN_CODE_VERIFICATION_ROOT: '/source',
+      ENG03_A_CODEX_BINARY: '/opt/codex', ENG03_A_OPENCODE_BINARY: '/opt/opencode' }))
+      .toEqual({ codexBinary: '/opt/codex', openCodeBinary: '/opt/opencode' })
+  })
+})
 
 const require = createRequire(import.meta.url)
 

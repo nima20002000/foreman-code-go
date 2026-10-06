@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { isAutoJobSpec, type JobDefinition, type JobExecution } from '@foreman-code/contracts/jobs'
+import { isAutoJobSpecRecord, type JobDefinitionRecord, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { JobPlacementIntent } from '@foreman-code/contracts/job-admission'
 import { Alert, Button, Dialog, Select } from '../../shared/ui/nocturne'
 import { ApiError } from '../../shared/api/client'
@@ -11,8 +11,8 @@ import { jobKeys, useJobQueueTicket } from './query'
 import { JobQueueFacts, JobSpecFacts } from './JobSpecFacts'
 
 export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted }: {
-  definition: JobDefinition; workspaceId: string; rerun?: JobExecution;
-  onClose: () => void; onAccepted: (execution: JobExecution) => void
+  definition: JobDefinitionRecord; workspaceId: string; rerun?: JobExecutionRecord;
+  onClose: () => void; onAccepted: (execution: JobExecutionRecord) => void
 }) {
   const cache = useQueryClient()
   const [placementChoice, setPlacementChoice] = useState('saved')
@@ -21,7 +21,7 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
   const validation = useQuery({ queryKey: ['jobs', workspaceId, 'validation', definition.id, definition.revision],
     queryFn: () => jobsClient.validate(workspaceId, definition.spec), retry: jobReadRetry, staleTime: 0 })
   const readiness = validation.isSuccess && !validation.isFetching ? validation.data : undefined
-  const readyLabel = isAutoJobSpec(definition.spec) ? 'Configuration valid' : 'Ready to start'
+  const readyLabel = isAutoJobSpecRecord(definition.spec) ? 'Configuration valid' : 'Ready to start'
   const readyMessage = 'Configuration validation passed. The request is saved before preparation and waits for an eligible computer with capacity.'
   const [unresolved, setUnresolved] = useState(false)
   const start = useMutation({ mutationKey: ['jobs', workspaceId, 'start', definition.id], gcTime: Infinity, retry: false,
@@ -86,14 +86,14 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
   }
   const submit = () => start.mutateAsync(input())
   const close = useUnsavedChanges({ label: 'job launch', scope: 'surface', dirty: false, busy: start.isPending,
-    uncertain, saveDisabled: !start.variables && (!readiness || placementUnavailable), save: submit, discard: onClose,
+    uncertain, saveDisabled: !start.variables && (!readiness?.valid || placementUnavailable), save: submit, discard: onClose,
     ...(start.error ? { error: jobError(start.error) } : {}) })
   return <Dialog open className="job-dialog" title={rerun ? 'Review rerun' : 'Review job launch'} size="lg"
     busy={start.isPending} dismissible={!uncertain} onOpenChange={open => { if (!open) void close(onClose) }}
     description={`Launch saved revision ${definition.revision} of ${definition.name}.`}
     footer={<>
       <Button disabled={start.isPending || uncertain} onClick={() => void close(onClose)}>{admission ? 'Close' : 'Back'}</Button>
-      {!admission && <Button variant="primary" loading={start.isPending} disabled={!start.variables && (!readiness || placementUnavailable)}
+      {!admission && <Button variant="primary" loading={start.isPending} disabled={!start.variables && (!readiness?.valid || placementUnavailable)}
         onClick={() => start.mutate(input())}>
         {startLabel}
       </Button>}

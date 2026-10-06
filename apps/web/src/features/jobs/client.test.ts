@@ -2,8 +2,59 @@ import { describe, it, expect } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
 import { jobsClient } from './client'
-import { definition, execution, logPage, queueTicket } from './fixtures'
+import { definition, execution, logPage, queueTicket, verificationDefinition,
+  verificationExecution, verificationTemplate, verificationQueueTicket } from './fixtures'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
+
+it('reads mixed build and verification choices, saved versions, execution history and cancellation', async () => {
+  const workspaceId = definition.workspaceId
+  const choices = { sources: [definition.spec.source], targets: [], policies: [definition.spec.policy],
+    autoPolicies: [{ policy: verificationTemplate.policy, limits: verificationTemplate.resources.limits }],
+    verificationTemplates: [verificationTemplate] }
+  server.use(
+    http.get(`${root}/choices`, () => HttpResponse.json(choices)),
+    http.get(`${root}/definitions`, () => HttpResponse.json({ definitions: [definition, verificationDefinition] })),
+    http.get(`${root}/definitions/:id`, () => HttpResponse.json({ definition: verificationDefinition })),
+    http.get(`${root}/definitions/:id/versions/:version`, () => HttpResponse.json({ definition: verificationDefinition })),
+    http.get(`${root}/executions`, () => HttpResponse.json({ executions: [execution, verificationExecution] })),
+    http.get(`${root}/executions/:id`, () => HttpResponse.json({ execution: verificationExecution })),
+    http.post(`${root}/executions/:id/cancel`, () => HttpResponse.json({ execution: verificationExecution })),
+  )
+  expect(await jobsClient.choices(workspaceId)).toEqual(choices)
+  expect(await jobsClient.definitions(workspaceId)).toEqual([definition, verificationDefinition])
+  expect(await jobsClient.definition(workspaceId, verificationDefinition.id)).toEqual(verificationDefinition)
+  expect(await jobsClient.definitionVersion(workspaceId, verificationDefinition.id, verificationDefinition.versionId))
+    .toEqual(verificationDefinition)
+  expect(await jobsClient.executions(workspaceId)).toEqual([execution, verificationExecution])
+  expect(await jobsClient.execution(workspaceId, verificationExecution.id)).toEqual(verificationExecution)
+  expect(await jobsClient.cancel(workspaceId, verificationExecution.id, 'cancel-verification')).toEqual(verificationExecution)
+  await expect(jobsClient.execution('foreign', verificationExecution.id)).rejects.toMatchObject({ code: 'JOB_SELECTION_MISMATCH' })
+})
+
+it('validates, saves and starts the verification request without stripping its shared record fields', async () => {
+  const requests: unknown[] = []
+  server.use(
+    http.post(`${root}/validate`, async ({ request }) => {
+      requests.push(await request.json())
+      return HttpResponse.json({ valid: true, reasons: [], sideEffects: false })
+    }),
+    http.post(`${root}/definitions`, async ({ request }) => {
+      requests.push(await request.json())
+      return HttpResponse.json({ definition: verificationDefinition })
+    }),
+    http.post(`${root}/executions`, () => HttpResponse.json({ admission: {
+      kind: 'pending-admission', ticket: verificationQueueTicket,
+    } })),
+  )
+  const input = { commandId: 'save-verification', expectedRevision: null,
+    name: verificationDefinition.name, spec: verificationDefinition.spec }
+  await jobsClient.validate(definition.workspaceId, input.spec)
+  expect(await jobsClient.save(definition.workspaceId, input)).toEqual(verificationDefinition)
+  expect(requests).toEqual([{ spec: input.spec }, input])
+  const admission = await jobsClient.start(definition.workspaceId, { commandId: verificationQueueTicket.commandId,
+    definitionId: verificationDefinition.id, expectedRevision: verificationDefinition.revision })
+  expect(admission).toEqual({ kind: 'pending-admission', ticket: verificationQueueTicket })
+})
 
 describe('job client identity and retry boundary', () => {
   it('preserves exact start commandId/payload through lost acknowledgment and same-request retry', async () => {

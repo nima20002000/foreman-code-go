@@ -199,6 +199,7 @@ async function main() {
   assert.equal(environment.HOST, '127.0.0.1')
   assert.equal(new URL(environment.DATABASE_URL).port, '55440')
   const release = await realpath(join(app, 'current'))
+  await import(pathToFileURL(join(release, 'apps/api/dist/app.js')).href)
   const require = createRequire(join(release, 'apps/api/package.json'))
   const { Pool } = require('pg')
   const { Client } = await import(require.resolve('@modelcontextprotocol/sdk/client/index.js'))

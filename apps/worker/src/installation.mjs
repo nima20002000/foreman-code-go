@@ -104,7 +104,7 @@ export async function installVersion({ root, artifact, approvedManifestSha256, f
         await copyFile(source, target);
         // Verify copied bytes as well, closing source mutation between verification and copy.
         if (hash(await readFile(target)) !== file.sha256) throw new WorkerError('artifact_checksum_mismatch');
-        await chmod(target, 0o600);
+        await chmod(target, file.path === 'artifacts/job-quota-query' ? 0o700 : 0o600);
         const handle = await open(target, 'r'); try { await handle.sync(); } finally { await handle.close(); }
       }
       const mf = await open(join(stage, 'manifest.json'), 'wx', 0o600); try { await mf.writeFile(bytes); await mf.sync(); } finally { await mf.close(); }

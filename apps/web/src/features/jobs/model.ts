@@ -1,4 +1,5 @@
-import type { JobExecution, JobLogPage } from '@foreman-code/contracts/jobs'
+import type { JobLogPage } from '@foreman-code/contracts/jobs'
+import type { JobDefinitionSpecRecord, JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { ApiError } from '../../shared/api/client'
 
@@ -19,11 +20,14 @@ export function loadedChunks(pages: JobLogPage[] = []) {
   for (const page of pages) for (const chunk of page.chunks) chunks.set(`${chunk.attemptId}:${chunk.sequence}`, chunk)
   return [...chunks.values()].sort((a, b) => a.sequence - b.sequence)
 }
-export function processLabel(execution: JobExecution) {
+export function processLabel(execution: JobExecutionRecord) {
   const { process } = execution
   if (process.outcome === 'cancelled' && process.processStopped) return 'Cancellation confirmed'
   if (execution.cancelRequestedAt && !process.processStopped) return 'Cancellation requested · stop unconfirmed'
   return (process.outcome ?? process.phase).replaceAll('_', ' ')
+}
+export function jobNetworkLabel(network: JobDefinitionSpecRecord['policy']['network']) {
+  return typeof network === 'string' ? network : network.mode
 }
 export function queueLabel(ticket: JobQueueTicket) {
   if (ticket.state === 'terminal') return (ticket.terminalReason ?? 'terminal').replaceAll('_', ' ')

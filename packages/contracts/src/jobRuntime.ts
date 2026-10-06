@@ -47,7 +47,7 @@ const HistoricalProvisionedRuntimeFields = { ...HistoricalDeviceExecutionAdmissi
   quota: JobRuntimeProjectQuotaSchema.optional(), aggregateCgroupIdentityDigest: Digest.optional(),
   imageManifestDigest: ProvisionedRuntimeFields.imageManifestDigest.optional(), imageConfigDigest: ProvisionedRuntimeFields.imageConfigDigest.optional(),
 }
-function validateProvisionedRuntime(value: { cpuLimit: number; memoryBytes: number; pidsLimit: number; diskBytes: number;
+export function validateProvisionedRuntime(value: { cpuLimit: number; memoryBytes: number; pidsLimit: number; diskBytes: number;
   imageDigest: string } & Partial<z.infer<typeof zProvisionedFields>>, ctx: z.RefinementCtx): void {
   if (!value.deviceLimits || !value.quota) return
   const reserve = DEVICE_RESOURCE_CONTROL_RESERVE
@@ -89,15 +89,22 @@ export const JobRuntimeApprovalSchema=z.object({schemaVersion:z.literal(1),id:z.
 /** Trusted admission retained on the original human-approved qualification row.
  * A diagnostic is its own subject; it never borrows a workflow grant or Job ID.
  * Public profile/request inputs do not accept this internal authority. */
-export const JobRuntimeNativeAdmissionSchema=z.object({...HistoricalDeviceExecutionAdmissionFields,schemaVersion:z.union([z.literal(1),z.literal(2)]),kind:z.literal('job-runtime-qualification'),
+const JobRuntimeNativeAdmissionFieldsSchema=z.object({...HistoricalDeviceExecutionAdmissionFields,schemaVersion:z.union([z.literal(1),z.literal(2)]),kind:z.literal('job-runtime-qualification'),
   approvalId:z.uuid(),qualificationId:z.uuid(),operationId:z.uuid(),workspaceId:IdSchema,profileId:IdSchema,profileRevision:z.number().int().positive(),
   fingerprintDigest:Digest,leaseId:z.uuid(),runCommandId:IdSchema,runPrincipalId:IdSchema,approvedByPrincipalId:IdSchema,
   hostRef:JobTargetSchema.shape.hostRef,registration:JobTargetSchema.shape.registration,mainInstallationId:IdSchema,bootId:z.uuid(),
   connection:DeviceSessionBindingSchema.nullable(),admittedAt:TimestampSchema,expiresAt:TimestampSchema,
-}).strict().superRefine((value,ctx)=>{
+}).strict()
+export const JobRuntimeNativeAdmissionSchema=JobRuntimeNativeAdmissionFieldsSchema.superRefine((value,ctx)=>{
   validateHistoricalDeviceExecutionAdmission(value,ctx)
   if ((value.schemaVersion === 2) !== (value.resourcePolicyRevision !== undefined))
     ctx.addIssue({code:'custom',message:'Provisioned diagnostic admission requires its complete version 2 policy and approval.'})
+  validateJobRuntimeNativeContext(value,ctx)
+})
+export function validateJobRuntimeNativeContext(
+  value: Omit<z.infer<typeof JobRuntimeNativeAdmissionFieldsSchema>, 'schemaVersion'>,
+  ctx: z.RefinementCtx,
+): void {
   if(value.operationId!==value.qualificationId||value.hostRef.mainId!==value.mainInstallationId)
     ctx.addIssue({code:'custom',message:'Admission must retain the original qualification and Main installation.'})
   if(Date.parse(value.expiresAt)<=Date.parse(value.admittedAt))
@@ -109,7 +116,7 @@ export const JobRuntimeNativeAdmissionSchema=z.object({...HistoricalDeviceExecut
     value.connection.workerInstallationId!==value.registration.workerInstallationId||value.connection.keyRevision!==value.registration.keyRevision||
     value.connection.authorizationRevision!==value.registration.authorizationRevision||value.connection.bootId!==value.bootId)
     ctx.addIssue({code:'custom',message:'Admission must retain the exact authenticated worker binding.'})
-})
+}
 export const CurrentJobRuntimeNativeAdmissionSchema=JobRuntimeNativeAdmissionSchema.safeExtend({schemaVersion:z.literal(2),...DeviceExecutionAdmissionFields})
 export type CurrentJobRuntimeNativeAdmission=z.infer<typeof CurrentJobRuntimeNativeAdmissionSchema>
 export type JobRuntimeNativeAdmission=z.infer<typeof JobRuntimeNativeAdmissionSchema>
@@ -195,7 +202,7 @@ export const JobRuntimeQualificationRpcResponseSchema=z.discriminatedUnion('oper
   z.object({version:z.literal(1),operation:z.literal('authorize'),admission:JobRuntimeNativeAdmissionSchema,candidate:JobQualificationCandidateSchema,
     approval:z.object({status:z.literal('approved'),fingerprint:Digest,expiresAt:TimestampSchema}).strict()}).strict(),
 ])
-export const JOB_RUNTIME_QUALIFICATION_EXTENSION=Object.freeze({namespace:'job-runtime-qualification-v1',version:1 as const,maxJsonBytes:1048576,maxBinaryBytes:0})
+export const JOB_RUNTIME_QUALIFICATION_EXTENSION=Object.freeze({namespace:'job-runtime-qualification-v1',version:1 as const,maxJsonBytes:1048576,maxBinaryBytes:1048576})
 export type JobRuntimeQualificationRpcRequest=z.infer<typeof JobRuntimeQualificationRpcRequestSchema>
 export type JobRuntimeQualificationRpcResponse=z.infer<typeof JobRuntimeQualificationRpcResponseSchema>
 

@@ -53,12 +53,13 @@ async function fixture() {
   const nativeOwnerFor = vi.fn(async (): Promise<SourceInstalledNativeOwner | null> => null)
   const preparationNativeClosed = vi.fn(async () => true)
   const preparationTransfersClosed = vi.fn(async () => {})
+  const preparationReconciled = vi.fn(async () => {})
   const service = new SourceOperationWorkerService({ authenticate: async () => {}, approvedRoots: readRoots, currentOwner,
     transfers: { resolveVerifiedReceipt: async () => receipt, openVerified: open }, transferContext: async () => transferContext,
-    nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed })
+    nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled })
   const context = { binding, signal: new AbortController().signal }
   return { directory, runtime, namespace, data, bytes, manifest, root, owner, request, receipt, context, service, currentOwner,
-    readRoots, open, nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed }
+    readRoots, open, nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled }
 }
 
 it('confirms preparation cleanup only after native closure and transfer reservations are released', async () => {
@@ -68,17 +69,21 @@ it('confirms preparation cleanup only after native closure and transfer reservat
   f.preparationNativeClosed.mockResolvedValue(false)
   await expect(f.service.handle(request, f.context)).rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
   expect(f.preparationTransfersClosed).not.toHaveBeenCalled()
+  expect(f.preparationReconciled).not.toHaveBeenCalled()
   f.preparationNativeClosed.mockResolvedValue(true)
   f.preparationTransfersClosed.mockRejectedValueOnce(new Error('Transfer cleanup incomplete'))
   await vi.waitFor(async () => {
     await expect(f.service.handle(request, f.context)).rejects.toThrow('Transfer cleanup incomplete')
   })
+  expect(f.preparationReconciled).not.toHaveBeenCalled()
   const response = await f.service.handle(request, f.context)
   expect(response).toMatchObject({ operation: request.operation, closure: {
     operationId: f.owner.identity.operationId, executionId: f.owner.attempt.executionId,
     claimReleased: true, childrenClosed: true, evidencePreserved: true,
   } })
   expect(f.preparationTransfersClosed).toHaveBeenCalledTimes(2)
+  if (response.operation !== 'sources.reconcile-preparation') throw new Error('Wrong cleanup response')
+  expect(f.preparationReconciled).toHaveBeenCalledWith(response.closure)
 })
 
 async function continuationFixture() {

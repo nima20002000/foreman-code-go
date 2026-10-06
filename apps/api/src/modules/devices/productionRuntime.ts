@@ -16,6 +16,7 @@ export interface DeviceDomainComposition {
   extensions: DeviceExtensionRegistration[]
   reconcile(binding: DeviceSessionBinding, signal: AbortSignal, endpoint: DeviceEndpoint): Promise<void>
   bindingLost?(binding: Readonly<DeviceSessionBinding>): void | Promise<void>
+  bindingReady?(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal, endpoint: DeviceEndpoint): void | Promise<void>
 }
 
 /** The management facade and device listener delegate to one persisted-main
@@ -97,6 +98,7 @@ export class ProductionDeviceRuntime {
       // Cleanup uses the captured original binding even after request admission
       // closes; Endpoint.join retains failures before runtime ownership release.
       onBindingLost: binding => this.domains?.bindingLost?.(binding),
+      onBindingReady: (binding, signal) => this.domains?.bindingReady?.(binding, signal, endpoint),
     })
     this.service = access; this.endpoint = endpoint; this.presence = presence
     if (this.listenerConfig) this.listener = new ProductionDeviceListener(this.listenerConfig, endpoint, {

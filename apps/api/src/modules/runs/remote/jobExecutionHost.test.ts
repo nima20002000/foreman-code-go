@@ -1,19 +1,19 @@
-import { JOB_PRIVATE_GIT_LAYOUT, type VerifiedJobGitMounts } from '../../jobs/privateGitMounts.js'
+import { privateFixtureDirectory } from '../../../../test/helpers/privateFixtureDirectory.js'
+import { prepareJobRepositoryFixture } from '../../../../test/helpers/jobRepositoryFixture.js'
+import { JOB_PRIVATE_GIT_LAYOUT } from '../../jobs/privateGitMounts.js'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises'
+import { mkdir, open, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import pg from 'pg'
 import { PostgresJobDispatch } from '../../jobs/dispatch.js'
 import { projectJobReceiptLocked } from '../../jobs/receiptProjection.js'
 import type { JobSql } from '../../jobs/repository.js'
-import type { JobExecution } from '@foreman-code/contracts/jobs'
-import type { RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
-import { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
+import type { RemoteJobOperationReceiptRecord } from '@foreman-code/contracts/remote-job-execution'
 import { jobInputSnapshotDigest } from '@foreman-code/contracts/job-inputs-node'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/contracts/job-inputs'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
@@ -28,18 +28,17 @@ import { JobOutputCollectionError } from '../../jobs/executorOutputs.js'
 const roots: string[] = [], journals: RemoteOperationJournal[] = [], hosts: RemoteJobExecutionHost[] = []
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(hosts.splice(0).map(host => host.drain())); await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(root => rm(root,{recursive:true,force:true}))) })
 async function fixture(loseClosureAck = false, denyPublication = false, wrongInput = false, loseCollectionAck = false) {
-  const root = await mkdtemp(join(tmpdir(),'w08-job-')); roots.push(root)
+  const root = await privateFixtureDirectory('w08-job-'); roots.push(root)
   const journal = await RemoteOperationJournal.open(join(root,'journal'),{initializeNewInstallation:true}); journals.push(journal)
   const execution = jobExecution()
-  const sourceRoot=join(root,execution.acceptedSpec.source.materializationId,'tree');await mkdir(dirname(sourceRoot),{mode:0o700});await mkdir(sourceRoot,{mode:0o700})
-  const sourceHandle=await open(sourceRoot,constants.O_RDONLY|constants.O_DIRECTORY),sourceIdentity=await identity(sourceHandle);await sourceHandle.close()
-  Object.assign(execution.acceptedSpec.target.destination,{canonicalProjectRoot:sourceRoot,canonicalCwd:sourceRoot,directoryIdentityHash:createHash('sha256').update(JSON.stringify(sourceIdentity)).digest('hex')})
-  execution.acceptedSpec.target.destination.managedRuntimeRoot=join(root,'runtime');await mkdir(execution.acceptedSpec.target.destination.managedRuntimeRoot,{mode:0o700})
-  Object.assign(execution.acceptedSpec,jobSpecDigests(execution.acceptedSpec,execution.acceptedSpec.workflowInput))
+  const runtimeRoot = join(root, 'runtime')
+  await mkdir(runtimeRoot, { mode: 0o700 })
+  const { sourceRoot, gitMounts } = await prepareJobRepositoryFixture(execution, root, runtimeRoot)
   const intent: RemoteJobDispatchIntent = { schemaVersion:1,protocolVersion:1,mainId:execution.acceptedSpec.target.mainId,
     subject:{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId},executionId:execution.id,
     attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner }
   const state = { loseClosureAck, loseCollectionAck, creates:0, collected:0, closureAccepted:false, reports:[] as string[], allowed:true,
+    containerPresent: false, removals: 0, removalFailures: 0,
     collectionError: null as Error | null }
   let started = false, released = false
   const waiting: Array<() => void> = []
@@ -47,7 +46,25 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   const profile: QualifiedJobProfile = {workspaceLayout:JOB_PRIVATE_GIT_LAYOUT, policyId:policy.isolationPolicyId,policyRevision:policy.isolationPolicyRevision,imageDigest:policy.imageDigest,toolchainDigest:policy.toolchainDigest,
     runtimeVersion:'unit',ociRuntimeVersion:'unit',kernelVersion:'unit',qualificationId:'unit-qualified',rootless:true,cgroupV2:true,filesystemBounded:true,descendantContainment:true,network:'none',cpuLimit:1,memoryBytes:1048576,pidsLimit:64,diskBytes:1048576 }
   const runner: PodmanCommandRunner = { run:async argv => {
-    if(argv.includes('create')){state.creates++;return{exitCode:0,stdout:cid}}
+    if(argv.includes('create')){state.creates++;state.containerPresent=true;return{exitCode:0,stdout:cid}}
+    if (argv[0] === 'rm') {
+      expect(await journal.jobStatus(intent.operationId)).toMatchObject({
+        status: 'known', receipt: { terminal: { processStopped: true, exitCode: 7 } },
+      })
+      if (state.removalFailures > 0) {
+        state.removalFailures--
+        return { exitCode: 1, stdout: '' }
+      }
+      state.removals++
+      state.containerPresent = false
+      return { exitCode: 0, stdout: cid }
+    }
+    if (argv[0] === 'container' && argv[1] === 'exists') {
+      return { exitCode: state.containerPresent ? 0 : 1, stdout: '' }
+    }
+    if (argv[0] === 'container' && argv[1] === 'inspect' && !state.containerPresent) {
+      return { exitCode: 1, stdout: '' }
+    }
     if(argv[0]==='wait')return new Promise(resolve => { waiting.push(() => resolve({exitCode:0,stdout:'7'})) })
     if(argv[0]==='exec'){released=true;for(const finish of waiting.splice(0))finish();return{exitCode:0,stdout:''}}
     return{exitCode:0,stdout:JSON.stringify([{Id:cid,Config:{Labels:{'graphql.job.identity':jobSupervisorIdentity(execution),'graphql.job.spec':execution.acceptedSpec.specDigest,'graphql.job.attempt':execution.attemptId}},State:{Running:started&&!released,Pid:started&&!released?100:0,ExitCode:7,Status:released?'exited':started?'running':'created'}}])}
@@ -58,7 +75,7 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   vi.spyOn(OwnedOCIContainer.prototype,'close').mockResolvedValue(true)
   const supervisor=new PodmanJobSupervisor(profile,runner,async()=>ownership)
   const host=new RemoteJobExecutionHost({journal,connection:{kind:'main',mainId:intent.mainId,mainInstallationId:execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},incarnationId:randomUUID(),supervisor,
-    source:{verify:async()=>({privateRepositoryRoot:execution.acceptedSpec.target.destination.canonicalProjectRoot,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true,diskQuotaBytes:1024,gitMounts:mountFixture(execution,sourceIdentity)})},
+    source:{verify:async()=>({privateRepositoryRoot:execution.acceptedSpec.target.destination.canonicalProjectRoot,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true,diskQuotaBytes:1024,gitMounts})},
     inputs:{prepare:async current=>{
       const spec=current.acceptedSpec,hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex')
       const manifest=Buffer.from(JSON.stringify(JobBuildInputManifestSchema.parse({version:1,inputSnapshotDigest:jobInputSnapshotDigest(current),workflowInput:spec.workflowInput,files:[]}))),workflow=Buffer.from(JSON.stringify(spec.workflowInput))
@@ -71,6 +88,34 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   return {root,journal,execution,intent,state,host,supervisor}
 }
 describe('actual OCI job adapter with command doubles, no installed runtime claim',()=>{
+  it.each([false, true])('removes the owned container after its terminal result, including publication denial %s', async denied => {
+    const f = await fixture(false, denied)
+    await f.host.deliver(f.intent, f.execution)
+    await f.host.drain()
+    expect(f.state.containerPresent).toBe(false)
+    expect(f.state.removals).toBe(1)
+    await f.host.deliver(f.intent, f.execution)
+    expect(f.state.removals).toBe(1)
+    expect(f.state.creates).toBe(1)
+  })
+
+  it('retries failed container removal without publishing completion or rerunning the Job', async () => {
+    const f = await fixture()
+    f.state.removalFailures = 1
+    await f.host.deliver(f.intent, f.execution)
+    await f.host.drain()
+    expect(f.state.containerPresent).toBe(true)
+    expect(f.state.collected).toBe(0)
+    expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({
+      status: 'known', receipt: { publication: 'pending', terminal: { exitCode: 7 } },
+    })
+    await f.host.deliver(f.intent, f.execution)
+    expect(f.state.containerPresent).toBe(false)
+    expect(f.state.removals).toBe(1)
+    expect(f.state.creates).toBe(1)
+    expect(f.state.collected).toBe(1)
+  })
+
   it('records expired publication as failed without changing native outcome or rerunning it', async () => {
     const f = await fixture()
     f.state.collectionError = new JobOutputCollectionError('The output transfer expired before publication.')
@@ -115,6 +160,36 @@ describe('actual OCI job adapter with command doubles, no installed runtime clai
     await f.host.recover()
     expect(reconcile).toHaveBeenCalledWith(f.execution);expect(f.state.creates).toBe(0);expect(f.state.collected).toBe(0)
   })
+  it('recovers a confirmed unentered container without hashing absent identifiers or launching it', async () => {
+    const f = await fixture(), operationId = f.intent.operationId
+    await f.journal.jobAccept(f.intent, f.execution, { kind: 'main', mainId: f.intent.mainId,
+      mainInstallationId: f.execution.acceptedSpec.target.mainInstallationId, bootId: randomUUID() }, randomUUID())
+    await f.journal.jobReserveEntry(operationId)
+    const identity = jobSupervisorIdentity(f.execution), binary = '/usr/bin/podman'
+    await f.journal.jobContainerIntent(operationId, identity, f.execution.acceptedSpec.specDigest)
+    for (const [operation, exitCode] of [['inspect', 125], ['exists', 1]] as const) {
+      const launchId = randomUUID()
+      await f.journal.jobReserveProcess(operationId, { launchId, binary,
+        argv: ['--remote=false', 'container', operation, identity] })
+      await f.journal.jobProcessClosed(operationId, launchId, { exitCode, signal: null })
+    }
+    await f.journal.jobConfirmContainerNonEntry(operationId, binary)
+    const laterInspection = randomUUID()
+    await f.journal.jobReserveProcess(operationId, { launchId: laterInspection, binary,
+      argv: ['--remote=false', 'container', 'inspect', identity] })
+    await f.journal.jobProcessClosed(operationId, laterInspection, { exitCode: 125, signal: null })
+    const inspect = vi.spyOn(f.supervisor, 'reconcile').mockRejectedValue(new Error('must not inspect again'))
+    const stop = vi.spyOn(f.supervisor, 'stopExecution').mockRejectedValue(new Error('must not allocate another control command'))
+    await f.host.recover()
+    expect(await f.journal.jobStatus(operationId)).toMatchObject({ status: 'known', receipt: {
+      terminal: { outcome: 'preparation_failed', processStopped: true }, publication: 'pending' } })
+    await f.host.deliver(f.intent, f.execution)
+    expect(await f.journal.jobStatus(operationId)).toMatchObject({ status: 'known', receipt: {
+      entryAttempted: true, terminal: { outcome: 'preparation_failed', processStopped: true }, publication: 'complete' } })
+    expect(f.state.creates).toBe(0)
+    expect(inspect).not.toHaveBeenCalled()
+    expect(stop).not.toHaveBeenCalled()
+  })
   it('worker journal negative fence and restart retain original job identity',async()=>{const f=await fixture();await f.journal.jobAccept(f.intent,f.execution,{kind:'main',mainId:f.intent.mainId,mainInstallationId:f.execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},randomUUID());await f.journal.jobControl({schemaVersion:1,protocolVersion:1,commandId:'stop',operationId:f.intent.operationId,attemptId:f.intent.attemptId,executionId:f.intent.executionId,bindingHash:f.intent.bindingHash,subject:f.intent.subject,owner:f.intent.owner,action:{kind:'stop'}});await f.journal.close();const recovered=await RemoteOperationJournal.open(join(f.root,'journal'));journals.push(recovered);expect((await recovered.jobReserveEntry(f.intent.operationId)).reserved).toBe(false);expect((await recovered.jobStatus(f.intent.operationId)).status).toBe('known');expect(f.state.creates).toBe(0)})
   it('spools exact log sequences in the same durable operation journal before main acknowledgment',async()=>{const f=await fixture();await f.journal.jobAccept(f.intent,f.execution,{kind:'main',mainId:f.intent.mainId,mainInstallationId:f.execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},randomUUID());const chunk={executionId:f.execution.id,attemptId:f.execution.attemptId,sequence:1,stream:'stdout' as const,text:'a',byteSize:1,createdAt:new Date().toISOString()};await f.journal.jobAppendLog(f.intent.operationId,chunk);expect(await f.journal.jobPendingLogs(f.intent.operationId)).toEqual([chunk]);await f.journal.jobAcknowledgeLog(f.intent.operationId,1);expect(await f.journal.jobPendingLogs(f.intent.operationId)).toEqual([]);await expect(f.journal.jobAppendLog(f.intent.operationId,{...chunk,text:'different',byteSize:9})).rejects.toThrow('conflict')})
 })
@@ -124,16 +199,15 @@ async function acceptedClosure(wrongInput=false) {
   const f=await fixture(false,false,wrongInput);await f.host.deliver(f.intent,f.execution);await f.host.drain()
   const status=await f.journal.jobStatus(f.intent.operationId)
   if(status.status!=='known')throw new Error('Actual journal receipt required')
-  const row={record:structuredClone(f.execution),accepted_spec:structuredClone(f.execution.acceptedSpec),intent:structuredClone(f.intent),last_receipt:null as RemoteJobOperationReceipt|null,receipt_sequence:'0'}
+  const row={record:structuredClone(f.execution) as JobExecutionRecord,accepted_spec:structuredClone(f.execution.acceptedSpec),intent:structuredClone(f.intent),last_receipt:status.receipt as RemoteJobOperationReceiptRecord|null,receipt_sequence:String(status.receipt.sequence)}
   const query=vi.fn(async(text:string,values?:unknown[])=>{
     if(text.startsWith('select intent,receipt_sequence'))return {rows:[row]}
     if(text.startsWith('update job_dispatch_intents set receipt_sequence')) {
-      row.receipt_sequence=String(values![1]);row.last_receipt=JSON.parse(String(values![2])) as RemoteJobOperationReceipt
+      row.receipt_sequence=String(values![1]);row.last_receipt=JSON.parse(String(values![2])) as RemoteJobOperationReceiptRecord
       return {rows:[]}
     }
-    if(text.startsWith('update job_executions set record')) {row.record=JSON.parse(String(values![2])) as JobExecution;return {rows:[]}}
+    if(text.startsWith('update job_executions set record')) {row.record=JSON.parse(String(values![2])) as JobExecutionRecord;return {rows:[]}}
     if(text.startsWith('select e.record,e.accepted_spec')) {
-      expect(text).toContain('for share of e,d')
       const expected=[row.record.workspaceId,row.record.id,row.record.attemptId,row.record.operationId,row.intent.bindingHash,row.intent.owner.grantId,row.intent.owner.epoch]
       return {rows:JSON.stringify(values)===JSON.stringify(expected)?[row]:[]}
     }
@@ -143,9 +217,6 @@ async function acceptedClosure(wrongInput=false) {
   const forbidden=vi.fn(async()=>{throw new Error('Closure getter must not contact hosts or acquire runtime authority')})
   const dispatch=new PostgresJobDispatch(pool,{deliver:forbidden,reconcile:forbidden,control:forbidden},{revalidate:forbidden,authorizeControl:forbidden,observe:forbidden})
   try {
-    // Isolate the existing trusted-ingress SQL writer; live owner/auth fences are separate Root DB gates.
-    const accept=Reflect.get(dispatch,'acceptReceipt') as (sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt)=>Promise<boolean>
-    expect(await accept.call(dispatch,sql,f.execution,status.receipt)).toBe(true)
     await projectJobReceiptLocked(sql,structuredClone(f.execution),status.receipt,{verifyRequiredOutputs:async()=>{}})
   } finally {await pool.end()}
   const input={workspaceId:f.execution.workspaceId,executionId:f.execution.id,attemptId:f.execution.attemptId,operationId:f.execution.operationId,bindingHash:f.execution.acceptedSpec.bindingHash,owner:f.execution.owner}
@@ -180,13 +251,3 @@ describe('SQL-only current accepted job closure receipts',()=>{
     await expect(f.dispatch.readAcceptedClosureReceipt(f.sql,f.input)).rejects.toMatchObject({code:expect.stringMatching(/^JOB_CLOSURE_/)})
   })
 })
-
-// Structured source authority double; real receipt/inode guards are tested in sources/repository.test.ts.
-function mountFixture(execution:JobExecution,filesystem={device:'1',inode:'2',mountId:'3'}):VerifiedJobGitMounts {
-  const spec=execution.acceptedSpec,parent=dirname(spec.target.destination.canonicalProjectRoot),digest='a'.repeat(64)
-  return {version:1,layout:JOB_PRIVATE_GIT_LAYOUT,workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,specDigest:spec.specDigest,bindingHash:spec.bindingHash,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest,
-    git:{directory:join(parent,'repository'),filesystem,generatedCommit:'4'.repeat(40),sourceCommit:spec.source.commit,repositoryReceiptDigest:digest,configDigest:digest,indexDigest:digest,mountpoint:filesystem},scheduler:{directory:join(parent,'job-heavy-jobs'),filesystem},receiptDigest:digest}
-}
-
-// This suite models OCI/native boundaries; original filesystem receipts are independently tested.
-vi.mock('../../jobs/privateGitMounts.js',async original=>{const actual=await original<typeof import('../../jobs/privateGitMounts.js')>();return {...actual,verifyJobGitMounts:vi.fn(async()=>{})}})

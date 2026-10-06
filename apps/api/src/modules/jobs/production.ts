@@ -1,9 +1,17 @@
+import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
+import { componentLogger } from '../../infrastructure/logger.js'
+import { createMainJobExecutionHost } from './mainExecution.js'
+import { createQualificationReportPublisher } from './qualificationReports.js'
+import { createVerificationSystemInput } from './verificationSystemInput.js'
+import { openMainJobJournal } from './mainJobJournal.js'
+import { jobLifecycleSignal } from './lifecycle.js'
+import { JobExecutionRecordSchema } from '@foreman-code/contracts/job-verification'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { constants } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
-import { reserveInstalledJobQualification } from './installedRuntimeQualification.js'
+import { reserveInstalledJobQualification, recoverInstalledJobRuntimeQualifications } from './installedRuntimeQualification.js'
 import { createJobQualificationCarrier } from './qualificationCarrier.js'
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
@@ -42,7 +50,7 @@ import { dirname, join } from 'node:path'
 import { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
 import { assertBuildComputerTarget, BuildComputerSettings, buildComputerTarget } from '../settings/buildComputers.js'
 import { buildComputerReadiness } from '../settings/buildComputerReadiness.js'
-import { JobComputerSelection, releaseClosedJobComputers } from './computerSelection.js'
+import { JobComputerSelection, releaseClosedJobComputers, type VerificationMemoryReader } from './computerSelection.js'
 import { JobBuildQueueConfigurationSchema, type JobBuildQueueConfiguration } from '@foreman-code/contracts/job-admission'
 import { isAutoJobSpec } from '@foreman-code/contracts/jobs'
 import { JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
@@ -108,6 +116,13 @@ export function createReviewedBuildQueueConfiguration(
     review: configuration.review,
     limits: configuration.limits,
     async resources(sql, definition) {
+      if ('verification' in definition.spec) {
+        const resources = definition.spec.verification.resources
+        if (!configuration.envelopes.some(envelope => canonical(envelope) === canonical(resources))) {
+          throw new DomainError('JOB_QUEUE_ENVELOPE_REVIEW_REQUIRED', 'No reviewed resource envelope covers this verification.', 409)
+        }
+        return JobResourceRequestSchema.parse(resources)
+      }
       let limits: JobResourceRequest['limits']
       if (isAutoJobSpec(definition.spec)) limits = definition.spec.limits
       else {
@@ -134,6 +149,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; storageRoot: string;
   endpoint(): DeviceEndpoint; infrastructure?: ProductionJobInfrastructure;
   workerExecution?: WorkerExecutionPolicy;
+  availableMemory?: VerificationMemoryReader;
   activeNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['activeNativeSession']>;
   captureNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['captureNativeSession']>; nativeRegistry?: NativeProcessRegistry;
   transferSender?: NonNullable<Parameters<typeof createProductionSources>[0]['transferSender']>;
@@ -145,21 +161,66 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     ?? await readBuildQueueConfiguration(join(input.runtimeRoot, 'job-queue.json'))
   const queue = reviewedQueue ? createReviewedBuildQueueConfiguration(reviewedQueue, input.mainId) : undefined
   const requestQueueWake = (): void => { if (queue) jobs.requestQueueWake() }
-  const source = await createProductionSources({ ...input, dispatch: () => dispatch,
-    ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
   const configurationPath = join(input.runtimeRoot, 'job-runtime.json')
   const configured = await lstat(configurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error })
+  const installedConfiguration = input.infrastructure?.installedConfiguration
+    ?? (configured ? { path: configurationPath, ownerUid: process.getuid!() } : null)
+  const source = await createProductionSources({ ...input, dispatch: () => dispatch,
+    ...(installedConfiguration ? { installedJobConfiguration: installedConfiguration } : {}),
+    ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
   let qualificationJournal: Promise<RemoteOperationJournal> | undefined
+  const journalPath = join(input.runtimeRoot, 'job-runtime-operations.json')
+  if (installedConfiguration && input.nativeRegistry) {
+    qualificationJournal = openMainJobJournal({ sql: input.pool, path: journalPath, mainId: input.mainId,
+      initialization: 'bootstrap' })
+    try {
+      const journal = await qualificationJournal
+      if (input.nativeRegistry) await recoverInstalledJobRuntimeQualifications({ journal, registry: input.nativeRegistry,
+        host: { hostRef: { kind: 'main', mainId: input.mainId }, registration: null,
+          mainInstallationId: input.mainId, bootId: bootIdentity() } })
+    }
+    catch (error) {
+      componentLogger('jobs').warn({ err: error }, 'Main Job journal requires recovery')
+    }
+  }
+  const getMainJournal = () => {
+    qualificationJournal ??= openMainJobJournal({ sql: input.pool, path: journalPath, mainId: input.mainId,
+      initialization: 'existing-only' })
+    return qualificationJournal
+  }
+  const localExecution = input.infrastructure?.localExecution
+    ?? (installedConfiguration && input.nativeRegistry ? createMainJobExecutionHost({
+      pool: input.pool, mainId: input.mainId, runtimeRoot: input.runtimeRoot, storageRoot: input.storageRoot,
+      configuration: installedConfiguration, registry: input.nativeRegistry, journal: getMainJournal,
+      application: () => application, inputs: () => canonicalInputs.local, publication: () => publication,
+    }) : undefined)
+  const publishQualificationReport = createQualificationReportPublisher({ pool: input.pool, storageRoot: input.storageRoot })
   const localHost = createInstalledJobRuntimeHost({ identity: input.pool,
-    configuration: input.infrastructure?.installedConfiguration ?? (configured ? { path: configurationPath, ownerUid: process.getuid!() } : null),
+    publishReport: async (candidate, report, bytes) => {
+      const journal = await getMainJournal()
+      const assertClosed = async () => {
+        const receipt = await journal.qualificationStatus(candidate.operationId)
+        const certificates = [receipt?.container?.certificate, ...(receipt?.closedContainers ?? [])]
+        if (!receipt || !sameWorkflowValue(receipt.candidate, candidate)
+          || !certificates.some(certificate => sameWorkflowValue(certificate, report.closure))) {
+          throw new DomainError('JOB_OUTPUT_NOT_QUIESCENT', 'Original diagnostic closure is missing.', 409)
+        }
+      }
+      return publishQualificationReport(candidate, report, bytes, assertClosed)
+    },
+    configuration: installedConfiguration,
     currentConnection: async (_sql, profile) => profile.root.selection.hostRef.kind === 'device'
       ? input.endpoint().currentBinding(profile.root.selection.hostRef.deviceId) ?? null : null,
     reserve: async original => {
       if (input.infrastructure?.reserveQualification) return input.infrastructure.reserveQualification(original)
       if (!input.nativeRegistry || original.nativeAdmission.hostRef.kind !== 'main') throw new DomainError('JOB_RUNTIME_OWNER_UNAVAILABLE', 'The actual original local diagnostic native owner is unavailable.', 409)
-      qualificationJournal ??= RemoteOperationJournal.open(join(input.runtimeRoot, 'job-runtime-operations.json'))
+      const journal = await getMainJournal()
       const admission = original.nativeAdmission
-      return reserveInstalledJobQualification({ candidate: original.candidate, admission, journal: await qualificationJournal,
+      const retained = original.intent === 'reconcile' ? await journal.qualificationStatus(admission.operationId) : null
+      if (original.intent === 'reconcile' && !retained) throw new DomainError('JOB_RUNTIME_RECOVERY_REQUIRED',
+        'The original qualification receipt is missing; fresh work cannot be launched.', 409)
+      return reserveInstalledJobQualification({ candidate: retained?.candidate ?? original.candidate, admission, journal,
+        ...(original.intent === 'reconcile' ? { entry: 'reconcile' as const } : {}),
         registry: input.nativeRegistry, signal: original.signal,
         host: { hostRef: admission.hostRef, registration: admission.registration, mainInstallationId: input.mainId, bootId: original.candidate.fingerprint.bootId, connection: null },
         assertAdmission: async supplied => { if (!sameWorkflowValue(supplied, admission)) throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'The original local diagnostic admission changed.', 409); await original.assertAdmission() },
@@ -175,6 +236,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     sources: source.sources,
     endpoint: input.endpoint,
     local: localHost,
+    publishReport: publishQualificationReport,
     ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
   })
   const host = qualification.host
@@ -183,14 +245,14 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     sources: source.sources, host, changed: requestQueueWake })
   const workerExecution = input.workerExecution ?? new WorkerExecutionPolicy()
   const buildComputers = new BuildComputerSettings(input.pool, input.commands, buildComputerReadiness({
-    endpoint: input.endpoint, profiles, workerExecution, localExecutor: Boolean(input.infrastructure?.localExecution),
+    endpoint: input.endpoint, profiles, workerExecution, localExecutor: Boolean(localExecution),
   }), requestQueueWake)
   const preparationPort: JobPreparationPort = {
     choices: (...args) => preparation.choices(...args), validate: (...args) => preparation.validate(...args),
     accept: (...args) => preparation.accept(...args), revalidateAccepted: (...args) => preparation.revalidateAccepted(...args),
     adoptFinalBinding: (...args) => preparation.adoptFinalBinding(...args),
   }
-  const carrier = new RemoteJobCarrierDispatch(input.pool, { request: (deviceId, namespace, payload) => input.endpoint().request(deviceId, namespace, payload) }, input.infrastructure?.localExecution)
+  const carrier = new RemoteJobCarrierDispatch(input.pool, { request: (deviceId, namespace, payload) => input.endpoint().request(deviceId, namespace, payload) }, localExecution)
   const dispatch: PostgresJobDispatch = new PostgresJobDispatch(input.pool, carrier, {
     prepareWaiting: (): Promise<void> => jobs.wakeQueue(),
     capacityChanged: requestQueueWake,
@@ -220,7 +282,12 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
         await releaseClosedJobComputers(input.pool)
         return
       }
-      await source.sources.confirmClosed(SourceMaterializationRecordSchema.parse(row.record))
+      const job = (await input.pool.query<{ record: unknown }>(
+        'select record from job_executions where id=$1', [executionId])).rows[0]
+      const execution = JobExecutionRecordSchema.parse(job?.record)
+      const options = execution.schemaVersion === 2 ? { signal: jobLifecycleSignal(execution, 'cleanup'),
+        deadlineAt: execution.acceptedSpec.lifecycle.cleanupDeadlineAt } : undefined
+      await source.sources.confirmClosed(SourceMaterializationRecordSchema.parse(row.record), options)
       await releaseClosedJobComputers(input.pool)
     },
     async observe(sql, execution, receipt) {
@@ -234,6 +301,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     },
   }, input.workerExecution)
   const canonicalInputs = createCanonicalJobInputPorts({ pool: input.pool, storageRoot: input.storageRoot, runtime: dispatch,
+    systemInput: createVerificationSystemInput({ configuration: installedConfiguration, journal: getMainJournal }),
     endpoint: { currentBinding: deviceId => input.endpoint().currentBinding(deviceId) }, receiptRoot: join(input.runtimeRoot, 'job-input-receipts') })
   const inputs = { ...canonicalInputs, extension: createMainJobInputRsyncExtension(canonicalInputs.main, canonicalInputs.extension, input.inputRsync) }
   const privateRepositories = new CanonicalJobPrivateRepositories(input.pool, source.sources, source.executions,
@@ -259,13 +327,13 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
       const discovery = await preparationSources.candidates(...args)
       const candidates = discovery.candidates.map(candidate => {
         const target = candidate.spec.target.hostRef
-        const available = target.kind === 'main' ? Boolean(input.infrastructure?.localExecution)
+        const available = target.kind === 'main' ? Boolean(localExecution)
           : Boolean(input.endpoint().captureRequest(target.deviceId, 'execution-v1'))
         return available ? candidate : { ...candidate, ready: false, reasons: [...candidate.reasons, 'executor_unavailable'] }
       })
       return { ...discovery, candidates }
     },
-  }, workerExecution)
+  }, workerExecution, input.availableMemory)
   const publication = new JobPublicationAuthority(dispatch, preparation)
   const outputs = createAdmittedJobOutputs({pool:input.pool,storageRoot:input.storageRoot,stagingRoot:join(input.runtimeRoot,'job-output-transfer-staging'),
     endpoint:{currentBinding:(...args)=>input.endpoint().currentBinding(...args)},authority:publication,
@@ -287,13 +355,20 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     verifyPublication: (sql, execution) => artifacts.verifyRequiredOutputs(sql, execution) })
   const application = new JobApplicationBridge(input.pool, dispatch, workers, publication)
   const workflow = createWorkflowJobComposition({ jobs, dispatch, outputs: artifacts })
+  if (localExecution) {
+    try { await localExecution.recover() }
+    catch (error) {
+      componentLogger('jobs').warn({ err: error }, 'Main Job execution requires reconciliation')
+    }
+  }
   if (queue) jobs.startQueueRecovery()
   return { ...source, jobs, buildComputers, profiles, dispatch, artifacts, outputs, inputs, application, workflow, host, qualificationExtension: qualification.extension,
     queueConfiguration: reviewedQueue,
     requestQueueWake,
     async close() {
       const failures: unknown[] = []
-      const resources = [() => jobs.closeQueue(), () => metadataRecovery.close(), () => dispatch.close(), () => outputs.close(),
+      const resources = [() => jobs.closeQueue(), () => metadataRecovery.close(),
+        async () => { await localExecution?.shutdown() }, () => dispatch.close(), () => outputs.close(), () => localHost.shutdown(),
         async () => { if (qualificationJournal) await (await qualificationJournal).close() }]
       for (const close of resources) {
         try {

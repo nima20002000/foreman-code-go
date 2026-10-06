@@ -1,10 +1,13 @@
+import { recoverInstalledJobRuntimeQualifications } from '../jobs/installedRuntimeQualification.js'
+import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
 import { JOB_OUTPUT_NAMESPACE } from '../files/jobs/workerProtocol.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { createWorkerSourceRsyncAcknowledgement } from '../sources/rsyncTransferLifecycle.js'
 import { createInstalledRsyncComposition, type InstalledRsyncProviders } from '../byte-transfer/productionComposition.js'
 import { randomUUID } from 'node:crypto'
-import { RemoteJobExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobExecutionRpcRequestRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { createInstalledJobExecutionHost } from '../jobs/executorInstalled.js'
+import { createVerificationSystemInput } from '../jobs/verificationSystemInput.js'
 import { WorkerJobApplicationSink } from '../runs/remote/workerJobApplicationSink.js'
 import { createInstalledJobSource } from '../runs/remote/installedJobSource.js'
 import { createRemoteExecutionHandler } from '../runs/remote/executionRouter.js'
@@ -14,7 +17,7 @@ import { createWorkerJobOutputCollector } from '../runs/remote/workerJobOutputs.
 import { createInstalledJobOutputRsync } from '../runs/remote/installedJobOutputRsync.js'
 import { createInstalledJobInputRsync } from '../runs/remote/installedJobInputRsync.js'
 import { DeviceConnectionError } from './deviceWire.js'
-import type { RemoteJobExecutionHost } from '../runs/remote/jobExecutionHost.js'
+import type { RemoteJobExecutionHost, RemoteJobExecutionHostPorts } from '../runs/remote/jobExecutionHost.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import { createWorkerQualificationExtension } from '../jobs/workerQualificationCarrier.js'
@@ -24,7 +27,11 @@ import { isDeepStrictEqual } from 'node:util'
 import type { WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { HarnessDiscoveryRequestSchema } from '@foreman-code/contracts/harness-registry'
-import { SOURCE_OPERATION_EXTENSION, SourceOperationResponseSchema, SourceTransferStatusResponseSchema } from '@foreman-code/contracts/source-operations'
+import {
+  SOURCE_OPERATION_EXTENSION,
+  SourceOperationResponseSchema,
+  SourceTransferStatusResponseSchema,
+} from '@foreman-code/contracts/source-operations'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from './deviceApplicationChannel.js'
 import type { DeviceConnectionSupervisor } from './connectionSupervisor.js'
 import { createAuthenticatedTransferReceiver, transferContextForBinding } from '../byte-transfer/carrier.js'
@@ -35,14 +42,22 @@ import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/inst
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
 import { createInstalledWorkerProfileChecks } from '../harnesses/installedWorkerProfileChecks.js'
 import { DomainError } from '../errors.js'
+import { jobContainerNonEntryObserved } from '../jobs/executorJournal.js'
+import { proveOCIBoundaryEmpty } from '../jobs/executorContainerOwner.js'
+import { sourceMaterializationDigest } from '../sources/bindingHash.js'
+import { createWorkerResourceTelemetryExtension } from '../resource-telemetry/ingestion/carrier.js'
+import { createLinuxResourceCollector } from '../resource-telemetry/collector/ports.js'
 
 /** Shipped worker domains consume actual protected installation selections and
  * sole Main authority. No database, Run scheduler, generated grant or ready flag. */
 export async function createInstalledWorkerDomains(input: {
   stateDirectory: string; pairing: WorkerPairingConfiguration; bootId: string
+  /** The packaged Worker's existing exclusive state socket remains held during journal recovery. */
+  assertStateOwnership?: () => void
   configuration: InstalledWorkflowConfigurationLocation | null
   nativeOutputs?: InstalledWorkflowHostOptions['nativeOutputs']
   jobConfiguration?: InstalledRuntimeConfigurationLocation | null
+  jobReports?: Pick<RemoteJobExecutionHostPorts, 'prepareOutputs' | 'preparePublication'>
   approvedRoots(): Promise<ApprovedRootAllowlist | null>
   connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest'> | undefined
   codexSuiteRevision: string
@@ -53,9 +68,13 @@ export async function createInstalledWorkerDomains(input: {
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
   const jobRegistry = new NativeProcessRegistry(join(input.stateDirectory, 'job-runtime-native-processes'))
   let jobJournalOpening: Promise<RemoteOperationJournal> | undefined
-  const jobJournal = () => jobJournalOpening ??= RemoteOperationJournal.open(join(input.stateDirectory, 'job-runtime-operations.json'))
+  const ownership = input.assertStateOwnership ? { assertExclusiveOwner: input.assertStateOwnership } : undefined
+  const jobJournal = () => jobJournalOpening ??= RemoteOperationJournal.open(
+    join(input.stateDirectory, 'job-runtime-operations.json'), ownership)
+  const systemInput = createVerificationSystemInput({ configuration: input.jobConfiguration ?? null, journal: jobJournal })
   let journalOpening: Promise<RemoteOperationJournal> | undefined
-  const journal = () => journalOpening ??= RemoteOperationJournal.open(join(input.stateDirectory, 'workflow-operations.json'))
+  const journal = () => journalOpening ??= RemoteOperationJournal.open(
+    join(input.stateDirectory, 'workflow-operations.json'), ownership)
   const current = () => {
     lifetime.signal.throwIfAborted()
     const binding = input.connection()?.currentBinding()
@@ -114,6 +133,7 @@ export async function createInstalledWorkerDomains(input: {
     providers: { ...input.rsync, quiescent: async (intent, signal) => { await rsync.writers.quiescent(intent, signal); await input.rsync!.quiescent(intent, signal) } },
     ownership: rsync.ownership, journal: await jobJournal(), current, request })
   if (rsync.kind === 'configured' && input.rsync && input.jobConfiguration && approved) jobInputRsync = createInstalledJobInputRsync({
+    systemInput,
     receiver: input.rsync.receiver, journal: await jobJournal(), channel: { request, currentBinding: current },
     receiptRoot: join(input.stateDirectory, 'job-input-receipts'), admissionRoot: join(input.stateDirectory, 'job-input-rsync-admissions') })
   const extensions: DeviceExtensionRegistration[] = rsync.extensions.map(extension => ({ ...extension, role: 'duplex' as const }))
@@ -127,6 +147,10 @@ export async function createInstalledWorkerDomains(input: {
     const sources = new SourceOperationWorkerService({
       authenticate: async context => { if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not on the actual original worker generation.', 409) },
       approvedRoots: roots,
+      async quotaPoolFor(binding) {
+        const pool = await installedSourceQuotaPool(input.jobConfiguration ?? null, binding)
+        return pool ? { pool } : undefined
+      },
       currentOwner: async (operation, context) => {
         const reply = await request(SOURCE_OPERATION_EXTENSION.namespace, { version: 1, operation: 'sources.authorize', request: operation }, { signal: context.signal })
         const value = SourceOperationResponseSchema.parse(reply.payload)
@@ -140,7 +164,35 @@ export async function createInstalledWorkerDomains(input: {
         if (owner.preparationKind === 'workflow') {
           return native?.kind === 'configured' ? native.preparationClosed(owner) : false
         }
-        return input.jobConfiguration ? (await (await jobJournal()).jobNativeOwner(operationId)) === null : false
+        if (!input.jobConfiguration) return false
+        const retained = await jobJournal(), nativeOwner = await retained.jobNativeOwner(operationId)
+        if (!nativeOwner) return true
+        const status = await retained.jobStatus(operationId)
+        if (status.status !== 'known' || !status.receipt.terminal?.processStopped
+          || !['complete', 'failed'].includes(status.receipt.publication) || !owner.record) return false
+        const execution = status.receipt.execution, receipt = owner.record.receipt
+        if (execution.id !== owner.attempt.executionId || execution.attemptId !== owner.attempt.attemptId
+          || execution.operationId !== operationId || execution.workspaceId !== owner.root.binding.workspaceId
+          || execution.acceptedSpec.source.materializationId !== receipt.materializationId
+          || execution.acceptedSpec.source.materializationDigest !== sourceMaterializationDigest(owner.record)
+          || execution.acceptedSpec.bindingHash !== owner.record.finalDispatchBindingHash
+          || nativeOwner.connection.bootId !== input.bootId || nativeOwner.launches.some(launch => !launch.closed)) return false
+        if (nativeOwner.nonEntryConfirmed && jobContainerNonEntryObserved(nativeOwner)) return true
+        const certificate = nativeOwner.container?.certificate
+        if (!certificate || certificate.lifecycle !== 'closed' || certificate.scope.subject.operationId !== operationId
+          || certificate.scope.bootId !== input.bootId) return false
+        return await proveOCIBoundaryEmpty(certificate.boundary)
+          && (await Promise.all(certificate.helpers.map(helper => helper.boundary
+            ? proveOCIBoundaryEmpty(helper.boundary) : Promise.resolve(false)))).every(Boolean)
+      },
+      preparationReconciled: async closure => {
+        if (!input.jobConfiguration) return
+        const retained = await jobJournal()
+        const status = await retained.jobStatus(closure.operationId)
+        if (status.status === 'known' && status.receipt.execution.schemaVersion === 2
+          && await retained.jobNativeOwner(closure.operationId)) {
+          await retained.jobSourceReclaimed(closure.operationId, closure)
+        }
       },
       ...(rsync.kind === 'configured' ? {
         preparationTransfersClosed: (closure, signal) => rsync.backend.retirePreparation(closure, signal),
@@ -156,8 +208,31 @@ export async function createInstalledWorkerDomains(input: {
       return { payload: await sources.handle(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) }) }
     } }, ...(native.kind === 'configured' ? native.extensions : []))
   }
-  if (input.jobConfiguration && approved) extensions.push(createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
-    currentBinding: current, request, journal: jobJournal, registry: jobRegistry, signal: lifetime.signal }))
+  if (input.jobConfiguration && approved) {
+    await recoverInstalledJobRuntimeQualifications({ journal: await jobJournal(), registry: jobRegistry,
+      host: { hostRef: { kind: 'device', mainId: input.pairing.mainId, deviceId: input.pairing.deviceId },
+        registration: { workerInstallationId: input.pairing.workerInstallationId, keyRevision: input.pairing.keyRevision,
+          authorizationRevision: input.pairing.authorizationRevision },
+        mainInstallationId: input.pairing.mainId, bootId: input.bootId } })
+  }
+  let qualification: ReturnType<typeof createWorkerQualificationExtension> | undefined
+  let telemetry: ReturnType<typeof createWorkerResourceTelemetryExtension> | undefined
+  if (input.jobConfiguration && approved) {
+    telemetry = createWorkerResourceTelemetryExtension({ signal: lifetime.signal, currentBinding: current,
+      createCollector: (identity, signal) => createLinuxResourceCollector({ identity, signal,
+        // The installed Job controller already reads host MemAvailable at native entry.
+        wholeHostVisible: true,
+        // This mount supplies computer metrics; no logical owner attribution is inferred.
+        ownership: { async snapshot(signal) {
+          signal.throwIfAborted()
+          return { revision: jobRegistry.revision(), views: [] }
+        }, changes: (revision, signal) => jobRegistry.changes(revision, signal) },
+      }) })
+    extensions.push(telemetry.extension)
+    qualification = createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
+    currentBinding: current, request, journal: jobJournal, registry: jobRegistry, signal: lifetime.signal })
+    extensions.push(qualification)
+  }
   extensions.push({ namespace: 'harness-discovery-v1', version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
     async handle(payload, context) {
       HarnessDiscoveryRequestSchema.parse(payload)
@@ -174,8 +249,10 @@ export async function createInstalledWorkerDomains(input: {
     const connection = current(), retained = await jobJournal()
     const application = new WorkerJobApplicationSink({ request })
     jobInputs = jobInputRsync ?? createWorkerJobInputPort({ channel: { request, currentBinding: current },
+      systemInput,
       stagingRoot: join(input.stateDirectory, 'job-input-transfer-staging'), receiptRoot: join(input.stateDirectory, 'job-input-receipts') })
     const host = createInstalledJobExecutionHost({ configuration: input.jobConfiguration ?? null, registry: jobRegistry,
+      ...input.jobReports,
       connection, incarnationId: randomUUID(), journal: retained, currentBinding: current,
       source: createInstalledJobSource({ journal: retained, application, currentBinding: current, approvedRoots: roots }), inputs: jobInputs,
       authorize: (intent, _execution, action) => application.authorize(intent, action),
@@ -208,7 +285,7 @@ export async function createInstalledWorkerDomains(input: {
     const handler: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
       async handle(payload, context) {
         if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'Execution requires its actual authenticated worker channel.', 409)
-        const job = RemoteJobExecutionRpcRequestSchema.safeParse(payload).success ? await openJobs() : jobs
+        const job = RemoteJobExecutionRpcRequestRecordSchema.safeParse(payload).success ? await openJobs() : jobs
         return { payload: await createRemoteExecutionHandler({ handle: async raw => {
           if (!workflow) throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE', 'The installed Workflow runtime is unavailable.', 409)
           return (await workflow(raw, context)).payload
@@ -232,11 +309,13 @@ export async function createInstalledWorkerDomains(input: {
       lifetime.abort()
       const failures: unknown[] = []
       try { await profileChecks?.close() } catch (error) { failures.push(error) }
+      try { await telemetry?.close() } catch (error) { failures.push(error) }
       try { if (rsync.kind === 'configured') await rsync.rsyncWriters.close() } catch (error) { failures.push(error) }
       try { if (jobOpening) await (await jobOpening).shutdown() } catch (error) { failures.push(error) }
       try { await jobInputs?.close() } catch (error) { failures.push(error) }
       try { if (native?.kind === 'configured') await native.close() } catch (error) { failures.push(error) }
       await Promise.allSettled([...active])
+      await qualification?.drain()
       try { await receiver?.receiver.close() } catch (error) { failures.push(error) }
       if (!failures.length) {
         for (const opening of [journalOpening, jobJournalOpening]) {

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { JobLogChunk } from '@foreman-code/contracts/jobs'
-import { RemoteJobDispatchIntentSchema, type RemoteJobOperationReceipt } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobDispatchIntentSchema, type RemoteJobOperationReceiptRecord } from '@foreman-code/contracts/remote-job-execution'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
 import { executeJob, jobSupervisorIdentity } from '../../jobs/executor.js'
 import type { PodmanJobSupervisor } from '../../jobs/executorPodman.js'
@@ -44,7 +44,7 @@ async function fixture(failLog: boolean) {
     return { outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true, supervisorIdentity: name,
       containerId: 'c'.repeat(64), recoveryRequired: false, logError: false, logsTruncated: false, outputCollectionError: false }
   })
-  const state = { released: false, latest: undefined as RemoteJobOperationReceipt | undefined }
+  const state = { released: false, latest: undefined as RemoteJobOperationReceiptRecord | undefined }
   const appendLog = vi.fn(async () => { if (state.released) throw new Error('original Main owner retired') })
   if (failLog) appendLog.mockRejectedValueOnce(new Error('final stdout transport failed'))
   const forbidden = vi.fn(async () => { throw new Error('No source or input I/O in executor unit double') })

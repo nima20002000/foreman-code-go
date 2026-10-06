@@ -21,7 +21,7 @@ export { approvedRootExtensions, createWorkerExecutionDomains };
 // Read-only qualification helper for the explicit human installation gate only.
 // Startup consumes and verifies the approved facts; it never calls this helper.
 export { qualifyApprovedRootAllowlist } from '../../../apps/api/src/modules/sources/rootAttestation.ts';
-export { captureInstalledRuntimeConfiguration } from '../../../apps/api/src/modules/jobs/installedRuntimeHost.ts';
+export { captureInstalledRuntimeConfiguration, captureInstalledRuntimeConfigurationRecord } from '../../../apps/api/src/modules/jobs/installedRuntimeHost.ts';
 
 export async function prepareWorkerState(stateDirectory) {
   const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory]);
@@ -78,7 +78,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []).concat(bindingFailures);
     if (failures.length) throw new AggregateError(failures, 'Worker shutdown remains incomplete.');
     if (rsyncEntrypoint?.kind === 'configured') await rsyncEntrypoint.close();
-  }, createConnection: async ({ bootId }) => {
+  }, createConnection: async ({ bootId, assertStateOwnership }) => {
     const pairing = await loadWorkerPairing(stateDirectory);
     const rootExtensions = await approvedRootExtensions(stateDirectory, pairing, bootId);
     if (!executionDomains) {
@@ -100,7 +100,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
       const selection = await lstat(configurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
       const jobConfigurationPath = join(stateDirectory, 'job-runtime.json');
       const jobSelection = await lstat(jobConfigurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-      installed = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId,
+      installed = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId, assertStateOwnership,
         configuration: selection ? { path: configurationPath, ownerUid: process.getuid() } : null,
         jobConfiguration: jobSelection ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
         approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,

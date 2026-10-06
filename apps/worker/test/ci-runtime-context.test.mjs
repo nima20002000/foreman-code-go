@@ -1,3 +1,5 @@
+const fixtureGitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, symlink } from 'node:fs/promises';
@@ -7,10 +9,10 @@ import { createHash } from 'node:crypto';
 import { buildCiRuntimeContext } from '../../../scripts/build-ci-runtime-context.mjs';
 
 async function fixture(t) {
-  const root = await mkdtemp('/var/tmp/ci-image-context-'), repository = join(root, 'repo'), output = join(root, 'context');
+  const root = await mkdtemp(join(persistentFixtureRoot, 'ci-image-context-')), repository = join(root, 'repo'), output = join(root, 'context');
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(repository);
-  const git = (...args) => execFileSync('git', args, { cwd: repository, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
+  const git = (...args) => execFileSync('git', args, { cwd: repository, env: fixtureGitEnvironment, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
   git('init', '-q');
   for (const [path, bytes] of [['package.json', '{"packageManager":"pnpm@11.27.0"}'], ['apps/web/package.json', '{"name":"web"}'],
     ['pnpm-lock.yaml', 'lockfileVersion: 9\n'], ['pnpm-workspace.yaml', 'minimumReleaseAge: 2880\n'], ['.env', 'SECRET'], ['apps/web/local-cache', 'CACHE']]) {
@@ -31,7 +33,7 @@ test('CI context captures committed manifests and policy without working bytes, 
   assert.equal(receipt.files.length, 6);
   assert.ok(receipt.files.every(file => !file.path.includes('.env') && !file.path.includes('local-cache')));
   for (const file of receipt.files) {
-    const bytes = execFileSync('git', ['show', `${f.captured}:${file.path}`], { cwd: f.repository });
+    const bytes = execFileSync('git', ['show', `${f.captured}:${file.path}`], { cwd: f.repository, env: fixtureGitEnvironment });
     assert.equal(file.sha256, createHash('sha256').update(bytes).digest('hex'));
   }
   await assert.rejects(readFile(join(f.output, 'source-lock/.env')), { code: 'ENOENT' });

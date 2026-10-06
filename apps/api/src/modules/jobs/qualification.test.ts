@@ -1,20 +1,73 @@
+import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 import { inflateSync } from 'node:zlib'
-import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT } from './privateGitMounts.js'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import type { ChildProcess } from 'node:child_process'
+import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type { JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
 import { CI_QUALIFICATION_SUITE, JobQualificationCandidateSchema, fingerprintQualificationPath, jobQualificationFingerprint,
   validateBoundedVolumeGeometry, qualificationMountId, qualifyJobRuntime, validateIsolationMeasurement, verifyJobQualification,
   validateJobQualificationMounts, prepareQualificationPrivateGit, createPhysicalJobRuntimeProducer, type JobQualificationCandidate, type JobQualificationRecord } from './qualification.js'
-import { ensureEmptyPodmanHooks } from './executorPodman.js'
+import { backingFileConfigurationIdentity } from './qualification.js'
+import { runQualificationCommand, type QualificationNativeOwner } from './qualification.js'
+import { validateVerificationIsolationObservation } from './qualification.js'
+import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
+import { requireVerificationRuntime } from './executor.js'
+import { VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
+import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
+import { jobExecution } from '../../../test/helpers/jobFixture.js'
+import { verificationRepositoryContext } from './executorOutputs.js'
 
 const id = '00000000-0000-4000-8000-000000000001'
 const digest = 'a'.repeat(64)
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
+
+it('keeps the fully allocated backing reservation stable when writes grow extent metadata', () => {
+  const backing = { path: '/approved/volume.ext4', device: '1', inode: '2', bytes: '68719476736',
+    allocatedBytes: '68719611904', mode: '33056', uid: '0', links: '1' }
+  const original = backingFileConfigurationIdentity(backing)
+  expect(backingFileConfigurationIdentity({ ...backing, allocatedBytes: '68719620096' })).toEqual(original)
+  expect(original.reservedBytes).toBe(backing.bytes)
+  expect(backingFileConfigurationIdentity({ ...backing, inode: '3' })).not.toEqual(original)
+  expect(() => backingFileConfigurationIdentity({ ...backing, allocatedBytes: '1024' })).toThrow('fully allocated')
+})
+
+it('retains bounded diagnostic stderr alongside the original native exit code', async () => {
+  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });
+  const owner = { reserveProcess: async () => 'reserved-command',
+    spawnProcess: () => {
+      queueMicrotask(() => {
+        child.stdout.write('observed output');
+        child.stderr.write('fixture diagnostic failure');
+        child.emit('close', 7, null);
+      });
+      return child as unknown as ChildProcess;
+    },
+    readNativeExit: async () => ({ confirmed: true, exitCode: 7 }),
+  } as unknown as QualificationNativeOwner;
+  expect(await runQualificationCommand(owner, '/approved/diagnostic', [], {}, new AbortController().signal))
+    .toEqual({ exitCode: 7, stdout: 'observed output', stderr: 'fixture diagnostic failure' });
+})
+
+it('reports measured isolation values without copying arbitrary observation fields into errors', () => {
+  const f = verificationRuntimeFixture()
+  const input = { observation: { interfaces: [], privateToken: 'fixture-private-value' },
+    resources: f.measurement.fingerprint.resources, hostPidNamespace: 'pid:[1]',
+    hostNetworkNamespace: 'net:[1]', ownerSentinelPaths: ['/owner-sentinel'] }
+  try {
+    validateVerificationIsolationObservation(input)
+    expect.fail('Invalid observation was accepted')
+  } catch (error) {
+    expect((error as Error).message).toContain('interfaces')
+    expect((error as Error).message).not.toContain('fixture-private-value')
+  }
+})
 function candidate(): JobQualificationCandidate {
   return JobQualificationCandidateSchema.parse({ qualificationId: id, operationId: id, approvalId: id,
     fingerprint: { workspaceLayout:JOB_PRIVATE_GIT_LAYOUT,schemaVersion: 1, profileId: id, profileRevision: 1, specDigest: digest,
@@ -32,6 +85,128 @@ function candidate(): JobQualificationCandidate {
     findmntBinary: '/usr/bin/findmnt', findmntBinarySha256: digest, controllerEnvironment: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: '/run/user/1000', LANG: 'C.UTF-8' },
     sourceParent: '/approved/source', runtimeRoot: '/approved/runtime', spoolBytes: 131072, ttlSeconds: 600 })
 }
+
+
+describe('offline verification launch validation with structured physical observations', () => {
+  it('rejects another source commit before using the approved runtime', () => {
+    const f = verificationRuntimeFixture()
+    expect(() => requireVerificationRuntime({ ...f.spec,
+      source: { ...f.spec.source, commit: 'c'.repeat(40) } }, f.measurement, f.runtime))
+      .toThrow('no matching measured offline runtime')
+  })
+  it('caps worker entry at the reviewed ceiling even when measurements allow more', () => {
+    const f = verificationRuntimeFixture()
+    f.measurement.suites[0]!.maxUnitWorkers = 16
+    const request = (unitWorkers: number) => ({ ...f.spec, verification: { ...f.spec.verification,
+      parameters: { ...f.spec.verification.parameters, unitWorkers } } })
+    expect(() => requireVerificationRuntime(request(12), f.measurement, f.runtime)).not.toThrow()
+    expect(() => requireVerificationRuntime(request(16), f.measurement, f.runtime)).toThrow('matching measured')
+  })
+  it('derives the trusted ordinary wrapper context from accepted identities, declared limits and qualified workers', () => {
+    const f = verificationRuntimeFixture()
+    const paths = [
+      ['suite-summary', 'summary.json', 'application/json'], ['junit', 'junit.xml', 'application/xml'],
+      ['vitest-json', 'vitest.json', 'application/json'], ['logs-archive', 'logs.tar.gz', 'application/gzip'],
+    ]
+    const execution = VerificationJobExecutionSchema.parse({ ...jobExecution(), schemaVersion: 2,
+      acceptedSpec: { ...f.spec, outputs: paths.map(([kind, name, mediaType]) => ({ kind,
+        path: `.logs/verification/${name}`, mediaType, required: true, maxBytes: 1024 })) } })
+    const preseedFacts = { lockfileSha256: digest, pnpmVersion: '11.27.0', platform: 'linux', architecture: 'x64',
+      provenanceDigest: digest, minimumReleaseAgeMinutes: 2880, releaseAgeVerified: true }
+    const spec = execution.acceptedSpec
+    const parent = dirname(spec.target.destination.canonicalProjectRoot)
+    const filesystem = { device: '1', inode: '2', mountId: '3' }
+    const gitMounts: VerifiedJobGitMounts = {
+      version: 1, layout: JOB_PRIVATE_GIT_LAYOUT, workspaceId: execution.workspaceId,
+      executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId,
+      owner: execution.owner, specDigest: spec.specDigest, bindingHash: spec.bindingHash,
+      materializationId: spec.source.materializationId, materializationDigest: spec.source.materializationDigest,
+      git: { directory: join(parent, 'repository'), filesystem, generatedCommit: '4'.repeat(40),
+        sourceCommit: spec.source.commit, repositoryReceiptDigest: digest, configDigest: digest,
+        indexDigest: digest, mountpoint: filesystem },
+      scheduler: { directory: join(parent, 'job-heavy-jobs'), filesystem }, receiptDigest: digest,
+    }
+    const context = verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts, gitMounts, requiredPortions: [{ key: 'root:install', kind: 'command' }] })
+    expect(context.identity).toMatchObject({ executionId: execution.id, attemptId: execution.attemptId,
+      commit: f.spec.source.commit, profile: f.spec.profile, resources: f.spec.verification.resources })
+    expect(context.qualifiedUnitWorkers).toBe(1)
+    expect(context.storeDirectory).toBe('/job-scratch/pnpm-store')
+    expect(context.privateGit).toMatchObject({ generatedCommit: '4'.repeat(40), sourceCommit: spec.source.commit })
+    expect(context.limits).toEqual({ summaryBytes: 1024, junitBytes: 1024, vitestBytes: 1024,
+      logsArchiveBytes: 1024, logBytes: 1024 })
+    expect(() => verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts: null, gitMounts, requiredPortions: [{ key: 'root:install', kind: 'command' }] })).toThrow()
+    expect(() => verificationRepositoryContext({ execution, measurement: f.measurement, preseedFacts,
+      requiredPortions: [{ key: 'root:install', kind: 'command' }], gitMounts: { ...gitMounts, git: { ...gitMounts.git, sourceCommit: '0'.repeat(40) } } })).toThrow('Git/scheduler')
+    expect(() => verificationRepositoryContext({ execution: { ...execution,
+      acceptedSpec: { ...execution.acceptedSpec, outputs: execution.acceptedSpec.outputs.slice(0, 1) } },
+      measurement: f.measurement, preseedFacts, gitMounts, requiredPortions: [{ key: 'root:install', kind: 'command' }] })).toThrow('every fixed')
+  })
+  it('denies host namespace, executable control temp, shared memory overflow and owner-home visibility', () => {
+    const { resources } = verificationFixture()
+    const ownerSentinelPaths = ['/owner/home/qualification-sentinel']
+    const observation = { schemaVersion: 1, node: 'v22.23.3', pidNamespace: 'pid:[2]', networkNamespace: 'net:[2]',
+      interfaces: ['lo'], memoryMax: String(resources.limits.memoryBytes), swapMax: '0',
+      pidsMax: String(resources.limits.pidsLimit), cpuRatio: resources.limits.cpuLimit,
+      capabilities: '0000000000000000', noNewPrivileges: '1', controlExecution: 'EACCES', scratchExecution: 0,
+      shmType: 0x01021994, controlTempType: 0x01021994, shmCapacityBytes: resources.shmBytes,
+      controlTempCapacityBytes: resources.controlTempBytes,
+      packagePolicy: { minimumReleaseAge: 2880, minimumReleaseAgeStrict: true, minimumReleaseAgeIgnoreMissingTime: false },
+      ownerSentinels: [{ path: ownerSentinelPaths[0], result: 'ENOENT' }],
+      mountInfo: [
+        '1 0 0:1 / /tmp rw,nosuid,nodev,noexec - tmpfs tmpfs rw',
+        '2 0 0:2 / /dev/shm rw,nosuid,nodev,noexec - tmpfs tmpfs rw',
+        '3 0 0:3 / /job-scratch rw,nosuid,nodev - ext4 /dev/loop0 rw',
+      ].join('\n') }
+    const input = { observation, resources, ownerSentinelPaths, hostPidNamespace: 'pid:[1]', hostNetworkNamespace: 'net:[1]' }
+    expect(() => validateVerificationIsolationObservation(input)).not.toThrow()
+    for (const change of [{ pidNamespace: 'pid:[1]' }, { interfaces: ['lo', 'eth0'] }, { controlExecution: 0 },
+      { shmCapacityBytes: resources.shmBytes + 1 }, { ownerSentinels: [{ path: ownerSentinelPaths[0], result: 'accessible' }] },
+      { mountInfo: observation.mountInfo.replace('rw,nosuid,nodev - ext4', 'rw,nodev - ext4') }]) {
+      expect(() => validateVerificationIsolationObservation({ ...input, observation: { ...observation, ...change } }))
+        .toThrow('isolation rejected')
+    }
+  })
+  it('requires separate measured suite evidence and enough reviewed validity without double-subtracting capacity', () => {
+    const f = verificationRuntimeFixture()
+    expect(requireVerificationRuntime(f.spec, f.measurement, f.runtime)).toEqual(f.measurement)
+    expect(() => requireVerificationRuntime(f.spec, f.measurement, f.runtime,
+      Date.parse(f.measurement.expiresAt) - 1)).toThrow()
+    const unbounded = structuredClone(f.measurement)
+    unbounded.fingerprint.quota.workloadHardInodes++
+    unbounded.identity.fingerprintDigest = hash(unbounded.fingerprint)
+    expect(() => requireVerificationRuntime({ ...f.spec, profile: unbounded.identity }, unbounded, f.runtime))
+      .toThrow('unenforced')
+    expect(() => requireVerificationRuntime({ ...f.spec, verification: {
+      ...f.spec.verification, parameters: { unitWorkers: 2, integrationShards: 1 },
+    } }, f.measurement, f.runtime)).toThrow('matching measured')
+  })
+  it('emits private bounded scratch, control temp and shm with no owner-home or network mount', () => {
+    const { resources } = verificationFixture()
+    const sourceRoot = `/approved/source/${id}/tree`
+    const input = { identity: 'graphql-verification-test', sourceRoot, runtimeRoot: '/approved/runtime', cwd: sourceRoot,
+      argv: ['corepack', 'pnpm', 'test'], profile: { ...resources.limits, imageDigest: `sha256:${digest}` },
+      spoolBytes: 4096, labels: {}, inputRoot: `${sourceRoot}/.graphql-job-inputs`,
+      gitDirectory: join(sourceRoot, '..', 'repository'), schedulerDirectory: join(sourceRoot, '..', 'job-heavy-jobs'),
+      verification: { resources, scratchDirectory: join(sourceRoot, '..', 'job-scratch'),
+        parameters: { unitWorkers: 1, integrationShards: 1 }, qualifiedIntegrationShards: 1 } }
+    const argv = podmanIsolationCreateArgv(input)
+    expect(argv).toContain('--network=none')
+    expect(argv).toContain('--ipc=private')
+    expect(argv).toContain(`/tmp:rw,nosuid,nodev,noexec,size=${resources.controlTempBytes}`)
+    expect(argv.slice(argv.indexOf('--shm-size'), argv.indexOf('--shm-size') + 2)).toEqual(['--shm-size', String(resources.shmBytes)])
+    expect(argv).toContain(`/dev/shm:rw,nosuid,nodev,noexec,size=${resources.shmBytes}`)
+    expect(argv).toContain('--read-only')
+    expect(argv).toContain('--read-only-tmpfs=false')
+    expect(argv).toContain(`${input.verification.scratchDirectory}:/job-scratch:rw,nosuid,nodev,exec,rprivate`)
+    expect(argv).toContain('HOME=/job-scratch/home')
+    expect(argv).toContain('FOREMAN_CODE_VERIFICATION_UNIT_WORKERS=1')
+    expect(argv).toContain('FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS=1')
+    expect(() => podmanIsolationCreateArgv({ ...input, verification: { resources, scratchDirectory: '/owner/home' } }))
+      .toThrow('reserved private boundary')
+    expect(() => podmanIsolationCreateArgv({ ...input, profile: { ...input.profile, memoryBytes: 1 } }))
+      .toThrow('reserved private boundary')
+  })
+})
 
 describe('qualification metadata and measured observation verification (no native execution)', () => {
   it('denied, revoked, missing or expired approval performs zero admission/probes', async () => {

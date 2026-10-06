@@ -31,13 +31,29 @@ The command exclusively publishes a private 0600, bounded, fsynced
 including a symlink, is refused. There is no force/update option. Existing
 identity, pairing, roots and journals are preserved, including when capture
 fails. Updating installed configuration requires a separately reviewed lifecycle
-operation; deleting recovery evidence is not an update mechanism.
+operation; deleting recovery evidence is not an update mechanism. The installer
+can refresh a stopped, quiescent Worker using:
+
+```sh
+/approved/node /approved/worker/src/cli.mjs refresh-job-runtime \
+  --state /existing/private/worker-state \
+  --input /private/reviewed-refresh-input.json
+```
+
+The strict refresh input contains `expectedConfigurationSha256` for the original
+protected file and `captureInput` using the same capture schema. Refresh rejects
+active or unfinished work, stale configuration digests, changed pairing, or roots
+outside the approved installation. It captures current host facts and preserves
+the complete previous configuration in a private immutable history file before
+atomically publishing its replacement. Journals, identity, pairing and source
+records are retained. A changed fingerprint requires a new physical approval and
+qualification; refresh never authorizes execution.
 
 Stdout contains only a receipt with `configurationPath`, `captured: true`,
 `qualified: false`, `executionAuthorized: false`. Input/configuration/credentials
 are not printed. Errors are bounded codes.
 
-This is intentionally human-only installer configuration: it selects protected
+Capture and refresh are intentionally human-only installer configuration: they select protected
 host paths and expands installation filesystem scope. Operator MCP cannot
 self-select these paths or self-approve physical qualification. Existing MCP
 runtime-profile save/request/run/read tools continue using the same services and

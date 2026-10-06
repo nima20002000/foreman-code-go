@@ -1,4 +1,11 @@
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import type { SourceQuotaPool } from '../src/modules/sources/materialization.js'
+import { readdir, open } from 'node:fs/promises'
+import { verificationRuntimeFixture } from './helpers/verificationRuntimeFixture.js'
+import { JobVerificationProfileSchema, JobVerificationRuntimeMeasurementSchema, JobRuntimeApprovalRecordSchema }
+  from '@foreman-code/contracts/job-verification-runtime'
+import { jobDigest } from '../src/modules/jobs/service.js'
+import { JobVerificationPolicyRequirementsSchema } from '@foreman-code/contracts/job-verification-policy'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
@@ -30,15 +37,20 @@ import { CarrierRemoteSourceMaterializationHost } from '../src/modules/sources/o
 import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
 import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { verificationFixture } from './helpers/jobVerificationFixture.js'
+import { jobPolicyRequirementsRecord, ResolvedJobDefinitionSpecRecordSchema, type ResolvedJobDefinitionSpecRecord } from '@foreman-code/contracts/job-verification'
+import { createVerificationProfile } from '../src/modules/jobs/verificationProfiles.js'
+import { JOB_VERIFICATION_APPROVAL_LIFETIME_MS } from '@foreman-code/contracts/job-verification-policy'
 import { jobSpec } from './helpers/jobFixture.js'
 import { buildQueueFixture } from './helpers/buildComputerFixture.js'
 import { JobComputerSelection, releaseClosedJobComputers } from '../src/modules/jobs/computerSelection.js'
 import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
-import { JobDefinitionSchema, JobExecutionSchema } from '@foreman-code/contracts/jobs'
+import { JobDefinitionSchema, ResolvedJobDefinitionSpecSchema } from '@foreman-code/contracts/jobs'
+import { JobExecutionRecordSchema } from '@foreman-code/contracts/job-verification'
 import { sourceMaterializationDigest } from '../src/modules/sources/bindingHash.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
 import { projectJobReceiptLocked } from '../src/modules/jobs/receiptProjection.js'
-import { RemoteJobOperationReceiptSchema } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobOperationReceiptRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { releaseMaterializationClaim } from '../src/modules/sources/materialization.js'
 import { measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
 import type { SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
@@ -47,6 +59,7 @@ import type { SourceMaterializationRecord } from '@foreman-code/contracts/source
  * The paired W07 carrier is an in-memory boundary; no laptop/container proof. */
 describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation', () => {
   let database: Awaited<ReturnType<typeof agent3Database>>, app: ReturnType<typeof buildApp>, address: string, directory: string
+  let verificationQuota: SourceQuotaPool | undefined
   let access: PostgresAccessService, sources: PostgresSourceService, journal: RemoteOperationJournal
   let jobs: JobService
   let writer: Awaited<ReturnType<PostgresAccessService['issue']>>, reader: Awaited<ReturnType<PostgresAccessService['issue']>>
@@ -103,7 +116,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       const row = (await database.pool.query<{ record: unknown }>(
         'select record from job_executions where id=$1', [record.receipt.executionId])).rows[0]
       if (!row) return false
-      const execution = JobExecutionSchema.parse(row.record)
+      const execution = JobExecutionRecordSchema.parse(row.record)
       return Boolean(await closureDispatch.readAcceptedClosureReceipt(database.pool, {
         workspaceId, executionId: execution.id, attemptId: execution.attemptId,
         operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash, owner: execution.owner,
@@ -114,16 +127,25 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       currentOwner:(operation,context)=>owners.resolve(operation,DeviceConnectionIdentitySchema.parse({mainId:context.binding.mainId,deviceId:context.binding.deviceId,
         workerInstallationId:context.binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:context.binding.bootId,connectionGeneration:1})),
       transfers:{resolveVerifiedReceipt:unused,openVerified:unused},transferContext:async()=>binding,
+      quotaPoolFor: async () => verificationQuota,
       preparationNativeClosed:async operationId=>allowPreparationClosure && (await journal.jobNativeOwner(operationId))===null})
     const remote = new CarrierRemoteSourceMaterializationHost({capture:()=>({identity:DeviceConnectionIdentitySchema.parse({mainId,deviceId:binding.deviceId,
       workerInstallationId:binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:binding.bootId,connectionGeneration:1}),
       request:async(_namespace,request)=>({payload:await worker.handle(SourceFilesystemOperationSchema.parse(request),{binding,signal:new AbortController().signal})})})},owners,{send:unused})
     const commands = new PostgresCommandCoordinator(database.pool)
-    const materializer = new PrivateSourceMaterializer({read:async()=>bytes},async()=>{})
     sources = new PostgresSourceService(database.pool,commands,{} as never,new PrivateSourceSnapshotStore(join(directory,'snapshots')),mainId,{} as never,
-      {authorize:async()=>{},authorizeFinal:async()=>{},prepare:(manifest,root,attempt)=>materializer.prepare({manifest,binding:root.binding,attempt}),verify:unused,verifyWorkingDirectory:unused,
+      {authorize:async()=>{},authorizeFinal:async()=>{},prepare: async (manifest, root, attempt) => {
+          const row = (await database.pool.query<{ spec: unknown }>(
+            'select spec from job_computer_selections where execution_id=$1', [attempt.executionId])).rows[0]
+          const quota = row && 'verification' in ResolvedJobDefinitionSpecRecordSchema.parse(row.spec)
+            ? verificationQuota : undefined
+          return new PrivateSourceMaterializer({ read: async () => bytes }, async () => {}, quota)
+            .prepare({ manifest, binding: root.binding, attempt })
+        },verify:unused,verifyWorkingDirectory:unused,
         releaseClaim: async record => {
-          await releaseMaterializationClaim(record.receipt, async () => 'released')
+          await releaseMaterializationClaim(record.receipt, async () => 'released',
+            record.receipt.quota ? verificationQuota : undefined)
+          if (record.receipt.quota) return 0
           return measureRetainedSourceDirectory(record.receipt.binding.canonicalPath,
             record.receipt.materializationId, record.receipt.binding.filesystem)
         }, reconcilePreparation:(id,owner)=>remote.reconcilePreparation(id,owner)}, {confirmedClosed}, {
@@ -234,7 +256,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     } finally {release();pause=null;await pending}
   },60000)
 
-  async function queuedFixture() {
+  async function queuedFixture(kind: 'build' | 'verification' = 'build') {
     const authority = await access.issue({ name: 'Queued source writer', audience: 'operator',
       expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['sources:read', 'source_roots:read',
         'job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:read', 'jobs:cancel',
@@ -243,11 +265,82 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     queueServices.push(f.jobs)
     const saved = JobDefinitionSchema.parse((await database.pool.query<{ record: unknown }>(
       'select record from job_definitions where id=$1', [definitionId])).rows[0]!.record)
-    const spec = jobSpec()
-    Object.assign(spec, saved.spec)
+    let spec: ResolvedJobDefinitionSpecRecord = ResolvedJobDefinitionSpecSchema.parse({ ...jobSpec(), ...saved.spec })
+    if (kind === 'verification') {
+      const verification = verificationFixture().spec
+      spec = { ...verification, source: spec.source, target: spec.target, argv: verification.argv,
+        policy: { ...verification.policy, isolationPolicyId: randomUUID() } }
+    }
     const computer = f.computers[0]!
+    let profile = 'verification' in spec ? createVerificationProfile({
+      id: spec.policy.isolationPolicyId, revision: spec.policy.isolationPolicyRevision, workspaceId,
+      name: 'Verification cleanup runtime', root, sourceCommit: spec.source.commit,
+      spec: { rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
+        resources: spec.verification.resources, policy: JobVerificationPolicyRequirementsSchema.parse(jobPolicyRequirementsRecord(spec.policy)),
+        suites: ['unit'], approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS } },
+      previous: null, now: new Date().toISOString(),
+    }) : { ...computer.candidate.profile, root }
+    if (profile.schemaVersion === 2) {
+      // Runtime metadata is a serialized boundary fixture; the worker cleanup and storage path are real.
+      const facts = verificationRuntimeFixture().measurement
+      const requestedAt = new Date().toISOString()
+      const approvalId = randomUUID()
+      const qualificationId = randomUUID()
+      const fingerprint = { ...facts.fingerprint, profileId: profile.id, profileRevision: profile.revision,
+        specDigest: profile.specDigest, root, hostRef: root.selection.hostRef, registration: root.registration,
+        mainInstallationId: root.binding.mainId, sourceCommit: spec.source.commit, approvalConfig: profile.approvalConfig,
+        quotaPool: { ...facts.fingerprint.quotaPool!, slots: facts.fingerprint.quotaPool!.slots.map(slot => ({
+          ...slot, filesystem: { ...root.binding.filesystem, inode: slot.filesystem.inode },
+        })) } }
+      for (const slot of fingerprint.quotaPool.slots) {
+        const path = join(root.binding.canonicalPath, slot.namespace)
+        await mkdir(path, { mode: 0o700 })
+        const directory = await openPrivateRoot(path)
+        try { slot.filesystem = await identity(directory) } finally { await directory.close() }
+      }
+      verificationQuota = { pool: fingerprint.quotaPool, read: async (pool, path, signal) => {
+        signal.throwIfAborted()
+        const slot = pool.slots.find(value => path.startsWith(join(root.binding.canonicalPath, value.namespace)))!
+        const handle = await openPrivateRoot(path)
+        const filesystem = await identity(handle)
+        await handle.close()
+        const base = join(root.binding.canonicalPath, slot.namespace)
+        const directory = await open(base, 'r')
+        const allocated = (await directory.stat()).blocks * 512
+        await directory.close()
+        const occupied = (await readdir(base)).length > 0
+        return { volumeCapacityBytes: fingerprint.quota.volumeCapacityBytes,
+          volumeCapacityInodes: pool.volumeCapacityInodes, projectId: slot.projectId, inheritance: true,
+          hardLimitBytes: slot.hardLimitBytes, hardInodes: slot.hardInodes,
+          usedBytes: occupied ? allocated + 4096 : allocated, usedInodes: occupied ? 2 : 1,
+          accountingEnabled: true, filesystem }
+      } }
+      const approvalExpiresAt = new Date(Date.parse(requestedAt) + profile.approvalConfig.approvalLifetimeMs).toISOString()
+      const profileIdentity = { ...facts.identity, profileId: profile.id, profileRevision: profile.revision,
+        rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
+        qualificationId, approvalId, fingerprintDigest: jobDigest(fingerprint), approvalExpiresAt }
+      const measurement = JobVerificationRuntimeMeasurementSchema.parse({ ...facts, fingerprint, identity: profileIdentity,
+        approvedAt: requestedAt, checkedAt: requestedAt,
+        suites: facts.suites.map(suite => ({ ...suite, maxConcurrentHeavyJobs: 2 })) })
+      const saved = profile
+      profile = JobVerificationProfileSchema.parse({ ...saved, status: 'qualified', measurement })
+      await database.pool.query(`insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record)
+        values($1,$2,$3,$4,$5,$6::jsonb)`, [profile.id, workspaceId, profile.revision,
+        root.binding.rootId, root.binding.bindingRevision, JSON.stringify(profile)])
+      await database.pool.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,$2,$3::jsonb)',
+        [saved.id, saved.revision, JSON.stringify(saved)])
+      const approval = JobRuntimeApprovalRecordSchema.parse({ schemaVersion: 2, id: approvalId, qualificationId,
+        workspaceId, profileId: profile.id, profileRevision: profile.revision, fingerprint,
+        fingerprintDigest: profileIdentity.fingerprintDigest, requestedByPrincipalId: authority.principal.id,
+        status: 'complete', approvedByPrincipalId: authority.principal.id, approvedAt: requestedAt,
+        requestedAt, expiresAt: approvalExpiresAt })
+      await database.pool.query(`insert into job_runtime_qualification_approvals
+        (id,qualification_id,profile_id,profile_revision,workspace_id,record,measurement,requested_by,approved_by)
+        values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$8)`, [approvalId, qualificationId, profile.id,
+        profile.revision, workspaceId, JSON.stringify(approval), JSON.stringify(measurement), authority.principal.id])
+    }
     const candidate = { ...computer.candidate, spec, ready: true, reasons: [],
-      profile: { ...computer.candidate.profile, root }, sourceReservation: {
+      profile, sourceReservation: {
         scopeId: `${binding.mainId}:${binding.deviceId}:${binding.workerInstallationId}:${root.binding.filesystem.device}:${root.binding.filesystem.mountId}`,
         reservedBytes: 2097152,
       } }
@@ -256,7 +349,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     await f.settings.update(authority.principal, 'http', { commandId: randomUUID(), target,
       expectedRevision: preference.preference.revision, buildEnabled: true, buildPriority: 100 })
     const executionPolicy = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
-    const placement = new JobComputerSelection(f.settings, { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) }, executionPolicy)
+    const placement = new JobComputerSelection(f.settings, { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) }, executionPolicy, async () => 32 * 2 ** 30)
     let afterMaterialization: (() => Promise<void>) | undefined
     const delivered: string[] = []
     function create() {
@@ -267,7 +360,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
           const terminal = { finishedAt, closureEvidenceDigest: '7'.repeat(64), outcome: 'preparation_failed',
             exitCode: null, signal: null, processStopped: true, resultDigest: '8'.repeat(64),
             logGapPossible: false, logsTruncated: false, outputCollectionError: false, artifactDigests: [] }
-          return { status: 'known', receipt: RemoteJobOperationReceiptSchema.parse({
+          return { status: 'known', receipt: RemoteJobOperationReceiptRecordSchema.parse({
             schemaVersion: 1, kind: 'job', intent, execution: { ...execution,
               process: { phase: 'terminal', outcome: 'preparation_failed', exitCode: null, signal: null,
                 processStopped: true }, publication: 'complete', finishedAt },
@@ -291,7 +384,9 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       }, executionPolicy)
       dispatches.push(dispatch)
       closureDispatch = dispatch
-      const jobs = new JobService(database.pool, f.commands, { placement, queue: f.queue,
+      const jobs = new JobService(database.pool, f.commands, { placement, queue: { ...f.queue,
+        resources: (sql, definition) => 'verification' in definition.spec
+          ? Promise.resolve(definition.spec.verification.resources) : f.queue.resources(sql, definition) },
         workerExecution: executionPolicy, dispatch,
         closePreparation: ticket => sources.closeQueuedPreparation(ticket),
         preparation: {
@@ -328,7 +423,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       const ticketId = admission.kind === 'accepted' ? admission.ticketId : admission.ticket.id
       return jobs.getQueueTicket(principal, workspaceId, ticketId)
     }
-    return { ...runtime, principal: authority.principal, create, enqueue, delivered,
+    return { ...runtime, principal: authority.principal, create, enqueue, delivered, placement, definition,
       pausePreparation: (callback?: () => Promise<void>) => { afterMaterialization = callback } }
   }
 
@@ -353,6 +448,50 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     await restarted.jobs.wakeQueue()
     expect((await restarted.jobs.getQueueTicket(f.principal, workspaceId, next.id)).state).toBe('accepted')
     expect(f.delivered).toEqual([ticket.executionId, next.executionId])
+  })
+  it('audits fresh bounded MCP recovery of a stopped admitted Job and denies a caller without Job cancellation authority', async () => {
+    const f = await queuedFixture('verification')
+    failSourceSettlement = true
+    const ticket = await f.enqueue()
+    await expect(f.jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
+    const execution = await f.jobs.getExecution(f.principal, workspaceId, ticket.executionId)
+    if (execution.schemaVersion !== 2) throw new Error('Verification execution required')
+    expect(execution).toMatchObject({ process: { phase: 'terminal', processStopped: true }, publication: 'complete' })
+    await f.jobs.closeQueue(); await f.dispatch.close(); failSourceSettlement = false
+    const cleanup = await access.issue({ name: 'Stopped Job source recovery', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['sources:read', 'source_roots:read',
+        'sources:reconcile', 'jobs:cancel', 'capabilities:read'], scope: { workspaceIds: [workspaceId] } }] })
+    const sourceOnly = await access.issue({ name: 'Source recovery without Job authority', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['sources:read', 'source_roots:read',
+        'sources:reconcile', 'capabilities:read'], scope: { workspaceIds: [workspaceId] } }] })
+    const command = { workspaceId, operationId: ticket.operationId, commandId: randomUUID() }
+    const denied = await client(sourceOnly.token)
+    expect((await denied.callTool({ name: 'source_preparation_reconcile', arguments: command })).isError).toBe(true)
+    const operator = await client(cleanup.token)
+    const result = await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })
+    expect(result.isError).not.toBe(true)
+    const value = (result.structuredContent as { value: { reservationState: string; executionId: string;
+      closure: { quotaReclaimed: boolean } } }).value
+    expect(value).toMatchObject({ reservationState: 'reclaimed', executionId: ticket.executionId,
+      closure: { quotaReclaimed: true } })
+    const readback = await operator.callTool({ name: 'source_preparation_get',
+      arguments: { workspaceId, operationId: ticket.operationId } })
+    expect(readback.structuredContent).toEqual(value)
+    const replay = await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })
+    expect(replay.structuredContent).toMatchObject({ value, replayed: true })
+    const refreshed = await operator.callTool({ name: 'source_preparation_reconcile',
+      arguments: { ...command, commandId: randomUUID() } })
+    expect(refreshed.isError, JSON.stringify(refreshed)).not.toBe(true)
+    const refreshedValue = (refreshed.structuredContent as { value: typeof value }).value
+    expect(refreshedValue).toMatchObject({ reservationState: 'reclaimed', executionId: ticket.executionId })
+    expect(refreshedValue.closure).not.toEqual(value.closure)
+    expect((await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })).structuredContent)
+      .toMatchObject({ value, replayed: true })
+    expect((await f.jobs.getExecution(f.principal, workspaceId, ticket.executionId)).acceptedSpec).toEqual(execution.acceptedSpec)
+    const persisted = (await database.pool.query<{ owner: { identity: { expiresAt: string } }; status: string }>(
+      'select owner,status from source_preparation_reconciliations where operation_id=$1', [ticket.operationId])).rows[0]!
+    expect(persisted.status).toBe('closed')
+    expect(Date.parse(persisted.owner.identity.expiresAt) - Date.now()).toBeLessThanOrEqual(execution.acceptedSpec.policy.cleanupTimeoutMs)
   })
 
   it.each(['cancelled', 'authorization_revoked', 'timed_out'] as const)(
@@ -404,4 +543,55 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       await restarted.jobs.wakeQueue()
       expect((await restarted.jobs.getQueueTicket(writer.principal, workspaceId, next.id)).state).toBe('accepted')
     })
+  it.each(['cancelled', 'timed_out'] as const)(
+    'reclaims partially materialized verification preparation after %s and restart', async reason => {
+      const f = await queuedFixture('verification')
+      let resume!: () => void
+      let entered!: () => void
+      const paused = new Promise<void>(resolve => { resume = resolve })
+      const preparing = new Promise<void>(resolve => { entered = resolve })
+      f.pausePreparation(async () => { entered(); await paused })
+      const ticket = await f.enqueue()
+      const pending = f.jobs.wakeQueue()
+      await preparing
+      allowPreparationClosure = false
+      try {
+        const current = await f.jobs.getQueueTicket(f.principal, workspaceId, ticket.id)
+        if (reason === 'cancelled') {
+          await f.jobs.cancelQueued(f.principal, 'mcp', workspaceId, {
+            commandId: randomUUID(), ticketId: ticket.id, expectedRevision: current.revision,
+          })
+        } else {
+          await database.pool.query("update job_preparations set created_at=now()-interval '1 hour' where execution_id=$1",
+            [ticket.executionId])
+        }
+      } finally { resume() }
+      await expect(pending).rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
+      expect((await database.pool.query('select 1 from job_computer_selections where execution_id=$1 and released_at is null',
+        [ticket.executionId])).rowCount).toBe(1)
+      await f.jobs.closeQueue()
+      await f.dispatch.close()
+      allowPreparationClosure = true
+      f.pausePreparation()
+      const restarted = f.create()
+      await restarted.jobs.wakeQueue()
+      expect((await database.pool.query('select 1 from job_computer_selections where execution_id=$1 and released_at is null',
+        [ticket.executionId])).rowCount).toBe(0)
+      expect((await database.pool.query<{ status: string; closure: unknown }>(
+        'select status,closure from source_preparation_reconciliations where operation_id=$1', [ticket.operationId]))
+        .rows[0]).toMatchObject({ status: 'closed', closure: expect.objectContaining({
+          executionId: ticket.executionId, attemptId: ticket.attemptId, operationId: ticket.operationId,
+        }) })
+      expect(f.delivered).toEqual([])
+      const sql = await database.pool.connect()
+      try {
+        await sql.query('begin')
+        const claim = await f.placement.claim(sql, f.principal, f.definition, {
+          executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(),
+        })
+        expect(claim.spec).toMatchObject({ verification: { suite: 'unit' } })
+        await sql.query('rollback')
+      } finally { sql.release() }
+    })
+
 })
