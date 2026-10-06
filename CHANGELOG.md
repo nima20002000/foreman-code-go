@@ -5,6 +5,39 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.23] - 2026-10-06
+
+### Added
+
+- Selected unit and native acceptance files through the root heavy-job queue and owned disposable test databases.
+
+### Changed
+
+- Open local development and production dashboards without account setup, login, passkeys, browser tokens or cookies.
+- Preserve the former browser owner's conversations, attachments, permissions and command retries across upgrade and restart.
+- Auth native verification: untested on Claude/OpenCode (laptops are Codex-only); credentialed local results are retained separately.
+
+### Removed
+
+- Browser authentication endpoints, sign-in/setup pages, account/session tables and authentication dependencies.
+
+### Fixed
+
+- Serve local HTTP before optional native model discovery, while retaining qualification checks and joining discovery during shutdown.
+
+- Read dashboard root location and root policies through local HTTP without login.
+- Reconcile a lost Start response after upgrade using the original Run and command ownership.
+- Preserve schedule ownership, occurrence history and exhausted cursors through no-login HTTP and authenticated MCP.
+- Allow scoped callers to read their own permissions while retaining operation-specific checks.
+- Give cold native conversation attachment its startup budget before observing the existing turn.
+- Preserve compiled production hosting, queued Job access, native streaming and Auto placement after authentication removal.
+
+### Security
+
+- Keep local services on loopback with origin checks and OS socket/process attribution for human requests, including the development proxy.
+- Preserve authenticated MCP grants, scopes, revocation, read-only access, human approval boundaries and harness isolation.
+- Preserve Foreman Code package and environment names and recognize both supported MCP credential spellings when isolating native clients.
+
 ## [0.0.22] - 2026-10-05
 
 ### Fixed
