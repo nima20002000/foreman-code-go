@@ -136,7 +136,7 @@ storage. The installer keeps its cache separate; accepted harness permissions
 and file-tool grants still control each operation.
 
 For an environment-based provider credential, explicitly add the provider's
-variable, such as `OPENROUTER_API_KEY`, as a string in private `operator.json`,
+variable, such as `OPENCODE_API_KEY`, as a string in private `operator.json`,
 then rerun `production:install`. This is an OS-owner setting, outside Operator
 MCP; the file and generated service environment remain 0600. Provider credentials
 reach native subprocesses, while database credentials and unscoped application

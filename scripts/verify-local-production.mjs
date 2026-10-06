@@ -149,7 +149,7 @@ async function qualifyEnvironmentMigration(release) {
     CODEX_BINARY: '/opt/native "qualified"/codex',
     OPENCODE_BINARY: "/opt/native\\tools/'qualified'/opencode",
     OPENAI_API_KEY: "test-only\\secret\"quote'single$literal`tick\nsecond line\\",
-    OPENROUTER_API_KEY: 'test-only-provider-credential',
+    OPENCODE_API_KEY: 'test-only-provider-credential',
     HARNESS_TIMEOUT_MS: '600000',
   }
   const owned = { NODE_ENV: 'production', FOREMAN_CODE_LOCAL_PRODUCTION: '1', HOST: '127.0.0.1',
@@ -179,8 +179,8 @@ async function qualifyEnvironmentMigration(release) {
     const module = pathToFileURL(join(release, 'apps/api/dist/modules/harnesses/secrets.js')).href
     const code = `const { inheritedAgentEnvironment } = await import(${JSON.stringify(module)});\n`
       + 'const native = inheritedAgentEnvironment();\n'
-      + 'console.log(JSON.stringify({ providerCredentialDelivered: !!process.env.OPENROUTER_API_KEY\n'
-      + '&& native.OPENROUTER_API_KEY === process.env.OPENROUTER_API_KEY,\n'
+      + 'console.log(JSON.stringify({ providerCredentialDelivered: !!process.env.OPENCODE_API_KEY\n'
+      + '&& native.OPENCODE_API_KEY === process.env.OPENCODE_API_KEY,\n'
       + 'databaseCredentialRemoved: !Object.hasOwn(native, "GRAPHQL_PRODUCTION_DB_PASSWORD")\n'
       + '&& !Object.hasOwn(native, "DATABASE_URL") }));'
     const { stdout } = await execute('/usr/bin/systemd-run', ['--user', '--wait', '--pipe', '--collect', '--quiet',

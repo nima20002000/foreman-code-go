@@ -521,7 +521,7 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
       native_session_id: string; directory: string }>(`select v.record,c.agent_id,c.native_session_id,
         c.record->>'workingDirectory' as directory from operator_conversations c
         join agent_configuration_versions v on v.id=c.agent_configuration_version_id where c.id=$1`, [id])).rows[0]!
-    const harness = { harness: 'opencode' as const, model: 'openrouter/test', variant: '', nativeAgent: 'build',
+    const harness = { harness: 'opencode' as const, model: 'opencode-go/test', variant: '', nativeAgent: 'build',
       thinking: false, autoApprove: false }
     const versionId = randomUUID()
     const version = Number((await database.pool.query<{ version: string }>(

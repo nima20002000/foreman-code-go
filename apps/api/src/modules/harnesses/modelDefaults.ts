@@ -2,14 +2,21 @@ import { AgentEffortSchema, ClaudeEffortSchema, type HarnessConfiguration } from
 import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
 
+/** OpenCode automatic defaults use the OpenCode Go subscription whenever it is connected;
+ * other connected providers stay selectable explicitly. */
+export const OPENCODE_DEFAULT_PROVIDER = 'opencode-go'
+
 /** Recency comes from provider release metadata; preference comes from its
  * ranked native catalog. IDs and display labels never establish recency. */
 export function latestNativeModel(options: HarnessOptions): HarnessOptions['models'][number] {
   if (!options.authenticated || !options.models.length) throw new DomainError('HARNESS_MODEL_UNAVAILABLE',
     'The installed harness has no authenticated selectable model.', 409)
-  const dated = options.models.filter(model => model.releasedAt && Number.isFinite(Date.parse(model.releasedAt)))
+  const preferred = options.harness === 'opencode'
+    ? options.models.filter(model => model.providerId === OPENCODE_DEFAULT_PROVIDER) : []
+  const models = preferred.length ? preferred : options.models
+  const dated = models.filter(model => model.releasedAt && Number.isFinite(Date.parse(model.releasedAt)))
   if (dated.length) return dated.reduce((latest, model) => Date.parse(model.releasedAt!) > Date.parse(latest.releasedAt!) ? model : latest)
-  const ranked = options.models.filter(model => model.defaultPriority !== undefined)
+  const ranked = models.filter(model => model.defaultPriority !== undefined)
   if (ranked.length) return ranked.reduce((preferred, model) => model.defaultPriority! < preferred.defaultPriority! ? model : preferred)
   throw new DomainError('HARNESS_MODEL_DEFAULT_UNAVAILABLE', 'The native catalog supplies no release date or default model preference.', 409)
 }

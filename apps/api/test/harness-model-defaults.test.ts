@@ -27,6 +27,15 @@ it('selects the latest connected OpenCode release and medium variant from its ob
   expect(value).toMatchObject({ model: 'connected/newer-a', variant: 'medium', autoApprove: false })
 })
 
+it('defaults OpenCode to its newest OpenCode Go model even when another connected provider released later', () => {
+  const options = openCodeOptions({ all: [
+    { id: 'other-provider', models: { newest: { release_date: '2026-10-05' } } },
+    { id: 'opencode-go', models: { 'deepseek-v4-flash': { release_date: '2026-07-31' }, older: { release_date: '2026-01-01' } } },
+  ], connected: ['other-provider', 'opencode-go'] }, [{ name: 'build' }])
+  expect(nativeModelDefaults(DEFAULT_HARNESS_DEFAULTS.opencode, { ...catalog('opencode', options.models), authenticated: options.authenticated }))
+    .toMatchObject({ model: 'opencode-go/deepseek-v4-flash' })
+})
+
 it('does not invent model ordering or effort support', () => {
   expect(() => latestNativeModel(catalog('codex', [model('newer-looking-id')]))).toThrow('no release date or default model preference')
   const options = catalog('opencode', [model('connected/model', { defaultPriority: 0, variants: ['', 'high'] })])
