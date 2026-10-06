@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, writeFile, readFile, rename, stat } from 'node:fs/promises'
@@ -59,7 +60,7 @@ it('removes a workspace through authenticated MCP with denied access, replay and
     expect((await pool.query('select created_project_folder from workspaces where id=$1', [single.workspace.id])).rows[0].created_project_folder.rootPath).toBe(project)
     const retained = await workflows.create(owner.principal, 'http', { commandId: randomUUID(), workspaceId: single.workspace.id, name: 'History stays' })
     const singleInput = { commandId: randomUUID(), workspaceId: single.workspace.id, expectedRevision: single.revision }
-    await expect(denied.callTool({ name: 'workspace_archive', arguments: singleInput })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(denied.callTool({ name: 'workspace_archive', arguments: singleInput }))
     const archiveOnly = await access.issue({ name: 'Archive only', audience: 'operator', grants: [{ actions: ['workspaces:archive'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
     expect((await (await connect(archiveOnly.token)).callTool({ name: 'workspace_archive', arguments: singleInput })).isError).toBe(true)
     expect(await readFile(join(project, 'owned.txt'), 'utf8')).toBe('owned content')

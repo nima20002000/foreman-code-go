@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
@@ -216,7 +217,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         grants: [{ actions: ['settings:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
       const deniedClient = await connect(denied.token)
       expect((await deniedClient.listTools()).tools.map(tool => tool.name)).not.toContain('operator_chat_get')
-      await expect(deniedClient.callTool({ name: 'operator_chat_get', arguments: { conversationId: source.id } })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(deniedClient.callTool({ name: 'operator_chat_get', arguments: { conversationId: source.id } }))
       await expect(chat.get(source.id, denied.principal)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
       expect(await facts()).toEqual(before)
       expect(await repository.acceptedConfiguration(source.id, first.requestId)).toEqual(acceptedFirst)
@@ -264,7 +265,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect(prepared).toEqual([configuration])
       expect((await read()).value.operator.harnessProfileSelection).toEqual(selection)
       const denied = await connect(['settings:read'])
-      await expect(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } }))
       expect((await read()).revision).toBe(accepted.value.revision)
       expect(validated).toHaveLength(1)
       expect(prepared).toHaveLength(1)
@@ -394,7 +395,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         return client
       }
       client = await connect(['operator_chat:read', 'operator_chat:write', 'settings:read', 'settings:update', 'harnesses:read'])
-      const created = (await client.callTool({ name: 'operator_chat_create', arguments: {} })).structuredContent as { conversation: { id: string } }
+      const created = (await client.callTool({ name: 'operator_chat_create', arguments: { commandId: randomUUID() } })).structuredContent as { conversation: { id: string } }
       sourceId = created.conversation.id
       await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId,
         request: { requestId: 'mcp-source', content: 'Remember the release details.' } } })
@@ -434,7 +435,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect((await reader.callTool({ name: 'operator_handoff_history_get', arguments: { sourceConversationId: 'unrelated-chat' } })).isError).toBe(true)
       const denied = await connect(['operator_chat:read'])
       expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_chat_send')
-      await expect(denied.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(denied.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } }))
     })
   })
   it('inspects persisted Claude setup through read-only HTTP and MCP without creating an execution owner', async () => {
@@ -504,8 +505,8 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const deniedClient = new Client({ name: 'claude-setup-denied', version: '1' }); clients.push(deniedClient)
       await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => denied.token } }))
       expect((await deniedClient.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_mcp_setup_get')
-      await expect(deniedClient.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).rejects.toThrow('not found')
-      await expect(client.callTool({ name: 'operator_chat_create', arguments: {} })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(deniedClient.callTool({ name: 'operator_mcp_setup_get', arguments: {} }))
+      await expectMcpAccessDenied(client.callTool({ name: 'operator_chat_create', arguments: {} }))
       expect(managersCreated).toBe(0)
       expect((await pool.query('select id from operator_conversations')).rowCount).toBe(0)
       expect((await pool.query('select request_id from operator_conversation_turns')).rowCount).toBe(0)
@@ -699,8 +700,8 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect((await client.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).structuredContent).toMatchObject({ status: 'configured', harness: 'codex' })
       const denied = await connect(['settings:read'])
       expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_mcp_setup_get')
-      await expect(denied.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).rejects.toThrow('not found')
-      await expect(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(denied.callTool({ name: 'operator_mcp_setup_get', arguments: {} }))
+      await expectMcpAccessDenied(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } }))
       expect((await read()).revision).toBe(accepted.value.revision)
     } finally { for (const client of clients) await client.close(); await app.close() }
   })
@@ -755,6 +756,41 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect(await repository.activity.append(conversation.id, 'activity-request', completed)).toBeUndefined()
     const other = (await access.issue({ name: 'activity other owner', audience: 'operator', grants: owner.grants, expiresAt: new Date(Date.now() + 600_000) })).principal
     await expect(chat.activityPage(conversation.id, other, {})).rejects.toMatchObject({ code: 'CONVERSATION_NOT_FOUND' })
+  })
+
+  it('settles a completed native turn after authoritative tool history corrects its streamed result', async () => {
+    const turnId = 'reconciled-turn'
+    const toolEvent = (session: NativeSessionReference, type: string, output: string) => NativeHarnessEventSchema.parse({
+      connectionId: 'native-connection', sequence: type === 'item.completed' ? 12 : 0,
+      occurredAt: '2026-10-01T00:00:00Z', type,
+      payload: { threadId: session.nativeSessionId, turnId, item: {
+        id: 'completed-tool', type: 'commandExecution', status: 'completed',
+        command: 'read fixture', aggregatedOutput: output,
+      } },
+    })
+    const start = vi.spyOn(manager, 'startTurn').mockImplementation(async function* (session, input) {
+      await input.onSubmitted?.(turnId)
+      yield toolEvent(session, 'item.completed', 'streamed result')
+    })
+    vi.spyOn(manager, 'reconcile').mockImplementation(async (session, correlationId) => ({
+      correlationId, nativeTurnId: turnId,
+      events: [toolEvent(session, 'item.snapshot', 'saved result')], pendingInteractions: [],
+      terminalResult: { outcome: 'succeeded', output: 'Native result' },
+    }))
+    const conversation = await chat.create(owner)
+    await chat.send(conversation.id, { requestId: 'reconciled-tool', content: 'Read the fixture' }, owner)
+    await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
+    const state = await chat.get(conversation.id, owner)
+    expect(state.activeRequestId).toBeNull()
+    expect(state.lastResult).toEqual({ outcome: 'succeeded', output: 'Native result' })
+    expect(state.activities).toContainEqual(expect.objectContaining({ id: 'completed-tool',
+      status: 'completed', output: 'saved result' }))
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(manager.disposals).toBe(1)
+    const retained = await pool.query(`select native_closure_state as "closureState",
+      terminal_history_persisted as "historyPersisted",result from operator_conversation_turns
+      where conversation_id=$1 and request_id=$2`, [conversation.id, 'reconciled-tool'])
+    expect(retained.rows).toEqual([{ closureState: 'closed', historyPersisted: true, result: state.lastResult }])
   })
 
   it('lists chats only after the first message and supports owner-scoped deletion and Undo', async () => {
@@ -1226,13 +1262,13 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       }
       const allowed = await connect(writer.token)
       const denied = await connect(reader.token)
-      const created = await allowed.callTool({ name: 'operator_chat_create', arguments: {} })
+      const created = await allowed.callTool({ name: 'operator_chat_create', arguments: { commandId: randomUUID() } })
       expect(created.isError, JSON.stringify(created)).not.toBe(true)
       const conversationId = (created.structuredContent as { conversation: { id: string } }).conversation.id
       const input = { requestId: 'mcp-terminal-request', content: 'Run once.' }
       const send = { name: 'operator_chat_send', arguments: { conversationId, request: input } }
       expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('operator_chat_send')
-      await expect(denied.callTool(send)).rejects.toThrow('not found')
+      await expectMcpAccessDenied(denied.callTool(send))
       expect(claude.prompts).toHaveLength(0)
       expect((await allowed.callTool(send)).isError).not.toBe(true)
       await waitFor(async () => Boolean(await repository.submittedMessageId(conversationId, input.requestId)))

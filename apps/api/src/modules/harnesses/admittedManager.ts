@@ -1,23 +1,35 @@
 import type { AgentHarness } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { NativeMcpInspector } from './mcpDetection.js'
-import type { NativeHarnessSessionManager } from './port.js'
+import type { NativeHarnessSessionManager, NativeSessionStart } from './port.js'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import { unavailableNativeResponse } from './responseAvailability.js'
 import { NativeDeliveryError } from './errors.js'
+
+export type NativeManagerAdmission = { purpose: 'execution' } | {
+  purpose: 'observation'
+  session: NativeSessionReference
+  start: NativeSessionStart
+}
 
 /** One async domain admission behind the existing synchronous role factory.
  * The returned lifetime owns initialization and its actual adapter cleanup. */
 export function createAdmittedNativeManager<T extends NativeHarnessSessionManager>(harness: AgentHarness,
-  initialize: (signal: AbortSignal) => Promise<{ manager: T; inspector?: NativeMcpInspector }>) {
+  initialize: (signal: AbortSignal, admission: NativeManagerAdmission) => Promise<{
+    manager: T; inspector?: NativeMcpInspector
+  }>) {
   const lifetime = new AbortController()
   let allocation: { manager: T; inspector?: NativeMcpInspector } | undefined
   let opening: Promise<{ manager: T; inspector?: NativeMcpInspector }> | undefined
   let disposal: Promise<void> | undefined
+  let observationOnly = false
   const stopped = new Map<string, Parameters<NonNullable<NativeHarnessSessionManager['stopAutomaticResponses']>>[0]>()
-  const actual = async (signal?: AbortSignal): Promise<T> => {
+  const actual = async (signal?: AbortSignal,
+    admission: NativeManagerAdmission = { purpose: 'execution' }): Promise<T> => {
     signal?.throwIfAborted(); lifetime.signal.throwIfAborted()
-    opening ??= Promise.resolve().then(() => initialize(lifetime.signal)).then(async result => {
+    opening ??= Promise.resolve().then(() => initialize(lifetime.signal, admission)).then(async result => {
       allocation = result
+      observationOnly = admission.purpose === 'observation'
       if (lifetime.signal.aborted || result.manager.harness !== harness) {
         await result.manager.dispose?.()
         if (lifetime.signal.aborted) throw lifetime.signal.reason
@@ -30,6 +42,12 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     signal?.throwIfAborted(); lifetime.signal.throwIfAborted()
     return result.manager
   }
+  const executionManager = async (signal?: AbortSignal): Promise<T> => {
+    const current = await actual(signal)
+    if (observationOnly) throw new DomainError('HARNESS_OBSERVATION_ONLY',
+      'Acquire live execution authority before starting or responding to native work.', 409)
+    return current
+  }
   const manager: NativeHarnessSessionManager = {
     harness,
     requiresRuntimeClosure: () => allocation?.manager.requiresRuntimeClosure?.() ?? Boolean(allocation),
@@ -37,29 +55,29 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     inspectMcp: async signal => (await actual(signal)).inspectMcp(signal),
     createSession: async (start, signal) => {
       let current: T
-      try { current = await actual(signal) } catch (error) {
+      try { current = await executionManager(signal) } catch (error) {
         throw new NativeDeliveryError('session_creation', 'not_sent', error)
       }
       return current.createSession(start, signal)
     },
-    attachSession: async (session, start, signal) => (await actual(signal)).attachSession(session, start, signal),
+    attachSession: async (session, start, signal) => (await executionManager(signal)).attachSession(session, start, signal),
     async *startTurn(session, input, signal) {
       let current: T
-      try { current = await actual(signal) } catch (error) {
+      try { current = await executionManager(signal) } catch (error) {
         throw new NativeDeliveryError('turn_submission', 'not_sent', error)
       }
       yield* current.startTurn(session, input, signal)
     },
     forkSession: async (source, start, signal) => {
       let current: T
-      try { current = await actual(signal) } catch (error) {
+      try { current = await executionManager(signal) } catch (error) {
         throw new NativeDeliveryError('session_creation', 'not_sent', error)
       }
       if (!current.forkSession) throw new DomainError('HARNESS_FORK_UNAVAILABLE', 'The admitted driver has no fork capability.', 409)
       return current.forkSession(source, start, signal)
     },
     pending: async (session, signal) => (await actual(signal)).pending(session, signal),
-    respond: async (session, requestId, option, signal) => (await actual(signal)).respond(session, requestId, option, signal),
+    respond: async (session, requestId, option, signal) => (await executionManager(signal)).respond(session, requestId, option, signal),
     stopAutomaticResponses(session) { stopped.set(session.nativeSessionId, session); allocation?.manager.stopAutomaticResponses?.(session) },
     cancel: async (session, signal, turnId) => (await actual(signal)).cancel(session, signal, turnId),
     subagentHistory: async (session, cursor, signal) => {
@@ -112,13 +130,17 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
       return session
     }
     manager.steerTurn = async (session, input, signal) => {
-      const current = await actual(signal)
+      const current = await executionManager(signal)
       if (!current.steerTurn) throw new DomainError('HARNESS_STEER_UNAVAILABLE', 'The admitted driver cannot steer this turn.', 409)
       return current.steerTurn(session, input, signal)
     }
     manager.reconcileSteers = async (session, inputs, signal) => (await actual(signal)).reconcileSteers?.(session, inputs, signal) ?? []
   }
   if (harness === 'opencode') {
+    manager.attachSessionForObservation = async (session, start, signal) => {
+      const current = await actual(signal, { purpose: 'observation', session, start })
+      return current.attachSessionForObservation!(session, start, signal)
+    }
     manager.recoverEnvironment = async signal => (await actual(signal)).recoverEnvironment?.(signal)
     manager.captureNativeOutputCall = async (session, toolName, args, signal) => {
       signal?.throwIfAborted()

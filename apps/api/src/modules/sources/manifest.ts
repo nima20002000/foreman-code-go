@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto'
 import { SourceManifestSchema, type SourceManifest, type SourceEntry } from '@foreman-code/contracts/source-materialization'
 
 export class SourceError extends Error {
-  constructor(readonly code: string, message: string) { super(message); this.name = 'SourceError' }
+  constructor(readonly code: string, message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'SourceError'
+  }
 }
 export const SOURCE_LIMITS = Object.freeze({ entries: 4096, bytes: 128 * 1024 * 1024,
   fileBytes: 16 * 1024 * 1024, depth: 32, preparationMs: 300_000, concurrent: 2 })

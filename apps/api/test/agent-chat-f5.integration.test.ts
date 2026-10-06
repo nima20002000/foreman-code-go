@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -96,8 +97,8 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
         payload: { requestId: 'denied-response', nativeRequestId: 'approval-a', optionId: 'approve-once' } })
       assert.equal(denied.statusCode, 403)
       assert.equal((await f.reader.listTools()).tools.some((tool) => tool.name === 'agent_chat_respond'), false)
-      await assert.rejects(f.reader.callTool({ name: 'agent_chat_respond', arguments: { workspaceId: f.workspaceId, conversationId: f.id,
-        nativeRequestId: 'approval-a', optionId: 'approve-once' } }), /not found/)
+      await expectMcpAccessDenied(f.reader.callTool({ name: 'agent_chat_respond', arguments: { workspaceId: f.workspaceId, conversationId: f.id,
+        nativeRequestId: 'approval-a', optionId: 'approve-once' } }))
       assert.deepEqual(await f.repository.get(f.id), before)
       assert.deepEqual(f.native.responses, [])
 

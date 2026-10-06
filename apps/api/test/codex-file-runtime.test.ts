@@ -6,7 +6,7 @@ import type { NativeSessionReference } from '@foreman-code/contracts'
 import { AgentFileReadResultSchema } from '@foreman-code/contracts/files'
 import type { CodexChatFileAdmission } from '../src/modules/harnesses/codexFiles/production.js'
 import type { CodexChatFiles } from '../src/modules/harnesses/codexFiles/runtime.js'
-import { afterEach, beforeEach, describe, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { calls, collect, emit, finish, fixtureQualification, input, until, type Fixture } from './fixtures/codex-test-helpers.js'
 import { deferred, filePorts, fileRuntimeFixture, fileScope, publishedRef, sourceRef } from './fixtures/codex-file-runtime-helpers.js'
 
@@ -20,6 +20,7 @@ let ports: ReturnType<typeof filePorts>
 vi.doMock('../src/modules/files/tools/production.js', () => ({ productionFileTools: () => ports.files }))
 const { CodexAppServerSessionManager } = await import('../src/modules/harnesses/codexAppServer.js')
 const { productionCodexChatFiles } = await import('../src/modules/harnesses/codexFiles/production.js')
+const { codexResponseSurfaceFixtures } = await import('./fixtures/codex-response-surfaces.js')
 type Manager = InstanceType<typeof CodexAppServerSessionManager>
 let f: Fixture
 let manager: Manager
@@ -265,10 +266,35 @@ describe.skipIf(process.platform === 'win32')('FIL-08a: real Codex manager file 
     assert(ports.events.includes('host:close'))
   })
 
-  it('rejects file ports on a credential-enabled manager', () => {
-    assert.throws(() => new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'scoped', {
-      prepare: async () => undefined,
-    }), /File-enabled chat/)
+  it.each(['workflow', 'agent-chat', 'selected-run-continuation'] as const)(
+    'rejects management credentials with file ports for %s before native or file work', async (surface) => {
+      const prepare = vi.fn(async () => undefined)
+      const scoped = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'scoped', { prepare })
+      managers.push(scoped)
+      const start = codexResponseSurfaceFixtures(f.directory).find(value => value.surface === surface)!.source
+      await expect(scoped.createSession(start)).rejects.toMatchObject({
+        result: { error: { code: 'CODEX_FILE_CHAT_ISOLATION_REQUIRED' } },
+      })
+      expect(prepare).not.toHaveBeenCalled()
+      expect(await calls(f.directory)).toEqual([])
+      expect(ports.issued).toEqual([])
+    },
+  )
+
+  it('creates an Operator session with separate management credentials and file declarations', async () => {
+    const prepare = vi.fn(async () => undefined)
+    const scoped = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'scoped', { prepare })
+    managers.push(scoped)
+    const start = codexResponseSurfaceFixtures(f.directory).find(value => value.surface === 'operator')!.source
+    const session = await scoped.createSession(start)
+    expect(session).toMatchObject({ harness: 'codex', nativeSessionId: expect.any(String) })
+    const threads = await wire('thread/start')
+    expect(threads).toHaveLength(1)
+    expect(threads[0]!.params?.dynamicTools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'files_read' }),
+    ]))
+    expect(prepare).not.toHaveBeenCalled()
+    expect(ports.issued).toEqual([])
   })
 
   it('keeps file dispatch separate from native approval interactions', async () => {

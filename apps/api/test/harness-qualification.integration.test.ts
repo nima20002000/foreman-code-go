@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
@@ -88,17 +89,17 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility as the local huma
     const writeClient = await connect(writer.token)
     const readClient = await connect(reader.token)
     expect((await readClient.listTools()).tools.map((tool) => tool.name)).not.toContain('harness_qualification_run')
-    await expect(readClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(readClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } }))
     const compatible = HarnessCompatibilityListSchema.parse((await readClient.callTool({
       name: 'harness_compatibility_list', arguments: {},
     })).structuredContent)
     expect(compatible.harnesses[0]).toMatchObject({ installedVersion: '0.160.0', status: 'probe-passed', source: 'cache' })
     expect(compatible.canRetry).toBe(false)
-    await expect(readClient.callTool({ name: 'harness_compatibility_retry', arguments: { harness: 'codex' } })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(readClient.callTool({ name: 'harness_compatibility_retry', arguments: { harness: 'codex' } }))
     const other = await access.issue({ name: 'No harness grants', audience: 'operator',
       grants: [{ actions: ['runs:read'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
     const deniedClient = await connect(other.token)
-    await expect(deniedClient.callTool({ name: 'harness_compatibility_list', arguments: {} })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(deniedClient.callTool({ name: 'harness_compatibility_list', arguments: {} }))
     expect((await writeClient.callTool({ name: 'harness_compatibility_retry', arguments: { harness: 'codex' } })).isError).not.toBe(true)
     await compatibility.checkAll()
     const started = await writeClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } })

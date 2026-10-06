@@ -24,7 +24,13 @@ function authorization(entry: JsonObject): { key: string; value: string } | unde
 function withoutAuthorization(entry: JsonObject): JsonObject {
   const headers = Object.fromEntries(Object.entries(object(entry.headers) ?? {})
     .filter(([name]) => name.toLowerCase() !== 'authorization'))
-  return { ...entry, headers }
+  const comparable: JsonObject = { ...entry, headers }
+  if (entry.type === 'remote') {
+    // Deep-merged remote entries can retain local fields that the provider does not use.
+    delete comparable.command
+    delete comparable.environment
+  }
+  return comparable
 }
 
 /**

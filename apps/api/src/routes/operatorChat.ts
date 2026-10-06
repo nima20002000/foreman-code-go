@@ -45,7 +45,10 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
   app.post<{ Body: unknown }>('/api/operator/conversations', async (request, reply) => {
     const input = CreateOperatorConversationRequestSchema.parse(request.body ?? {})
     reply.code(201)
-    return CreateOperatorConversationResponseSchema.parse({ conversation: await chat.create(requirePrincipal(request), input.title) })
+    const command = input.commandId ? { commandId: input.commandId, source: 'http' as const } : undefined
+    return CreateOperatorConversationResponseSchema.parse({
+      conversation: await chat.create(requirePrincipal(request), input.title, command),
+    })
   })
   app.delete<{ Params: ConversationParams }>('/api/operator/conversations/:conversationId', async (request) =>
     DeleteOperatorConversationResponseSchema.parse(await chat.setDeleted(request.params.conversationId, requirePrincipal(request), true)))

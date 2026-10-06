@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { captureOriginalCodexSession, type OriginalCodexSession } from './originalCodexSession.js'
-import { createAdmittedNativeManager } from './admittedManager.js'
+import { createAdmittedNativeManager, type NativeManagerAdmission } from './admittedManager.js'
 import type { ClaudeOwnedVersionObservation } from './claudeSdk/currentPin.js'
 import { createAdmittedClaudeManager } from './claudeSdk/admittedManager.js'
 import { allocateClaudeNativeHarness, type ClaudeNativeAllocation, type ClaudeNativeAllocationResult } from './claudeSdk/composition.js'
@@ -114,9 +114,10 @@ export class NativeHarnessFactories {
     return binaryCacheIdentity(harness, binary, directory)
   }
 
-  allocateAdmitted(harness: 'codex' | 'opencode', prepare: (signal: AbortSignal) => Promise<NativeHarnessAllocation>) {
-    const result = createAdmittedNativeManager<NativeHarnessSessionManager>(harness, async signal => {
-      const accepted = await prepare(signal)
+  allocateAdmitted(harness: 'codex' | 'opencode',
+    prepare: (signal: AbortSignal, admission: NativeManagerAdmission) => Promise<NativeHarnessAllocation>) {
+    const result = createAdmittedNativeManager<NativeHarnessSessionManager>(harness, async (signal, admission) => {
+      const accepted = await prepare(signal, admission)
       signal.throwIfAborted()
       return this.allocate(accepted)
     })
@@ -196,6 +197,10 @@ export class NativeHarnessFactories {
     if ((input.role === 'agent-chat' || input.role === 'diagnostics' || input.role === 'qualification')
       && (input.appMcpAccess !== 'none' || input.credentialEnvironmentVariable)) {
       throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This runtime role has no application MCP credentials.', 403)
+    }
+    if (input.chatFiles && input.appMcpAccess === 'scoped' && input.role !== 'operator') {
+      throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
+        'Only Operator chat can combine file tools with application management credentials.', 403)
     }
     const auxiliary = input.role === 'diagnostics' || input.role === 'qualification'
     if (auxiliary && this.auxiliaryClosing) throw new DomainError(

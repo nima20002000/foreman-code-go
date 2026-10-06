@@ -16,8 +16,9 @@ import { jobSpec } from './helpers/jobFixture.js'
 
 // The integration runner supplies a disposable test database; this test owns its schema.
 // Saved metadata is synthetic; no native execution or qualification is claimed.
-it.skipIf(!process.env.TEST_DATABASE_URL)('exposes late Operator services through authenticated MCP with denied callers and persisted HTTP readback', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL!
+it('exposes late Operator services through authenticated MCP with denied callers and persisted HTTP readback', async () => {
+  const connectionString = process.env.TEST_DATABASE_URL
+  if (!connectionString) throw new Error('The integration runner must supply a disposable test database.')
   const url = new URL(connectionString)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !url.pathname.toLowerCase().includes('test')) {
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests.')

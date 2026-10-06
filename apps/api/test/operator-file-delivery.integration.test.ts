@@ -1,12 +1,19 @@
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
-import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:net'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
-import Fastify from 'fastify'
+import type { FastifyInstance } from 'fastify'
+import { buildApp } from '../src/app.js'
+import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { APP_MCP_SERVER_NAME } from '../src/modules/harnesses/appMcpLauncher.js'
+import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
+import { closeTestResources } from './support/cleanup.js'
 import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -20,7 +27,7 @@ import type { FileToolContext } from '../src/modules/files/tools/types.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import type { ManagedOpenCodeServerOptions } from '../src/modules/harnesses/opencodeTransport.js'
 import { RecordedOpenCodeServer } from './support/opencodeRecordedServer.js'
-import { calls, emit, finish, fixtureQualification, input, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
+import { calls, emit, finish, fixtureQualification, input, processesForRequests, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
 import { deferred } from './helpers/wave25Agent3.js'
 import { fileRuntimeFixture } from './fixtures/codex-file-runtime-helpers.js'
 
@@ -35,7 +42,7 @@ const serverOptions: ManagedOpenCodeServerOptions[] = []
 const { applyApplicationMigrations } = await import('../src/infrastructure/migrations.js')
 const { PostgresAccessService } = await import('../src/modules/access/postgres.js')
 const { PostgresOperatorRepository } = await import('../src/modules/operators/postgres.js')
-const { PostgresOperatorChatAuthority } = await import('../src/modules/conversations/operatorChatAuthority.js')
+const { PostgresOperatorChatAuthority, OPERATOR_MCP_ENVIRONMENT_VARIABLE } = await import('../src/modules/conversations/operatorChatAuthority.js')
 const { OperatorChatService, PostgresOperatorConversationRepository } = await import('../src/modules/conversations/operatorChat.js')
 const { registerProductionFileStorage } = await import('../src/modules/files/production.js')
 const { productionFileTools } = await import('../src/modules/files/tools/production.js')
@@ -86,6 +93,25 @@ async function retainedCodexDeclarations(f: Fixture, sessionId: string) {
   }
   return persisted.dynamicTools ?? []
 }
+
+async function expectCodexCredentialIsolation(directory: string, auditOffset = 0) {
+  const audit = (await calls(directory)).slice(auditOffset)
+  const executionPids = new Set((await processesForRequests(directory, 'thread/start', 'thread/resume'))
+    .map(entry => entry.pid))
+  const metadataPids = new Set((await processesForRequests(directory, 'model/list')).map(entry => entry.pid))
+  const environments = audit.filter(entry => 'af02CredentialKeys' in entry)
+  const execution = environments.filter(entry => executionPids.has(entry.processPid))
+  const metadata = environments.filter(entry => metadataPids.has(entry.processPid))
+  expect(execution.length).toBeGreaterThan(0)
+  expect(metadata.length).toBeGreaterThan(0)
+  expect(execution.every(entry => (entry.af02CredentialKeys as string[])
+    .includes(OPERATOR_MCP_ENVIRONMENT_VARIABLE))).toBe(true)
+  expect(metadata.every(entry => (entry.af02CredentialKeys as string[]).length === 0)).toBe(true)
+  const overrides = audit.filter(entry => Array.isArray(entry.cli)
+    && (entry.cli as string[]).some(arg => /^mcp_servers\..+\.enabled=false$/.test(arg)))
+  expect(overrides.some(entry => metadataPids.has(entry.processPid))).toBe(true)
+  expect(overrides.some(entry => executionPids.has(entry.processPid))).toBe(false)
+}
 function fileCallValue(result: CodexFileCallResult): unknown {
   expect(result.success).toBe(true)
   const content = result.contentItems[0]
@@ -97,7 +123,8 @@ function fileCallValue(result: CodexFileCallResult): unknown {
 // fake attachment admission is supplied by these sends.
 describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 production Operator native file delivery', () => {
   let schema: string, admin: pg.Pool, pool: pg.Pool, f: Fixture, config: ApiConfig, vault: string, runtimeHome: string
-  let app: ReturnType<typeof Fastify>
+  let app: FastifyInstance
+  let managementEndpoint: string
   let files: ReturnType<typeof registerProductionFileStorage>
   let tools: ReturnType<typeof productionFileTools>
   let operators: InstanceType<typeof PostgresOperatorRepository>
@@ -132,8 +159,8 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     nativeFixture = await nativeConfigurationFixture({ files: true, respond: async () => 'done',
       beforeFinish: async () => { await nativeFinished.promise } })
     // Outside /tmp: Codex workspace-write treats /tmp as writable, so the file host must not live there.
-    vault = await mkdtemp(join(homedir(), '.af02-vault-'))
-    runtimeHome = await mkdtemp(join(homedir(), '.af02-runtime-'))
+    vault = await privateFixtureDirectory('.af02-vault-')
+    runtimeHome = await privateFixtureDirectory('.af02-runtime-')
     await writeFile(join(f.directory, 'file-turn'), '')
     // Audit key presence only, not credential values. The fixture's worker
     // default is absent because the actual Operator service supplies its input.
@@ -141,8 +168,26 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     const seam = "const agent = process.env.TEST_AGENT_ID || 'agent-a'"
     assert.equal(binary.split(seam).length, 2)
     await writeFile(f.binary, binary.replace(seam,
-      `log({ af02CredentialKeys: Object.keys(process.env).filter((key) => /GRAPHQL.*(?:TOKEN|CREDENTIAL)/.test(key) && key !== 'GRAPHQL_HEAVY_JOB_TOKEN') })\n${seam}`))
-    config = { host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
+      `log({ af02CredentialKeys: Object.keys(process.env).filter((key) => /^(?:GRAPHQL|FOREMAN_CODE).*(?:TOKEN|CREDENTIAL)/.test(key) && key !== 'GRAPHQL_HEAVY_JOB_TOKEN' && key !== 'FOREMAN_CODE_HEAVY_JOB_TOKEN') })\n${seam}`))
+    const reservation = createServer()
+    await new Promise<void>((resolve, reject) => {
+      reservation.once('error', reject)
+      reservation.listen(0, '127.0.0.1', resolve)
+    })
+    const address = reservation.address()
+    assert(address && typeof address !== 'string')
+    const port = address.port
+    await new Promise<void>((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()))
+    managementEndpoint = `http://127.0.0.1:${port}/mcp`
+    await writeFile(join(f.directory, 'mcp.json'), JSON.stringify({ name: 'graphql', enabled: true, required: true,
+      transport: { type: 'streamable_http', url: managementEndpoint,
+        bearer_token_env_var: OPERATOR_MCP_ENVIRONMENT_VARIABLE } }))
+    const nativeConfig = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT!)
+    vi.stubEnv('OPENCODE_CONFIG_CONTENT', JSON.stringify({ ...nativeConfig, mcp: {
+      [APP_MCP_SERVER_NAME]: { type: 'remote', url: managementEndpoint, enabled: true, oauth: false,
+        headers: { Authorization: `Bearer {env:${OPERATOR_MCP_ENVIRONMENT_VARIABLE}}` } },
+    } }))
+    config = { host: '127.0.0.1', port, readinessTimeoutMs: 2000,
       database: { connectionString: connectionString!, maxConnections: 4, connectionTimeoutMs: 2000, queryTimeoutMs: 5000 },
       checkpoints: { schema: 'langgraph' }, workspaceStorageRoot: join(f.directory, 'projects'), fileStorageRoot: join(vault, 'files'),
       harnesses: { workspaceRoot: join(runtimeHome, 'runtime'), codexBinary: f.binary,
@@ -150,13 +195,6 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     const cwd = join(config.harnesses.workspaceRoot, 'operator')
     await mkdir(cwd, { recursive: true })
     await mkdir(config.workspaceStorageRoot!, { recursive: true })
-    app = Fastify({ logger: false })
-    files = registerProductionFileStorage(app, pool, config)
-    await app.listen({ host: '127.0.0.1', port: 0 })
-    const address = app.server.address()
-    assert(address && typeof address !== 'string')
-    config.port = address.port
-    tools = productionFileTools(app)
     const access = new PostgresAccessService(pool)
     owner = (await access.issue({ name: 'AF-02 owner', audience: 'operator',
       grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel', 'operator_chat:respond', 'harnesses:read'], scope: {} }],
@@ -165,25 +203,34 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     repository = new PostgresOperatorConversationRepository(pool)
     const responseJournal = new NativeResponseJournal(join(f.directory, 'responses'))
     const nativeFactories = new NativeHarnessFactories({ ...config.harnesses,
-      openCodeFileStorageRoot: files.bytes.root,
-      appMcpEndpoint: 'http://127.0.0.1:4100/mcp', responseJournal }, {
+      openCodeFileStorageRoot: config.fileStorageRoot!,
+      appMcpEndpoint: managementEndpoint, responseJournal }, {
       mode: 'native', openCodeServer: options => {
         serverOptions.push(options)
-        const server = new RecordedOpenCodeServer({ ...options, pure: true })
+        const server = new RecordedOpenCodeServer({ ...options,
+          ...(options.advancedConfiguration ? {} : { pure: true }) })
         server.onPromptAccepted = () => accepted.resolve()
         servers.push(server)
         return server
       },
     })
     authority = new PostgresOperatorChatAuthority(pool, access, new NativeRollout({ NODE_ENV: 'test', HOST: '127.0.0.1' }), cwd,
-      'http://127.0.0.1:4100/mcp', (manager) => nativeFactories.inspector(manager))
+      managementEndpoint, (manager) => nativeFactories.inspector(manager))
     setup = vi.spyOn(authority, 'setup')
     prepare = vi.spyOn(authority, 'prepare')
     const resolve = productionOperatorManagers({ app: () => app, pool, config, workingDirectory: cwd,
-      endpointHost: '127.0.0.1', appMcpEndpoint: 'http://127.0.0.1:4100/mcp', managers,
+      endpointHost: '127.0.0.1', appMcpEndpoint: managementEndpoint, managers,
       processRegistry: new NativeProcessRegistry(join(f.directory, 'processes')),
       responseJournal, nativeFactories })
     chat = new OperatorChatService(repository, operators, resolve, cwd, authority)
+    app = buildApp({ logger: false, readiness: {
+      database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
+    }, operator: { access, services: {
+      commands: new PostgresCommandCoordinator(pool), operatorChat: chat,
+    } as unknown as OperatorServices } })
+    files = registerProductionFileStorage(app, pool, config)
+    tools = productionFileTools(app)
+    await app.listen({ host: '127.0.0.1', port })
     const issue = tools.sessions.issueForAcceptedSession.bind(tools.sessions)
     vi.spyOn(tools.sessions, 'issueForAcceptedSession').mockImplementation(async (context, expiry, transport) => {
       // Issuance is forbidden until BOTH conversation ACK and original message
@@ -201,18 +248,18 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
   afterEach(async () => {
     if (waitingForNative) nativeAccepted.reject(new Error('Operator fixture is closing.'))
     nativeFinished?.resolve()
-    try { await chat?.shutdown() } finally {
-      try { await app?.close() } finally {
-        await pool?.end()
-        if (schema) await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve())
-        await admin?.end()
-        await nativeFixture?.close()
-        if (f) await removeFixtureDirectory(f.directory)
-        if (vault) await removeFixtureDirectory(vault)
-        if (runtimeHome) await removeFixtureDirectory(runtimeHome)
-        managers.clear(); servers.length = 0; serverOptions.length = 0; issued.length = 0
-        vi.restoreAllMocks()
-      }
+    try {
+      await closeTestResources([
+        async () => chat?.shutdown(), async () => app?.close(), async () => pool?.end(),
+        async () => { if (schema) await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve()) },
+        async () => admin?.end(), async () => nativeFixture?.close(),
+        async () => { if (f) await removeFixtureDirectory(f.directory) },
+        async () => { if (vault) await removeFixtureDirectory(vault) },
+        async () => { if (runtimeHome) await removeFixtureDirectory(runtimeHome) },
+      ])
+    } finally {
+      managers.clear(); servers.length = 0; serverOptions.length = 0; issued.length = 0
+      vi.restoreAllMocks()
     }
   })
 
@@ -247,7 +294,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       await writeFile(join(f.directory, 'version.json'), JSON.stringify(version))
       // Exercise the real text-mode setup/credential path, not a mocked authority.
       await writeFile(join(f.directory, 'mcp.json'), JSON.stringify({ name: 'graphql', enabled: true, required: true,
-        transport: { type: 'streamable_http', url: 'http://127.0.0.1:4100/mcp', bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' } }))
+        transport: { type: 'streamable_http', url: managementEndpoint, bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' } }))
       const current = await operators.ensure()
       const native = input(f.directory).request.configuration.harness
       assert(native.harness === 'codex')
@@ -297,11 +344,17 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect(list).not.toHaveBeenCalled()
       expect(prepare).toHaveBeenCalledTimes(1)
       expect(setup).toHaveBeenCalledTimes(1)
+      const access = new PostgresAccessService(pool)
+      const textEnvironment = await prepare.mock.results[0]!.value
+      const textToken = textEnvironment.variables[OPERATOR_MCP_ENVIRONMENT_VARIABLE]!
+      const textDelegate = await access.authenticate(textToken)
+      expect(textDelegate.id).not.toBe(owner.id)
       expect((await calls(f.directory)).some((entry) =>
         (entry.af02CredentialKeys as string[] | undefined)?.includes('GRAPHQL_MCP_TOKEN'))).toBe(true)
       await finish(f.directory, nativeSessionId, 'Text-only turn completed.')
       await until(async () => (await chat.get(conversation.id, owner)).turnState === 'idle', 10000)
       await until(async () => managers.size === 0, 10000)
+      await expect(access.authenticate(textToken)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       const textHistory = structuredClone((await state(f.directory, nativeSessionId)).turns)
       expect(textHistory).toHaveLength(1)
       expect(textHistory[0]!.status).toBe('completed')
@@ -325,8 +378,17 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect(managers.get(conversation.id)).not.toBe(textManager)
       expect(await retainedCodexDeclarations(f, nativeSessionId)).toEqual(declarations)
       expect((await state(f.directory, nativeSessionId)).turns[0]).toEqual(textHistory[0])
-      expect(prepare).toHaveBeenCalledTimes(1)
-      expect(setup).toHaveBeenCalledTimes(1)
+      expect(prepare).toHaveBeenCalledTimes(2)
+      expect(setup).toHaveBeenCalledTimes(2)
+      const fileManagementEnvironment = await prepare.mock.results[1]!.value
+      const managementToken = fileManagementEnvironment.variables[OPERATOR_MCP_ENVIRONMENT_VARIABLE]!
+      expect(managementToken).not.toBe(textToken)
+      expect(managementToken).not.toBe(token)
+      const fileDelegate = await access.authenticate(managementToken)
+      expect(fileDelegate.id).not.toBe(textDelegate.id)
+      expect(fileDelegate.grants).toEqual(textDelegate.grants)
+      expect(fileDelegate.grants.flatMap(grant => grant.actions)).not.toContain('operator_chat:write')
+      await expect(tools.sessions.authenticate(managementToken)).rejects.toThrow()
       const wire = (await calls(f.directory)).map((entry) => entry.wire as {
         method?: string; params?: Record<string, unknown>
       } | undefined)
@@ -337,13 +399,10 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect(resumes).toHaveLength(1)
       expect(resumes[0]!.params!.threadId).toBe(nativeSessionId)
       expect(resumes[0]!.params).not.toHaveProperty('dynamicTools')
-      const fileEnvironment = (await calls(f.directory)).slice(fileAuditOffset)
-        .filter((entry) => 'af02CredentialKeys' in entry)
-      expect(fileEnvironment.length).toBeGreaterThan(0)
-      expect(fileEnvironment.every((entry) => (entry.af02CredentialKeys as string[]).length === 0)).toBe(true)
+      await expectCodexCredentialIsolation(f.directory, fileAuditOffset)
       expect((await pool.query(`select count(*)::int as count from operator_chat_credentials c
         join management_principals p on p.id=c.principal_id
-        where c.conversation_id=$1 and p.revoked_at is null`, [conversation.id])).rows[0].count).toBe(0)
+        where c.conversation_id=$1 and p.revoked_at is null`, [conversation.id])).rows[0].count).toBe(1)
 
       const nativeTurnId = context.turnId
       assert.ok(nativeTurnId, 'This Codex fixture requires an observed native turn binding.')
@@ -368,6 +427,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       await until(async () => (await chat.get(conversation.id, owner)).turnState === 'idle', 10000)
       await until(async () => managers.size === 0, 10000)
       await expect(tools.sessions.authenticate(token)).rejects.toThrow()
+      await expect(access.authenticate(managementToken)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       const transcript = await chat.get(conversation.id, owner)
       expect(transcript.messages.filter((message) => message.role === 'user')).toHaveLength(2)
       expect(transcript.messages.flatMap((message) => message.attachments ?? [])
@@ -385,7 +445,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     }, 30000)
 
   for (const harness of ['codex', 'opencode'] as const) for (const item of cases) {
-    it(`${harness}: ${item.name} reaches the native request exactly once with Operator-only authority`, async () => {
+    it(`${harness}: ${item.name} reaches the native request once with separate file and management authority`, async () => {
       const current = await operators.ensure()
       const native = harness === 'codex' ? input(f.directory).request.configuration.harness : nativeFixture.harness
       await operators.update(native, current.operator.currentConfigurationVersionId)
@@ -411,9 +471,9 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect(context.messageId).toBeTruthy()
       expect(read.mock.calls.length).toBeGreaterThan(0)
       for (const [, request] of read.mock.calls) expect(request).toMatchObject(ref)
-      expect(setup).not.toHaveBeenCalled()
-      expect(prepare).not.toHaveBeenCalled()
-      expect((await pool.query('select count(*)::int as count from operator_chat_credentials')).rows[0].count).toBe(0)
+      expect(setup).toHaveBeenCalledTimes(1)
+      expect(prepare).toHaveBeenCalledTimes(1)
+      expect((await pool.query('select count(*)::int as count from operator_chat_credentials')).rows[0].count).toBe(1)
       const nativeSessionId = context.nativeSessionId
       let prompt: string, deliveredImage: string | undefined
       if (harness === 'codex') {
@@ -423,14 +483,9 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
         const parts = turns[0]!.params!.input as Array<{ type: string; text?: string; path?: string }>
         prompt = parts[0]!.text!
         deliveredImage = parts.find((part) => part.type === 'localImage')?.path
-        const audit = await calls(f.directory)
-        const environments = audit.filter((entry) => 'af02CredentialKeys' in entry)
-        expect(environments.length).toBeGreaterThan(0)
-        expect(environments.every((entry) => (entry.af02CredentialKeys as unknown[]).length === 0)).toBe(true)
+        await expectCodexCredentialIsolation(f.directory)
         const thread = wire.find((entry) => entry?.method === 'thread/start')!
         expect(thread.params!.dynamicTools).toBeInstanceOf(Array)
-        expect(audit.some((entry) => Array.isArray(entry.cli)
-          && (entry.cli as string[]).some((arg) => /^mcp_servers\..+\.enabled=false$/.test(arg)))).toBe(true)
       } else {
         const server = servers[0]!
         expect(server.nativePid).toBeDefined()
@@ -441,9 +496,9 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
         prompt = parts[0]!.text!
         const part = parts.find((value) => value.type === 'file')
         if (part) { expect(part.mime).toBe(item.mediaType); deliveredImage = fileURLToPath(part.url!) }
-        expect(serverOptions[0]!.appMcpAccess).toBe('none')
-        expect(serverOptions[0]!.credentialEnvironmentVariable).toBeUndefined()
-        for (const environment of server.restartEnvironments) expect(environment.variables).toEqual({})
+        expect(serverOptions[0]!.appMcpAccess).toBe('scoped')
+        expect(serverOptions[0]!.credentialEnvironmentVariable).toBe(OPERATOR_MCP_ENVIRONMENT_VARIABLE)
+        for (const environment of server.restartEnvironments) expect(Object.keys(environment.variables)).toEqual([OPERATOR_MCP_ENVIRONMENT_VARIABLE])
         expect(JSON.stringify(turns[0]!.body!.system ?? '')).not.toContain('Attached files')
       }
       expect(prompt).toContain(item.filename)
@@ -540,18 +595,35 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect((await stored()).attachmentRefs).toEqual(attachments)
     }, 90000)
   }
-  it('preserves the management MCP setup requirement for text-only Operator turns', async () => {
+  it.each([false, true])('requires management MCP for Operator turns (attachments: %s)', async attachments => {
     const current = await operators.ensure()
-    await operators.update(nativeFixture.harness, current.operator.currentConfigurationVersionId)
+    await operators.update({ ...nativeFixture.harness, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+      mcp: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION.mcp, serverEnabled: { [APP_MCP_SERVER_NAME]: false } },
+    } }, current.operator.currentConfigurationVersionId)
     const conversation = await chat.create(owner)
-    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Manage the app.' }, owner)
-    // This fixture deliberately has management MCP disabled. A text-only turn
-    // must take the old setup/prepare path and fail, not bypass it as file chat.
-    await until(async () => (await chat.get(conversation.id, owner)).turnState === 'error', 10000)
+    const refs: MessageAttachmentRef[] = []
+    if (attachments) {
+      const target = { kind: 'operator' as const, conversationId: conversation.id }
+      const bytes = Buffer.from('# Attached specification\n')
+      const uploadId = randomUUID()
+      await files.allocate(owner, target, { requestId: uploadId, filename: 'spec.md', mediaType: 'text/markdown',
+        byteSize: bytes.length, sha256: digest(bytes) })
+      await files.upload(owner, target, uploadId, Readable.from([bytes]))
+      const ready = await files.finalize(owner, target, uploadId)
+      refs.push({ fileId: ready.value.file.fileId, revisionId: ready.value.revision.revisionId })
+    }
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Manage the app.',
+      ...(attachments ? { attachments: refs } : {}) }, owner)
+    // The accepted settings disable management MCP for both message shapes.
+    const failed = await until(async () => {
+      const state = await chat.get(conversation.id, owner)
+      return state.turnState === 'error' ? state : undefined
+    }, 10000)
+    expect(failed.lastResult).toMatchObject({ outcome: 'failed', error: { code: 'OPERATOR_MCP_SETUP_REQUIRED' } })
     expect(prepare).toHaveBeenCalledTimes(1)
     expect(setup).toHaveBeenCalledTimes(1)
     expect(serverOptions[0]!.appMcpAccess).toBe('scoped')
-    expect(serverOptions[0]!.credentialEnvironmentVariable).toBe('GRAPHQL_MCP_TOKEN')
+    expect(serverOptions[0]!.credentialEnvironmentVariable).toBe(OPERATOR_MCP_ENVIRONMENT_VARIABLE)
     expect(issued).toHaveLength(0)
     expect(servers.flatMap((server) => server.calls).some((call) => call.path.includes('/prompt_async'))).toBe(false)
   }, 30000)

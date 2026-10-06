@@ -89,6 +89,24 @@ describe('one Foreman Code MCP server scoped by role', () => {
     })])
     expect(recordDenied).toHaveBeenCalledWith(readonly.id, 'mcp', 'interaction_respond', 'mcp:interaction_respond')
   })
+
+  it('audits grant-hidden tools for the correct role without auditing unknown or authorized names', async () => {
+    const restricted = { ...context('operator'), principal: { ...operator, grants: [] } }
+    const denied = await roleDeniedToolCall(restricted, call('workspace_update'))
+    expect(denied?.result.isError).toBe(true)
+    expect(JSON.stringify(denied?.result.content)).toContain('ACCESS_DENIED')
+    expect(recordDenied).toHaveBeenCalledExactlyOnceWith('operator-1', 'mcp', 'workspace_update', 'mcp:workspace_update')
+    expect(await roleDeniedToolCall(restricted, call('no_such_tool'))).toBeUndefined()
+    expect(await roleDeniedToolCall(context('operator'), call('workspace_update'))).toBeUndefined()
+    expect(recordDenied).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails closed when recording a denial fails', async () => {
+    const restricted = { ...context('operator'), principal: { ...operator, grants: [] } }
+    recordDenied.mockRejectedValueOnce(new Error('audit store unavailable'))
+    await expect(roleDeniedToolCall(restricted, call('workspace_update'))).rejects.toThrow('audit store unavailable')
+  })
+
   it('audits direct output calls outside the role or saved Agent tool set', async () => {
     const name = 'files.native_output_publish'
     expect(await deniedText('operator', name)).toContain('ROLE_NOT_ALLOWED')

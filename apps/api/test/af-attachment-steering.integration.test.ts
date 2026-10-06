@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import type { SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
@@ -42,7 +43,7 @@ describe.skipIf(!postgresEnabled)('AF-05 attachment steering', { timeout: 90_000
         // Authority/discovery remains unchanged. A read-only principal cannot send even text.
         const text = f.request(f.conversationId, { intent: 'steer', expectedNativeTurnId: active.turn.nativeTurnId, content: 'text only' })
         expect((await reader.listTools()).tools.map((entry) => entry.name)).not.toContain('agent_chat_send')
-        await expect(reader.callTool({ name: 'agent_chat_send', arguments: { workspaceId: f.workspaceId, request: text } })).rejects.toThrow(/not found/)
+        await expectMcpAccessDenied(reader.callTool({ name: 'agent_chat_send', arguments: { workspaceId: f.workspaceId, request: text } }))
         expect((await sendHttp(text, f.reader.token)).statusCode).toBe(403)
         expect((await sendHttp(text)).statusCode).toBe(202)
         expect(f.native.steerCalls).toBe(1)

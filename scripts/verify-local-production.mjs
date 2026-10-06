@@ -289,7 +289,9 @@ async function main() {
     const persistedWorkspace = await call(writer, 'workspace_get', { workspaceId })
     assert.equal(persistedWorkspace.revision, changed.value.revision)
     assert.equal(persistedWorkspace.workspace.description, update.description)
-    const conversation = await call(writer, 'operator_chat_create', { title: 'Production regression' })
+    const conversation = await call(writer, 'operator_chat_create', {
+      commandId: randomUUID(), title: 'Production regression',
+    })
     conversationId = conversation.conversation.id
     stopOperatorObserver = await observeOperatorErrors(conversationId, writerCredential.token, operatorErrors)
     const beforeChat = await call(writer, 'operator_chat_get', { conversationId: conversation.conversation.id })

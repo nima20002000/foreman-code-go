@@ -5,6 +5,7 @@ import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, 
 
 import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager, type OpenCodeServerController } from '../src/modules/harnesses/opencodeServer.js'
 import { childEnvironmentFingerprint } from '../src/modules/harnesses/opencodeTransport.js'
+import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from '../src/modules/harnesses/appMcpLauncher.js'
 import type { NativeMcpEntryEvidence } from '../src/modules/harnesses/mcpDetection.js'
 import { nativeMessageId, nativePolicy, object, type JsonObject, type OpenCodeMessage } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { ChildProcessEnvironment } from '../src/modules/harnesses/port.js'
@@ -117,6 +118,16 @@ export class FixtureServer implements OpenCodeServerController {
     await this.beforeRestart?.()
     this.environment = structuredClone(environment)
     this.restartEnvironments.push(structuredClone(environment))
+    this.generation += 1
+    this.resetInstance()
+  }
+  async startObservation() {
+    this.environment = undefined
+    const configured = object(this.config.mcp)
+    const appNames = chatExcludedAppMcpServerNames(APP_MCP_SERVER_NAME)
+    this.config = { ...this.config, mcp: Object.fromEntries(Object.entries(configured).map(([name, entry]) =>
+      [name, appNames.includes(name)
+        ? { ...object(entry), enabled: false } : entry])) }
     this.generation += 1
     this.resetInstance()
   }
