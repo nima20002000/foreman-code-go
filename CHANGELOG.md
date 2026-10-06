@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.26] - 2026-10-06
+
+### Fixed
+
+- Verify local API access guidance after rejected harness compatibility retries, preserving the existing report for both unavailable and denied access without requiring browser account authentication.
+
 ## [0.0.25] - 2026-10-06
 
 ### Fixed
