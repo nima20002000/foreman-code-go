@@ -45,6 +45,7 @@ function fixture() {
   const first = join(home, 'one')
   mkdirSync(join(first, 'scripts'), { recursive: true })
   copyFileSync(source, join(first, 'scripts/heavy-job.mjs'))
+  copyFileSync(new URL('./heavy-job-slots.mjs', import.meta.url), join(first, 'scripts/heavy-job-slots.mjs'))
   mkdirSync(join(first, 'packages/contracts/src'), { recursive: true })
   copyFileSync(new URL('../packages/contracts/src/productEnvironment.mjs', import.meta.url), join(first, 'packages/contracts/src/productEnvironment.mjs'))
   writeFileSync(join(first, 'package.json'), '{"type":"module"}')
