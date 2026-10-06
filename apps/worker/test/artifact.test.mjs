@@ -10,10 +10,20 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { workerPath } from '../src/harnessPath.mjs';
 
 const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
-test('packaged worker help identifies Foreman Code without starting runtime services', { skip: !artifact }, () => {
+test('packaged worker help and native initialization load current contracts without execution authority', { skip: !artifact }, async t => {
   const output = execFileSync(process.execPath, [join(artifact, 'src/cli.mjs'), '--help'], { encoding: 'utf8', timeout: 5000 });
   assert.match(output, /^Foreman Code worker\n/);
   assert.match(output, /Pairing retries reuse the original enrollment file/);
+  const state = await mkdtemp(join(persistentFixtureRoot, 'worker-native-initialization-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const initialized = JSON.parse(execFileSync(process.execPath,
+    [join(artifact, 'src/cli.mjs'), 'initialize-native-runtime', '--state', state],
+    { encoding: 'utf8', timeout: 10000 }));
+  assert.deepEqual(initialized, { nativeRuntime: 'initialized', executionAuthorized: false });
+  const status = JSON.parse(execFileSync(process.execPath,
+    [join(artifact, 'src/cli.mjs'), 'doctor', '--state', state], { encoding: 'utf8', timeout: 5000 }));
+  assert.equal(status.pairing, 'unpaired');
+  assert.equal(status.service.active, false);
 });
 test('packaged schema checker accepts the actual pinned Codex export', {
   skip: !artifact || !readProductEnvironment(process.env, 'WORKER_CODEX_BINARY'),
