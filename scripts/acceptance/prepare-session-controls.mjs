@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { sessionControlProduct } from './session-control-product.mjs'
+import { assertSessionControlDefaults } from './session-control-client.mjs'
 
 /** Creates chats on already provisioned, selected nodes and profiles through the public product services. */
 export async function prepareSessionControlMatrix(input, { contracts, agentChat, management, identity, tool, read }) {
@@ -28,6 +29,7 @@ export async function prepareSessionControlMatrix(input, { contracts, agentChat,
     assert.equal(subject.agent.context.runId, undefined, 'Provision current nodes without a synthetic Run.')
   }
   const original = management.ManagedAgentDefaultsSchema.parse(await tool('agent_defaults_get', {}))
+  assertSessionControlDefaults(original)
   let current = original
   let changed = false
   let failure

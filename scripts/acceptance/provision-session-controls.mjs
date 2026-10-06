@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { prepareSessionControlMatrix } from './prepare-session-controls.mjs'
 import { sessionControlProduct } from './session-control-product.mjs'
+import { assertSessionControlDefaults } from './session-control-client.mjs'
 
 function validateSubjects(input, contracts, profiles, placements, identity) {
   assert.deepEqual(identity, input.expectedIdentity, 'The reviewed fixture app identity changed.')
@@ -124,6 +125,7 @@ async function saveNode(subject, profile, { contracts, management, workflows, to
 export async function provisionSessionControlSubjects(input, ports) {
   const subjects = validateSubjects(input, ports.contracts, ports.profiles, ports.placements, ports.identity)
   const defaults = ports.management.ManagedAgentDefaultsSchema.parse(await ports.tool('agent_defaults_get', {}))
+  assertSessionControlDefaults(defaults)
   const prepared = []
   for (const subject of subjects) {
     const { profile, profileCheckRequest } = await qualifyProfile(subject, ports)

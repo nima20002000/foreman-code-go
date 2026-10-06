@@ -122,6 +122,14 @@ test('refuses a changed fixture identity before any product write', async () => 
   assert.equal(f.calls.length, 0)
 })
 
+test('refuses non-Haiku fixture defaults before any write or native qualification', async () => {
+  const f = fixture()
+  const claude = f.input.subjects.find(subject => subject.harness === 'claude').operatorDefaults.harness
+  f.defaults().value.operator.harness = { ...claude, model: 'claude-opus-5-5' }
+  await assert.rejects(prepareSessionControlMatrix(f.input, f.ports), /explicit Haiku Operator defaults/)
+  assert.deepEqual(f.calls.map(call => call.name), ['agent_defaults_get'])
+})
+
 test('restores defaults after failed preparation and preserves a concurrent revision conflict', async () => {
   const f = fixture()
   f.fail()
