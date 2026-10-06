@@ -67,9 +67,14 @@ async function qualifyProfile(subject, { profiles, tool }) {
   assert.equal(checked.proof.instanceRevision, checked.value.instanceRevision)
   assert.deepEqual(checked.proof.target, target)
   assert.equal(checked.proof.configurationFingerprint, checked.value.configurationFingerprint)
-  assert.equal(checked.proof.authenticated, true, 'The actual native profile is not authenticated.')
-  assert.equal(checked.proof.compatible, true, 'The actual native profile is not compatible.')
-  assert.equal(checked.proof.qualified, true, 'The actual native profile did not qualify.')
+  const profileLocation = `${checked.value.driverId} on ${subject.hostRef.kind}`
+  if (checked.proof.failure) {
+    const { code, message } = checked.proof.failure
+    throw new Error(`Native profile check failed for ${profileLocation}: ${code}: ${message}`)
+  }
+  assert.equal(checked.proof.authenticated, true, `The native profile is not authenticated: ${profileLocation}.`)
+  assert.equal(checked.proof.compatible, true, `The native profile is not compatible: ${profileLocation}.`)
+  assert.equal(checked.proof.qualified, true, `The native profile did not qualify: ${profileLocation}.`)
   const readback = profiles.HostHarnessOverrideListSchema.parse(await tool('harness_instances_list', {
     hostRef: subject.hostRef, applicationInstallationId: target.applicationInstallationId,
   })).overrides.find(value => value.instanceId === saved.instanceId)

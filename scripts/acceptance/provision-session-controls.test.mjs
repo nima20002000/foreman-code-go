@@ -291,6 +291,21 @@ test('rejects failed qualification or changed persisted proof before creating an
   }
 })
 
+test('reports a native profile failure before treating unknown authentication as a sign-in problem', async () => {
+  const f = fixture()
+  const tool = async (name, args) => {
+    const result = await f.ports.tool(name, args)
+    if (name !== 'harness_instance_check') return result
+    return { ...result, value: { ...result.value, qualification: 'unqualified' },
+      proof: { ...result.proof, authenticated: null, compatible: null, qualified: false,
+        failure: { code: 'CODEX_MODEL_UNAVAILABLE', message: 'The selected model is absent from the native Codex catalog.' } } }
+  }
+  await assert.rejects(provisionSessionControlSubjects(f.input, { ...f.ports, tool }),
+    /codex on main: CODEX_MODEL_UNAVAILABLE: The selected model is absent/)
+  assert.equal(f.workspaces.size, 0)
+  assert.equal(f.calls.some(call => call.name === 'workflow_create'), false)
+})
+
 test('does not save a profile for an offline Worker or accept a foreign root selection', async () => {
   const f = fixture()
   const worker = f.input.subjects.find(value => value.hostRef.kind === 'device')
