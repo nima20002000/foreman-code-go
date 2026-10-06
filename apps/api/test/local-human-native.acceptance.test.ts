@@ -1,10 +1,15 @@
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { describe, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import { OpenCodeHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
+import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { signalTree, spawnOwnedStdioProcess } from '../src/modules/harnesses/process.js'
 import { inheritedAgentEnvironment, redactSecretText } from '../src/modules/harnesses/secrets.js'
+import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
 import { nativeHttpIsolation, type NativeHttpIsolationInput } from './helpers/nativeHttpIsolation.js'
 
 const enabled = process.env.RUN_REAL_HARNESS_TESTS === '1' || process.env.RUN_ENG03_C_NATIVE_TESTS === '1'
@@ -13,10 +18,15 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
   it.each(['codex', 'opencode'] as const)(
     '%s protects human HTTP from a terminal-launched restricted MCP client without a registry or credential marker', async harness => {
     await nativeHttpIsolation(async input => {
-      const { script, report } = await installProbe(input)
+      const { script, report, marker } = await installProbe(input)
       const environment = inheritedAgentEnvironment()
       delete environment.FOREMAN_CODE_MCP_TOKEN
+      const secrets = Object.entries(environment).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
+        .map(([, value]) => value).filter((value): value is string => Boolean(value))
+      const redactor = nativePersistenceRedactor([...secrets, input.token])
       const binaries = harnessBinaries(process.env)
+      const openCodeModel = process.env.OPENCODE_TEST_MODEL ?? 'opencode-go/gpt-5.6-luna'
+      if (harness === 'opencode') await qualifyOpenCode(input, openCodeModel)
       const codexArguments = [
         'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
         '--model', process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
@@ -25,8 +35,9 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
         '-c', `mcp_servers.isolation.args=${JSON.stringify([script])}`,
         'Reply DONE.',
       ]
-      const openCodeArguments = ['run', '--agent', 'plan', '--format', 'json', '--model',
-        process.env.OPENCODE_TEST_MODEL ?? 'opencode-go/gpt-5.6-luna', 'Reply DONE.']
+      const openCodeArguments = ['--print-logs', '--log-level', 'ERROR', 'run', '--dir', input.directory,
+        '--agent', 'plan', '--format', 'json', '--model',
+        openCodeModel, 'Reply DONE.']
       if (harness === 'opencode') {
         environment.OPENCODE_CONFIG_CONTENT = JSON.stringify({
           mcp: { isolation: { type: 'local', command: [process.execPath, script], enabled: true } },
@@ -41,12 +52,19 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
         child.once('close', () => resolve())
       })
       let diagnostics = ''
-      child.stdout.resume()
-      child.stderr.on('data', chunk => { diagnostics = (diagnostics + String(chunk)).slice(-4_000) })
+      const collectDiagnostics = (chunk: Buffer) => {
+        diagnostics = redactor.text(diagnostics + String(chunk)).slice(-4_000)
+      }
+      child.stdout.on('data', collectDiagnostics)
+      child.stderr.on('data', collectDiagnostics)
       const deadline = Date.now() + 120_000
       try {
         while (Date.now() < deadline) {
-          try { return { exitCode: 0, stdout: await readFile(report, 'utf8'), stderr: '' } }
+          try {
+            const stdout = await readFile(report, 'utf8')
+            expect(JSON.parse(stdout).placementMarker).toBe(marker)
+            return { exitCode: 0, stdout, stderr: '' }
+          }
           catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
           }
@@ -65,7 +83,7 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
 
   it('cannot approve a human gate or mutate settings by omitting or forging browser headers', async () => {
     await nativeHttpIsolation(async input => {
-      const { script, report } = await installProbe(input)
+      const { script, report, marker } = await installProbe(input)
       let launchError: Error | undefined
       let diagnostics = ''
       let transcript = ''
@@ -97,6 +115,7 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
           throw new Error(`Contained Codex did not complete its MCP startup probe: ${safeDiagnostics}`, { cause: error })
         }
+        expect(JSON.parse(stdout).placementMarker).toBe(marker)
         return { exitCode: outcome.exitCode, stdout, stderr: safeDiagnostics }
       } finally {
         clearTimeout(deadline)
@@ -106,17 +125,42 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
   })
 })
 
+async function qualifyOpenCode(input: NativeHttpIsolationInput, model: string): Promise<void> {
+  const registry = new NativeProcessRegistry(input.recovery.root)
+  const factories = new NativeHarnessFactories({
+    ...harnessBinaries(process.env),
+    auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
+    admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
+    abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
+    closeRecovery: async recovery => {
+      if (!await registry.closeOwner(recovery.owner)) throw new Error('Native provider inspection closure is unconfirmed.')
+    },
+  })
+  try {
+    await factories.qualifyConfiguration(OpenCodeHarnessConfigurationSchema.parse({
+      harness: 'opencode', model, variant: '', nativeAgent: 'plan', thinking: false, autoApprove: false,
+    }), input.directory)
+  } finally {
+    factories.stopAuxiliaries()
+    await factories.disposeAuxiliaries()
+  }
+}
+
 /** Probe from the real harness's MCP child before initialization completes. */
 async function installProbe(input: NativeHttpIsolationInput) {
   const script = join(input.directory, 'native-mcp-probe.cjs')
   const report = join(input.directory, 'native-mcp-results.json')
+  const marker = randomUUID()
+  await writeFile(join(input.directory, 'native-probe-marker'), marker, { mode: 0o600 })
   const probe = input.script.replace('process.env.FOREMAN_CODE_MCP_TOKEN', JSON.stringify(input.token))
   await writeFile(script, `
     const fs = require('node:fs');
     const readline = require('node:readline');
     let complete = false;
     console.log = value => {
-      fs.writeFileSync(${JSON.stringify(`${report}.tmp`)}, value, {mode:0o600});
+      const observed = JSON.parse(value);
+      observed.placementMarker = fs.readFileSync('native-probe-marker', 'utf8');
+      fs.writeFileSync(${JSON.stringify(`${report}.tmp`)}, JSON.stringify(observed), {mode:0o600});
       fs.renameSync(${JSON.stringify(`${report}.tmp`)}, ${JSON.stringify(report)});
       complete = true;
     };
@@ -135,5 +179,5 @@ async function installProbe(input: NativeHttpIsolationInput) {
       })().catch(error => { console.error(error.message); process.exitCode = 1; });
     });
   `, { mode: 0o600 })
-  return { script, report }
+  return { script, report, marker }
 }

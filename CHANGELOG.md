@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.34] - 2026-10-06
+
+### Fixed
+
+- Pass the owned fixture directory explicitly to terminal OpenCode requests, preventing inherited PWD from creating the native session in the surrounding checkout.
+- Verify native MCP startup reads the fixture's unique placement marker while preserving every local HTTP denial, scoped MCP permission and cleanup assertion.
+- Check the selected native OpenCode model and provider through the shared qualification service before terminal launch, keeping unsupported models separate from missing provider credentials and closing the diagnostic process before the unregistered isolation client starts.
+- Terminal OpenCode local-human isolation remains untested on Claude/OpenCode (laptops are Codex-only). Its native model lookup failed before the MCP probe; native preflight now reports missing provider credentials explicitly. Both Codex isolation cases passed on Mana.
+
 ## [0.0.33] - 2026-10-06
 
 ### Fixed
