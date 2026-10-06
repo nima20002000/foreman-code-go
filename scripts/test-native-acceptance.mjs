@@ -53,6 +53,16 @@ export function nativeAcceptanceVitestArguments(files, environment) {
     ...(pattern ? ['--testNamePattern', pattern] : [])]
 }
 
+export function nativeAcceptanceCommand(files, environment) {
+  const cli = join(dirname(require.resolve('vitest/package.json')), 'vitest.mjs')
+  return {
+    executable: process.execPath,
+    arguments: [join(root, 'scripts/heavy-job.mjs'), '--', process.execPath, cli,
+      ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=12'],
+    directory: join(root, 'apps/api'),
+  }
+}
+
 export async function withNativeAcceptanceDatabase(configured, evidenceRoot, execute) {
   if (configured) requireLoopbackTestDatabase(configured)
   const server = adminDatabaseUrl(configured)
@@ -88,11 +98,9 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
 }
 
 async function runNativeAcceptance(environment, files) {
-  const child = spawn(process.execPath, [
-    'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
-    'vitest', ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=12',
-  ], {
-    cwd: root, stdio: 'inherit', detached: true,
+  const command = nativeAcceptanceCommand(files, environment)
+  const child = spawn(command.executable, command.arguments, {
+    cwd: command.directory, stdio: 'inherit', detached: true,
     env: environment,
   })
   let interrupted

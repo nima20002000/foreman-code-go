@@ -7,7 +7,26 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { promisify } from 'node:util'
 import { nativeAcceptanceConfiguration, nativeAcceptanceEnvironment, nativeAcceptanceFiles,
-  nativeAcceptanceVitestArguments } from './test-native-acceptance.mjs'
+  nativeAcceptanceVitestArguments, nativeAcceptanceCommand } from './test-native-acceptance.mjs'
+
+test('native execution uses installed Vitest after the data directory changes without installing dependencies', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-acceptance-dependencies-'))
+  const bin = join(directory, 'bin')
+  try {
+    await mkdir(bin)
+    await writeFile(join(bin, 'corepack'), '#!/bin/sh\nexit 82\n', { mode: 0o700 })
+    const environment = nativeAcceptanceEnvironment({ ...process.env, HOME: directory,
+      XDG_DATA_HOME: join(directory, 'data'), XDG_CACHE_HOME: join(directory, 'cache'),
+      PATH: [bin, process.env.PATH].join(delimiter) })
+    const command = nativeAcceptanceCommand(['--version'], environment)
+    const result = await promisify(execFile)(command.executable, command.arguments, {
+      cwd: command.directory, env: environment, timeout: 30000,
+    })
+    assert.match(result.stdout, /vitest\//)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('native launchers retain the running Node interpreter when HOME is isolated', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'native-acceptance-runtime-'))
