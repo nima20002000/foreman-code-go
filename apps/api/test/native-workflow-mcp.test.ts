@@ -77,6 +77,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
     restore = await configureNativeWorkflowMcp({ projectDirectory,
       runtimeDirectory: join(directory, 'runtime'), codexBinary: 'recorded', openCodeBinary: 'recorded' })
     const ownedHome = process.env.CODEX_HOME!
+    const ownedConfigHome = process.env.XDG_CONFIG_HOME!
     const configured = JSON.parse(await readFile(process.env.OPENCODE_CONFIG!, 'utf8')) as {
       mcp: Record<string, { type: string; command: string[]; environment: Record<string, string> }>
     }
@@ -101,6 +102,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
     expect(process.env.XDG_CONFIG_HOME).toBe(previousConfigHome)
     expect(await readFile(join(sourceConfigDirectory, 'opencode.json'), 'utf8')).toBe(sourceConfig)
     await expect(access(ownedHome)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(ownedConfigHome)).rejects.toMatchObject({ code: 'ENOENT' })
   } finally {
     try { await restore?.() }
     finally {

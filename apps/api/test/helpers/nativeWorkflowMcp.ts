@@ -43,8 +43,10 @@ export async function configureNativeWorkflowMcp(input: {
     else process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDirectory
     if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
     else process.env.XDG_CONFIG_HOME = previousConfigHome
-    await removeFixtureDirectory(codexHomeDirectory)
-    if (openCodeConfigHome) await removeFixtureDirectory(openCodeConfigHome)
+    const directories = [codexHomeDirectory, ...(openCodeConfigHome ? [openCodeConfigHome] : [])]
+    const removed = await Promise.allSettled(directories.map(directory => removeFixtureDirectory(directory)))
+    const errors = removed.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (errors.length) throw new AggregateError(errors, 'Native fixture profile cleanup failed.')
   }
   try {
     // Inspect copied configuration against its original managed-launcher location.
