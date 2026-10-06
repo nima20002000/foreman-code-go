@@ -143,16 +143,26 @@ export class LocalWorkflowArtifactAuthority {
       || !['running', 'waiting'].includes(current.execution.state)) {
       return denied('The saved artifact context cannot write in this execution state.')
     }
-    const live = await query.query(`select 1 from runs r join execution_native_closures c on c.execution_id=$2
+    const live = await query.query<{
+      stopped: boolean; cleanup: boolean; closed: boolean; detached: boolean;
+      correlation_matches: boolean; turn_matches: boolean; lease_held: boolean | null
+    }>(`select r.stop_requested_at is not null as stopped,
+      exists(select 1 from run_cleanup_intents where run_id=r.id and pending) as cleanup,
+      c.closed_at is not null as closed,c.detached_at is not null as detached,
+      l.record->>'correlationId'=$5 as correlation_matches,l.record->>'currentTurnOrMessageId'=$6 as turn_matches,
+      (l.record->>'leaseExpiresAt')::timestamptz>clock_timestamp() as lease_held
+      from runs r join execution_native_closures c on c.execution_id=$2
       join native_session_lanes l on l.harness=$7 and l.native_session_id=$3 and l.owner_agent_id=$4
-      where r.id=$1 and r.stop_requested_at is null
-      and not exists(select 1 from run_cleanup_intents where run_id=r.id and pending)
-      and c.closed_at is null and c.detached_at is null
+      where r.id=$1
       and c.generation=(select max(generation) from execution_native_closures where execution_id=$2)
-      and l.record->>'correlationId'=$5 and l.record->>'currentTurnOrMessageId'=$6
-      and (l.record->>'leaseExpiresAt')::timestamptz>clock_timestamp() for share of r,c,l`,
+      for share of r,c,l`,
     [current.run.id, current.execution.id, context.nativeSessionId, current.execution.agentId,
       `execution:${current.execution.id}`, context.turnId, current.configuration.harness.harness])
-    if (live.rowCount !== 1) return denied('The original native lifetime and turn writer are not active.')
+    const state = live.rows[0]
+    if (live.rowCount !== 1 || !state || state.stopped || state.cleanup || state.closed || state.detached
+      || state.correlation_matches !== true || state.turn_matches !== true || state.lease_held !== true) {
+      throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original local artifact execution is unavailable.', 403,
+        { reason: 'The original native lifetime and turn writer are not active.', ...(state ? { conditions: state } : {}) })
+    }
   }
 }
