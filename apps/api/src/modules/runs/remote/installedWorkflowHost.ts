@@ -1,5 +1,5 @@
 import { constants } from 'node:fs'
-import { componentLogger } from '../../../infrastructure/logger.js'
+import { componentLogger } from '../../diagnostics/logger.js'
 import { open, realpath } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'

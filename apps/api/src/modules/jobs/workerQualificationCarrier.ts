@@ -10,7 +10,7 @@ import { inspectInstalledJobRuntime, type InstalledRuntimeConfigurationLocation 
 import { runInstalledJobRuntimeQualification, reconcileInstalledJobRuntimeQualification } from './installedRuntimeQualification.js'
 import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { DomainError } from '../errors.js'
 
 /** All diagnostic processes and OCI objects stay on this original installed

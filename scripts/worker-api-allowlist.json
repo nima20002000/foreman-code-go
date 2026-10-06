@@ -1,6 +1,6 @@
 [
-  "apps/api/src/infrastructure/logger.ts",
-  "apps/api/src/infrastructure/runtimeTiming.ts",
+  "apps/api/src/modules/diagnostics/logger.ts",
+  "apps/api/src/modules/diagnostics/runtimeTiming.ts",
   "apps/api/src/mcp/shared/results.ts",
   "apps/api/src/modules/byte-transfer/carrier.ts",
   "apps/api/src/modules/byte-transfer/installedEntrypoints.ts",
