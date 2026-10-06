@@ -72,7 +72,8 @@ it('keeps source development commands usable after successful and failed product
 
 
 it('loads the compiled API using only its deployed production dependencies', async () => {
-  const { deployProductionApi } = await import('../../../scripts/local-production-runtime.mjs')
+  const script = new URL('../../../scripts/local-production-runtime.mjs', import.meta.url).href
+  const { deployProductionApi } = await import(script)
   const execute = promisify(execFile)
   const source = fileURLToPath(new URL('../../../', import.meta.url))
   const directory = await mkdtemp(join(tmpdir(), 'production-runtime-dependencies-'))
