@@ -29,6 +29,8 @@ import { inspectOpenCodeMcpConfiguration } from '../src/modules/harnesses/openco
 import { DomainError } from '../src/modules/errors.js'
 import * as mcpResults from '../src/mcp/shared/results.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
+import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
 import { detectedClaudeProfilePath } from '../src/modules/harnesses/claudeSdk/productionMetadata.js'
@@ -133,6 +135,19 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         .filter(([name, value]) => /TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL/.test(name) && value)
         .map(([, value]) => value!))
       const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail }> = []
+      const nativeHistories: unknown[] = []
+      const reconcile = OpenCodeNativeSessionManager.prototype.reconcile
+      const historyObserver = vi.spyOn(OpenCodeNativeSessionManager.prototype, 'reconcile')
+        .mockImplementation(async function (this: OpenCodeNativeSessionManager, session, correlationId, signal) {
+          const history = await reconcile.call(this, session, correlationId, signal)
+          if (history.terminalTurn && nativeHistories.length < 8) {
+            nativeHistories.push(nativePersistenceRedactor([...secrets]).value({
+              nativeSessionId: session.nativeSessionId, correlationId,
+              ...history, events: history.events.slice(-64),
+            }))
+          }
+          return history
+        })
       const toolFailure = mcpResults.toolFailure
       const mcpFailureObserver = vi.spyOn(mcpResults, 'toolFailure').mockImplementation((error, message) => {
         if (nativeFailures.length < 16 && (!(error instanceof DomainError) || error.status >= 500)) {
@@ -311,6 +326,30 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             harness,
             prompt: { system: 'Produce the requested report using only the four declared tools whose names end in files_native_output_create, files_native_output_append, files_native_output_seal, and files_native_output_publish. Do not write files with shell tools. Follow the Foreman Code artifact and work-handoff result contracts.' },
           })
+        }
+        if (usesOpenCode) {
+          const registry = new NativeProcessRegistry(join(runtimeRoot, 'native-process-registry'))
+          const factories = new NativeHarnessFactories({ ...binaries,
+            auxiliaryRecovery: role => registry.scope(`workflow-qualification:${role}:${randomUUID()}`),
+            admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
+            abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
+            closeRecovery: async recovery => {
+              if (!await registry.closeOwner(recovery.owner)) throw new Error('Native provider inspection closure is unconfirmed.')
+            },
+          })
+          try {
+            const qualified = new Set<string>()
+            for (const configuration of configurations) {
+              if (configuration.harness.harness !== 'opencode') continue
+              const key = JSON.stringify(configuration.harness)
+              if (qualified.has(key)) continue
+              await factories.qualifyConfiguration(configuration.harness, projectPath, AbortSignal.timeout(30_000))
+              qualified.add(key)
+            }
+          } finally {
+            factories.stopAuxiliaries()
+            await factories.disposeAuxiliaries()
+          }
         }
         const workspace = WorkspaceSchema.parse({ id: fixture.scope.workspaceId, name: 'NIM-2691 native qualification' })
         const canonicalPath = await realpath(projectPath), details = await stat(projectPath)
@@ -927,7 +966,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               [observedRunId],
             )).rows : []
             const evidence = nativePersistenceRedactor([...secrets]).value({
-              scenario: scenario.name, runId: observedRunId, nativeFailures, cancellations, executions,
+              scenario: scenario.name, runId: observedRunId, nativeFailures, nativeHistories, cancellations, executions,
               run: observedRunId ? (await pool.query('select record from runs where id=$1', [observedRunId])).rows : [],
               runControl: observedRunId ? (await pool.query(
                 `select stop_requested_at is not null as stopped,
@@ -955,6 +994,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       sessionObserver.mockRestore()
       cancellationObserver.mockRestore()
       mcpFailureObserver.mockRestore()
+      historyObserver.mockRestore()
       const cleanupErrors: unknown[] = []
       if (artifactBoundary) {
         try { await artifactBoundary.query('rollback') }
