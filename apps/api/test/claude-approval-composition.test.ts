@@ -148,6 +148,7 @@ describe('production Claude approval composition', () => {
       stage('disposing')
       validation.mockRestore()
       await f.manager.dispose?.()
+      stage('native manager disposed')
       await endpoint.app.close()
       stage('cleanup complete')
     }
