@@ -1,4 +1,6 @@
 import { publicationSignal } from './publicationSignal.js'
+import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
+import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
 import { runtimeTimingChannel, type RuntimeTimingRecord } from '../../src/infrastructure/runtimeTiming.js'
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
@@ -23,7 +25,7 @@ import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService as WorkerCredentialService } from '../../src/modules/interactions/wave25/credentials.js'
 import { CodexAppServerSessionManager } from '../../src/modules/harnesses/codexAppServer.js'
-import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from '../../src/modules/harnesses/opencodeServer.js'
+import { OpenCodeNativeSessionManager } from '../../src/modules/harnesses/opencodeServer.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from '../../src/modules/harnesses/mcpDetection.js'
 import { codexMcpInspectorAdapter } from '../../src/modules/harnesses/codexMcpInspectorAdapter.js'
@@ -57,24 +59,6 @@ import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
 import { seedAgent3 } from './wave25Agent3.js'
 import { configureNativeWorkflowMcp } from './nativeWorkflowMcp.js'
-
-function nativeFailureDetails(error: unknown, depth = 0): Record<string, unknown> {
-  if (!(error instanceof Error)) return { name: typeof error }
-  const code = 'code' in error && typeof error.code === 'string'
-    && /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : null
-  const details: Record<string, unknown> = {
-    name: error.name,
-    code,
-    message: nativePersistenceRedactor([]).text(error.message).slice(0, 2_000),
-  }
-  if (depth < 3) {
-    if (error instanceof AggregateError) {
-      details.errors = error.errors.slice(0, 8).map(item => nativeFailureDetails(item, depth + 1))
-    }
-    if (error.cause !== undefined) details.cause = nativeFailureDetails(error.cause, depth + 1)
-  }
-  return details
-}
 
 const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
@@ -113,6 +97,16 @@ export interface Eng03NativeOptions {
 
 interface RuntimeInstance extends Eng03NativeRuntime {
   managers: ExecutionScopedNativeSessionManagerResolver
+  factories: NativeHarnessFactories
+}
+
+interface NativeScenarioResult {
+  artifactPath: string
+  outcome: 'succeeded' | 'failed'
+  overlap: boolean
+  identitiesDistinct: boolean
+  joinExact: boolean
+  cleanup: boolean
 }
 
 interface NativeInterval {
@@ -187,7 +181,12 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let restoreNativeMcp: (() => Promise<void>) | undefined
   let runId: string | undefined
   let stopRun: (() => Promise<boolean>) | undefined
+  let scenarioFailure: unknown
+  let scenarioResult: NativeScenarioResult | undefined
+  const cleanupErrors: unknown[] = []
   const runtimeTimeline: RuntimeTimingRecord[] = []
+  const nativeSecrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
+    .map(([, value]) => value).filter((value): value is string => Boolean(value))
   let droppedTimingRecords = 0
   const captureTiming = (message: unknown) => {
     if (runtimeTimeline.length < 100_000) runtimeTimeline.push(message as RuntimeTimingRecord)
@@ -268,6 +267,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         { actions: ['runs:start', 'runs:stop', 'runs:read'], scope: { workspaceIds: [fixture.scope.workspaceId], workflowIds: [fixture.scope.workflowId] } },
         { actions: ['workspace_locations:read', 'workspace_locations:update'], scope: { workspaceIds: [fixture.scope.workspaceId] } },
       ] })
+    nativeSecrets.push(authority.token)
     const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), runtimeDirectory)
     const location = await locations.set(authority.principal, 'http', { workspaceId: fixture.scope.workspaceId,
       commandId: randomUUID(), expectedLocationRevision: 1, runnerId: locations.runnerId, rootPath: projectDirectory })
@@ -367,16 +367,27 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       }
       const interactions = new Wave25InteractionRepository(livePool, new ReviewNativeProofServices(reviewCapture.verify))
       const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
-      const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
+      const factories = new NativeHarnessFactories({
+        codexBinary, openCodeBinary, appMcpEndpoint: endpoint,
+        auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
+        admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
+        abandonRecovery: recovery => registry.abandonReservedLaunch(recovery),
+        closeRecovery: async recovery => {
+          if (!await registry.closeOwner(recovery.owner)) throw new Error('Native diagnostic closure is unconfirmed.')
+        },
+      })
+      const managers = new ExecutionScopedNativeSessionManagerResolver(context => {
         const config = context.configuration.harness
         if (config.harness !== context.harness) throw new Error('Pinned harness mismatch')
         if (config.harness === 'claude') throw new Error('ENG-03 native acceptance only qualifies Codex and OpenCode')
-        if (config.harness === 'codex') return new CodexAppServerSessionManager(codexBinary, undefined, undefined,
-          registry.scope(`execution:${context.executionId}`))
-        return new OpenCodeNativeSessionManager({ server: new ManagedOpenCodeServer({ binary: openCodeBinary,
-          processRecovery: registry.scope(`execution:${context.executionId}`), workingDirectory: context.workingDirectory,
-          ownerAgentId: context.agentId, ...(config.advanced ? { advancedConfiguration: config.advanced } : {}) }),
-          ownerAgentId: context.agentId, expectedAppMcpEndpoint: endpoint })
+        return factories.allocate({
+          harness: config.harness, role: 'workflow', appMcpAccess: 'scoped',
+          ownerAgentId: context.agentId, workingDirectory: context.workingDirectory,
+          processRecovery: registry.scope(`execution:${context.executionId}`),
+          configured: { instanceId: context.configuration.id, instanceRevision: context.configuration.contentHash,
+            driverId: config.harness, enabled: true, configuration: config },
+          ...(config.harness === 'opencode' && config.advanced ? { advancedConfiguration: config.advanced } : {}),
+        }).manager
       })
       const validateContinuation = continuationValidator(livePool, locations)
       const workerCredentials = new WorkerCredentialService(livePool, new PostgresAccessService(livePool))
@@ -412,6 +423,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           } }
           const prepared = await new WorkerLaunchCredentialService(new McpDetectionService(diagnosticInspector, endpoint), workerCredentials, 'runner-local').prepare(input)
           await mcpRoutes!.refresh()
+          nativeSecrets.push(...Object.values(prepared.credential.environment.variables))
           return prepared
         },
         revoke: (credential) => workerCredentials.revoke(credential),
@@ -441,13 +453,13 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           if (errors.length < 16) errors.push({ executionId: input.execution.id,
             occurredAt: new Date().toISOString(),
             failures,
-            ...nativeFailureDetails(error) })
+            ...describeNativeFailure(error, nativeSecrets) })
           throw error
         }
       }
       const engine = new LangGraphWorkflowEngine(runs, workflows, approvals, saver, runtimeDirectory, locations,
         credentials, interactions, undefined, { workerParallelism: 2 })
-      return { engine, runs, approvals, interactions, budgets, registry, managers }
+      return { engine, runs, approvals, interactions, budgets, registry, managers, factories }
     }
     activeRuntime = makeRuntime(checkpoints.saver)
     engine = activeRuntime.engine
@@ -465,7 +477,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     evidence.startTaskState = 'pending'
     if (options.control) void startTask.then(() => { evidence.startTaskState = 'fulfilled' }, (error: unknown) => {
       evidence.startTaskState = 'rejected'
-      evidence.startError = nativeFailureDetails(error)
+      evidence.startError = describeNativeFailure(error, nativeSecrets)
     })
     const restartRuntime = async (kind: 'waiting' | 'terminal_unaccepted'): Promise<Eng03NativeRuntime> => {
       if (kind === 'waiting') await startTask
@@ -500,6 +512,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       if (stopBefore.rows[0]?.stop_requested_at) throw new Error('A stopped Run cannot exercise waiting restart.')
       await activeRuntime.engine.shutdown()
       await activeRuntime.managers.dispose()
+      activeRuntime.factories.stopAuxiliaries()
+      await activeRuntime.factories.disposeAuxiliaries()
       await checkpoints.close()
       checkpoints = createCheckpointStore(url.toString(), schema)
       await checkpoints.setup()
@@ -606,12 +620,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       nativeEventSummary: executions.map((execution) => ({ id: execution.id,
         events: nativeEvents.filter((event) => event.executionId === execution.id)
           .map(({ type, occurredAt, sequence }) => ({ type, occurredAt, sequence })) })) })
-    return { artifactPath, outcome, overlap, identitiesDistinct, joinExact: joined, cleanup }
+    scenarioResult = { artifactPath, outcome, overlap, identitiesDistinct, joinExact: joined, cleanup }
   } catch (error) {
-    console.error('ENG03_NATIVE_FAILURE', JSON.stringify({ scenario,
-      startError: evidence.startError, observationErrors: evidence.nativeObservationErrors,
-      mcpInspectionErrors: evidence.mcpInspectionErrors }))
-    evidence.error = nativeFailureDetails(error)
+    scenarioFailure = error
+    evidence.error = describeNativeFailure(error, nativeSecrets)
     evidence.failureAt = new Date().toISOString()
     evidence.failureStartTaskState = evidence.startTaskState
     if (runId && pool) {
@@ -666,27 +678,45 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       evidence.failureNativeEvents = events?.rows
     }
     await stopRun?.().catch(() => undefined)
-    throw error
   } finally {
-    await engine?.shutdown().catch(() => undefined)
-    await activeRuntime?.managers.dispose().catch(() => undefined)
-    await mcpRoutes?.close().catch(() => undefined)
-    await mcpApp?.close().catch(() => undefined)
-    if (runId) await checkpoints?.saver.deleteThread(runId).catch(() => undefined)
-    await checkpoints?.close().catch(() => undefined)
-    await pool?.end().catch(() => undefined)
-    await admin.query(`drop schema if exists ${schema} cascade`).catch(() => undefined)
-    await admin.end()
+    activeRuntime?.factories.stopAuxiliaries()
+    const phases = [
+      [() => engine?.shutdown()],
+      [() => activeRuntime?.managers.dispose(), () => activeRuntime?.factories.disposeAuxiliaries()],
+      [() => mcpRoutes?.close(), () => mcpApp?.close()],
+      [() => restoreNativeMcp?.()],
+      [() => runId ? checkpoints?.saver.deleteThread(runId) : undefined],
+      [() => checkpoints?.close(), () => pool?.end()],
+      [() => admin.query(`drop schema if exists ${schema} cascade`)],
+      [() => admin.end()],
+    ]
+    for (const phase of phases) {
+      const results = await Promise.allSettled(phase.map(close => Promise.resolve().then(close)))
+      for (const result of results) if (result.status === 'rejected') cleanupErrors.push(result.reason)
+    }
+    if (cleanupErrors.length) {
+      evidence.cleanupError = describeNativeFailure(new AggregateError(cleanupErrors,
+        'Native acceptance cleanup failed.'), nativeSecrets)
+    }
     timing.totalMs = Math.round(performance.now() - scenarioBegan)
     runtimeTimingChannel.unsubscribe(captureTiming)
     evidence.droppedTimingRecords = droppedTimingRecords
     evidence.finishedAt = new Date().toISOString()
-    try {
-      await restoreNativeMcp?.()
-      await writeFile(artifactPath, JSON.stringify(evidence, null, 2))
-    } finally {
-      if (!process.env.ENG03_A_KEEP_RUNTIME) await rm(root, { recursive: true, force: true })
+    if (evidence.error || evidence.startError || evidence.cleanupError) {
+      console.error(`Native acceptance failure ${nativeFailureSummary(evidence, nativeSecrets)}`)
     }
+    const finalized = await Promise.allSettled([
+      writeFile(artifactPath, JSON.stringify(nativePersistenceRedactor(nativeSecrets).value(evidence), null, 2)),
+      rm(root, { recursive: true, force: true }),
+    ])
+    for (const result of finalized) if (result.status === 'rejected') cleanupErrors.push(result.reason)
     process.stdout.write(`ENG03 evidence ${artifactPath}\n`)
   }
+  if (cleanupErrors.length) {
+    const failures = [...cleanupErrors]
+    if (evidence.error) failures.unshift(scenarioFailure)
+    throw new AggregateError(failures, 'Native acceptance or cleanup failed.', { cause: scenarioFailure })
+  }
+  if (evidence.error) throw scenarioFailure
+  return scenarioResult!
 }

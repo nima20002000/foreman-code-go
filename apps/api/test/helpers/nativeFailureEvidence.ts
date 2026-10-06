@@ -9,6 +9,22 @@ export interface NativeFailureDetail {
   causes?: NativeFailureDetail[]
 }
 
+/** Emit the failed operation's bounded state before disposable artifacts are removed. */
+export function nativeFailureSummary(evidence: Record<string, unknown>, secrets: readonly string[]): string {
+  const fields = ['scenario', 'error', 'startError', 'cleanupError', 'startTaskState', 'mcpInspectionErrors',
+    'failureExecutions', 'failureNativeHistories', 'nativeObservationErrors', 'failureInteractions',
+    'checks', 'failureReason']
+  const selected = Object.fromEntries(fields.filter(name => evidence[name] !== undefined)
+    .map(name => [name, evidence[name]]))
+  const privateField = /^(?:environment|variables|headers|authorization|cookie|token|password|secret|credential|input|output|body|responseBody)$/i
+  return JSON.stringify(nativePersistenceRedactor(secrets).value(selected), (key, value: unknown) => {
+    if (privateField.test(key)) return undefined
+    if (typeof value === 'string') return value.slice(0, 2_048)
+    if (Array.isArray(value)) return value.slice(0, 16)
+    return value
+  }).slice(0, 32_768)
+}
+
 export function describeNativeFailure(error: unknown, secrets: readonly string[], depth = 0): NativeFailureDetail {
   const redactor = nativePersistenceRedactor(secrets)
   const detail: NativeFailureDetail = {

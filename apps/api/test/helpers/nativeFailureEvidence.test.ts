@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
-import { describeNativeFailure } from './nativeFailureEvidence.js'
+import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
 
 it('retains the native failure reason and nested causes without exposing credentials or error fields', () => {
   const token = `opm_${'a'.repeat(43)}`
@@ -26,4 +26,26 @@ it('bounds cyclic causes and long native messages before writing failure evidenc
   expect(result.message).toHaveLength(2048)
   expect(result.causes?.[0]?.causes?.[0]?.causes?.[0]?.causes).toBeUndefined()
   expect(() => JSON.stringify(result)).not.toThrow()
+})
+
+it('keeps actionable failed-execution codes in the run log and redacts issued credentials', () => {
+  const credential = 'issued-native-credential-fixture'
+  const summary = nativeFailureSummary({
+    scenario: 'native-restart',
+    error: describeNativeFailure(new Error('No native start.'), []),
+    failureExecutions: [{ state: 'failed', result: { outcome: 'failed',
+      error: { code: 'CODEX_DIAGNOSTIC_OWNER_REQUIRED', message: `Refresh failed ${credential}` },
+      environment: { token: 'unknown-cold-credential' }, output: 'private-native-output' } }],
+    environment: { credential },
+    runtimeTimeline: ['unrelated'],
+  }, [credential])
+  expect(JSON.parse(summary)).toMatchObject({ scenario: 'native-restart',
+    failureExecutions: [{ result: { error: { code: 'CODEX_DIAGNOSTIC_OWNER_REQUIRED',
+      message: 'Refresh failed [REDACTED]' } } }] })
+  expect(summary).not.toContain(credential)
+  expect(summary).not.toContain('environment')
+  expect(summary).not.toContain('unknown-cold-credential')
+  expect(summary).not.toContain('private-native-output')
+  expect(summary).not.toContain('unrelated')
+  expect(JSON.parse(nativeFailureSummary({ error: 'x'.repeat(100_000) }, [])).error).toHaveLength(2_048)
 })

@@ -6,6 +6,7 @@ import { createRequire } from 'node:module'
 import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { adminDatabaseUrl, requireLoopbackTestDatabase } from './test-integration.mjs'
+import { withNativeAcceptanceStorage } from './native-acceptance-storage.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
@@ -109,14 +110,14 @@ async function main() {
         NIM2691_ADMIN_DATABASE_URL: databaseUrl,
       }
       delete environment.TEST_DATABASE_URL
-      return new Promise((resolve, reject) => {
+      return withNativeAcceptanceStorage(environment, nativeEnvironment => new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [
           'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
           'vitest', ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=12',
-        ], { cwd: root, env: environment, stdio: 'inherit' })
+        ], { cwd: root, env: nativeEnvironment, stdio: 'inherit' })
         child.once('error', reject)
         child.once('exit', (code, signal) => resolve(code ?? (signal === 'SIGINT' ? 130 : 143)))
-      })
+      }))
     })
   process.exitCode = record.exitCode
 }

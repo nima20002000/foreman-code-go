@@ -7,8 +7,11 @@ import { AgentConfigurationVersionSchema, type AgentConfigurationVersion, type N
 
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { closeQualificationResources } from '../src/modules/harnesses/qualification/cleanup.js'
 import type { NativeHarnessSessionManager, WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import { readNativeSource } from './helpers/agentChatNativeSource.js'
+import { describeNativeFailure, nativeFailureSummary } from './helpers/nativeFailureEvidence.js'
 
 /**
  * Real installed Codex/OpenCode Agent chat through the production runtime factory.
@@ -36,7 +39,8 @@ async function turn(manager: NativeHarnessSessionManager, session: NativeSession
   const correlation = `agent-chat:${conversation}:${randomUUID()}`
   for await (const event of manager.startTurn(session, { prompt, clientCorrelationId: correlation })) void event
   const history = await manager.reconcile(session, correlation)
-  expect(history.terminalResult?.outcome).toBe('succeeded')
+  expect(history.terminalResult?.outcome,
+    nativeFailureSummary({ failureExecutions: [{ result: history.terminalResult }] }, [])).toBe('succeeded')
   return JSON.stringify(history.terminalResult?.output ?? '')
 }
 
@@ -45,9 +49,18 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
     it(`${harness}: fork keeps context in a new session and leaves the source unchanged`, async () => {
       const directory = await realpath(await mkdtemp(join(tmpdir(), `agent-chat-${harness}-`)))
       const config = configuration(harness)
-      const factories = new NativeHarnessFactories(binaries)
+      const registry = new NativeProcessRegistry(join(directory, 'native-processes'))
+      const factories = new NativeHarnessFactories({ ...binaries,
+        auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
+        admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
+        abandonRecovery: recovery => registry.abandonReservedLaunch(recovery),
+        closeRecovery: async recovery => {
+          if (!await registry.closeOwner(recovery.owner)) throw new Error('Native diagnostic closure is unconfirmed.')
+        },
+      })
       const make = (): NativeHarnessSessionManager => factories.allocate({
         harness, role: 'agent-chat', workingDirectory: directory, ownerAgentId: config.agentId, appMcpAccess: 'none',
+        processRecovery: registry.scope(`agent-chat:${randomUUID()}`),
         configured: { instanceId: config.agentId, instanceRevision: config.id, driverId: harness,
           enabled: true, configuration: config.harness },
       }).manager
@@ -65,9 +78,22 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
         expect((await source.history(sourceSession)).events.length).toBe(before)
         // Fresh storage observers on BOTH sides: same event counts cannot hide changed content/IDs.
         expect(await readNativeSource(sourceSession, directory, config.agentId)).toBe(sourceBefore)
+      } catch (error) {
+        const secrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
+          .map(([, value]) => value).filter((value): value is string => Boolean(value))
+        console.error(`Native fork failure ${JSON.stringify(describeNativeFailure(error, secrets))}`)
+        throw error
       } finally {
-        await Promise.allSettled([source.dispose?.(), forker.dispose?.()])
-        await rm(directory, { recursive: true, force: true })
+        factories.stopAuxiliaries()
+        try {
+          await closeQualificationResources([
+            { close: async () => { await source.dispose?.() } },
+            { close: async () => { await forker.dispose?.() } },
+            { close: () => factories.disposeAuxiliaries() },
+          ])
+        } finally {
+          await rm(directory, { recursive: true, force: true })
+        }
       }
     }, 240_000)
   }

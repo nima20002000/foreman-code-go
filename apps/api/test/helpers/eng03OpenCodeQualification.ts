@@ -19,6 +19,7 @@ import { nativeCompatibilityProbe } from '../../src/modules/harnesses/compatibil
 import { clearQualificationGate, installQualificationGate } from '../../src/modules/harnesses/qualification/gate.js'
 import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeServer.js'
 import { record } from '../../src/modules/harnesses/nativeMcpCommon.js'
+import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
 
 /** Actual qualification through the audited service; never seed a qualified row
  * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
@@ -37,11 +38,18 @@ export async function qualifyEng03OpenCode() {
   let service: HarnessQualificationService | undefined
   const close = async () => {
     clearQualificationGate()
-    await service?.shutdown()
-    await pool.end()
-    await admin.query(`drop schema ${schema} cascade`)
-    await admin.end()
-    await rm(directory, { recursive: true, force: true })
+    const errors: unknown[] = []
+    const phases = [
+      [() => service?.shutdown()],
+      [() => pool.end()],
+      [() => admin.query(`drop schema if exists ${schema} cascade`)],
+      [() => admin.end(), () => rm(directory, { recursive: true, force: true })],
+    ]
+    for (const phase of phases) {
+      const results = await Promise.allSettled(phase.map(close => Promise.resolve().then(close)))
+      for (const result of results) if (result.status === 'rejected') errors.push(result.reason)
+    }
+    if (errors.length) throw new AggregateError(errors, 'Native qualification cleanup failed.')
   }
   try {
     await applyApplicationMigrations(pool)
@@ -87,9 +95,26 @@ export async function qualifyEng03OpenCode() {
       assert.equal((await registry.inspectBinary(binary)).sha256, sha256, 'Native binary changed during qualification')
       signal?.throwIfAborted()
     }
+    const secrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
+      .map(([, value]) => value).filter((value): value is string => Boolean(value))
+    const diagnosticSuite: typeof opencodeQualificationSuite = {
+      ...opencodeQualificationSuite,
+      async run(input) {
+        try {
+          const result = await opencodeQualificationSuite.run(input)
+          if (result.checks.some(check => !check.passed)) {
+            console.error(`OpenCode qualification checks ${nativeFailureSummary({ checks: result.checks }, secrets)}`)
+          }
+          return result
+        } catch (error) {
+          console.error(`OpenCode qualification failure ${JSON.stringify(describeNativeFailure(error, secrets))}`)
+          throw error
+        }
+      },
+    }
     const suites = { codex: withNativeQualificationOwnership(codexQualificationSuite, processes,
       (input) => guard(input.binary, input.binarySha256)),
-    opencode: withNativeQualificationOwnership(opencodeQualificationSuite, processes,
+    opencode: withNativeQualificationOwnership(diagnosticSuite, processes,
       (input) => guard(input.binary, input.binarySha256)) }
     service = new HarnessQualificationService(repository, registry, suites, binaries,
       new PostgresCommandCoordinator(pool), settings, undefined, undefined,
@@ -124,5 +149,12 @@ export async function qualifyEng03OpenCode() {
     assert.equal(await registry.trustedExact('opencode', qualification.version, qualification.binarySha256), true)
     installQualificationGate(registry, service)
     return close
-  } catch (error) { await close(); throw error }
+  } catch (error) {
+    try {
+      await close()
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Native qualification and cleanup failed.', { cause: error })
+    }
+    throw error
+  }
 }
