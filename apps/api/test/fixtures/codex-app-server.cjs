@@ -218,7 +218,6 @@ setInterval(() => {
       })().catch(error => log({ nativeManagementResult: { id: message.id, error: error.message } }))
       continue
     }
-
     if (message.id !== undefined && message.method && owner && !outstanding.has(message.id)) {
       outstanding.set(message.id, { threadId: owner.id, turnId: message.params.turnId || owner.turns.at(-1)?.id,
         remaining: 0 })

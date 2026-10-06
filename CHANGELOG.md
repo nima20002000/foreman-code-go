@@ -24,6 +24,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Compensate failed workspace provisioning after receipt, audit or commit failures, retaining uncertain commits for recovery.
 - Report malformed, unsupported and oversized MCP requests as safe client errors.
 - Preserve file declarations, original native session history and both credential lifecycles when a text-first Operator resumes with an attachment.
+- Retain split native fixture notifications through complete JSONL records and avoid saved-thread reads for stateless events, preserving burst delivery, bounded history and cursor coverage.
 
 ### Security
 
