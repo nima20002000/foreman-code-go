@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.33] - 2026-10-06
+
+### Fixed
+
+- Read installed OpenCode MCP credential provenance before switching native acceptance to its owned launcher, preserving the verified token reference across merged native configuration. Keep managed-launcher and scoped credential enforcement intact; remove copied login state during cleanup.
+
 ## [0.0.32] - 2026-10-06
 
 ### Added
