@@ -1,4 +1,5 @@
 import { createConnection, createServer, type Socket } from 'node:net'
+import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { expect, it } from 'vitest'
 import { createPool } from '../src/infrastructure/pool.js'
@@ -51,8 +52,10 @@ it.skipIf(!postgresEnabled)('delivers completed queries after a delayed reply wh
   const proxy = await forwardPostgres(process.env.TEST_DATABASE_URL!)
   const pool = createPool({ connectionString: proxy.connectionString, maxConnections: 1,
     connectionTimeoutMs: 2000, queryTimeoutMs: 250 }, 'database-response-deadline')
+  const table = `response_deadline_${randomUUID().replaceAll('-', '')}`
   try {
     await pool.query('select 1')
+    await pool.query(`create table ${table}(value int primary key)`)
     proxy.hold()
     const completed = pool.query<{ value: number }>('select 42::int as value')
       .then(result => ({ rows: result.rows }), error => ({ error }))
@@ -61,6 +64,15 @@ it.skipIf(!postgresEnabled)('delivers completed queries after a delayed reply wh
     proxy.release()
     expect(await completed).toEqual({ rows: [{ value: 42 }] })
 
+    proxy.hold()
+    const committed = pool.query<{ value: number }>(`insert into ${table}(value) values(42) returning value`)
+      .then(result => ({ rows: result.rows }), error => ({ error }))
+    await proxy.received()
+    await delay(500)
+    proxy.release()
+    expect(await committed).toEqual({ rows: [{ value: 42 }] })
+    expect((await pool.query(`select value from ${table}`)).rows).toEqual([{ value: 42 }])
+
     await expect(pool.query('select pg_sleep(1)')).rejects.toMatchObject({ code: '57014' })
 
     proxy.hold()
@@ -68,6 +80,8 @@ it.skipIf(!postgresEnabled)('delivers completed queries after a delayed reply wh
     await proxy.received()
     await expect(silent).resolves.toMatchObject({ message: 'Query read timeout' })
   } finally {
-    try { await pool.end() } finally { await proxy.close() }
+    proxy.release()
+    try { await pool.query(`drop table if exists ${table}`) }
+    finally { try { await pool.end() } finally { await proxy.close() } }
   }
 }, 15_000)
