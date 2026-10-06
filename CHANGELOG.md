@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.31] - 2026-10-06
+
+### Fixed
+
+- Initialize the disposable database in the Operator Claude publication recovery fixture before its unchanged five-second behavior deadline. Keep authenticated file publication, replay, revocation and persisted readback checks, and close fixture resources after the test.
+
 ## [0.0.30] - 2026-10-06
 
 ### Fixed
