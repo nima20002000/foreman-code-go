@@ -66,9 +66,34 @@ it('shows unknown context honestly and the popover invokes the compact operation
   render(<SessionControls controls={controls} />)
   fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
   expect(screen.getByText('Current usage unknown')).toBeInTheDocument()
+  expect(screen.queryByText(/Native default window:/)).not.toBeInTheDocument()
   expect(screen.getByText('Automatic compaction: default')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Compact context' }))
   await waitFor(() => expect(controls.change).toHaveBeenCalledWith({ kind: 'compact' }))
+})
+
+it('labels estimated occupancy and separates current, configured, default and lifetime values', () => {
+  const controls = controller()
+  controls.state = SessionControlStateSchema.parse({ ...state,
+    applied: { ...state.applied, contextBudget: 100000 },
+    capabilities: { ...state.capabilities, modelCapacity: 200000, nativeDefaultCapacity: 160000 },
+    context: { nativeSessionId: 'native-chat', model: 'model', generation: 'runtime', sequence: 3,
+      observedAt: '2026-10-06T00:00:00.000Z', source: 'claude', accuracy: 'estimated',
+      usedTokens: 50000, capacityTokens: 100000, lifetimeTokens: 800000, cost: null, stale: false },
+  })
+  const view = render(<SessionControls controls={controls} />)
+  fireEvent.click(screen.getByRole('button', { name: 'About 50% context' }))
+  expect(screen.getByText('Estimated usage: 50,000 tokens in context / 100,000 native context window')).toBeInTheDocument()
+  expect(screen.getByText('Configured budget: 100,000')).toBeInTheDocument()
+  expect(screen.getByText('Model capacity: 200,000')).toBeInTheDocument()
+  expect(screen.getByText('Native default window: 160,000 tokens')).toBeInTheDocument()
+  expect(screen.getByText('Total processed: 800,000')).toBeInTheDocument()
+
+  controls.state = { ...controls.state!, context: { ...controls.state!.context!, accuracy: 'native' } }
+  view.rerender(<SessionControls controls={controls} />)
+  expect(screen.getByRole('button', { name: '50% context' })).toBeInTheDocument()
+  expect(screen.getByText('50,000 tokens in context / 100,000 native context window')).toBeInTheDocument()
+  expect(screen.queryByText(/Estimated usage:/)).not.toBeInTheDocument()
 })
 
 it('closes context details with Escape and restores focus to the meter', () => {

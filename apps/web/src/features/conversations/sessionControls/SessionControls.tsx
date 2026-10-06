@@ -40,6 +40,9 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
   const context = state.context
   const known = context?.usedTokens != null && context.capacityTokens != null
   const percentage = known ? Math.round(context.usedTokens! / context.capacityTokens! * 100) : null
+  const estimated = context?.accuracy === 'estimated'
+  const percentagePrefix = estimated ? 'About ' : ''
+  const usagePrefix = estimated ? 'Estimated usage: ' : ''
   const compactReason = state.busyReason ?? (compactionBlocksSend(state.compaction) ? 'Compaction is still unconfirmed. Refresh its status.'
     : state.capabilities.compact.reason)
   const pending = controls.mutation.isPending
@@ -58,15 +61,20 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
           {percentage !== null ? <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2"
             strokeDasharray={`${Math.min(100, percentage) * .5655} 56.55`} transform="rotate(-90 12 12)" /> : null}
         </svg>
-        {percentage === null ? 'Context unknown' : `${percentage}% context`}{context?.stale ? ' · stale' : ''}
+        {percentage === null ? 'Context unknown' : `${percentagePrefix}${percentage}% context`}
+        {context?.stale ? ' · stale' : ''}
       </Button>
       {open ? <div ref={surface} popover="manual" id={`${id}-context`} className="session-context-popover" onKeyDown={event => {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() }
       }}>
-        <p>{context?.usedTokens == null ? 'Current usage unknown' : `${context.usedTokens.toLocaleString()} tokens in context`}
+        <p>{context?.usedTokens == null ? 'Current usage unknown'
+          : `${usagePrefix}${context.usedTokens.toLocaleString()} tokens in context`}
           {context?.capacityTokens != null ? ` / ${context.capacityTokens.toLocaleString()} native context window` : ''}</p>
         {state.applied?.contextBudget ? <p>Configured budget: {state.applied.contextBudget.toLocaleString()}</p> : null}
         {state.capabilities.modelCapacity !== null ? <p>Model capacity: {state.capabilities.modelCapacity.toLocaleString()}</p> : null}
+        {state.capabilities.nativeDefaultCapacity != null ? <p>
+          Native default window: {state.capabilities.nativeDefaultCapacity.toLocaleString()} tokens
+        </p> : null}
         {context?.stale ? <p>Last known usage. Waiting for a native update.</p> : null}
         {context?.lifetimeTokens != null ? <p>Total processed: {context.lifetimeTokens.toLocaleString()}</p> : null}
         {context?.cost != null ? <p>Total cost: {context.cost}</p> : null}
