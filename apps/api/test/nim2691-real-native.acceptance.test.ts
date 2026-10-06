@@ -927,6 +927,10 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             const evidence = nativePersistenceRedactor([...secrets]).value({
               scenario: scenario.name, runId: observedRunId, nativeFailures, cancellations, executions,
               run: observedRunId ? (await pool.query('select record from runs where id=$1', [observedRunId])).rows : [],
+              runControl: observedRunId ? (await pool.query(
+                `select stop_requested_at is not null as stopped,
+                  exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup_pending
+                  from runs r where r.id=$1`, [observedRunId])).rows : [],
               nativeInputsAndResults: observedRunId ? (await pool.query(
                 'select id,record from harness_executions where run_id=$1 order by id limit 16', [observedRunId])).rows : [],
               deliveryAttempts: observedRunId ? (await pool.query(
