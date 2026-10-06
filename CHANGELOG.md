@@ -5,12 +5,30 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.0.50] - 2026-10-06
+
+### Added
+
+- Add shared Operator and Agent chat session controls for manual compaction, Plan mode, context usage and supported native context settings, with matching HTTP and Operator MCP operations.
+- Add capability-driven chat controls and persistent command receipts, preserving drafts, native session identity and denied-caller behavior.
+
+### Fixed
+
+- Keep native context observations separate from editable settings revisions and retain newer Worker receipts when replies arrive out of order.
+- Give configuration inspection separate process ownership, preserve saved OpenCode connection facts and observed version, and retain the caller on authorized Agent control reads.
+- Page complete MCP tool catalogs within existing Worker relay limits while retaining schemas, annotations, grant filtering and cursor validation.
+
+### Validation
+
+- Retain prior focused passing checks, including 85 conversation integrations, 123 Codex adapter cases, Worker ownership and callback checks, MCP catalog/permission checks, and actual namespace routing.
+- Codex Operator on Main and device, Codex Agent on Main, and OpenCode Agent on Main passed their ordinary native control journeys on earlier candidates.
+- Integrated main v0.0.49 once and passed direct typecheck and lint. Release was completed under the owner order without further native tests or a complete acceptance rerun.
+
 
 ### Verification
 
 - not verified: paired Worker restart case (moved to crosscomputer lane)
-- not verified / follow-up: Codex Agent/device first-turn callback timeout; remaining OpenCode Operator and device control journeys; Claude read-only qualification and context-setting live coverage.
+- not verified / follow-up: Codex Agent/device first-turn callback timeout; remaining OpenCode Operator and device control journeys; Claude Full-access context-setting live coverage. Main’s explicit Full-access Claude policy is preserved.
 - not verified / follow-up: browser acceptance and interrupted compaction dispatch recovery. The full session-control acceptance matrix is incomplete; no complete native or browser acceptance is claimed.
 - not verified / follow-up: final caller-context and saved OpenCode inspection adjustments received typecheck/lint only under the owner release order; native reruns were stopped.
 ## [0.0.49] - 2026-10-06
