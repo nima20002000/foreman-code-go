@@ -63,7 +63,7 @@ export async function configureNativeWorkflowMcp(input: {
   } catch (error) {
     try { await restore() }
     catch (cleanup) {
-      throw new AggregateError([error, cleanup], 'Native fixture configuration and cleanup failed.', { cause: error })
+      throw new AggregateError([error, cleanup], 'Native fixture configuration and cleanup failed.', { cause: cleanup })
     }
     throw error
   }
