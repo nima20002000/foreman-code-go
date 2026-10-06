@@ -170,6 +170,11 @@ export class PostgresInteractionCoordinationRepository {
     await appendNativeEvent(this.pool, { ...event, executionId: row.execution_id })
   }
 
+  async appendReviewNativeHistory(job: ReviewJob, events: readonly NativeHarnessEvent[],
+    projection?: Parameters<PostgresInteractionCoordinationRepository['appendReviewNativeEvent']>[2]): Promise<void> {
+    for (const event of events) await this.appendReviewNativeEvent(job, event, projection)
+  }
+
   async claimReviewJob(id: string, owner: string, token: string, leaseExpiresAt: string): Promise<ReviewJob> {
     const input = leaseInput(id, owner, token, leaseExpiresAt)
     const client = await this.pool.connect()

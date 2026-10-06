@@ -124,8 +124,8 @@ export class ReviewerDispatcher {
             const original = safe.value(await read())
             await check()
             const capture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane, { type: 'history', history: original })
-            for (const event of original.events) await this.coordination.appendReviewNativeEvent(job,
-              normalizeNativeProducerEvent({ ...event, executionId: executionId! }).event,
+            await this.coordination.appendReviewNativeHistory(job,
+              original.events.map(event => normalizeNativeProducerEvent({ ...event, executionId: executionId! }).event),
               { writer: lane.fence, live: false, terminalReady: false, nativeCapture: capture })
             return original
           }
@@ -250,8 +250,8 @@ export class ReviewerDispatcher {
                 : manager.reconcile(session, job.correlationId, cleanupSignal)), cleanupSignal))
               await check()
               const capture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane, { type: 'history', history: original })
-              for (const event of original.events) await this.coordination.appendReviewNativeEvent(job,
-                normalizeNativeProducerEvent({ ...event, executionId: executionId! }).event,
+              await this.coordination.appendReviewNativeHistory(job,
+                original.events.map(event => normalizeNativeProducerEvent({ ...event, executionId: executionId! }).event),
                 { writer: lane.fence, live: false, terminalReady: false, nativeCapture: capture })
               return original
             },
@@ -353,15 +353,12 @@ export class ReviewerDispatcher {
           if (observedProviderId) await recordProviderTurn(observedProviderId)
           const nativeCapture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane,
             { type: 'history', history: originalHistory })
-          for (const event of normalizedEvents) {
-            await check()
-            workSignal.throwIfAborted()
-            await this.coordination.appendReviewNativeEvent(job, event, {
-              writer: lane.fence, live: false,
-              terminalReady: false, nativeCapture,
-            })
-            await this.nativeRuntime.afterReviewCommit?.(executionId!)
-          }
+          await check()
+          workSignal.throwIfAborted()
+          await this.coordination.appendReviewNativeHistory(job, normalizedEvents, {
+            writer: lane.fence, live: false, terminalReady: false, nativeCapture,
+          })
+          await this.nativeRuntime.afterReviewCommit?.(executionId!)
           const evidence = tracker.snapshot()
           if (evidence.providerId) lane.providerId = evidence.providerId
           if (evidence.identityConflict) return await failReview({ code: 'REVIEW_JOB_IDENTITY_CONFLICT',

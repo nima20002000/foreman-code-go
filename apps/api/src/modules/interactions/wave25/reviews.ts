@@ -17,7 +17,7 @@ import { stopForReviewFailure } from './stop.js'
 import { runCleanupAllowed } from './cleanupAuthority.js'
 import { renewReviewLease } from './reviewLease.js'
 import { publicReviewRetirementFacts } from '../../run-graph/publicLifecycle.js'
-import { appendReviewNativeGraphEvent } from './reviewNativeGraph.js'
+import { appendReviewNativeGraphEvent, appendReviewNativeGraphHistory } from './reviewNativeGraph.js'
 
 function parseReviewJob(input: unknown): ReviewJob {
   return ReviewJobSchema.parse(JSON.parse(JSON.stringify(input)))
@@ -62,6 +62,13 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
 
     if (!projection?.nativeCapture || !this.nativeProofs) return fail('REVIEW_ORIGINAL_SOURCE_REQUIRED')
     await appendReviewNativeGraphEvent(this.approvalPool, job, event,
+      projection.writer, this.nativeProofs, projection.nativeCapture)
+  }
+  override async appendReviewNativeHistory(job: ReviewJob, events: readonly NativeHarnessEvent[],
+    projection?: Parameters<PostgresInteractionCoordinationRepository['appendReviewNativeEvent']>[2]): Promise<void> {
+    await this.subject('review', job.id)
+    if (!projection?.nativeCapture || !this.nativeProofs) return fail('REVIEW_ORIGINAL_SOURCE_REQUIRED')
+    await appendReviewNativeGraphHistory(this.approvalPool, job, events,
       projection.writer, this.nativeProofs, projection.nativeCapture)
   }
   private async subject(kind: 'interaction' | 'review' | 'execution', id: string) {

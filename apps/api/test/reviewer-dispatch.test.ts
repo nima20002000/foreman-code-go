@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, HarnessExecutionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type NativeHarnessEvent, type NativeSessionLane, type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { freezePlacement, deriveDispatch } from '../src/modules/placement/binding.js'
@@ -103,12 +103,22 @@ class CoordinationFake {
   }
   async appendReviewNativeEvent(job: ReviewJob, event: NativeHarnessEvent,
     options: { writer?: WriterFence; nativeCapture?: ReviewNativeCapture }) {
+    this.publishEvents(job, [event], options)
+  }
+  async appendReviewNativeHistory(job: ReviewJob, events: NativeHarnessEvent[],
+    options: { writer?: WriterFence; nativeCapture?: ReviewNativeCapture }) {
+    this.publishEvents(job, events, options)
+  }
+  private publishEvents(job: ReviewJob, events: NativeHarnessEvent[],
+    options: { writer?: WriterFence; nativeCapture?: ReviewNativeCapture }) {
     const source = this.readCapture(options.nativeCapture, job, options.writer)
     const originals = source.type === 'event' ? [source.event] : source.type === 'history' ? source.history.events : []
-    assert.ok(originals.some((original) => isDeepStrictEqual(event,
-      normalizeNativeProducerEvent({ ...original, executionId: this.context.executionId }).event)),
-    'Projected event must come from the exact captured original event/history')
-    this.nativeEvents.push(clone(event))
+    for (const event of events) {
+      assert.ok(originals.some((original) => isDeepStrictEqual(event,
+        normalizeNativeProducerEvent({ ...original, executionId: this.context.executionId }).event)),
+      'Projected event must come from the exact captured original event/history')
+      this.nativeEvents.push(clone(event))
+    }
   }
 
   asRepository() { return this as unknown as PostgresInteractionCoordinationRepository }
@@ -503,6 +513,43 @@ test('rechecks topology on recovery before claiming an older queued review', asy
   assert.equal(f.counts().attached, 0)
 })
 
+
+test('settles terminal review history before repeated publication expires its physical observation', async () => {
+  let now = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+  try {
+    const f = fixture(900_000)
+    const events = Array.from({ length: 8 }, (_, sequence) => ({ ...event('item/started'), sequence }))
+    events.push({ ...endEvent(), sequence: 8 })
+    f.manager.reconcile = async () => history(events)
+    const capturedAt = new Map<ReviewNativeCapture, number>()
+    const capture = f.runtime.captureReviewNative
+    f.runtime.captureReviewNative = (...args) => {
+      const value = capture(...args)
+      if (args[4].type === 'history') capturedAt.set(value, now)
+      return value
+    }
+    const append = f.coordination.appendReviewNativeEvent.bind(f.coordination)
+    f.coordination.appendReviewNativeEvent = async (job, event, options) => {
+      const observedAt = options.nativeCapture && capturedAt.get(options.nativeCapture)
+      if (observedAt !== undefined) {
+        now += 10_000
+        if (now - observedAt >= 60_000) throw new Error('Original physical observation expired')
+      }
+      await append(job, event, options)
+    }
+    await enqueue(f)
+    const completed = await f.dispatcher.dispatchNext('reviewer', 'worker')
+    assert.equal(completed?.state, 'completed')
+    assert.equal(f.counts().started, 1)
+    for (const event of events) {
+      assert.ok(f.coordination.nativeEvents.some(projected => projected.sequence === event.sequence
+        && projected.type === normalizeNativeProducerEvent(event).event.type))
+    }
+  } finally {
+    clock.mockRestore()
+  }
+})
 
 test('post-delivery disconnect remains recoverable and only matching terminal history completes it', async () => {
   const f = fixture(); await enqueue(f)

@@ -63,11 +63,18 @@ function observationFor(job: ReviewJob, event: HarnessNativeEvent, scope: Native
  * native sequence while connecting the same source to graph and review facts. */
 export async function appendReviewNativeGraphEvent(pool: pg.Pool, supplied: ReviewJob, input: NativeHarnessEvent,
   writer: WriterFence, originals: ReviewNativeProofServices, nativeCapture: ReviewNativeCapture): Promise<void> {
+  return appendReviewNativeGraphHistory(pool, supplied, [input], writer, originals, nativeCapture)
+}
+
+export async function appendReviewNativeGraphHistory(pool: pg.Pool, supplied: ReviewJob,
+  inputs: readonly NativeHarnessEvent[], writer: WriterFence, originals: ReviewNativeProofServices,
+  nativeCapture: ReviewNativeCapture): Promise<void> {
+  if (!inputs.length) return
   const runId = await runFor(pool, 'review', supplied.id)
   const executionId = (await pool.query<{ execution_id: string }>(
     'select execution_id from review_jobs where id=$1', [supplied.id])).rows[0]?.execution_id
   if (!executionId) return fail('REVIEW_JOB_CONTEXT_MISSING')
-  const normalized = normalizeNativeProducerEvent({ ...input, executionId })
+  const normalizedEvents = inputs.map(input => normalizeNativeProducerEvent({ ...input, executionId }))
   await transact(pool, runId, async (publication) => {
     const sql = publication.sql
     const row = (await sql.query<{ record: unknown; execution_id: string; lease_fence: string; lease_expires_at: Date | null;
@@ -121,45 +128,48 @@ export async function appendReviewNativeGraphEvent(pool: pg.Pool, supplied: Revi
         access: held ? 'project' : 'observe' }
     } }
     const original = await originals.persistLocked(publication, job, nativeCapture)
-    const event = normalized.event
-    if (!reviewSourceEvents(original).some((candidate) => canonicalGraphJson(candidate) === canonicalGraphJson(event))) {
-      return fail('REVIEW_ORIGINAL_SOURCE_CONFLICT')
-    }
+    const sourceEvents = new Set(reviewSourceEvents(original).map(event => canonicalGraphJson(event)))
     const { live, terminalReady } = reviewSourceReadiness(original, job.providerTurnOrMessageId)
-    const raw = await appendNormalizedNativeEvent(sql, { ...normalized, event })
-    if (raw.rejected || !job.submittedAt) return
-    const correlation = await readNativeGraphCorrelation(sql, publication.scope, key, job.correlationId)
-    if (event.type === OPENCODE_RECONCILIATION_EVENT && (!correlation || job.provider !== 'opencode'
-      || correlation.provider !== 'opencode' || correlation.nativeSessionId !== job.nativeSessionId
-      || correlation.nativeTurnId !== job.providerTurnOrMessageId)) return
-    if (!correlation && !live) return
-    if (correlation && (correlation.connectionId !== (event.connectionId ?? null)
-      || String(correlation.connectionGeneration) !== row.generation)) return
-    if (!correlation) await new PostgresNativeGraphProjectionWriter().persistCorrelation(sql, publication.scope, null, {
-      key, correlationKey: job.correlationId, provider: job.provider, nativeSessionId: job.nativeSessionId,
-      connectionId: event.connectionId ?? null, connectionGeneration: lane.record.connectionGeneration,
-      nativeTurnId: job.providerTurnOrMessageId ?? null, nativeRequestId: null,
-      interactionId: job.interactionId, reviewJobId: job.id, firstNativeSequence: String(event.sequence),
-      lastNativeSequence: String(event.sequence), terminalNativeSequence: null, metadataRevision: '0',
-    }, guard)
-    const reconciled = job.provider === 'opencode' && terminalReady && job.providerTurnOrMessageId
-      ? await openCodeGraphReconciliation(sql, event, { ownerAgentId: job.reviewerAgentId,
-        nativeSessionId: job.nativeSessionId, correlationId: job.correlationId,
-        nativeTurnId: job.providerTurnOrMessageId, providerVersion: row.provider_version }, publication.scope, key, row.generation!) : undefined
-    if (event.type === OPENCODE_RECONCILIATION_EVENT && !reconciled) return
-    const transport = reconciled ?? nativeDisconnectObservation(publication.scope, key, event, row.generation!)
-    await appendNativeGraphEvent(publication, event, [{ guard, correlationKey: job.correlationId,
-      ...(transport ? { observation: transport } : {}) }])
-    let observation = reconciled ?? observationFor(job, event, publication.scope, key, row.generation!, terminalReady)
-    if (reconciled?.kind === 'terminal') {
-      const previous = await reviewEvidence(sql, job.id)
-      // A pre-fix live terminal or a prior marker may have settled this turn. Retain that
-      // original receipt, rather than relabeling it with a reconciliation source.
-      // The shared consumer still validates scope, work, authority and identity.
-      if (previous?.kind === 'terminal' && previous.submissionId === reconciled.submissionId
-        && previous.connectionGeneration === reconciled.connectionGeneration
-        && previous.terminal.nativeSettled && previous.terminal.outcome === reconciled.terminal.outcome) observation = previous
+    for (const normalized of normalizedEvents) {
+      const event = normalized.event
+      if (!sourceEvents.has(canonicalGraphJson(event))) {
+        return fail('REVIEW_ORIGINAL_SOURCE_CONFLICT')
+      }
+      const raw = await appendNormalizedNativeEvent(sql, { ...normalized, event })
+      if (raw.rejected || !job.submittedAt) continue
+      const correlation = await readNativeGraphCorrelation(sql, publication.scope, key, job.correlationId)
+      if (event.type === OPENCODE_RECONCILIATION_EVENT && (!correlation || job.provider !== 'opencode'
+        || correlation.provider !== 'opencode' || correlation.nativeSessionId !== job.nativeSessionId
+        || correlation.nativeTurnId !== job.providerTurnOrMessageId)) continue
+      if (!correlation && !live) continue
+      if (correlation && (correlation.connectionId !== (event.connectionId ?? null)
+        || String(correlation.connectionGeneration) !== row.generation)) continue
+      if (!correlation) await new PostgresNativeGraphProjectionWriter().persistCorrelation(sql, publication.scope, null, {
+        key, correlationKey: job.correlationId, provider: job.provider, nativeSessionId: job.nativeSessionId,
+        connectionId: event.connectionId ?? null, connectionGeneration: lane.record.connectionGeneration,
+        nativeTurnId: job.providerTurnOrMessageId ?? null, nativeRequestId: null,
+        interactionId: job.interactionId, reviewJobId: job.id, firstNativeSequence: String(event.sequence),
+        lastNativeSequence: String(event.sequence), terminalNativeSequence: null, metadataRevision: '0',
+      }, guard)
+      const reconciled = job.provider === 'opencode' && terminalReady && job.providerTurnOrMessageId
+        ? await openCodeGraphReconciliation(sql, event, { ownerAgentId: job.reviewerAgentId,
+          nativeSessionId: job.nativeSessionId, correlationId: job.correlationId,
+          nativeTurnId: job.providerTurnOrMessageId, providerVersion: row.provider_version }, publication.scope, key, row.generation!) : undefined
+      if (event.type === OPENCODE_RECONCILIATION_EVENT && !reconciled) continue
+      const transport = reconciled ?? nativeDisconnectObservation(publication.scope, key, event, row.generation!)
+      await appendNativeGraphEvent(publication, event, [{ guard, correlationKey: job.correlationId,
+        ...(transport ? { observation: transport } : {}) }])
+      let observation = reconciled ?? observationFor(job, event, publication.scope, key, row.generation!, terminalReady)
+      if (reconciled?.kind === 'terminal') {
+        const previous = await reviewEvidence(sql, job.id)
+        // A pre-fix live terminal or a prior marker may have settled this turn. Retain that
+        // original receipt, rather than relabeling it with a reconciliation source.
+        // The shared consumer still validates scope, work, authority and identity.
+        if (previous?.kind === 'terminal' && previous.submissionId === reconciled.submissionId
+          && previous.connectionGeneration === reconciled.connectionGeneration
+          && previous.terminal.nativeSettled && previous.terminal.outcome === reconciled.terminal.outcome) observation = previous
+      }
+      if (observation) await recordReviewObservation(publication, observation, guard, original.proofId)
     }
-    if (observation) await recordReviewObservation(publication, observation, guard, original.proofId)
   })
 }
