@@ -50,7 +50,7 @@ async function native(models: unknown, refreshFlag?: string) {
   directories.push(f.directory)
   await writeFile(join(f.directory, 'models.json'), JSON.stringify({ models }))
   if (refreshFlag) await writeFile(join(f.directory, refreshFlag), '')
-  const qualified = await fixtureQualification(f.binary, undefined, f.directory, {}, true)
+  const qualified = await fixtureQualification(f.binary, f.directory, {}, true)
   return { ...f, inspection: { qualified, assertUnchanged: async () => undefined } }
 }
 
@@ -62,9 +62,11 @@ it('checks the exact model, effort and tier through validated stdio without crea
     f.binary, f.directory, {}, undefined, undefined, f.inspection)
   await qualify(configuration)
   await expect(qualify({ ...configuration, model: 'absent' }))
-    .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_UNAVAILABLE' } } })
+    .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_UNAVAILABLE',
+      message: expect.stringContaining(f.inspection.qualified.providerVersion) } } })
   await expect(qualify({ ...configuration, reasoningEffort: 'high' }))
-    .rejects.toMatchObject({ result: { error: { code: 'CODEX_SETTING_UNSUPPORTED' } } })
+    .rejects.toMatchObject({ result: { error: { code: 'CODEX_SETTING_UNSUPPORTED',
+      message: expect.stringContaining('model/list') } } })
   const wire = (await calls(f.directory)).filter(entry => entry.wire).map(entry => entry.wire as { method: string })
   expect(wire.filter(entry => entry.method === 'model/list')).toHaveLength(3)
   expect(wire.some(entry => ['thread/start', 'thread/resume', 'turn/start'].includes(entry.method))).toBe(false)
@@ -98,6 +100,18 @@ function recordedInspection(request: () => Promise<unknown>, close: () => Promis
     runCommand: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }),
     transportFactory: () => ({ start: async () => undefined, reject: async () => undefined, request, close }) }
 }
+
+it.each([null, { model: 'test-model' }])(
+  'reports a missing native model capability with its observed version and confirms cleanup: %j', async model => {
+    let closed = false
+    const inspection = recordedInspection(async () => ({ data: [model], nextCursor: null }),
+      async () => { closed = true })
+    inspection.qualified.providerVersion = 'codex-cli 0.160.0'
+    await expect(readNativeCodexModelCatalog(inspection, '/recorded-workspace', {}))
+      .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_CATALOG_INVALID',
+        message: expect.stringContaining(inspection.qualified.providerVersion) } } })
+    expect(closed).toBe(true)
+  })
 
 it.each([
   { configured: [], disabled: [] },
@@ -162,7 +176,8 @@ it('rejects empty continuation pages and confirms cleanup without unbounded meta
     return { data: [], nextCursor: `cursor-${reads}` }
   }, async () => { closed = true })
   await expect(readNativeCodexModelCatalog(inspection, '/recorded-workspace', {}))
-    .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_CATALOG_INVALID' } } })
+    .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_CATALOG_INVALID',
+      message: expect.stringContaining(inspection.qualified.providerVersion) } } })
   expect(reads).toBe(1)
   expect(closed).toBe(true)
 })

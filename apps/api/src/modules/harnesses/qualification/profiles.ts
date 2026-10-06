@@ -1,10 +1,6 @@
 import type { CompatibilityHarness, HarnessProfileId } from '@foreman-code/contracts'
 
-/**
- * Behavior profiles replace exact-version branches. Baselines are the upstream
- * releases reviewed by hand; any other version is usable only after the app's
- * qualification suite passes against that exact binary (see registry.ts).
- */
+/** Historical strategy labels interpret saved evidence; they do not authorize a binary or skip contract checks. */
 export interface BaselineRelease { harness: CompatibilityHarness; version: string; profile: HarnessProfileId }
 
 export const BASELINE_RELEASES: readonly BaselineRelease[] = [

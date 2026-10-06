@@ -115,6 +115,7 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
       ...(operation ? { signal: operation.signal } : {}),
       ...(services.operator ? { operator: services.operator } : {}),
       ...(services.interactions ? { interactions: services.interactions } : {}) }
+    // Cover every other known tool hidden by grants before the SDK handles unknown names.
     const denied = await roleDeniedToolCall(context, request.body)
     if (denied) return reply.send(denied)
     const artifacts = principal.audience === 'worker' ? services.workerArtifacts?.() : undefined

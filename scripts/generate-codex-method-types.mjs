@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-// Types are regenerated only from the bundled, exact baseline executable.
+// Types use the bundled executable as a compile-time reference; runtime contracts are checked separately.
 const directory = await mkdtemp(join(tmpdir(), 'graphql-codex-types-'))
 const binary = resolve('apps/api/node_modules/.bin/codex')
 const methods = {
@@ -26,7 +26,7 @@ const methods = {
 }
 try {
   const version = execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim()
-  if (version !== 'codex-cli 0.154.0') throw new Error('Regenerate only from bundled Codex 0.154.0.')
+  if (!/^codex-cli \d+\.\d+\.\d+$/.test(version)) throw new Error('Codex returned no recognized version.')
   execFileSync(binary, ['app-server', 'generate-ts', '--out', directory], { stdio: 'pipe' })
   const sources = new Map()
   const visit = async (file) => {

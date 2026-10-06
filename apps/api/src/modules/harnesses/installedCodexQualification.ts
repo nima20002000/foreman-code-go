@@ -75,7 +75,7 @@ export function createInstalledCodexQualificationReader(input: {
       || profileProof.protocolRevision !== installation.protocolRevision || profileProof.suiteRevision !== 'codex-profile-check-v1'
       || profileProof.environmentGeneration !== installation.environmentGeneration || profileProof.connectionGeneration !== installation.connectionGeneration
       || profileProof.authenticated !== true || profileProof.compatible !== true || !profileProof.qualified
-      || qualification.harness !== 'codex' || qualification.version !== current.expectedVersion || installation.observedVersion !== qualification.version
+      || qualification.harness !== 'codex' || installation.observedVersion !== qualification.version
       || qualification.binarySha256 !== current.binarySha256 || qualification.suiteRevision !== input.suiteRevision
       || qualification.status !== 'qualified' || qualification.profile !== QUALIFICATION_TARGET_PROFILE.codex
       || !qualification.checkedAt || !qualification.checks.length || qualification.checks.some(check => !check.passed)) return unavailable()

@@ -11,6 +11,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type { OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
 
 import { HarnessExecutionError } from './errors.js'
+import { parseInstalledVersion } from './compatibility/probe.js'
 import { requireHarnessQualification } from './qualification/gate.js'
 import type { NativeMcpEntryEvidence } from './mcpDetection.js'
 import { inspectOpenCodeMcpConfiguration } from './opencodeMcpConfiguration.js'
@@ -63,6 +64,7 @@ export interface OpenCodeServerController {
   detachForRestart?(): Promise<boolean>
   dispose(): Promise<void>
   restart?(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void>
+  startObservation?(signal?: AbortSignal): Promise<void>
 }
 
 export interface ManagedOpenCodeServerOptions {
@@ -128,6 +130,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private fileIsolation: OpenCodeVaultIsolation | undefined
   private conversationId: string | undefined
   private conversationStorage: OpenCodeConversationStorage | undefined
+  private observationOnly = false
   private adopted: NativeLaunchObservation | undefined
   private restartDetached = false
 
@@ -176,7 +179,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       && this.baseUrl && this.password ? this.generation : undefined
   }
   get disabledAppMcpServerName(): string | undefined {
-    return this.options.appMcpAccess === 'none' ? this.options.appMcpServerName ?? APP_MCP_SERVER_NAME : undefined
+    return this.observationOnly || this.options.appMcpAccess === 'none'
+      ? this.options.appMcpServerName ?? APP_MCP_SERVER_NAME : undefined
   }
 
   get credentialEnvironmentFingerprint(): string | undefined {
@@ -265,6 +269,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       ...(this.options.processRecovery ? { processRecovery: this.options.processRecovery } : {}),
       ...(this.options.assertInstallation ? { assertInstallation: this.options.assertInstallation } : {}),
       credentialEnvironmentVariable: this.options.credentialEnvironmentVariable ?? APP_CREDENTIAL_ENV,
+      onVersion: version => { if (!this.child) this.expectedVersion = version },
       pure: this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true,
       ...(signal ? { signal } : {}),
     })
@@ -361,6 +366,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   async restart(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void> {
+    if (this.observationOnly) throw new HarnessExecutionError('OPENCODE_OBSERVATION_ONLY',
+      'An observation process cannot receive management credentials.')
     const next = this.validateEnvironment(environment)
     signal?.throwIfAborted()
     const epoch = this.epoch
@@ -370,6 +377,19 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       await this.stopLiveProcess()
       // Desired validated credentials survive failed process creation and health checks.
       this.desiredEnvironment = next
+      await this.start()
+    }), signal)
+  }
+
+  async startObservation(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
+    const epoch = this.epoch
+    await waitFor(this.exclusive(async () => {
+      signal?.throwIfAborted()
+      if (epoch !== this.epoch) throw new Error('OpenCode observation was invalidated by disposal.')
+      await this.stopLiveProcess()
+      this.observationOnly = true
+      this.desiredEnvironment = { agentId: this.options.ownerAgentId, variables: {} }
       await this.start()
     }), signal)
   }
@@ -450,7 +470,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       abort.signal.throwIfAborted()
       await this.options.assertInstallation?.(abort.signal)
       abort.signal.throwIfAborted()
-      const installed = (version.stdout || version.stderr).trim()
+      const installed = version.exitCode === 0 ? parseInstalledVersion('opencode', version.stdout, version.stderr) : 'unknown version'
       if (version.exitCode === 0) {
         await requireHarnessQualification('opencode', installed, this.options.binary)
         this.expectedVersion = installed
@@ -517,7 +537,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       try {
         const health = object(await response.json())
         if (!response.ok || health.healthy !== true || health.version !== this.expectedVersion) {
-          throw new HarnessExecutionError('OPENCODE_SERVER_UNHEALTHY', 'The authenticated OpenCode health/version check failed.')
+          throw new HarnessExecutionError('OPENCODE_SERVER_UNHEALTHY', `OpenCode ${this.expectedVersion} did not satisfy the authenticated /global/health healthy/version contract.`)
         }
       } finally { await response.body?.cancel().catch(() => undefined) }
       if (this.disabledAppMcpServerName !== undefined) {
@@ -562,7 +582,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       }
       const failed = (error: Error) => finish(error)
       // Do not echo native stderr, which can contain expanded configuration secrets.
-      const closed = () => finish(new HarnessExecutionError('OPENCODE_SERVER_START_FAILED', 'OpenCode exited before becoming ready.'))
+      const closed = () => finish(new HarnessExecutionError('OPENCODE_SERVER_START_FAILED', `OpenCode ${this.expectedVersion || 'unknown version'} did not satisfy the serve startup contract.`))
       const abort = () => finish(signal.reason)
       child.stdout.on('data', data)
       child.once('error', failed)

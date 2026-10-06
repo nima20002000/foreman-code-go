@@ -1,12 +1,58 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { nativeAcceptanceConfiguration, nativeAcceptanceEnvironment, nativeAcceptanceFiles,
+import { archiveNativeAcceptanceEvidence, nativeAcceptanceConfiguration, nativeAcceptanceEnvironment, nativeAcceptanceFiles,
   nativeAcceptanceVitestArguments } from './test-native-acceptance.mjs'
+import { createTestRoot, removeTestRoot } from './test-resources.mjs'
+
+test('native results survive disposable cleanup without exporting provider authentication', async () => {
+  const invocation = createTestRoot()
+  const archive = createTestRoot(dirname(invocation.directory))
+  const evidence = join(invocation.directory, 'evidence')
+  try {
+    await mkdir(join(evidence, 'database'), { recursive: true, mode: 0o700 })
+    await mkdir(join(invocation.directory, 'home'), { mode: 0o700 })
+    await writeFile(join(invocation.directory, 'home', 'auth.json'), 'private provider authentication', { mode: 0o600 })
+    await writeFile(join(evidence, 'codex-failed.json'), '{"terminal":null}', { mode: 0o600 })
+    await writeFile(join(evidence, 'database', 'database.json'), '{"removed":true}', { mode: 0o600 })
+    const retained = await archiveNativeAcceptanceEvidence(invocation, evidence, archive.directory)
+    removeTestRoot(invocation)
+    assert.equal(await readFile(join(retained, 'codex-failed.json'), 'utf8'), '{"terminal":null}')
+    assert.equal(await readFile(join(retained, 'database', 'database.json'), 'utf8'), '{"removed":true}')
+    assert.deepEqual((await readdir(retained)).sort(), ['codex-failed.json', 'database'])
+    assert.equal((await stat(retained)).mode & 0o077, 0)
+    assert.equal((await stat(join(retained, 'codex-failed.json'))).mode & 0o077, 0)
+  } finally {
+    try { if (existsSync(invocation.directory)) removeTestRoot(invocation) }
+    finally { removeTestRoot(archive) }
+  }
+})
+
+test('native evidence rejects symlinks and an archive inside the disposable root', async () => {
+  const invocation = createTestRoot()
+  const archive = createTestRoot(dirname(invocation.directory))
+  const evidence = join(invocation.directory, 'evidence')
+  try {
+    await mkdir(evidence, { mode: 0o700 })
+    const authentication = join(invocation.directory, 'auth.json')
+    await writeFile(authentication, 'private provider authentication', { mode: 0o600 })
+    await symlink(authentication, join(evidence, 'auth.json'))
+    const previousArchiveEntries = await readdir(archive.directory)
+    await assert.rejects(archiveNativeAcceptanceEvidence(invocation, evidence, archive.directory), /symlink/)
+    assert.deepEqual(await readdir(archive.directory), previousArchiveEntries)
+    await assert.rejects(archiveNativeAcceptanceEvidence(invocation, evidence,
+      join(invocation.directory, 'archive')), /survive disposable root cleanup/)
+    assert.equal(await readFile(authentication, 'utf8'), 'private provider authentication')
+  } finally {
+    try { removeTestRoot(invocation) }
+    finally { removeTestRoot(archive) }
+  }
+})
 
 test('native launchers retain the running Node interpreter when HOME is isolated', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'native-acceptance-runtime-'))

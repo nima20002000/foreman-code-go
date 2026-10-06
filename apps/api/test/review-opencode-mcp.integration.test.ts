@@ -103,7 +103,9 @@ it('F-10 exposes credential-free approval through authenticated MCP, denies a re
     const optionId = state.pendingInteraction!.responseOptions[0]!.optionId
     const args = { workspaceId, conversationId, requestId: 'answer', nativeRequestId: 'approval', optionId }
     assert.equal((await denied.listTools()).tools.some(tool => tool.name === 'agent_chat_respond'), false)
-    await assert.rejects(denied.callTool({ name: 'agent_chat_respond', arguments: args }), /not found/)
+    const deniedResponse = await denied.callTool({ name: 'agent_chat_respond', arguments: args })
+    assert.equal(deniedResponse.isError, true)
+    assert.match(JSON.stringify(deniedResponse.content), /ACCESS_DENIED/)
     assert.deepEqual(await repository.get(conversationId), before)
     assert.equal(provider.calls.filter(call => call.path.includes('/reply')).length, 0)
     const reply = await mcp.callTool({ name: 'agent_chat_respond', arguments: args })

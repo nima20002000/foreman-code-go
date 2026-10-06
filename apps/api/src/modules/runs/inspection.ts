@@ -22,7 +22,7 @@ import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { canonicalRepeatEffectReceipt } from '../run-graph/repeatPublication.js'
 import { assertRepeatCanonicalReceiptLocked } from '../run-graph/repeatReceipts.js'
 import { withCurrentRunRead } from './currentRead.js'
-import type { AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
+import { readAcceptedRepeatRunLocked, readAcceptedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import {
   readRepeatAcceptedResultLocked, readRepeatDecision, readRepeatExecutionLocked,
   type StoredRepeatExecution,
@@ -151,9 +151,10 @@ export class RunInspectionService {
   constructor(private readonly pool: pg.Pool) {}
 
   private async read<T>(principal: ManagementPrincipal, input: { workspaceId: string; runId: string },
-    work: (sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, live: ManagementPrincipal) => Promise<T>): Promise<T> {
+    work: (sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, live: ManagementPrincipal) => Promise<T>,
+    readAcceptedRun = readAcceptedRepeatRunLocked): Promise<T> {
     try {
-      return await withCurrentRunRead(this.pool, principal, input.workspaceId, input.runId, 'runs:read', work)
+      return await withCurrentRunRead(this.pool, principal, input.workspaceId, input.runId, 'runs:read', work, readAcceptedRun)
     } catch (error) {
       // Do not serialize parser fragments of private persisted input/native data.
       if (error instanceof z.ZodError || error instanceof SyntaxError) throw new DomainError(
@@ -193,7 +194,7 @@ export class RunInspectionService {
       // explicit error on HTTP and MCP, never an input/result truncation.
       return RunRecordDetailSchema.parse(bounded({ run, stopRequested: snapshot.stopRequested,
         cleanupPending: snapshot.cleanupPending }))
-    })
+    }, readAcceptedRepeatRunSnapshot)
   }
 
   async executions(principal: ManagementPrincipal, raw: unknown): Promise<RunExecutionsPage> {

@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -60,7 +61,7 @@ it('paginates and atomically archives through authenticated MCP with scope, revi
     const reader = await access.issue({ name: 'Reader', audience: 'operator', grants: [{ actions: ['workflows:read'], scope: { workspaceIds: [workspaceId] } }], expiresAt: new Date(Date.now() + 60_000) })
     const denied = await connect(reader.token)
     expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('workflow_batch_archive')
-    await expect(denied.callTool({ name: 'workflow_batch_archive', arguments: input })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(denied.callTool({ name: 'workflow_batch_archive', arguments: input }))
     const scoped = await access.issue({ name: 'Scoped', audience: 'operator', grants: [{ actions: ['workflows:read', 'workflows:archive'], scope: { workspaceIds: [workspaceId], workflowIds: [input.workflows[0]!.workflowId] } }], expiresAt: new Date(Date.now() + 60_000) })
     const scopedClient = await connect(scoped.token)
     expect((await scopedClient.callTool({ name: 'workflow_batch_archive', arguments: input })).isError).toBe(true)

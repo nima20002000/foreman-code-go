@@ -39,7 +39,11 @@ it.each(['service', 'mcp'] as const)('rejects an ephemeral Operator host profile
       grants: [{ actions: ['settings:read', 'harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
     const denied = await f.connect(reader.token)
     expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('agent_defaults_update')
-    await expect(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).rejects.toThrow('not found')
+    const deniedUpdate = await denied.callTool({ name: 'agent_defaults_update', arguments: {
+      ...input, commandId: randomUUID(),
+    } })
+    expect(deniedUpdate.isError).toBe(true)
+    expect(JSON.stringify(deniedUpdate.content)).toContain('ACCESS_DENIED')
     expect(await f.repository.getAgentDefaults()).toEqual(initial)
 
     const persistent = (await f.profiles.save(owner.principal, 'http', {

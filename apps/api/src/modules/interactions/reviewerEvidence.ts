@@ -1,9 +1,7 @@
-import { createHash } from 'node:crypto'
-
 import { ExecutionResultSchema, type NativeHarnessEvent, type NativeSessionReference } from '@foreman-code/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
-import { harnessProfile } from '../harnesses/qualification/profiles.js'
+import { nativeMessageId } from '../harnesses/opencodeProtocol.js'
 
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -45,10 +43,7 @@ export class ReviewEvidenceTracker {
     this.acknowledged = Boolean(knownProviderId)
     // Claude message identity is supplied by its admitted SDK manager and exact
     // native receipt. This tracker does not grant release/profile qualification.
-    const profile = session.harness === 'claude' ? undefined : harnessProfile(session.harness, session.providerVersion)
-    if (profile === null) this.identityConflict = true
-    this.messageId = session.harness === 'opencode' && profile === 'opencode-1.18.31'
-      ? `msg_${createHash('sha256').update(correlationId).digest('hex').slice(0, 24)}` : undefined
+    this.messageId = session.harness === 'opencode' ? nativeMessageId(correlationId) : undefined
     if (knownProviderId && this.messageId && knownProviderId !== this.messageId) this.identityConflict = true
   }
 

@@ -1,48 +1,50 @@
+import assert from 'node:assert/strict'
 import { join } from 'node:path'
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import { checkCodexSchema, checkOpenCodeSchema, parseExport } from '../src/modules/harnesses/compatibility/schema.js'
-import { diagnosticEnvironment, parseInstalledVersion, schemaExportArguments } from '../src/modules/harnesses/compatibility/probe.js'
+import { diagnosticEnvironment, nativeCompatibilityProbe, parseInstalledVersion, schemaExportArguments } from '../src/modules/harnesses/compatibility/probe.js'
+import { CompatibilityCheckError } from '../src/modules/harnesses/compatibility/errors.js'
 
-/** Synthetic schemas test the diagnostic itself; they are not provider qualification evidence. */
-function codexSchema() {
-  const methods = ['initialize', 'thread/start', 'thread/resume', 'thread/read', 'thread/turns/list', 'thread/items/list', 'turn/start', 'turn/interrupt', 'turn/steer', 'thread/fork', 'config/read', 'model/list', 'config/batchWrite', 'mcpServerStatus/list', 'account/login/start', 'account/login/cancel']
-  const serverMethods = ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'item/tool/requestUserInput', 'mcpServer/elicitation/request']
-  const responses = ['InitializeResponse', 'ThreadStartResponse', 'ThreadResumeResponse', 'ThreadReadResponse', 'ThreadTurnsListResponse', 'ThreadItemsListResponse', 'TurnStartResponse', 'TurnInterruptResponse', 'TurnSteerResponse', 'ThreadForkResponse', 'ConfigReadResponse', 'ModelListResponse', 'ConfigWriteResponse', 'ListMcpServerStatusResponse', 'LoginAccountResponse', 'CancelLoginAccountResponse', 'CommandExecutionRequestApprovalResponse', 'FileChangeRequestApprovalResponse', 'PermissionsRequestApprovalResponse', 'ToolRequestUserInputResponse', 'McpServerElicitationRequestResponse']
-  const branch = (method: string) => ({ type: 'object', properties: {
-    method: { const: method }, id: { type: 'integer' },
-    params: method === 'thread/start' ? { $ref: '#/definitions/v2/ThreadStartParams' } : { type: 'object' },
-  }, required: ['method'] })
-  const start = { type: 'object', properties: {
-    model: { type: 'string' }, cwd: { type: 'string' }, ephemeral: { type: 'boolean' }, config: { type: 'object' },
-    serviceTier: { type: ['string', 'null'] },
-    sandbox: { type: 'string', enum: ['read-only', 'workspace-write', 'danger-full-access'] },
-    approvalPolicy: { type: 'string', enum: ['on-request', 'never'] },
-    approvalsReviewer: { type: 'string', enum: ['user', 'auto_review'] },
-  } }
-  return { $schema: 'http://json-schema.org/draft-07/schema#', definitions: {
-    ClientRequest: { oneOf: methods.map(branch) }, ServerRequest: { oneOf: serverMethods.map(branch) },
-    ServerNotification: { oneOf: ['turn/started', 'turn/completed', 'item/started', 'item/completed', 'serverRequest/resolved'].map(branch) },
-    v2: { ...Object.fromEntries(responses.map((name) => [name, { type: 'object' }])), ThreadStartParams: start },
-  } }
-}
-function openCodeSchema() {
-  const paths: Record<string, Record<string, Record<string, unknown>>> = {}
-  for (const [path, method] of [
-    ['/global/health', 'get'], ['/config', 'get'], ['/provider', 'get'], ['/agent', 'get'], ['/event', 'get'],
-    ['/session', 'post'], ['/session/{sessionID}', 'get'], ['/session/{sessionID}/message', 'get'],
-    ['/session/{sessionID}/prompt_async', 'post'], ['/session/{sessionID}/abort', 'post'],
-    ['/permission/{requestID}/reply', 'post'], ['/mcp', 'get'],
-  ]) paths[path!] = { [method!]: { operationId: `${path}:${method}`, responses: { '200': {} } } }
-  const body = (properties: Record<string, unknown>) => ({ content: { 'application/json': { schema: { type: 'object', properties } } } })
-  paths['/config']!.get!.responses = { '200': body({ model: { type: 'string' }, agent: { type: 'object' }, permission: { type: 'object' }, mcp: { type: 'object' }, plugin: { type: 'array' }, compaction: { type: 'object' } }) }
-  paths['/session']!.post!.requestBody = body({ permission: { type: 'array', items: { type: 'object', properties: {
-    permission: { type: 'string' }, pattern: { type: 'string' }, action: { type: 'string', enum: ['allow', 'ask', 'deny'] },
-  } } } })
-  paths['/session/{sessionID}/prompt_async']!.post!.requestBody = body({ model: { type: 'object', properties: { providerID: { type: 'string' }, modelID: { type: 'string' } } }, agent: { type: 'string' }, variant: { type: 'string' }, parts: { type: 'array' } })
-  paths['/permission/{requestID}/reply']!.post!.requestBody = body({ reply: { type: 'string', enum: ['once', 'always', 'reject'] } })
-  return { openapi: '3.1.0', paths }
-}
+import { protocolFromBundle } from '../src/modules/harnesses/codexProtocol.js'
+import { codexSchema, openCodeSchema } from './fixtures/harness-schemas.js'
+
 describe('model-free command and schema diagnostics', () => {
+  it.skipIf(process.platform === 'win32').each(['codex', 'opencode'] as const)(
+    'names the harness, observed version and export command when %s refuses its contract', async harness => {
+      const directory = await mkdtemp(join(tmpdir(), 'harness-export-contract-'))
+      const binary = join(directory, 'harness.mjs')
+      const version = harness === 'codex' ? 'codex-cli 0.158.0' : '2.0.0'
+      await writeFile(binary, `#!${process.execPath}
+if (process.argv.includes('--version')) {
+  console.log(${JSON.stringify(version)})
+} else {
+  console.error('private-credential')
+  process.exitCode = 1
+}
+`)
+      await chmod(binary, 0o700)
+      const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, directory)
+      const signal = AbortSignal.timeout(15_000)
+      try {
+        const installation = await probe.inspect(harness, signal)
+        await assert.rejects(probe.probe(harness, installation, signal), (error: unknown) => {
+          assert(error instanceof CompatibilityCheckError)
+          expect(error.code).toBe('CLI_CHECK_REJECTED')
+          expect(error.message).toContain(`${harness} ${installation.version}`)
+          expect(error.message).toContain(harness === 'codex' ? 'app-server generate-json-schema --experimental' : '--pure generate')
+          expect(error.message).not.toContain('private-credential')
+          return true
+        })
+      } finally {
+        try {
+          assert(probe.close)
+          await probe.close()
+        }
+        finally { await rm(directory, { recursive: true, force: true }) }
+      }
+    }, 20_000)
   it('only constructs export commands, never run, exec, serve, sessions or prompts', () => {
     expect(schemaExportArguments('codex', '/isolated')).toEqual(['app-server', 'generate-json-schema', '--experimental', '--out', join('/isolated', 'schemas')])
     expect(schemaExportArguments('opencode', '/isolated')).toEqual(['--pure', 'generate'])
@@ -69,7 +71,29 @@ describe('model-free command and schema diagnostics', () => {
     expect(() => checkCodexSchema(codexSchema())).not.toThrow()
     const broken = codexSchema()
     broken.definitions.v2.ThreadStartParams.properties.approvalsReviewer.enum = ['user']
-    expect(() => checkCodexSchema(broken)).toThrow('protocol and settings')
+    expect(() => checkCodexSchema(broken)).toThrow('enum values user, auto_review')
+  })
+  it('rejects a missing Codex history field before reporting compatibility', () => {
+    const broken = codexSchema()
+    const response = broken.definitions.v2.ThreadReadResponse
+    Reflect.deleteProperty(response.properties, 'thread')
+    expect(() => checkCodexSchema(broken)).toThrow('ThreadReadResponse.thread')
+  })
+  it('accepts optional declarations while requiring consumed fields in observed Codex responses', () => {
+    const broken = codexSchema()
+    broken.definitions.v2.ThreadReadResponse.required = []
+    expect(() => checkCodexSchema(broken)).not.toThrow()
+    const protocol = protocolFromBundle(broken, 'codex-cli 0.160.0')
+    expect(() => protocol.response('thread/read', { thread: { id: 'saved-thread', turns: [] } })).not.toThrow()
+    expect(() => protocol.response('thread/read', {})).toThrow('0.160.0')
+    expect(() => protocol.response('thread/read', {})).toThrow('ThreadReadResponse.thread')
+  })
+  it('rejects OpenCode session creation schemas that cannot return an unconditional session ID', () => {
+    const broken = openCodeSchema()
+    broken.paths['/session']!.post!.responses = { '200': { content: { 'application/json': {
+      schema: { type: 'object', properties: {}, required: [] },
+    } } } }
+    expect(() => checkOpenCodeSchema(broken)).toThrow('POST /session response.id')
   })
   it('requires OpenCode permission replies, settings and control methods', () => {
     expect(() => checkOpenCodeSchema(openCodeSchema())).not.toThrow()
@@ -77,6 +101,28 @@ describe('model-free command and schema diagnostics', () => {
     delete broken.paths['/permission/{requestID}/reply']
     expect(() => checkOpenCodeSchema(broken)).toThrow()
   })
+  it('accepts compatible OpenCode fields even when their declarations are optional', () => {
+    const schema = openCodeSchema()
+    const response = schema.paths['/session']!.post!.responses as { '200': { content: {
+      'application/json': { schema: { required: string[] } }
+    } } }
+    response['200'].content['application/json'].schema.required = []
+    expect(() => checkOpenCodeSchema(schema)).not.toThrow()
+  })
+  it('rejects a native prompt contract that cannot preserve child system instructions', () => {
+    const schema = openCodeSchema()
+    const body = schema.paths['/session/{sessionID}/prompt_async']!.post!.requestBody as {
+      content: { 'application/json': { schema: { properties: Record<string, unknown> } } }
+    }
+    delete body.content['application/json'].schema.properties.system
+    expect(() => checkOpenCodeSchema(schema)).toThrow('system')
+  })
+  it.each(['/session/status', '/question/{requestID}/reject', '/session/{sessionID}/message/{messageID}'])(
+    'names a missing OpenCode reconciliation or cleanup contract: %s', path => {
+      const broken = openCodeSchema()
+      delete broken.paths[path]
+      expect(() => checkOpenCodeSchema(broken)).toThrow(path)
+    })
   it('rejects external refs and empty/deep exports instead of guessing compatibility', () => {
     const broken = openCodeSchema()
     broken.paths['/session']!.post!.requestBody = { $ref: 'https://example.invalid/schema' }

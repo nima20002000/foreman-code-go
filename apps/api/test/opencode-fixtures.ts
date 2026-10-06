@@ -1,9 +1,11 @@
+import { openCodeSchema } from './fixtures/harness-schemas.js'
 import assert from 'node:assert/strict'
 
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type HarnessExecutionRequest, type OpenCodeHarnessConfiguration } from '@foreman-code/contracts'
 
 import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager, type OpenCodeServerController } from '../src/modules/harnesses/opencodeServer.js'
 import { childEnvironmentFingerprint } from '../src/modules/harnesses/opencodeTransport.js'
+import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from '../src/modules/harnesses/appMcpLauncher.js'
 import type { NativeMcpEntryEvidence } from '../src/modules/harnesses/mcpDetection.js'
 import { nativeMessageId, nativePolicy, object, type JsonObject, type OpenCodeMessage } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { ChildProcessEnvironment } from '../src/modules/harnesses/port.js'
@@ -68,9 +70,9 @@ export class FixtureServer implements OpenCodeServerController {
   mcpCredentialReferences: Record<string, string> = {}
   config: JsonObject = {}
   mcp: JsonObject = {}
-  providers: unknown = { all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }] }
+  providers: unknown = { all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: { max: {} } } } }], connected: [] }
   agents: unknown = [{ name: 'build' }, { name: 'plan' }]
-  paths: JsonObject = requiredPaths
+  paths: JsonObject = { ...requiredPaths, ...openCodeSchema().paths }
   permissions: JsonObject[] = []
   questions: JsonObject[] = []
   disposals = 0
@@ -116,6 +118,16 @@ export class FixtureServer implements OpenCodeServerController {
     await this.beforeRestart?.()
     this.environment = structuredClone(environment)
     this.restartEnvironments.push(structuredClone(environment))
+    this.generation += 1
+    this.resetInstance()
+  }
+  async startObservation() {
+    this.environment = undefined
+    const configured = object(this.config.mcp)
+    const appNames = chatExcludedAppMcpServerNames(APP_MCP_SERVER_NAME)
+    this.config = { ...this.config, mcp: Object.fromEntries(Object.entries(configured).map(([name, entry]) =>
+      [name, appNames.includes(name)
+        ? { ...object(entry), enabled: false } : entry])) }
     this.generation += 1
     this.resetInstance()
   }
@@ -178,7 +190,7 @@ export class FixtureServer implements OpenCodeServerController {
     const replacement = await this.beforeRequest?.(path, init)
     if (replacement) return replacement
     if (route === '/global/health') return json({ healthy: true, version: '1.18.31' })
-    if (route === '/doc') return json({ paths: this.paths })
+    if (route === '/doc') return json({ openapi: '3.1.0', paths: this.paths })
     if (route === '/provider') return json(this.providers)
     if (route === '/agent') return json(this.agents)
     if (route === '/config') return json(this.config)

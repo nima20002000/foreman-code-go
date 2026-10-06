@@ -1,3 +1,4 @@
+import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import type { CodexHarnessConfiguration, NativeSessionReference } from '@foreman-code/contracts'
@@ -5,7 +6,6 @@ import { CodexAppServerSessionManager, type CodexSessionDependencies, type Codex
 import { randomUUID } from 'node:crypto'
 import { CodexRuntimeFileTurn } from '../src/modules/harnesses/codexFiles/runtime.js'
 import type { CodexFileTurn } from '../src/modules/harnesses/codexFiles/turn.js'
-import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
 import type { RpcRequest } from '../src/modules/harnesses/codexStdioTransport.js'
 import { translateCodexInteraction } from '../src/modules/harnesses/codexInteractions.js'
 import { errorCode, fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
@@ -16,7 +16,7 @@ function gate() { let release!: () => void; const promise = new Promise<void>((r
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
 
 async function fixture(id: string | number = 901, files = true) {
-  const session = { harness: 'codex' as const, providerVersion: QUALIFIED_CODEX_VERSION, nativeSessionId: 'callback-thread' }
+  const session = { harness: 'codex' as const, providerVersion: RECORDED_CODEX_VERSION, nativeSessionId: 'callback-thread' }
   const source = input('/callback-no-io')
   const forbidden = async () => { throw new Error('Native IO is forbidden in this memory fixture.') }
   const dependencies: Extract<CodexSessionDependencies, { mode: 'replay' }> = {
@@ -46,7 +46,7 @@ async function fixture(id: string | number = 901, files = true) {
   const runtime = seam.runtime({ input: source, harnessConfiguration: source.request.configuration.harness as CodexHarnessConfiguration,
     workingDirectory: '/callback-no-io', scopedCredentialVariable: undefined, strippedCredentialVariable: undefined,
     environment: {}, disabledAppMcpServerNames: [], qualified: {
-      binary: 'not-executed', identity: 'fixture-identity', providerVersion: QUALIFIED_CODEX_VERSION, protocol: fixtureProtocol,
+      binary: 'not-executed', identity: 'fixture-identity', providerVersion: RECORDED_CODEX_VERSION, protocol: fixtureProtocol,
       schemaManifestSha256: 'fixture-schema', stableSchemaGitBlob: 'fixture-stable', referenceSchemaManifestSha256: 'fixture-reference',
     } }, session, transport)
   runtime.phase = 'active'; runtime.activeTurnId = 'callback-turn'

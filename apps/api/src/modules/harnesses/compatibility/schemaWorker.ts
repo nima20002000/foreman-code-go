@@ -13,6 +13,6 @@ try {
   if (harness === 'codex') checkCodexSchema(schema)
   else checkOpenCodeSchema(schema)
   console.info(JSON.stringify({ ok: true, schemaSha256: createHash('sha256').update(text).digest('hex') }))
-} catch {
-  console.info(JSON.stringify({ ok: false }))
+} catch (error) {
+  console.info(JSON.stringify({ ok: false, contract: error instanceof Error ? error.message.slice(0, 500) : 'schema validation' }))
 }

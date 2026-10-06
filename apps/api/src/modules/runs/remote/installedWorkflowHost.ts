@@ -391,9 +391,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           },
         })
         const manager=new CodexAppServerSessionManager(binary,undefined,undefined,actual.scope,'scoped',undefined,{...dependencies,
-          qualify:async(binary,version,cwd,environment,authenticated,effectSignal)=>{
+          qualify:async(binary,cwd,environment,authenticated,effectSignal)=>{
             await before()
-            const result=await dependencies.qualify(binary,version,cwd,environment,authenticated,effectSignal,actual.scope)
+            const result=await dependencies.qualify(binary,cwd,environment,authenticated,effectSignal,actual.scope)
             if(normalizeHarnessVersion('codex',result.providerVersion)!==actual.capture.qualification.version)unavailable('native_version_changed')
             return result
           },

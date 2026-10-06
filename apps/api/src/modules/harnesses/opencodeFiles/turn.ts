@@ -3,7 +3,7 @@ import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
 import type { AgentFileApplyFormatEditInput, AgentFileCreateWorkingCopyInput,
   AgentFilePublishInput, AgentFileWriteWorkingCopyInput } from '@foreman-code/contracts/files'
-import { chatExcludedAppMcpServerNames } from '../appMcpLauncher.js'
+import { appMcpServerName, chatExcludedAppMcpServerNames } from '../appMcpLauncher.js'
 import type { FileToolOperation } from '../../files/tools/types.js'
 import { fileDeliveryPrompt, nativeImagePart, readPinnedAttachment, readPinnedInput, sha256, type DeliveredAttachment } from './attachments.js'
 import { checkFileCondition, OpenCodeFileCleanupError, OpenCodeFileError, type AcceptedOpenCodeFileTurn,
@@ -108,11 +108,21 @@ export class OpenCodeFileTurn {
   private async assertChat(signal: AbortSignal): Promise<void> {
     const config = object(await this.json('/config', signal))
     const mcp = object(config.mcp)
-    const names = chatExcludedAppMcpServerNames(this.options.appMcpServerName)
-    checkFileCondition(object(mcp[this.options.appMcpServerName]).enabled === false,
-      'FILE_CHAT_ISOLATION_REQUIRED', 'Workflow App MCP must already be disabled for chat.')
     const status = object(await this.json('/mcp', signal))
+    const operator = this.preparation === 'post_ack' && this.accepted?.context.scope.chat.kind === 'operator'
+    const connectionName = operator ? appMcpServerName(mcp, this.options.appMcpServerName) : this.options.appMcpServerName
+    const names = chatExcludedAppMcpServerNames(connectionName)
+    if (operator) {
+      checkFileCondition(Object.hasOwn(mcp, connectionName)
+        && object(mcp[connectionName]).enabled !== false
+        && object(status[connectionName]).status === 'connected',
+      'FILE_CHAT_ISOLATION_REQUIRED', 'Operator files require the separately authorized management connection.')
+    } else {
+      checkFileCondition(object(mcp[this.options.appMcpServerName]).enabled === false,
+        'FILE_CHAT_ISOLATION_REQUIRED', 'Workflow App MCP must already be disabled for chat.')
+    }
     for (const name of names) {
+      if (operator && name === connectionName) continue
       checkFileCondition((!Object.hasOwn(mcp, name) || object(mcp[name]).enabled === false)
         && (!Object.hasOwn(status, name) || object(status[name]).status === 'disabled'),
       'FILE_CHAT_ISOLATION_REQUIRED', 'Chat cannot acquire workflow or Operator MCP authority.')

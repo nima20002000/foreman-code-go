@@ -1571,7 +1571,10 @@ export const ListOperatorConversationSummariesResponseSchema = z.object({
   conversations: z.array(OperatorConversationSummarySchema),
 }).strict();
 
-export const CreateOperatorConversationRequestSchema = z.object({ title: z.string().trim().min(1).optional() }).strict();
+export const CreateOperatorConversationRequestSchema = z.object({
+  commandId: IdSchema.optional(),
+  title: z.string().trim().min(1).optional(),
+}).strict();
 export const DeleteOperatorConversationResponseSchema = z.object({ conversationId: IdSchema }).strict();
 export const CreateOperatorConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
 export const ListOperatorConversationsResponseSchema = z.object({ conversations: z.array(ConversationSchema) }).strict();

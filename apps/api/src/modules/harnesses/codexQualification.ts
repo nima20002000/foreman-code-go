@@ -17,16 +17,18 @@ export async function qualifyNativeCodexModel(
   inspection?: CodexModelInspection,
 ): Promise<void> {
   const qualified = inspection?.qualified
-    ?? await qualifyCodex(binary, undefined, workingDirectory, environment, true, signal, recovery)
+    ?? await qualifyCodex(binary, workingDirectory, environment, true, signal, recovery)
   const { models } = await readNativeCodexModelCatalog({ ...inspection, qualified },
     workingDirectory, environment, signal, recovery)
   const model = models.find((entry) => entry.slug === configuration.model)
-  if (!model) throw new HarnessExecutionError('CODEX_MODEL_UNAVAILABLE', 'The accepted model is absent from the native Codex catalog.')
+  if (!model) throw new HarnessExecutionError('CODEX_MODEL_UNAVAILABLE',
+    `Codex ${qualified.providerVersion} does not advertise the accepted model in its model/list catalog.`)
   const efforts = Array.isArray(model.supported_reasoning_levels) ? model.supported_reasoning_levels.filter(isObject) : []
   const tiers = Array.isArray(model.additional_speed_tiers) && model.additional_speed_tiers.every((tier) => typeof tier === 'string')
     ? model.additional_speed_tiers : []
   if (!efforts.some((effort) => effort.effort === configuration.reasoningEffort)
     || (configuration.serviceTier === 'priority' && !tiers.includes('fast'))) {
-    throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'The selected model does not advertise the requested effort or service tier.')
+    throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED',
+      `Codex ${qualified.providerVersion} model/list does not advertise the requested reasoning effort or service tier.`)
   }
 }

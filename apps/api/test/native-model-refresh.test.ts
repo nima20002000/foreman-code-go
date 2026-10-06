@@ -37,11 +37,11 @@ it('only an explicit OpenCode upstream refresh runs the qualified CLI cache upda
   expect(options).toHaveBeenCalledTimes(2)
 })
 
-it('rejects an unqualified OpenCode version before updating its cache', async () => {
+it('allows a compatible installed OpenCode command without a release allowlist', async () => {
   const { service, calls, options } = await fixture('1.18.30')
-  await expect(service.refreshOptions('opencode', 'upstream')).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
-  expect(await readFile(calls, 'utf8')).toBe('--version\n')
-  expect(options).not.toHaveBeenCalled()
+  await expect(service.refreshOptions('opencode', 'upstream')).resolves.toMatchObject({ harness: 'opencode' })
+  expect(await readFile(calls, 'utf8')).toBe('--version\nmodels --refresh --pure\n')
+  expect(options).toHaveBeenCalledOnce()
 })
 
 it('does not offer an upstream cache update for Codex', async () => {

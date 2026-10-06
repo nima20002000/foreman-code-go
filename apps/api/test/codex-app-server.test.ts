@@ -433,6 +433,29 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     }, 15_000)
   }
 
+  it('resumes saved sessions on a newer compatible binary without rewriting their provenance', async () => {
+    const session = await manager.createSession(source)
+    await manager.dispose()
+    await json('version.json', 'codex-cli 0.160.0')
+    const replacement = makeManager()
+    assert.deepEqual(await replacement.attachSession(session, source), session)
+    assert.equal((await replacement.capabilities()).providerVersion, 'codex-cli 0.160.0')
+    const fork = await replacement.forkSession(session, source)
+    assert.equal(fork.providerVersion, 'codex-cli 0.160.0')
+    assert.equal(session.providerVersion, 'codex-cli 0.154.0')
+  })
+
+  it('reports the installed version and model/list contract when discovery returns an invalid model identity', async () => {
+    await json('version.json', 'codex-cli 0.160.0')
+    await json('models.json', { models: [{ slug: '', supported_reasoning_levels: [{ effort: 'medium' }] }] })
+    await assert.rejects(manager.discoverModels(f.directory), error => error instanceof Error
+      && errorCode(error) === 'CODEX_MODEL_CATALOG_INVALID' && error.message.includes('0.160.0')
+      && error.message.includes('model/list catalog response contract'))
+    assert.equal((await wire('model/list')).length, 1)
+    assert.equal((await wire('thread/start')).length, 0)
+    await assertMetadataProcessesClosed()
+  })
+
   it('F01: refuses another Agent, workspace, run, or workflow-node owner on loaded attachment', async () => {
     const session = await manager.createSession(source)
     await assertCode(manager.attachSession(session, input(f.directory, 'agent-b')), 'CODEX_SESSION_OWNER_MISMATCH')
@@ -748,6 +771,23 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const session = await until(async () => { try { return await manager.reconcileSessionCreation(source) } catch { return undefined } })
     assert.deepEqual(await manager.createSession(source), session)
     assert.equal((await wire('thread/start')).length, 1)
+  })
+
+  it('retains an incomplete fixture notification until its remaining bytes arrive', async () => {
+    const session = await manager.createSession(source)
+    const message = JSON.stringify({ method: 'thread/name/updated',
+      params: { threadId: session.nativeSessionId, threadName: 'split-notification' } }) + '\n'
+    const midpoint = Math.floor(message.length / 2)
+    const inbox = join(f.directory, 'inbox-agent-a.jsonl')
+    await appendFile(inbox, message.slice(0, midpoint))
+    await until(async () => (await calls(f.directory)).some(entry => entry.inboxBufferedLength === midpoint))
+    assert(!(await manager.history(session)).events.some(event => event.type === 'transport.disconnected'))
+    await appendFile(inbox, message.slice(midpoint))
+    await until(async () => (await manager.history(session)).events
+      .some(event => event.payload.threadName === 'split-notification'))
+    const history = await manager.history(session)
+    assert.equal(history.events.filter(event => event.payload.threadName === 'split-notification').length, 1)
+    assert(!history.events.some(event => event.type === 'native.malformed' || event.type === 'transport.disconnected'))
   })
 
   it('retains large qualified events with bounded history and monotonic cursors', async () => {
@@ -1290,25 +1330,28 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('thread/start')).length, 0)
   })
 
-  it('F27: rechecks version and authentication for later sessions and replacements', async () => {
+  it('rechecks observed version and authentication after a compatible replacement', async () => {
     const session = await manager.createSession(source)
     await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: 'recover' }))
     await json('version.json', 'codex-cli 0.155.0')
-    await assertCode(manager.createSession(input(f.directory, 'agent-b')), 'CODEX_APP_SERVER_VERSION_UNQUALIFIED')
-    await assertCode(manager.reconcile(session, 'recover'), 'CODEX_APP_SERVER_VERSION_UNQUALIFIED')
-    await unflag('version.json'); await flag('logged-out')
-    await assertCode(manager.createSession(input(f.directory, 'agent-b')), 'CODEX_APP_SERVER_AUTH_UNQUALIFIED')
-    await assertCode(manager.reconcile(session, 'recover'), 'CODEX_APP_SERVER_AUTH_UNQUALIFIED')
+    const compatible = await manager.createSession(input(f.directory, 'agent-b'))
+    assert.equal(compatible.providerVersion, 'codex-cli 0.155.0')
+    assert.equal((await manager.reconcile(session, 'recover')).terminalResult?.outcome, 'succeeded')
+    await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: 'auth-recover' }))
+    await flag('logged-out')
+    await assertCode(manager.createSession(input(f.directory, 'agent-c')), 'CODEX_APP_SERVER_AUTH_UNQUALIFIED')
+    await assertCode(manager.reconcile(session, 'auth-recover'), 'CODEX_APP_SERVER_AUTH_UNQUALIFIED')
     await unflag('logged-out')
-    await manager.reconcile(session, 'recover')
+    assert.equal((await manager.reconcile(session, 'auth-recover')).terminalResult?.outcome, 'succeeded')
   })
 
-  it('does not resume a saved thread across two separately qualified Codex releases', async () => {
+  it('resumes a saved thread across compatible Codex releases while retaining its provenance', async () => {
     const session = await manager.createSession(source)
     await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: 'recover' }))
     await json('version.json', 'codex-cli 0.156.1')
-    await assertCode(manager.reconcile(session, 'recover'), 'CODEX_SESSION_VERSION_MISMATCH')
-    assert.equal((await wire('thread/resume')).length, 0)
+    assert.equal((await manager.reconcile(session, 'recover')).terminalResult?.outcome, 'succeeded')
+    assert.equal((await wire('thread/resume')).length, 1)
+    assert.equal(session.providerVersion, 'codex-cli 0.154.0')
     await unflag('version.json')
     assert.equal((await manager.reconcile(session, 'recover')).terminalResult?.outcome, 'succeeded')
   })

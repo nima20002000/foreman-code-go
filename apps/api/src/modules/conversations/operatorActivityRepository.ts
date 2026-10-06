@@ -125,7 +125,7 @@ export class PostgresOperatorActivityRepository {
     const result = await query.query<{ record: unknown; sequence: string; revision: string }>(`
       select record,sequence::text,revision::text from operator_conversation_activity
       where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
-      order by sequence desc limit $3`, [conversationId, before ?? null, limit + 1])
+      order by operator_conversation_activity.sequence desc limit $3`, [conversationId, before ?? null, limit + 1])
     const rows = result.rows.slice(0, limit)
     const page = OperatorActivityPageSchema.parse({
       activities: rows.reverse().map((row) => ({ ...(row.record as object), sequence: row.sequence, revision: Number(row.revision) })),

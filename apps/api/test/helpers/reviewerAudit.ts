@@ -64,7 +64,9 @@ export async function until(condition: () => boolean): Promise<void> {
 
 /** Database and native transport are doubles; dispatch, evidence, fences, attach,
  * credential maintenance and redaction execute the production implementations. */
+const recordedSession = session
 export async function reviewerFixture(options: {
+  savedProviderVersion?: string
   recovering?: boolean
   recoveredLane?: 'bound' | 'unbound'
   workflow?: boolean
@@ -72,6 +74,7 @@ export async function reviewerFixture(options: {
   events?: number
   closedWorkflow?: boolean
 } = {}) {
+  const session = { ...recordedSession, providerVersion: options.savedProviderVersion ?? recordedSession.providerVersion }
   const configuration: AgentConfigurationVersion = {
     id: 'configuration-pinned', workspaceId: 'workspace-1', agentId: 'reviewer-1', version: 1,
     productRole: 'orchestrator', prompt: {}, assignedSkills: [], contentHash: 'sha256:fixture', createdAt: now,

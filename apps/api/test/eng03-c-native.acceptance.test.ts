@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -30,8 +30,18 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
+import { inspectOpenCodeMcpConfiguration } from '../src/modules/harnesses/opencodeMcpConfiguration.js'
+import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
+import { managedStatus } from '../src/modules/harnesses/nativeMcpCommon.js'
+import { APP_MCP_SERVER_NAME, isSupportedAppMcpTokenName } from '../src/modules/harnesses/appMcpLauncher.js'
 import { provisionTestResources } from '../../../scripts/test-resources.mjs'
 import { stopGroup } from '../../../scripts/integration-process.mjs'
+
+function waitForOwnerBeforeWork(release: string, work: string): string {
+  return `Before the following work, use the native shell tool once to run exactly: while [ ! -f '${release}' ]; do sleep 0.1; done. `
+    + `This reads an owner-controlled fixture; do not create or modify it, and do not finish before the command returns. `
+    + `If the tool returns a running command session, poll that same native session until it finishes; do not start another command. Then ${work}`
+}
 
 const require = createRequire(import.meta.url)
 
@@ -47,11 +57,30 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
   it('uses the fixture MCP launcher and rejects an unmanaged replacement before credential delivery', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'native-workflow-mcp-'))
     const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? harnessBinaries(process.env).codexBinary
+    const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? harnessBinaries(process.env).openCodeBinary
     const manager = new CodexAppServerSessionManager(codexBinary)
+    const previousConfigHome = process.env.XDG_CONFIG_HOME
+    const previousConfigDirectory = process.env.OPENCODE_CONFIG_DIR
     let restore: (() => Promise<void>) | undefined
     try {
+      const configHome = join(directory, 'native-config')
+      const configDirectory = join(configHome, 'opencode')
+      await mkdir(configDirectory, { recursive: true, mode: 0o700 })
+      process.env.XDG_CONFIG_HOME = configHome
+      process.env.OPENCODE_CONFIG_DIR = configDirectory
+      await writeFile(join(configDirectory, 'opencode.json'), JSON.stringify({ mcp: { graphql: {
+        type: 'local', command: [process.execPath, '--version'], enabled: false,
+        environment: { GRAPHQL_MCP_TOKEN: '{env:GRAPHQL_MCP_TOKEN}' },
+      } } }), { mode: 0o600 })
       restore = await configureNativeWorkflowMcp({ projectDirectory: directory,
-        runtimeDirectory: directory, codexBinary })
+        runtimeDirectory: directory, codexBinary, openCodeBinary })
+      const openCode = await inspectOpenCodeMcpConfiguration({ binary: openCodeBinary,
+        workingDirectory: directory, serverName: APP_MCP_SERVER_NAME, pure: true })
+      expect(openCode?.automaticEndpoint, JSON.stringify(openCode)).toBe(true)
+      expect(isSupportedAppMcpTokenName(openCode?.credentialEnvironmentVariable)).toBe(true)
+      expect(openCode?.credentialEnvironmentVariable).toBe('GRAPHQL_MCP_TOKEN')
+      const settings = await new OpenCodeMcpConnections(openCodeBinary, directory).read(AbortSignal.timeout(30_000))
+      expect(managedStatus(settings, 'graphql')).toBe('installed')
       const configured = await manager.inspectMcpConfiguration(directory)
       expect(configured.configured.automaticEndpoint).toBe(true)
       const detection = new McpDetectionService(codexMcpInspectorAdapter(manager), 'http://127.0.0.1:1/mcp')
@@ -69,7 +98,13 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       try { await manager.dispose() }
       finally {
         try { await restore?.() }
-        finally { await removeFixtureDirectory(directory) }
+        finally {
+          if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+          else process.env.XDG_CONFIG_HOME = previousConfigHome
+          if (previousConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR
+          else process.env.OPENCODE_CONFIG_DIR = previousConfigDirectory
+          await removeFixtureDirectory(directory)
+        }
       }
     }
   }, 90_000)
@@ -174,16 +209,22 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     let interruptedExecutionId = ''
     let originalBranches: Array<{ execution_id: string; native_session_id: string }> = []
     const result = await runEng03NativeScenario('E03-L02', 'codex', 'codex', {
+      prompts: {
+        A: waitForOwnerBeforeWork('release-native-fault', 'read the accepted Entry result. Without more tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. Finish with A-FAULT. Keep the response under 3000 characters.'),
+        B: waitForOwnerBeforeWork('release-native-fault', 'read the accepted Entry result. Without more tools or files, list n and n cubed modulo 101 for n=1 through 120, one row per n. Finish with B-FAULT. Keep the response under 3000 characters.'),
+      },
       control: async (context) => {
-        const { pool, runId, nodeIds, registry, runs, startTask } = context
+        const { pool, runId, nodeIds, projectDirectory, registry, runs, startTask } = context
         const started = await startedBranches(context)
         originalBranches = started
         interruptedExecutionId = started[0]!.execution_id
-        await registry.closeOwner(`execution:${interruptedExecutionId}`)
-        await startTask.catch(() => undefined)
-        expect((await runs.get(runId))?.outcome).toBe('failed')
-        expect((await pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2',
-          [runId, nodeIds[3]])).rowCount).toBe(0)
+        try {
+          await registry.closeOwner(`execution:${interruptedExecutionId}`)
+          await startTask.catch(() => undefined)
+          expect((await runs.get(runId))?.outcome).toBe('failed')
+          expect((await pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2',
+            [runId, nodeIds[3]])).rowCount).toBe(0)
+        } finally { await writeFile(join(projectDirectory, 'release-native-fault'), 'release') }
       },
     })
     const artifact = JSON.parse(await readFile(result.artifactPath, 'utf8')) as {
@@ -364,8 +405,8 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             'This is a task-owned output path outside your project.',
             'Wait for the User approval, finish the command, and end with A-APPROVED.',
           ].join(' '),
-            B: 'Read the accepted Entry result. Without tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. End with B-PROGRESSED.' },
-          control: async ({ pool, runId, nodeIds, runs, approvals, interactions, budgets, engine, startTask }) => {
+            B: waitForOwnerBeforeWork('release-approval-sibling', 'read the accepted Entry result. Without more tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. End with B-PROGRESSED.') },
+          control: async ({ pool, runId, nodeIds, projectDirectory, runs, approvals, interactions, budgets, engine, startTask }) => {
             const controlStarted = Date.now()
             const progress = (stage: string) => process.stdout.write(`ENG03 A01 progress ${JSON.stringify({
               runId, stage, elapsedMs: Date.now() - controlStarted,
@@ -388,7 +429,10 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
                 const sibling = (await readCurrentExecutions(runs, runId)).find((item) => item.workflowNodeId === nodeIds[2])
                 const nativeStarted = (await pool.query(`select 1 from harness_native_events where execution_id=$1
                   and record->>'type'='turn.started' limit 1`, [sibling?.id ?? ''])).rowCount === 1
-                if (nativeStarted && sibling?.state !== 'completed') siblingActiveAtWait = true
+                if (pending.graphInterruptId && nativeStarted && sibling?.state !== 'completed' && !siblingActiveAtWait) {
+                  siblingActiveAtWait = true
+                  await writeFile(join(projectDirectory, 'release-approval-sibling'), 'release')
+                }
                 if (pending.graphInterruptId && (await runs.get(runId))?.executionState === 'waiting'
                   && sibling?.result?.outcome === 'succeeded') break
               }

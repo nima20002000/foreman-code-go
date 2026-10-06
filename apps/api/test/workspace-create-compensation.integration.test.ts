@@ -1,0 +1,326 @@
+import { randomUUID } from 'node:crypto'
+import { fork, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import pg from 'pg'
+import * as contracts from '@foreman-code/contracts/management'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.js'
+
+afterEach(() => vi.restoreAllMocks())
+
+const failures = ['receipt', 'audit', 'commit', 'commit division by zero', 'commit localized rejection'] as const
+
+describe('workspace project folder compensation through authenticated MCP', () => {
+  for (const explicitName of [true, false]) {
+    it.each(failures)(`removes the ${explicitName ? 'explicit' : 'suggested'} folder after a %s failure`, async failure => {
+      const f = await workspaceMcpFixture()
+      try {
+        const name = 'Recovered project'
+        await f.defaults.updateWorkspaceDefaults({ suggestedName: name, description: '', parentPath: f.parentPath }, 0)
+        const table = failure === 'receipt' ? 'management_command_receipts' : 'management_audit'
+        const trigger = failure.startsWith('commit')
+          ? `create constraint trigger reject_creation after insert on ${table}
+             deferrable initially deferred for each row execute function reject_creation()`
+          : `create trigger reject_creation before insert on ${table}
+             for each row execute function reject_creation()`
+        const condition = failure === 'receipt'
+          ? "new.operation = 'workspace.create'" : "new.action = 'workspace.create' and new.outcome = 'succeeded'"
+        const rejection = failure === 'commit division by zero' || failure === 'commit localized rejection'
+          ? "raise exception 'Injected division by zero' using errcode = '22012'"
+          : "raise exception 'Injected creation failure'"
+        await f.pool.query(`create function reject_creation() returns trigger language plpgsql as $$
+          begin
+            if ${condition} then ${rejection}; end if;
+            return new;
+          end $$; ${trigger}`)
+        if (failure === 'commit localized rejection') {
+          const query = pg.Client.prototype.query as unknown as
+            (this: pg.Client, ...args: unknown[]) => Promise<pg.QueryResult>
+          // Keep the real deferred COMMIT rejection; represent its localized protocol severity.
+          vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, ...args: unknown[]) {
+            const response = query.apply(this, args)
+            if (args[0] !== 'commit') return response
+            return response.catch((error: unknown) => {
+              if (error instanceof pg.DatabaseError && error.code === '22012') {
+                error.severity = 'FEHLER'
+              }
+              throw error
+            })
+          } as never)
+        }
+        const input = { commandId: randomUUID(), parentPath: f.parentPath, ...(explicitName ? { name } : {}) }
+        const failed = await f.owner.client.callTool({ name: 'workspace_create', arguments: input })
+        expect(failed.isError).toBe(true)
+        expect(await readdir(f.parentPath)).toEqual([])
+        expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])
+        expect((await f.pool.query('select count(*)::int as count from workspaces')).rows[0].count).toBe(0)
+        expect((await f.pool.query('select count(*)::int as count from management_command_receipts where command_id = $1',
+          [input.commandId])).rows[0].count).toBe(0)
+        await f.pool.query(`drop trigger reject_creation on ${table}`)
+        const retried = await callWorkspaceTool(f.owner.client, 'workspace_create', contracts.ManagedWorkspaceCommandResultSchema, input)
+        expect(retried.replayed).toBe(false)
+        expect(retried.value.workspace.name).toBe(name)
+        const readback = await callWorkspaceTool(f.owner.client, 'workspace_get', contracts.ManagedWorkspaceSchema,
+          { workspaceId: retried.value.workspace.id })
+        expect(readback.executionLocation?.rootPath).toBe(join(f.parentPath, name))
+        expect(readback.locationValidation.status).toBe('ready')
+        expect(await readdir(f.parentPath)).toEqual([name])
+        const owned = (await f.pool.query('select id, created_project_folder from workspaces')).rows
+        expect(owned).toHaveLength(1)
+        expect(owned[0]).toMatchObject({ id: retried.value.workspace.id,
+          created_project_folder: { rootPath: join(f.parentPath, name) } })
+        expect((await callWorkspaceTool(f.owner.client, 'workspace_create',
+          contracts.ManagedWorkspaceCommandResultSchema, input)).replayed).toBe(true)
+        expect(await readdir(f.parentPath)).toEqual([name])
+        expect((await f.pool.query(`select outcome from management_audit
+          where action = 'workspace.create' and details->>'commandId' = $1 order by sequence`,
+        [input.commandId])).rows.map(row => row.outcome)).toEqual(['failed', 'succeeded'])
+      } finally { await f.close() }
+    }, 30_000)
+  }
+
+  it('retains a committed project folder after lost acknowledgement and replays the same workspace', async () => {
+    const f = await workspaceMcpFixture()
+    try {
+      const input = { commandId: randomUUID(), parentPath: f.parentPath, name: 'Acknowledged on retry' }
+      const query = pg.Client.prototype.query as unknown as
+        (this: pg.Client, ...args: unknown[]) => Promise<pg.QueryResult>
+      const creatingClients = new WeakSet<pg.Client>()
+      let loseAcknowledgement = true
+      vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, ...args: unknown[]) {
+        const sql = args[0]
+        const values = args[1] as unknown[] | undefined
+        if (typeof sql === 'string' && sql.includes('insert into management_command_receipts')
+          && values?.[2] === input.commandId) creatingClients.add(this)
+        const response = query.apply(this, args)
+        if (sql === 'commit' && creatingClients.has(this) && loseAcknowledgement) {
+          loseAcknowledgement = false
+          return response.then(() => { throw new Error('Commit acknowledgement lost') })
+        }
+        return response
+      } as never)
+      expect((await f.owner.client.callTool({ name: 'workspace_create', arguments: input })).isError).toBe(true)
+      vi.restoreAllMocks()
+      const directory = join(f.parentPath, input.name)
+      expect((await stat(directory)).isDirectory()).toBe(true)
+      const persisted = (await f.pool.query('select id from workspaces')).rows
+      expect(persisted).toHaveLength(1)
+      const replayed = await callWorkspaceTool(f.owner.client, 'workspace_create', contracts.ManagedWorkspaceCommandResultSchema, input)
+      expect(replayed.replayed).toBe(true)
+      expect(replayed.value.workspace.id).toBe(persisted[0].id)
+      const readback = await callWorkspaceTool(f.owner.client, 'workspace_get', contracts.ManagedWorkspaceSchema,
+        { workspaceId: replayed.value.workspace.id })
+      expect(readback.executionLocation?.rootPath).toBe(directory)
+      expect(readback.locationValidation.status).toBe('ready')
+      expect(await readdir(f.parentPath)).toEqual([input.name])
+    } finally {
+      vi.restoreAllMocks()
+      await f.close()
+    }
+  }, 30_000)
+
+  it('denies creation without provisioning grants and creates neither workspace nor directory', async () => {
+    const f = await workspaceMcpFixture()
+    try {
+      const caller = await f.issue([{ actions: ['workspaces:create'], scope: {} }])
+      const input = { commandId: randomUUID(), name: 'Denied project', parentPath: f.parentPath }
+      const denied = await caller.client.callTool({ name: 'workspace_create', arguments: input })
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
+      expect(await readdir(f.parentPath)).toEqual([])
+      expect((await callWorkspaceTool(f.owner.client, 'workspace_list', contracts.ManagedWorkspacePageSchema)).items).toEqual([])
+      expect((await f.pool.query('select count(*)::int as count from management_command_receipts where command_id = $1',
+        [input.commandId])).rows[0].count).toBe(0)
+    } finally { await f.close() }
+  }, 30_000)
+
+  it('recovers an unpublished stage without deleting a pre-existing project folder', async () => {
+    const f = await workspaceMcpFixture()
+    let child: ChildProcess | undefined
+    try {
+      const name = 'Existing project'
+      await f.defaults.updateWorkspaceDefaults({ suggestedName: name, description: '', parentPath: f.parentPath }, 0)
+      const existing = join(f.parentPath, name)
+      await mkdir(existing)
+      await writeFile(join(existing, 'user.txt'), 'Keep this project')
+      const input = { commandId: randomUUID(), parentPath: f.parentPath }
+      child = fork(fileURLToPath(new URL('./helpers/workspaceCreateProcess.ts', import.meta.url)), [], {
+        cwd: fileURLToPath(new URL('..', import.meta.url)), execArgv: ['--import', 'tsx'], silent: true,
+      })
+      child.send({ database: f.pool.options, parentPath: f.parentPath, token: f.owner.token,
+        input, interrupt: 'staged' })
+      expect((await once(child, 'message'))[0]).toEqual({ phase: 'staged' })
+      const exited = once(child, 'exit')
+      child.kill('SIGKILL')
+      await exited
+      const saved = await callWorkspaceTool(f.owner.client, 'workspace_create',
+        contracts.ManagedWorkspaceCommandResultSchema, input)
+      expect(saved.value.workspace.name).toBe(`${name} (1)`)
+      expect(await readFile(join(existing, 'user.txt'), 'utf8')).toBe('Keep this project')
+      expect((await readdir(f.parentPath)).sort()).toEqual([name, `${name} (1)`])
+      expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, 'exit')
+        child.kill('SIGKILL')
+        await exited
+      }
+      await f.close()
+    }
+  }, 30_000)
+
+  it.each([true, false])('recovers an interrupted %s-name creation in a fresh process without suffixes', async explicit => {
+    const f = await workspaceMcpFixture()
+    const children: ChildProcess[] = []
+    const launch = (input: contracts.WorkspaceCreateInput, interrupt: boolean) => {
+      const child = fork(fileURLToPath(new URL('./helpers/workspaceCreateProcess.ts', import.meta.url)), [], {
+        cwd: fileURLToPath(new URL('..', import.meta.url)), execArgv: ['--import', 'tsx'], silent: true,
+      })
+      children.push(child)
+      child.send({ database: f.pool.options, parentPath: f.parentPath, token: f.owner.token, input, interrupt })
+      return child
+    }
+    try {
+      const name = 'Recovered after crash'
+      await f.defaults.updateWorkspaceDefaults({ suggestedName: name, description: '', parentPath: f.parentPath }, 0)
+      const input = { commandId: randomUUID(), parentPath: f.parentPath, ...(explicit ? { name } : {}) }
+      const interrupted = launch(input, true)
+      const [paused] = await once(interrupted, 'message')
+      expect(paused).toEqual({ phase: 'provisioned' })
+      expect(await readdir(f.parentPath)).toEqual([name])
+      expect((await f.pool.query('select id from workspaces')).rows).toEqual([])
+      expect((await f.pool.query('select identity from workspace_project_provisioning')).rows)
+        .toEqual([{ identity: { device: expect.any(String), inode: expect.any(String) } }])
+      const exited = once(interrupted, 'exit')
+      interrupted.kill('SIGKILL')
+      expect(await exited).toEqual([null, 'SIGKILL'])
+      const restarted = launch(input, false)
+      const completion = once(restarted, 'exit')
+      const [message] = await once(restarted, 'message')
+      expect(message.phase).toBe('completed')
+      expect(message.result.isError).not.toBe(true)
+      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(message.result.structuredContent)
+      expect(saved.replayed).toBe(false)
+      expect(saved.value.workspace.name).toBe(name)
+      expect(await completion).toEqual([0, null])
+      const readback = await callWorkspaceTool(f.owner.client, 'workspace_get', contracts.ManagedWorkspaceSchema,
+        { workspaceId: saved.value.workspace.id })
+      expect(readback.executionLocation?.rootPath).toBe(join(f.parentPath, name))
+      expect(readback.locationValidation.status).toBe('ready')
+      expect(await readdir(f.parentPath)).toEqual([name])
+      expect((await f.pool.query('select id from workspaces')).rows).toEqual([{ id: saved.value.workspace.id }])
+      expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])
+      expect((await callWorkspaceTool(f.owner.client, 'workspace_create',
+        contracts.ManagedWorkspaceCommandResultSchema, input)).replayed).toBe(true)
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null && child.signalCode === null) {
+          const exited = once(child, 'exit')
+          child.kill('SIGKILL')
+          await exited
+        }
+      }
+      await f.close()
+    }
+  }, 30_000)
+
+  it.each([true, false])('settles a surviving rename during %s-name recovery before releasing ownership', async explicit => {
+    const f = await workspaceMcpFixture()
+    const children: ChildProcess[] = []
+    const gate = join(f.parentPath, 'publication-gate')
+    let publisherPid: number | undefined
+    const errors: unknown[] = []
+    try {
+      await mkdir(gate)
+      await writeFile(join(gate, 'mv'), `#!/usr/bin/env node
+const { writeFile, stat } = require('node:fs/promises')
+const { join } = require('node:path')
+const { execFile } = require('node:child_process')
+const { promisify } = require('node:util')
+async function publish() {
+  const gate = process.env.WORKSPACE_PUBLICATION_GATE
+  await writeFile(join(gate, 'started'), String(process.pid))
+  while (true) {
+    try { await stat(join(gate, 'release')); break }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      await new Promise(done => setTimeout(done, 10))
+    }
+  }
+  await promisify(execFile)('/usr/bin/mv', process.argv.slice(2))
+  await writeFile(join(gate, 'published'), '')
+}
+publish().catch(error => { console.error(error); process.exitCode = 1 })
+`, { mode: 0o700 })
+      const name = 'Recovered during publication'
+      await f.defaults.updateWorkspaceDefaults({ suggestedName: name, description: '', parentPath: f.parentPath }, 0)
+      const input = { commandId: randomUUID(), parentPath: f.parentPath, ...(explicit ? { name } : {}) }
+      const launch = (recover: boolean) => {
+        const child = fork(fileURLToPath(new URL('./helpers/workspaceCreateProcess.ts', import.meta.url)), [], {
+          cwd: fileURLToPath(new URL('..', import.meta.url)), execArgv: ['--import', 'tsx'], silent: true,
+          env: recover ? process.env : { ...process.env, PATH: `${gate}:${process.env.PATH}`,
+            WORKSPACE_PUBLICATION_GATE: gate },
+        })
+        children.push(child)
+        child.send({ database: f.pool.options, parentPath: f.parentPath, token: f.owner.token, input,
+          interrupt: false, ...(recover ? { reconcilePublication: gate } : {}) })
+        return child
+      }
+      const interrupted = launch(false)
+      for (let attempt = 0; ; attempt++) {
+        try { publisherPid = Number(await readFile(join(gate, 'started'), 'utf8')); break }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || attempt >= 1000) throw error
+          await new Promise(done => setTimeout(done, 10))
+        }
+      }
+      expect((await f.pool.query('select identity from workspace_project_provisioning')).rows)
+        .toEqual([{ identity: { device: expect.any(String), inode: expect.any(String) } }])
+      const exited = once(interrupted, 'exit')
+      interrupted.kill('SIGKILL')
+      await exited
+      const restarted = launch(true)
+      const completion = once(restarted, 'exit')
+      const [message] = await once(restarted, 'message')
+      expect(message.phase).toBe('completed')
+      expect(message.result.isError).not.toBe(true)
+      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(message.result.structuredContent)
+      expect(saved.value.workspace.name).toBe(name)
+      expect(await completion).toEqual([0, null])
+      expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])
+      expect((await readdir(f.parentPath)).sort()).toEqual(['publication-gate', name].sort())
+      const readback = await callWorkspaceTool(f.owner.client, 'workspace_get', contracts.ManagedWorkspaceSchema,
+        { workspaceId: saved.value.workspace.id })
+      expect(readback.executionLocation?.rootPath).toBe(join(f.parentPath, name))
+      expect(readback.locationValidation.status).toBe('ready')
+      expect((await callWorkspaceTool(f.owner.client, 'workspace_create',
+        contracts.ManagedWorkspaceCommandResultSchema, input)).replayed).toBe(true)
+    } catch (error) {
+      errors.push(error)
+    }
+    for (const child of children) {
+      try {
+        if (child.exitCode === null && child.signalCode === null) {
+          const exited = once(child, 'exit')
+          child.kill('SIGKILL')
+          await exited
+        }
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+    if (publisherPid) {
+      try { process.kill(publisherPid, 'SIGKILL') }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') errors.push(error)
+      }
+    }
+    try { await f.close() }
+    catch (error) { errors.push(error) }
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) throw new AggregateError(errors, 'Workspace publication test and cleanup failed.')
+  }, 30_000)
+})

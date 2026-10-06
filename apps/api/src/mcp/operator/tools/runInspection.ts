@@ -46,7 +46,7 @@ export function registerRunInspectionTools(server: McpServer, context: OperatorR
   const reads = context.services.runs?.inspection
   if (!reads) return
   if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.record)) server.registerTool(RUN_INSPECTION_TOOLS.record, {
-    description: 'Read one exact WorkflowRunV3 record: original input, recorded result, lifecycle, Stop-request and cleanup-pending facts, and immutable pins. No executions, activity, native events or workflow definition. Maximum 6 MiB; oversized records fail, never truncate. Requires runs:read on the Run; location is redacted without live workspace_locations:read. Use for result disclosure or full-Run retry preflight, not aggregate run_get.',
+    description: 'Read one committed WorkflowRunV3 snapshot while a native publication is in progress: original input, recorded result, lifecycle, Stop-request and cleanup-pending facts, and immutable pins. No executions, activity, native events or workflow definition. Maximum 6 MiB; oversized records fail, never truncate. Requires runs:read on the Run; location is redacted without live workspace_locations:read. Use for result disclosure or full-Run retry preflight, not aggregate run_get.',
     inputSchema: RunRecordGetInputSchema, outputSchema: RunRecordDetailSchema, annotations,
   }, async (input) => invokeOperatorTool(context, RUN_INSPECTION_TOOLS.record, () => reads.record(context.principal, input)))
   if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.executions)) server.registerTool(RUN_INSPECTION_TOOLS.executions, {

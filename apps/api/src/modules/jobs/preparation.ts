@@ -148,7 +148,8 @@ export class JobQueuePreparation {
   }
 
   async waitForWork(tasks: readonly Promise<void>[] = [...this.work.values()]): Promise<void> {
-    const results = await Promise.allSettled(tasks)
+    const pending = new Set([...tasks, ...this.work.values()])
+    const results = await Promise.allSettled(pending)
     const failure = results.find(result => result.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
   }

@@ -318,7 +318,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               nativeAgent: 'build', thinking: false, autoApprove: false,
               ...(scenario.approval && index === approvalNode ? { advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
                 permissionRules: [{ permission: 'shell', pattern: 'pwd', effect: 'ask' }] } } : {}) }
-            : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
+            : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? process.env.CODEX_TEST_MODEL ?? 'gpt-6-luna',
               reasoningEffort: process.env.NIM2691_CODEX_REASONING_EFFORT ?? 'medium',
               sandbox: 'read-only', serviceTier: 'standard' },
           prompt: { system: scenario.capLoop

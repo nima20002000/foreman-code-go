@@ -24,9 +24,10 @@ import { acceptedClaudeAppTools } from './mcpPolicy.js'
 import type { ClaudeInteractionBridge } from './interactions.js'
 import { claudeProductionMcpInspector } from './productionMcpInspector.js'
 import type { ClaudeNativeSessionManager } from './sessionManager.js'
+import type { OperatorProfileObservation } from '../operatorProfileObservation.js'
 
 /** Private lifetime signal is never serialized into accepted configuration or provenance. */
-export type ClaudeProfileOwner = (ClaudeDomainBinding | {
+export type ClaudeProfileOwner = (ClaudeDomainBinding | OperatorProfileObservation | {
   /** Read-only setup has no conversation, accepted input or SDK callbacks. */
   kind: 'operator-inspection'; principalId: string; configurationVersionId: string; configurationHash: string
 }) & { admissionSignal?: AbortSignal; purpose?: 'reviewer' }

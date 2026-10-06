@@ -7,7 +7,6 @@ import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionError } from './errors.js'
 import type { NativeMcpEntryEvidence, NativeMcpInspector } from './mcpDetection.js'
 import { runCommand } from './process.js'
-import { harnessProfile } from './qualification/profiles.js'
 
 type JsonObject = Record<string, unknown>
 
@@ -25,7 +24,13 @@ function authorization(entry: JsonObject): { key: string; value: string } | unde
 function withoutAuthorization(entry: JsonObject): JsonObject {
   const headers = Object.fromEntries(Object.entries(object(entry.headers) ?? {})
     .filter(([name]) => name.toLowerCase() !== 'authorization'))
-  return { ...entry, headers }
+  const comparable: JsonObject = { ...entry, headers }
+  if (entry.type === 'remote') {
+    // Deep-merged remote entries can retain local fields that the provider does not use.
+    delete comparable.command
+    delete comparable.environment
+  }
+  return comparable
 }
 
 /**
@@ -60,8 +65,8 @@ export async function inspectOpenCodeMcpConfiguration(input: {
   }
   const version = await run(['--version'])
   const providerVersion = (version.stdout || version.stderr).trim()
-  if (version.exitCode !== 0 || harnessProfile('opencode', providerVersion) === null) {
-    throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode MCP inspection requires a qualified binary.')
+  if (version.exitCode !== 0 || !providerVersion) {
+    throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode could not report its version for MCP inspection.')
   }
   input.onVersion?.(providerVersion)
   const args = ['debug', 'config', ...(input.pure ? ['--pure'] : [])]

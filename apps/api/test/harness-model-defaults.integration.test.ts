@@ -1,3 +1,4 @@
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { operatorChatSettings } from '@foreman-code/contracts'
@@ -37,7 +38,7 @@ it('persists detected defaults once, preserves explicit pins and exposes the exa
     expect(AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent)).toEqual({ ...saved, replayed: true })
     const reader = await f.access.issue({ name: 'Read-only model caller', audience: 'operator', grants: [{ actions: ['settings:read', 'harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
     const readClient = await f.connect(reader.token)
-    await expect(readClient.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).rejects.toThrow('not found')
+    await expectMcpAccessDenied(readClient.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } }))
     expect(ManagedAgentDefaultsSchema.parse((await readClient.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)).toEqual(saved.value)
     await initializeNativeDefaults({ pool: f.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
     expect(await f.repository.getAgentDefaults()).toEqual(saved.value)
