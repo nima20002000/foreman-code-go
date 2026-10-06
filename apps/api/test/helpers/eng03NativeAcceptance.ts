@@ -27,7 +27,6 @@ import { Wave25WorkerCredentialService as WorkerCredentialService } from '../../
 import { CodexAppServerSessionManager } from '../../src/modules/harnesses/codexAppServer.js'
 import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 import { OpenCodeNativeSessionManager } from '../../src/modules/harnesses/opencodeServer.js'
-import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from '../../src/modules/harnesses/mcpDetection.js'
 import { codexMcpInspectorAdapter } from '../../src/modules/harnesses/codexMcpInspectorAdapter.js'
