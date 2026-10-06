@@ -36,14 +36,14 @@ const storageFixtures = [
   { name: 'foreman-code', token: 'FOREMAN_CODE_MCP_TOKEN' },
 ].flatMap(identity => ['direct', 'isolated', 'copied', 'relocated'].map(storage => ({ ...identity, storage })))
 
-it.each(storageFixtures)('keeps the verified $token reference in $storage native storage', async (identity) => {
-
+it.each(storageFixtures)('keeps the $token reference in $storage native storage', async (identity) => {
   const directory = await mkdtemp(join(tmpdir(), 'native-workflow-source-'))
   const previousHome = process.env.CODEX_HOME
   const previousLauncherDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
   const previousSourceLauncher = process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
   const previousOpenCodeConfig = process.env.OPENCODE_CONFIG
   const previousOpenCodeConfigDirectory = process.env.OPENCODE_CONFIG_DIR
+  const previousConfigHome = process.env.XDG_CONFIG_HOME
   const previousAuthentication = process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
   let restore: (() => Promise<void>) | undefined
   try {
@@ -81,6 +81,7 @@ it.each(storageFixtures)('keeps the verified $token reference in $storage native
     restore = await configureNativeWorkflowMcp({ projectDirectory,
       runtimeDirectory: join(directory, 'runtime'), codexBinary: 'recorded', openCodeBinary: 'recorded' })
     const ownedHome = process.env.CODEX_HOME!
+    const ownedConfigHome = process.env.XDG_CONFIG_HOME!
     const configured = JSON.parse(await readFile(process.env.OPENCODE_CONFIG!, 'utf8')) as {
       mcp: Record<string, { type: string; command: string[]; environment: Record<string, string> }>
     }
@@ -88,6 +89,9 @@ it.each(storageFixtures)('keeps the verified $token reference in $storage native
     const directoryConfig = JSON.parse(await readFile(
       join(process.env.OPENCODE_CONFIG_DIR!, 'opencode.json'), 'utf8')) as typeof configured
     expect(directoryConfig.mcp[identity.name]).toEqual(entry)
+    const userConfig = JSON.parse(await readFile(
+      join(process.env.XDG_CONFIG_HOME!, 'opencode', 'opencode.json'), 'utf8')) as typeof configured
+    expect(userConfig.mcp[identity.name]).toEqual(entry)
     // OpenCode merges environment maps from user and project configuration.
     const effective = { ...entry, environment: { [identity.token]: '', ...entry.environment } }
     expect(entry.environment).toEqual({ [identity.token]: `{env:${identity.token}}` })
@@ -99,9 +103,10 @@ it.each(storageFixtures)('keeps the verified $token reference in $storage native
     expect(process.env.FOREMAN_CODE_APP_MCP_DIRECTORY).toBe(restoredLauncherDirectory)
     expect(process.env.OPENCODE_CONFIG).toBe(previousOpenCodeConfig)
     expect(process.env.OPENCODE_CONFIG_DIR).toBe(sourceConfigDirectory)
+    expect(process.env.XDG_CONFIG_HOME).toBe(previousConfigHome)
     expect(await readFile(join(sourceConfigDirectory, 'opencode.json'), 'utf8')).toBe(sourceConfig)
-
     await expect(access(ownedHome)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(ownedConfigHome)).rejects.toMatchObject({ code: 'ENOENT' })
   } finally {
     try { await restore?.() }
     finally {
@@ -115,6 +120,8 @@ it.each(storageFixtures)('keeps the verified $token reference in $storage native
       else process.env.OPENCODE_CONFIG = previousOpenCodeConfig
       if (previousOpenCodeConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR
       else process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDirectory
+      if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = previousConfigHome
       if (previousAuthentication === undefined) delete process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
       else process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE = previousAuthentication
       await rm(directory, { recursive: true, force: true })

@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   APP_MCP_TOKEN, appLauncherPath, appLauncherTokenName, appMcpServerName, installAppLauncher,
@@ -29,8 +29,10 @@ export async function configureNativeWorkflowMcp(input: {
   const previousCodexHome = process.env.CODEX_HOME
   const previousOpenCodeConfig = process.env.OPENCODE_CONFIG
   const previousOpenCodeConfigDirectory = process.env.OPENCODE_CONFIG_DIR
+  const previousConfigHome = process.env.XDG_CONFIG_HOME
   // Codex's release build refuses helper aliases beneath TMPDIR.
   const codexHomeDirectory = await privateFixtureDirectory('native-cli-codex-')
+  let openCodeConfigHome: string | undefined
   const restore = async () => {
     if (previous === undefined) delete process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
     else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previous
@@ -40,7 +42,12 @@ export async function configureNativeWorkflowMcp(input: {
     else process.env.OPENCODE_CONFIG = previousOpenCodeConfig
     if (previousOpenCodeConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR
     else process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDirectory
-    await removeFixtureDirectory(codexHomeDirectory)
+    if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previousConfigHome
+    const directories = [codexHomeDirectory, ...(openCodeConfigHome ? [openCodeConfigHome] : [])]
+    const removed = await Promise.allSettled(directories.map(directory => removeFixtureDirectory(directory)))
+    const errors = removed.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (errors.length) throw new AggregateError(errors, 'Native fixture profile cleanup failed.')
   }
   try {
     // Inspect copied configuration against its original managed-launcher location.
@@ -78,14 +85,18 @@ export async function configureNativeWorkflowMcp(input: {
         token = sourceToken && record(source.environment)[sourceToken] === `{env:${sourceToken}}`
           ? sourceToken : APP_MCP_TOKEN
       }
-      const configurationFile = join(input.projectDirectory, 'opencode.json')
+      openCodeConfigHome = await privateFixtureDirectory('native-cli-opencode-')
+      const configurationDirectory = join(openCodeConfigHome, 'opencode')
+      await mkdir(configurationDirectory, { mode: 0o700 })
+      const configurationFile = join(configurationDirectory, 'opencode.json')
       await writeFile(configurationFile, JSON.stringify({ mcp: { [name]: {
         type: 'local', command: [process.execPath, appLauncherPath()], enabled: true,
         environment: { [token]: `{env:${token}}` },
       } } }), { mode: 0o600 })
-      // OpenCode loads its custom directory after the explicit file and project config.
+      // The native settings manager owns the user entry; every loader selects that same file.
+      process.env.XDG_CONFIG_HOME = openCodeConfigHome
       process.env.OPENCODE_CONFIG = configurationFile
-      process.env.OPENCODE_CONFIG_DIR = input.projectDirectory
+      process.env.OPENCODE_CONFIG_DIR = configurationDirectory
     }
     return restore
   } catch (error) {

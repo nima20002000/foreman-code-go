@@ -20,6 +20,7 @@ export interface HarnessInstallation {
   payloadPaths?: string[]
 }
 export interface CompatibilityProbe {
+  /** Version commands own their deadline; installation verification and cleanup also observe cancellation. */
   inspect(harness: CompatibilityHarness, signal: AbortSignal, attempt?: number): Promise<HarnessInstallation>
   probe(harness: CompatibilityHarness, installation: HarnessInstallation, signal: AbortSignal): Promise<string>
   assertUnchanged(installation: HarnessInstallation, signal: AbortSignal): Promise<void>

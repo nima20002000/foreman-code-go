@@ -140,7 +140,8 @@ export class HarnessQualificationService {
       ?? nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, 5000)
     this.probes.add(probe)
     let version: string
-    try { version = (await this.timed(5000, (signal) => probe.inspect(harness, signal))).version }
+    // The probe bounds the CLI command; installation checks and closure have separate ownership.
+    try { version = (await probe.inspect(harness, this.cancellation.signal)).version }
     finally { await closeQualificationProbe(probe, this.probes, () => { this.blocked.add(harness) }) }
     const previous = await this.repository.find(harness, version, sha256, suite.revision)
     this.assertRunning()

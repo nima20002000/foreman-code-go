@@ -30,6 +30,32 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Preserve launcher integrity and path trust, credential isolation, read-only enforcement, sandbox settings, approval policy and authenticated host-bound qualification.
 - Keep MCP and Worker credentials scoped and separate from the implicit local human; compatible-version checks grant no execution or write authority.
 
+## [0.0.44] - 2026-10-06 - 2026-10-06
+
+### Fixed
+
+- Observe each provider's native startup event during installed recovery verification, requiring the bound execution and session and rejecting replayed history.
+- Remove the installed test's runtime workspace after native cleanup on success and failure, while retaining production data and persisted audit history.
+- Retire the obsolete installer-owned browser-access setting during production updates, preserving native provider configuration and MCP security.
+- Give the standalone migration command a separate bounded DDL deadline while retaining API request deadlines, transactions and migration locks.
+- Remove unsuccessful release staging without deleting an activated release or production data.
+- Snapshot deployed API and workspace dependencies into independent files so later source builds cannot mutate an installed release.
+- Read committed Run-only snapshots during native publication without taking a mutation-blocking Run lock; preserve live grants, immutable pins, locked execution detail and mutation/Stop checks.
+- Cover delayed read/write responses, persisted write readback, replacement connections after SQL cancellation and bounded missing replies in the PostgreSQL deadline regression.
+- Preserve the supported OpenCode credential key when disposable test storage changes launcher identity, with unit and live native preflight coverage for legacy configuration merging.
+- Bind isolated OpenCode preflight and execution to the fixture-owned configuration file and directory, preventing a later source-directory override, restoring both settings during cleanup and preserving managed-launcher and credential checks.
+- Use one private OpenCode user-profile entry for native execution and managed MCP setup, retaining source ownership checks and restoring the prior configuration home.
+- Include the MCP client in production API dependencies so the compiled Claude runtime and installed API start without development packages.
+- Retain server-side failure codes and locations for unexpected Operator MCP errors without logging private error text, tool arguments or credentials.
+- Keep the native version-command deadline separate from installation verification and confirmed process cleanup during qualification, preserving binary guards and cancellation.
+
+### Changed
+
+- Verify compiled production hosting and scoped agent HTTP/MCP readback with denied callers after the noauth upgrade; verify credential-free human creation/edits in the actual browser without altering OS client attribution.
+- Retain redacted private Operator failure events and attempt independent test resource cleanup when another cleanup step fails.
+- Retain bounded database wait and blocker diagnostics during installed recovery verification.
+- Document OpenCode runtime isolation, private native storage and the Node/Bubblewrap requirements after the installed file-runtime upgrade.
+
 ## [0.0.43] - 2026-10-06
 
 ### Added
