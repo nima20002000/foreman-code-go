@@ -41,7 +41,7 @@ async function verifyWorkerSource(manifest: Record<string, unknown>, commit: str
   const paths = snapshot.files.map(file => file.path)
   assert.equal(new Set(paths).size, paths.length)
   for (const path of paths) {
-    assert.ok(!path.startsWith('/') && !/[\x00-\x1f]/.test(path)
+    assert.ok(!path.startsWith('/') && [...path].every(character => character.charCodeAt(0) >= 32)
       && path.split('/').every(part => part && part !== '.' && part !== '..'))
   }
   const required = ['scripts/build-worker-artifact.mjs', 'scripts/worker-api-allowlist.json', 'pnpm-lock.yaml',
