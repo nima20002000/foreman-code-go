@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { expect, it } from 'vitest'
@@ -9,9 +10,9 @@ import { PostgresOperatorConversationRepository } from '../src/modules/conversat
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 
 it('pins the full cross-harness Operator configuration and preserves it on exact retries', async () => {
-  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
   const schema = `pr18_pin_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ ...admin.options, max: 1, options: `-c search_path=${schema}` })
   try {
     await applyApplicationMigrations(pool)
@@ -44,5 +45,5 @@ it('pins the full cross-harness Operator configuration and preserves it on exact
     expect((await repository.configuration(pin))?.harness).toEqual(intended)
     await expect(repository.beginTurn(conversation.id, { ...input, content: 'changed' }, principal.id)).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
     expect((await pool.query('select request_id from operator_conversation_turns')).rowCount).toBe(1)
-  } finally { await pool.end(); await admin.query(`drop schema "${schema}" cascade`); await admin.end() }
+  } finally { await pool.end(); await dropFixtureSchema(admin, schema); await admin.end() }
 }, 30_000)

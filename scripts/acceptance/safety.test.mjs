@@ -6,7 +6,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } fro
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { BASE, assertOwned, databaseUrl, environment, freePort, options, publicError } from './safety.mjs'
+import { BASE, assertOwned, environment, freePort, options, publicError } from './safety.mjs'
 
 async function fixture(work) {
   const state = await mkdtemp(join(await realpath('/tmp'), 'eng07-'))
@@ -17,6 +17,9 @@ async function fixture(work) {
 }
 test('defaults are independent of ambient database and service configuration', () => {
   assert.deepEqual(options([]), { apiPort: 3307, webPort: 5307, smoke: false })
+  assert.deepEqual(options(['--smoke']), { apiPort: 3307, webPort: 5307, smoke: true })
+  assert.deepEqual(options(['--api-port', '3307', '--web-port', '5307']),
+    { apiPort: 3307, webPort: 5307, smoke: false })
   assert.deepEqual(options(['--api-port', '3407', '--web-port', '5407', '--smoke']), { apiPort: 3407, webPort: 5407, smoke: true })
 })
 test('rejects reuse/reset/URL options and malformed, duplicate or conflicting ports', () => {
@@ -38,14 +41,23 @@ test('allowlist excludes ambient database, code injection, web secrets and rollo
   const result = environment(input)
   assert.deepEqual(result, { PATH: '/bin', HOME: '/home/local', OPENAI_API_KEY: 'test-only-provider-sentinel' })
 })
-test('database URI addresses exactly one private socket and contains no password', () => {
-  const url = new URL(databaseUrl('/tmp/eng07-Ab1234', 'eng07_0123456789abcdef'))
-  assert.equal(url.hostname, '127.0.0.1')
-  assert.equal(url.searchParams.get('host'), '/tmp/eng07-Ab1234/socket')
-  assert.equal(url.searchParams.get('port'), '5432')
-  assert.equal(url.pathname, '/eng07_0123456789abcdef')
-  assert.equal(url.username, 'eng07_owner'); assert.equal(url.password, '')
-  for (const db of ['postgres', 'production', 'eng07_abc;drop database x', '../other', 'eng07_0']) assert.throws(() => databaseUrl('/tmp/eng07-Ab1234', db))
+test('acceptance resources reject app URLs and socket overrides and own their native homes', async () => {
+  const { createTestRoot, removeTestRoot, requireTestServerUrl, testAdminUrl, testEnvironment } = await import('../test-resources.mjs')
+  const resource = createTestRoot()
+  try {
+    const url = new URL('/graphql_test_acceptance', testAdminUrl)
+    assert.equal(requireTestServerUrl(url.href).port, '55439')
+    for (const value of ['postgresql://graphql:graphql@127.0.0.1:5432/graphql',
+      url.href + '?host=/tmp/app-socket', url.href + '?options=-c%20search_path=public']) {
+      assert.throws(() => requireTestServerUrl(value), /dedicated disposable/)
+    }
+    const isolated = testEnvironment({ HOME: '/real/home', CODEX_HOME: '/real/codex' },
+      { ...resource, name: 'graphql_test_acceptance', databaseUrl: url.href })
+    const safe = environment(isolated)
+    assert.equal(safe.HOME, join(resource.directory, 'home'))
+    assert.equal(safe.CODEX_HOME, join(resource.directory, 'home/.codex'))
+    assert.equal(safe.TEST_DATABASE_URL, url.href)
+  } finally { removeTestRoot(resource) }
 })
 test('occupied ports are rejected without terminating or adopting the listener', async () => {
   const server = createServer()

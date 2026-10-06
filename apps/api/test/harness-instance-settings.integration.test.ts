@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -17,16 +18,16 @@ import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/i
 import { harnessInstanceProfileEvidenceMigration } from '../src/modules/harnesses/instanceSettings/profileMigration.js'
 import { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSettings/service.js'
 
-const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
 const schema = `harness_instances_${randomUUID().replaceAll('-', '')}`
 const pool = new pg.Pool({ ...admin.options, options: `-c search_path=${schema}` })
 beforeAll(async () => {
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   await applyApplicationMigrations(pool)
 }, 60_000)
 afterAll(async () => {
   await pool.end()
-  try { await admin.query(`drop schema if exists "${schema}" cascade`) } finally { await admin.end() }
+  try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
 }, 60_000)
 
 it('persists host overrides through actual buildApp authenticated MCP and HTTP with denial, CAS, replay, cold readback and canonical revocation', async () => {

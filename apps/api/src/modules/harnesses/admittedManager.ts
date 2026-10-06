@@ -32,6 +32,7 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
   }
   const manager: NativeHarnessSessionManager = {
     harness,
+    requiresRuntimeClosure: () => allocation?.manager.requiresRuntimeClosure?.() ?? Boolean(allocation),
     capabilities: async signal => (await actual(signal)).capabilities(signal),
     inspectMcp: async signal => (await actual(signal)).inspectMcp(signal),
     createSession: async (start, signal) => {
@@ -117,9 +118,29 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     }
     manager.reconcileSteers = async (session, inputs, signal) => (await actual(signal)).reconcileSteers?.(session, inputs, signal) ?? []
   }
-  if (harness === 'opencode') manager.historyPage = async (session, before, signal) => {
-    const current = await actual(signal)
-    return current.historyPage ? current.historyPage(session, before, signal) : current.history(session, signal)
+  if (harness === 'opencode') {
+    manager.recoverEnvironment = async signal => (await actual(signal)).recoverEnvironment?.(signal)
+    manager.captureNativeOutputCall = async (session, toolName, args, signal) => {
+      signal?.throwIfAborted()
+      lifetime.signal.throwIfAborted()
+      const current = allocation?.manager
+      if (!current?.captureNativeOutputCall) throw new DomainError('HARNESS_NATIVE_OUTPUT_CAPTURE_UNAVAILABLE',
+        'The original admitted native output owner is not allocated.', 409)
+      const captured = await current.captureNativeOutputCall(session, toolName, args,
+        signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal)
+      const assertCurrent = () => {
+        lifetime.signal.throwIfAborted()
+        if (allocation?.manager !== current) throw new DomainError('HARNESS_NATIVE_OUTPUT_CAPTURE_UNAVAILABLE',
+          'The original admitted native output owner changed.', 409)
+        captured.assertCurrent()
+      }
+      assertCurrent()
+      return { ...captured, assertCurrent }
+    }
+    manager.historyPage = async (session, before, signal) => {
+      const current = await actual(signal)
+      return current.historyPage ? current.historyPage(session, before, signal) : current.history(session, signal)
+    }
   }
   const inspector: NativeMcpInspector = { async inspect(request) {
     await actual(request.signal)

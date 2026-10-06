@@ -88,10 +88,18 @@ describe('BR1-007: immutable finite choices reach the actual request builder', (
     expect(handoff).toContain('Foreman Code work-handoff result contract (version 1)')
     expect(handoff).toContain('"send_to_d"')
     expect(handoff).toContain('the exact request ID in your received work')
+    expect(handoff).toContain('parentRequest.requestId')
+    expect(handoff).toContain('work.request.requestId')
     expect(handoff.startsWith('Review.\n\n')).toBe(true)
   })
   it('preserves the authored task and never mutates the declaration', () => {
     const declaration = choice(), before = structuredClone(declaration)
+    const combined = currentInitialPrompt({ initialPrompt: 'Publish and delegate.', choice: declaration,
+      artifactOutputs: { version: 1, outputKeys: ['report'] } }, false, true)!
+    expect(combined).toContain('exactly routing, data, and artifactOutputs')
+    expect(combined).toContain('routing.kind is request, return, or finish')
+    expect(combined).toContain('original native turn’s successful files.publish_transferred_result')
+    expect(combined).toContain('latestDeliverable')
     expect(currentInitialPrompt({ initialPrompt: 'Check the implementation.', choice: declaration }))
       .toMatch(/^Check the implementation\.\n\nForeman Code finite-choice/)
     expect(declaration).toEqual(before)

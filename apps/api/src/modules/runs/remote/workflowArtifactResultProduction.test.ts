@@ -12,10 +12,11 @@ import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
 import { currentInitialPrompt, parseCurrentChoiceResult } from '../currentRouting.js'
 import { createProductionWorkflowArtifactResultSource } from './workflowArtifactResultProduction.js'
 
-const reads = vi.hoisted(() => ({ snapshot: vi.fn(), execution: vi.fn(), dispatch: vi.fn(), intent: vi.fn(), receipt: vi.fn() }))
+const reads = vi.hoisted(() => ({ snapshot: vi.fn(), execution: vi.fn(), dispatch: vi.fn(), intent: vi.fn(),
+  receipt: vi.fn(), placement: vi.fn() }))
 vi.mock('../repeatStartRead.js', () => ({ readAcceptedRepeatRunLocked: reads.snapshot }))
 vi.mock('../repeatPostgres.js', () => ({ readRepeatExecutionLocked: reads.execution }))
-vi.mock('../../placement/persistence.js', () => ({ readDispatchIntent: reads.dispatch }))
+vi.mock('../../placement/persistence.js', () => ({ readDispatchIntent: reads.dispatch, readAcceptedPlacement: reads.placement }))
 vi.mock('./persistence.js', () => ({ readReconciledDispatchIntent: reads.intent }))
 vi.mock('../../run-graph/repeatReceipts.js', () => ({ assertRepeatCanonicalReceiptLocked: reads.receipt,
   requireRepeatCanonicalReceiptBeforeCommit: vi.fn() }))
@@ -100,14 +101,15 @@ it('does not retain ordinary, failed or undeclared observations', async () => {
   expect(f.service.acceptedAfterCommit(f.evidence)).toBeUndefined()
   expect(f.physical.artifactTerminalContext).not.toHaveBeenCalled()
 })
-it('refuses declared artifact native launch before any physical or publication work', async () => {
+it('retains the saved output declaration through launch admission and rejects a changed placement', async () => {
   const f = fixture()
-  await expect(f.connection.transaction(sql => f.service.assertLaunchSupportedLocked(sql, 'execution', 'run')))
-    .rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_NATIVE_HOST_UNAVAILABLE' })
+  reads.placement.mockResolvedValue({ payload: { kind: 'agent', artifactOutputs: { version: 1, outputKeys: ['report'] } } })
+  await f.connection.transaction(sql => f.service.assertLaunchDeclarationLocked(sql, 'execution', 'run'))
   expect(f.physical.artifactTerminalContext).not.toHaveBeenCalled()
   expect(f.authority.resolveWorkflowContext).not.toHaveBeenCalled()
-  f.snapshot.version.definition.nodes[0]!.artifactOutputs = undefined as never
-  await f.connection.transaction(sql => f.service.assertLaunchSupportedLocked(sql, 'execution', 'run'))
+  reads.placement.mockResolvedValue({ payload: { kind: 'agent', artifactOutputs: { version: 1, outputKeys: ['foreign'] } } })
+  await expect(f.connection.transaction(sql => f.service.assertLaunchDeclarationLocked(sql, 'execution', 'run')))
+    .rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE' })
 })
 it('prompts only the saved keys and original successful publication commands', () => {
   const prompt = currentInitialPrompt({ initialPrompt: 'Produce a report.', artifactOutputs: { version: 1, outputKeys: ['report'] } })!

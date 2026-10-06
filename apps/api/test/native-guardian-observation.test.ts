@@ -1,16 +1,19 @@
 import { EventEmitter } from 'node:events'
+import { timingSafeEqual } from 'node:crypto'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { NATIVE_GUARDIAN_SOURCE } from '../src/modules/harnesses/recovery/nativeGuardian.js'
 
 /** Execute the actual guardian program against deterministic private storage and
  * process APIs. No executable, kernel cgroup, signal or host setting is touched. */
-function guardianFixture(childAvailable = true, observationWriteFails = false) {
+function guardianFixture(childAvailable = true, observationWriteFails = false,
+  options: { restartDetachable?: true } = {}) {
   const id = '11111111-1111-1111-1111-111111111111'
   const boot = '22222222-2222-2222-2222-222222222222'
   const records = new Map<string, string>()
   const descriptors = new Map<number, string>()
-  const native = Object.assign(new EventEmitter(), { pid: 902 })
+  const native = Object.assign(new EventEmitter(), { pid: 902, stdout: new EventEmitter(), stderr: new EventEmitter() })
+  const output: unknown[] = []
   const ipc: unknown[] = []
   const flushed: (() => void)[] = []
   const signals: unknown[] = []
@@ -21,7 +24,8 @@ function guardianFixture(childAvailable = true, observationWriteFails = false) {
     exit: () => undefined, send: (value: unknown, callback?: () => void) => {
       ipc.push(value)
       if (callback && (value as { operation: string }).operation === 'native_exit') flushed.push(callback)
-    }, stderr: { write: () => undefined },
+    }, stdout: Object.assign(new EventEmitter(), { write: (chunk: unknown) => output.push(chunk) }),
+    stderr: Object.assign(new EventEmitter(), { write: (chunk: unknown) => output.push(chunk) }),
   })
   records.set('/private/intent.json', JSON.stringify({ format: 1, id, boot, owner: 'same-lease', controlKey: 'a'.repeat(64) }))
   function stat(pid: number, ticks: string) {
@@ -58,21 +62,66 @@ function guardianFixture(childAvailable = true, observationWriteFails = false) {
     statfsSync: () => ({ type: 0x63677270 }),
   }
   const server = { on: () => undefined, listen: (_options: unknown, callback: () => void) => callback(), maxConnections: 0 }
+  let acceptSocket: (socket: EventEmitter) => void
   const requireFixture = (module: string): unknown => {
     if (module === 'node:fs') return fs
     if (module === 'node:child_process') return { spawn: () => native }
-    if (module === 'node:net') return { createServer: () => server }
-    if (module === 'node:crypto') return { randomUUID: () => `${records.size}`, timingSafeEqual: () => true }
+    if (module === 'node:net') return { createServer: (callback: typeof acceptSocket) => { acceptSocket = callback; return server } }
+    if (module === 'node:crypto') return { randomUUID: () => `${records.size}`, timingSafeEqual }
     if (module === 'node:path') return { join: (...parts: string[]) => parts.join('/').replaceAll('//', '/'), dirname: (path: string) => path.slice(0, path.lastIndexOf('/')) || '/', resolve: (...parts: string[]) => parts.join('/').replace('/./', '/').replaceAll('//', '/'), parse: () => ({ root: '/' }), sep: '/' }
     throw new Error(module)
   }
   runInNewContext(NATIVE_GUARDIAN_SOURCE, { require: requireFixture, process, Buffer,
     setTimeout: (callback: () => void, delay: number) => timers.push({ callback, delay }) })
-  process.emit('message', { operation: 'start', directory: '/private', binary: 'actual-cli', args: ['private-argument'], cwd: '/workspace', environment: { SECRET: 'private-secret' } })
-  return { records, native, ipc, signals, flushed, kills, timers, process }
+  process.emit('message', { operation: 'start', directory: '/private', binary: 'actual-cli', args: ['private-argument'],
+    cwd: '/workspace', environment: { SECRET: 'private-secret' }, restartDetachable: options.restartDetachable === true })
+  const control = (message: unknown) => {
+    const state = { destroyed: false, replies: [] as string[] }
+    const socket = Object.assign(new EventEmitter(), { setTimeout: () => {}, pause: () => {},
+      destroy: () => { state.destroyed = true }, end: (reply: string) => state.replies.push(reply) })
+    acceptSocket(socket)
+    socket.emit('data', Buffer.from(JSON.stringify(message) + '\n'))
+    return state
+  }
+  return { records, native, ipc, signals, flushed, kills, timers, process, output, control, id }
 }
 
 describe('guardian actual child observation receipts', () => {
+  it('retains the original daemon across authenticated detachment and still closes on Stop', () => {
+    const f = guardianFixture(true, false, { restartDetachable: true })
+    const command = { operation: 'detach', id: f.id, owner: 'same-lease',
+      controlKey: 'a'.repeat(64), startTicks: '100' }
+    f.native.stdout.emit('data', 'original-output')
+    expect(f.output).toEqual(['original-output'])
+    expect(f.control({ ...command, controlKey: 'b'.repeat(64) }).destroyed).toBe(true)
+    expect(f.records.has('/private/restart-detached.json')).toBe(false)
+    expect(f.control(command).replies).toHaveLength(1)
+    const detached = f.records.get('/private/restart-detached.json')!
+    expect(JSON.parse(detached)).toMatchObject({ id: f.id, owner: 'same-lease',
+      guardian: { pid: 501, startTicks: '100' }, provider: { pid: 902, startTicks: '200' } })
+    expect(detached).not.toMatch(/private-secret|controlKey/)
+    expect(f.control(command).replies).toHaveLength(1)
+    expect(f.records.get('/private/restart-detached.json')).toBe(detached)
+    f.process.connected = false
+    f.process.emit('disconnect')
+    f.process.stdout.emit('error', { code: 'EPIPE' })
+    f.process.stderr.emit('error', { code: 'EPIPE' })
+    f.native.stdout.emit('data', 'detached-output')
+    f.native.stderr.emit('data', 'detached-error')
+    expect(f.output).toEqual(['original-output'])
+    expect(f.signals).toEqual([])
+    expect(f.control({ ...command, operation: 'stop' }).replies).toHaveLength(1)
+    expect(f.signals).toEqual([[-501, 'SIGTERM']])
+  })
+  it('keeps ordinary native launches tied to their original parent', () => {
+    const f = guardianFixture()
+    expect(f.control({ operation: 'detach', id: f.id, owner: 'same-lease',
+      controlKey: 'a'.repeat(64), startTicks: '100' }).destroyed).toBe(true)
+    expect(f.records.has('/private/restart-detached.json')).toBe(false)
+    f.process.connected = false
+    f.process.emit('disconnect')
+    expect(f.signals).toEqual([[-501, 'SIGTERM']])
+  })
   it('journals actual child PID/startTicks and positive CLI exit independently of wrapper termination', () => {
     const f = guardianFixture()
     const birth = JSON.parse(f.records.get('/private/provider.json')!) as Record<string, unknown>

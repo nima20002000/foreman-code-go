@@ -1,3 +1,4 @@
+import { createFixtureDatabase, dropFixtureDatabase } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import Fastify from 'fastify'
 import pg from 'pg'
@@ -15,7 +16,7 @@ function gate() {
 // Runtime-owner advisory locks are DATABASE scoped, not schema scoped. Use a
 // disposable database so parallel production integration files cannot collide.
 // The test role needs CREATEDB; never alter its privileges or skip on failure.
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.TEST_DATABASE_URL!
 const databaseName = `runtime_owner_${randomUUID().replaceAll('-', '')}`
 const admin = new pg.Client({ connectionString })
 const isolatedUrl = new URL(connectionString)
@@ -25,7 +26,7 @@ let created = false
 
 beforeAll(async () => {
   await admin.connect()
-  await admin.query(`create database "${databaseName}" template template0`)
+  await createFixtureDatabase(admin, databaseName, "template template0")
   created = true
 }, 15_000)
 afterEach(async () => {
@@ -36,7 +37,7 @@ afterEach(async () => {
   if (errors.length) throw new AggregateError(errors, 'Runtime-owner database fixture cleanup failed.')
 })
 afterAll(async () => {
-  try { if (created) await admin.query(`drop database "${databaseName}"`) } finally { await admin.end() }
+  try { if (created) await dropFixtureDatabase(admin, databaseName) } finally { await admin.end() }
 })
 
 function owner() {

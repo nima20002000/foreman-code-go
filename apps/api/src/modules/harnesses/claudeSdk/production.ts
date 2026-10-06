@@ -4,7 +4,9 @@ import type { AgentFileToolService } from '../../files/tools/service.js'
 import { productionClaudeFileAdmission } from './fileProduction.js'
 import type pg from 'pg'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { appMcpServerName, isSupportedAppMcpServerName } from '../appMcpLauncher.js'
 import { DomainError } from '../../errors.js'
 import type { NativeHarnessFactories } from '../runtimeFactory.js'
@@ -12,12 +14,14 @@ import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
 import type { NativeSessionStart } from '../port.js'
 import type { ProductionHarnessRegistry } from '../productionRegistry.js'
 import type { AcceptedClaudeProfileAdmission, AcceptedProfileSelector } from '../instanceSettings/acceptedProfile.js'
-import type { ClaudeSdkClient } from './port.js'
+import { ClaudeInputNotDeliveredError, type ClaudeSdkClient } from './port.js'
 import { compileClaudeConfiguration } from './configuration.js'
 import { createPostgresClaudeInteractionBridge, type ClaudeDomainBinding } from './domainAuthority.js'
 import { createClaudeSdkCallbacks } from './sdkCallbacks.js'
 import { createClaudeSdkRunner } from './runner.js'
 import { loadOfficialClaudeSdk } from './official.js'
+import { acceptedClaudeAppTools } from './mcpPolicy.js'
+import type { ClaudeInteractionBridge } from './interactions.js'
 import { claudeProductionMcpInspector } from './productionMcpInspector.js'
 import type { ClaudeNativeSessionManager } from './sessionManager.js'
 
@@ -61,6 +65,7 @@ export function productionClaudeManager(input: {
     inspectedStart ??= structuredClone(await input.inspectionStart())
     return structuredClone(inspectedStart)
   }
+  let policyBridge: ClaudeInteractionBridge | undefined
   let fileServer: ReturnType<typeof createClaudeFileMcpServer> | undefined
   let allocated: ((manager: ClaudeNativeSessionManager) => void) | undefined
   const result = input.factories.allocateAdmittedClaude(async signal => {
@@ -81,6 +86,7 @@ export function productionClaudeManager(input: {
       'A registered-device profile must execute through its authenticated host.', 409)
     const domain = createPostgresClaudeInteractionBridge({ database: input.pool, binding: input.binding,
       configuration: compiled.configuration, manager: { nativeCallbackContext: (sessionId, toolUseId) => actual?.nativeCallbackContext(sessionId, toolUseId) } })
+    policyBridge = domain.bridge
     let callbackAuthority = await domain.callbackAdmission()
     signal.throwIfAborted()
     const scope = { deviceId: accepted.override.target.hostRef.mainId, profilePath: compiled.configuration.configDirectory,
@@ -95,13 +101,23 @@ export function productionClaudeManager(input: {
     } })
     allocated = manager => {
       actual = manager
+      let sessionStart: NativeSessionStart | undefined
       domain.bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
+      const readHistory = manager.history.bind(manager)
+      manager.history = async (session, effectSignal) => ({ ...await readHistory(session, effectSignal),
+        responseDeliveries: await domain.bridge.deliveryEvidence(session) })
+      const reconcile = manager.reconcile.bind(manager)
+      manager.reconcile = async (session, correlationId, effectSignal) => {
+        const history = await reconcile(session, correlationId, effectSignal)
+        return { ...history, responseDeliveries: await domain.bridge.deliveryEvidence(session) }
+      }
       const initial = manager.startInitialTurn.bind(manager)
       manager.startInitialTurn = async function* (start, message, effectSignal) {
         if (input.appMcpAccess === 'none' && APP_MCP_TOKEN_NAMES.some((name) => start.environment?.variables[name])) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
           'This Claude owner cannot inherit an application MCP credential.', 403)
         callbackAuthority = await domain.callbackAdmission()
         effectSignal?.throwIfAborted()
+        sessionStart = structuredClone(start)
         yield* initial(start, { ...message, callbackAuthority }, effectSignal)
       }
       const attach = manager.attachSession.bind(manager)
@@ -110,14 +126,24 @@ export function productionClaudeManager(input: {
           'This Claude owner cannot inherit an application MCP credential.', 403)
         await domain.callbackAdmission()
         effectSignal?.throwIfAborted()
-        return attach(session, start, effectSignal)
+        const attached = await attach(session, start, effectSignal)
+        sessionStart = structuredClone(start)
+        return attached
       }
       const turn = manager.startTurn.bind(manager)
       manager.startTurn = async function* (session, message, effectSignal) {
-        callbackAuthority = await domain.callbackAdmission()
-        effectSignal?.throwIfAborted()
+        let attached: NativeSessionReference
+        try {
+          callbackAuthority = await domain.callbackAdmission()
+          effectSignal?.throwIfAborted()
+          if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED',
+            'The message requires its admitted native session context.', 409)
+          attached = await attach(session, sessionStart, effectSignal)
+        } catch (error) {
+          throw new ClaudeInputNotDeliveredError(error instanceof Error ? error.message : 'Claude could not prepare the next input.')
+        }
         const acceptedMessage = { ...message, callbackAuthority }
-        yield* turn(session, acceptedMessage, effectSignal)
+        yield* turn(attached, acceptedMessage, effectSignal)
       }
     }
     if (input.files) {
@@ -130,6 +156,7 @@ export function productionClaudeManager(input: {
         calls: createClaudeFileCallResolver({ manager: () => actual, signal }),
         admission: productionClaudeFileAdmission({ pool: input.pool, binding: input.binding, manager: () => actual, allowMutation }) })
     }
+    domain.bridge.bindMcpTools(fileServer ? [fileServer.manifest] : [])
     const callbacks = createClaudeSdkCallbacks({ manager: () => actual!, bridge: domain.bridge })
     const serverName = appMcpServerName(compiled.mcpServers)
     const appServer = compiled.mcpServers[serverName]
@@ -146,8 +173,11 @@ export function productionClaudeManager(input: {
         history: compiled.qualification.history, interactions: compiled.qualification.policy.alwaysAppliedToolHook },
       inspectionStart, expectedMcp: { serverName,
         ...(appServer?.type === 'http' ? { url: appServer.url } : {}) },
-      interactionPort: domain.interactionPort, liveCallbacks: domain.bridge, cancelPendingRequests: () => domain.bridge.close(),
+      interactionPort: domain.interactionPort, liveCallbacks: domain.bridge,
+      cancelPendingRequests: () => domain.bridge.cancelPendingRequests(),
       pendingInteractions: session => domain.bridge.pendingInteractions(session),
+      responseDeliveries: session => domain.bridge.deliveryEvidence(session),
+      messageSubmitted: correlationId => domain.authority.messageSubmitted(correlationId),
       ownerForStart: () => ({ ownerId: input.binding.kind === 'workflow' ? input.binding.runId : input.binding.conversationId,
         attemptId: callbackAuthority.attemptId, generation: input.recovery.launchId ?? callbackAuthority.attemptId }),
       // Filled by the common factory's construction callback below, before any SDK query.
@@ -158,14 +188,39 @@ export function productionClaudeManager(input: {
   // Factory initialization remains lazy; the admitted allocator's exact instance
   // is captured in the construction callback rather than selected by harness ID.
   const refresh = result.manager.refreshInspectionCredentials.bind(result.manager)
+  let refreshingMcp = false
   result.manager.refreshInspectionCredentials = async (start, servers, signal) => {
-    const snapshot = await refresh(start, servers, signal)
-    inspectedStart = structuredClone(start)
-    return snapshot
+    if (refreshingMcp) throw new DomainError('CLAUDE_MCP_CONTROL_CONFLICT', 'An MCP credential refresh is already in progress.', 409)
+    refreshingMcp = true
+    try {
+      policyBridge?.bindMcpTools(fileServer ? [fileServer.manifest] : [])
+      if (input.appMcpAccess === 'none' && Object.keys(servers).some(isSupportedAppMcpServerName)) {
+        throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This Claude owner cannot receive management MCP tools.', 403)
+      }
+      if (fileServer && servers['graphql-files'] !== undefined && servers['graphql-files'] !== fileServer.server) {
+        throw new DomainError('CLAUDE_MCP_SCOPE_CONFLICT', 'The local file server cannot be replaced during credential refresh.', 409)
+      }
+      const acceptedServers = { ...servers, ...(fileServer ? { 'graphql-files': fileServer.server } : {}) }
+      const snapshot = await refresh(start, acceptedServers, signal)
+      const manifests = input.appMcpAccess === 'none' ? [] : await acceptedClaudeAppTools({
+        configuration: input.configuration, servers: acceptedServers,
+        token: readProductEnvironment(start.environment?.variables ?? {}, 'MCP_TOKEN'),
+        ...(signal ? { signal } : {}),
+      })
+      policyBridge!.bindMcpTools([...manifests, ...(fileServer ? [fileServer.manifest] : [])])
+      inspectedStart = structuredClone(start)
+      return snapshot
+    } finally {
+      refreshingMcp = false
+    }
   }
   const dispose = result.manager.dispose!.bind(result.manager)
   result.manager.dispose = async () => {
-    try { await dispose() } finally { await fileServer?.close(); inspectedStart = undefined }
+    try { await dispose() } finally {
+      policyBridge?.close()
+      await fileServer?.close()
+      inspectedStart = undefined
+    }
   }
   return { ...result, inspectionStart }
 }

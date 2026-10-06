@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { childHistoryEvent } from '../src/modules/subagents/nativeReadback.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -38,11 +39,11 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     if (!connectionString || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(connectionString).hostname)) throw new Error('An explicit loopback TEST_DATABASE_URL (or SUBAGENT_CORE_ADMIN_DATABASE_URL) is required.')
     admin = new pg.Pool({ connectionString, max: 1 })
     schema = `subagent_core_${randomUUID().replaceAll('-', '')}`
-    await admin.query(`create schema "${schema}"`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString, max: 8, options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
     await applyApplicationMigrations(pool)
   }, 60000)
-  afterAll(async () => { await pool?.end(); if (schema) await admin.query(`drop schema "${schema}" cascade`); await admin?.end() })
+  afterAll(async () => { await pool?.end(); if (schema) await dropFixtureSchema(admin, schema); await admin?.end() })
   async function fixture(provider: 'codex' | 'opencode' | 'claude' = 'codex') {
     const suffix = randomUUID(), workspaceId = `w-${suffix}`, workflowId = `wf-${suffix}`, version = `v-${suffix}`, runId = `r-${suffix}`, executionId = `e-${suffix}`, agentId = `a-${suffix}`, configurationId = `cfg-${suffix}`
     await pool.query("insert into workspaces(id,record) values($1,'{}')", [workspaceId])

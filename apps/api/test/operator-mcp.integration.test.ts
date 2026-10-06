@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdir, readdir, rm, stat } from 'node:fs/promises'
+import { mkdir, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema } from '@foreman-code/contracts/wave25'
@@ -112,7 +113,7 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
         expect((await f.client.callTool({ name: 'workspace_location_set', arguments: { ...location, commandId: randomUUID() } })).isError).toBe(true)
       }
       expect(ids[0]).not.toBe(ids[1])
-      const rootPath = join(f.db.directory, 'project-1'); await rm(rootPath, { recursive: true })
+      const rootPath = join(f.db.directory, 'project-1'); await removeFixtureDirectory(rootPath, { force: false })
       await expect(stat(rootPath)).rejects.toMatchObject({ code: 'ENOENT' })
       expect(value(await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId: ids[1] } })))
         .toMatchObject({ executionLocation: { rootPath }, locationValidation: { status: 'unavailable' } })

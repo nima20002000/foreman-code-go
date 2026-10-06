@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -64,7 +65,7 @@ describe.skipIf(!postgresEnabled)('AF-01 OpenCode file authority follows the acc
     tools = new AgentFileToolService(files, sessions, new FileToolArtifacts(repository, files.bytes, sessions), repository)
   })
   afterAll(async () => {
-    try { if (root) await rm(root, { recursive: true, force: true }) }
+    try { if (root) await removeFixtureDirectory(root) }
     finally { await database?.close() }
   })
 

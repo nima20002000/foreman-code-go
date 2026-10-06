@@ -30,20 +30,26 @@ export function EntryFields({ graph, context, change, agentEdits }: { graph: Wor
 }
 
 export function ApprovalFields({ graph, context, change, report, agentEdits }: { graph: WorkflowDefinitionV3; context: NextDraftContext; change: EditGraph; report: (error: unknown) => void; agentEdits?: DraftAgentEdits }) {
+  let hint = 'Agents ask you before sensitive actions. Requests appear in the approval inbox.'
+  if (graph.approval?.handler === 'orchestrator') {
+    hint = 'The starting orchestrator reviews requests from agents it has an approval connection to.'
+  } else if (graph.approval?.handler === 'native') {
+    hint = 'Each Agent must explicitly use native approval handling. Saved permission rules still apply; requests do not go to the app’s approval inbox.'
+  }
   return <section className="next-draft-section" aria-label="Approval handling">
     <h3>Approvals</h3>
     <Select data-save-field="approval" label="Approval handler" value={graph.approval?.handler ?? ''} onChange={(event) => {
       const handler = event.target.value
-      if (handler !== 'user' && handler !== 'orchestrator') return
+      if (handler !== 'user' && handler !== 'orchestrator' && handler !== 'native') return
       try { change((value) => changeApprovalHandler(value, handler)) } catch (error) { report(error) }
-    }} options={[{ value: '', label: 'Choose who approves', disabled: true }, { value: 'user', label: 'You, the Operator' }, { value: 'orchestrator', label: 'An orchestrator agent' }]} />
+    }} options={[{ value: '', label: 'Choose who approves', disabled: true }, { value: 'user', label: 'You, the Operator' },
+      { value: 'orchestrator', label: 'An orchestrator agent' }, { value: 'native', label: 'Native harness' }]} />
     {graph.approval?.handler === 'orchestrator' ? <Select data-save-field="orchestrator" label="Reviewing orchestrator" value={graph.approval.designatedOrchestratorAgentId ?? ''}
       onChange={(event) => change((value) => ({ ...value, approval: { handler: 'orchestrator', ...(event.target.value ? { designatedOrchestratorAgentId: event.target.value } : {}) } }))} options={[
         { value: '', label: 'Choose an orchestrator' },
         ...graph.nodes.filter((node) => node.kind!=='job').filter((node) => roleEvidence(context, node.agentId, agentEdits).role === 'orchestrator').map((node) => ({ value: node.agentId, label: nodeTitle(graph, node.id) })),
       ]} /> : null}
-    <p className="next-draft-hint">{graph.approval?.handler === 'orchestrator'
-      ? 'The starting orchestrator reviews requests from agents it has an approval connection to.' : 'Agents ask you before sensitive actions. Requests appear in the approval inbox.'}</p>
+    <p className="next-draft-hint">{hint}</p>
   </section>
 }
 

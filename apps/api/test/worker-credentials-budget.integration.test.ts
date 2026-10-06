@@ -1,6 +1,7 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 
-import { HarnessExecutionSchema, WorkflowRunSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, WorkflowRunSchema, type HarnessExecution } from '@foreman-code/contracts'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 
@@ -8,10 +9,12 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { WorkerCredentialService } from '../src/modules/access/workerCredentials.js'
+import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
+import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { WorkerLaunchCredentialService } from '../src/modules/harnesses/mcpDetection.js'
 import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.TEST_DATABASE_URL!
 let schema: string
 let admin: pg.Pool
 let pool: pg.Pool
@@ -23,7 +26,7 @@ let budgets: PostgresApprovalBudgetRepository
 beforeEach(async () => {
   schema = `worker_budget_${randomUUID().replaceAll('-', '')}`
   admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
   pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   await applyApplicationMigrations(pool)
   await ensureAcceptanceSeed(pool)
@@ -61,7 +64,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await pool?.end()
-  await admin?.query(`drop schema if exists "${schema}" cascade`)
+  await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve())
   await admin?.end()
 })
 
@@ -76,6 +79,51 @@ it('renews an expired scoped token while its exact execution lease is still owne
   expect(after.token_hash).toEqual(before.token_hash)
   expect(after.expires_at.toISOString()).toBe(renewedAt)
   expect(after.revoked_at).toBe(null)
+})
+
+it('restores the original native credential after service restart without allocating or rotating it', async () => {
+  const configuration = AgentConfigurationVersionSchema.parse((await pool.query(
+    'select record from agent_configuration_versions where id=$1', [execution.agentConfigurationVersionId])).rows[0].record)
+  const session = { harness: configuration.harness.harness, providerVersion: 'credential-fixture-no-native',
+    nativeSessionId: 'original-credential-session' }
+  execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId })
+  await pool.query('update harness_executions set record=$2::jsonb where id=$1', [execution.id, JSON.stringify(execution)])
+  const coordination = new PostgresInteractionCoordinationRepository(pool)
+  await coordination.bindWorkflowSession(execution.id, session)
+  await coordination.ensureLane({ id: 'original-credential-lane', harness: session.harness,
+    nativeSessionId: session.nativeSessionId, ownerAgentId: execution.agentId,
+    connectionGeneration: 1, revision: 0, observedAt: execution.createdAt, observedStatus: 'idle' })
+  const issued = await new Wave25WorkerCredentialService(pool, access, 60_000).issueForExecution(execution.id)
+  const before = (await pool.query('select id,token_hash,expires_at from management_principals where id=$1',
+    [issued.principalId])).rows[0]
+  const restarted = new WorkerCredentialService(pool, new PostgresAccessService(pool), 60_000)
+  expect(await restarted.restoreForExecution(execution.id, issued.environment)).toEqual(issued)
+  expect((await pool.query('select id,token_hash,expires_at from management_principals where id=$1',
+    [issued.principalId])).rows[0]).toEqual(before)
+  expect((await pool.query('select principal_id from worker_credential_bindings where execution_id=$1',
+    [execution.id])).rows).toEqual([{ principal_id: issued.principalId }])
+  await expect(restarted.restoreForExecution('another-execution', issued.environment))
+    .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_IDENTITY_CONFLICT' })
+  await expect(restarted.restoreForExecution(execution.id, { ...issued.environment, agentId: 'agent-reviewer' }))
+    .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_IDENTITY_CONFLICT' })
+  await expect(restarted.restoreForExecution(execution.id, { ...issued.environment,
+    variables: { ...issued.environment.variables, EXTRA: 'unexpected' } }))
+    .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_IDENTITY_CONFLICT' })
+})
+
+it('denies credential restoration after revocation, expiry or Stop', async () => {
+  const revoked = await credentials.issueForExecution(execution.id)
+  await credentials.revoke(revoked)
+  await expect(credentials.restoreForExecution(execution.id, revoked.environment))
+    .rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+  const expired = await credentials.issueForExecution(execution.id)
+  await pool.query("update management_principals set expires_at=now()-interval '1 second' where id=$1", [expired.principalId])
+  await expect(credentials.restoreForExecution(execution.id, expired.environment))
+    .rejects.toMatchObject({ code: 'AUTH_EXPIRED' })
+  const stopped = await credentials.issueForExecution(execution.id)
+  await budgets.stop(execution.id)
+  await expect(credentials.restoreForExecution(execution.id, stopped.environment))
+    .rejects.toMatchObject({ code: 'AUTH_REVOKED' })
 })
 
 for (const revokedTable of ['management_principals', 'worker_credential_bindings'] as const) {

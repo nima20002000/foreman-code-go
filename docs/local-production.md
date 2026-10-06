@@ -167,7 +167,7 @@ After installing and configuring qualified native profiles, run the installed
 service regression through the heavy-job queue:
 
 ```sh
-corepack pnpm test:production:installed
+corepack pnpm production:verify
 ```
 
 This uses the installed compiled release and authenticated Operator MCP. It also
@@ -196,3 +196,5 @@ systemctl --user disable --now graphql-operator-api.service graphql-production-d
 ```
 
 These actions retain production data.
+
+Installed production verification is an administrative operation. `production:verify` writes temporary workflow/chat records to the installed production database and restarts its live services. Run it deliberately in a quiet maintenance window. It replaces `test:production:installed`; ordinary `test:*` commands use disposable resources and do not invoke this operation.

@@ -18,6 +18,7 @@ import { upgradeProductionMcpLauncher } from '../src/modules/harnesses/productio
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { runLauncherProcess } from './helpers/launcherInstallationProcess.js'
+import { ownedTestDatabaseUrl } from './helpers/testResources.js'
 
 const cleanup: Array<() => Promise<unknown>> = []
 afterEach(async () => {
@@ -60,7 +61,7 @@ it.each(cases)(
     const entry = nativeConnection(harness, connection)
     expect(isAppLauncher(harness, entry)).toBe(true)
     const database = createDatabase({
-      connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql',
+      connectionString: ownedTestDatabaseUrl(),
       maxConnections: 4, connectionTimeoutMs: 5000, queryTimeoutMs: 5000,
     })
     cleanup.push(() => database.close())

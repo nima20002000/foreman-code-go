@@ -1,3 +1,4 @@
+import { TextTruncationSchema } from './activityText.js';
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
 import { NativeInteractionSupportSchema } from './nativeInteractionSupport.js';
 import { NativeInteractionInputSchema } from './interactionInput.js';
@@ -286,6 +287,16 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   designatedOrchestrator: z.boolean().default(false),
 }).strict().superRefine((value, context) => {
   if (!value.workflowApprovalHandler) return;
+  if (value.workflowApprovalHandler === "native") {
+    const configuration = value.configuration;
+    const native = configuration.harness === "opencode"
+      ? configuration.autoApprove || configuration.advanced?.permissionHandling === "native_auto"
+      : configuration.harness === "codex" && (configuration.advanced?.approvalPolicy === "never"
+        || configuration.advanced?.approvalsReviewer === "auto_review");
+    if (!native) context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration"],
+      message: "native workflow handling requires explicit native approval settings on each Agent" });
+    return;
+  }
   if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review"
     && value.workflowApprovalHandler !== "orchestrator") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalsReviewer"], message: "native auto review conflicts with this workflow approval handler" });
@@ -842,6 +853,7 @@ export const MessageSchema = z
     /** OpenCode text-part identity is nativeMessageId; this is its assistant message. */
     nativeParentMessageId: IdSchema.optional(),
     nativeMessageComplete: z.boolean().optional(),
+    truncation: TextTruncationSchema.optional(),
     afterActivitySequence: z.string().regex(/^[0-9]+$/).optional(),
     role: MessageRoleSchema,
     content: z.string(),
@@ -1073,6 +1085,15 @@ export const HarnessNativeEventSchema = z
   .strict();
 export type HarnessNativeEvent = z.infer<typeof HarnessNativeEventSchema>;
 
+/** Caller references reconstructed from saved ancestry, separate from frozen task input. */
+export const HarnessExecutionContextSchema = z.object({
+  parentRequest: z.object({
+    requestId: GraphIdSchema,
+    requesterNodeId: GraphIdSchema,
+  }).strict().nullable(),
+}).strict();
+export type HarnessExecutionContext = z.infer<typeof HarnessExecutionContextSchema>;
+
 /** Command handed to a harness adapter when initializing a new native session. */
 export const HarnessExecutionRequestSchema = z
   .object({
@@ -1086,6 +1107,7 @@ export const HarnessExecutionRequestSchema = z
     initialPrompt: z.string().trim().min(1).optional(),
     configuration: AgentConfigurationVersionSchema,
     input: z.json(),
+    executionContext: HarnessExecutionContextSchema.optional(),
   })
   .strict();
 export type HarnessExecutionRequest = z.infer<typeof HarnessExecutionRequestSchema>;

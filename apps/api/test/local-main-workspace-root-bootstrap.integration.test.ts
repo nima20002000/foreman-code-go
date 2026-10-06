@@ -1,3 +1,4 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, rename, rm, stat, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -37,7 +38,7 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
 
   afterEach(async () => {
     home.path = ''
-    await rm(fixtureHome, { recursive: true, force: true })
+    await removeFixtureDirectory(fixtureHome)
   })
 
   it('adopts actual app storage once and supports authenticated HTTP/MCP browse, bind and persisted replay without widening grants', async () => {
@@ -166,13 +167,13 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
       expect((await db.pool.query('select count(*)::int as count from workflows')).rows[0]?.count).toBe(0)
       await rename(runtimeRoot, `${runtimeRoot}-original`); await mkdir(runtimeRoot, { mode: 0o700 })
       await expect(bootstrap()).rejects.toMatchObject({ code: 'ROOT_RUNTIME_CHANGED' })
-      await rm(runtimeRoot, { recursive: true }); await rename(`${runtimeRoot}-original`, runtimeRoot)
+      await removeFixtureDirectory(runtimeRoot, { force: false }); await rename(`${runtimeRoot}-original`, runtimeRoot)
       expect(await bootstrap()).toEqual(approved)
       await rename(storageRoot, `${storageRoot}-original`); await mkdir(storageRoot, { mode: 0o700 })
       await expect(bootstrap()).rejects.toMatchObject({ code: 'ROOT_BASE_CHANGED' })
     } finally {
       await Promise.allSettled(clients.map(client => client.close())); await app.close(); await db.close()
-      await rm(directory, { recursive: true, force: true })
+      await removeFixtureDirectory(directory)
     }
   }, 120_000)
 
@@ -211,7 +212,7 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
       } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
       expect(await bootstrapLocalMainWorkspaceRoot(input)).toEqual(approved)
       expect((await db.pool.query('select count(*)::int as count from workspace_root_host_configurations')).rows[0]?.count).toBe(1)
-    } finally { await db.close(); await rm(directory, { recursive: true, force: true }) }
+    } finally { await db.close(); await removeFixtureDirectory(directory) }
   }, 120_000)
 
   it('uses an already-private isolated server storage override under sticky /tmp without touching default storage', async () => {
@@ -229,7 +230,7 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
       expect(await bootstrapLocalMainWorkspaceRoot(input)).toEqual(approved)
       await expect(stat(workspaceStorageRoot())).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
-      await db.close(); await rm(storageRoot, { recursive: true, force: true }); await rm(runtimeRoot, { recursive: true, force: true })
+      await db.close(); await removeFixtureDirectory(storageRoot); await removeFixtureDirectory(runtimeRoot)
     }
   }, 120_000)
 })

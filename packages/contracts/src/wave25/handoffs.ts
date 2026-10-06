@@ -4,6 +4,10 @@ import { TimestampSchema } from '../schemaPrimitives.js'
 import { GraphDigestSchema, GraphIdSchema, RunGraphScopeSchema } from './graphPrimitives.js'
 import type { WorkflowDefinitionV3 } from './workflowShape.js'
 import { canonicalGraphJson } from './json.js'
+import {
+  WorkflowArtifactOutputsV1Schema, WorkflowArtifactResultV1Schema,
+  type WorkflowArtifactOutputsV1, type WorkflowArtifactResultV1,
+} from '../workflowArtifactDeclarations.js'
 export { HANDOFF_CONTRACT_VERSION, WorkHandoffPolicyV1Schema } from './workflowShape.js'
 export type { WorkHandoffPolicyV1 } from './workflowShape.js'
 
@@ -89,7 +93,7 @@ export type WorkLimitDenial = z.infer<typeof WorkLimitDenialSchema>
 export const WorkAlternativeSchema = z.object({
   relationshipId: GraphIdSchema, destinationNodeId: GraphIdSchema,
   destinationAgentId: GraphIdSchema, destinationName: z.string().trim().min(1).max(200),
-  outcomes: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)).min(1).max(16),
+  outcomes: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)).max(16),
   used: Count, maxWorkHandoffsPerRun: z.number().int().min(1).max(2147483647).nullable(),
 }).strict().refine((value) => value.maxWorkHandoffsPerRun === null
   || value.used < value.maxWorkHandoffsPerRun, 'WORK_ALTERNATIVE_EXHAUSTED')
@@ -136,6 +140,7 @@ export type WorkNotice = z.infer<typeof WorkNoticeSchema>
 export const WorkActivationInputSchema = z.object({
   executionSemanticsVersion: z.literal(3), runInput: z.json(),
   occurrence: z.null(), entry: z.null(), predecessors: z.tuple([]),
+  parentRequest: WorkRequestSchema.optional(),
   work: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('entry'), activation: WorkActivationIdentitySchema }).strict(),
     z.object({ kind: z.literal('work_request'), activation: WorkActivationIdentitySchema,
@@ -148,10 +153,14 @@ export const WorkActivationInputSchema = z.object({
       notice: WorkNoticeSchema }).strict(),
     z.object({ kind: z.literal('join'), activation: WorkActivationIdentitySchema,
       sources: z.array(z.object({ request: WorkRequestSchema,
-        acceptedSourceResult: ExecutionResultSchema }).strict()).min(2).max(1000) }).strict(),
+        acceptedSourceResult: ExecutionResultSchema }).strict()).min(1).max(1000) }).strict(),
   ]),
 }).strict().superRefine((value, context) => {
   const { work } = value
+  if (value.parentRequest && (value.parentRequest.destinationNodeId !== work.activation.workflowNodeId
+    || canonicalGraphJson(value.parentRequest.scope) !== canonicalGraphJson(work.activation.scope))) {
+    context.addIssue({ code: 'custom', path: ['parentRequest'], message: 'WORK_PARENT_REQUEST_CONFLICT' })
+  }
   if (work.activation.cause.kind !== work.kind
     || work.kind === 'work_request' && (work.activation.cause.kind !== 'work_request'
       || work.activation.cause.requestId !== work.request.requestId
@@ -190,6 +199,7 @@ export const WorkHandoffResultSchema = z.object({
     z.object({ kind: z.literal('finish'), outcome: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/).optional() }).strict(),
   ]),
   data: z.object({ latestDeliverable: z.json(), remainingFindings: z.array(z.json()).max(1000) }).strict(),
+  artifactOutputs: WorkflowArtifactResultV1Schema.optional(),
 }).strict().superRefine((value, context) => {
   if (value.data.latestDeliverable === null) context.addIssue({ code: 'custom', path: ['data', 'latestDeliverable'], message: 'HANDOFF_DELIVERABLE_REQUIRED' })
   try { canonicalGraphJson(value, 64 * 1024) } catch { context.addIssue({ code: 'custom', message: 'HANDOFF_RESULT_TOO_LARGE' }) }
@@ -208,6 +218,25 @@ export function parseWorkHandoffResult(result: unknown): WorkHandoffResult {
     output = JSON.parse(output)
   }
   return WorkHandoffResultSchema.parse(output)
+}
+
+/** Artifact associations share the handoff envelope; publication is checked separately. */
+export function parseWorkHandoffArtifactResult(result: unknown, declaration: WorkflowArtifactOutputsV1):
+  WorkHandoffResult & { artifactOutputs: WorkflowArtifactResultV1 } {
+  const accepted = ExecutionResultSchema.parse(result)
+  const output = accepted.output
+  if (accepted.outcome !== 'succeeded' || !output || typeof output !== 'object' || Array.isArray(output)
+    || Object.keys(output).length !== 1 || !('text' in output) || typeof output.text !== 'string') {
+    throw new Error('WORKFLOW_ARTIFACT_NATIVE_TEXT_REQUIRED')
+  }
+  const envelope = parseWorkHandoffResult(accepted)
+  const artifactOutputs = WorkflowArtifactResultV1Schema.parse(envelope.artifactOutputs)
+  const saved = WorkflowArtifactOutputsV1Schema.parse(declaration)
+  const keys = new Set(artifactOutputs.outputs.map((item) => item.outputKey))
+  if (keys.size !== saved.outputKeys.length || saved.outputKeys.some((key) => !keys.has(key))) {
+    throw new Error('WORKFLOW_ARTIFACT_OUTPUT_KEYS_MISMATCH')
+  }
+  return { ...envelope, artifactOutputs }
 }
 
 export const WorkHandoffOperationKindSchema = z.enum([

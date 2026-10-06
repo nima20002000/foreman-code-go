@@ -106,6 +106,16 @@ function fixture() {
 }
 
 describe('durable original artifact completeness before result acceptance', () => {
+  it.each(['invalid_result', 'missing_publication'] as const)('refuses persisted %s before output adoption', async reason => {
+    const f = fixture()
+    const original = structuredClone(f.execution.result)
+    f.remote.terminal!.artifactDigests = []
+    f.remote.terminal!.artifactValidationError = { code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT', reason }
+    await expect(f.check()).rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT' })
+    expect(f.state.committed).toBe(false)
+    expect(f.execution.result).toEqual(original)
+    expect(f.authority.authorize).not.toHaveBeenCalled()
+  })
   it('resamples all original canonical mappings and authority before COMMIT and on replay', async () => {
     const f = fixture(); await f.check(); await f.check()
     expect(f.state.committed).toBe(true)

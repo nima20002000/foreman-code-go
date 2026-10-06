@@ -1,9 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { WorkerNativeOutputCommandSchema, WorkerNativeOutputBytesSchema, WORKER_NATIVE_OUTPUT_FILE_OPERATIONS } from './workerNativeOutput.js'
+import { WorkerNativeOutputCommandSchema, WorkerNativeOutputBytesSchema, WORKER_NATIVE_OUTPUT_FILE_OPERATIONS,
+  parseNativeOutputToolCommand, nativeOutputToolArguments, WORKER_NATIVE_OUTPUT_TOOL_NAMES } from './workerNativeOutput.js'
 import { WorkerMcpRelayRequestSchema, WorkerNativeOutputAuthorizationSchema, WorkerNativeOutputDeclarationsAuthorizationSchema } from './workerMcpRelay.js'
 
 describe('closed worker native output commands', () => {
   const create = { operation: 'create', commandId: 'create-command', filename: 'result.md', mediaType: 'text/markdown' }
+  it('shares normalized path-free arguments between MCP calls and native command capture', () => {
+    const commands = [create,
+      { operation: 'append', commandId: 'append-command', artifactId: 'opaque-output', offset: 0, contentBase64: 'Zg==' },
+      { operation: 'seal', commandId: 'seal-command', artifactId: 'opaque-output' },
+      { operation: 'publish', publication: { commandId: 'publish-command', artifactId: 'opaque-output',
+        filename: 'result.md', mediaType: 'text/markdown' } },
+    ].map(command => WorkerNativeOutputCommandSchema.parse(command))
+    for (const command of commands) {
+      const name = WORKER_NATIVE_OUTPUT_TOOL_NAMES[command.operation]
+      const input = nativeOutputToolArguments(command)
+      expect(parseNativeOutputToolCommand(name, input)).toEqual(command)
+      expect(() => parseNativeOutputToolCommand(name, { ...input, scope: 'foreign' })).toThrow()
+      expect(() => parseNativeOutputToolCommand(name, { ...input, operation: command.operation })).toThrow()
+    }
+    expect(() => parseNativeOutputToolCommand('foreign-tool', {})).toThrow()
+  })
   it('validates file metadata and prohibits caller-selected scope, path and identity', () => {
     expect(WorkerNativeOutputCommandSchema.parse(create)).toEqual(create)
     for (const key of ['path', 'scope', 'executionId', 'nativeSessionId', 'turnId', 'root']) {

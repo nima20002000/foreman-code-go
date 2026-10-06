@@ -66,6 +66,16 @@ export interface NativeTurnInput {
   /** Await persistence of the provider identity immediately after submission acknowledgement. */
   onSubmitted?(nativeTurnId: string): Promise<void>
   onMessageSubmitted?(identity: NativeMessageSubmission): Promise<void>
+  /** Save the matched native result before publishing completion or releasing its runtime. */
+  onTerminal?(observation: NativeTerminalObservation): Promise<void>
+}
+
+export interface NativeTerminalObservation {
+  submission: NativeMessageSubmission
+  result: ExecutionResult
+  nativeMessageId?: string
+  /** Owned history saved with the result so settlement survives process replacement. */
+  history?: NativeHistory
 }
 
 /** Input added to the exact active turn; the provider rejects it when that turn is no longer active. */
@@ -131,8 +141,38 @@ export interface NativeSubagentHistoryPage {
   nextCursor: string | null
 }
 
+export interface NativeOutputCallCapture {
+  descriptor: {
+    nativeSessionId: string
+    rootTurnId: string
+    assistantMessageId: string
+    callId: string
+    toolName: string
+    nativeToolName: string
+    inputDigest: string
+  }
+  effectivePolicy: 'allow' | 'ask' | 'deny'
+  nativeAutoApproval?: {
+    nativeRequestId: string
+    nativeSessionId: string
+    permission: string
+    patterns: readonly string[]
+    assistantMessageId: string
+    callId: string
+    reply: 'once'
+  }
+  assertCurrent(): void
+}
+
 export interface NativeHarnessSessionManager extends ResponseAvailabilityInspector {
   readonly harness: AgentHarness
+  /** Read the original protected credential environment for a verified restart attachment. */
+  recoverEnvironment?(signal?: AbortSignal): ChildProcessEnvironment | undefined
+    | Promise<ChildProcessEnvironment | undefined>
+  captureNativeOutputCall?(session: NativeSessionReference, toolName: string, args: unknown,
+    signal?: AbortSignal): Promise<NativeOutputCallCapture>
+  /** True after native query dispatch; false proves this manager never launched work. */
+  requiresRuntimeClosure?(): boolean
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
@@ -166,6 +206,8 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   observeBoundary?(session: NativeSessionReference, signal?: AbortSignal): Promise<void>
   historyPage?(session: NativeSessionReference, before?: string, signal?: AbortSignal): Promise<NativeHistory>
   reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory>
+  /** Release resident turn resources after the caller commits its result and history. */
+  retireTurn?(session: NativeSessionReference, correlationId: string): Promise<void>
   /** Read-only recovery of the exact response; missing evidence remains uncertain. */
   reconcileResponse?(session: NativeSessionReference, response: NativeResponseIdentity, signal?: AbortSignal): Promise<NativeHistory>
   close(session: NativeSessionReference): Promise<void>

@@ -23,8 +23,7 @@ function record(id: string, workspaceId = 'workspace-a', workflowId = 'workflow-
 // An isolated temporary table exercises the actual PostgreSQL authorization and
 // pagination query without modifying application data or replacing query semantics.
 async function database(work: (service: PostgresAppInteractionService, insert: (...rows: DurableInteraction[]) => Promise<void>) => Promise<void>) {
-  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL
-    ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql', max: 1 })
+  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, max: 1 })
   try {
     await pool.query(`create temporary table durable_interactions (
       id text primary key, workspace_id text not null, workflow_id text not null,

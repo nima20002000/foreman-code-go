@@ -57,5 +57,7 @@ export class ClaudeFileBridge {
     this.closed = true
     if (this.issue) await this.issue.catch(() => undefined)
     if (this.token) await this.service.sessions.revoke(this.token)
+    this.token = undefined
+    this.issue = undefined
   }
 }

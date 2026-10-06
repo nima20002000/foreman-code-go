@@ -8,7 +8,8 @@ import { nativeMessageId, nativePolicy, normalizedHistory, object, OPENCODE_EVEN
 import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation,
   matchesOpenCodeHistorySource } from '../src/modules/harnesses/opencodeReconciliation.js'
-import { forgetQualifiedProfile } from '../src/modules/harnesses/qualification/profiles.js'
+import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
+import { forgetQualifiedProfile, rememberQualifiedProfile } from '../src/modules/harnesses/qualification/profiles.js'
 
 import { advanced, brokenBody, configuration, environment, errorCode, FixtureServer, json, manager, permission, request, sessionFor } from './opencode-fixtures.js'
 
@@ -548,6 +549,36 @@ it('[F20] hides actual reasoning updates and deltas before retention, reconnect 
   assert(!JSON.stringify(await native.history(session)).includes('PRIVATE_REASONING'))
   const states = (native as unknown as { sessions: Map<string, { events: NativeHarnessEvent[] }> }).sessions
   assert(!JSON.stringify(states.get(session.nativeSessionId)?.events).includes('PRIVATE_REASONING'))
+})
+
+it('retains newly verified terminal source after attaching an original completed turn', async () => {
+  const server = new FixtureServer()
+  const original = manager(server)
+  const session = await sessionFor(original)
+  const correlationId = 'execution:execution-1'
+  server.user(correlationId)
+  server.complete(correlationId, 'original completed answer')
+  const restored = manager(server)
+  try {
+    await restored.attachSession(session, { request: request(), environment: environment(), correlationId })
+    const first = await restored.reconcile(session, correlationId)
+    const repeated = await restored.reconcile(session, correlationId)
+    for (const history of [first, repeated]) {
+      assert.equal(history.terminalResult?.outcome, 'succeeded')
+      assertOriginalWorkflowTerminal({ id: 'execution-1', agentId: 'agent-1' }, session, history)
+      const marker = history.events.find(event => event.type === OPENCODE_RECONCILIATION_EVENT)
+      assert(marker)
+      const proof = readOpenCodeReconciliation(marker, { ownerAgentId: 'agent-1',
+        nativeSessionId: session.nativeSessionId, providerVersion: session.providerVersion,
+        correlationId, nativeTurnId: nativeMessageId(correlationId) })
+      assert(proof)
+      assert(history.events.some(event => matchesOpenCodeHistorySource(proof, event)))
+    }
+    assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 0)
+  } finally {
+    await restored.dispose()
+    await original.dispose()
+  }
 })
 
 it('[F21] authoritative history reconstructs missed tool completion and final output after replacement', async () => {

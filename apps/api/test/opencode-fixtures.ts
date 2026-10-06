@@ -141,7 +141,8 @@ export class FixtureServer implements OpenCodeServerController {
   }
   assistant(parentID: string, text = 'done', finish: string | undefined = 'stop', completed = true, sessionID = 'ses_test'): OpenCodeMessage {
     const id = `msg_assistant_${this.clock++}`
-    const message: OpenCodeMessage = { info: { id, sessionID, role: 'assistant', parentID,
+    const agent = String(this.sessionInfos.get(sessionID)?.agent ?? 'build')
+    const message: OpenCodeMessage = { info: { id, sessionID, role: 'assistant', parentID, agent, mode: agent,
       time: { created: this.clock++, ...(completed ? { completed: this.clock++ } : {}) }, ...(finish ? { finish } : {}) },
       parts: [{ id: `prt_${this.clock++}`, sessionID, messageID: id, type: 'text', text }] }
     this.append(message)

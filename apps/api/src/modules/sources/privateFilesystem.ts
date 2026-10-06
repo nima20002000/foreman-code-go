@@ -1,4 +1,5 @@
 import { constants, readFileSync, type BigIntStats } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { open, mkdir, realpath, type FileHandle } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { SourceError } from './manifest.js'
@@ -6,6 +7,31 @@ import { DomainError } from '../errors.js'
 
 export const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
 export function anchored(handle: FileHandle, name = ''): string { return `/proc/self/fd/${handle.fd}${name ? `/${name}` : ''}` }
+
+/** Lock the pinned directory inode across processes, until the guard closes. */
+export async function withPrivateDirectoryLock<T>(root: FileHandle, work: () => Promise<T>,
+  options: { nonBlocking?: boolean; signal?: AbortSignal | undefined } = {}): Promise<T> {
+  const guard = await open(anchored(root), constants.O_RDONLY | constants.O_DIRECTORY)
+  try {
+    options.signal?.throwIfAborted()
+    await new Promise<void>((resolve, reject) => {
+      // The inherited open file description keeps the lock in our guard after flock exits.
+      const child = spawn('/usr/bin/flock', ['--exclusive', ...(options.nonBlocking ? ['--nonblock'] : []), '3'], {
+        stdio: ['ignore', 'ignore', 'ignore', guard.fd],
+        ...(options.signal ? { signal: options.signal } : {}),
+      })
+      let failure: Error | undefined
+      child.once('error', error => { failure = error })
+      child.once('close', code => {
+        if (failure) reject(failure)
+        else if (code === 0) resolve()
+        else reject(new SourceError('SOURCE_CLAIM_LOCK_FAILED', 'Source ownership serialization failed.'))
+      })
+    })
+    options.signal?.throwIfAborted()
+    return await work()
+  } finally { await guard.close() }
+}
 // An open handle pins its device, inode and mount until it closes. Ownership
 // and permissions are deliberately checked afresh by each directory guard.
 const identities = new WeakMap<FileHandle, Promise<{ device: string; inode: string; mountId: string }>>()

@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { beforeAll, afterAll, describe, it, expect } from 'vitest'
@@ -23,7 +24,7 @@ describe.skipIf(!databaseUrl)('W09 canonical edge database fault fixtures', () =
   beforeAll(async () => {
     const url = new URL(databaseUrl!)
     if (!['postgres:', 'postgresql:'].includes(url.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !/test/i.test(url.pathname)) throw new Error('Explicit owned loopback TEST_DATABASE_URL required.')
-    admin = new pg.Pool({ connectionString: databaseUrl }); await admin.query(`create schema ${schema}`)
+    admin = new pg.Pool({ connectionString: databaseUrl }); await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}` })
     await pool.query(`create table files(file_id text primary key,state text,scope_kind text,expires_at timestamptz);
       create table file_revisions(file_id text references files(file_id),revision_id text,sha256 text,byte_size bigint,unique(file_id,revision_id));
@@ -33,7 +34,7 @@ describe.skipIf(!databaseUrl)('W09 canonical edge database fault fixtures', () =
       create table grants(grant_id text primary key,revoked boolean); insert into grants values ('grant',false);`)
     await pool.query(artifactEdgeMigrationSql); repository = new PostgresArtifactEdgeRepository(pool)
   })
-  afterAll(async () => { await pool?.end(); if (admin) { try { await admin.query(`drop schema ${schema} cascade`) } finally { await admin.end() } } })
+  afterAll(async () => { await pool?.end(); if (admin) { try { await dropFixtureSchema(admin, schema) } finally { await admin.end() } } })
   async function seed(b: ArtifactEdgeBinding, state = 'finalized') {
     await pool.query(`insert into files values ($1,'ready','temporary',clock_timestamp()+interval '1 hour')`, [b.pins.fileId])
     await pool.query('insert into file_revisions values ($1,$2,$3,$4)', [b.pins.fileId,b.pins.revisionId,b.pins.sha256,b.pins.byteSize])

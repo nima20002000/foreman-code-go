@@ -2,6 +2,7 @@ import type pg from 'pg'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { WorkerMcpRelayRequestSchema, WorkerMcpRelayAuthorizationSchema, WorkerMcpRelayResponseSchema, WorkerNativeOutputAuthorizationSchema,
   WorkerNativeOutputDeclarationsAuthorizationSchema, WorkerNativeOutputDeclarationsPolicySchema,
+  WorkerNativeOutputReadinessSchema,
   type WorkerNativeOutputDeclarationsPolicy, type WorkerMcpRelayRequest } from '@foreman-code/contracts/worker-mcp-relay'
 import { TemporaryFileScopeSchema, type TemporaryFileScope } from '@foreman-code/contracts/files'
 import { WORKER_NATIVE_OUTPUT_FILE_OPERATIONS } from '@foreman-code/contracts/worker-native-output'
@@ -17,6 +18,7 @@ import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { readAcceptedPlacement } from './persistence.js'
 import { DomainError } from '../errors.js'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 
 export interface SelectedMainMcpForward {
   /** Existing selected main's MCP transports, with this exact worker bearer;
@@ -81,6 +83,7 @@ export class MainWorkerMcpRelay {
     let authorization: ReturnType<typeof WorkerMcpRelayAuthorizationSchema.parse>
     let nativeScope: TemporaryFileScope | undefined
     let declarations: WorkerNativeOutputDeclarationsPolicy | undefined
+    let ready = false
     try {
       await client.query('begin')
       const intent = await readReconciledDispatchIntent(client, app.operationId, true)
@@ -117,7 +120,9 @@ export class MainWorkerMcpRelay {
       requireAuthorization(authority.principal, 'runs:start', { workspaceId: binding.workspace_id, workflowId: binding.workflow_id })
       authorization = WorkerMcpRelayAuthorizationSchema.parse({ version: 1, mainId: this.mainId, audience: 'worker', principalId: principal.id,
         executionId: app.executionId, agentId: app.agentId, operationId: app.operationId, attemptId: app.attemptId, bindingHash: app.bindingHash, expiresAt: principal.expiresAt })
-      if (input.operation === 'worker-mcp.authorize-native-output' || input.operation === 'worker-mcp.authorize-native-output-declarations') {
+      if (input.operation === 'worker-mcp.authorize-native-output'
+        || input.operation === 'worker-mcp.authorize-native-output-declarations'
+        || input.operation === 'worker-mcp.native-output-readiness') {
         if (binding.purpose !== 'workflow' || placement.payload.kind !== 'agent' || !placement.payload.artifactOutputs) {
           throw new DomainError('WORKER_NATIVE_OUTPUT_DENIED', 'Native output requires the original declared workflow Agent.', 403)
         }
@@ -132,9 +137,26 @@ export class MainWorkerMcpRelay {
           WorkerNativeOutputAuthorizationSchema.parse({ ...authorization, outputOperation: input.outputOperation,
             nativeSessionId: input.nativeSessionId, turnId: input.turnId, scope: nativeScope })
         } else {
-          declarations = WorkerNativeOutputDeclarationsPolicySchema.parse(await this.nativeOutputs.authorizeDeclarations(input, connection, client))
+          const declarationInput = { version: input.version, intent: input.intent, placement: input.placement,
+            applicationAccess: input.applicationAccess, operation: 'worker-mcp.authorize-native-output-declarations' as const }
+          declarations = WorkerNativeOutputDeclarationsPolicySchema.parse(
+            await this.nativeOutputs.authorizeDeclarations(declarationInput, connection, client))
           if (declarations.agentConfigurationVersionId !== placement.payload.agentConfigurationVersionId) {
             throw new DomainError('WORKER_NATIVE_OUTPUT_DENIED', 'The accepted native output configuration changed.', 403)
+          }
+          if (input.operation === 'worker-mcp.native-output-readiness') {
+            const row = (await client.query<{ receipt: unknown }>(
+              'select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])).rows[0]
+            const receipt = row && RemoteOperationReceiptSchema.parse(row.receipt)
+            if (receipt?.native && (receipt.native.sessionId !== input.nativeSessionId
+              || receipt.native.turnId && receipt.native.turnId !== input.turnId)) {
+              throw new DomainError('WORKER_MCP_SCOPE_CONFLICT', 'Native output readiness belongs to another turn.', 403)
+            }
+            ready = receipt?.native?.sessionId === input.nativeSessionId && receipt.native.turnId === input.turnId
+              && (await client.query(`select 1 from operator_conversations where kind='agent' and deleted_at is null
+                and origin_run_id=$1 and origin_execution_id=$2 and native_session_id=$3
+                and record#>>'{workflowFileContext,context,turnId}'=$4 for share`,
+              [intent.runId, intent.executionId, input.nativeSessionId, input.turnId])).rowCount === 1
           }
         }
       }
@@ -145,6 +167,9 @@ export class MainWorkerMcpRelay {
       ...authorization, outputOperation: input.outputOperation, nativeSessionId: input.nativeSessionId, turnId: input.turnId, scope: nativeScope,
     })
     if (input.operation === 'worker-mcp.authorize-native-output-declarations') return WorkerNativeOutputDeclarationsAuthorizationSchema.parse({ ...authorization, ...declarations })
+    if (input.operation === 'worker-mcp.native-output-readiness') return WorkerNativeOutputReadinessSchema.parse({
+      ...authorization, nativeSessionId: input.nativeSessionId, turnId: input.turnId, ready,
+    })
     return WorkerMcpRelayResponseSchema.parse(await this.forward.request(input.body, app.token, input.protocolVersion))
   }
 }

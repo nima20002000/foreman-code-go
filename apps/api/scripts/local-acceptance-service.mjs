@@ -1,30 +1,54 @@
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
-import { mkdir, realpath } from 'node:fs/promises'
-import { assertOwned, publicError } from './safety.mjs'
-import { seed } from './scenarios.mjs'
-import { parity } from './parity.mjs'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { assertOwned, publicError } from '../../../scripts/acceptance/safety.mjs'
+import { seed } from '../../../scripts/acceptance/scenarios.mjs'
+import { parity } from '../../../scripts/acceptance/parity.mjs'
+import { assertTestDatabase, ownedTestDatabaseUrl } from '../../../scripts/test-resources.mjs'
+import * as schemas from '@foreman-code/contracts/wave25'
+import * as sdk from '@modelcontextprotocol/client'
+import { redactKnownSecrets } from '../src/modules/harnesses/secrets.ts'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
+const root = join(dirname(fileURLToPath(import.meta.url)), '../../..')
 const state = process.env.ENG07_STATE
 const owner = process.env.ENG07_OWNER
 const kind = process.argv[2]
-const apiRequire = createRequire(join(root, 'apps/api/package.json'))
 const source = (path) => import(pathToFileURL(join(root, 'apps/api/src', path)).href)
-const dependency = (name) => import(pathToFileURL(apiRequire.resolve(name)).href)
 const send = (message) => { if (process.connected) process.send(message) }
 let close = async () => {}, closing = false
 let stage = 'ownership'
+async function recordFailure(failedStage, error) {
+  const secrets = Object.entries(process.env).filter(([key, value]) => value
+    && /TOKEN|SECRET|PASSWORD|KEY|DATABASE_URL/.test(key)).map(([, value]) => value)
+  const diagnostic = redactKnownSecrets({ kind, stage: failedStage, code: publicError(error),
+    name: error?.name, message: String(error?.message ?? 'Unknown service failure'),
+    issues: error?.issues, details: error?.details, method: error?.method,
+    path: error?.path, status: error?.status }, secrets)
+  try {
+    await writeFile(join(state, `${kind}-failure.json`), JSON.stringify(diagnostic, null, 2),
+      { flag: 'wx', mode: 0o600 })
+  } catch {
+    send({ type: 'notice', code: 'STARTUP_DIAGNOSTIC_UNAVAILABLE' })
+  }
+}
 async function shutdown() {
   if (closing) return
   closing = true
-  try { await close(); send({ type: 'closed' }); process.exit(0) }
+  try {
+    await close()
+    if (process.connected) {
+      await new Promise((resolve, reject) => process.send({ type: 'closed' },
+        (error) => error ? reject(error) : resolve()))
+    }
+    process.exit(0)
+  }
   catch { send({ type: 'failure', stage: 'shutdown', code: 'SHUTDOWN_FAILED' }); process.exit(1) }
 }
 process.on('SIGTERM', () => { void shutdown() })
 process.on('SIGINT', () => { void shutdown() })
 process.on('disconnect', () => { void shutdown() })
+process.on('message', (message) => { if (message?.type === 'shutdown') void shutdown() })
 
 async function main() {
   await assertOwned(state, owner)
@@ -36,7 +60,11 @@ async function main() {
       // Do not load .env/.env.local from the checkout or write its Vite cache.
       envDir: join(state, 'empty-env'), cacheDir: join(state, 'vite-cache'), logLevel: 'silent',
       server: { host: '127.0.0.1', port: Number(process.env.ENG07_WEB_PORT), strictPort: true, open: false } })
-    close = () => server.close()
+    close = async () => {
+      // Finish HTML-triggered import warmup before close cancels Vite's dependency crawler.
+      await server.waitForRequestsIdle()
+      await server.close()
+    }
     if (closing) return close()
     await server.listen()
     send({ type: 'ready' })
@@ -44,19 +72,22 @@ async function main() {
   }
   if (kind !== 'api') throw new Error('Unknown service.')
   stage = 'database-identity'
-  const [{ loadConfig }, { createDatabase }, { createCheckpointStore }, { buildProductionApp }, { PostgresAccessService }, schemas, sdk] = await Promise.all([
+  const [{ loadConfig }, { createDatabase }, { createCheckpointStore }, { buildProductionApp }, { PostgresAccessService }] = await Promise.all([
     source('config.ts'), source('infrastructure/database.ts'), source('infrastructure/checkpoints.ts'), source('production.ts'),
-    source('modules/access/postgres.ts'), dependency('@foreman-code/contracts/wave25'), dependency('@modelcontextprotocol/client'),
+    source('modules/access/postgres.ts'),
   ])
   // Same production composition, engine, checkpointer, migrations and native
   // ownership services as src/server.ts. Only storage root and logger differ.
   const config = { ...loadConfig(process.env), workspaceStorageRoot: join(state, 'projects') }
   const db = createDatabase(config.database)
   close = () => db.close()
-  const identity = (await db.pool.query(`select current_database() as database, current_schema() as schema,
-    current_setting('data_directory') as directory, current_setting('listen_addresses') as listen`)).rows[0]
-  if (identity.database !== process.env.ENG07_DATABASE || identity.schema !== 'eng07'
-    || await realpath(identity.directory) !== await realpath(join(state, 'pg')) || identity.listen !== '') throw new Error('Database identity mismatch.')
+  ownedTestDatabaseUrl()
+  await assertTestDatabase(db.pool, { directory: state, token: process.env.FOREMAN_CODE_TEST_OWNER,
+    name: process.env.ENG07_DATABASE, databaseUrl: process.env.TEST_DATABASE_URL })
+  const identity = (await db.pool.query('select current_database() as database, current_schema() as schema')).rows[0]
+  if (identity.database !== process.env.ENG07_DATABASE || identity.schema !== 'eng07') {
+    throw Object.assign(new Error('Database identity mismatch.'), { code: 'ACCEPTANCE_DATABASE_IDENTITY_MISMATCH' })
+  }
   stage = 'migrations'
   await db.migrate()
   const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
@@ -93,11 +124,15 @@ async function main() {
           : await parity({ apiUrl, workspaceId: message.demo.workspaceId, workflowIds: message.demo.workflowIds,
             runId: message.runId, access: new PostgresAccessService(db.pool), ...sdk })
         send({ type: 'result', requestId: message.requestId, result })
-      } catch (error) { send({ type: 'failure', requestId: message.requestId, stage: message.type, code: publicError(error) }) }
+      } catch (error) {
+        await recordFailure(message.type, error)
+        send({ type: 'failure', requestId: message.requestId, stage: message.type, code: publicError(error) })
+      }
     })
   })
 }
 main().catch(async (error) => {
+  await recordFailure(stage, error)
   send({ type: 'failure', stage, code: publicError(error) })
   try { await close() } finally { process.exit(1) }
 })

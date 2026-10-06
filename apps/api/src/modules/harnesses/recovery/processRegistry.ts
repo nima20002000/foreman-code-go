@@ -12,7 +12,8 @@ import { bootIdentity, identityAlive, processIdentity, sessionAlive, type LinuxP
 import { cgroupBoundary, cgroupPopulated, cgroupRemoved, killCgroup, retireCgroup,
   type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { NATIVE_GUARDIAN_SOURCE } from './nativeGuardian.js'
-import { nativeRegistryProjection, type NativeRegistrySnapshot, type NativeRegistryChange } from './registryObservation.js'
+import { nativeRegistryProjection, type NativeRegistrySnapshot, type NativeRegistryChange,
+  type NativeLaunchObservation } from './registryObservation.js'
 export type { NativeLaunchObservation, NativeRegistrySnapshot, NativeRegistryChange } from './registryObservation.js'
 import { nativeAgentEnvironment } from '../secrets.js'
 import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
@@ -26,13 +27,14 @@ export interface NativeProcessRecovery {
 // This tracks ordinary sequential subprocesses of the SAME live manager. It is
 // never consulted as closure evidence and cannot be reconstructed on restart.
 const consumedLaunchScopes = new WeakMap<NativeProcessRecovery, { root: string; owner: string; launchId: string }>()
+const abandonedLaunchScopes = new WeakMap<NativeProcessRecovery, { root: string; owner: string; launchId: string }>()
 interface LaunchRecord {
   format: 1; id: string; owner: string; boot: string; parent: LinuxProcessIdentity; controlKey: string
 }
 interface BirthRecord { format: 1; id: string; owner: string; boot: string; guardian: LinuxProcessIdentity; containment?: NativeCgroupBoundary }
 export interface NativeProcessExit { exitCode: number | null; exitSignal: NodeJS.Signals | null }
 const owned = new WeakMap<ChildProcess, { scope: NativeProcessRecovery; id: string; closed?: boolean;
-  exit?: NativeProcessExit; receiptError?: Error }>()
+  exit?: NativeProcessExit; receiptError?: Error; restartDetachable?: true }>()
 const closing = new Map<string, Promise<void>>()
 const key = (owner: string) => createHash('sha256').update(owner).digest('hex')
 const socketName = (id: string) => `\0graphql-native-${id}`
@@ -63,6 +65,11 @@ function birthRecord(value: unknown, launch: LaunchRecord): BirthRecord {
 }
 
 async function stopGuardian(launch: LaunchRecord, birth: BirthRecord, signal?: AbortSignal): Promise<void> {
+  return controlGuardian(launch, birth, 'stop', signal)
+}
+
+async function controlGuardian(launch: LaunchRecord, birth: BirthRecord,
+  operation: 'stop' | 'detach', signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted()
   await new Promise<void>((resolve, reject) => {
     const socket = connect({ path: socketName(launch.id) })
@@ -83,7 +90,7 @@ async function stopGuardian(launch: LaunchRecord, birth: BirthRecord, signal?: A
     socket.on('error', finish)
     socket.once('connect', () => socket.write(JSON.stringify({
       id: launch.id, owner: launch.owner, controlKey: launch.controlKey,
-      startTicks: birth.guardian.startTicks, operation: 'stop',
+      startTicks: birth.guardian.startTicks, operation,
     }) + '\n'))
     socket.on('data', (chunk: Buffer) => {
       buffer += chunk.toString('utf8')
@@ -269,6 +276,14 @@ export class NativeProcessRegistry {
   async abandonReservedLaunch(scope: NativeProcessRecovery): Promise<boolean> {
     if (process.platform !== 'linux' || resolve(scope.root) !== resolve(this.root)
       || !scope.launchId || !/^[0-9a-f-]{36}$/.test(scope.launchId)) throw new Error('Invalid native launch abandonment scope.')
+    const abandoned = abandonedLaunchScopes.get(scope)
+    if (abandoned) {
+      if (abandoned.root !== resolve(scope.root) || abandoned.owner !== scope.owner || abandoned.launchId !== scope.launchId) {
+        throw new Error('The abandoned native launch scope was modified.')
+      }
+      await this.closeRegistration(scope, scope.launchId)
+      return true
+    }
     const consumed = consumedLaunchScopes.get(scope)
     if (consumed) {
       if (consumed.root !== resolve(scope.root) || consumed.owner !== scope.owner || consumed.launchId !== scope.launchId) {
@@ -294,6 +309,7 @@ export class NativeProcessRegistry {
       if (row.id !== launch.id || row.owner !== launch.owner) throw new Error('Conflicting native startup evidence.')
     } else writeRecord(join(directory, 'not-started.json'), { id: launch.id, owner: launch.owner }, true)
     await this.closeRegistration(scope, launch.id)
+    abandonedLaunchScopes.set(scope, { root: resolve(scope.root), owner: scope.owner, launchId: scope.launchId })
     return true
   }
   async closeOwner(owner: string, signal?: AbortSignal): Promise<boolean> {
@@ -500,7 +516,7 @@ function takeLaunch(scope: NativeProcessRecovery): LaunchRecord {
  * Native stdin/stdout/stderr retain their original pipe semantics.
  */
 export function spawnNativeProcess(binary: string, args: string[], options: {
-  cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery
+  cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery; restartDetachable?: true
 }): ChildProcessWithoutNullStreams {
   return observeNativeProcess(spawnNativeProcessUnobserved(binary, args, {
     ...options, env: nativeAgentEnvironment(binary, options.cwd, options.env),
@@ -528,7 +544,7 @@ function observeNativeProcess(child: ChildProcessWithoutNullStreams, binary: str
 }
 
 function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
-  cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery
+  cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery; restartDetachable?: true
 }): ChildProcessWithoutNullStreams {
   if (!options.recovery || process.platform !== 'linux') return spawn(binary, args, {
     cwd: options.cwd, env: options.env, detached: process.platform !== 'win32',
@@ -543,7 +559,7 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
   }) as ChildProcessWithoutNullStreams
   // Observe startup errors before sending configuration or exposing the child to the adapter.
   child.on('error', () => undefined)
-  owned.set(child, { scope, id })
+  owned.set(child, { scope, id, ...(options.restartDetachable ? { restartDetachable: true } : {}) })
   if (scope.launchId && !consumedLaunchScopes.has(scope)) consumedLaunchScopes.set(scope,
     { root: resolve(scope.root), owner: scope.owner, launchId: scope.launchId })
   child.once('exit', () => publishObservation(scope.root))
@@ -581,7 +597,8 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
       }
     })
     dispatchAttempted = true
-    child.send({ operation: 'start', directory, binary, args, cwd: options.cwd, environment: options.env }, (error) => {
+    child.send({ operation: 'start', directory, binary, args, cwd: options.cwd, environment: options.env,
+      restartDetachable: options.restartDetachable === true }, (error) => {
       if (error) { try { child.disconnect() } catch { /* Already disconnected. */ } }
     })
   } catch (error) {
@@ -599,6 +616,49 @@ export function registeredNativeProcess(child: ChildProcess): NativeProcessRecov
   const registration = owned.get(child)
   if (!registration) return undefined
   return { root: registration.scope.root, owner: registration.scope.owner, launchId: registration.id }
+}
+
+/** Original daemon identity only; a detached marker cannot authorize a new launch. */
+export function readDetachedNativeProcess(scope: NativeProcessRecovery): NativeLaunchObservation | undefined {
+  const launches = new NativeProcessRegistry(scope.root).snapshot().launches.filter(item => item.owner === scope.owner)
+  const detached = launches.filter(launch => {
+    const path = join(scope.root, key(scope.owner), launch.launchId, 'restart-detached.json')
+    const raw = readRecord(path)
+    if (raw === undefined) return false
+    const row = recordObject(raw)
+    const guardian = recordObject(row.guardian)
+    const provider = recordObject(row.provider)
+    if (!launch.guardian || !launch.provider || row.format !== 1 || row.id !== launch.launchId
+      || row.owner !== scope.owner || row.boot !== launch.bootId
+      || guardian.pid !== launch.guardian.pid || guardian.startTicks !== launch.guardian.startTicks
+      || provider.pid !== launch.provider.pid || provider.startTicks !== launch.provider.startTicks) {
+      throw new Error('Detached native process identity changed.')
+    }
+    return launch.lifecycle === 'active' && launch.bootId === bootIdentity()
+      && !!launch.guardian && identityAlive(launch.guardian) && !!launch.provider && identityAlive(launch.provider)
+      && !!launch.boundary && cgroupPopulated(cgroupBoundary(launch.boundary, launch.launchId))
+  })
+  if (detached.length > 1) throw new Error('Detached native owner is ambiguous.')
+  return detached[0]
+}
+
+/** Release the original HTTP daemon's pipes after authenticated guardian detachment. */
+export async function detachRecoveredChild(child: ChildProcessWithoutNullStreams,
+  signal?: AbortSignal): Promise<NativeLaunchObservation> {
+  const registration = owned.get(child)
+  if (!registration?.restartDetachable || registration.closed) throw new Error('Native process is not restart detachable.')
+  const directory = join(privateDirectory(registration.scope.root), key(registration.scope.owner), registration.id)
+  const launch = launchRecord(readRecord(join(directory, 'intent.json')))
+  const birth = birthRecord(readRecord(join(directory, 'birth.json')), launch)
+  await controlGuardian(launch, birth, 'detach', signal)
+  const detached = readDetachedNativeProcess(registration.scope)
+  if (!detached || detached.launchId !== registration.id) throw new Error('Native process detachment is unconfirmed.')
+  if (child.connected) child.disconnect()
+  child.stdin.destroy()
+  child.stdout.destroy()
+  child.stderr.destroy()
+  child.unref()
+  return detached
 }
 
 /** A guardian cleanup signal is not the native outcome. Missing receipts retain

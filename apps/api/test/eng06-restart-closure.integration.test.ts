@@ -1,3 +1,4 @@
+import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -22,9 +23,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('ENG06-A PostgreSQL recovery rec
     }
     schema = `eng06_recovery_${randomUUID().replaceAll('-', '')}`
     admin = new pg.Pool({ connectionString: url, max: 1 })
-    await admin.query(`create schema ${schema}`)
+    await createFixtureSchema(admin, schema)
     pool = new pg.Pool({ connectionString: url, max: 6,
-      options: `-c search_path=${schema},public -c statement_timeout=10000 -c lock_timeout=5000` })
+      options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
     await pool.query(`
       create table runs(id text primary key,execution_state text not null,record jsonb not null,stop_requested_at timestamptz);
       create table harness_executions(id text primary key,run_id text not null references runs(id),record jsonb not null);
@@ -41,7 +42,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('ENG06-A PostgreSQL recovery rec
   }, 30_000)
   afterAll(async () => {
     await pool?.end()
-    if (schema && admin) await admin.query(`drop schema ${schema} cascade`)
+    if (schema && admin) await dropFixtureSchema(admin, schema)
     await admin?.end()
   })
 

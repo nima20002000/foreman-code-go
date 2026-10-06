@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { access, mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises'
-import { constants } from 'node:fs'
+import { constants, createReadStream } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
 
@@ -66,15 +66,20 @@ async function executable(binary: string, cwd: string, environment: NodeJS.Proce
   throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'The configured Codex executable is unavailable.')
 }
 
+export async function codexExecutableIdentity(binary: string): Promise<string> {
+  const path = await realpath(binary)
+  const value = await stat(path)
+  if (!value.isFile()) throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'Codex must be a regular executable file.')
+  // pnpm creates hardlinks across worktrees, changing ctime without replacing executable content.
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer)
+  return canonical([path, value.dev, value.ino, value.size, value.mode, value.mtimeMs, hash.digest('hex')])
+}
+
 export async function codexBinaryIdentity(binary: string): Promise<string> {
   const payload = await passiveDriverPayloads('codex', binary)
   const paths = [...new Set([await realpath(binary), ...payload.paths])].sort()
-  const entries = await Promise.all(paths.map(async path => {
-    const value = await stat(path)
-    if (!value.isFile()) throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'Codex payload must be a regular file.')
-    return [path, value.dev, value.ino, value.size, value.mtimeMs, value.ctimeMs]
-  }))
-  return canonical(entries)
+  return canonical(await Promise.all(paths.map(codexExecutableIdentity)))
 }
 
 export async function assertCodexUnchanged(qualified: QualifiedCodex): Promise<void> {

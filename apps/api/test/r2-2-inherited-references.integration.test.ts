@@ -1,7 +1,8 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import Fastify from 'fastify'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
@@ -75,8 +76,8 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
       finally {
         await database.close()
         await nativeFixture?.close()
-        await rm(root, { recursive: true, force: true })
-        await rm(f.directory, { recursive: true, force: true })
+        await removeFixtureDirectory(root)
+        await removeFixtureDirectory(f.directory)
       }
     }
   })

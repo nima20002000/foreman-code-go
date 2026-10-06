@@ -3,7 +3,8 @@ import { resolve } from 'node:path'
 import type pg from 'pg'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import type { DurableInteraction } from '@foreman-code/contracts'
-import { ExecutableWorkflowV3Schema, type WorkflowRunV3 } from '@foreman-code/contracts/wave25'
+import { CurrentRunVersionSnapshotSchema, ExecutableWorkflowV3Schema,
+  type WorkflowRunV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
@@ -18,7 +19,7 @@ import { executeRepeatEngineStart } from './repeatStartComposition.js'
 import { repeatSettlementPending } from './repeatRuntime.js'
 import { readWorkflowCheckpoint } from './repeatGraph.js'
 import { hasWorkDirectionWait, persistWorkDirectionWait,
-  persistWorkflowApprovalWait, settleWorkflowRun } from './workflowLifecycle.js'
+  persistWorkflowApprovalWait, settleWorkForRestart, settleWorkflowRun } from './workflowLifecycle.js'
 import { consumeDeliveredApprovals, type WorkflowResumePermit } from './approvalCheckpointResume.js'
 import type { AuthorizeWorkflowStop } from './repeatLifecycle.js'
 import type { PostgresRunRepository } from './postgres.js'
@@ -27,6 +28,7 @@ import type { WorkflowOrchestrator } from './port.js'
 import { RunnerAdmission } from './runnerAdmission.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
+import type { WorkflowRestartApprovals } from './workflowRepositoryServices.js'
 
 /** One engine, Run owner, checkpoint thread and repository for all current V3
  * graphs. Optional bounded blocks are compiled into this same LangGraph; an
@@ -106,6 +108,17 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   resume(runId: string): Promise<void> { return this.queueResume(runId) }
 
+  async prepareInteraction(interaction: DurableInteraction): Promise<void> {
+    if (this.closing) throw new DomainError('ENGINE_CLOSING', 'The workflow engine is shutting down.', 503)
+    if (interaction.runId !== interaction.graphThreadId) throw new DomainError(
+      'INTERACTION_RUN_MISMATCH', 'Approval preparation must name its original Run checkpoint.', 409)
+    if (this.nativeExecutions.hasOriginalRequester(interaction)) return
+    // Join the existing recovery task before recording a decision that changes its pending-source classification.
+    await this.start(interaction.runId)
+    if (!this.nativeExecutions.hasOriginalRequester(interaction)) throw new DomainError(
+      'NATIVE_SESSION_RECOVERY_REQUIRED', 'The original requester has not recovered from its saved checkpoint.', 409)
+  }
+
   resumeInteraction(interaction: DurableInteraction, claim?: GraphResumeClaim): Promise<void> {
     // Notifications select only; the real current checkpoint is re-read below.
     if (!interaction.runId || interaction.runId !== interaction.graphThreadId) return Promise.reject(new DomainError(
@@ -167,18 +180,16 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         'RUN_NOT_RESUMABLE', 'This Run requires Stop settlement or a separately authorized new Run.', 409)
       if (snapshot.run.executionState === 'waiting' && snapshot.version.definition.handoffs
         && await hasWorkDirectionWait(owner)) return
-      // Classify cold native lifetimes before binding/consuming an interrupt.
-      // A dead requester may leave a valid approval alongside a task error. Do
-      // not weaken checkpoint validation or replay delivery to escape that wait.
-      if (await this.nativeExecutions.requestColdRunCleanup(owner)) {
+      const checkpoint = await readWorkflowCheckpoint(runId, snapshot.version, this.checkpointer)
+      if (checkpoint.values.runId && checkpoint.values.runId !== runId) throw new DomainError('RUN_PIN_CONFLICT', 'The checkpoint belongs to another Run.', 409)
+      const current = checkpoint.tasks.some((task) => task.interrupts?.length)
+        ? await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint) : []
+      if (await this.nativeExecutions.requestColdRunCleanup(owner, current, controller.signal)) {
         await this.cleanupOwned(owner)
         return
       }
-      const checkpoint = await readWorkflowCheckpoint(runId, snapshot.version, this.checkpointer)
-      if (checkpoint.values.runId && checkpoint.values.runId !== runId) throw new DomainError('RUN_PIN_CONFLICT', 'The checkpoint belongs to another Run.', 409)
       let permit: WorkflowResumePermit | undefined
       if (checkpoint.tasks.some((task) => task.interrupts?.length)) {
-        const current = await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint)
         owner.assertOwned(); controller.signal.throwIfAborted()
         if (requestedIds && !current.some((item) => requestedIds.includes(item.id))) return
         const delivered = current.filter((item) => item.status === 'delivered' && item.deliveryState === 'delivered')
@@ -388,7 +399,24 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // commits. Failed persistence must not authorize a Job abort or close.
       this.restartIntent = Promise.resolve().then(async () => {
         const intents = await withCleanupDeadline(async () => Promise.allSettled([...this.activeOwners.entries()].map(async ([runId, owner]) => {
-          if (this.activeOwners.get(runId) === owner) await this.runs.requestCleanup(runId, owner)
+          if (this.activeOwners.get(runId) === owner) {
+            const run = await this.runs.get(runId)
+            const version = run && await this.workflows.getVersion(run.workflowVersionId)
+            const accepted = CurrentRunVersionSnapshotSchema.parse({ run, version })
+            let approvals: WorkflowRestartApprovals | undefined
+            if (accepted.version.definition.handoffs) {
+              const checkpoint = await readWorkflowCheckpoint(runId, accepted.version, this.checkpointer)
+              const interactions = checkpoint.tasks.some(task => task.interrupts?.length)
+                ? await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint) : []
+              if (interactions.length && isAtomicApprovalCheckpointSaver(this.checkpointer)) {
+                approvals = { saver: this.checkpointer, interactions }
+              }
+            }
+            // Freeze handoff tasks before classifying their queued reservations.
+            // These tasks do not abort Jobs, which require the cleanup fence first.
+            if (accepted.version.definition.handoffs) this.activeRuns.get(runId)?.abort(reason)
+            await this.requestRestartCleanup(owner, approvals)
+          }
         })))
         const intentErrors = intents.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
         if (intentErrors.length) throw new AggregateError(intentErrors, 'Workflow restart cleanup intent remains unconfirmed.')
@@ -418,5 +446,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     // when its close receipt or draining was unconfirmed on the previous attempt.
     void attempt.catch(() => { if (this.shutdownTask === attempt) this.shutdownTask = undefined })
     return attempt
+  }
+
+  private async requestRestartCleanup(owner: RunOwnership, approvals?: WorkflowRestartApprovals): Promise<void> {
+    const { version } = await this.runs.getRepeatSnapshot(owner.runId, owner)
+    if (version.definition.handoffs && await settleWorkForRestart(owner, approvals)) return
+    await this.runs.requestCleanup(owner.runId, owner)
   }
 }

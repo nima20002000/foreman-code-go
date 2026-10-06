@@ -14,6 +14,7 @@ import { native2Fixture } from './eng04-native2-fixtures.js'
 function observerFixture(completed = false) {
   const f = native2Fixture(completed)
   const store: RepeatNativeLaunchStore = { ...f.store,
+    readWorkExecutionContext: async () => { throw new Error('Ordinary workflows have no work-handoff context') },
     beginNativeEntry: async () => { throw Object.assign(new Error('No preparation permit'), { code: 'NATIVE_ENTRY_CONFLICT' }) },
     claimLaunch: async () => { throw new Error('claim not configured') },
     recoverSession: async () => f.get(),

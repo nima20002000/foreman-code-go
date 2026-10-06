@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { removeFixtureDirectory } from '../helpers/testResources.js'
 import { createServer, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -77,7 +78,7 @@ export async function mcpLauncherFixture(
       lines.close()
       server.closeAllConnections()
       if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()))
-      await rm(directory, { recursive: true, force: true })
+      await removeFixtureDirectory(directory)
       if (stderr) throw new Error(stderr)
     },
   }

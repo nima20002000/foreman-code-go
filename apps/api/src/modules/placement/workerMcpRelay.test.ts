@@ -34,7 +34,14 @@ function fixture(nativeOutputs?: import('./workerMcpRelay.js').WorkerNativeOutpu
     expiresAt: new Date(Date.now() + 60_000).toISOString(), revokedAt: null }
   const binding = { execution_id: 'execution', run_id: 'run', workspace_id: 'workspace', workflow_id: 'workflow', agent_id: 'agent',
     purpose: 'workflow', revoked_at: null as Date | null, execution_state: 'running', run_state: 'running', authorization_principal_id: 'owner', stopped: false, cleanup: false }
-  const query = vi.fn(async (sql: string) => ({ rows: sql.includes('from worker_credential_bindings') ? [binding] : [] }))
+  const state = { receipt: undefined as unknown, contextReady: false }
+  const query = vi.fn(async (sql: string): Promise<{ rows: Record<string, unknown>[]; rowCount: number }> => {
+    let rows: Record<string, unknown>[] = []
+    if (sql.includes('from worker_credential_bindings')) rows = [binding]
+    if (sql.includes('from remote_execution_receipts') && state.receipt) rows = [{ receipt: state.receipt }]
+    if (sql.includes('from operator_conversations') && state.contextReady) rows = [{ id: 'conversation' }]
+    return { rows, rowCount: rows.length }
+  })
   const pool = { connect: async () => ({ query, release: vi.fn() }) } as unknown as pg.Pool
   ports.intent.mockResolvedValue(intent); ports.placement.mockResolvedValue(placement)
   ports.host.mockResolvedValue({ keyRevision: 1, authorizationRevision: 1 })
@@ -45,9 +52,29 @@ function fixture(nativeOutputs?: import('./workerMcpRelay.js').WorkerNativeOutpu
     agentId: 'agent', operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash }
   const request = { version: 1, operation: 'worker-mcp.authorize', intent, placement, applicationAccess }
   const connection = { mainId, deviceId, workerInstallationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
-  return { relay, principal, binding, request, connection, forward, query }
+  return { relay, principal, binding, request, connection, forward, query, state }
 }
 describe('Main worker MCP relay with original binding doubles and real worker scope policy', () => {
+  it('waits for the original native ACK and admitted file context without granting a mutation', async () => {
+    const authorize = vi.fn(async () => structuredClone(originalScope))
+    const f = fixture({ authorize, authorizeDeclarations: async () => declarationsPolicy })
+    const request = { ...f.request, operation: 'worker-mcp.native-output-readiness',
+      nativeSessionId: 'original-session', turnId: 'original-turn' }
+    expect(await f.relay.handle(request, f.connection)).toMatchObject({ ready: false })
+    f.state.receipt = { schemaVersion: 1, intent: f.request.intent, connection: f.connection,
+      workerIncarnationId: randomUUID(), sequence: 1, phase: 'running', entryAttempted: true,
+      turnEntryAttempted: true, stopFence: false, controls: [],
+      native: { sessionId: request.nativeSessionId, turnId: request.turnId, processIdentityDigest: 'a'.repeat(64) } }
+    expect(await f.relay.handle(request, f.connection)).toMatchObject({ ready: false })
+    f.state.contextReady = true
+    expect(await f.relay.handle(request, f.connection)).toMatchObject({ ready: true })
+    expect(authorize).not.toHaveBeenCalled()
+    expect(f.forward).not.toHaveBeenCalled()
+    await expect(f.relay.handle({ ...request, turnId: 'another-turn' }, f.connection))
+      .rejects.toMatchObject({ code: 'WORKER_MCP_SCOPE_CONFLICT' })
+    f.binding.revoked_at = new Date()
+    await expect(f.relay.handle(request, f.connection)).rejects.toMatchObject({ code: 'WORKER_MCP_LEASE_UNAVAILABLE' })
+  })
   it('does not infer native mutation permission from a valid application lease', async () => {
     const f = fixture()
     await expect(f.relay.handle({ ...f.request, operation: 'worker-mcp.authorize-native-output', outputOperation: 'create',

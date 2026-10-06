@@ -1,6 +1,7 @@
+import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
-import { mkdir, rename, rm } from 'node:fs/promises'
+import { mkdir, rename } from 'node:fs/promises'
 
 import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -28,7 +29,7 @@ import { FixtureServer } from './opencode-fixtures.js'
 import { buildProductionApp } from '../src/production.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.TEST_DATABASE_URL!
 let schema: string, root: string, project: string, address: string
 let admin: pg.Pool, database: ReturnType<typeof createDatabase>, checkpoints: ReturnType<typeof createCheckpointStore>
 let production: ReturnType<typeof buildProductionApp>
@@ -73,7 +74,8 @@ beforeEach(async () => {
   root = await privateFixtureDirectory('pr15-runtime-')
   project = await privateFixtureDirectory('pr15-project-')
   admin = new pg.Pool({ connectionString })
-  await admin.query(`create schema "${schema}"`)
+  await createFixtureSchema(admin, schema)
+  await createFixtureSchema(admin, `${schema}_checkpoints`)
   const url = new URL(connectionString)
   url.searchParams.set('options', `-c search_path=${schema}`)
   config = loadConfig({ DATABASE_URL: url.toString(), DATABASE_POOL_MAX: '1', DATABASE_QUERY_TIMEOUT_MS: '5000', HARNESS_WORKSPACE_ROOT: root, HARNESS_TIMEOUT_MS: '30000', PORT: '4100' })
@@ -243,10 +245,10 @@ afterEach(async () => {
   await production?.shutdown()
   await production?.app.close()
   await checkpoints?.close(); await database?.close()
-  await admin?.query(`drop schema if exists "${schema}" cascade`)
-  await admin?.query(`drop schema if exists "${schema}_checkpoints" cascade`)
+  await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve())
+  await (admin ? dropFixtureSchema(admin, `${schema}_checkpoints`) : Promise.resolve())
   await admin?.end()
-  await rm(root, { recursive: true, force: true }); await rm(project, { recursive: true, force: true })
+  await removeFixtureDirectory(root); await removeFixtureDirectory(project)
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
 })
@@ -349,7 +351,7 @@ for (const change of ['location', 'authority'] as const) it(`rejects a waiting c
     const untouched = await interactions.get(pending.id)
     expect(untouched?.selectedOptionId).toBeUndefined()
     expect(untouched?.status).toBe('pending')
-  } finally { if (change === 'location') { await rm(project, { recursive: true }); await rename(`${project}-old`, project) } }
+  } finally { if (change === 'location') { await removeFixtureDirectory(project, { force: false }); await rename(`${project}-old`, project) } }
 })
 
 it('makes production Stop and native delivery progress with a one-slot pool', async () => {

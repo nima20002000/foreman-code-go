@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AcceptedChatResponseControlSchema } from './interaction-activity.js'
+import { AcceptedChatResponseControlSchema, ChatResponseAcknowledgmentSchema, matchingChatResponseAcknowledgment } from './interaction-activity.js'
 
 const control = {
   schemaVersion: 1, kind: 'respond', conversationId: 'conversation', modelRequestId: 'request',
@@ -23,5 +23,18 @@ describe('accepted native response identity', () => {
   })
   it('rejects a receipt from another conversation scope', () => {
     expect(AcceptedChatResponseControlSchema.safeParse({ ...control, scope: { ...control.scope, conversationId: 'other' } }).success).toBe(false)
+  })
+  it('matches Claude delivery to the accepted message and callback generation', () => {
+    const accepted = AcceptedChatResponseControlSchema.parse({ ...control, native: { ...control.native, harness: 'claude',
+      turnId: undefined, messageId: 'message', generation: 'generation' } })
+    const proof = { source: 'provider_history', harness: 'claude', providerVersion: 'pinned', nativeSessionId: 'session',
+      nativeRequestId: 'native-request', nativeRequestType: 'approval', optionId: 'allow', semantic: 'approve_once',
+      nativeIdentity: { kind: 'message', nativeMessageId: 'message', generation: 'generation' } }
+    expect(matchingChatResponseAcknowledgment(accepted, proof)).toEqual(proof)
+    expect(ChatResponseAcknowledgmentSchema.safeParse({ ...proof, nativeIdentity: undefined }).success).toBe(false)
+    for (const identity of [{ kind: 'turn', nativeTurnId: 'message' },
+      { ...proof.nativeIdentity, nativeMessageId: 'other' }, { ...proof.nativeIdentity, generation: 'other' }]) {
+      expect(matchingChatResponseAcknowledgment(accepted, { ...proof, nativeIdentity: identity })).toBeUndefined()
+    }
   })
 })

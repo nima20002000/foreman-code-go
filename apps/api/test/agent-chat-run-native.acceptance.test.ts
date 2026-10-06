@@ -1,3 +1,5 @@
+import { assertOwnedExecutionDestinations, assertOwnedTestApi,
+  ownedTestDatabaseUrl, ownedTestPath } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
@@ -51,7 +53,7 @@ async function protectedState(pool: pg.Pool, schema: string, checkpointSchema: s
 describe.skipIf(!enabled)('F4 A-R21 actual terminal-Run to Agent-chat immutability', () => {
   it('forks and follows up through the authenticated API without changing source native, Run, execution, results, graph or checkpoints', async () => {
     const api = new URL(required('AGENT_CHAT_ACCEPTANCE_API_URL'))
-    const database = new URL(required('AGENT_CHAT_ACCEPTANCE_DATABASE_URL'))
+    const database = new URL(ownedTestDatabaseUrl('AGENT_CHAT_ACCEPTANCE_DATABASE_URL'))
     const loopback = ['localhost', '127.0.0.1', '[::1]']
     if (!loopback.includes(api.hostname) || !loopback.includes(database.hostname) || !database.pathname.toLowerCase().includes('test')) {
       throw new Error('Acceptance requires a loopback API and an explicitly named test database.')
@@ -87,6 +89,8 @@ describe.skipIf(!enabled)('F4 A-R21 actual terminal-Run to Agent-chat immutabili
       throw new Error('Native chat did not settle; no resend or replacement session was attempted.')
     }
     try {
+      await assertOwnedTestApi(api, pool)
+      await assertOwnedExecutionDestinations(pool, { workspaceId: context.workspaceId, runId: context.runId })
       const run = WorkflowRunV3Schema.parse((await pool.query<{ record: unknown }>('select record from runs where id=$1', [context.runId])).rows[0]?.record)
       expect(run.workspaceId).toBe(context.workspaceId)
       expect(run.workflowId).toBe(context.workflowId)
@@ -98,6 +102,7 @@ describe.skipIf(!enabled)('F4 A-R21 actual terminal-Run to Agent-chat immutabili
       expect(executions).toHaveLength(1)
       const execution = executions[0]!
       if (!execution.workingDirectory || !execution.nativeSessionId) throw new Error('The terminal execution has no actual native storage identity.')
+      ownedTestPath(execution.workingDirectory)
       const initial = await read()
       expect(initial.conversation).toBeNull()
       expect(initial.availability.canSend).toBe(true)

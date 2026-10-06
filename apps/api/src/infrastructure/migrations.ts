@@ -1,5 +1,16 @@
+import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
+import { localWorkflowNativeOutputMigration } from './localWorkflowNativeOutputMigration.js'
+import { workExhaustedRouteMigration } from './workExhaustedRouteMigration.js'
+import { workJoinRoundMigration } from './workJoinRoundMigration.js'
+import { workUnresolvedRoutesMigration } from './workUnresolvedRoutesMigration.js'
+import { workJoinDispatchMigration } from './workJoinDispatchMigration.js'
+import { workJoinDispositionMigration } from './workJoinDispositionMigration.js'
+import { workParentRequestMigration } from './workParentRequestMigration.js'
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { workflowPresentationMigration } from './workflowPresentationMigration.js'
+import { operatorTerminalMigration } from './operatorTerminalMigration.js'
+import { operatorTerminalHistoryMigration } from './operatorTerminalHistoryMigration.js'
+import { claudeCallbackMigration } from './claudeCallbackMigration.js'
 import { runSubagentsMigration } from './runSubagentsMigration.js'
 import { deviceIdentityMigration } from '../modules/devices/migration.js'
 import { activitySnapshotMigration } from './activitySnapshotMigration.js'
@@ -821,7 +832,18 @@ export const migrations = [
   jobQueueCleanupMigration,
   runPresentationMigration,
   workflowPresentationMigration,
+  workParentRequestMigration,
+  workJoinRoundMigration,
+  workExhaustedRouteMigration,
+  workDeliverySettlementMigration,
+  workUnresolvedRoutesMigration,
+  workJoinDispatchMigration,
+  workJoinDispositionMigration,
+  operatorTerminalMigration,
+  operatorTerminalHistoryMigration,
+  localWorkflowNativeOutputMigration,
   localHumanMigration,
+  claudeCallbackMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

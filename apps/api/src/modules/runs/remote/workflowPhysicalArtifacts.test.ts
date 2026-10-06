@@ -77,6 +77,8 @@ async function fixture(aliases=false) {
     if(text.includes('from runs r join workflow_versions'))rows=[{run,version}]
     else if(text.includes('from file_tool_publications p')){
       const link=links.get(args[1] as string);if(state.publication&&link)rows=[{record:link,file_id:link.ref.fileId,revision_id:link.ref.revisionId}]
+    }else if(text.includes('from file_tool_publications')){
+      const link=links.get(args[1] as string);if(state.publication&&link)rows=[{record:link}]
     }else if(text.includes("operation='remote.artifact-transfer.admit'")){
       const original=admissions.get(args[0] as string);if(state.admission&&original)rows=[{...admissionRows.get(args[0] as string),result:original}]
     }else if(text.includes("operation='remote.native-artifact.output'")){
@@ -107,6 +109,27 @@ async function fixture(aliases=false) {
   return {f,binding,accepted,caller,artifactOutputs,result,run,version,links,admissions,admissionRows,mappings,readout,state,authority,files,connection,verifier,publications,adopted,adopt}
 }
 describe('canonical physical artifact metadata and final adoption',()=>{
+  it.each(['invalid_result', 'missing_publication'] as const)(
+    'verifies %s against saved declarations and canonical publications without adopting outputs', async reason => {
+      const t = await fixture()
+      try {
+        const failure = { code: 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT' as const, reason }
+        const result = reason === 'invalid_result' ? { outcome: 'succeeded' as const,
+          output: { text: JSON.stringify({ data: null, artifactOutputs: { version: 1,
+            outputs: [{ outputKey: 'foreign-key', commandId: 'foreign-command' }] } }) } } : t.result
+        t.readout.output = { kind: 'invalid-artifacts', result, failure }
+        t.readout.receipt.terminal = { ...t.readout.receipt.terminal!, result,
+          artifactDigests: [], artifactValidationError: failure }
+        if (reason === 'missing_publication') {
+          await expect(t.publications()).rejects.toMatchObject({ code: 'REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE' })
+          t.state.publication = false
+        }
+        await t.publications()
+        await expect(t.adopted()).rejects.toMatchObject({ code: 'REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE' })
+        expect(t.mappings.size).toBe(0)
+        expect(t.readout.receipt.terminal.result).toEqual(result)
+      } finally { await t.connection.close() }
+    })
   it('proves canonical publications before adoption and requires exact durable mappings afterward without G1 byte IO',async()=>{
     const t=await fixture()
     try {

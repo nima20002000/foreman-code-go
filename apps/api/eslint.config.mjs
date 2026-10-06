@@ -22,6 +22,10 @@ export default tseslint.config(
     rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
   {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: { globals: globals.node },
+  },
+  {
     // These validators reject control characters in file names on purpose.
     files: [
       'src/modules/harnesses/codexFiles/bytes.ts',

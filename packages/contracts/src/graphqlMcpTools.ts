@@ -15,6 +15,22 @@ export const GRAPHQL_AGENT_TOOLS = {
   interaction_list: { label: "List interactions", description: "Approval requests in its run.", roles: ["operator", "orchestrator", "coder"] },
   interaction_get: { label: "Read an interaction", description: "One approval request and its options.", roles: ["operator", "orchestrator", "coder"] },
   interaction_respond: { label: "Respond to approvals", description: "Answer user-handled approvals as Operator or assigned approvals as Orchestrator, with scoped response grants.", roles: ["operator", "orchestrator"] },
+  "files.native_output_create": {
+    label: "Create workflow output", description: "Create an opaque output for this declared workflow turn.",
+    roles: ["orchestrator", "coder"],
+  },
+  "files.native_output_append": {
+    label: "Append workflow output", description: "Append bounded bytes to this turn's output.",
+    roles: ["orchestrator", "coder"],
+  },
+  "files.native_output_seal": {
+    label: "Seal workflow output", description: "Freeze this turn's output bytes before publication.",
+    roles: ["orchestrator", "coder"],
+  },
+  "files.native_output_publish": {
+    label: "Publish workflow output", description: "Publish this turn's sealed output under its saved permissions.",
+    roles: ["orchestrator", "coder"],
+  },
 } as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[] }>;
 
 /** Explicit Operator catalog. Listing a tool never supplies a grant or native qualification. */

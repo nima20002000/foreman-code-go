@@ -34,15 +34,17 @@ vi.mock('../src/modules/harnesses/openCodeMcpConnections.js', () => ({
 const storageFixtures = [
   { name: 'graphql', token: 'GRAPHQL_MCP_TOKEN' },
   { name: 'foreman-code', token: 'FOREMAN_CODE_MCP_TOKEN' },
-].flatMap(identity => ['direct', 'isolated', 'relocated'].map(storage => ({ ...identity, storage })))
+].flatMap(identity => ['direct', 'isolated', 'copied', 'relocated'].map(storage => ({ ...identity, storage })))
 
-it.each(storageFixtures)('keeps the $token reference in $storage native storage', async (identity) => {
+it.each(storageFixtures)('keeps the verified $token reference in $storage native storage', async (identity) => {
+
   const directory = await mkdtemp(join(tmpdir(), 'native-workflow-source-'))
   const previousHome = process.env.CODEX_HOME
   const previousLauncherDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
   const previousSourceLauncher = process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
   const previousOpenCodeConfig = process.env.OPENCODE_CONFIG
   const previousOpenCodeConfigDirectory = process.env.OPENCODE_CONFIG_DIR
+  const previousAuthentication = process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
   let restore: (() => Promise<void>) | undefined
   try {
     const home = join(directory, 'source-home')
@@ -56,6 +58,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
     process.env.OPENCODE_CONFIG_DIR = sourceConfigDirectory
     await writeFile(join(home, 'auth.json'), JSON.stringify({ fixture: true }), { mode: 0o600 })
     process.env.CODEX_HOME = home
+    process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE = join(home, 'auth.json')
     process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'source-launcher')
     source.name = identity.name
     source.token = identity.token
@@ -65,11 +68,15 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
       process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'outer-storage-mcp')
     } else {
       delete process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
+      if (identity.storage === 'copied') {
+        process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'copied-launcher')
+      }
     }
     if (identity.storage === 'relocated') {
       process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'relocated-launcher')
     }
     const restoredLauncherDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
+
 
     restore = await configureNativeWorkflowMcp({ projectDirectory,
       runtimeDirectory: join(directory, 'runtime'), codexBinary: 'recorded', openCodeBinary: 'recorded' })
@@ -93,6 +100,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
     expect(process.env.OPENCODE_CONFIG).toBe(previousOpenCodeConfig)
     expect(process.env.OPENCODE_CONFIG_DIR).toBe(sourceConfigDirectory)
     expect(await readFile(join(sourceConfigDirectory, 'opencode.json'), 'utf8')).toBe(sourceConfig)
+
     await expect(access(ownedHome)).rejects.toMatchObject({ code: 'ENOENT' })
   } finally {
     try { await restore?.() }
@@ -107,6 +115,8 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
       else process.env.OPENCODE_CONFIG = previousOpenCodeConfig
       if (previousOpenCodeConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR
       else process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDirectory
+      if (previousAuthentication === undefined) delete process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE
+      else process.env.FOREMAN_CODE_TEST_CODEX_AUTH_FILE = previousAuthentication
       await rm(directory, { recursive: true, force: true })
     }
   }

@@ -24,6 +24,12 @@ const message = (error: unknown) => error instanceof DomainError ? error.code : 
  * and graph complexity never select another repository or approval protocol. */
 export class InteractionService {
   private atomicApprovalResume: AtomicApprovalResumeConsumer | undefined
+  private prepareRequester: ((interaction: DurableInteraction) => Promise<void>) | undefined
+  useApprovalPreparation(prepare: (interaction: DurableInteraction) => Promise<void>): void {
+    if (this.prepareRequester && this.prepareRequester !== prepare) throw new DomainError(
+      'APPROVAL_RESUME_ALREADY_BOUND', 'The requester recovery consumer is already bound.', 409)
+    this.prepareRequester = prepare
+  }
   useAtomicApprovalResume(consumer: AtomicApprovalResumeConsumer): void {
     if (this.atomicApprovalResume && this.atomicApprovalResume !== consumer) throw new DomainError(
       'APPROVAL_RESUME_ALREADY_BOUND', 'The production checkpoint consumer is already bound.', 409)
@@ -33,7 +39,8 @@ export class InteractionService {
   private approvalDependencies(): ApprovalRuntimeDependencies {
     return { repository: this.interactions, nativeRuntime: this.nativeRuntime,
       ...(this.responseJournal ? { journal: this.responseJournal } : {}),
-      ...(this.atomicApprovalResume ? { atomicResume: this.atomicApprovalResume } : {}) }
+      ...(this.atomicApprovalResume ? { atomicResume: this.atomicApprovalResume } : {}),
+      ...(this.prepareRequester ? { prepareRequester: this.prepareRequester } : {}) }
   }
   constructor(private readonly interactions: Wave25InteractionRepository,
     _budgets: PostgresApprovalBudgetRepository, private readonly nativeRuntime: InteractionNativeRuntime,

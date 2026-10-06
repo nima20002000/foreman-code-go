@@ -1,3 +1,4 @@
+import { parseWorkHandoffArtifactResult } from '@foreman-code/contracts/wave25'
 import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
@@ -71,8 +72,13 @@ export class WorkflowArtifactResultAdoption {
     assertOriginalWorkflowTerminal(execution, proof.session, history)
     let mappings: WorkflowArtifactResultV1['outputs']
     try {
-      mappings = (node.choice ? parseWorkflowArtifactResult(terminal.result, node.artifactOutputs, node.choice)
-        : parseWorkflowArtifactResult(terminal.result, node.artifactOutputs)).artifactOutputs.outputs
+      if (version.definition.handoffs) {
+        mappings = parseWorkHandoffArtifactResult(terminal.result, node.artifactOutputs).artifactOutputs.outputs
+      } else if (node.choice) {
+        mappings = parseWorkflowArtifactResult(terminal.result, node.artifactOutputs, node.choice).artifactOutputs.outputs
+      } else {
+        mappings = parseWorkflowArtifactResult(terminal.result, node.artifactOutputs).artifactOutputs.outputs
+      }
     } catch {
       // Parser details can contain model text. Surface a stable domain error.
       throw new DomainError('WORKFLOW_ARTIFACT_RESULT_INVALID', 'The original native result does not satisfy its saved artifact output contract.', 409)

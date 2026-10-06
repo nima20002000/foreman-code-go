@@ -9,6 +9,7 @@ import type { RepeatNativeObservationStore } from '../src/modules/interactions/r
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import { DomainError } from '../src/modules/errors.js'
 import type { NativeHistory } from '../src/modules/harnesses/port.js'
+import type { ExecutionCredentialProvider } from '../src/modules/harnesses/mcpDetection.js'
 import { nativeCompleted, nativeFixture, nativeStored, nativeAt } from './eng04-native-fixtures.js'
 
 /** Doubles only. These tests never start a provider, DB, native process or browser. */
@@ -134,13 +135,13 @@ export function native2Fixture(completed = true) {
     ensure: async () => undefined, resume: async () => undefined, remaining: async () => 60_000,
     assertActive: async () => undefined, beginWait: async () => { calls.push('pause-budget') },
   }
-  const credentials = {
+  const credentials: Pick<ExecutionCredentialProvider, 'prepare' | 'revoke' | 'revokeForExecution'> = {
     prepare: forbidden('credential-prepare'),
     revoke: async ({ principalId }: { principalId: string }) => {
       calls.push(`revoke:${principalId}`); revoked = true
       for (const binding of recovery.bindings) if (binding.principalId === principalId) binding.revoked = true
     },
-    revokeForExecution: async (id: string) => { calls.push(`revoke-execution:${id}`); revoked = true },
+    revokeForExecution: async (id: string) => { calls.push(`revoke-execution:${id}`); revoked = true; return 1 },
   }
   const managers = { resolve: forbidden('resolve'), release: () => { calls.push('release-manager') } }
   const closures = {

@@ -1,5 +1,6 @@
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
@@ -98,7 +99,7 @@ describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () 
       expect((await db.pool.query('select count(*)::int as count from agents')).rows[0]?.count).toBe(0)
     } finally {
       try { await Promise.allSettled(clients.map(client => client.close())); await app.close(); await db.close() }
-      finally { if (rootDirectory) await rm(rootDirectory, { recursive: true, force: true }) }
+      finally { if (rootDirectory) await removeFixtureDirectory(rootDirectory) }
     }
   }, 120_000)
 })

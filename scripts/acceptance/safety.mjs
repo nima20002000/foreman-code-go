@@ -1,18 +1,18 @@
 import { createServer } from 'node:net'
 import { lstat, readFile, realpath } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 
 export const BASE = '16b33373b3b2962dd0d0c57ad0b2f2c93198c400'
 export const HELP = `ENG07-C isolated local acceptance (PostgreSQL 17; non-root Linux; macOS setup smoke only)
 Usage: node scripts/acceptance/local.mjs [options]
   --api-port N       Loopback API port (default 3307)
   --web-port N       Loopback web port (default 5307)
-  --pg-bin PATH      Directory containing PostgreSQL 17 binaries
   --codex-model ID   Also seed a Codex branch, using this authenticated model
   --smoke           Migrate, seed, verify HTTP/MCP and shut down; no native Runs
   --help            Print help without creating resources
 No database URL, existing cluster, state directory or destructive-reset option.
 Interactive commands: restart-api, crash-api, parity, parity RUN_ID, quit.
+Run corepack pnpm db:up first. Native authentication uses FOREMAN_CODE_TEST_* credentials.
 Quit/Ctrl-C removes only this invocation's state after orderly shutdown.
 `
 export function options(args) {
@@ -24,14 +24,13 @@ export function options(args) {
     seen.add(key)
     if (key === '--help') { result.help = true; continue }
     if (key === '--smoke') { result.smoke = true; continue }
-    if (!['--api-port', '--web-port', '--pg-bin', '--codex-model'].includes(key)) throw new Error('Unknown option.')
+    if (!['--api-port', '--web-port', '--codex-model'].includes(key)) throw new Error('Unknown option.')
     const value = args[++i]
     if (!value || value.startsWith('--') || /[\x00-\x1f\x7f]/.test(value)) throw new Error('Missing or invalid option value.')
     if (key.endsWith('-port')) {
       if (!/^[0-9]+$/.test(value) || +value < 1024 || +value > 65535) throw new Error('Ports must be integers from 1024 through 65535.')
       result[key === '--api-port' ? 'apiPort' : 'webPort'] = +value
-    } else if (key === '--pg-bin') result.pgBin = resolve(value)
-    else {
+    } else {
       if (!/^[a-zA-Z0-9_.:/-]{1,200}$/.test(value)) throw new Error('Invalid Codex model identifier.')
       result.codexModel = value
     }
@@ -43,8 +42,11 @@ export function options(args) {
 // Deliberately do not spread process.env. No ambient PG*, DATABASE_URL, .env,
 // NODE_OPTIONS, proxy, dev principal, rollout flag or Vite configuration survives.
 export function environment(source) {
-  const keys = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM',
-    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'CODEX_HOME', 'OPENCODE_BINARY', 'CODEX_BINARY',
+  const keys = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TMP', 'TEMP',
+    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR',
+    'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'OPENCODE_BINARY', 'CODEX_BINARY',
+    'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT', 'LOG_DIR', 'COREPACK_HOME',
+    'FOREMAN_CODE_TEST_ROOT', 'FOREMAN_CODE_TEST_OWNER', 'TEST_DATABASE_URL',
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENCODE_API_KEY']
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]))
 }
@@ -55,18 +57,8 @@ export async function freePort(port) {
     server.listen({ host: '127.0.0.1', port, exclusive: true }, () => server.close(yes))
   })
 }
-export function databaseUrl(state, database) {
-  if (!/^eng07_[0-9a-f]{16}$/.test(database)) throw new Error('Invalid task database identity.')
-  const url = new URL(`postgresql://eng07_owner@127.0.0.1/${database}`)
-  // node-postgres uses the host query parameter as a Unix socket directory.
-  // The authority is loopback for the product's local-dev origin validation;
-  // PostgreSQL itself has TCP listening disabled, with no fallback to TCP.
-  url.searchParams.set('host', join(state, 'socket'))
-  url.searchParams.set('port', '5432')
-  return url.href
-}
 export async function assertOwned(state, owner) {
-  if (!/^\/(?:private\/)?tmp\/eng07-[A-Za-z0-9]+$/.test(state)) throw new Error('Unsafe state path.')
+  if (!isAbsolute(state) || !/^eng07-[A-Za-z0-9]+$/.test(basename(state))) throw new Error('Unsafe state path.')
   const stat = await lstat(state)
   if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0
     || stat.uid !== process.getuid() || await realpath(state) !== state) throw new Error('State ownership changed.')
