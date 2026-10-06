@@ -529,9 +529,11 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
         // A pre-activation failure may never have acquired this binding; retain
         // an unrelated current claim and every copy while closing that failure.
       } else if (materializationId !== null) {
-        const directory = await materializationDirectory(root, { materializationId, ...(owner.record?.receipt.quota ? { quota: owner.record.receipt.quota } : {}) })
+        const quota = owner.record?.receipt.quota
+        const directory = quota ? await open(anchored(root), constants.O_RDONLY | constants.O_DIRECTORY)
+          : await materializationDirectory(root, { materializationId })
         try {
-          const file = await open(anchored(directory, 'released-claim.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+          const file = await open(anchored(directory, quota ? `released-binding-${materializationId}.json` : 'released-claim.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
           try {
             cleanupSignal.throwIfAborted()
             const stat = await file.stat()
@@ -542,6 +544,11 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
               throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Original release evidence belongs to another attempt.')
           } finally { await file.close() }
         } finally { await directory.close() }
+        if (quota) {
+          if (!quotaPool) throw new SourceError('SOURCE_QUOTA_MISSING', 'Original recovery quota configuration is required.')
+          await reclaimPreparationQuota({ binding, quota, materializationId }, root, quotaPool, nativeClosed, cleanupSignal)
+          quotaReclaimed = true
+        }
       }
       cleanupSignal.throwIfAborted()
       const proof = SourcePreparationClosureSchema.parse({ version: 1, reconciliationId, operationId: owner.identity.operationId,

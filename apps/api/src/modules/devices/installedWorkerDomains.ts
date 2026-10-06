@@ -42,6 +42,9 @@ import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/inst
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
 import { createInstalledWorkerProfileChecks } from '../harnesses/installedWorkerProfileChecks.js'
 import { DomainError } from '../errors.js'
+import { jobContainerNonEntryObserved } from '../jobs/executorJournal.js'
+import { proveOCIBoundaryEmpty } from '../jobs/executorContainerOwner.js'
+import { sourceMaterializationDigest } from '../sources/bindingHash.js'
 import { createWorkerResourceTelemetryExtension } from '../resource-telemetry/ingestion/carrier.js'
 import { createLinuxResourceCollector } from '../resource-telemetry/collector/ports.js'
 
@@ -161,7 +164,26 @@ export async function createInstalledWorkerDomains(input: {
         if (owner.preparationKind === 'workflow') {
           return native?.kind === 'configured' ? native.preparationClosed(owner) : false
         }
-        return input.jobConfiguration ? (await (await jobJournal()).jobNativeOwner(operationId)) === null : false
+        if (!input.jobConfiguration) return false
+        const retained = await jobJournal(), nativeOwner = await retained.jobNativeOwner(operationId)
+        if (!nativeOwner) return true
+        const status = await retained.jobStatus(operationId)
+        if (status.status !== 'known' || !status.receipt.terminal?.processStopped
+          || !['complete', 'failed'].includes(status.receipt.publication) || !owner.record) return false
+        const execution = status.receipt.execution, receipt = owner.record.receipt
+        if (execution.id !== owner.attempt.executionId || execution.attemptId !== owner.attempt.attemptId
+          || execution.operationId !== operationId || execution.workspaceId !== owner.root.binding.workspaceId
+          || execution.acceptedSpec.source.materializationId !== receipt.materializationId
+          || execution.acceptedSpec.source.materializationDigest !== sourceMaterializationDigest(owner.record)
+          || execution.acceptedSpec.bindingHash !== owner.record.finalDispatchBindingHash
+          || nativeOwner.connection.bootId !== input.bootId || nativeOwner.launches.some(launch => !launch.closed)) return false
+        if (nativeOwner.nonEntryConfirmed && jobContainerNonEntryObserved(nativeOwner)) return true
+        const certificate = nativeOwner.container?.certificate
+        if (!certificate || certificate.lifecycle !== 'closed' || certificate.scope.subject.operationId !== operationId
+          || certificate.scope.bootId !== input.bootId) return false
+        return await proveOCIBoundaryEmpty(certificate.boundary)
+          && (await Promise.all(certificate.helpers.map(helper => helper.boundary
+            ? proveOCIBoundaryEmpty(helper.boundary) : Promise.resolve(false)))).every(Boolean)
       },
       ...(rsync.kind === 'configured' ? {
         preparationTransfersClosed: (closure, signal) => rsync.backend.retirePreparation(closure, signal),

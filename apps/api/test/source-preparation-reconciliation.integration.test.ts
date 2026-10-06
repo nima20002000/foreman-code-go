@@ -44,11 +44,12 @@ import { jobSpec } from './helpers/jobFixture.js'
 import { buildQueueFixture } from './helpers/buildComputerFixture.js'
 import { JobComputerSelection, releaseClosedJobComputers } from '../src/modules/jobs/computerSelection.js'
 import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
-import { JobDefinitionSchema, ResolvedJobDefinitionSpecSchema, JobExecutionSchema } from '@foreman-code/contracts/jobs'
+import { JobDefinitionSchema, ResolvedJobDefinitionSpecSchema } from '@foreman-code/contracts/jobs'
+import { JobExecutionRecordSchema } from '@foreman-code/contracts/job-verification'
 import { sourceMaterializationDigest } from '../src/modules/sources/bindingHash.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
 import { projectJobReceiptLocked } from '../src/modules/jobs/receiptProjection.js'
-import { RemoteJobOperationReceiptSchema } from '@foreman-code/contracts/remote-job-execution'
+import { RemoteJobOperationReceiptRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { releaseMaterializationClaim } from '../src/modules/sources/materialization.js'
 import { measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
 import type { SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
@@ -114,7 +115,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       const row = (await database.pool.query<{ record: unknown }>(
         'select record from job_executions where id=$1', [record.receipt.executionId])).rows[0]
       if (!row) return false
-      const execution = JobExecutionSchema.parse(row.record)
+      const execution = JobExecutionRecordSchema.parse(row.record)
       return Boolean(await closureDispatch.readAcceptedClosureReceipt(database.pool, {
         workspaceId, executionId: execution.id, attemptId: execution.attemptId,
         operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash, owner: execution.owner,
@@ -358,7 +359,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
           const terminal = { finishedAt, closureEvidenceDigest: '7'.repeat(64), outcome: 'preparation_failed',
             exitCode: null, signal: null, processStopped: true, resultDigest: '8'.repeat(64),
             logGapPossible: false, logsTruncated: false, outputCollectionError: false, artifactDigests: [] }
-          return { status: 'known', receipt: RemoteJobOperationReceiptSchema.parse({
+          return { status: 'known', receipt: RemoteJobOperationReceiptRecordSchema.parse({
             schemaVersion: 1, kind: 'job', intent, execution: { ...execution,
               process: { phase: 'terminal', outcome: 'preparation_failed', exitCode: null, signal: null,
                 processStopped: true }, publication: 'complete', finishedAt },
@@ -382,7 +383,9 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       }, executionPolicy)
       dispatches.push(dispatch)
       closureDispatch = dispatch
-      const jobs = new JobService(database.pool, f.commands, { placement, queue: f.queue,
+      const jobs = new JobService(database.pool, f.commands, { placement, queue: { ...f.queue,
+        resources: (sql, definition) => 'verification' in definition.spec
+          ? Promise.resolve(definition.spec.verification.resources) : f.queue.resources(sql, definition) },
         workerExecution: executionPolicy, dispatch,
         closePreparation: ticket => sources.closeQueuedPreparation(ticket),
         preparation: {
@@ -444,6 +447,42 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     await restarted.jobs.wakeQueue()
     expect((await restarted.jobs.getQueueTicket(f.principal, workspaceId, next.id)).state).toBe('accepted')
     expect(f.delivered).toEqual([ticket.executionId, next.executionId])
+  })
+  it('audits fresh bounded MCP recovery of a stopped admitted Job and denies a caller without Job cancellation authority', async () => {
+    const f = await queuedFixture('verification')
+    failSourceSettlement = true
+    const ticket = await f.enqueue()
+    await expect(f.jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
+    const execution = await f.jobs.getExecution(f.principal, workspaceId, ticket.executionId)
+    if (execution.schemaVersion !== 2) throw new Error('Verification execution required')
+    expect(execution).toMatchObject({ process: { phase: 'terminal', processStopped: true }, publication: 'complete' })
+    await f.jobs.closeQueue(); await f.dispatch.close(); failSourceSettlement = false
+    const cleanup = await access.issue({ name: 'Stopped Job source recovery', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['sources:read', 'source_roots:read',
+        'sources:reconcile', 'jobs:cancel', 'capabilities:read'], scope: { workspaceIds: [workspaceId] } }] })
+    const sourceOnly = await access.issue({ name: 'Source recovery without Job authority', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['sources:read', 'source_roots:read',
+        'sources:reconcile', 'capabilities:read'], scope: { workspaceIds: [workspaceId] } }] })
+    const command = { workspaceId, operationId: ticket.operationId, commandId: randomUUID() }
+    const denied = await client(sourceOnly.token)
+    expect((await denied.callTool({ name: 'source_preparation_reconcile', arguments: command })).isError).toBe(true)
+    const operator = await client(cleanup.token)
+    const result = await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })
+    expect(result.isError).not.toBe(true)
+    const value = (result.structuredContent as { value: { reservationState: string; executionId: string;
+      closure: { quotaReclaimed: boolean } } }).value
+    expect(value).toMatchObject({ reservationState: 'reclaimed', executionId: ticket.executionId,
+      closure: { quotaReclaimed: true } })
+    const readback = await operator.callTool({ name: 'source_preparation_get',
+      arguments: { workspaceId, operationId: ticket.operationId } })
+    expect(readback.structuredContent).toEqual(value)
+    const replay = await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })
+    expect(replay.structuredContent).toMatchObject({ value, replayed: true })
+    expect((await f.jobs.getExecution(f.principal, workspaceId, ticket.executionId)).acceptedSpec).toEqual(execution.acceptedSpec)
+    const persisted = (await database.pool.query<{ owner: { identity: { expiresAt: string } }; status: string }>(
+      'select owner,status from source_preparation_reconciliations where operation_id=$1', [ticket.operationId])).rows[0]!
+    expect(persisted.status).toBe('closed')
+    expect(Date.parse(persisted.owner.identity.expiresAt) - Date.now()).toBeLessThanOrEqual(execution.acceptedSpec.policy.cleanupTimeoutMs)
   })
 
   it.each(['cancelled', 'authorization_revoked', 'timed_out'] as const)(
