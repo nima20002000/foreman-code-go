@@ -85,7 +85,8 @@ export class PostgresSourceOperationAuthority {
       if (request.operation !== 'sources.release' && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
       let record: SourceMaterializationRecord | null = null, physicalClosureConfirmed = false
       if (request.operation !== 'sources.prepare') {
-        const stored = (await sql.query<{ record: unknown; state: string }>('select record,state from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 and operation_id=$4 for share',
+        const lock = cleanup ? 'for update' : 'for share'
+        const stored = (await sql.query<{ record: unknown; state: string }>(`select record,state from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 and operation_id=$4 ${lock}`,
           [receipt!.materializationId, attempt.executionId, attempt.attemptId, allocated.operation_id])).rows[0]
         record = SourceMaterializationRecordSchema.parse(stored?.record)
         if (!isDeepStrictEqual(record, request.record)) throw new DomainError('SOURCE_RECORD_CONFLICT', 'The submitted record is not the actual immutable Main materialization.', 409)
@@ -99,8 +100,14 @@ export class PostgresSourceOperationAuthority {
       }
       let identity: SourceOperationOwner['identity']
       if (cleanup) {
+        const lease = (await sql.query<{ expires_at: Date }>(`update source_execution_materializations
+          set cleanup_lease_expires_at=case when cleanup_lease_expires_at>clock_timestamp()
+            then cleanup_lease_expires_at else clock_timestamp()+interval '60 seconds' end
+          where materialization_id=$1 and record=$2::jsonb returning cleanup_lease_expires_at as expires_at`,
+        [record!.receipt.materializationId, JSON.stringify(record)])).rows[0]
+        if (!lease) throw new DomainError('SOURCE_RECORD_CONFLICT', 'The original cleanup record changed.', 409)
         identity = { operationId: allocated.operation_id, ownerPrincipalId: allocated.principal_id,
-          expiresAt: new Date(Date.now() + 60_000).toISOString() }
+          expiresAt: lease.expires_at.toISOString() }
       } else {
         const live = principal!
         identity = request.operation === 'sources.prepare' ? request.identity

@@ -63,8 +63,10 @@ it('releases only a proven closed original claim after its admission grant expir
     rootPolicyId: policyId, rootPolicyRevision: '1', operationId: randomUUID(), reservationId: randomUUID(),
     sourceBindingHash: hash, finalDispatchBindingHash: hash, state: 'prepared' })
   const allocation = { operation_id: record.operationId, principal_id: 'admission-owner', preparation_kind: 'workflow' }
-  const responses = [[], [allocation], [{ record: root }], [{ availability: 'retained' }],
-    [{ record, state: 'prepared' }], [{}], []]
+  const leaseExpiry = new Date(Date.now() + 60_000)
+  const releasedRows = () => [[], [allocation], [{ record: root }], [{ availability: 'retained' }],
+    [{ record, state: 'prepared' }], [{}], [{ expires_at: leaseExpiry }], []]
+  const responses = releasedRows()
   const query = vi.fn(async () => { const rows = responses.shift() ?? []; return { rows, rowCount: rows.length } })
   const client = { query, release: vi.fn() }
   const pool = { connect: async () => client } as unknown as pg.Pool
@@ -80,6 +82,14 @@ it('releases only a proven closed original claim after its admission grant expir
   expect(released.identity.ownerPrincipalId).toBe('admission-owner')
   expect(released.record).toEqual(record)
   expect(attempts.authorize).not.toHaveBeenCalled()
+  responses.length = 0
+  responses.push(...releasedRows())
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5_000)
+  try {
+    const rechecked = await authority.resolve({ version: 1, operation: 'sources.release', record }, device)
+    expect(rechecked).toEqual(released)
+  } finally { clock.mockRestore() }
+  responses.length = 0
   responses.push([], [allocation])
   await expect(authority.resolve({ version: 1, operation: 'sources.verify', record, relativeCwd: '' }, device))
     .rejects.toMatchObject({ code: 'AUTH_REVOKED' })
