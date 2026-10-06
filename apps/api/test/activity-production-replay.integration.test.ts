@@ -1,23 +1,26 @@
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentConfigurationVersionSchema, GetInteractionResponseSchema, OperatorConversationStateSchema } from '@foreman-code/contracts'
 import { AgentChatHistoryPageSchema, AgentChatStateSchema, SendAgentChatMessageResponseSchema } from '@foreman-code/contracts/agent-chat'
 import { ManagementActionSchema, ManagedAgentDefaultsSchema, WorkspaceLocationSetResultSchema } from '@foreman-code/contracts/management'
-import { ManualRunStartResultSchema, SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { ManualRunStartResultSchema, SavedRunDetailsSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture, type CurrentFixtureForm } from '@foreman-code/contracts/wave25'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
 import { LOCAL_RUNNER_ID } from '../src/modules/workspaces/location.js'
 import { loadConfig } from '../src/config.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
+import * as workflowLifecycle from '../src/modules/runs/workflowLifecycle.js'
 import { buildProductionApp } from '../src/production.js'
 import { ActivityProductionReplay } from './helpers/activityProductionReplay.js'
 import { createActivityReplayFileStorage, createActivityReplayWorkspace, startActivityReplayProduction } from './helpers/activityReplayLifecycle.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 
 const closes: Array<() => Promise<void>> = []
 async function eventStream(url: string, token: string) {
@@ -66,7 +69,7 @@ async function freePort() {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
   return address.port
 }
-async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write' } = {}) {
+async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write'; form?: CurrentFixtureForm; handoffs?: boolean } = {}) {
   const db = await agent3Database(); closes.push(db.close)
   const directory = await privateFixtureDirectory('activity-replay-workspace-')
   closes.push(() => removeFixtureDirectory(directory))
@@ -81,7 +84,9 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
   const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, cpSchema, config.database)
   await checkpoints.setup()
   closes.push(async () => { await checkpoints.close(); await dropFixtureSchema(db.pool, cpSchema) })
-  const seed = makeCurrentWorkflowFixture(randomUUID(), 'single')
+  const seed = makeCurrentWorkflowFixture(randomUUID(), options.form ?? 'single')
+  if (options.handoffs) seed.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...seed.version,
+    definition: { ...seed.version.definition, handoffs: { contractVersion: 1 } } }))
   seed.configurations = seed.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({ ...configuration,
     harness: { harness: 'codex', model: 'test-model', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' } }))
   const saved = await seedAgent3(db.pool, workspace.workingDirectory, seed, { run: false })
@@ -146,6 +151,90 @@ async function completedRun(f: Awaited<ReturnType<typeof setup>>) {
 /** Every scenario traverses actual production factories -> authenticated transport -> real native adapter
  * -> existing PostgreSQL receipts/messages -> authenticated HTTP/MCP readback. No installed-provider claim. */
 describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { timeout: 120000 }, () => {
+  for (const boundary of ['queued successor', 'native terminal'] as const) {
+    it(`restarts the actual engine at a ${boundary} without replaying native work`, async () => {
+      const f = await setup({ form: 'sequential', handoffs: true })
+      let queued!: () => void
+      let release!: () => void
+      const successorQueued = new Promise<void>((resolve) => { queued = resolve })
+      const pause = new Promise<void>((resolve) => { release = resolve })
+      let classified!: () => void
+      const restartClassified = new Promise<void>((resolve) => { classified = resolve })
+      const preserve = workflowLifecycle.settleWorkForRestart
+      const classification = vi.spyOn(workflowLifecycle, 'settleWorkForRestart')
+        .mockImplementation(async (...args) => {
+          const result = await preserve(...args)
+          if (result) classified()
+          return result
+        })
+      const admit = RepeatRunRepository.prototype.admitWorkActivation
+      let paused = false
+      const admission = vi.spyOn(RepeatRunRepository.prototype, 'admitWorkActivation')
+        .mockImplementation(async function (this: RepeatRunRepository, ...args) {
+          const result = await admit.apply(this, args)
+          if (boundary === 'queued successor' && !paused
+            && result.execution.workflowNodeId === f.saved.version.definition.nodes[1]!.id) {
+            paused = true
+            queued()
+            await pause
+          }
+          return result
+        })
+      const accept = RepeatRunRepository.prototype.acceptWorkTerminal
+      const acceptance = vi.spyOn(RepeatRunRepository.prototype, 'acceptWorkTerminal')
+        .mockImplementation(async function (this: RepeatRunRepository, ...args) {
+          if (boundary === 'native terminal' && !paused) {
+            paused = true
+            queued()
+            await pause
+          }
+          return accept.apply(this, args)
+        })
+      try {
+        const workflow = f.saved.scope
+        const revision = (await f.db.pool.query<{ revision: string }>('select revision::text from workflows where id=$1',
+          [workflow.workflowId])).rows[0]!
+        const response = await f.http('POST', `/api/management/workspaces/${workflow.workspaceId}/workflows/${workflow.workflowId}/runs`, {
+          workflowVersionId: f.saved.version.id, commandId: randomUUID(), executionSemanticsVersion: 3,
+          expectedWorkflowRevision: Number(revision.revision),
+          expectedAgentConfigurationVersionIds: f.saved.version.agentConfigurationVersionIds,
+          expectedLocationRevision: f.location.locationRevision, input: {},
+        })
+        expect(response.statusCode, response.body).toBe(202)
+        const started = ManualRunStartResultSchema.parse(response.json())
+        // Supply the provider's original accepted handoff result through its native transport.
+        const first = await eventually(async () => f.replay.starts[0], (value) => value !== undefined)
+        f.replay.complete(first!.sessionId, first!.nativeTurnId, JSON.stringify({ routing: { kind: 'finish' },
+          data: { latestDeliverable: { revision: 1 }, remainingFindings: [] } }))
+        await successorQueued
+        const before = (await f.db.pool.query<{ id: string; record: { state: string; input: unknown } }>(
+          'select id,record from harness_executions where run_id=$1 and workflow_node_id=$2',
+          [started.run.id, f.saved.version.definition.nodes[boundary === 'queued successor' ? 1 : 0]!.id])).rows[0]!
+        expect(before.record.state).toBe(boundary === 'queued successor' ? 'queued' : 'completed')
+        expect(f.replay.starts).toHaveLength(1)
+        const restarting = f.restart()
+        await restartClassified
+        release()
+        await restarting
+        admission.mockRestore()
+        expect((await f.db.pool.query('select run_id from run_cleanup_intents where run_id=$1 and pending',
+          [started.run.id])).rowCount).toBe(0)
+        const resumed = f.reconcile()
+        const second = await eventually(async () => f.replay.starts[1], (value) => value !== undefined)
+        f.replay.complete(second!.sessionId, second!.nativeTurnId, JSON.stringify({ routing: { kind: 'finish' },
+          data: { latestDeliverable: { revision: 2 }, remainingFindings: [] } }))
+        await resumed
+        const detail = await eventually(async () => SavedRunDetailsSchema.parse((await f.http('GET',
+          `/api/management/workspaces/${f.saved.scope.workspaceId}/runs/${started.run.id}`)).json()),
+        (value) => value.run.executionState === 'completed')
+        expect(detail.run.outcome).toBe('succeeded')
+        expect(detail.executions.find((execution) => execution.id === before.id)?.input).toEqual(before.record.input)
+        expect(f.replay.starts).toHaveLength(2)
+        expect((await f.db.pool.query('select id from harness_executions where run_id=$1', [started.run.id])).rowCount).toBe(2)
+      } finally { release(); admission.mockRestore(); acceptance.mockRestore(); classification.mockRestore() }
+    })
+  }
+
   for (const selected of [false, true]) it(`${selected ? 'selected Run' : 'Agent'}: older active/newer queued, final empty, replay and restart preserve exact source`, async () => {
     const f = await setup(), workspaceId = f.saved.scope.workspaceId, workflowId = f.saved.scope.workflowId
     const node = f.saved.version.definition.nodes[0]!

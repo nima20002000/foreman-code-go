@@ -16,8 +16,12 @@ function setup(completed = true) {
     settleNativeExecution: vi.fn(async (id: string): Promise<void> => { void id }),
   }
   const observeExact = vi.fn(async (value: HarnessExecution, signal: AbortSignal): Promise<void> => { void value; void signal })
-  const driver = repeatExecutionDriver({ scope: f.scope, version: f.version, owner, store, observeExact })
-  return { f, owner, store, observeExact, driver, get: () => execution, set: (value: HarnessExecution) => { execution = value } }
+  const reconcileArtifacts = vi.fn<(execution: HarnessExecution, signal: AbortSignal) => Promise<void>>(async () => {})
+  const createDriver = () => repeatExecutionDriver({ scope: f.scope, version: f.version, owner, store,
+    observeExact, reconcileArtifacts })
+  const driver = createDriver()
+  return { f, owner, store, observeExact, reconcileArtifacts, createDriver, driver,
+    get: () => execution, set: (value: HarnessExecution) => { execution = value } }
 }
 
 describe('ENG04 exact native occurrence driver', () => {
@@ -35,6 +39,33 @@ describe('ENG04 exact native occurrence driver', () => {
     expect(f.observeExact.mock.calls[0]![0]).toEqual(f.get())
     expect(f.observeExact.mock.calls[0]![0].state).toBe('completed')
     expect(f.store.settleNativeExecution).toHaveBeenCalledTimes(2)
+  })
+  it('adopts outputs only after the completed native execution settles', async () => {
+    const f = setup(false)
+    const order: string[] = []
+    f.observeExact.mockImplementation(async () => { f.set(nativeCompleted(f.get())) })
+    f.store.settleNativeExecution.mockImplementation(async () => { order.push('settle') })
+    f.reconcileArtifacts.mockImplementation(async terminal => {
+      expect(terminal).toEqual(f.get())
+      expect(terminal.state).toBe('completed')
+      order.push('adopt')
+    })
+    await f.driver.observe(f.get(), new AbortController().signal)
+    expect(order).toEqual(['settle', 'adopt'])
+  })
+  it('retains an adoption failure and recovers the accepted terminal after reconstruction', async () => {
+    const f = setup(false)
+    const failedAdoption = new DomainError('WORKFLOW_ARTIFACT_OUTPUTS_PENDING', 'pending', 409)
+    f.observeExact.mockImplementation(async () => { f.set(nativeCompleted(f.get())) })
+    f.reconcileArtifacts.mockRejectedValueOnce(failedAdoption)
+    const signal = new AbortController().signal
+    await expect(f.driver.observe(f.get(), signal)).rejects.toBe(failedAdoption)
+    await f.createDriver().observe(f.get(), signal)
+    expect(f.get().result?.outcome).toBe('succeeded')
+    expect(f.observeExact).toHaveBeenCalledOnce()
+    expect(f.store.settleNativeExecution).toHaveBeenCalledTimes(2)
+    expect(f.reconcileArtifacts).toHaveBeenCalledTimes(2)
+    expect(f.reconcileArtifacts).toHaveBeenLastCalledWith(f.get(), signal)
   })
   it('does not call native cleanup for a contradictory closure/session identity', async () => {
     const f = setup()

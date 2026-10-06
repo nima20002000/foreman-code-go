@@ -85,7 +85,7 @@ export async function queryForReadiness(
   }
 }
 
-async function cancelBackendQuery(options: pg.PoolConfig, processId: number): Promise<void> {
+export async function cancelBackendQuery(options: pg.PoolConfig, processId: number): Promise<void> {
   const client = new pg.Client(options)
   try {
     await client.connect()

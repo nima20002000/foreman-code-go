@@ -17,6 +17,7 @@ export async function configureNativeWorkflowMcp(input: {
   runtimeDirectory: string
   codexBinary: string
   openCodeBinary?: string
+  appServerName?: string
 }): Promise<() => Promise<void>> {
   ownedTestDatabaseUrl()
   ownedTestPath(input.projectDirectory)
@@ -54,7 +55,7 @@ export async function configureNativeWorkflowMcp(input: {
     if (sourceLauncher !== undefined) process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = sourceLauncher
     const codex = await new CodexMcpConnections(input.codexBinary, input.projectDirectory)
       .read(AbortSignal.timeout(30_000))
-    const codexName = appMcpServerName(codex.effective)
+    const codexName = appMcpServerName(codex.effective, input.appServerName)
     const entry = record(codex.effective[codexName])
     const reference = appLauncherTokenName('codex', entry) ?? entry.bearer_token_env_var
     const codexToken = typeof reference === 'string' && isSupportedAppMcpTokenName(reference)
@@ -76,12 +77,14 @@ export async function configureNativeWorkflowMcp(input: {
       '',
     ].join('\n'), { mode: 0o600 })
     if (openCode) {
-      const name = appMcpServerName(openCode.effective)
-      // Disposable storage can change launcher identity before this inspection.
-      // Keep the user entry's supported key when constructing the fixture entry;
-      // the resulting connection still requires native credential preflight.
-      const token = openCode.credentialReferences?.[name]
-        ?? appLauncherTokenName('opencode', record(openCode.user[name])) ?? APP_MCP_TOKEN
+      const name = appMcpServerName(openCode.effective, input.appServerName)
+      let token = openCode.credentialReferences?.[name]
+      if (!token) {
+        const source = record(openCode.user[name])
+        const sourceToken = appLauncherTokenName('opencode', source)
+        token = sourceToken && record(source.environment)[sourceToken] === `{env:${sourceToken}}`
+          ? sourceToken : APP_MCP_TOKEN
+      }
       openCodeConfigHome = await privateFixtureDirectory('native-cli-opencode-')
       const configurationDirectory = join(openCodeConfigHome, 'opencode')
       await mkdir(configurationDirectory, { mode: 0o700 })

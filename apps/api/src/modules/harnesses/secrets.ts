@@ -4,7 +4,7 @@ import { accessSync, constants } from 'node:fs'
 import { delimiter, dirname, resolve } from 'node:path'
 
 export function isDatabaseCredentialVariable(key: string): boolean {
-  return key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD'
+  return key === 'DATABASE_URL' || key.endsWith('_DATABASE_URL') || key === 'PGPASSWORD'
     || key === 'GRAPHQL_PRODUCTION_DB_PASSWORD' || key === 'FOREMAN_CODE_PRODUCTION_DB_PASSWORD'
 }
 

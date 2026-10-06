@@ -37,7 +37,9 @@ import { agent3Database, seedAgent3 } from './wave25Agent3.js'
  * real OpenCode adapter. No provider process, network listener or model runs. */
 export class Br1002OpenCodeServer extends FixtureServer {
   beforeReply?: () => Promise<void>
-  constructor(readonly executionId: string, entry: boolean, options: { permissionPatterns?: string[] } = {}) {
+  constructor(readonly executionId: string, entry: boolean, private readonly options: {
+    permissionPatterns?: string[]; workflowOutput?: (executionId: string) => Promise<string>
+  } = {}) {
     super()
     // Each execution owns a separate OpenCode process in production. Distinct
     // provider-issued session IDs also keep this deterministic fixture honest.
@@ -45,10 +47,14 @@ export class Br1002OpenCodeServer extends FixtureServer {
     this.mcpCredentialReferences['graphql'] = APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
     this.mcp = { 'graphql': { status: 'connected' } }
     this.nextSessionIds.push(`ses_${executionId}`)
-    this.onPrompt = (sessionID, body) => {
+    this.onPrompt = async (sessionID, body) => {
       const workflowCorrelation = `execution:${executionId}`
       if (body.messageID !== nativeMessageId(workflowCorrelation)) return // A review stays live until the test finishes it.
-      if (entry) { this.complete(workflowCorrelation, 'entry complete', sessionID); return }
+      if (entry) {
+        const output = await options.workflowOutput?.(executionId) ?? 'entry complete'
+        this.complete(workflowCorrelation, output, sessionID)
+        return
+      }
       const tool = this.assistant(String(body.messageID), 'Requesting permission', 'tool-calls', true, sessionID)
       const ask = { ...permission(`per_${executionId}`, sessionID),
         ...(options.permissionPatterns ? { patterns: options.permissionPatterns } : {}),
@@ -66,12 +72,13 @@ export class Br1002OpenCodeServer extends FixtureServer {
     if (pending && result.ok && init.method === 'POST') {
       // Actual reply endpoint accepted. The provider continues the SAME turn;
       // drop its terminal SSE notification, retaining only native history.
-      this.finishFromHistory(`execution:${this.executionId}`, String(pending.sessionID))
+      const output = await this.options.workflowOutput?.(this.executionId) ?? 'finished'
+      this.finishFromHistory(`execution:${this.executionId}`, String(pending.sessionID), output)
     }
     return result
   }
-  finishFromHistory(correlationId: string, sessionID: string) {
-    const message = this.assistant(nativeMessageId(correlationId), 'finished', 'stop', true, sessionID)
+  finishFromHistory(correlationId: string, sessionID: string, output = 'finished') {
+    const message = this.assistant(nativeMessageId(correlationId), output, 'stop', true, sessionID)
     this.statuses.delete(sessionID)
     return message
   }
@@ -83,12 +90,14 @@ export class Br1002OpenCodeServer extends FixtureServer {
  * Authenticated HTTP/MCP and a live provider are NOT qualified by this fixture. Reviewer decisions
  * below use a real issued SQL-scoped principal, not a fabricated binding. */
 export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = 'user',
-  options: { permissionPatterns?: string[] } = {}) {
+  options: { permissionPatterns?: string[]; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
+    workflowOutput?: (executionId: string) => Promise<string> } = {}) {
   const db = await agent3Database()
   let engine: LangGraphWorkflowEngine | undefined
+  const engines: LangGraphWorkflowEngine[] = []
   const adapters: OpenCodeNativeSessionManager[] = []
   try {
-    const f = makeCurrentWorkflowFixture(randomUUID())
+    const f = options.fixture ?? makeCurrentWorkflowFixture(randomUUID())
     const entry = f.version.definition.nodes.find((node) => node.id === f.version.entryNodeId)!
     const approval = handler === 'user' ? { handler } : { handler, designatedOrchestratorAgentId: entry.agentId }
     f.configurations = f.configurations.map((c) => AgentConfigurationVersionSchema.parse({ ...c,
@@ -126,51 +135,56 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
         workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId], runIds: [f.run.id],
       } }] })
     const servers = new Map<string, Br1002OpenCodeServer>()
-    const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
-      let server = servers.get(context.executionId)
-      if (!server) {
-        server = new Br1002OpenCodeServer(context.executionId, context.agentId === entry.agentId, options)
-        servers.set(context.executionId, server)
-      }
-      // FixtureServer retains external sessions/history across an adapter close.
-      // A fresh review may attach to its completed host; its own live-start and
-      // history settlement must then occur on that SAME manager/generation.
-      const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: context.agentId,
-        appMcpServerName: 'graphql', expectedAppMcpEndpoint: 'http://127.0.0.1:4100/mcp/app' })
-      adapters.push(native)
-      return native
-    })
     const saver = new ApprovalPostgresSaver(db.pool, undefined, { schema: db.schema })
     await saver.setup()
-    const workflows = new PostgresWorkflowRepository(db.pool)
-    const locations = new WorkspaceLocationService(db.pool, new PostgresCommandCoordinator(db.pool))
-    vi.spyOn(locations, 'revalidateSnapshot').mockResolvedValue(undefined)
-    const workflowCapture = createWorkflowNativeCaptureChannel()
-    const nativeCapture = { capture: workflowCapture.capture.capture.bind(workflowCapture.capture) }
-    const reviewCapture = createReviewNativeCaptureChannel()
-    const runs = new PostgresRunRepository(db.pool, workflows, locations,
-      { runtimeRoot: db.directory, ...createWorkflowRepositoryServices(workflowCapture.verify) })
-    const repository = new Wave25InteractionRepository(db.pool, new ReviewNativeProofServices(reviewCapture.verify)), budgets = new PostgresApprovalBudgetRepository(db.pool)
-    const credentials = new Wave25WorkerCredentialService(db.pool, access)
-    const launchCredentials = providerLaunchCredentials(runs, locations, managers, credentials, (manager) => {
-      if (!(manager instanceof OpenCodeNativeSessionManager)) throw new Error('Expected OpenCode native manager')
-      return openCodeMcpInspectorAdapter(manager)
-    }, db.pool)
-    const native = new ApprovalExecutionCoordinator(runs, repository, budgets, managers, 600000,
-      launchCredentials, continuationValidator(db.pool, locations),
-      new PostgresWorkflowClosureStore(db.pool), new PostgresRepeatReviewerBindings(db.pool),
-      nativeCapture, reviewCapture.capture)
-    engine = new LangGraphWorkflowEngine(runs, workflows, native, saver, db.directory,
-      locations, launchCredentials, repository, undefined, { workerParallelism: 2 })
-    const activeEngine = engine
-    const service = new InteractionService(repository, budgets, native, (i) => activeEngine.resumeInteraction(i))
-    registerApprovalCheckpointResume(service, engine)
+    function compose(checkpointer = saver) {
+      const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
+        let server = servers.get(context.executionId)
+        if (!server) {
+          server = new Br1002OpenCodeServer(context.executionId, context.agentId === entry.agentId, options)
+          servers.set(context.executionId, server)
+        }
+        // FixtureServer retains external sessions/history across an adapter close.
+        // A fresh review may attach to its completed host; its own live-start and
+        // history settlement must then occur on that SAME manager/generation.
+        const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: context.agentId,
+          appMcpServerName: 'graphql', expectedAppMcpEndpoint: 'http://127.0.0.1:4100/mcp/app' })
+        adapters.push(native)
+        return native
+      })
+      const workflows = new PostgresWorkflowRepository(db.pool)
+      const locations = new WorkspaceLocationService(db.pool, new PostgresCommandCoordinator(db.pool))
+      vi.spyOn(locations, 'revalidateSnapshot').mockResolvedValue(undefined)
+      const workflowCapture = createWorkflowNativeCaptureChannel()
+      const nativeCapture = { capture: workflowCapture.capture.capture.bind(workflowCapture.capture) }
+      const reviewCapture = createReviewNativeCaptureChannel()
+      const runs = new PostgresRunRepository(db.pool, workflows, locations,
+        { runtimeRoot: db.directory, ...createWorkflowRepositoryServices(workflowCapture.verify) })
+      const repository = new Wave25InteractionRepository(db.pool, new ReviewNativeProofServices(reviewCapture.verify)), budgets = new PostgresApprovalBudgetRepository(db.pool)
+      const credentials = new Wave25WorkerCredentialService(db.pool, access)
+      const launchCredentials = providerLaunchCredentials(runs, locations, managers, credentials, (manager) => {
+        if (!(manager instanceof OpenCodeNativeSessionManager)) throw new Error('Expected OpenCode native manager')
+        return openCodeMcpInspectorAdapter(manager)
+      }, db.pool)
+      const native = new ApprovalExecutionCoordinator(runs, repository, budgets, managers, 600000,
+        launchCredentials, continuationValidator(db.pool, locations),
+        new PostgresWorkflowClosureStore(db.pool), new PostgresRepeatReviewerBindings(db.pool),
+        nativeCapture, reviewCapture.capture)
+      const activeEngine = new LangGraphWorkflowEngine(runs, workflows, native, checkpointer, db.directory,
+        locations, launchCredentials, repository, undefined, { workerParallelism: 2 })
+      engines.push(activeEngine)
+      const service = new InteractionService(repository, budgets, native, (i) => activeEngine.resumeInteraction(i))
+      registerApprovalCheckpointResume(service, activeEngine)
+      return { engine: activeEngine, native, runs, repository, service, credentials,
+        nativeCapture, nativeVerification: workflowCapture.verify }
+    }
+    const runtime = compose()
+    engine = runtime.engine
     const config = { configurable: { thread_id: f.run.id } }
-    return { db, f, engine, native, runs, repository, service, saver, config, servers, credentials, access,
-      nativeCapture, nativeVerification: workflowCapture.verify,
+    return { db, f, ...runtime, compose, saver, config, servers, access,
       principal: user.principal, authorizationPrincipalId: authority.principal.id,
-      stop: () => stopProviderRun(runs, f, authority.principal.id),
-      async pending() { return repository.list({ runId: f.run.id, limit: 100 }) },
+      stop: () => stopProviderRun(runtime.runs, f, authority.principal.id),
+      async pending() { return runtime.repository.list({ runId: f.run.id, limit: 100 }) },
       async receipts() { return (await db.pool.query(`select entity_id,effect_digest,first_sequence::text
         from run_graph_effects where run_id=$1 and effect_kind='graph.resume' order by entity_id`, [f.run.id])).rows },
       counts() {
@@ -180,7 +194,7 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
           responses: calls.filter((c) => /^\/permission\/[^/]+\/reply/.test(c.path)).length }
       },
       async close() {
-        try { await activeEngine.shutdown() }
+        try { for (const item of engines.reverse()) await item.shutdown() }
         finally { try { for (const adapter of adapters) await adapter.dispose() } finally { await db.close() } }
       } }
   } catch (error) {

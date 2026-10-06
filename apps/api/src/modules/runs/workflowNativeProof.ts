@@ -404,6 +404,9 @@ export class WorkflowNativeProofServices {
       const source = await this.persistOriginalLocked(sql, run, evidence, owner)
       if (incoming.state === 'waiting' && capture.source.type === 'history') {
         const history = capture.source.history
+        if (run.approval.handler === 'native' && history.pendingInteractions.length) {
+          return fail('WORKFLOW_NATIVE_APPROVAL_UNHANDLED')
+        }
         if (run.approval.handler === 'orchestrator' && run.approval.designatedOrchestratorAgentId === incoming.agentId) {
           return fail('ORCHESTRATOR_BOOTSTRAP_APPROVAL_UNSUPPORTED')
         }

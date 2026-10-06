@@ -20,7 +20,8 @@ export interface RepeatNativeObservationStore extends Pick<RepeatRunRepository,
 }
 
 /** The launch implementation belongs to the existing owner repository, not here. */
-export interface RepeatNativeLaunchStore extends RepeatNativeObservationStore {
+export interface RepeatNativeLaunchStore extends RepeatNativeObservationStore,
+  Pick<RepeatRunRepository, 'readWorkExecutionContext'> {
   beginNativeEntry(executionId: string): Promise<WorkflowNativeEntryPermit>
   claimLaunch(executionId: string, paths: { workingDirectory: string; runtimeDirectory: string }): Promise<HarnessExecution | undefined>
   recoverSession(executionId: string): Promise<HarnessExecution>

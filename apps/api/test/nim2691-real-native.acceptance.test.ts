@@ -5,29 +5,50 @@ import { mkdir, realpath, stat } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-  ListInteractionsResponseSchema, WorkspaceSchema } from '@foreman-code/contracts'
-import { RunEventsPageSchema } from '@foreman-code/contracts/management'
-import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
-  RunActivitiesPageSchema, RunHandoffsReadSchema, SavedManagedWorkflowCommandResultSchema,
+import type pg from 'pg'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { AgentConfigurationVersionSchema, AgentSchema, HarnessExecutionSchema, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+  DEFAULT_CODEX_ADVANCED_CONFIGURATION, ListInteractionsResponseSchema, WorkspaceSchema,
+  type HarnessExecution } from '@foreman-code/contracts'
+import { ManagementActionSchema, ManagedWorkflowDefaultsSchema, WorkflowDefaultsUpdateResultSchema,
+  RunEventsPageSchema } from '@foreman-code/contracts/management'
+import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowCapabilitiesSchema, CurrentWorkflowReadResultSchema,
+  CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
+  RunActivitiesPageSchema, RunHandoffsReadSchema, SavedManagedWorkflowCommandResultSchema, ManualRunStartResultSchema,
   makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
 import { buildProductionApp } from '../src/production.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, isSupportedAppMcpTokenName,
+  isAppLauncher, appMcpServerName } from '../src/modules/harnesses/appMcpLauncher.js'
+import { record } from '../src/modules/harnesses/nativeMcpCommon.js'
+import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
+import { OpenCodeMcpConnections } from '../src/modules/harnesses/openCodeMcpConnections.js'
+import { inspectOpenCodeMcpConfiguration } from '../src/modules/harnesses/opencodeMcpConfiguration.js'
 import { DomainError } from '../src/modules/errors.js'
-import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
+import * as mcpResults from '../src/mcp/shared/results.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
+import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
 import { detectedClaudeProfilePath } from '../src/modules/harnesses/claudeSdk/productionMetadata.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { describeNativeFailure, type NativeFailureDetail } from './helpers/nativeFailureEvidence.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
-import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
 import { configureNativeAcceptanceMcp } from './helpers/nativeAcceptanceMcp.js'
+import { writeNativeAcceptanceEvidence } from './helpers/nativeAcceptanceEvidence.js'
+import { LocalNativeArtifactOutputSchema } from '../src/modules/runs/remote/nativeArtifactOutputs.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { nativeOpenCodeMcpToolName } from '../src/modules/harnesses/openCodePermissionPolicy.js'
+import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from '@foreman-code/contracts/worker-native-output'
+import { graphRpcValue } from './eng04-graph-composition-fixture.js'
 
 const enabled = process.env.NIM2691_REAL_NATIVE === '1' && process.env.NIM2691_POSTGRES === '1'
+const appServerName = process.env.NATIVE_ACCEPTANCE_APP_MCP_SERVER ?? APP_MCP_SERVER_NAME
+if (!isSupportedAppMcpServerName(appServerName)) throw new Error('Select a supported native application MCP connection.')
 
 async function taskPort(): Promise<number> {
   const server = createServer()
@@ -44,6 +65,25 @@ async function taskPort(): Promise<number> {
 describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
   it.each([
     { name: 'single Codex activation', form: 'single', providers: ['codex'], review: false, approval: false, capLoop: false, attemptFourth: false },
+    { name: 'local Codex artifact through authenticated MCP', form: 'single', providers: ['codex'],
+      review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true },
+    { name: 'local Codex artifact recovery before adoption', form: 'single', providers: ['codex'],
+      review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true, restartOnArtifacts: true },
+    { name: 'local OpenCode artifact with native build defaults', form: 'single', providers: ['opencode'],
+      review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true },
+    { name: 'local OpenCode artifact with explicit native permissions', form: 'single', providers: ['opencode'],
+      review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true,
+      artifactPolicy: 'allow', repeatOutputCommands: true },
+    { name: 'local OpenCode artifact with original native approvals', form: 'single', providers: ['opencode'],
+      review: false, approval: true, capLoop: false, attemptFourth: false, artifacts: true, artifactPolicy: 'ask', restartOnApproval: true },
+    { name: 'local OpenCode artifact with native automatic approvals', form: 'single', providers: ['opencode'],
+      review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true,
+      artifactPolicy: 'ask', nativeAuto: true, restartOnArtifacts: true },
+    { name: 'local OpenCode artifact recovery before adoption', form: 'single', providers: ['opencode'],
+      review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true,
+      artifactPolicy: 'allow', restartOnArtifacts: true },
+    { name: 'local OpenCode allowed creation with denied publication', form: 'single', providers: ['opencode'],
+      review: false, approval: false, capLoop: false, attemptFourth: false, artifacts: true, artifactPolicy: 'deny_publish' },
     { name: 'Codex to OpenCode handoff', form: 'sequential', providers: ['codex', 'opencode'], review: false, approval: false, capLoop: false, attemptFourth: false },
     { name: 'Codex conditional final route to OpenCode', form: 'conditional',
       providers: ['codex', 'opencode'], review: false, approval: false, capLoop: false, attemptFourth: false },
@@ -53,6 +93,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       providers: ['opencode', 'codex'], review: false, approval: true, capLoop: false, attemptFourth: false },
     { name: 'unequal Codex and OpenCode branches into one all-required join', form: 'parallel',
       providers: ['codex', 'opencode', 'codex', 'opencode'], review: false, approval: false, capLoop: false, attemptFourth: false },
+    { name: 'concurrent branches into one join approval with engine restart', form: 'parallel',
+      providers: ['codex', 'codex', 'codex', 'opencode'], review: false, approval: true,
+      approvalNode: 3, restartOnApproval: true, capLoop: false, attemptFourth: false },
     { name: 'third needs-changes review reroutes from C to D', form: 'parallel',
       providers: ['codex', 'opencode', 'codex', 'opencode'], review: false, approval: false, capLoop: true, attemptFourth: false },
     { name: 'attempted fourth C request is denied before D reroute', form: 'parallel',
@@ -64,18 +107,27 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       providers: ['codex', 'opencode', 'codex', 'opencode'], review: false, approval: false,
       capLoop: true, attemptFourth: false, finalAccepted: true },
   ] as const)('finishes $name with exact accepted results and cleanup', async (scenario) => {
+    const approvalNode = 'approvalNode' in scenario ? scenario.approvalNode : 0
+    const restartOnApproval = 'restartOnApproval' in scenario && scenario.restartOnApproval
     const noRoute = 'noRoute' in scenario && scenario.noRoute
     const finalAccepted = 'finalAccepted' in scenario && scenario.finalAccepted
+    const artifacts = 'artifacts' in scenario && scenario.artifacts
+    const restartOnArtifacts = 'restartOnArtifacts' in scenario && scenario.restartOnArtifacts
+    const artifactPolicy = 'artifactPolicy' in scenario ? scenario.artifactPolicy : undefined
+    const nativeAuto = 'nativeAuto' in scenario && scenario.nativeAuto
+    const repeatOutputCommands = 'repeatOutputCommands' in scenario && scenario.repeatOutputCommands
     await nim2691TaskDatabase(async (pool, directory, suppliedUrl) => {
       const projectPath = join(directory, 'workspaces')
       const runtimeRoot = join(directory, 'runtime')
       await mkdir(projectPath, { mode: 0o700 })
       await mkdir(runtimeRoot, { mode: 0o700 })
+      const binaries = harnessBinaries(process.env)
+      let openCodeServerName: string = appServerName
       const port = await taskPort()
       const config = { ...loadConfig({ ...process.env, HOST: '127.0.0.1', PORT: String(port),
         DATABASE_URL: suppliedUrl.replace(/^postgres:/, 'postgresql:'),
         HARNESS_WORKSPACE_ROOT: runtimeRoot, DATABASE_QUERY_TIMEOUT_MS: '10000' }),
-        workspaceStorageRoot: projectPath }
+        workspaceStorageRoot: projectPath, ...(artifacts ? { fileStorageRoot: join(directory, 'files') } : {}) }
       const database = createDatabase(config.database)
       const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
       let app: ReturnType<typeof buildProductionApp>['app'] | undefined
@@ -85,6 +137,26 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         .map(([, value]) => value!))
       const nativeFailures: Array<{ stage: string; executionId?: string; error: NativeFailureDetail;
         elapsedMs?: number; signalAborted?: boolean }> = []
+      const nativeHistories: unknown[] = []
+      const reconcile = OpenCodeNativeSessionManager.prototype.reconcile
+      const historyObserver = vi.spyOn(OpenCodeNativeSessionManager.prototype, 'reconcile')
+        .mockImplementation(async function (this: OpenCodeNativeSessionManager, session, correlationId, signal) {
+          const history = await reconcile.call(this, session, correlationId, signal)
+          if (history.terminalTurn && nativeHistories.length < 8) {
+            nativeHistories.push(nativePersistenceRedactor([...secrets]).value({
+              nativeSessionId: session.nativeSessionId, correlationId,
+              ...history, events: history.events.slice(-64),
+            }))
+          }
+          return history
+        })
+      const toolFailure = mcpResults.toolFailure
+      const mcpFailureObserver = vi.spyOn(mcpResults, 'toolFailure').mockImplementation((error, message) => {
+        if (nativeFailures.length < 16 && (!(error instanceof DomainError) || error.status >= 500)) {
+          nativeFailures.push({ stage: 'mcp_tool', error: describeNativeFailure(error, [...secrets]) })
+        }
+        return toolFailure(error, message)
+      })
       const cancellations: Array<{ nativeSessionId: string; caller: string[]; reason?: NativeFailureDetail }> = []
       const inspectMcp = CodexAppServerSessionManager.prototype.inspectMcpConfiguration
       const inspectionObserver = vi.spyOn(CodexAppServerSessionManager.prototype, 'inspectMcpConfiguration')
@@ -133,9 +205,51 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             throw error
           }
         })
-      try {
+      const validateInteraction = ApprovalExecutionCoordinator.prototype.validateInteraction
+      const validationObserver = vi.spyOn(ApprovalExecutionCoordinator.prototype, 'validateInteraction')
+        .mockImplementation(async function (this: ApprovalExecutionCoordinator, interaction, signal) {
+          try { return await validateInteraction.call(this, interaction, signal) }
+          catch (error) {
+            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'validate_interaction',
+              executionId: interaction.executionId, error: describeNativeFailure(error, [...secrets]) })
+            throw error
+          }
+        })
+      const attachInteraction = ApprovalExecutionCoordinator.prototype.attachInteraction
+      const attachmentObserver = vi.spyOn(ApprovalExecutionCoordinator.prototype, 'attachInteraction')
+        .mockImplementation(async function (this: ApprovalExecutionCoordinator, interaction, signal) {
+          try { return await attachInteraction.call(this, interaction, signal) }
+          catch (error) {
+            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'attach_interaction',
+              executionId: interaction.executionId, error: describeNativeFailure(error, [...secrets]) })
+            throw error
+          }
+        })
+      let production: ReturnType<typeof buildProductionApp> | undefined
+      const mcpClients: Client[] = []
+      let artifactBoundary: pg.PoolClient | undefined
+      let failure: { error: unknown } | undefined
+      let cleanupRun: { workspaceId: string; id: string } | undefined
+      const verify = async () => {
         await database.migrate()
         await checkpoints.setup()
+        const usesOpenCode = scenario.providers.some(provider => provider === 'opencode')
+        await configureNativeAcceptanceMcp(database.pool, runtimeRoot, {
+          codex: config.harnesses.codexBinary, opencode: config.harnesses.openCodeBinary,
+        }, `http://127.0.0.1:${port}/mcp`, scenario.providers)
+        if (usesOpenCode) {
+          const connections = await new OpenCodeMcpConnections(binaries.openCodeBinary, projectPath)
+            .read(AbortSignal.timeout(30_000))
+          openCodeServerName = appMcpServerName(connections.effective, appServerName)
+          expect(isAppLauncher('opencode', record(connections.effective[openCodeServerName]))).toBe(true)
+          const native = await inspectOpenCodeMcpConfiguration({ binary: binaries.openCodeBinary,
+            workingDirectory: projectPath, serverName: openCodeServerName, exactServerName: true,
+            signal: AbortSignal.timeout(30_000) })
+          expect(native?.name).toBe(openCodeServerName)
+          expect(native?.automaticEndpoint).toBe(true)
+          expect(native?.enabled).toBe(true)
+          expect(isSupportedAppMcpTokenName(native?.credentialEnvironmentVariable)).toBe(true)
+        }
         const settings = new PostgresSettingsRepository(pool)
         const defaults = await settings.getHarnessDefaults()
         await settings.saveHarnessDefaults({ ...defaults, claude: {
@@ -143,30 +257,40 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           configDirectory: detectedClaudeProfilePath(), permissionMode: 'default', sandbox: 'read-only',
           tools: [], permissionRules: [], instructions: '', mcpServers: {},
         } })
-        await configureNativeAcceptanceMcp(database.pool, runtimeRoot, {
-          codex: config.harnesses.codexBinary,
-          opencode: config.harnesses.openCodeBinary,
-        }, `http://127.0.0.1:${port}/mcp`, scenario.providers)
-        const production = buildProductionApp(config, database, checkpoints, false)
-        const startupErrors: Array<{ code: string; detail?: string }> = []
-        const start = production.engine.start.bind(production.engine)
-        production.engine.start = async (runId) => {
-          try { return await start(runId) }
-          catch (error) {
-            if (nativeFailures.length < 16) nativeFailures.push({ stage: 'start_run',
-              error: describeNativeFailure(error, [...secrets]) })
-            let code = error instanceof Error ? error.name : 'unknown'
-            if (error instanceof DomainError) code = error.code
-            else if (error instanceof HarnessExecutionError) code = error.result.error?.code ?? error.name
-            const diagnostic: (typeof startupErrors)[number] = { code }
-            if (error instanceof DomainError && error.code === 'APP_MCP_PREFLIGHT_FAILED') {
-              diagnostic.detail = nativePersistenceRedactor([...secrets]).text(error.message)
-            }
-            startupErrors.push(diagnostic)
-            throw error
+        production = buildProductionApp(config, database, checkpoints, false)
+        const startupErrors: Array<{ code: string; message: string; cause: string | null;
+          inspectionCodes: string[]; probe: unknown }> = []
+        const recordFailure = (error: unknown) => {
+          const redact = nativePersistenceRedactor([...secrets])
+          if (nativeFailures.length < 16) nativeFailures.push({ stage: 'engine',
+            error: describeNativeFailure(error, [...secrets]) })
+          const code = error && typeof error === 'object' && 'code' in error
+              ? String(error.code) : error instanceof Error ? error.name : 'unknown'
+          startupErrors.push({ code: redact.text(code),
+            message: redact.text(error instanceof Error ? error.message : 'Unknown engine failure').slice(0, 2048),
+            cause: error instanceof Error && error.cause instanceof Error
+              ? redact.text(error.cause.message).slice(0, 2048) : null,
+            probe: error instanceof DomainError && error.code === 'WORKER_NATIVE_OUTPUT_PROTECTION_FAILED'
+              ? redact.value(error.details ?? null) : null,
+            inspectionCodes: error instanceof DomainError && Array.isArray(error.details?.inspectionCodes)
+              ? error.details.inspectionCodes.filter((value): value is string =>
+                typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/u.test(value)) : [] })
+        }
+        const observeEngine = (runtime: ReturnType<typeof buildProductionApp>) => {
+          const start = runtime.engine.start.bind(runtime.engine)
+          runtime.engine.start = async (runId) => {
+            try { return await start(runId) }
+            catch (error) { recordFailure(error); throw error }
+          }
+          const resume = runtime.engine.resumeInteraction.bind(runtime.engine)
+          runtime.engine.resumeInteraction = async (interaction, claim) => {
+            try { return await resume(interaction, claim) }
+            catch (error) { recordFailure(error); throw error }
           }
         }
+        observeEngine(production)
         app = production.app
+        if (artifacts) production.registerFileStorage()
         await production.initialize()
         expect((await settings.getHarnessDefaults()).claude?.model).toBe('claude-haiku-4-5-20251001')
         await app.listen({ host: config.host, port: config.port })
@@ -176,7 +300,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           harness: scenario.providers[index] === 'opencode'
             ? { harness: 'opencode', model: 'opencode-go/gpt-5.6-luna', variant: 'high',
               nativeAgent: 'build', thinking: false, autoApprove: false,
-              ...(scenario.approval && index === 0 ? { advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+              ...(scenario.approval && index === approvalNode ? { advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
                 permissionRules: [{ permission: 'shell', pattern: 'pwd', effect: 'ask' }] } } : {}) }
             : { harness: 'codex', model: process.env.NIM2691_CODEX_MODEL ?? process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
               reasoningEffort: process.env.NIM2691_CODEX_REASONING_EFFORT ?? 'medium',
@@ -185,12 +309,62 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             ? finalAccepted && index === 1
               ? 'You are requester B. On work_request and needs-changes work_return, always output a new routing.kind request with outcome review_c. Never output routing.kind return. Follow the node initial prompt and the Foreman Code work-handoff output contract. Do not use tools.'
               : 'Follow the node initial prompt and the Foreman Code work-handoff output contract. Do not use tools.'
-            : index === 0
-            ? scenario.approval
+            : index === 0 || scenario.approval && index === approvalNode
+            ? scenario.approval && index === approvalNode
               ? 'Use exactly one read-only shell command: pwd. Wait for the authorized response. Then follow the Foreman Code work-handoff output contract.'
               : 'Follow the Foreman Code work-handoff output contract. Do not use tools.'
             : 'Summarize only the received work. Follow the Foreman Code work-handoff output contract.' },
         }))
+        if (artifacts) {
+          const original = configurations[0]!
+          let harness = original.harness
+          if (harness.harness === 'codex') harness = { ...harness, sandbox: 'workspace-write',
+            advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, workspaceWrite: { networkAccess: false,
+              excludeTmpdirEnvVar: true, excludeSlashTmp: true } } }
+          if (harness.harness === 'opencode') {
+            let permissionRules = DEFAULT_OPENCODE_ADVANCED_CONFIGURATION.permissionRules
+            const effect = artifactPolicy === 'deny_publish' ? 'allow' : artifactPolicy
+            if (effect) permissionRules = [{ permission: '*', pattern: '*', effect: 'deny' },
+              ...Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES).map(toolName => ({
+                permission: nativeOpenCodeMcpToolName(toolName, openCodeServerName), pattern: '*', effect,
+              }))]
+            if (artifactPolicy === 'deny_publish') permissionRules.push({
+              permission: nativeOpenCodeMcpToolName(WORKER_NATIVE_OUTPUT_TOOL_NAMES.publish, openCodeServerName),
+              pattern: '*', effect: 'deny',
+            })
+            harness = { ...harness, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules } }
+            if (nativeAuto) harness = { ...harness, autoApprove: true,
+              advanced: { ...harness.advanced!, permissionHandling: 'native_auto' } }
+          }
+          configurations[0] = AgentConfigurationVersionSchema.parse({ ...original,
+            harness,
+            prompt: { system: 'Produce the requested report using only the four declared tools whose names end in files_native_output_create, files_native_output_append, files_native_output_seal, and files_native_output_publish. Do not write files with shell tools. Follow the Foreman Code artifact and work-handoff result contracts.' },
+          })
+        }
+        if (usesOpenCode) {
+          const registry = new NativeProcessRegistry(join(runtimeRoot, 'native-process-registry'))
+          const factories = new NativeHarnessFactories({ ...binaries,
+            auxiliaryRecovery: role => registry.scope(`workflow-qualification:${role}:${randomUUID()}`),
+            admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
+            abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
+            closeRecovery: async recovery => {
+              if (!await registry.closeOwner(recovery.owner)) throw new Error('Native provider inspection closure is unconfirmed.')
+            },
+          })
+          try {
+            const qualified = new Set<string>()
+            for (const configuration of configurations) {
+              if (configuration.harness.harness !== 'opencode') continue
+              const key = JSON.stringify(configuration.harness)
+              if (qualified.has(key)) continue
+              await factories.qualifyConfiguration(configuration.harness, projectPath, AbortSignal.timeout(30_000))
+              qualified.add(key)
+            }
+          } finally {
+            factories.stopAuxiliaries()
+            await factories.disposeAuxiliaries()
+          }
+        }
         const workspace = WorkspaceSchema.parse({ id: fixture.scope.workspaceId, name: 'NIM-2691 native qualification' })
         const canonicalPath = await realpath(projectPath), details = await stat(projectPath)
         await pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)
@@ -214,12 +388,55 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           await pool.query('update agents set current_configuration_version_id=$2 where id=$1',
             [agent.id, configuration.id])
         }
+        const access = new PostgresAccessService(pool)
+        const writer = await access.issue({ name: 'NIM-2691 native test owner', audience: 'operator',
+          expiresAt: new Date(Date.now() + 10 * 60_000), grants: [
+            { actions: ['capabilities:read'], scope: {} },
+            { actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'),
+              scope: { workspaceIds: [workspace.id] } },
+          ] })
         const headers = { host: 'localhost' }
+        const connect = async (token: string) => {
+          const client = new Client({ name: 'local-artifact-acceptance', version: '1.0.0' })
+          mcpClients.push(client)
+          await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`),
+            { authProvider: { token: async () => token } }))
+          return client
+        }
+        if (nativeAuto) {
+          const reader = await access.issue({ name: 'Native defaults reader', audience: 'operator',
+            expiresAt: new Date(Date.now() + 10 * 60_000),
+            grants: [{ actions: ['settings:read'], scope: {} }] })
+          const editor = await access.issue({ name: 'Native defaults editor', audience: 'operator',
+            expiresAt: new Date(Date.now() + 10 * 60_000),
+            grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }] })
+          const readonly = await connect(reader.token)
+          const editing = await connect(editor.token)
+          const original = ManagedWorkflowDefaultsSchema.parse((await readonly.callTool({
+            name: 'workflow_defaults_get', arguments: {},
+          })).structuredContent)
+          const update = { commandId: randomUUID(), expectedRevision: original.revision,
+            value: { approvalHandler: 'native' } }
+          expect((await readonly.listTools()).tools.map(tool => tool.name)).not.toContain('workflow_defaults_update')
+          await expect(readonly.callTool({ name: 'workflow_defaults_update', arguments: update }))
+            .rejects.toMatchObject({ code: -32602 })
+          expect(ManagedWorkflowDefaultsSchema.parse((await readonly.callTool({
+            name: 'workflow_defaults_get', arguments: {},
+          })).structuredContent)).toEqual(original)
+          const changed = WorkflowDefaultsUpdateResultSchema.parse((await editing.callTool({
+            name: 'workflow_defaults_update', arguments: update,
+          })).structuredContent)
+          expect(ManagedWorkflowDefaultsSchema.parse((await readonly.callTool({
+            name: 'workflow_defaults_get', arguments: {},
+          })).structuredContent)).toEqual(changed.value)
+          expect(changed.value.value.approvalHandler).toBe('native')
+        }
         const created = await app.inject({ method: 'POST',
           url: `/api/management/workspaces/${workspace.id}/workflows`, headers,
           payload: { workspaceId: workspace.id, commandId: randomUUID(), name: 'NIM-2691 single native turn' } })
         expect(created.statusCode, created.body).toBe(201)
         const managed = SavedManagedWorkflowCommandResultSchema.parse(created.json()).value
+        if (nativeAuto) expect(managed.workflow.approval?.handler).toBe('native')
         const capEdges = scenario.capLoop ? [
           { id: `edge-${randomUUID()}`, kind: 'execution' as const,
             source: fixture.version.definition.nodes[0]!.id, target: fixture.version.definition.nodes[1]!.id },
@@ -232,6 +449,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             ...(!noRoute && !finalAccepted ? { maxWorkHandoffsPerRun: 1 } : {}) },
         ] : undefined
         const graph = { ...fixture.version.definition, id: managed.workflow.id,
+          ...(nativeAuto ? { approval: { handler: 'native' as const } } : {}),
           version: managed.workflow.version, createdAt: managed.workflow.createdAt,
           updatedAt: managed.workflow.updatedAt, name: managed.workflow.name,
           nodes: fixture.version.definition.nodes.map((node, index) => ({ ...node,
@@ -255,11 +473,11 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                   ? 'If input.work.kind is work_request or a work_return without a notice, submit routing.kind request with outcome review_c, preserving latestDeliverable and remainingFindings. On the third work_return with input.work.notice, there is no connected alternative from B: output routing {"kind":"finish"}, preserve input.work.returned.latestDeliverable and remainingFindings without claiming approval. Never request C after the notice.'
                   : 'If input.work.kind is work_request, submit routing.kind request with outcome review_c and latestDeliverable {"revision":0}. If input.work.kind is work_return and input.work.notice exists, submit a new request with outcome review_d, preserving returned.latestDeliverable and returned.remainingFindings. Otherwise submit a new request with outcome review_c, preserving returned.latestDeliverable and returned.remainingFindings. Never finish before D returns.',
                 finalAccepted
-                  ? 'Return to the exact input.work.request.requestId. If its acceptedSourceResult.output.data.latestDeliverable.revision is less than 2, use routing.outcome needs_changes, add one to the revision and include one finding. At revision 2, return routing.outcome accepted, preserve the deliverable and set remainingFindings []. Never create a fourth review.'
-                  : 'Return to the exact input.work.request.requestId with routing.kind return and outcome needs_changes. Set latestDeliverable.revision to the prior latestDeliverable.revision plus one. Include one remaining finding. Never accept.',
+                  ? 'Return to input.work.request.requestId, copying every character verbatim. Read the prior revision from input.work.acceptedSourceResult.output.data.latestDeliverable.revision. If that prior revision is less than 2, use routing.outcome needs_changes, add one to the revision and include one finding. At prior revision 2, return routing.outcome accepted, preserve the deliverable and set remainingFindings []. Never create a fourth review.'
+                  : 'Return to input.work.request.requestId, copying every character verbatim without shortening, repeating or reconstructing it. Use routing.kind return and outcome needs_changes. Set latestDeliverable.revision to input.work.acceptedSourceResult.output.data.latestDeliverable.revision plus one. Include one remaining finding. Never accept.',
                 'Return to the exact input.work.request.requestId with routing.kind return and outcome accepted. Preserve the latest deliverable and set remainingFindings to [].',
               ][index]
-              : scenario.approval && index === 0
+              : scenario.approval && index === approvalNode
               ? 'First call the shell tool with exactly pwd. After its approval and result, return a short greeting in latestDeliverable and finish.'
               : scenario.review
               ? index === 0
@@ -269,33 +487,124 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                 ? 'Return a short greeting in latestDeliverable, use routing.kind finish, and select routing.outcome go.'
               : index === 0
                 ? 'Return a short greeting as latestDeliverable and finish.'
-                : 'Summarize only the received work in latestDeliverable and finish.' })),
+                : 'Summarize only the received work in latestDeliverable. Your routing must be exactly {"kind":"finish"}, with no outcome or requestId. Do not copy the predecessor routing.' })),
           edges: capEdges ?? fixture.version.definition.edges.map((edge) => ({ ...edge, maxWorkHandoffsPerRun: 3 })),
-          handoffs: { contractVersion: 1 }, executionPolicy: { maxParallelism: 1,
+          handoffs: { contractVersion: 1 }, executionPolicy: { maxParallelism: scenario.form === 'parallel' && !scenario.capLoop ? 2 : 1,
             maxNodeExecutions: scenario.capLoop ? 12 : configurations.length } }
+        if (artifacts) {
+          const node = graph.nodes[0]!
+          node.artifactOutputs = { version: 1, outputKeys: ['report'] }
+          node.initialPrompt = 'Produce one report.md text/markdown artifact containing exactly LOCAL_ARTIFACT_REPORT\\n. Create it with files_native_output_create, append base64 TE9DQUxfQVJUSUZBQ1RfUkVQT1JUCg== at offset 0, seal, and publish. Use distinct command IDs. Return routing.kind finish, data.latestDeliverable "local report", data.remainingFindings [], and the report output key with the publication commandId in artifactOutputs. Do not invent a publication or use other tools.'
+          if (artifactPolicy === 'deny_publish') node.initialPrompt = 'This is a permission diagnostic. Call the allowed native output create tool exactly once to create report.md text/markdown with a unique commandId. Publishing is disabled by the saved native policy; do not try to bypass it with another tool. After create succeeds, finish with routing.kind finish, latestDeliverable "created without publication", remainingFindings [], and artifactOutputs {"version":1,"outputs":[]}. The missing report is intentional and must cause backend artifact validation to fail.'
+          if (repeatOutputCommands) node.initialPrompt += ' For each of the four operations, call its native tool twice with identical arguments and the SAME commandId before moving to the next operation. A retry must preserve the artifactId and publication file/revision IDs. Use the original publish commandId in the final result.'
+        }
         const saveInput = CurrentWorkflowSaveInputSchema.parse({ workspaceId: workspace.id,
           workflowId: managed.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
           expectedRevision: managed.revision, expectedWorkflowVersionId: null,
           expectedAgentConfigurationVersionIds: Object.fromEntries(configurations.map((configuration) => [configuration.agentId, configuration.id])),
           expectedLocationRevision: 1, graph })
-        const savedResponse = await app.inject({ method: 'PUT', headers,
-          url: `/api/management/workspaces/${workspace.id}/workflows/${managed.workflow.id}/definition`,
-          payload: saveInput })
-        expect(savedResponse.statusCode, savedResponse.body).toBe(200)
-        const saved = CurrentWorkflowSaveResultSchema.parse(savedResponse.json())
-        const started = await app.inject({ method: 'POST', headers,
-          url: `/api/management/workspaces/${workspace.id}/workflows/${managed.workflow.id}/runs`,
-          payload: { workspaceId: workspace.id, workflowId: managed.workflow.id,
+        let saved: ReturnType<typeof CurrentWorkflowSaveResultSchema.parse>
+        if (nativeAuto) {
+          const reader = await access.issue({ name: 'Native approval readback caller', audience: 'operator',
+            expiresAt: new Date(Date.now() + 10 * 60_000), grants: [{ actions: ['workflows:read', 'graph:read'],
+              scope: { workspaceIds: [workspace.id] } }] })
+          const readonly = await connect(reader.token)
+          expect((await readonly.listTools()).tools.map(tool => tool.name)).not.toContain(CURRENT_WORKFLOW_TOOLS.save)
+          const saveDenied = await readonly.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: saveInput })
+          expect(saveDenied.isError).toBe(true)
+          expect(graphRpcValue(saveDenied)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+          expect((await pool.query('select 1 from workflow_versions where workflow_id=$1', [managed.workflow.id])).rowCount).toBe(0)
+          const owner = await connect(writer.token)
+          const capabilities = await owner.callTool({ name: CURRENT_WORKFLOW_TOOLS.capabilities, arguments: {} })
+          expect(CurrentWorkflowCapabilitiesSchema.parse(capabilities.structuredContent).approvalHandlers).toContain('native')
+          const published = await owner.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: saveInput })
+          expect(published.isError, JSON.stringify(published)).not.toBe(true)
+          saved = CurrentWorkflowSaveResultSchema.parse(published.structuredContent)
+          const readback = await readonly.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved,
+            arguments: { workspaceId: workspace.id, workflowId: managed.workflow.id } })
+          expect(readback.isError, JSON.stringify(readback)).not.toBe(true)
+          expect(CurrentWorkflowReadResultSchema.parse(readback.structuredContent).version).toEqual(saved.value.version)
+          expect(saved.value.version.approval.handler).toBe('native')
+        } else {
+          const savedResponse = await app.inject({ method: 'PUT', headers,
+            url: `/api/management/workspaces/${workspace.id}/workflows/${managed.workflow.id}/definition`,
+            payload: saveInput })
+          expect(savedResponse.statusCode, savedResponse.body).toBe(200)
+          saved = CurrentWorkflowSaveResultSchema.parse(savedResponse.json())
+        }
+        const startInput = { workspaceId: workspace.id, workflowId: managed.workflow.id,
             workflowVersionId: saved.value.version.id, executionSemanticsVersion: 3,
             commandId: randomUUID(), expectedWorkflowRevision: saved.value.revision,
             expectedAgentConfigurationVersionIds: saved.value.version.agentConfigurationVersionIds,
-            expectedLocationRevision: 1, input: { task: 'Say hello once.' } } })
-        expect(started.statusCode, started.body).toBe(202)
-        const runId = started.json().run.id as string
+            expectedLocationRevision: 1, input: { task: artifacts ? 'Produce one original report artifact.' : 'Say hello once.' } }
+        let artifactCut: HarnessExecution | undefined
+        let runId: string
+        if (artifacts) {
+          const reader = await access.issue({ name: 'Artifact denied reader', audience: 'operator',
+            expiresAt: new Date(Date.now() + 10 * 60_000), grants: [{
+              actions: ['runs:read', 'workflows:read'], scope: { workspaceIds: [workspace.id] },
+            }] })
+          const denied = await connect(reader.token)
+          expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('run_start')
+          const startDenied = await denied.callTool({ name: 'run_start', arguments: startInput })
+          expect(startDenied.isError).toBe(true)
+          expect(graphRpcValue(startDenied)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+          const outputDenied = await denied.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
+            arguments: { commandId: randomUUID(), filename: 'forbidden.md', mediaType: 'text/markdown' } })
+          expect(outputDenied.isError).toBe(true)
+          expect(graphRpcValue(outputDenied)).toMatchObject({ error: { code: 'ROLE_NOT_ALLOWED' } })
+          expect((await pool.query('select 1 from local_workflow_native_outputs')).rowCount).toBe(0)
+          expect((await pool.query('select 1 from runs where workflow_id=$1', [managed.workflow.id])).rowCount).toBe(0)
+          const client = await connect(writer.token)
+          const launched = await client.callTool({ name: 'run_start', arguments: startInput })
+          expect(launched.isError, JSON.stringify(launched)).not.toBe(true)
+          runId = ManualRunStartResultSchema.parse(launched.structuredContent).run.id
+        } else {
+          const started = await app.inject({ method: 'POST', headers,
+            url: `/api/management/workspaces/${workspace.id}/workflows/${managed.workflow.id}/runs`, payload: startInput })
+          expect(started.statusCode, started.body).toBe(202)
+          runId = started.json().run.id as string
+        }
+        cleanupRun = { workspaceId: workspace.id, id: runId }
+        if (restartOnArtifacts) {
+          artifactBoundary = await pool.connect()
+          await artifactBoundary.query('begin')
+          // Publication uses the real file ledger. Only output binding's INSERT
+          // waits here, then rolls back under its production lock timeout.
+          await artifactBoundary.query('lock table management_command_receipts in share mode')
+        }
         observedRunId = runId
         const approved = new Set<string>()
+        let restarted = false
+        let approvalNativeLaunch: ReturnType<NativeProcessRegistry['snapshot']>['launches'][number] | undefined
         let state: string | undefined, outcome: string | undefined
         for (let attempt = 0; attempt < (scenario.capLoop ? 420 : 180); attempt++) {
+          if (restartOnArtifacts && !restarted) {
+            const terminal = (await pool.query<{ execution: unknown; closed: boolean; published: boolean }>(
+              `select e.record as execution,
+                exists(select 1 from execution_native_closures c where c.execution_id=e.id and c.closed_at is not null) as closed,
+                exists(select 1 from file_tool_publications p join files f on f.file_id=p.file_id
+                  where f.execution_id=e.id and f.state='ready') as published
+               from harness_executions e where e.run_id=$1 and e.record->>'state'='completed'`, [runId])).rows[0]
+            if (terminal?.closed && terminal.published) {
+              artifactCut = HarnessExecutionSchema.parse(terminal.execution)
+              expect((await pool.query(`select 1 from management_command_receipts
+                where operation='remote.native-artifact.output' and result->'producer'->>'runId'=$1`,
+              [runId])).rowCount).toBe(0)
+              await production.shutdown()
+              await artifactBoundary!.query('rollback')
+              artifactBoundary!.release()
+              artifactBoundary = undefined
+              production = buildProductionApp(config, database, checkpoints, false)
+              observeEngine(production)
+              production.registerFileStorage()
+              app = production.app
+              await production.initialize()
+              await app.listen({ host: config.host, port: config.port })
+              await production.reconcile((error) => { throw error })
+              restarted = true
+            }
+          }
           if (scenario.approval) {
             const pendingResponse: { statusCode: number; body: string; json(): unknown } = await app.inject({ method: 'GET',
               url: `/api/user/interactions?workspaceId=${encodeURIComponent(workspace.id)}&workflowId=${encodeURIComponent(managed.workflow.id)}&runId=${encodeURIComponent(runId)}&status=pending&limit=20`,
@@ -303,11 +612,47 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             expect(pendingResponse.statusCode, pendingResponse.body).toBe(200)
             const pending: ReturnType<typeof ListInteractionsResponseSchema.parse>['items'] =
               ListInteractionsResponseSchema.parse(pendingResponse.json()).items
+            if (restartOnApproval && !restarted && pending.length) {
+              expect(pending).toHaveLength(1)
+              const current = (await pool.query<{ execution_state: string }>(
+                'select execution_state from runs where id=$1', [runId])).rows[0]
+              if (current?.execution_state !== 'waiting') {
+                await new Promise((resolve) => setTimeout(resolve, 50))
+                continue
+              }
+              const registry = new NativeProcessRegistry(join(runtimeRoot, 'native-process-registry'))
+              const ownedLaunches = registry.snapshot().launches.filter(launch =>
+                launch.owner === `execution:${pending[0]!.executionId}` && launch.lifecycle === 'active')
+              expect(ownedLaunches).toHaveLength(1)
+              approvalNativeLaunch = ownedLaunches[0]!
+              expect(approvalNativeLaunch.guardian).toBeDefined()
+              expect(approvalNativeLaunch.provider).toBeDefined()
+              await production.shutdown()
+              production = buildProductionApp(config, database, checkpoints, false)
+              observeEngine(production)
+              if (artifacts) production.registerFileStorage()
+              app = production.app
+              await production.initialize()
+              await app.listen({ host: config.host, port: config.port })
+              await production.reconcile((error) => { throw error })
+              const recoveredLaunches = registry.snapshot().launches.filter(launch =>
+                launch.owner === approvalNativeLaunch!.owner && launch.lifecycle === 'active')
+              expect(recoveredLaunches).toHaveLength(1)
+              expect(recoveredLaunches[0]).toMatchObject({ launchId: approvalNativeLaunch.launchId,
+                bootId: approvalNativeLaunch.bootId, guardian: approvalNativeLaunch.guardian,
+                provider: approvalNativeLaunch.provider })
+              restarted = true
+              continue
+            }
             for (const interaction of pending) {
               if (approved.has(interaction.id)) continue
               const request = interaction.request as { permission?: unknown; patterns?: unknown }
-              if (interaction.nativeRequestType !== 'permission.asked' || request.permission !== 'bash'
-                || !Array.isArray(request.patterns) || request.patterns.length !== 1 || request.patterns[0] !== 'pwd') {
+              let permitted = request.permission === 'bash'
+                && Array.isArray(request.patterns) && request.patterns.length === 1 && request.patterns[0] === 'pwd'
+              if (artifacts) permitted = Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES)
+                .some(toolName => request.permission === nativeOpenCodeMcpToolName(toolName, openCodeServerName))
+                && Array.isArray(request.patterns) && request.patterns.length === 1 && request.patterns[0] === '*'
+              if (interaction.nativeRequestType !== 'permission.asked' || !permitted) {
                 throw new Error('The native provider asked for a permission other than the exact read-only pwd command.')
               }
               const choice = interaction.responseOptions.find((option) => option.semantic === 'approve_once')
@@ -323,6 +668,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               approved.add(interaction.id)
             }
           }
+          // server.ts runs this recovery every five seconds alongside native observation.
+          if (attempt % 5 === 0) await production.reconcile(recordFailure)
           const row = (await pool.query<{ execution_state: string; record: { outcome?: string } }>(
             'select execution_state,record from runs where id=$1', [runId])).rows[0]
           state = row?.execution_state; outcome = row?.record.outcome
@@ -330,6 +677,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             && (await pool.query('select 1 from run_work_direction_waits where run_id=$1', [runId])).rowCount === 1) break
           await new Promise((resolve) => setTimeout(resolve, 1000))
         }
+        const redact = nativePersistenceRedactor([...secrets])
         const runError = (await pool.query<{ code: string | null }>(
           `select record #>> '{result,error,code}' as code from runs where id=$1`, [runId])).rows[0]
         const executions = (await pool.query<{ id: string; state: string; outcome: string | null;
@@ -338,32 +686,102 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             record #>> '{result,error,code}' as code,record #>> '{result,error,message}' as message
             from harness_executions where run_id=$1 order by id`, [runId])).rows
           .map(({ message, ...execution }) => ({ ...execution,
+            message: message === null ? null : redact.text(message).slice(0, 2048),
             modelAtCapacity: message === 'Selected model is at capacity. Please try a different model.',
           }))
         const activityKinds = (await pool.query<{ kind: string }>(
           'select kind from run_activity where run_id=$1 order by sequence', [runId])).rows.map((row) => row.kind)
+        const approvalProgress = (await pool.query<{ id: string; status: string; delivery: string | null;
+          resume: string | null; acknowledged: boolean | null }>(`select i.id,i.status,
+          i.record->>'deliveryState' as delivery,g.state as resume,
+          g.approval_native_ack_id is not null as acknowledged from durable_interactions i
+          left join interaction_graph_resumes g on g.interaction_id=i.id
+          where i.run_id=$1 order by i.id`, [runId])).rows
+        const invalidNativeResults = (await pool.query<{ execution_id: string; result: unknown }>(
+          `select p.execution_id,p.record#>'{original,history,terminalTurn,result}' as result
+            from workflow_native_proofs p join harness_executions e on e.id=p.execution_id
+            where p.run_id=$1 and e.record#>>'{result,error,code}'='WORK_RESULT_INVALID'
+              and p.record#>'{original,history,terminalTurn,result}' is not null
+            order by p.proof_id limit 5`, [runId])).rows.map(row => ({
+          executionId: row.execution_id, result: redact.text(JSON.stringify(row.result)).slice(0, 4096),
+        }))
         const publicEvents = await app.inject({ method: 'GET', headers,
           url: `/api/management/workspaces/${workspace.id}/runs/${runId}/events?limit=500` })
         expect(publicEvents.statusCode, publicEvents.body).toBe(200)
         const publicPage = RunEventsPageSchema.parse(publicEvents.json())
         if (outcome !== (noRoute ? 'pending' : 'succeeded')) {
-          const records = (await pool.query<{ record: unknown }>(
-            'select record from harness_executions where run_id=$1 order by id', [runId])).rows
-          const nativeEvents = (await pool.query<{ record: unknown }>(
-            `select e.record from harness_native_events e join harness_executions x on x.id=e.execution_id
-             where x.run_id=$1 order by e.sequence`, [runId])).rows
           await writeNativeAcceptanceEvidence(`handoff-failure-${randomUUID()}.json`,
-            nativePersistenceRedactor([]).value({ scenario: scenario.name, runId, state, outcome,
-              runError, records, nativeEvents, activityKinds, startupErrors }))
+            nativePersistenceRedactor([...secrets]).value({ scenario: scenario.name, runId, state, outcome,
+              runError, executions, activityKinds, startupErrors, nativeFailures, nativeHistories }))
         }
-        expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors }))
+        if (artifactPolicy === 'deny_publish') {
+          expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors }))
+            .toEqual({ state: 'completed', outcome: 'failed' })
+          const created = await pool.query<{ retired: boolean }>(`select retired_at is not null as retired
+            from local_workflow_native_outputs where execution_id in(select id from harness_executions where run_id=$1)`, [runId])
+          expect(created.rows).toEqual([{ retired: true }])
+          expect((await pool.query('select 1 from files where run_id=$1', [runId])).rowCount).toBe(0)
+          expect((await pool.query(`select 1 from management_command_receipts
+            where operation='remote.native-artifact.output' and result->'producer'->>'runId'=$1`, [runId])).rowCount).toBe(0)
+          expect((await pool.query(`select 1 from execution_native_closures c join harness_executions e on e.id=c.execution_id
+            where e.run_id=$1 and c.closed_at is not null`, [runId])).rowCount).toBe(1)
+          return
+        }
+        if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted'),
+          JSON.stringify({ state, outcome, runError, executions, startupErrors })).toBe(true)
+        expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors,
+          approvalProgress, invalidNativeResults }))
           .toEqual({ state: noRoute ? 'waiting' : 'completed', outcome: noRoute ? 'pending' : 'succeeded' })
-        if (scenario.capLoop) expect(publicPage.items.some((item) => item.kind === 'work_handoff_accepted')).toBe(true)
+        if (artifacts) {
+          if (restartOnArtifacts) expect(restarted).toBe(true)
+          if (artifactPolicy === 'ask' && !nativeAuto) expect(approved.size).toBe(4)
+          const records = (await pool.query<{ result: unknown }>(`select result from management_command_receipts
+            where operation='remote.native-artifact.output' and result->'producer'->>'runId'=$1`, [runId])).rows
+          expect(records).toHaveLength(1)
+          const output = LocalNativeArtifactOutputSchema.parse(records[0]!.result)
+          expect(output.outputKey).toBe('report')
+          expect((await pool.query('select 1 from file_tool_publications where file_id=$1',
+            [output.pins.fileId])).rowCount).toBe(1)
+          if (scenario.providers[0] === 'opencode') {
+            expect((await pool.query(`select 1 from local_workflow_native_output_chunks c
+              join local_workflow_native_outputs o on o.artifact_id=c.artifact_id where o.execution_id=$1`,
+            [output.producer.executionId])).rowCount).toBe(0)
+            expect((await pool.query('select 1 from local_workflow_native_output_commands where execution_id=$1',
+              [output.producer.executionId])).rowCount).toBe(0)
+          }
+          expect((await pool.query('select 1 from execution_dispatch_intents where run_id=$1', [runId])).rowCount).toBe(0)
+          if (artifactCut) {
+            expect(output.producer.executionId).toBe(artifactCut.id)
+            expect(output.nativeIdentity.nativeSessionId).toBe(artifactCut.nativeSessionId)
+            expect((await pool.query<{ record: unknown }>('select record from harness_executions where id=$1',
+              [artifactCut.id])).rows[0]!.record).toEqual(artifactCut)
+          }
+          const download = await app.inject({ method: 'GET', headers,
+            url: `/api/workspaces/${workspace.id}/agent-chat/conversations/${output.scope.chat.conversationId}/files/${output.pins.fileId}/revisions/${output.pins.revisionId}/content` })
+          expect(download.statusCode, download.body).toBe(200)
+          expect(download.body).toBe('LOCAL_ARTIFACT_REPORT\n')
+          const reader = new Client({ name: 'artifact-readback', version: '1.0.0' })
+          mcpClients.push(reader)
+          await reader.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`),
+            { authProvider: { token: async () => writer.token } }))
+          const readback = await reader.callTool({ name: 'run_get', arguments: { workspaceId: workspace.id, runId } })
+          expect(readback.isError, JSON.stringify(readback)).not.toBe(true)
+          expect(readback.structuredContent).toMatchObject({ run: { id: runId, outcome: 'succeeded' },
+            executions: [expect.objectContaining({ id: output.producer.executionId, state: 'completed' })] })
+        }
         if (noRoute) {
           expect(runError?.code).toBeNull()
           expect(activityKinds).toContain('work_needs_direction')
           expect(activityKinds).toContain('work_direction_wait')
           expect((await pool.query('select 1 from run_work_unresolved where run_id=$1',
+            [runId])).rowCount).toBe(1)
+        }
+        if (restartOnApproval) {
+          expect(restarted).toBe(true)
+          expect(approved.size).toBe(1)
+          expect((await pool.query('select id from harness_executions where run_id=$1 and workflow_node_id=$2',
+            [runId, fixture.version.definition.nodes[approvalNode]!.id])).rowCount).toBe(1)
+          expect((await pool.query('select activation_id from run_work_join_dispatches where run_id=$1',
             [runId])).rowCount).toBe(1)
         }
         if (scenario.approval) {
@@ -555,7 +973,10 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           from worker_credential_bindings b join management_principals p on p.id=b.principal_id
           where b.run_id=$1 and p.revoked_at is null`, [runId])).rows[0]
         expect(Number(liveCredentials?.count)).toBe(0)
-      } catch (error) {
+      }
+      try { await verify() }
+      catch (error) {
+        failure = { error }
         const directory = process.env.ENG03_A_EVIDENCE_DIR
         if (directory) {
           try {
@@ -569,28 +990,70 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               results: (await pool.query('select * from run_work_results where run_id=$1', [observedRunId])).rows,
             } : undefined
             const evidence = nativePersistenceRedactor([...secrets]).value({
-              scenario: scenario.name, runId: observedRunId, nativeFailures, cancellations, executions, handoffs,
+              scenario: scenario.name, runId: observedRunId, nativeFailures, nativeHistories, cancellations, executions, handoffs,
+              run: observedRunId ? (await pool.query('select record from runs where id=$1', [observedRunId])).rows : [],
+              runControl: observedRunId ? (await pool.query(
+                `select stop_requested_at is not null as stopped,
+                  exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup_pending
+                  from runs r where r.id=$1`, [observedRunId])).rows : [],
+              nativeInputsAndResults: observedRunId ? (await pool.query(
+                'select id,record from harness_executions where run_id=$1 order by id limit 16', [observedRunId])).rows : [],
+              deliveryAttempts: observedRunId ? (await pool.query(
+                `select a.interaction_id,a.state,a.error from interaction_delivery_attempts a
+                  join durable_interactions i on i.id=a.interaction_id where i.run_id=$1 limit 16`, [observedRunId])).rows : [],
               failure: describeNativeFailure(error, [...secrets]),
             })
             const filename = `native-workflow-failure-${randomUUID()}.json`
             await writeNativeAcceptanceEvidence(filename, evidence)
             console.info('Private native workflow failure evidence:', join(directory, filename))
           } catch (evidenceError) {
-            throw new AggregateError([error, evidenceError], 'Native failure evidence could not be retained.', {
-              cause: evidenceError,
-            })
+            failure = { error: new AggregateError([error, evidenceError],
+              'Native failure evidence could not be retained.', { cause: error }) }
           }
         }
-        throw error
-      } finally {
-        executionObserver.mockRestore()
-        inspectionObserver.mockRestore()
-        sessionObserver.mockRestore()
-        cancellationObserver.mockRestore()
-        await app?.close().catch(() => undefined)
-        await Promise.allSettled([checkpoints.close(), database.close()])
-        await removeFixtureDirectory(projectPath)
       }
+      executionObserver.mockRestore()
+      validationObserver.mockRestore()
+      attachmentObserver.mockRestore()
+      sessionObserver.mockRestore()
+      cancellationObserver.mockRestore()
+      mcpFailureObserver.mockRestore()
+      historyObserver.mockRestore()
+      const cleanupErrors: unknown[] = []
+      if (artifactBoundary) {
+        try { await artifactBoundary.query('rollback') }
+        catch (error) { cleanupErrors.push(error) }
+        finally { artifactBoundary.release() }
+      }
+      if (failure && cleanupRun && app) {
+        try {
+          const current = (await pool.query<{ execution_state: string }>(
+            'select execution_state from runs where id=$1', [cleanupRun.id])).rows[0]
+          if (current && current.execution_state !== 'completed') {
+            const stopped = await app.inject({ method: 'POST',
+              headers: { host: 'localhost' },
+              url: `/api/management/workspaces/${cleanupRun.workspaceId}/runs/${cleanupRun.id}/stop`,
+              payload: { workspaceId: cleanupRun.workspaceId, runId: cleanupRun.id, commandId: randomUUID() } })
+            if (stopped.statusCode !== 200) throw new Error(`Owned native cleanup Stop failed: ${stopped.body}`)
+          }
+        } catch (error) { cleanupErrors.push(error) }
+      }
+      const clients = await Promise.allSettled(mcpClients.map(client => client.close()))
+      inspectionObserver.mockRestore()
+      for (const result of clients) if (result.status === 'rejected') cleanupErrors.push(result.reason)
+      try { await production?.shutdown() }
+      catch (error) { cleanupErrors.push(error) }
+      try { await production?.drainShutdown() }
+      catch (error) { cleanupErrors.push(error) }
+      const resources = await Promise.allSettled([checkpoints.close(), database.close()])
+      for (const result of resources) if (result.status === 'rejected') cleanupErrors.push(result.reason)
+      if (cleanupErrors.length) {
+        if (failure) cleanupErrors.unshift(failure.error)
+        throw new AggregateError(cleanupErrors, 'Native workflow verification or cleanup failed.',
+          { cause: failure?.error ?? cleanupErrors[0] })
+      }
+      await removeFixtureDirectory(directory)
+      if (failure) throw failure.error
     })
   }, 600000)
 })

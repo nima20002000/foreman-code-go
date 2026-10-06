@@ -1,15 +1,18 @@
 import {
   McpDetectionSchema,
   ScopedMcpDetectionSchema,
+  GraphqlAgentToolSchema,
   type AgentHarness,
   type McpDetection,
   type McpCredentialArrangement,
   type ScopedMcpDetection,
 } from '@foreman-code/contracts'
 import type pg from 'pg'
+import type { ChildProcessEnvironment } from './port.js'
 
 import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
+import { HarnessExecutionError } from './errors.js'
 import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 
 export const MCP_INSPECTION_TIMEOUT_MS = 30_000
@@ -92,7 +95,7 @@ const details: Record<McpDetection['state'], string> = {
   status_unavailable: 'Native configuration is available; connection health has not been established.',
   check_failed: 'Native MCP inspection failed. Check provider configuration and command access.',
 }
-const appTools = new Set(['context_get', 'interaction_list', 'interaction_get', 'interaction_respond'])
+const appTools = new Set<string>(GraphqlAgentToolSchema.options)
 function toolFilter(values: readonly string[]): string[] {
   if (!Array.isArray(values)) throw new Error('Invalid native tool filter.')
   // Unknown tool names cannot grant access to the current App catalog. Do not
@@ -184,6 +187,11 @@ export class McpDetectionService {
       })
     } catch (error) {
       if (error instanceof DomainError && error.code === 'MCP_INSPECTION_CONTEXT_MISMATCH') throw error
+      let reportedCode: string | undefined
+      if (error instanceof DomainError) reportedCode = error.code
+      else if (error instanceof HarnessExecutionError) reportedCode = error.result.error?.code
+      const failureCode = reportedCode && /^[A-Z][A-Z0-9_]{0,95}$/u.test(reportedCode)
+        ? reportedCode : 'NATIVE_MCP_INSPECTION_FAILED'
       return ScopedMcpDetectionSchema.parse({
         detection: McpDetectionSchema.parse({
           harness: input.harness, serverName: this.serverName, state: 'check_failed',
@@ -191,7 +199,8 @@ export class McpDetectionService {
           credentialArrangement: { kind: 'unknown' },
           detail: signal.aborted ? 'Native MCP inspection was canceled or exceeded its deadline.' : details.check_failed,
         }),
-        runnerId: input.runnerId, workingDirectory: input.workingDirectory, providerVersion: 'unknown', nativeFilters: {},
+        runnerId: input.runnerId, workingDirectory: input.workingDirectory, providerVersion: 'unknown',
+        nativeFilters: { diagnostics: [failureCode] },
       })
     } finally {
       clearTimeout(timeout)
@@ -211,7 +220,8 @@ export class McpDetectionService {
     if (!['connected', 'status_unavailable', 'authentication_required'].includes(result.detection.state)) {
       throw new DomainError('APP_MCP_PREFLIGHT_FAILED', result.detection.state === 'not_detected'
         ? `Foreman Code MCP is not installed for ${input.harness === 'codex' ? 'Codex' : 'OpenCode'}. Add it in Harness Settings › Connections, then start again.`
-        : `Foreman Code MCP credential injection refused: ${result.detection.state}.`, 409)
+        : `Foreman Code MCP credential injection refused: ${result.detection.state}.`, 409,
+      { inspectionCodes: result.nativeFilters.diagnostics ?? [] })
     }
     input.signal?.throwIfAborted()
     return result
@@ -296,6 +306,8 @@ export interface PreparedExecutionCredential {
 export interface ExecutionCredentialProvider {
   /** New process only; never inject a replacement environment into a resident process. */
   prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential>
+  /** Verify the retained original environment without issuing another process credential. */
+  restore?(executionId: string, environment: ChildProcessEnvironment): Promise<IssuedWorkerCredential>
   /** Same-token server-side lease renewal. Providers without it must not rotate a busy process. */
   renew?(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string>
   revoke(credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<void>

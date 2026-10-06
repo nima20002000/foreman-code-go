@@ -1,3 +1,4 @@
+import { parseWorkHandoffArtifactResult } from '@foreman-code/contracts/wave25'
 import { isDeepStrictEqual as same } from 'node:util'
 import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { ArtifactAttemptSchema } from '@foreman-code/contracts/artifact-edges'
@@ -39,6 +40,11 @@ export function createWorkflowArtifactOutputsGate(mainId: string,
     if (!intent) return pending()
     if (intent.mainId !== mainId || intent.runId !== run.id || intent.nodeId !== node.id
       || intent.technicalAttempt !== execution.attempt || intent.inputDigest !== repeatDigest(execution.input)) return conflict()
+    const receiptRow = (await sql.query<{ receipt: unknown }>(
+      'select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])).rows[0]
+    if (!receiptRow) return pending()
+    const remote = RemoteOperationReceiptSchema.parse(receiptRow.receipt)
+    if (remote.terminal?.artifactValidationError) return conflict()
     const producer = ArtifactAttemptSchema.parse({ workspaceId: run.workspaceId, workflowId: run.workflowId,
       runId: run.id, nodeId: node.id, executionId: execution.id, attemptId: intent.attemptId, placementHash: intent.bindingHash })
     const rows = (await sql.query<{ record: WorkflowNativeProofRecord; source_digest: string }>(
@@ -62,13 +68,14 @@ export function createWorkflowArtifactOutputsGate(mainId: string,
     }
     let mappings
     try {
-      mappings = (node.choice ? parseWorkflowArtifactResult(execution.result, node.artifactOutputs, node.choice)
-        : parseWorkflowArtifactResult(execution.result, node.artifactOutputs)).artifactOutputs.outputs
+      if (version.definition.handoffs) {
+        mappings = parseWorkHandoffArtifactResult(execution.result, node.artifactOutputs).artifactOutputs.outputs
+      } else if (node.choice) {
+        mappings = parseWorkflowArtifactResult(execution.result, node.artifactOutputs, node.choice).artifactOutputs.outputs
+      } else {
+        mappings = parseWorkflowArtifactResult(execution.result, node.artifactOutputs).artifactOutputs.outputs
+      }
     } catch { return conflict() }
-    const receiptRow = (await sql.query<{ receipt: unknown }>(
-      'select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])).rows[0]
-    if (!receiptRow) return pending()
-    const remote = RemoteOperationReceiptSchema.parse(receiptRow.receipt)
     const native = remote.native
     if (!same(remote.intent, intent) || !same(remote.terminal?.result, execution.result)
       || !native?.turnId || native.sessionId !== execution.nativeSessionId) return conflict()

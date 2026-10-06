@@ -23,13 +23,24 @@ export const RemoteOwnerControlSchema = OwnerControlSchema.extend({
   if (value.action.kind === 'respond' && !value.native?.turnId) context.addIssue({ code: 'custom', message: 'Respond requires the exact native session and turn.' })
 })
 export type RemoteOwnerControl = z.infer<typeof RemoteOwnerControlSchema>
+export const WorkflowArtifactValidationFailureSchema = z.object({
+  code: z.literal('WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT'),
+  reason: z.enum(['invalid_result', 'missing_publication']),
+}).strict()
+export type WorkflowArtifactValidationFailure = z.infer<typeof WorkflowArtifactValidationFailureSchema>
 export const RemoteTerminalEvidenceSchema = z.object({
   kind: z.enum(['completed', 'cancelled', 'not_started', 'failed']),
   /** W11/provider recovery attestation, never PID absence or a missed heartbeat. */
   closureEvidenceDigest: PlacementDigestSchema,
   resultDigest: PlacementDigestSchema.optional(),
   result: z.lazy(() => ExecutionResultSchema).optional(), artifactDigests: z.array(PlacementDigestSchema).max(128).optional(),
-}).strict()
+  artifactValidationError: WorkflowArtifactValidationFailureSchema.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.artifactValidationError && (value.kind !== 'completed' || value.result?.outcome !== 'succeeded'
+    || (value.artifactDigests?.length ?? 0) !== 0)) {
+    context.addIssue({ code: 'custom', message: 'Artifact validation retains the original successful terminal without adopted digests.' })
+  }
+})
 export type RemoteTerminalEvidence = z.infer<typeof RemoteTerminalEvidenceSchema>
 export const RemoteInteractionTargetSchema = z.object({ interactionId: z.string().min(1), interactionRevision: z.string().regex(/^[1-9][0-9]*$/), nativeInteractionId: z.string().min(1), native: RemoteNativeIdentitySchema }).strict()
 export type RemoteInteractionTarget = z.infer<typeof RemoteInteractionTargetSchema>

@@ -34,7 +34,7 @@ vi.mock('../src/modules/harnesses/openCodeMcpConnections.js', () => ({
 const storageFixtures = [
   { name: 'graphql', token: 'GRAPHQL_MCP_TOKEN' },
   { name: 'foreman-code', token: 'FOREMAN_CODE_MCP_TOKEN' },
-].flatMap(identity => ['direct', 'isolated', 'relocated'].map(storage => ({ ...identity, storage })))
+].flatMap(identity => ['direct', 'isolated', 'copied', 'relocated'].map(storage => ({ ...identity, storage })))
 
 it.each(storageFixtures)('keeps the $token reference in $storage native storage', async (identity) => {
   const directory = await mkdtemp(join(tmpdir(), 'native-workflow-source-'))
@@ -68,11 +68,15 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
       process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'outer-storage-mcp')
     } else {
       delete process.env.FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY
+      if (identity.storage === 'copied') {
+        process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'copied-launcher')
+      }
     }
     if (identity.storage === 'relocated') {
       process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(directory, 'relocated-launcher')
     }
     const restoredLauncherDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
+
 
     restore = await configureNativeWorkflowMcp({ projectDirectory,
       runtimeDirectory: join(directory, 'runtime'), codexBinary: 'recorded', openCodeBinary: 'recorded' })

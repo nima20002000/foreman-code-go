@@ -337,7 +337,12 @@ for (const form of ['ordinary', 'repeat'] as const) {
       await t.assertNoNativeAcknowledgement(pending.id)
       t.faults.recoveryAvailable = true
       await t.recoverUntilSettled(); await assertInterrupted(t, pending.executionId!)
-      expect(await t.closureRows()).toEqual(detached)
+      const closures = await t.closureRows()
+      expect(closures.slice(0, detached.length)).toEqual(detached)
+      expect(closures).toHaveLength(detached.length + 1)
+      expect(closures.at(-1)).toMatchObject({ execution_id: pending.executionId,
+        expected_reference: { nativeSessionId: pending.nativeSessionId }, closed_at: null, detached_at: null })
+      expect((await t.recoveryRows())[0]?.generation).toBe(String(closures.at(-1)!.generation))
       expect(t.f.provider.counts).toMatchObject({ starts: 2, responses: 0, attaches: 0 })
     }, 90000)
   })
