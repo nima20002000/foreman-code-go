@@ -995,7 +995,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               results: (await pool.query('select * from run_work_results where run_id=$1', [observedRunId])).rows,
             } : undefined
             const evidence = nativePersistenceRedactor([...secrets]).value({
-              scenario: scenario.name, runId: observedRunId, nativeFailures, nativeHistories, cancellations, executions,
+              scenario: scenario.name, runId: observedRunId, nativeFailures, nativeHistories, cancellations, executions, handoffs,
               run: observedRunId ? (await pool.query('select record from runs where id=$1', [observedRunId])).rows : [],
               runControl: observedRunId ? (await pool.query(
                 `select stop_requested_at is not null as stopped,
@@ -1044,6 +1044,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         } catch (error) { cleanupErrors.push(error) }
       }
       const clients = await Promise.allSettled(mcpClients.map(client => client.close()))
+      inspectionObserver.mockRestore()
       for (const result of clients) if (result.status === 'rejected') cleanupErrors.push(result.reason)
       try { await production?.shutdown() }
       catch (error) { cleanupErrors.push(error) }
