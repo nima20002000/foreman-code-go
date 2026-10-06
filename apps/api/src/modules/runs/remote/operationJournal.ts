@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { DispatchIntentSchema, type DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { JobLogChunkSchema, type JobLogChunk } from '@foreman-code/contracts/jobs'
 import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
+import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema, RemoteOwnerReconciliationSchema,
   type RemoteOperationReceipt, type RemoteOperationStatus, type RemoteOwnerControl,
@@ -302,10 +303,13 @@ export class RemoteOperationJournal {
     const qualificationPending = this.data.qualificationReceipts.some(receipt =>
       receipt.phase !== 'closed' || !receipt.result || receipt.quotaClaims.length)
     const executionPending = this.data.receipts.some(receipt => receipt.phase !== 'confirmed_terminal'
-      || 'kind' in receipt && receipt.publication !== 'complete')
+      || 'kind' in receipt && receipt.publication !== 'complete'
+        && !(receipt.publication === 'failed' && this.data.jobOwners.some(owner =>
+          owner.operationId === receipt.intent.operationId && owner.sourceReclamation)))
     const nativePending = this.data.jobOwners.some(owner => owner.launches.some(launch => !launch.closed)
       || owner.container && owner.container.certificate?.lifecycle !== 'closed'
-      || owner.verification && !owner.verification.finalizedAt)
+        && !(owner.nonEntryConfirmed && jobContainerNonEntryObserved(owner))
+      || owner.verification && !owner.verification.finalizedAt && !owner.sourceReclamation)
     if (qualificationPending || executionPending || nativePending) {
       throw new Error('Installed runtime still has unfinished work.')
     }
@@ -785,6 +789,29 @@ export class RemoteOperationJournal {
         throw new Error('Verification finalization time changed.')
       }
       owner.verification.finalizedAt ??= finishedAt
+    })
+  }
+  jobSourceReclaimed(operationId: string, raw: SourcePreparationClosure) {
+    return this.change(data => {
+      const closure = SourcePreparationClosureSchema.parse(raw)
+      const receipt = this.jobReceipt(data, operationId), owner = this.jobOwner(data, operationId)
+      const execution = receipt.execution, target = execution.acceptedSpec.target
+      if (execution.schemaVersion !== 2 || receipt.phase !== 'confirmed_terminal'
+        || !receipt.terminal?.processStopped || !['complete', 'failed'].includes(receipt.publication)
+        || closure.quotaReclaimed !== true || closure.operationId !== operationId
+        || closure.executionId !== execution.id || closure.attemptId !== execution.attemptId
+        || closure.mainId !== target.mainId || closure.deviceId !== (target.hostRef.kind === 'device' ? target.hostRef.deviceId : null)
+        || closure.workerInstallationId !== (target.registration?.workerInstallationId ?? null)
+        || closure.keyRevision !== (target.registration?.keyRevision ?? null)
+        || closure.authorizationRevision !== (target.registration?.authorizationRevision ?? null)
+        || closure.materializationId !== execution.acceptedSpec.source.materializationId
+        || receipt.native && !owner.container
+        || owner.launches.some(launch => !launch.closed)
+        || owner.container && owner.container.certificate?.lifecycle !== 'closed'
+          && !(owner.nonEntryConfirmed && jobContainerNonEntryObserved(owner))) {
+        throw new Error('Original stopped Job and reclaimed quota closure required.')
+      }
+      owner.sourceReclamation ??= closure
     })
   }
   jobReserveProcess(operationId: string, input: { launchId: string; processOwner?: string; binary: string; argv: string[] }) {

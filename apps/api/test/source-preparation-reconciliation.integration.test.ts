@@ -478,6 +478,14 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     expect(readback.structuredContent).toEqual(value)
     const replay = await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })
     expect(replay.structuredContent).toMatchObject({ value, replayed: true })
+    const refreshed = await operator.callTool({ name: 'source_preparation_reconcile',
+      arguments: { ...command, commandId: randomUUID() } })
+    expect(refreshed.isError, JSON.stringify(refreshed)).not.toBe(true)
+    const refreshedValue = (refreshed.structuredContent as { value: typeof value }).value
+    expect(refreshedValue).toMatchObject({ reservationState: 'reclaimed', executionId: ticket.executionId })
+    expect(refreshedValue.closure).not.toEqual(value.closure)
+    expect((await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })).structuredContent)
+      .toMatchObject({ value, replayed: true })
     expect((await f.jobs.getExecution(f.principal, workspaceId, ticket.executionId)).acceptedSpec).toEqual(execution.acceptedSpec)
     const persisted = (await database.pool.query<{ owner: { identity: { expiresAt: string } }; status: string }>(
       'select owner,status from source_preparation_reconciliations where operation_id=$1', [ticket.operationId])).rows[0]!

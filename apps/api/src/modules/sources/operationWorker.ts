@@ -45,6 +45,7 @@ export interface SourceOperationWorkerOptions {
   /** Original protected installed Job journal. Missing evidence fails closed. */
   preparationNativeClosed?(operationId: string, owner: SourceOperationOwner): Promise<boolean>
   preparationTransfersClosed?(closure: SourcePreparationClosure, signal: AbortSignal): Promise<void>
+  preparationReconciled?(closure: SourcePreparationClosure): Promise<void>
   executionTransfersClosed?(record: SourceMaterializationRecord, signal: AbortSignal): Promise<void>
 }
 function attemptOf(record: NonNullable<SourceOperationOwner['record']>) {
@@ -142,7 +143,9 @@ export class SourceOperationWorkerService {
         const closure = await reconcileSourcePreparation(request.reconciliationId, owner,
           () => this.options.preparationNativeClosed!(owner.identity.operationId, owner), reauthorize, quotaPool, context.signal)
         await this.options.preparationTransfersClosed?.(closure, context.signal)
-        await reauthorize(); return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, closure })
+        await reauthorize()
+        await this.options.preparationReconciled?.(closure)
+        return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, closure })
       }
       if (request.operation === 'sources.prepare') {
         const materializer = new PrivateSourceMaterializer(reader, reauthorize, quotaPool)

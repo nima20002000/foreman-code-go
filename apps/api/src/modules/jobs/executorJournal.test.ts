@@ -69,6 +69,8 @@ describe('original Job native journal, no live isolation claim', () => {
     const status = await reopened.jobStatus(operationId)
     expect(status.status === 'known' && status.receipt.native).toBeUndefined()
     expect((await reopened.jobReserveEntry(operationId)).reserved).toBe(false)
+    await reopened.jobPublication(operationId, 'complete')
+    await expect(reopened.assertRuntimeQuiescent()).resolves.toBeUndefined()
   })
   it('requires the admitted entry before launcher/container reservations', async () => {
     const f = await fixture()

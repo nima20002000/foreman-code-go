@@ -534,13 +534,18 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
           : await materializationDirectory(root, { materializationId })
         try {
           const file = await open(anchored(directory, quota ? `released-binding-${materializationId}.json` : 'released-claim.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+            .catch(error => {
+              if (!quota || error.code !== 'ENOENT') throw error
+              return open(anchored(directory, `released-quota-${materializationId}.json`), constants.O_RDONLY | constants.O_NOFOLLOW)
+            })
           try {
             cleanupSignal.throwIfAborted()
             const stat = await file.stat()
             cleanupSignal.throwIfAborted()
             if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_CLAIM_INVALID', 'Original release evidence is invalid.')
-            const released = JSON.parse(await file.readFile({ encoding: 'utf8', signal: cleanupSignal })) as { materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }
-            if (released.materializationId !== materializationId || !equal(released.binding, binding) || !equal(released.attempt, owner.attempt))
+            const released = JSON.parse(await file.readFile({ encoding: 'utf8', signal: cleanupSignal })) as { materializationId: string; binding: RootBinding; attempt: MaterializationAttempt; quota?: SourceProjectQuotaSlot }
+            if (released.materializationId !== materializationId || !equal(released.binding, binding) || !equal(released.attempt, owner.attempt)
+              || quota && !equal(released.quota, quota))
               throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Original release evidence belongs to another attempt.')
           } finally { await file.close() }
         } finally { await directory.close() }

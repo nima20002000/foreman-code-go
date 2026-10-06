@@ -185,6 +185,15 @@ export async function createInstalledWorkerDomains(input: {
           && (await Promise.all(certificate.helpers.map(helper => helper.boundary
             ? proveOCIBoundaryEmpty(helper.boundary) : Promise.resolve(false)))).every(Boolean)
       },
+      preparationReconciled: async closure => {
+        if (!input.jobConfiguration) return
+        const retained = await jobJournal()
+        const status = await retained.jobStatus(closure.operationId)
+        if (status.status === 'known' && status.receipt.execution.schemaVersion === 2
+          && await retained.jobNativeOwner(closure.operationId)) {
+          await retained.jobSourceReclaimed(closure.operationId, closure)
+        }
+      },
       ...(rsync.kind === 'configured' ? {
         preparationTransfersClosed: (closure, signal) => rsync.backend.retirePreparation(closure, signal),
         executionTransfersClosed: (record, signal) => rsync.backend.retireMaterialization(record, signal),

@@ -243,8 +243,8 @@ export class PostgresSourcePreparationReconciliation {
           const closedJob = await admissionClosed(sql, state)
           if (closedJob) requireAuthorization(live, 'jobs:cancel', { workspaceId: state.workspaceId })
           await requireSourcePreparationHost(sql, state)
-          if (state.status === 'closed') { closure = SourcePreparationClosureSchema.parse(state.closure); return null }
-          if (state.owner) {
+          if (state.status === 'closed' && closedJob?.schemaVersion !== 2) { closure = SourcePreparationClosureSchema.parse(state.closure); return null }
+          if (state.owner && state.status !== 'closed') {
             const owner = SourceOperationOwnerSchema.parse(state.owner)
             if (owner.identity.ownerPrincipalId !== live.id || state.command_id !== input.commandId) throw new DomainError('SOURCE_RECONCILIATION_CONFLICT', 'Retry the original pending cleanup command and principal.', 409)
             return { reconciliationId: state.reconciliation_id!, owner }
@@ -257,7 +257,10 @@ export class PostgresSourcePreparationReconciliation {
             ...(state.kind === 'workflow' ? { preparationKind: 'workflow' as const,
               preparationNativeSession: state.nativeSession } : {}) }
           await sql.query(`insert into source_preparation_reconciliations(operation_id,reconciliation_id,workspace_id,principal_id,command_id,status,owner)
-            values($1,$2,$3,$4,$5,'reconciling',$6::jsonb)`, [input.operationId,reconciliationId,input.workspaceId,live.id,input.commandId,JSON.stringify(owner)])
+            values($1,$2,$3,$4,$5,'reconciling',$6::jsonb)
+            on conflict(operation_id) do update set reconciliation_id=excluded.reconciliation_id,
+              principal_id=excluded.principal_id,command_id=excluded.command_id,status='reconciling',owner=excluded.owner,closure=null`,
+          [input.operationId,reconciliationId,input.workspaceId,live.id,input.commandId,JSON.stringify(owner)])
           return { reconciliationId, owner }
         })
         if (pending) {

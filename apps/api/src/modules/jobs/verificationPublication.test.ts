@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { VerificationJobExecutionSchema, JobVerificationReportSchema } from '@foreman-code/contracts/job-verification'
 import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
 import { JobVerificationRepositoryContextSchema } from '@foreman-code/contracts/job-verification-runtime'
+import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { RemoteJobDispatchIntent, RemoteJobTerminalEvidence } from '@foreman-code/contracts/remote-job-execution'
 import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
@@ -13,6 +14,7 @@ import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { createVerificationPublication } from './verificationPublication.js'
 import { reserveVerificationReportSpace } from './executorOutputs.js'
+import { jobSupervisorIdentity } from './executor.js'
 import { jobLifecycleSignal } from './lifecycle.js'
 
 const directories: string[] = []
@@ -20,6 +22,49 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true })
 })
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
+
+it.each(['main', 'device'] as const)('permits runtime refresh after failed publication and verified quota reclamation on %s', async location => {
+  const f = await fixture(location)
+  try {
+    await f.journal.jobPublication(f.execution.operationId, 'failed')
+    await expect(f.journal.assertRuntimeQuiescent()).rejects.toThrow('unfinished work')
+    const execution = f.execution, target = execution.acceptedSpec.target
+    const name = jobSupervisorIdentity(execution), containerId = 'a'.repeat(64), bootId = bootIdentity()
+    await f.journal.jobContainerIntent(execution.operationId, name, execution.acceptedSpec.specDigest)
+    await f.journal.jobBindContainer(execution.operationId, name, containerId)
+    await f.journal.jobCertificate(execution.operationId, {
+      scope: { subject: { kind: 'job', executionId: execution.id, attemptId: execution.attemptId,
+        operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash },
+        leaseId: execution.operationId, owner: execution.owner, bootId,
+        observedDeviceId: target.hostRef.kind === 'device' ? target.hostRef.deviceId : null,
+        observedInstallationId: target.registration?.workerInstallationId ?? target.mainInstallationId },
+      containerId, process: { pid: 42, startTicks: '123', bootId },
+      boundary: { kind: 'cgroup-v2', path: `/sys/fs/cgroup/libpod-${containerId}.scope`, device: '1', inode: '2' },
+      helpers: [], lifecycle: 'closed',
+    })
+    const closure: SourcePreparationClosure = {
+      version: 1, reconciliationId: randomUUID(), operationId: execution.operationId,
+      executionId: execution.id, attemptId: execution.attemptId, rootId: randomUUID(), bindingRevision: 1,
+      materializationId: execution.acceptedSpec.source.materializationId!, mainId: target.mainId,
+      deviceId: target.hostRef.kind === 'device' ? target.hostRef.deviceId : null,
+      workerInstallationId: target.registration?.workerInstallationId ?? null,
+      keyRevision: target.registration?.keyRevision ?? null, authorizationRevision: target.registration?.authorizationRevision ?? null,
+      filesystem: { device: '1', inode: '2', mountId: '3' }, admissionClosed: true, childrenClosed: true,
+      claimReleased: true, evidencePreserved: true, quotaReclaimed: true, observedAt: new Date().toISOString(),
+    }
+    await expect(f.journal.jobSourceReclaimed(execution.operationId, { ...closure, attemptId: randomUUID() })).rejects.toThrow()
+    await expect(f.journal.jobSourceReclaimed(execution.operationId, { ...closure, quotaReclaimed: undefined })).rejects.toThrow()
+    await f.journal.jobSourceReclaimed(execution.operationId, closure)
+    await expect(f.journal.assertRuntimeQuiescent()).resolves.toBeUndefined()
+    expect((await f.journal.jobNativeOwner(execution.operationId))?.verification?.finalizedAt).toBeNull()
+    expect(await f.journal.jobStatus(execution.operationId)).toMatchObject({ status: 'known', receipt: { publication: 'failed' } })
+    await f.journal.close()
+    f.journal = await RemoteOperationJournal.open(f.journalPath)
+    await expect(f.journal.assertRuntimeQuiescent()).resolves.toBeUndefined()
+    await f.journal.jobReserveProcess(execution.operationId, { launchId: randomUUID(), binary: '/usr/bin/podman', argv: ['container', 'exists'] })
+    await expect(f.journal.assertRuntimeQuiescent()).rejects.toThrow('unfinished work')
+  } finally { await f.journal.close() }
+})
 
 async function fixture(location: 'main' | 'device') {
   const directory = await mkdtemp(join(persistentFixtureRoot, 'verification-publication-'))
@@ -37,7 +82,7 @@ async function fixture(location: 'main' | 'device') {
     target.registration = { workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 }
   }
   const policy = { ...f.spec.policy, maxOutputBytes: 114688, publicationTimeoutMs: 60000, cleanupTimeoutMs: 60000 }
-  const execution = VerificationJobExecutionSchema.parse({ ...jobExecution(), schemaVersion: 2, createdAt,
+  const execution = VerificationJobExecutionSchema.parse({ ...jobExecution(), operationId: randomUUID(), schemaVersion: 2, createdAt,
     acceptedSpec: { ...f.spec, target, policy, lifecycle: verificationJobLifecycle(createdAt, policy),
       outputs: [
         { path: '.logs/verification/summary.json', mediaType: 'application/json', kind: 'suite-summary', maxBytes: 16384, required: true },
