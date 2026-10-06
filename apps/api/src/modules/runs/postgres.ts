@@ -15,7 +15,7 @@ import type { RepeatRepositoryActivation, RepositoryExecutionSemantics, Reposito
 import { runStartSemantics } from './repeatStartDispatch.js'
 import { RepeatRepositoryFactory } from './repeatRepositoryHost.js'
 import { readRepeatExecutionLocked, readRepeatAcceptedResultLocked } from './repeatPostgres.js'
-import { readAcceptedRepeatRunLocked, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
+import { readAcceptedRepeatRunLocked, readAcceptedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { captureRepeatNativeEvidence, type RepeatLaunchPaths, type RepeatNativeBoundaryEvidence, type RepeatNativeEvidence } from './repeatNativeRepository.js'
 import { sameRepeatValue, type RepeatNodeRef } from './repeatResolution.js'
 import { markRepeatRunRunning, requestRepeatRunStop, openWorkflowLifecycleLocked, type AuthorizeWorkflowStop } from './repeatLifecycle.js'
@@ -65,11 +65,12 @@ export class PostgresRunRepository implements RunRepository {
     return owner
   }
   private async read<T>(runId: string, owner: RunOwnership | undefined,
-    work: (sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot) => Promise<T>): Promise<T> {
+    work: (sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot) => Promise<T>,
+    readAcceptedRun = readAcceptedRepeatRunLocked): Promise<T> {
     this.owned(runId, owner)
     const body = async (sql: GraphTransactionSql) => {
       const fence = owner && await owner.readOneShotFence(sql)
-      const snapshot = await readAcceptedRepeatRunLocked(sql, runId)
+      const snapshot = await readAcceptedRun(sql, runId)
       const value = await work(sql, snapshot)
       if (owner) beforeGraphCommit(sql, async () => {
         if (!sameRepeatValue(fence, await owner.readOneShotFence(sql))) throw new DomainError('RUN_OWNERSHIP_LOST', 'The Run owner changed before read completion.', 409)
@@ -79,7 +80,9 @@ export class PostgresRunRepository implements RunRepository {
     return owner ? owner.oneShotConnection().transaction(body)
       : withExclusiveGraphConnection(this.pool, (connection) => connection.transaction(body))
   }
-  getRepeatSnapshot(runId: string, owner?: RunOwnership) { return this.read(runId, owner, async (_sql, snapshot) => snapshot) }
+  getRepeatSnapshot(runId: string, owner?: RunOwnership) {
+    return this.read(runId, owner, async (_sql, snapshot) => snapshot, readAcceptedRepeatRunSnapshot)
+  }
   async executionSemantics(runId: string, owner?: RunOwnership): Promise<RepositoryExecutionSemantics> {
     return runRepositorySemantics((await this.getRepeatSnapshot(runId, owner)).run)
   }

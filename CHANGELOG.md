@@ -15,6 +15,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Give the standalone migration command a separate bounded DDL deadline while retaining API request deadlines, transactions and migration locks.
 - Remove unsuccessful release staging without deleting an activated release or production data.
 - Snapshot deployed API and workspace dependencies into independent files so later source builds cannot mutate an installed release.
+- Read committed Run-only snapshots during native publication without taking a mutation-blocking Run lock; preserve live grants, immutable pins, locked execution detail and mutation/Stop checks.
+- Cover delayed read/write responses, persisted write readback, replacement connections after SQL cancellation and bounded missing replies in the PostgreSQL deadline regression.
 
 ### Changed
 
