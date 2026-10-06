@@ -1,4 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as contracts from '@foreman-code/contracts'
@@ -21,6 +23,22 @@ const combinations = (['codex', 'opencode', 'claude'] as const).flatMap(harness 
 let fixture: Awaited<ReturnType<typeof pairedWorkerApplication>> | undefined
 let rows: Row[] = []
 const completed = new Map<string, { marker: string; compactRequest: contracts.SessionControlRequest }>()
+const nativeResults: Record<string, unknown>[] = []
+const settingsResults: Record<string, unknown>[] = []
+const recoveredConversations = new Set<string>()
+
+async function saveEvidence(cleanupConfirmed: boolean) {
+  const directory = process.env.ENG03_A_EVIDENCE_DIR
+  if (!directory) throw new Error('The native acceptance evidence directory is missing.')
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  const path = join(directory, `session-controls-${randomUUID()}.json`)
+  await writeFile(path, JSON.stringify({ sourceCommit: fixture?.sourceCommit,
+    nativeQualification: cleanupConfirmed && completed.size === 12 && settingsResults.length === 4
+      && recoveredConversations.size === 12,
+    cleanupConfirmed, nativeResults, settingsResults, recoveredConversations: [...recoveredConversations],
+  }, null, 2), { flag: 'wx', mode: 0o600 })
+  console.info(`Native session controls evidence: ${path}`)
+}
 
 function active() {
   if (!fixture) throw new Error('The production fixture has not started.')
@@ -130,7 +148,15 @@ describe('native session controls through the production Main and installed Work
     expect(new Set(rows.map(row => row.conversationId)).size).toBe(12)
   }, 1800000)
 
-  afterAll(async () => { await fixture?.close() }, 180000)
+  afterAll(async () => {
+    try { await fixture?.close() }
+    catch (cleanupError) {
+      try { await saveEvidence(false) }
+      catch (reportError) { throw new AggregateError([cleanupError, reportError], 'Native cleanup and evidence saving failed.') }
+      throw cleanupError
+    }
+    await saveEvidence(fixture !== undefined)
+  }, 180000)
 
   it.each(combinations)('$harness $role on $hostKind compacts its existing native session and plans one task', async key => {
     const row = rows.find(value => value.harness === key.harness && value.role === key.role && value.hostKind === key.hostKind)
@@ -181,6 +207,10 @@ describe('native session controls through the production Main and installed Work
     expect(followup.state.nativeSessionId).toBe(sessionId)
     expect((await transcript(row)).filter(message => message.role === 'assistant').at(-1)?.content).toContain(marker)
     completed.set(row.conversationId, { marker, compactRequest: request })
+    nativeResults.push({ ...key, conversationId: row.conversationId, profile: row.nativeProfile,
+      nativeSessionId: sessionId, compaction: compacted.compaction,
+      contextBefore: normal.state.context, contextAfter: followup.state.context,
+      appliedMode: followup.state.appliedMode, appliedPreferences: followup.state.applied })
   }, 600000)
 
   it.each(combinations.filter(key => key.harness === 'claude'))(
@@ -198,6 +228,7 @@ describe('native session controls through the production Main and installed Work
         expect(await compactionActivities(row)).toEqual(offBoundaries)
       }
       expect(state.context?.usedTokens).toBeGreaterThan(100000)
+      const offContext = state.context
       expect(state.context?.nativeSessionId).toBe(before.nativeSessionId)
       expect(state.capabilities.modelCapacity).toBe(before.capabilities.modelCapacity)
       const manual = await change(row, { kind: 'compact', requestId: randomUUID(), expectedRevision: state.revision })
@@ -228,7 +259,12 @@ describe('native session controls through the production Main and installed Work
       expect(automatic).toBe(true)
       expect(state.nativeSessionId).toBe(before.nativeSessionId)
       expect(state.applied?.autoCompactTokens).toBe(100000)
-      await applyPreferences(row, { ...on, autoCompact: 'default', autoCompactTokens: null })
+      const defaults = await applyPreferences(row, { ...on, autoCompact: 'default', autoCompactTokens: null })
+      settingsResults.push({ ...key, conversationId: row.conversationId, nativeSessionId: before.nativeSessionId,
+        offContext, autoCompactTokens: 100000, manualCompaction: compacted.compaction,
+        testedContextProfiles: before.capabilities.contextProfiles,
+        automaticActivityIds: (await compactionActivities(row)).filter(activity => !baseline.has(activity.id))
+          .map(activity => activity.id), defaultPreferences: defaults.applied })
     }, 1800000)
 
   it('restores the twelve native chats and compact receipts after Main closes and starts again', async () => {
@@ -264,6 +300,7 @@ describe('native session controls through the production Main and installed Work
       expect(followup.state.applied).toEqual(before.state.desired)
       expect((await transcript(row)).filter(message => message.role === 'assistant').at(-1)?.content)
         .toContain(accepted.marker)
+      recoveredConversations.add(row.conversationId)
     }
   }, 1800000)
 })
