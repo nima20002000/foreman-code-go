@@ -16,7 +16,9 @@ export function createPool(options: DatabaseOptions, applicationName: string): p
     connectionString: options.connectionString,
     max: options.maxConnections,
     connectionTimeoutMillis: options.connectionTimeoutMs,
-    query_timeout: queryTimeoutMs,
+    // The server owns the SQL deadline. Its reply (including durable commit
+    // acknowledgment) needs bounded delivery time before the client gives up.
+    query_timeout: Math.min(queryTimeoutMs + 1000, 2_147_483_647),
     statement_timeout: queryTimeoutMs,
     application_name: applicationName,
   })
