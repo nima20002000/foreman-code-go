@@ -214,6 +214,9 @@ describe.skipIf(!postgresEnabled)('verification Job authenticated MCP authoring'
 
       // Qualification metadata is the fixture boundary; no physical suite pass is asserted here.
       const qualified = await f.qualify(profile)
+      expect((await f.database.pool.query(
+        'select record from job_runtime_profile_versions where profile_id=$1 and revision=$2',
+        [profile.id, profile.revision])).rows).toEqual([{ record: profile }])
       const qualifiedTemplate = (await getChoices()).verificationTemplates!.find(item => item.profileId === profile.id)!
       expect(qualifiedTemplate).toMatchObject({ ready: true, maxUnitWorkers: 12 })
       expect(qualified.measurement!.suites[0]!.maxUnitWorkers).toBe(16)

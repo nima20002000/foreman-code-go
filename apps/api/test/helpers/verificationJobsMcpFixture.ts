@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import type { ManagementAction } from '@foreman-code/contracts/management'
-import { JobVerificationProfileSchema, JobVerificationRuntimeMeasurementSchema,
+import { JobRuntimeApprovalRecordSchema, JobVerificationProfileSchema, JobVerificationRuntimeMeasurementSchema,
   type JobRuntimeFingerprintRecord, type JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { createJobRuntimeProfileService } from '../../src/modules/jobs/runtimeProfileFactory.js'
@@ -55,12 +55,12 @@ export async function verificationJobsMcpFixture() {
   const ports = { preparation, placement, dispatch: runtime.dispatch, artifacts: runtime.artifacts, queue, workerExecution }
   const createJobs = () => new JobService(database.pool, retained.commands, ports)
   return { database, access, writer, reader, retained, profiles, seed, runtime, createJobs,
-    qualify: (profile: JobVerificationProfile) => seedQualifiedMetadata(database, metadata, profile, seed) }
+    qualify: (profile: JobVerificationProfile) => seedQualifiedMetadata(database, metadata, profile, seed, writer.principal.id) }
 }
 
 async function seedQualifiedMetadata(database: Awaited<ReturnType<typeof currentDatabase>>,
   metadata: Map<string, JobRuntimeFingerprintRecord>, profile: JobVerificationProfile,
-  seed: ReturnType<typeof verificationRuntimeFixture>) {
+  seed: ReturnType<typeof verificationRuntimeFixture>, principalId: string) {
   const original = seed.measurement
   const fingerprint = { ...original.fingerprint, profileId: profile.id, profileRevision: profile.revision,
     specDigest: profile.specDigest, root: profile.root, hostRef: profile.root.selection.hostRef,
@@ -79,7 +79,15 @@ async function seedQualifiedMetadata(database: Awaited<ReturnType<typeof current
   metadata.set(profile.id, measurement.fingerprint)
   await database.pool.query('update job_runtime_profiles set record=$2::jsonb where id=$1',
     [profile.id, JSON.stringify(qualified)])
-  await database.pool.query('update job_runtime_profile_versions set record=$3::jsonb where profile_id=$1 and revision=$2',
-    [profile.id, profile.revision, JSON.stringify(qualified)])
+  const approval = JobRuntimeApprovalRecordSchema.parse({ schemaVersion: 2,
+    id: measurement.identity.approvalId, qualificationId: measurement.identity.qualificationId,
+    workspaceId: profile.workspaceId, profileId: profile.id, profileRevision: profile.revision,
+    fingerprint, fingerprintDigest: measurement.identity.fingerprintDigest,
+    requestedByPrincipalId: principalId, status: 'complete', approvedByPrincipalId: principalId,
+    approvedAt: measurement.approvedAt, requestedAt: measurement.approvedAt, expiresAt: measurement.expiresAt })
+  await database.pool.query(`insert into job_runtime_qualification_approvals
+    (id,qualification_id,profile_id,profile_revision,workspace_id,record,measurement,requested_by,approved_by)
+    values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$8)`, [approval.id, approval.qualificationId,
+    profile.id, profile.revision, profile.workspaceId, JSON.stringify(approval), JSON.stringify(measurement), principalId])
   return qualified
 }
