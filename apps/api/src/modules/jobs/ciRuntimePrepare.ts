@@ -110,11 +110,14 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   const seedReceiptPath = join(installer, `seed-receipt-${short}.json`), contextReceiptPath = join(installer, `context-receipt-${short}.json`)
   await writeFile(seedReceiptPath, await readFile(join(context, 'seed-receipt.json')), { mode: 0o600 })
   await writeFile(contextReceiptPath, await readFile(join(context, 'context-receipt.json')), { mode: 0o600 })
+  // The refresh captures the unit suite's Codex from this copy; the checkout it came from is removed.
+  const codex = join(installer, `codex-${short}`)
+  await writeFile(codex, await readFile(unitCodex.path), { mode: 0o700 })
   for (const path of [context, buildContext, seedRoot]) await rm(path, { recursive: true, force: true })
   await run('git', ['-C', repository, 'worktree', 'remove', '--force', source], { env }).catch(() => undefined)
   return { commit, imageId: `sha256:${image.Id.replace(/^sha256:/u, '')}`, imageManifestDigest: image.Digest,
     seedReceiptPath, contextReceiptPath,
-    qualificationSource, unitCodex: { executable: '/opt/graphql-ci/tools/codex', sourceExecutable: unitCodex.path,
+    qualificationSource, unitCodex: { executable: '/opt/graphql-ci/tools/codex', sourceExecutable: codex,
       version: unitCodex.version, binarySha256: unitCodex.sha256 } }
 }
 
@@ -212,7 +215,7 @@ const closed = (child: ChildProcess, name: string) => new Promise<void>((resolve
 async function pruneInstaller(installer: string, repository: string, short: string, keepPaths: readonly string[], env: NodeJS.ProcessEnv) {
   const kept = new Set(keepPaths)
   for (const name of await readdir(installer).catch(() => [] as string[])) {
-    const match = /^(?:source|seed|context|build-context|qualification-source|seed-receipt|context-receipt)-([0-9a-f]{12})(?:\.json)?$/u.exec(name)
+    const match = /^(?:source|seed|context|build-context|qualification-source|seed-receipt|context-receipt|codex)-([0-9a-f]{12})(?:\.json)?$/u.exec(name)
     if (!match || match[1] === short || kept.has(join(installer, name))) continue
     await rm(join(installer, name), { recursive: true, force: true })
   }

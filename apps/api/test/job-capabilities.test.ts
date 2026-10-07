@@ -7,7 +7,8 @@ import { JOB_RUNTIME_TOOLS, unavailableJobRuntimeToolCall } from '../src/mcp/ope
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { createGraphqlMcpServer, roleDeniedToolCall } from '../src/mcp/unified/server.js'
 
-const actions:ManagementAction[]=['job_definitions:read','job_definitions:write','jobs:start','jobs:read','jobs:cancel','job_logs:read','job_artifacts:read','sources:read','source_roots:read']
+const actions:ManagementAction[]=['job_definitions:read','job_definitions:write','jobs:start','jobs:read','jobs:cancel','job_logs:read','job_artifacts:read','sources:read','source_roots:read',
+  'sources:approve','source_roots:bind','workspace_locations:read']
 const readerActions=actions.filter(action=>action.endsWith(':read'))
 function principal(jobActions=actions):ManagementPrincipal {
   return {id:'job-discovery',name:'Job discovery',audience:'operator',expiresAt:'2099-01-01T00:00:00.000Z',revokedAt:null,
@@ -20,7 +21,7 @@ async function fixture(actor=principal(),mounted=true,profiles=true) {
   const choices=vi.fn(async()=>{throw new Error('Discovery must not probe a Job host.')})
   const listProfiles=vi.fn(async()=>{throw new Error('Discovery must not probe a runtime profile.')})
   const recordDenied=vi.fn(async()=>undefined)
-  const services={commands:{recordDenied},...(mounted?{jobs:{choices}}:{}),...(profiles?{jobRuntimeProfiles:{list:listProfiles}}:{})} as unknown as OperatorServices
+  const services={commands:{recordDenied},...(mounted?{jobs:{choices}}:{}),...(profiles?{jobRuntimeProfiles:{list:listProfiles},ciRuntime:{start:async()=>{throw new Error("unused")},get:async()=>{throw new Error("unused")}}}:{})} as unknown as OperatorServices
   const context={principal:actor,services}
   const server=await createGraphqlMcpServer({role:'operator',principal:actor,operator:services})
   const [clientTransport,serverTransport]=InMemoryTransport.createLinkedPair()
@@ -57,6 +58,9 @@ describe('Job capability summary matches mounted Operator tools',()=>{
       }
       expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name: 'job_runtime_profile_save',
         actions: ['job_definitions:write', 'sources:read', 'source_roots:read'] }))
+      expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name: 'build_computer_prepare',
+        actions: ['job_definitions:write', 'sources:approve', 'sources:read', 'source_roots:bind', 'source_roots:read',
+          'workspace_locations:read', 'jobs:start', 'job_artifacts:read'] }))
       const limit=capabilities.runtimeLimits!.find(limit=>limit.feature==='ci_jobs')
       expect(limit).toMatchObject({state:'limited'})
       expect(limit!.detail).toContain('current host-bound CI qualification')
@@ -80,7 +84,7 @@ describe('Job capability summary matches mounted Operator tools',()=>{
     const capabilities=await f.capabilities('workspace-a')
     expect(jobNames(capabilities.tools)).toEqual(listed)
     expect(jobNames(capabilities.requirements!.map(requirement=>requirement.name))).toEqual(listed)
-    expect(runtimeNames(capabilities.tools)).toEqual(['job_runtime_profile_list','job_runtime_qualification_get'])
+    expect(runtimeNames(capabilities.tools)).toEqual(['build_computer_prepare_get','job_runtime_profile_list','job_runtime_qualification_get'])
     const denied=await unavailableJobToolCall(f.context,call('job_start'))
     expect(denied?.result.isError).toBe(true)
     expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
@@ -116,7 +120,7 @@ describe('Job capability summary matches mounted Operator tools',()=>{
       expect(runtimeNames(capabilities.requirements!.map(requirement=>requirement.name))).toEqual(runtimeNames(listed))
       expect(capabilities.runtimeLimits!.some(limit=>limit.feature==='ci_jobs')).toBe(false)
       if(!jobActions.includes('job_definitions:write')) {
-        expect(runtimeNames(listed)).toEqual(['job_runtime_profile_list','job_runtime_qualification_get'])
+        expect(runtimeNames(listed)).toEqual(['build_computer_prepare_get','job_runtime_profile_list','job_runtime_qualification_get'])
         const denied=await unavailableJobRuntimeToolCall(f.context,call('job_runtime_qualification_run'))
         expect(denied?.result.isError).toBe(true);expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
         expect(f.recordDenied).toHaveBeenCalledWith('job-discovery','mcp','job_runtime_qualification_run','mcp:job_runtime_qualification_run')

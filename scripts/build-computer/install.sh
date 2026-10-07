@@ -2,7 +2,9 @@
 # Root-once setup for a computer that runs CI Jobs. Everything later (offline packages, image,
 # protected runtime refresh and requalification) the app does itself as the computer's user.
 #
-#   sudo scripts/build-computer/install.sh <user> <job-quota-query> [volume-GiB] [installation-plan.json]
+#   sudo [BACKING=/existing/volume.ext4] scripts/build-computer/install.sh <user> <job-quota-query> [volume-GiB] [installation-plan.json]
+#
+# BACKING adopts an already provisioned volume file (its protected runtime records that path).
 #
 # - an ext4 volume with project quotas, mounted persistently at ~/.local/share/foreman-code/ci-verification/volume
 # - the read-only quota observer from the Worker artifact, with only the capability its quota reads need
@@ -18,18 +20,20 @@ home=$(getent passwd "$user" | cut -d: -f6)
 [ -n "$home" ] || { echo "Unknown user $user." >&2; exit 1; }
 base=$home/.local/share/foreman-code/ci-verification
 volume=$base/volume
-backing=/var/lib/foreman-code-ci/verification.ext4
+backing=${BACKING:-/var/lib/foreman-code-ci/verification.ext4}
 
 apt-get install -y --no-install-recommends podman crun uidmap e2fsprogs quota libcap2-bin
 grep -q "^$user:" /etc/subuid || usermod --add-subuids 100000-165535 "$user"
 grep -q "^$user:" /etc/subgid || usermod --add-subgids 100000-165535 "$user"
 
-install -d -m 0700 /var/lib/foreman-code-ci
+install -d -m 0700 "$(dirname "$backing")"
 if [ ! -f "$backing" ]; then
   fallocate -l "${size}G" "$backing"
   mkfs.ext4 -q -O quota,project -E quotatype=prjquota "$backing"
 fi
-install -d -m 0700 -o "$user" -g "$(id -gn "$user")" "$home/.local/share/foreman-code" "$base" "$volume"
+for directory in "$home/.local/share/foreman-code" "$base" "$volume"; do
+  [ -d "$directory" ] || install -d -m 0700 -o "$user" -g "$(id -gn "$user")" "$directory"
+done
 unit=$(systemd-escape -p --suffix=mount "$volume")
 cat > "/etc/systemd/system/$unit" <<UNIT
 [Unit]
@@ -46,12 +50,15 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now "$unit"
-chown "$user:$(id -gn "$user")" "$volume"
-chmod 0700 "$volume"
+# An adopted volume keeps its own root ownership and modes.
+if [ -z "${BACKING:-}" ]; then chown "$user:$(id -gn "$user")" "$volume"; chmod 0700 "$volume"; fi
 
-install -d -m 0755 /usr/local/lib/foreman-code-ci
-install -m 0755 "$observer" /usr/local/lib/foreman-code-ci/job-quota-query
-setcap cap_sys_admin=ep /usr/local/lib/foreman-code-ci/job-quota-query
+# The protected runtime pins the observer's digest: an installed observer is never replaced here.
+if [ ! -x /usr/local/lib/foreman-code-ci/job-quota-query ]; then
+  install -d -m 0755 /usr/local/lib/foreman-code-ci
+  install -m 0755 "$observer" /usr/local/lib/foreman-code-ci/job-quota-query
+  setcap cap_sys_admin=ep /usr/local/lib/foreman-code-ci/job-quota-query
+fi
 
 if [ -n "$plan" ]; then python3 "$(dirname "$0")/provision-quotas.py" "$plan"; fi
 echo "Build computer volume ready at $volume"
