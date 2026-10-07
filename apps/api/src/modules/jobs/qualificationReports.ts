@@ -1,3 +1,4 @@
+import { qualificationUnitWorkers } from '@foreman-code/contracts/job-verification-policy'
 import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { join } from 'node:path'
@@ -79,7 +80,8 @@ export function validateQualificationReport(raw: JobQualificationCandidateRecord
     || !isDeepStrictEqual(identity.profile.network, candidate.fingerprint.network)
     || identity.profile.imageDigest !== candidate.fingerprint.imageDigest
     || identity.profile.toolchainDigest !== candidate.fingerprint.toolchainDigest
-    || identity.parameters.unitWorkers !== 12 || identity.parameters.integrationShards !== 1
+    || identity.parameters.unitWorkers !== qualificationUnitWorkers(candidate.profile.spec.resources.limits)
+    || identity.parameters.integrationShards !== 1
 ) {
     throw new DomainError('JOB_QUALIFICATION_REPORT_CONFLICT', 'Report differs from its approved diagnostic.', 409)
   }

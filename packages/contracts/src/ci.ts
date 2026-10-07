@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { IdSchema } from './schemaPrimitives.js'
 import { JobOrdinaryVerificationSuiteSchema, JobVerificationReportReadSchema } from './jobVerification.js'
 import { JobQueueTicketSchema } from './jobAdmission.js'
+import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
 import { JobExecutionSchema } from './jobs.js'
 import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
@@ -42,7 +43,9 @@ export const CiRuntimeRequestSchema = z.discriminatedUnion('operation', [
     review: z.object({ reviewedByPrincipalId: IdSchema, decisionDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
     keepImages: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).max(8) }).strict(),
   z.object({ operation: z.literal('status') }).strict(),
-  z.object({ operation: z.literal('refresh'), commit: CommitSchema, root: SourceRootRecordSchema, manifest: SourceManifestSchema }).strict(),
+  /** `resources` are the verification profile's: the refreshed runtime reserves exactly what the profile requests. */
+  z.object({ operation: z.literal('refresh'), commit: CommitSchema, root: SourceRootRecordSchema, manifest: SourceManifestSchema,
+    resources: JobResourceRequestSchema }).strict(),
 ])
 export const CiRuntimeWorkerStateSchema = z.object({
   state: z.enum(['idle', 'preparing', 'prepared', 'failed', 'refreshing']),

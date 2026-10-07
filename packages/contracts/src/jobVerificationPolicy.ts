@@ -13,6 +13,11 @@ export const JOB_VERIFICATION_OWNER_CONFIGURATION = Object.freeze({
   laptopMinimumAvailableBytes: 4 * 2 ** 30, laptopPerRunningJobBytes: 2 * 2 ** 30,
   credentialDelivery: 'local-only',
 })
+/** Unit test workers for a qualification: the owner's maximum, but never more than the profile's whole CPUs,
+ * so a small build allowance does not oversubscribe its container and time tests out. */
+export function qualificationUnitWorkers(limits: { cpuLimit: number }): number {
+  return Math.max(1, Math.min(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers, Math.floor(limits.cpuLimit)))
+}
 export const JOB_VERIFICATION_INITIAL_CONCURRENCY = Object.freeze({
   heavyJobs: 1,
   integrationShards: 1,

@@ -32,7 +32,10 @@ function root(deviceId: string, rootId: string, bindingRevision: number, source 
 function profile(id: string, name: string, deviceId: string, rootId: string, suites: string[], memoryBytes = 6 * 2 ** 30) {
   return { schemaVersion: 2, id, name, revision: 3, status: 'qualified', sourceCommit: 'a'.repeat(40), root: root(deviceId, rootId, 1),
     approvalConfig: { review: { decisionDigest: 'e'.repeat(64) } },
-    spec: { rootId, bindingRevision: 1, suites, resources: { limits: { memoryBytes } }, approvalConfig: {}, policy: { imageDigest: oldImage, toolchainDigest: 't' } } }
+    spec: { rootId, bindingRevision: 1, suites, resources: { schemaVersion: 1,
+      limits: { cpuLimit: 4, memoryBytes, pidsLimit: 512, diskBytes: 20 * 2 ** 30 }, mutableInodes: 1_000_000,
+      controlTempBytes: 2 ** 26, scratchBytes: 2 ** 34, scratchExecutable: true, shmBytes: 2 ** 26, spoolBytes: 2 ** 25,
+      reportBytes: 2 ** 26 }, approvalConfig: {}, policy: { imageDigest: oldImage, toolchainDigest: 't' } } }
 }
 
 async function fixture(options: { prepareFails?: boolean } = {}) {
@@ -147,7 +150,8 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.bind).toEqual([expect.objectContaining({ source: newPin, expectedBindingRevision: 1, accessMode: 'exclusive-write' })])
       expect(f.calls.saves.map(value => [value.id, value.spec.bindingRevision, value.spec.policy.imageDigest]).sort())
         .toEqual([['p-install', 2, newImage], ['p-unit', 2, newImage]])
-      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: '/ci/state', root: expect.objectContaining({ source: newPin }) })])
+      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: '/ci/state', root: expect.objectContaining({ source: newPin }),
+        resources: expect.objectContaining({ limits: expect.objectContaining({ cpuLimit: 4 }) }) })])
       expect(f.calls.qualified.sort()).toEqual(['p-install', 'p-unit'])
       // Readback: Mana's profile was not touched; Dexter's carry the commit.
       expect(f.profiles.get('p-mana')).toMatchObject({ revision: 3, spec: { policy: { imageDigest: oldImage } } })

@@ -63,7 +63,8 @@ export class CiRuntimeWorker {
     if (!prepared || prepared.commit !== request.commit) {
       throw new DomainError('CI_RUNTIME_NOT_PREPARED', 'Prepare this commit on the computer before refreshing its runtime.', 409)
     }
-    await this.ports.refresh({ stateDirectory: this.stateDirectory, prepared, root: request.root, manifest: request.manifest })
+    await this.ports.refresh({ stateDirectory: this.stateDirectory, prepared, root: request.root, manifest: request.manifest,
+      resources: request.resources })
     return this.set({ ...this.state!, state: 'refreshing', stage: 'restart' })
   }
 

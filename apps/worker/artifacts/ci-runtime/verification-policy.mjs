@@ -169,7 +169,7 @@ export async function startTestDatabase(environment) {
   const psql = (database, sql) => execFileSync(`${POSTGRES}/psql`, ['-h', '127.0.0.1', '-p', '55439', '-U', 'graphql_test_admin',
     '-d', database, '-v', 'ON_ERROR_STOP=1', '-qc', sql], { env, stdio: ['ignore', 'ignore', 'inherit'] });
   for (let attempt = 0; ; attempt++) {
-    try { execFileSync(`${POSTGRES}/pg_isready`, ['-q', '-h', '127.0.0.1', '-p', '55439'], { env, stdio: 'ignore' }); break; }
+    try { execFileSync(`${POSTGRES}/pg_isready`, ['-q', '-h', '127.0.0.1', '-p', '55439', '-U', 'graphql_test_admin', '-d', 'postgres'], { env, stdio: 'ignore' }); break; }
     catch (error) {
       if (attempt >= 120 || server.exitCode !== null) throw new Error('The disposable test PostgreSQL did not start.', { cause: error });
       await new Promise(resolve => setTimeout(resolve, 250));

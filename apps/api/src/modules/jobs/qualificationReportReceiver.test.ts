@@ -1,3 +1,4 @@
+import { qualificationUnitWorkers } from '@foreman-code/contracts/job-verification-policy'
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -49,11 +50,11 @@ function fixture() {
     target: { ...f.spec.target, destination: { ...f.spec.target.destination,
       canonicalProjectRoot: root, canonicalCwd: root, rootPolicyId: profile.root.selection.rootPolicyId,
       rootPolicyRevision: profile.root.selection.rootPolicyRevision, directoryIdentityHash: jobDigest(filesystem) } }, resources,
-    parameters: { unitWorkers: 12, integrationShards: 1 } },
+    parameters: { unitWorkers: qualificationUnitWorkers(resources.limits), integrationShards: 1 } },
     privateGit: { sourceCommit: f.spec.source.commit, generatedCommit: 'b'.repeat(40),
       repositoryReceiptDigest: 'a'.repeat(64), configDigest: 'a'.repeat(64), indexDigest: 'a'.repeat(64) },
     requiredPortions: [{ key: 'root:install', kind: 'bootstrap' }], executionTimeoutMs: policy.executionTimeoutMs,
-    cancellationTimeoutMs: policy.cancellationGraceMs, qualifiedUnitWorkers: 12,
+    cancellationTimeoutMs: policy.cancellationGraceMs, qualifiedUnitWorkers: qualificationUnitWorkers(resources.limits),
     mutableDirectory: '/job-scratch', storeDirectory: '/job-scratch/pnpm-store',
     limits: { summaryBytes: 2097152, junitBytes: 2097152, vitestBytes: 2097152, logsArchiveBytes: 2097152, logBytes: 1024 },
     preseedReceipt: { lockfileSha256: 'a'.repeat(64), pnpmVersion: '11.27.0', platform: 'linux', architecture: 'x64',

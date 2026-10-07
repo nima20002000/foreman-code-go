@@ -8,7 +8,7 @@ import type { z } from 'zod'
 import type { FileHandle } from 'node:fs/promises'
 import { JobTargetSchema } from '@foreman-code/contracts/jobs'
 import { JobVerificationReportSchema } from '@foreman-code/contracts/job-verification'
-import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
+import { JOB_VERIFICATION_OWNER_CONFIGURATION, qualificationUnitWorkers } from '@foreman-code/contracts/job-verification-policy'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/contracts/job-inputs'
 import { JobVerificationQualificationCandidateSchema, JobVerificationRepositoryContextSchema,
   JobVerificationRuntimeQualificationResultSchema, JobVerificationRuntimeMeasurementSchema,
@@ -309,11 +309,11 @@ export async function qualifyVerificationRuntime(input: {
           definitionVersionId: `${fingerprint.profileId}:${fingerprint.profileRevision}:${candidate.qualificationId}:${suite}`,
           suite, executionId: `${candidate.operationId}:${suite}`, attemptId: `${candidate.qualificationId}:${suite}`, target,
           profile: profileIdentity, resources: fingerprint.resources,
-          parameters: { unitWorkers: JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers, integrationShards: 1 } },
+          parameters: { unitWorkers: qualificationUnitWorkers(fingerprint.resources.limits), integrationShards: 1 } },
         requiredPortions: captureVerificationInventory(source.sourceRoot, suite),
         privateGit: source.privateGit, executionTimeoutMs: candidate.profile.spec.policy.executionTimeoutMs,
         cancellationTimeoutMs: Math.max(1, candidate.profile.spec.policy.cancellationGraceMs),
-        qualifiedUnitWorkers: JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers,
+        qualifiedUnitWorkers: qualificationUnitWorkers(fingerprint.resources.limits),
         limits: { summaryBytes: maxBytes, junitBytes: maxBytes, vitestBytes: maxBytes,
           logsArchiveBytes: maxBytes, logBytes: Math.min(maxBytes, candidate.profile.spec.policy.maxLogBytes) },
         mutableDirectory: '/job-scratch', storeDirectory: '/job-scratch/pnpm-store',

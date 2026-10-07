@@ -7,21 +7,22 @@ import type { SourceManifest } from '@foreman-code/contracts/source-materializat
 import type { SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import { InstalledVerificationRuntimeCaptureInputSchema, InstalledVerificationRuntimeConfigurationSchema,
   type InstalledVerificationRuntimeCaptureInput } from './installedVerificationConfiguration.js'
-import type { PreparedCiRuntime } from '@foreman-code/contracts'
+import type { JobResourceRequest, PreparedCiRuntime } from '@foreman-code/contracts'
 
 const run = promisify(execFile)
 
 /** The next protected runtime: the current installation with the prepared image, seed, qualification source and root. */
 export function nextCaptureInput(current: unknown, prepared: PreparedCiRuntime, input: {
-  root: SourceRootRecord; manifest: SourceManifest; seedReceiptPath: string
+  root: SourceRootRecord; manifest: SourceManifest; seedReceiptPath: string; resources: JobResourceRequest
 }): InstalledVerificationRuntimeCaptureInput {
   const configuration = InstalledVerificationRuntimeConfigurationSchema.parse(current)
   const { bootId: _boot, runtimeBinarySha256: _runtime, ociBinarySha256: _oci, configurationDigest: _configuration,
     seedReceiptSha256: _seed, tools: _tools, ...machine } = configuration.machine
   void _boot; void _runtime; void _oci; void _configuration; void _seed; void _tools
   return InstalledVerificationRuntimeCaptureInputSchema.parse({
-    schemaVersion: 2, root: input.root, descriptor: configuration.descriptor,
-    machine: { ...machine, imageDigest: prepared.imageId, imageConfigDigest: prepared.imageId,
+    schemaVersion: 2, root: input.root, descriptor: { ...configuration.descriptor, resources: input.resources },
+    machine: { ...machine, resources: input.resources, limits: input.resources.limits,
+      imageDigest: prepared.imageId, imageConfigDigest: prepared.imageId,
       imageManifestDigest: prepared.imageManifestDigest, sourceCommit: prepared.commit },
     seedReceiptPath: input.seedReceiptPath,
     qualificationSource: { directory: prepared.qualificationSource, manifest: input.manifest },
@@ -34,7 +35,7 @@ export function nextCaptureInput(current: unknown, prepared: PreparedCiRuntime, 
  * Worker stopped. Runs as a separate user unit so it survives the Worker's own stop. */
 export async function scheduleCiRuntimeRefresh(input: {
   stateDirectory: string; prepared: PreparedCiRuntime; root: SourceRootRecord; manifest: SourceManifest
-  environment?: NodeJS.ProcessEnv
+  resources: JobResourceRequest; environment?: NodeJS.ProcessEnv
 }): Promise<{ unit: string; workerUnit: string }> {
   const environment = input.environment ?? process.env
   const configurationPath = join(input.stateDirectory, 'job-runtime.json')
@@ -45,7 +46,7 @@ export async function scheduleCiRuntimeRefresh(input: {
   await copyFile(input.prepared.seedReceiptPath, seedReceiptPath)
   await chmod(seedReceiptPath, 0o600)
   const captureInput = nextCaptureInput(JSON.parse(currentBytes.toString('utf8')), input.prepared,
-    { root: input.root, manifest: input.manifest, seedReceiptPath })
+    { root: input.root, manifest: input.manifest, seedReceiptPath, resources: input.resources })
   const refreshPath = join(base, `reviewed-refresh-${short}.json`)
   await writeFile(refreshPath, JSON.stringify({ expectedConfigurationSha256: createHash('sha256').update(currentBytes).digest('hex'),
     captureInput }), { mode: 0o600 })

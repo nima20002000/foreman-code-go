@@ -137,7 +137,7 @@ export class CiRuntimeProvisioner {
 
     // 3. The computer refreshes its protected runtime and restarts its Worker.
     update({ state: 'refreshing', stage: 'restart' })
-    await this.device(deviceId, { operation: 'refresh', commit, root, manifest: approved.manifest })
+    await this.device(deviceId, { operation: 'refresh', commit, root, manifest: approved.manifest, resources: profile.spec.resources })
     const restartDeadline = Date.now() + RESTART_LIMIT_MS
     for (;;) {
       if (Date.now() > restartDeadline) throw new DomainError('CI_RUNTIME_TIMEOUT', 'The computer did not come back after its runtime refresh.', 504)
