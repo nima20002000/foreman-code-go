@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { JobRuntimeProfileSchema, JobRuntimeFingerprintSchema, InstalledJobRuntimeDescriptorSchema }
   from '@foreman-code/contracts/job-runtime'
 import { JobRuntimeApprovalRecordSchema, JobRuntimeProfileRecordSchema, JobRuntimeFingerprintRecordSchema,

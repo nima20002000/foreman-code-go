@@ -1,7 +1,7 @@
 import { CiService } from './ci.js'
 import { RunCiAuthority } from './ciAuthority.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { createMainJobExecutionHost } from './mainExecution.js'
 import { createQualificationReportPublisher } from './qualificationReports.js'
 import { createVerificationSystemInput } from './verificationSystemInput.js'

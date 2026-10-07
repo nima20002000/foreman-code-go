@@ -6,7 +6,7 @@ import { ArtifactAttemptSchema, ArtifactEdgeBindingSchema, type ArtifactAttempt 
 import { VerifiedTransferReceiptSchema } from '@foreman-code/contracts/byte-transfer'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { cancelBackendQuery } from '../../../infrastructure/pool.js'
-import { componentLogger } from '../../../infrastructure/logger.js'
+import { componentLogger } from '../../diagnostics/logger.js'
 import type { DistributedPublicationLink } from '../../files/distributed/publicationLedger.js'
 import type { FileQuery } from '../../files/repository.js'
 import { fileScopeIdentity } from '../../files/requests.js'

@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { JobRuntimeProfileRecordSchema, type JobRuntimeProfileRecord }
   from '@foreman-code/contracts/job-verification-runtime'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { DomainError } from '../errors.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
 

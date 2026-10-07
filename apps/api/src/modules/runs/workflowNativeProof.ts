@@ -1,4 +1,4 @@
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { assertOriginalWorkflowTerminal, workflowProviderId } from '../interactions/workflowTerminalSource.js'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'

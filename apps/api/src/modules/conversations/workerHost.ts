@@ -11,7 +11,7 @@ import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execut
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../harnesses/port.js'
 import type { WorkerConversationJournal } from './workerJournal.js'
 import { DomainError } from '../errors.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import type { CompactionState } from '@foreman-code/contracts'
 import { recoverPersistedClaudeCompaction } from '../harnesses/claudeSdk/recoverCompaction.js'

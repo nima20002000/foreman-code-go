@@ -1,4 +1,4 @@
-import { componentLogger } from '../../../infrastructure/logger.js'
+import { componentLogger } from '../../diagnostics/logger.js'
 import { withInteractionDeliveryReconciliation, withOriginalInteractionDeliveryClaim } from '../originalDeliveryClaim.js'
 import { randomUUID } from 'node:crypto'
 import { withInteractionResponse, type DurableInteraction, type InteractionResponseValue } from '@foreman-code/contracts'

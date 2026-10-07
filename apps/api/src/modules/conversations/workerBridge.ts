@@ -17,7 +17,7 @@ import { DomainError } from '../errors.js'
 import { MainWorkerFiles, type PrepareWorkerFiles } from './mainWorkerFiles.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { definedProperties } from '../definedProperties.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 
 export interface WorkerConversationCallbacks {
   profile?(): Promise<WorkerConversationProfileFacts>

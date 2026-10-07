@@ -24,7 +24,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 export interface JobPreparationSources {
   revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecutionRecord,
     options?: { requireQualification: boolean }):Promise<void>

@@ -1,5 +1,5 @@
 import { jobDigest } from './digest.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import { JobWorkflowExecutionReferenceSchema } from '@foreman-code/contracts/job-workflow'
 import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'

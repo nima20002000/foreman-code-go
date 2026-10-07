@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { nativeEventBatches } from './nativeEventBatches.js'
 import { reviewPreflightIdentity } from './reviewPolicy.js'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 
 import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } from '@foreman-code/contracts'
 

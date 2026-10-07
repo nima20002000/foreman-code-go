@@ -38,7 +38,7 @@ import type {
   NativeTerminalObservation,
 } from '../harnesses/port.js'
 import { NativeDeliveryError } from '../harnesses/errors.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { primeInitialNativeStream } from '../harnesses/claudeSdk/initialStream.js'
 import type { PostgresOperatorRepository } from '../operators/postgres.js'
 import { withFilesystemDeadline } from '../workspaces/filesystem.js'

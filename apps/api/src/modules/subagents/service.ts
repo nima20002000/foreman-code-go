@@ -12,7 +12,7 @@ import { reconcileRunSubagents } from './projection.js'
 import { backfillRunSubagents } from './recovery.js'
 import type { SubagentNativeRecoverySource, SubagentControlResolver } from './types.js'
 import { executeSubagentCommand } from './commands.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 
 export interface SubagentRecoveryFailure {
   workspaceId: string; runId: string; executionId?: string; code: string
