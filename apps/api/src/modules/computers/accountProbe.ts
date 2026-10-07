@@ -51,7 +51,14 @@ async function claude(ports: AccountProbePorts, signal: AbortSignal): Promise<Co
   const binary = await ports.find('claude')
   if (!binary) return missing('claude')
   const result = await ports.run(binary, ['auth', 'status'], signal)
-  const status = JSON.parse(result.stdout) as { loggedIn?: unknown; email?: unknown; authMethod?: unknown }
+  let status: { loggedIn?: unknown; email?: unknown; authMethod?: unknown }
+  try { status = JSON.parse(result.stdout) as typeof status } catch {
+    // Signed-out releases print a login prompt instead of JSON.
+    if (result.code !== 0 && /\/login|not logged in|invalid api key/iu.test(`${result.stdout}\n${result.stderr}`)) {
+      return { tool: 'claude', installed: true, signedIn: false, account: null, details: [] }
+    }
+    throw new Error('Unreadable Claude sign-in status.')
+  }
   return { tool: 'claude', installed: true, signedIn: status.loggedIn === true,
     account: typeof status.email === 'string' ? status.email.slice(0, 320) : null,
     details: typeof status.authMethod === 'string' ? [status.authMethod.slice(0, 200)] : [] }

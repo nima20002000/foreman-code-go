@@ -31,6 +31,9 @@ it('reads each tool account without exposing tokens', async () => {
 })
 
 it('separates missing tools, signed-out tools and unreadable sign-in state', async () => {
+  const signedOut = await probeComputerAccounts(ports(['claude'], {
+    'claude auth status': { code: 1, stdout: 'Invalid API key · Please run /login' } }))
+  expect(signedOut.accounts.find(value => value.tool === 'claude')?.signedIn).toBe(false)
   const result = await probeComputerAccounts(ports(['codex', 'claude', 'gh', 'rclone'], {
     'claude auth status': { stdout: 'not json' },
     'gh auth status --hostname github.com': { code: 1, stderr: 'You are not logged into any GitHub hosts.' },
