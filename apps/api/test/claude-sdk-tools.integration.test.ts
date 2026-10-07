@@ -65,7 +65,7 @@ it.each([
       const endpoint = `${address}/mcp`
       const tool = scenario === 'files' ? 'mcp__graphql-files__files.read' : `mcp__${serverName}__workspace_create`
       const harness: ClaudeHarnessConfiguration = { harness: 'claude', model: 'recorded-model', authMode: 'subscription',
-        configDirectory: '/recorded/profile', permissionMode: 'default', sandbox: 'read-only', tools: [tool],
+        configDirectory: '/recorded/profile', permissionMode: 'default', sandbox: 'danger-full-access', tools: [tool],
         permissionRules: [{ tool, effect: 'ask' }], instructions: '',
         mcpServers: scenario === 'files' ? {} : { [serverName]: { type: 'http', url: endpoint } } }
       const mainId = randomUUID()

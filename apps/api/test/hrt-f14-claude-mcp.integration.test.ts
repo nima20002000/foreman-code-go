@@ -47,7 +47,7 @@ it('saves Claude templates through authenticated MCP while unavailable API-key d
     await database.migrate()
     const mainId = (await pool.query('select id from application_installation')).rows[0].id as string
     const harness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'api-key' as const,
-      configDirectory: join(root, 'recorded-profile'), permissionMode: 'default' as const, sandbox: 'read-only' as const,
+      configDirectory: join(root, 'recorded-profile'), permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
       tools: [], permissionRules: [], instructions: '', mcpServers: {} }
     // Historical persisted settings/native-proof fixtures are not physical qualification.
     await new PostgresSettingsRepository(pool).saveHarnessDefaults({ ...DEFAULT_HARNESS_DEFAULTS, claude: harness })
