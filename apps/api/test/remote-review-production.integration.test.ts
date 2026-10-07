@@ -235,14 +235,10 @@ describe('production remote review and native recovery through authenticated MCP
       expect(inventory.installations[0]?.connectionGeneration)
         .not.toBe(beforeInventory.installations[0]?.connectionGeneration)
       expect(fixture.workerPid()).toBe(originalWorkerPid)
-      await waitForRemoteReview(async () => {
-        await fixture.reconcile()
-        return receipts(fixture, active.run.id)
-      }, value => value.some(receipt => originalReceipts.some(original =>
-        original.intent.operationId === receipt.intent.operationId
-        && (original.intent.owner.epoch !== receipt.intent.owner.epoch
-          || original.intent.owner.grantId !== receipt.intent.owner.grantId))),
-      'new Main owner for the original native process')
+      await fixture.reconcile()
+      const currentReceipts = await receipts(fixture, active.run.id)
+      expect(currentReceipts.map(receipt => ({ intent: receipt.intent, native: receipt.native })))
+        .toEqual(originalReceipts.map(receipt => ({ intent: receipt.intent, native: receipt.native })))
       const reconnected = fixture.registry.snapshot().launches.filter(owner => originalLaunches.some(
         original => original.launchId === owner.launchId))
       expect(reconnected.map(owner => ({ owner: owner.owner, launchId: owner.launchId,
