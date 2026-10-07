@@ -9,6 +9,8 @@ import { buildApp } from '../src/app.js'
 import { DomainError } from '../src/modules/errors.js'
 import { BuildComputerSettings } from '../src/modules/settings/buildComputers.js'
 import { ComputerActivityService } from '../src/modules/computers/activity.js'
+import { ComputerAccountsService } from '../src/modules/computers/accounts.js'
+import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsListSchema, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -80,7 +82,17 @@ async function fixture() {
     return principal
   })
   const buildComputers = new BuildComputerSettings(pool, commands, async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
-  const services = { computerActivity: service, buildComputers, commands } as unknown as OperatorServices
+  const accountsOf = (email: string): ComputerAccounts => ({ observedAt: '2026-10-07T00:00:00.000Z', accounts: [
+    { tool: 'codex', installed: true, signedIn: true, account: email, details: ['ChatGPT'] },
+    { tool: 'github', installed: true, signedIn: true, account: 'octo-owner', details: [] },
+  ] })
+  const deviceAnswers = { calls: 0, email: 'laptop@example.com' }
+  const mainProbes = { calls: 0 }
+  const computerAccounts = new ComputerAccountsService(pool, mainId, () => ({
+    capabilities: () => observed ? [{ namespace: COMPUTER_ACCOUNTS_NAMESPACE, mainCanRequest: true }] : [],
+    request: async () => { deviceAnswers.calls++; return { payload: accountsOf(deviceAnswers.email) } },
+  }), commands, async () => { mainProbes.calls++; return accountsOf('main@example.com') })
+  const services = { computerActivity: service, computerAccounts, buildComputers, commands } as unknown as OperatorServices
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services } })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -91,7 +103,7 @@ async function fixture() {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
     return client
   }
-  return { app, service, jobs, agents, principals, audit, connect, setPresence(value: DevicePresence | null) { observed = value },
+  return { app, service, jobs, agents, principals, audit, connect, deviceAnswers, mainProbes, setPresence(value: DevicePresence | null) { observed = value },
     close: async () => { await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end() } }
 }
 afterEach(() => vi.restoreAllMocks())
@@ -174,5 +186,31 @@ it('supports revisioned build role, allowance and priority edits through authent
     expect(deniedSave.isError).toBe(true)
     const persisted = await reader.callTool({ name: 'build_computer_get', arguments: { target } })
     expect(BuildComputerStatusSchema.parse(persisted.structuredContent)).toEqual(saved)
+  } finally { await f.close() }
+})
+
+it('reads every computer signed-in account through HTTP and MCP, caching probes and denying readers without settings', async () => {
+  const f = await fixture()
+  try {
+    const client = await f.connect('owner')
+    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('computer_accounts_list')
+    const read = ComputerAccountsListSchema.parse((await client.callTool({ name: 'computer_accounts_list', arguments: {} })).structuredContent)
+    expect(read.computers.map(computer => computer.accounts?.accounts[0]?.account)).toEqual(['main@example.com', 'laptop@example.com'])
+    const http = await f.app.inject({ url: '/api/management/computers/accounts', headers: { authorization: 'Bearer owner' } })
+    expect(ComputerAccountsListSchema.parse(http.json())).toEqual(read)
+    expect([f.mainProbes.calls, f.deviceAnswers.calls]).toEqual([1, 1])
+    f.deviceAnswers.email = 'switched@example.com'
+    const refreshed = ComputerAccountsListSchema.parse((await client.callTool({ name: 'computer_accounts_list',
+      arguments: { refresh: true } })).structuredContent)
+    expect(refreshed.computers[1]?.accounts?.accounts[0]?.account).toBe('switched@example.com')
+    f.setPresence(null)
+    const offline = ComputerAccountsListSchema.parse((await client.callTool({ name: 'computer_accounts_list',
+      arguments: { refresh: true } })).structuredContent)
+    expect(offline.computers[1]?.accounts).toBeNull()
+    const reader = await f.connect('denied')
+    expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_accounts_list')
+    expect((await reader.callTool({ name: 'computer_accounts_list', arguments: {} })).isError).toBe(true)
+    expect((await f.app.inject({ url: '/api/management/computers/accounts',
+      headers: { authorization: 'Bearer denied' } })).statusCode).toBe(403)
   } finally { await f.close() }
 })

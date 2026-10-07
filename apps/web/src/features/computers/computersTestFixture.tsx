@@ -4,6 +4,7 @@ import { http, HttpResponse, type HttpHandler } from 'msw'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import type { BuildComputerStatus, BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
 import type { ComputerActivityList } from '@foreman-code/contracts/computer-activity'
+import type { ComputerAccountsList } from '@foreman-code/contracts/computer-accounts'
 import { server } from '../../mocks/server'
 import { computerKey } from '../../shared/api/computerActivity'
 import { useComputerUi } from './computerUiStore'
@@ -29,6 +30,16 @@ export function computersFixture(children: React.ReactNode, handlers: HttpHandle
   const activity: ComputerActivityList = { mainId, activityComplete: true, truncated: false,
     computers: [mainTarget, deviceTarget].map((target, index) => ({ target, name: index ? deviceName : 'Main PC',
       online: !index, jobs: [], agents: [] })) }
+  const accounts: ComputerAccountsList = { computers: [
+    { target: mainTarget, accounts: { observedAt: new Date().toISOString(), accounts: [
+      { tool: 'codex', installed: true, signedIn: true, account: 'coder@example.com', details: ['ChatGPT'] },
+      { tool: 'claude', installed: true, signedIn: false, account: null, details: [] },
+      { tool: 'opencode', installed: true, signedIn: true, account: null, details: ['OpenCode Go'] },
+      { tool: 'github', installed: true, signedIn: true, account: 'octo-owner', details: [] },
+      { tool: 'drive', installed: false, signedIn: null, account: null, details: [] },
+    ] } },
+    { target: deviceTarget, accounts: null },
+  ] }
   const writes: BuildComputerUpdate[] = []
   const update = (input: BuildComputerUpdate) => {
     const before = statuses.get(computerKey(input.target))!
@@ -51,6 +62,7 @@ export function computersFixture(children: React.ReactNode, handlers: HttpHandle
       return HttpResponse.json(update(input))
     }),
     http.get('*/api/management/computers/activity', () => HttpResponse.json(activity)),
+    http.get('*/api/management/computers/accounts', () => HttpResponse.json(accounts)),
     http.post('*/api/management/resource-telemetry/selector', () => HttpResponse.json({ kind: 'unavailable' })),
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })

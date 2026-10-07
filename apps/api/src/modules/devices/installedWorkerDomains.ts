@@ -40,6 +40,8 @@ import { SourceOperationWorkerService } from '../sources/operationWorker.js'
 import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '../runs/remote/installedWorkflowHost.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
+import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsRequestSchema } from '@foreman-code/contracts/computer-accounts'
+import { probeComputerAccounts, systemPorts } from '../computers/accountProbe.js'
 import { inspectInstalledOpenCode } from '../harnesses/installedOpenCodeInspection.js'
 import { inspectInstalledClaude } from '../harnesses/installedClaudeInspection.js'
 import { createInstalledWorkerProfileChecks } from '../harnesses/installedWorkerProfileChecks.js'
@@ -239,6 +241,16 @@ export async function createInstalledWorkerDomains(input: {
     currentBinding: current, request, journal: jobJournal, registry: jobRegistry, signal: lifetime.signal })
     extensions.push(qualification)
   }
+  extensions.push({ namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 65_536, maxBinaryBytes: 0,
+    async handle(payload, context) {
+      ComputerAccountsRequestSchema.parse(payload)
+      if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
+        throw new DomainError('COMPUTER_ACCOUNTS_STALE', 'Account facts require the actual authenticated worker channel.', 409)
+      }
+      return { payload: await probeComputerAccounts(systemPorts(process.env),
+        AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(20_000)])) }
+    },
+  })
   extensions.push({ namespace: 'harness-discovery-v1', version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
     async handle(payload, context) {
       HarnessDiscoveryRequestSchema.parse(payload)

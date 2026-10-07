@@ -5,6 +5,8 @@ import type { BuildComputerStatus } from '@foreman-code/contracts/build-computer
 import { computerDisplayName, type ComputerActivity } from '@foreman-code/contracts/computer-activity'
 import { useBuildComputers } from '../../shared/api/buildComputers'
 import { computerKey, useComputerActivity } from '../../shared/api/computerActivity'
+import { useComputerAccounts } from '../../shared/api/computerAccounts'
+import { ComputerAccountChips } from './ComputerAccounts'
 import { Alert, Button, IconButton, LoadingState, Switch, Select } from '../../shared/ui/nocturne'
 import { computerState } from './computerState'
 import { ComputerUtilization } from './ComputerUtilization'
@@ -23,6 +25,7 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
   }))]
   const reads = useBuildComputers(targets)
   const activity = useComputerActivity()
+  const accounts = useComputerAccounts()
   const save = useComputerEdits()
   const drag = useComputerUi(state => state.drag)
   const draggedKey = useComputerUi(state => state.draggedKey)
@@ -70,6 +73,7 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
           {read.isError && <Button size="sm" onClick={() => void read.refetch()}>Retry build settings</Button>}
           {read.data && !read.isError && <ComputerControls status={read.data} name={computerName(target)}
             disabled={save.isPending} onEdit={patch => save.mutate([preferenceEdit(read.data!, patch)])} />}
+          <ComputerAccountChips accounts={accounts.data?.computers.find(computer => computerKey(computer.target) === key)?.accounts} />
           <ComputerUtilization target={target} online={observed?.online ?? false} />
           {target.hostRef.kind === 'device' && onSelectComputer && <IconButton label={`Open ${computerName(target)}`}
             variant="ghost" size="sm" onClick={() => {

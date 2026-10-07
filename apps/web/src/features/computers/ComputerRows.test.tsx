@@ -138,3 +138,14 @@ it('reports a failed compensation and refreshes persisted priorities instead of 
   expect(f.writes).toHaveLength(3)
   expect(f.statuses.get(computerKey(deviceTarget))?.preference).toMatchObject({ buildPriority: 100, revision: 2 })
 })
+
+it('shows which accounts each computer is signed in to without listing offline computers as signed out', async () => {
+  computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  const main = await screen.findByRole('group', { name: 'Accounts' })
+  expect(within(main).getByLabelText('Codex: coder@example.com')).toBeInTheDocument()
+  expect(within(main).getByLabelText('GitHub: octo-owner')).toBeInTheDocument()
+  expect(within(main).getByLabelText('OpenCode: OpenCode Go')).toBeInTheDocument()
+  expect(within(main).getByLabelText('Claude: signed out')).toBeInTheDocument()
+  expect(within(main).getByLabelText('Google Drive: not installed')).toBeInTheDocument()
+  expect(screen.getAllByRole('group', { name: 'Accounts' })).toHaveLength(1)
+})
