@@ -52,7 +52,8 @@ import type {
   ResolvedNativeSessionManager,
 } from './runtimePorts.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
-import { readDetachedWorkflowSession, recoverWorkflowNativeClosure, type WorkflowClosureStore } from './workflowClosure.js'
+import { readDetachedWorkflowSession, readOpenRemoteWorkflowSession, recoverWorkflowNativeClosure,
+  type WorkflowClosureStore } from './workflowClosure.js'
 import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.js'
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
@@ -1208,10 +1209,13 @@ export class ApprovalExecutionCoordinator {
         }
       }
     }
+    const continuing = !this.ownedSessions.has(execution.id) && options.restartOwner
+      ? await readOpenRemoteWorkflowSession(options.restartOwner, execution) : undefined
     if (!this.ownedSessions.has(execution.id)) {
       const detached = options.restartOwner
         ? await readDetachedWorkflowSession(options.restartOwner, execution) : undefined
-      if (detached) this.assertSessionIdentity(detached, sessionReference)
+      if (continuing) this.assertSessionIdentity(continuing.session, sessionReference)
+      else if (detached) this.assertSessionIdentity(detached, sessionReference)
       else if (execution.state !== 'completed' || !await this.workflowClosures?.read(execution)) throw new DomainError(
         'NATIVE_SESSION_RECOVERY_REQUIRED', 'The original requester requires verified Run recovery.', 409)
     }
@@ -1246,6 +1250,10 @@ export class ApprovalExecutionCoordinator {
     // Claim outside cleanup: losing a concurrent startup race does not own its credentials.
     if (resolved.processState === 'needs_start') resolved.beginStart?.()
     const owned = this.ownSession(execution, resolutionContext, resolved.manager)
+    if (continuing) {
+      owned.closureRegistration = Promise.resolve(continuing.generation)
+      owned.closureGeneration = continuing.generation
+    }
     owned.session = sessionReference
     signal = signal ? AbortSignal.any([signal, owned.controller.signal]) : owned.controller.signal
     try {
@@ -1284,6 +1292,7 @@ export class ApprovalExecutionCoordinator {
   private async restorePendingWorkflowApprovals(owner: RunOwnership, execution: HarnessExecution,
     pending: readonly DurableInteraction[], signal?: AbortSignal): Promise<boolean> {
     const detached = await readDetachedWorkflowSession(owner, execution)
+      ?? (await readOpenRemoteWorkflowSession(owner, execution))?.session
     if (!detached) return false
     if (pending.some((item) => item.runId !== owner.runId || item.nativeSessionId !== detached.nativeSessionId
       || item.harness !== detached.harness || item.providerVersion !== detached.providerVersion

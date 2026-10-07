@@ -6,6 +6,8 @@ import { beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql } from
 import type { RunOwnership } from '../runs/ownership.js'
 import { DomainError } from '../errors.js'
 import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
+import { readExecutionPlacement } from '../placement/persistence.js'
 
 /** Backend-only lifetime receipt. It is not a native action or Run authority.
  * Reserve BEFORE credential preflight (which can spawn OpenCode), create or
@@ -136,6 +138,40 @@ export async function readDetachedWorkflowSession(owner: RunOwnership,
     || !isDeepStrictEqual(row.detached_reference, session)
     || row.expected_reference !== null && !isDeepStrictEqual(row.expected_reference, session)) return conflict()
   return session
+}
+
+export async function readOpenRemoteWorkflowSession(owner: RunOwnership, execution: HarnessExecution) {
+  owner.assertOwned()
+  if (execution.runId !== owner.runId || execution.state !== 'waiting' || !execution.nativeSessionId) return undefined
+  return owner.oneShotConnection().transaction(async sql => {
+    const placement = await readExecutionPlacement(sql, execution.id)
+    if (placement?.hostRef.kind !== 'device' || placement.payload.kind !== 'agent') return undefined
+    const row = (await sql.query<{ record: unknown; reference: unknown; receipt: unknown }>(`select e.record,s.reference,r.receipt
+      from harness_executions e join runs run on run.id=e.run_id
+      join execution_native_sessions s on s.execution_id=e.id
+      join execution_dispatch_intents i on i.execution_id=e.id
+      join remote_execution_receipts r using(operation_id)
+      where e.id=$1 and run.id=$2 and run.record->>'executionSemanticsVersion'='3'
+        and run.execution_state in ('running','waiting') and run.record->>'outcome'='pending'
+        and run.stop_requested_at is null and s.workflow_finalized_at is null
+        and not exists(select 1 from run_cleanup_intents c where c.run_id=run.id and c.pending)
+      for share of e,s,r`, [execution.id, owner.runId])).rows[0]
+    if (!row) return undefined
+    const current = HarnessExecutionSchema.parse(row.record)
+    const session = NativeSessionReferenceSchema.parse(row.reference)
+    const receipt = RemoteOperationReceiptSchema.parse(row.receipt)
+    const lifetime = await latest(sql, execution.id)
+    if (!lifetime || lifetime.closed || lifetime.detached || lifetime.prior_unclosed || receipt.terminal || receipt.stopFence)
+      return undefined
+    if (!isDeepStrictEqual(current, execution) || !isDeepStrictEqual(lifetime.execution_identity, executionIdentity(current))
+      || session.nativeSessionId !== current.nativeSessionId || session.harness !== placement.payload.driverId
+      || receipt.native?.sessionId !== session.nativeSessionId || receipt.intent.executionId !== current.id
+      || receipt.intent.runId !== current.runId || receipt.intent.nodeId !== current.workflowNodeId
+      || receipt.intent.bindingHash !== placement.bindingHash
+      || lifetime.expected_reference !== null && !isDeepStrictEqual(lifetime.expected_reference, session)) return conflict()
+    owner.assertOwned()
+    return { session, generation: lifetime.generation }
+  })
 }
 
 /** No-session closure is accepted only from the exact reserved lifetime's
