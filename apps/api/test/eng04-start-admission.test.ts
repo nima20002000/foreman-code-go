@@ -5,7 +5,10 @@ import { startSqlFixture } from './eng04-start-fixtures.js'
 // Native policy, recovery and trigger services are explicit seams in this SQL
 // fixture. Their real platform/DB/provider qualification is NOT claimed here.
 const hooks = vi.hoisted(() => ({ native: vi.fn(), recovery: vi.fn(), trigger: vi.fn() }))
-vi.mock('../src/modules/harnesses/nativeWorkflowConfiguration.js', () => ({ assertNativeWorkflowConfiguration: hooks.native }))
+vi.mock('../src/modules/harnesses/nativeWorkflowConfiguration.js', async (original) => ({
+  ...await original<typeof import('../src/modules/harnesses/nativeWorkflowConfiguration.js')>(),
+  assertNativeWorkflowConfiguration: hooks.native,
+}))
 vi.mock('../src/modules/runs/recoveryPolicy.js', () => ({ assertWorkflowRecovered: hooks.recovery }))
 vi.mock('../src/modules/workflows/triggerAuthority.js', () => ({ assertTriggerDispatch: hooks.trigger }))
 beforeEach(() => { vi.resetAllMocks() })

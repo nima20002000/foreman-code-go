@@ -44,6 +44,6 @@ it('shows actual Claude facts without invented effort or OpenCode variant', () =
   const agent = defaultAgentForHarness('claude', 'claude-1', 'Claude', savedClaudeConfiguration)
   expect(agentNodeFacts(agent)).toMatchObject({ harness: 'claude', harnessLabel: 'Claude', model: savedClaudeConfiguration.model })
   expect(agentNodeFacts(agent).meta).toEqual([{ label: 'Role', value: 'Agent' }])
-  expect(agentSettingRows(agent)).toContainEqual({ label: 'Sandbox', value: 'Read only' })
+  expect(agentSettingRows(agent)).toContainEqual({ label: 'Sandbox', value: 'Full access' })
   expect(agentSettingRows(agent)).not.toContainEqual(expect.objectContaining({ label: 'Variant' }))
 })

@@ -112,10 +112,14 @@ export class F1Store {
       this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
       return result([], 1)
     }
-    if (sql === "update conversation_session_controls set record=$2::jsonb where conversation_id=$1 and (record->>'revision')::bigint=$3") {
+    if (sql.startsWith("update conversation_session_controls set record=jsonb_set($2::jsonb,'{context}',")
+      || sql === "update conversation_session_controls set record=$2::jsonb where conversation_id=$1 and (record->>'revision')::bigint=$3") {
       const conversationId = String(values[0])
       if (this.sessionControls.get(conversationId)?.revision !== Number(values[2])) return result()
-      this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
+      const next = JSON.parse(String(values[1])) as SessionControlState
+      const previous = this.sessionControls.get(conversationId)
+      if (sql.includes("jsonb_set") && previous?.profileKey === next.profileKey) next.context = previous.context
+      this.sessionControls.set(conversationId, next)
       return result([], 1)
     }
     // This message fixture has no admitted compaction command receipts.

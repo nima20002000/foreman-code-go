@@ -139,7 +139,7 @@ function ClaudePresetSetup({ value, onChange, issues }: { value: ClaudeSetup; on
       options={[{ value: '', label: 'Choose authentication', disabled: true }, { value: 'subscription', label: 'Local Claude subscription login' }, { value: 'api-key', label: 'Explicit API key · separate billing' }]}
       onChange={(event) => onChange({ ...value, authMode: event.target.value as ClaudeHarnessConfiguration['authMode'] })} />
     <Select label="Sandbox" value={value.sandbox ?? ''} error={fieldMessage(issues, 'sandbox')}
-      options={[{ value: '', label: 'Choose sandbox', disabled: true }, { value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }]}
+      options={[{ value: '', label: 'Choose sandbox', disabled: true }, { value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }, { value: 'danger-full-access', label: 'Full access' }]}
       onChange={(event) => onChange({ ...value, sandbox: event.target.value as ClaudeHarnessConfiguration['sandbox'] })} />
     <Checkbox label="Include Foreman Code MCP" checked={Boolean(value.mcpServers?.graphql)} disabled={!setup.data?.graphqlMcp}
       hint="Uses this app’s endpoint. Tool access is selected separately after saving."

@@ -1,3 +1,4 @@
+import { memorySessionControls } from '../support/sessionControls.js'
 import type {
   Conversation, ExecutionResult, NativeSessionReference, OperatorConfigurationVersion,
   OperatorConversationState, PendingNativeInteraction, SendOperatorMessageRequest,
@@ -45,7 +46,9 @@ export function memoryConversation(configuration: OperatorConfigurationVersion, 
     ...(row.pending_interaction ? { pendingInteraction: row.pending_interaction } : {}),
     ...(row.response_delivery ? { responseDelivery: row.response_delivery } : {}),
     ...(row.last_result ? { lastResult: row.last_result } : {}) })
+  const controls = memorySessionControls()
   const repository = {
+    createSessionControls: () => controls,
     activity: { append: async () => undefined, settleKnownByNative: async () => undefined, unfinishedOwners: async () => ({ owners: [], hasMore: false }) },
     active: async () => structuredClone(row), get: async () => state(),
     getWithActivity: async () => ({ ...state(), activitySnapshot: { schemaVersion: 1, scope: { kind: 'operator_chat', conversationId: id }, revision: String(row.revision), active: [], queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } } }),

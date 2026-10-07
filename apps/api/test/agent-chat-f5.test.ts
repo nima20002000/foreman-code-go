@@ -1,3 +1,4 @@
+import { memorySessionControlPool } from './support/sessionControls.js'
 import assert from 'node:assert/strict'
 import type pg from 'pg'
 import { describe, it } from 'vitest'
@@ -51,6 +52,13 @@ function approvalFixture() {
       selection: null, activeStartedAt: now, latestRequestId: 'active-f5', unfinishedActivities: [],
       activityPage: { activities: [], nextCursor: null, itemRevisions: {} } }),
     turnContent: async () => 'Fixture turn',
+    turnSessionMode: async () => undefined,
+    turnPrincipalId: async () => principal.id,
+    abandon: async (_id: string, _requestId: string, message: string) => {
+      if (current.active_request_id !== _requestId) return
+      current.turn_state = 'uncertain'
+      current.last_error = message
+    },
     accepted: async (_id: string, _requestId: string, nativeTurnId: string) => { current.active_native_turn_id = nativeTurnId; return true },
     pending: async (_id: string, requestId: string, pending: PendingNativeInteraction | undefined) => {
       if (current.active_request_id !== requestId) return
@@ -63,7 +71,11 @@ function approvalFixture() {
     getCurrentSavedVersion: async () => ({ definition: { nodes: [{ id: context.workflowNodeId, agentId: context.agentId }] } }),
     getAgentConfiguration: async () => configuration,
   }
+  const controls = memorySessionControlPool()
   const pool = { query: async (text: string, values: unknown[]) => {
+    if (text.includes('conversation_session_') || text.includes('as compaction')) {
+      return controls.query(text, values)
+    }
     assert.equal(text, 'select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals where id=$1 for share')
     const rows = values[0] === principal.id ? [{ id: principal.id, name: principal.name, audience: principal.audience,
       grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : []
@@ -98,6 +110,7 @@ function sqlFixture(openCount: number, prior?: ReturnType<typeof receipt>, state
     calls.push({ sql, values })
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql)
       || sql.startsWith('select pg_advisory_xact_lock')) return { rows: [], rowCount: 0 }
+    if (sql.startsWith('select record from conversation_session_controls')) return { rows: [], rowCount: 0 }
     if (sql.startsWith('select * from operator_conversations')) return { rows: [row()], rowCount: 1 }
     if (sql.startsWith('select count(*)::text as count')) return { rows: [{ count: String(openCount) }], rowCount: 1 }
     if (sql.startsWith('select request_id,') && sql.includes('request_id=$2')) return { rows: prior ? [prior] : [], rowCount: prior ? 1 : 0 }

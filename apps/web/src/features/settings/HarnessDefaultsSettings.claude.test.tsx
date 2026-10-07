@@ -128,18 +128,18 @@ it('reapplies local empty-setup fields onto an externally created Claude preset 
   await user.type(screen.getByRole('textbox', { name: 'Model' }), 'local-chosen-model')
   await user.type(screen.getByRole('textbox', { name: 'Local Claude profile directory' }), '/local/chosen-profile')
   await user.selectOptions(screen.getByRole('combobox', { name: 'Authentication' }), 'api-key')
-  await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'danger-full-access')
   await act(async () => { await state.createClaude(savedClaudeConfiguration) })
   expect(await screen.findByText('These defaults changed elsewhere. Your edits are preserved.')).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Reapply my edits to current defaults' }))
   expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('local-chosen-model')
   expect(screen.getByRole('textbox', { name: 'Local Claude profile directory' })).toHaveValue('/local/chosen-profile')
   expect(screen.getByRole('combobox', { name: 'Authentication' })).toHaveValue('api-key')
-  expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue('workspace-write')
+  expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue('danger-full-access')
   await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
   expect(await screen.findByText('Changes saved to the server')).toBeVisible()
   const expected = { ...savedClaudeConfiguration, model: 'local-chosen-model', configDirectory: '/local/chosen-profile',
-    authMode: 'api-key', sandbox: 'workspace-write' }
+    authMode: 'api-key', sandbox: 'danger-full-access' }
   expect(state.submitted()?.defaults.claude).toEqual(expected)
   expect(state.submitted()?.expectedRevision).toBe(5)
   const readback = await getManagedHarnessCatalog()

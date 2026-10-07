@@ -3,7 +3,8 @@ import { createCurrentBoardMock } from './currentBoard'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures, getMockWorkspaceCreationDefaults } from './settingsExperienceHandlers'
 import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
-import { ApiErrorResponseSchema, CreateMessageRequestSchema, SaveHarnessDefaultsRequestSchema, type HarnessQualificationListSchema } from '@foreman-code/contracts'
+import { ApiErrorResponseSchema, SessionControlStateSchema, unavailableSessionControls, CreateMessageRequestSchema,
+  SaveHarnessDefaultsRequestSchema, type HarnessQualificationListSchema } from '@foreman-code/contracts'
 import type { z } from 'zod'
 import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@foreman-code/contracts/wave25'
 import {
@@ -220,7 +221,22 @@ export function bindMockInstallation(): void {
   window.localStorage.setItem('graphql.chat-instance-binding', `${mockRuntimeIdentity.checkoutId}:${mockRuntimeIdentity.installationId}`)
 }
 
+function sessionControlsResponse(conversationId: string) {
+  return HttpResponse.json(SessionControlStateSchema.parse({
+    conversationId, revision: 0, profileKey: 'mock-profile', desiredMode: 'regular', appliedMode: null,
+    defaults: {}, desired: {}, applied: null, applicability: 'next-turn', context: null,
+    nativeSessionId: null, nativeProviderVersion: null, compaction: null, compactions: [], busyReason: null,
+    capabilities: unavailableSessionControls('mock-profile'),
+  }))
+}
+
 export const handlers: RequestHandler[] = [
+  http.get('/api/workspaces/:workspaceId/agent-chat/session-controls', () =>
+    sessionControlsResponse('mock-conversation')),
+  http.get('/api/operator/conversations/:conversationId/session-controls', ({ params }) =>
+    sessionControlsResponse(String(params.conversationId))),
+  http.get('/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/session-controls', ({ params }) =>
+    sessionControlsResponse(String(params.conversationId))),
   http.get('*/api/management/computers/activity', () => HttpResponse.json({
     mainId: '11111111-1111-4111-8111-111111111111', computers: [], truncated: false, activityComplete: true,
   })),

@@ -604,7 +604,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (input.sessionMode === 'plan' && !(await this.sessionControlCapabilities(session)).plan.supported) {
       throw new OpenCodeNativeDeliveryError('OPENCODE_PLAN_UNAVAILABLE', 'No permitted Plan primary agent is available.', 'definite')
     }
-    const submitted = async (id: string) => { await input.onSubmitted?.(id); await input.onSettingsApplied?.() }
+    const submitted = async (id: string) => {
+      await input.onSettingsApplied?.()
+      await input.onSubmitted?.(id)
+    }
     yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal), submitted, input.sessionMode)
   }
 

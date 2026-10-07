@@ -15,7 +15,7 @@ export function workerConversationFixture(kind: 'operator' | 'agent' = 'operator
   } }
   const settings = harness === 'claude' ? {
     harness, model: 'model-fixture', authMode: 'subscription', configDirectory: '/uncreated/profile-fixture',
-    permissionMode: 'default', sandbox: 'read-only', tools: [], permissionRules: [], instructions: '', mcpServers: {},
+    permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: '', mcpServers: {},
   } : DEFAULT_HARNESS_DEFAULTS[harness]
   const common = { id: randomUUID(), version: 1, harness: settings, harnessProfileSelection: profile,
     contentHash: `sha256:${'a'.repeat(64)}`, createdAt: '2026-10-05T00:00:00.000Z' }
