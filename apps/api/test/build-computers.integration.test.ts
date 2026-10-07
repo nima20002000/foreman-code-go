@@ -63,7 +63,8 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
       computer.auto.source = source
       const profile = computer.candidate.profile
       const root = profile.root
-      root.source = source
+      root.source = { approvedSourceId: source.approvedSourceId, snapshotId: source.snapshotId,
+        manifestDigest: source.manifestDigest }
       root.binding.snapshotId = source.snapshotId
       await database.pool.query(`insert into device_registrations
         (id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,'fixture',$4::jsonb)`,
