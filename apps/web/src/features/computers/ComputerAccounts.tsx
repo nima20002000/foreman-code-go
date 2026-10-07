@@ -19,8 +19,8 @@ function accountSummary(account: ComputerAccount) {
 }
 
 /** One small chip per tool; the account shows on hover and to screen readers. */
-export function ComputerAccountChips({ accounts, onGitHub }: {
-  accounts: ComputerAccounts | null | undefined; onGitHub?: (() => void) | undefined
+export function ComputerAccountChips({ accounts, onGitHub, onDrive }: {
+  accounts: ComputerAccounts | null | undefined; onGitHub?: (() => void) | undefined; onDrive?: (() => void) | undefined
 }) {
   if (!accounts) return null
   return <div className="computer-accounts" role="group" aria-label="Accounts">
@@ -29,6 +29,8 @@ export function ComputerAccountChips({ accounts, onGitHub }: {
       const summary = accountSummary(account)
       if (account.tool === 'github' && onGitHub) return <button key={account.tool} type="button" className="computer-account"
         data-state={state} title={summary} aria-label={`${summary}. Manage GitHub`} onClick={onGitHub}>{TOOLS[account.tool].icon}</button>
+      if (account.tool === 'drive' && onDrive) return <button key={account.tool} type="button" className="computer-account"
+        data-state={state} title={summary} aria-label={`${summary}. Manage Google Drive`} onClick={onDrive}>{TOOLS[account.tool].icon}</button>
       return <span key={account.tool} className="computer-account" data-state={state} title={summary} role="img" aria-label={summary}>
         {TOOLS[account.tool].icon}
       </span>

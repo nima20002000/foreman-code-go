@@ -11,7 +11,10 @@ import { BuildComputerSettings } from '../src/modules/settings/buildComputers.js
 import { ComputerActivityService } from '../src/modules/computers/activity.js'
 import { ComputerAccountsService } from '../src/modules/computers/accounts.js'
 import { ComputerGitHubService } from '../src/modules/computers/github.js'
-import { COMPUTER_GITHUB_NAMESPACE, GitHubLoginStateSchema, type GitHubLoginRequest } from '@foreman-code/contracts/computer-accounts'
+import { ComputerDriveService } from '../src/modules/computers/drive.js'
+import type { DriveComputer } from '../src/modules/computers/driveComputer.js'
+import { COMPUTER_DRIVE_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, DriveLoginStateSchema, GitHubLoginStateSchema,
+  type DriveComputerRequest, type GitHubLoginRequest } from '@foreman-code/contracts/computer-accounts'
 import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsListSchema, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -109,7 +112,22 @@ async function fixture() {
       return { payload: githubState(payload as GitHubLoginRequest) }
     },
   }), commands, { handle: async request => { githubCalls.push({ where: 'main', request }); return githubState(request) } })
-  const services = { computerActivity: service, computerAccounts, computerGitHub, buildComputers, commands } as unknown as OperatorServices
+  const driveCalls: { where: string; operation: string; token?: string }[] = []
+  const driveState = (connected: boolean) => ({ installed: true, connected, account: connected ? 'owner@gmail.com' : null,
+    mountPath: connected ? '/home/laptop/Foreman Code Drive' : null, mounted: connected, message: null })
+  let finishSignIn!: (token: string) => void
+  const computerDrive = new ComputerDriveService(pool, mainId, () => ({
+    capabilities: () => observed ? [{ namespace: COMPUTER_DRIVE_NAMESPACE, mainCanRequest: true }] : [],
+    request: async (_device, _namespace, payload) => {
+      const request = payload as DriveComputerRequest
+      driveCalls.push({ where: 'device', operation: request.operation, ...(request.operation === 'connect' ? { token: request.token } : {}) })
+      return { payload: driveState(request.operation === 'connect') }
+    },
+  }), commands, { rclone: '/main/rclone', install: async () => { driveCalls.push({ where: 'main', operation: 'install' }) },
+    handle: async () => driveState(false) } as unknown as DriveComputer,
+  { start: () => ({ url: Promise.resolve('http://127.0.0.1:53682/auth?state=abc'),
+    token: new Promise<string>(resolve => { finishSignIn = resolve }), cancel: () => {} }) })
+  const services = { computerActivity: service, computerAccounts, computerGitHub, computerDrive, buildComputers, commands } as unknown as OperatorServices
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services } })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -120,7 +138,7 @@ async function fixture() {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
     return client
   }
-  return { app, service, jobs, agents, principals, audit, audited, connect, deviceAnswers, mainProbes, githubCalls, setPresence(value: DevicePresence | null) { observed = value },
+  return { app, service, jobs, agents, principals, audit, audited, connect, deviceAnswers, mainProbes, githubCalls, driveCalls, finishSignIn: (token: string) => finishSignIn(token), setPresence(value: DevicePresence | null) { observed = value },
     close: async () => { await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end() } }
 }
 afterEach(() => vi.restoreAllMocks())
@@ -260,5 +278,33 @@ it('starts, follows and ends GitHub sign-in on Main and a paired computer, denyi
     expect(f.audited.mock.calls.map(call => [call[2], call[4]])).toEqual([
       ['computer_github_login_start', 'succeeded'], ['computer_github_logout', 'succeeded']])
     expect(f.audit).toHaveBeenCalledWith('settings-reader', 'http', 'computer_github_login_start', `device:${deviceId}`)
+  } finally { await f.close() }
+})
+
+it('connects Google Drive on a paired computer through a sign-in on Main, sending the authorization only to that computer', async () => {
+  const f = await fixture()
+  try {
+    const client = await f.connect('owner')
+    const started = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_start', arguments: { target } })).structuredContent)
+    expect(started).toMatchObject({ state: 'waiting', authorizationUrl: 'http://127.0.0.1:53682/auth?state=abc' })
+    f.finishSignIn('{"access_token":"a","refresh_token":"r"}')
+    let done = started
+    for (let attempt = 0; attempt < 50 && done.state !== 'connected'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+      done = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_status',
+        arguments: { target, loginId: started.loginId } })).structuredContent)
+    }
+    expect(done).toMatchObject({ state: 'connected', account: 'owner@gmail.com', mountPath: '/home/laptop/Foreman Code Drive' })
+    expect(f.driveCalls).toEqual([{ where: 'main', operation: 'install' }, { where: 'device', operation: 'install' },
+      { where: 'device', operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' }])
+    const http = await f.app.inject({ method: 'POST', url: '/api/management/computers/drive/disconnect',
+      headers: { authorization: 'Bearer owner' }, payload: { target } })
+    expect(DriveLoginStateSchema.parse(http.json()).state).toBe('disconnected')
+    const reader = await f.connect('settings-reader')
+    expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_drive_connect_start')
+    expect((await reader.callTool({ name: 'computer_drive_connect_start', arguments: { target } })).isError).toBe(true)
+    expect(f.driveCalls).toHaveLength(4)
+    expect(f.audited.mock.calls.map(call => [call[2], call[4]])).toEqual([
+      ['computer_drive_connect_start', 'succeeded'], ['computer_drive_disconnect', 'succeeded']])
   } finally { await f.close() }
 })

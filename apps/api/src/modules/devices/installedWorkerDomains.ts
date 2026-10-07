@@ -41,7 +41,8 @@ import { SourceOperationWorkerService } from '../sources/operationWorker.js'
 import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '../runs/remote/installedWorkflowHost.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
-import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccountsRequestSchema, GitHubLoginRequestSchema } from '@foreman-code/contracts/computer-accounts'
+import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_DRIVE_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccountsRequestSchema, GitHubLoginRequestSchema } from '@foreman-code/contracts/computer-accounts'
+import { DriveComputer } from '../computers/driveComputer.js'
 import { GitHubLoginRunner } from '../computers/githubLogin.js'
 import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotRequestSchema, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
 import { snapshotAgentWorktree } from '../sources/agentSnapshot.js'
@@ -291,6 +292,15 @@ export async function createInstalledWorkerDomains(input: {
       const snapshot = await snapshotAgentWorktree(systemGitWorktreePorts(process.env), { path, baseCommit: request.baseCommit },
         AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(120_000)]))
       return { payload: AgentSnapshotResultSchema.parse({ commit: snapshot.commit, bundleBase64: snapshot.bundle.toString('base64') }) }
+    },
+  })
+  const drive = new DriveComputer()
+  extensions.push({ namespace: COMPUTER_DRIVE_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 16_384, maxBinaryBytes: 0,
+    async handle(payload, context) {
+      if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
+        throw new DomainError('COMPUTER_DRIVE_STALE', 'Google Drive requires the actual authenticated worker channel.', 409)
+      }
+      return { payload: await drive.handle(payload) }
     },
   })
   const githubLogin = new GitHubLoginRunner()

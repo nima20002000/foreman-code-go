@@ -30,7 +30,7 @@ export class ComputerGitHubService {
       await this.commands.recordDenied(principal.id, source, action, targetKey)
       throw error
     }
-    await this.current(principal, target)
+    await assertCurrentComputer(this.pool, this.mainId, principal, target)
     const parsed = GitHubLoginRequestSchema.parse(request)
     try {
       const state = GitHubLoginStateSchema.parse(target.hostRef.kind === 'main' ? await this.local.handle(parsed)
@@ -45,27 +45,6 @@ export class ComputerGitHubService {
     }
   }
 
-  /** The caller still holds settings:update and the target is this Main or a currently paired installation. */
-  private async current(principal: ManagementPrincipal, target: DeviceProvisioningTarget) {
-    const sql = await this.pool.connect()
-    try {
-      requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:update')
-      if (target.hostRef.mainId !== this.mainId) throw new DomainError('COMPUTER_NOT_FOUND', 'This computer belongs to another Main.', 404)
-      if (target.hostRef.kind === 'main') {
-        if (target.applicationInstallationId !== this.mainId) throw new DomainError('COMPUTER_NOT_FOUND', 'Main installation changed.', 404)
-        return
-      }
-      const row = (await sql.query<{ record: unknown }>(`select record from device_registrations
-        where main_id=$1 and record->>'deviceId'=$2 and record->>'status'='paired' limit 1`, [this.mainId, target.hostRef.deviceId])).rows[0]
-      const registration = row && DeviceRegistrationSchema.parse(row.record)
-      if (!registration || !sameDeviceProvisioningTarget(target, { hostRef: target.hostRef,
-        applicationInstallationId: registration.workerInstallationId, keyRevision: registration.keyRevision,
-        authorizationRevision: registration.authorizationRevision })) {
-        throw new DomainError('COMPUTER_NOT_FOUND', 'This computer is not currently paired with that installation.', 404)
-      }
-    } finally { sql.release() }
-  }
-
   private async device(deviceId: string, request: GitHubLoginRequest) {
     const endpoint = this.endpoint()
     if (!endpoint?.capabilities(deviceId).some(value => value.namespace === COMPUTER_GITHUB_NAMESPACE && value.mainCanRequest)) {
@@ -73,4 +52,25 @@ export class ComputerGitHubService {
     }
     return (await endpoint.request(deviceId, COMPUTER_GITHUB_NAMESPACE, request, { signal: AbortSignal.timeout(45_000) })).payload
   }
+}
+
+/** The caller still holds settings:update and the target is this Main or a currently paired installation. */
+export async function assertCurrentComputer(pool: pg.Pool, mainId: string, principal: ManagementPrincipal, target: DeviceProvisioningTarget) {
+  const sql = await pool.connect()
+  try {
+    requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:update')
+    if (target.hostRef.mainId !== mainId) throw new DomainError('COMPUTER_NOT_FOUND', 'This computer belongs to another Main.', 404)
+    if (target.hostRef.kind === 'main') {
+      if (target.applicationInstallationId !== mainId) throw new DomainError('COMPUTER_NOT_FOUND', 'Main installation changed.', 404)
+      return
+    }
+    const row = (await sql.query<{ record: unknown }>(`select record from device_registrations
+      where main_id=$1 and record->>'deviceId'=$2 and record->>'status'='paired' limit 1`, [mainId, target.hostRef.deviceId])).rows[0]
+    const registration = row && DeviceRegistrationSchema.parse(row.record)
+    if (!registration || !sameDeviceProvisioningTarget(target, { hostRef: target.hostRef,
+      applicationInstallationId: registration.workerInstallationId, keyRevision: registration.keyRevision,
+      authorizationRevision: registration.authorizationRevision })) {
+      throw new DomainError('COMPUTER_NOT_FOUND', 'This computer is not currently paired with that installation.', 404)
+    }
+  } finally { sql.release() }
 }

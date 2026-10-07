@@ -146,7 +146,7 @@ it('shows which accounts each computer is signed in to without listing offline c
   expect(within(main).getByRole('button', { name: 'GitHub: octo-owner. Manage GitHub' })).toBeInTheDocument()
   expect(within(main).getByLabelText('OpenCode: OpenCode Go')).toBeInTheDocument()
   expect(within(main).getByLabelText('Claude: signed out')).toBeInTheDocument()
-  expect(within(main).getByLabelText('Google Drive: not installed')).toBeInTheDocument()
+  expect(within(main).getByRole('button', { name: 'Google Drive: not installed. Manage Google Drive' })).toBeInTheDocument()
   expect(screen.getAllByRole('group', { name: 'Accounts' })).toHaveLength(1)
 })
 
@@ -172,4 +172,28 @@ it('connects GitHub on a computer with a one-time code and shows the signed-in a
   expect(within(dialog).getByRole('link', { name: /github.com\/login\/device/ })).toHaveAttribute('href', 'https://github.com/login/device')
   expect(bodies).toEqual([{ target: mainTarget }])
   await waitFor(() => expect(within(dialog).getByText('new-owner')).toBeInTheDocument(), { timeout: 8000 })
+}, 15_000)
+
+it('connects Google Drive on a computer through a Google sign-in link and shows the mounted account', async () => {
+  const user = userEvent.setup()
+  const state = { polls: 0 }
+  const waiting = { loginId: '77777777-7777-4777-8777-777777777777', state: 'waiting',
+    authorizationUrl: 'http://127.0.0.1:53682/auth?state=abc', expiresAt: '2026-10-07T00:10:00.000Z', account: null, mountPath: null, message: null }
+  const bodies: unknown[] = []
+  server.use(
+    http.post('*/api/management/computers/drive/connect', async ({ request }) => { bodies.push(await request.json()); return HttpResponse.json(waiting) }),
+    http.post('*/api/management/computers/drive/connect/status', () => {
+      state.polls++
+      return HttpResponse.json(state.polls < 2 ? waiting : { ...waiting, state: 'connected', authorizationUrl: null,
+        account: 'owner@gmail.com', mountPath: '/home/owner/Foreman Code Drive' })
+    }),
+  )
+  computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  await user.click(await screen.findByRole('button', { name: 'Google Drive: not installed. Manage Google Drive' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Google Drive on Main PC' })
+  await user.click(within(dialog).getByRole('button', { name: 'Connect Google Drive' }))
+  expect(await within(dialog).findByRole('link', { name: /Open Google sign-in/ })).toHaveAttribute('href', waiting.authorizationUrl)
+  expect(bodies).toEqual([{ target: mainTarget }])
+  await waitFor(() => expect(within(dialog).getByText('owner@gmail.com')).toBeInTheDocument(), { timeout: 8000 })
+  expect(within(dialog).getByText('/home/owner/Foreman Code Drive')).toBeInTheDocument()
 }, 15_000)

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
-import { ComputerAccountsListSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema, GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
+import { ComputerAccountsListSchema, ComputerDriveInputSchema, ComputerDriveStatusInputSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
+  DriveLoginStateSchema, GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
 import type { OperatorRequestContext } from '../types.js'
@@ -51,6 +52,29 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
     annotations: { ...writeAnnotations, destructiveHint: true },
   }, input => invokeOperatorTool(context, 'computer_github_logout',
     () => github.handle(context.principal, 'mcp', input.target, { operation: 'logout' })))
+  const drive = context.services.computerDrive
+  if (drive && operatorToolAvailable(context, 'computer_drive_connect_start')) server.registerTool('computer_drive_connect_start', {
+    description: 'Connect Google Drive on Main or a paired computer through rclone. Installs rclone for that computer\'s user if missing '
+      + '(checksum-verified), then returns authorizationUrl: a Google sign-in link served by rclone on Main (127.0.0.1:53682), to open in a '
+      + 'browser on Main. After sign-in the authorization is written only to that computer\'s rclone config, Drive mounts at '
+      + '~/Foreman Code Drive as a user service, and Main keeps no token. Requires global settings:update. Follow with '
+      + 'computer_drive_connect_status until connected. One sign-in at a time.',
+    inputSchema: ComputerDriveInputSchema, outputSchema: DriveLoginStateSchema, annotations: writeAnnotations,
+  }, input => invokeOperatorTool(context, 'computer_drive_connect_start',
+    () => drive.connectStart(context.principal, 'mcp', input.target)))
+  if (drive && operatorToolAvailable(context, 'computer_drive_connect_status')) server.registerTool('computer_drive_connect_status', {
+    description: 'Read an active Google Drive connection: waiting (with its sign-in link), connecting, connected (with the Google account '
+      + 'and mount path), failed or expired. Requires global settings:update.',
+    inputSchema: ComputerDriveStatusInputSchema, outputSchema: DriveLoginStateSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
+  }, input => invokeOperatorTool(context, 'computer_drive_connect_status',
+    () => drive.connectStatus(context.principal, 'mcp', input.target, input.loginId)))
+  if (drive && operatorToolAvailable(context, 'computer_drive_disconnect')) server.registerTool('computer_drive_disconnect', {
+    description: 'Unmount Google Drive on that computer and remove the app\'s rclone remote. Files stay in Google Drive. Requires global settings:update.',
+    inputSchema: ComputerDriveInputSchema, outputSchema: DriveLoginStateSchema,
+    annotations: { ...writeAnnotations, destructiveHint: true },
+  }, input => invokeOperatorTool(context, 'computer_drive_disconnect',
+    () => drive.disconnect(context.principal, 'mcp', input.target)))
   const service = context.services.buildComputers
   if (!service) return
   const annotations = { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false }
