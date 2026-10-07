@@ -26,7 +26,8 @@ apt-get install -y --no-install-recommends podman crun uidmap e2fsprogs quota li
 grep -q "^$user:" /etc/subuid || usermod --add-subuids 100000-165535 "$user"
 grep -q "^$user:" /etc/subgid || usermod --add-subgids 100000-165535 "$user"
 
-install -d -m 0700 "$(dirname "$backing")"
+# The Worker measures the backing file at capture: its directory stays traversable, not listable.
+[ -d "$(dirname "$backing")" ] || install -d -m 0711 "$(dirname "$backing")"
 if [ ! -f "$backing" ]; then
   fallocate -l "${size}G" "$backing"
   mkfs.ext4 -q -O quota,project -E quotatype=prjquota "$backing"
