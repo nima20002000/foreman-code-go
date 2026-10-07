@@ -1,3 +1,5 @@
+import { ComputerActivityService } from './modules/computers/activity.js'
+import { registerComputerActivityRoutes } from './routes/computerActivity.js'
 import { registerBuildComputerRoutes } from './routes/buildComputers.js'
 import { WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
 import { PRODUCT_SLUG } from '@foreman-code/contracts/product'
@@ -1604,6 +1606,9 @@ export function buildProductionApp(
       runtimeServices.workspaceRoots = new WorkspaceBoundLocationService(database.pool, commands, jobRuntime.policies)
       registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
       runtimeServices.sources = jobRuntime.sources
+      runtimeServices.computerActivity = new ComputerActivityService(database.pool, machine.installationId,
+        id => deviceRuntime.presenceFor(id), commands)
+      registerComputerActivityRoutes(app, runtimeServices.computerActivity)
       runtimeServices.buildComputers = jobRuntime.buildComputers
       registerBuildComputerRoutes(app, jobRuntime.buildComputers)
       runtimeServices.jobs = jobRuntime.jobs

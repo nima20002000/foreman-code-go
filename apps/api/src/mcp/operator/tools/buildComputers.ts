@@ -1,3 +1,5 @@
+import { z } from 'zod'
+import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
 import type { OperatorRequestContext } from '../types.js'
@@ -5,6 +7,17 @@ import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
 
 export function registerBuildComputerTools(server: McpServer, context: OperatorRequestContext): void {
+  if (context.services.computerActivity && operatorToolAvailable(context, 'computer_activity_list')) {
+    server.registerTool('computer_activity_list', {
+      description: 'Read current computer presence, running CI Jobs and placed workflow agent executions. '
+        + 'Requires global settings:read. Job and agent names are filtered by jobs:read and runs:read scopes. '
+        + 'Read-only, at most 101 computers and 200 entries per activity kind; truncated and activityComplete '
+        + 'describe coverage. No telemetry permissions are implied; use resource_telemetry tools for utilization.',
+      inputSchema: z.object({}).strict(), outputSchema: ComputerActivityListSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
+    }, () => invokeOperatorTool(context, 'computer_activity_list',
+      () => context.services.computerActivity!.list(context.principal, 'mcp')))
+  }
   const service = context.services.buildComputers
   if (!service) return
   const annotations = { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false }

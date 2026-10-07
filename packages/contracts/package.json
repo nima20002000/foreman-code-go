@@ -129,6 +129,7 @@
       "types": "./dist/remoteExecutionEntryClosureNode.d.ts",
       "import": "./dist/remoteExecutionEntryClosureNode.js"
     },
+    "./computer-activity": { "types": "./dist/computerActivity.d.ts", "import": "./dist/computerActivity.js" },
     "./build-computers": { "types": "./dist/buildComputers.d.ts", "import": "./dist/buildComputers.js" },
     "./jobs": {
       "types": "./dist/jobs.d.ts",

@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CanonicalMachineReference, DeviceRegistration } from '@foreman-code/contracts/device-identity'
+import { http, HttpResponse } from 'msw'
+import { server } from '../../mocks/server'
 import { ComputerSettings } from './ComputerSettings'
 vi.mock('../runtime-qualification/ComputerRuntimeQualification', () => ({ ComputerRuntimeQualification: () => null }))
 
@@ -35,7 +37,14 @@ function renderComputerSettings(deviceId?: string) {
   )
 }
 
-beforeEach(() => { fixture.status = 'paired' })
+beforeEach(() => {
+  fixture.status = 'paired'
+  server.use(http.post('*/api/management/settings/build-computers/read', async ({ request }) => {
+    const { target } = await request.json() as { target: unknown }
+    return HttpResponse.json({ preference: { target, revision: 0, buildEnabled: false, buildPriority: 50,
+      buildRole: 'primary', buildAllowancePercent: 100 }, state: 'disabled', reasons: [], remoteExecutionEnabled: true })
+  }))
+})
 afterEach(() => {
   cleanup()
   clients.splice(0).forEach(client => client.clear())
@@ -46,6 +55,7 @@ describe('Computer inventory and settings sibling identities', () => {
   it.each(['main', 'device'] as const)('renders both %s sections without colliding child keys', (kind) => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     renderComputerSettings(kind === 'device' ? fixture.deviceId : undefined)
+    if (kind === 'main') fireEvent.click(screen.getByText('Main PC setup'))
     expect(screen.getByRole('region', { name: 'Host harness inventory' })).toBeVisible()
     const hostRef = kind === 'device' ? { kind, mainId: fixture.mainId, deviceId: fixture.deviceId }
       : { kind, mainId: fixture.mainId }
@@ -57,12 +67,12 @@ describe('Computer inventory and settings sibling identities', () => {
 
   it.each([
     ['pending', 'Pairing pending', 'Awaiting pairing'],
-    ['paired', 'Paired remote computer', 'See observed connection below'],
+    ['paired', `Computer ${fixture.deviceId.slice(0, 8)}`, 'See observed connection below'],
     ['revoked', 'Access revoked', 'Unavailable for a revoked worker'],
   ] as const)('labels %s registration accurately in the list and details', (status, label, connection) => {
     fixture.status = status
     renderComputerSettings()
-    expect(screen.getByText(`${label} · open for its connection and installations`)).toBeVisible()
+    expect(screen.getByText(label)).toBeVisible()
     if (status === 'pending') expect(screen.queryByText(/Access revoked/)).not.toBeInTheDocument()
     cleanup()
     renderComputerSettings(fixture.deviceId)

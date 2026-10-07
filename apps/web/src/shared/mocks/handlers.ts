@@ -221,6 +221,9 @@ export function bindMockInstallation(): void {
 }
 
 export const handlers: RequestHandler[] = [
+  http.get('*/api/management/computers/activity', () => HttpResponse.json({
+    mainId: '11111111-1111-4111-8111-111111111111', computers: [], truncated: false, activityComplete: true,
+  })),
   ...agentChatHandlers,
   currentAuthoringHandler,
   http.get('/api/runtime/identity', () => HttpResponse.json(mockRuntimeIdentity)),

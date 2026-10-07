@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, useQueries, type QueryFunctionContext } from '@tanstack/react-query'
 import { BuildComputerStatusSchema, BuildComputerUpdateSchema, type BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
 import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { apiClient, ApiError } from './client'
@@ -15,19 +15,28 @@ function verifyTarget(value: import('@foreman-code/contracts/build-computers').B
   }
   return value
 }
+export function buildComputerQuery(target: DeviceProvisioningTarget) {
+  return { queryKey: buildComputerKeys.computer(target), enabled: !sessionIsSwitching(),
+    retry: false, refetchInterval: 5_000,
+    queryFn: async ({ signal }: QueryFunctionContext) => verifyTarget(await apiClient.request('/api/management/settings/build-computers/read',
+      BuildComputerStatusSchema, { method: 'POST', body: { target }, signal }), target) }
+}
 export function useBuildComputer(target: DeviceProvisioningTarget) {
   useHarnessSessionEpoch()
-  return useQuery({ queryKey: buildComputerKeys.computer(target), enabled: !sessionIsSwitching(),
-    retry: false, refetchInterval: 5_000,
-    queryFn: async ({ signal }) => verifyTarget(await apiClient.request('/api/management/settings/build-computers/read',
-      BuildComputerStatusSchema, { method: 'POST', body: { target }, signal }), target) })
+  return useQuery(buildComputerQuery(target))
+}
+export function useBuildComputers(targets: readonly DeviceProvisioningTarget[]) {
+  useHarnessSessionEpoch()
+  return useQueries({ queries: targets.map(buildComputerQuery) })
+}
+export async function updateBuildComputer(input: BuildComputerUpdate) {
+  return verifyTarget(await apiClient.request('/api/management/settings/build-computers/update',
+    BuildComputerStatusSchema, { method: 'POST', body: BuildComputerUpdateSchema.parse(input) }), input.target)
 }
 export function useUpdateBuildComputer() {
   const cache = useQueryClient()
   return useMutation({ retry: false,
-    mutationFn: async (input: BuildComputerUpdate) => verifyTarget(await apiClient.request(
-      '/api/management/settings/build-computers/update', BuildComputerStatusSchema,
-      { method: 'POST', body: BuildComputerUpdateSchema.parse(input) }), input.target),
+    mutationFn: updateBuildComputer,
     onSuccess: async value => {
       cache.setQueryData(buildComputerKeys.computer(value.preference.target), value)
       await cache.invalidateQueries({ queryKey: buildComputerKeys.root })

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import type { CanonicalMachineReference, DeviceRegistration } from '@foreman-code/contracts/device-identity'
-import { registeredComputerOptions } from '../../shared/api/computerOptions'
+import { ComputerRows } from '../computers/ComputerRows'
 import { useRuntimeIdentityQuery } from '../../shared/api/runtimeIdentity'
 import { useHostHarnessRegistryQuery, useRegisteredComputersQuery, useSelectedMainQuery } from '../../shared/api/computerSettings'
 import { Alert, Button, LoadingState } from '../../shared/ui/nocturne'
@@ -11,7 +11,7 @@ import { ComputerPairingForm } from './ComputerPairingForm'
 import { ConnectionSetupStatus } from './DeviceSetupGuide'
 import { HostHarnessOverrides } from './HostHarnessOverrides'
 import { HostHarnessInventory } from './HostHarnessInventory'
-import { BuildComputerParticipation, BuildComputerSummary } from './BuildComputerParticipation'
+import { BuildComputerParticipation } from './BuildComputerParticipation'
 import { WorkerExecutionSettings } from './WorkerExecutionSettings'
 import './computerSettings.css'
 
@@ -56,10 +56,9 @@ export function ComputerSettings({ deviceId, onSelectComputer }: { deviceId?: st
   const addScope = useAddPanel(state => state.scope)
   const toggleAdd = useAddPanel(state => state.toggle)
   const adding = currentMain !== undefined && addScope === `${sessionGeneration()}:${currentMain.mainId}`
-  const remote = currentMain && computers.isSuccess ? registeredComputerOptions(currentMain.mainId, computers.data.devices) : []
   return <section className="settings-editor-page computers-page" aria-label={deviceId ? 'Computer details' : 'Computers'}>
     <header className="computers-header"><div className="settings-experience-heading"><h1>{deviceId ? 'Computer details' : 'Computers'}</h1>
-      <p>The machines that run your workflows, and the harnesses installed on each.</p></div>
+      <p>Builds and agents, across your computers.</p></div>
       {currentMain ? <Button variant="primary" aria-expanded={adding} aria-controls="computer-add-panel" onClick={() => toggleAdd(`${sessionGeneration()}:${currentMain.mainId}`)}>{adding ? 'Close' : 'Add computer'}</Button> : null}</header>
     {currentMain ? <div id="computer-add-panel" className="computers-panel" hidden={!adding}><ComputerPairingForm key={currentMain.mainId} mainId={currentMain.mainId} /></div>
       : <p className="computer-hint">Read the selected main before adding a computer.</p>}
@@ -68,25 +67,15 @@ export function ComputerSettings({ deviceId, onSelectComputer }: { deviceId?: st
       : computers.isError ? <><Alert tone="danger" title="Registered computers could not be read." /><Button onClick={() => void computers.refetch()}>Retry registered computers</Button></>
         : registration ? <><RegistrationFacts registration={registration} /><ComputerRevokeButton key={`${registration.mainId}:${registration.deviceId}`} registration={registration} />
           {registration.status === 'paired' ? <ComputerRuntimeQualification key={`runtime:${registration.mainId}:${registration.deviceId}`} registration={registration} /> : null}</> : <Alert tone="warning" title="This device is not registered with the selected main." />
-      : <ul className="computer-rows">
-        <li className="computer-row"><div className="computer-row-body"><strong>This computer</strong>
-          <span>Runs the app and schedules workflows. It is not a remote worker.</span></div></li>
-        {!currentMain ? <li className="computer-row computer-row--note">Read the selected main before inspecting workers.</li>
-          : computers.isPending ? <li className="computer-row computer-row--note"><LoadingState label="Loading registered computers…" /></li>
-            : computers.isError ? <li className="computer-row computer-row--note"><Alert tone="danger" title="Registered computers could not be read." /><Button onClick={() => void computers.refetch()}>Retry registered computers</Button></li>
-              : remote.map(value => {
-                const paired = computers.data?.devices.find(item => item.deviceId === value.hostRef.deviceId)
-                return <li key={value.applicationInstallationId} className="computer-row">
-                <div className="computer-row-body"><strong className="computer-row-id">{value.label}</strong>
-                  {paired?.status === 'paired' && <BuildComputerSummary target={{ hostRef: value.hostRef,
-                    applicationInstallationId: value.applicationInstallationId, keyRevision: paired.keyRevision,
-                    authorizationRevision: paired.authorizationRevision }} />}
-                  <span>{value.registrationStatus === 'paired' ? 'Paired remote computer'
-                    : value.registrationStatus === 'pending' ? 'Pairing pending' : 'Access revoked'} · open for its connection and installations</span></div>
-                <Button size="sm" onClick={() => onSelectComputer?.(value.hostRef.deviceId)} disabled={!onSelectComputer} aria-label={`Open ${value.label}`}>Open</Button></li>
-              })}
-        {currentMain && computers.isSuccess && !remote.length ? <li className="computer-row computer-row--note">No remote computers are paired yet. Choose “Add computer” to pair one.</li> : null}
-      </ul>}
+      : main.isError ? <><Alert tone="danger" title="Main PC could not be read." />
+        <Button onClick={() => void main.refetch()}>Retry Main PC</Button></>
+      : !currentMain ? <LoadingState label="Loading Main PC…" />
+        : computers.isPending ? <LoadingState label="Loading computers…" />
+          : computers.isError ? <><Alert tone="danger" title="Computers could not be read." />
+            <Button onClick={() => void computers.refetch()}>Retry computers</Button></>
+            : <ComputerRows mainId={currentMain.mainId} devices={computers.data?.devices ?? []}
+              onSelectComputer={onSelectComputer} />}
+
     {!deviceId ? <details className="computer-details"><summary>Technical details</summary>
       <h3>Selected main · workflow authority</h3>
       {main.isPending ? <LoadingState label="Loading selected main…" /> : main.isError ? <>
@@ -99,15 +88,17 @@ export function ComputerSettings({ deviceId, onSelectComputer }: { deviceId?: st
         : <dl className="computer-facts"><div><dt>API installation</dt><dd>{identity.data.installationId}</dd></div></dl>}
       <p className="computer-hint">Where this browser sends requests. It does not choose where Runs execute.</p>
     </details> : null}
-    {host && (!registration || registration.status === 'paired') ? <BuildComputerParticipation
+    {deviceId && host && registration?.status === 'paired' ? <BuildComputerParticipation
       key={`builds:${host.mainId}:${deviceId ?? 'main'}:${registration?.authorizationRevision ?? 0}`}
       target={{ hostRef: host, applicationInstallationId: registration?.workerInstallationId ?? host.mainId,
         keyRevision: registration?.keyRevision ?? null, authorizationRevision: registration?.authorizationRevision ?? null }} /> : null}
+    <details className="computer-details" open={deviceId ? true : undefined}>
+      <summary>{deviceId ? 'Computer setup' : 'Main PC setup'}</summary>
     {host && (!registration || registration.status === 'paired') ? <Inventory key={`inventory:${host.mainId}:${deviceId ?? 'main'}`} host={host} applicationInstallationId={registration?.workerInstallationId ?? host.mainId} /> : null}
     {host && (!registration || registration.status === 'paired') ? <HostHarnessOverrides key={`overrides:${host.mainId}:${deviceId ?? 'main'}`} target={{ hostRef: host, applicationInstallationId: registration?.workerInstallationId ?? host.mainId }} /> : null}
-    {registration?.status === 'revoked' ? <Alert tone="warning" title="This worker’s application access is revoked." /> : null}
     {!deviceId ? <WorkerExecutionSettings /> : null}
-    <h2 className="computers-title">Default execution computer</h2>
-    <p className="computer-hint">Pick the computer and folder in a workspace’s settings. That choice is separate from this main and the browser connection; Runs keep the placement they were accepted with.</p>
+    </details>
+    {registration?.status === 'revoked' ? <Alert tone="warning" title="This worker’s application access is revoked." /> : null}
+
   </section>
 }

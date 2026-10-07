@@ -11,6 +11,7 @@ import {
 import { Settings, UserRound } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 
+import { ComputerActivityIcons } from '../../features/computers/ComputerActivity'
 import { ThemeToggle } from '../../features/theme'
 import { HarnessStatusMenu } from '../../features/settings/HarnessStatusMenu'
 import { useWorkspacePages } from '../api/query'
@@ -256,6 +257,7 @@ export function WorkspaceShell({
         </nav>
 
         <div className="sidebar-footer">
+          <ComputerActivityIcons />
           <HarnessStatusMenu />
           <div className="sidebar-account-row">
             <Link to="/account" className={`sidebar-account-link${activeGlobalSection === 'account' ? ' sidebar-account-link-active' : ''}`}

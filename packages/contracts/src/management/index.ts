@@ -688,7 +688,7 @@ export const OperatorToolNameSchema = z.enum([
   "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list", "source_preparation_get", "source_preparation_reconcile",
   "job_runtime_profile_list","job_runtime_profile_save","job_runtime_qualification_request","job_runtime_qualification_run","job_runtime_qualification_get",
   "job_choices_get","job_workflow_execution_get","job_definition_list","job_definition_get","job_definition_version_get","job_definition_save","job_validate","job_start","job_queue_get","job_queue_list","job_queue_cancel","job_get","job_list","job_cancel","job_cancellation_recovery_propose","job_cancellation_recovery_get","job_logs_read","job_artifacts_list","job_artifact_read",
-  "build_computer_get", "build_computer_update",
+  "build_computer_get", "build_computer_update", "computer_activity_list",
   "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
   "device_setup_code_create",
   "device_setup_options_get",

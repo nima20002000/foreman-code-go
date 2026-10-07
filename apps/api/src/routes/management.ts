@@ -1,3 +1,4 @@
+import { registerComputerActivityRoutes } from './computerActivity.js'
 import { registerBuildComputerRoutes } from './buildComputers.js'
 import { registerRunSubagentRoutes } from './runSubagents.js'
 import { registerHarnessRegistryRoutes } from '../modules/harnesses/registryManagement.js'
@@ -81,6 +82,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
       services.workerExecution!.read(requirePrincipal(request)))
   }
   if (services.harnessRegistry) registerHarnessRegistryRoutes(app, services.harnessRegistry, async request => requirePrincipal(request))
+  if (services.computerActivity) registerComputerActivityRoutes(app, services.computerActivity)
   if (services.buildComputers) registerBuildComputerRoutes(app, services.buildComputers)
   if (services.devices) registerDeviceManagementRoutes(app, services.devices, async request => requirePrincipal(request))
   if (services.workspaceRoots) registerWorkspaceRootRoutes(app, services.workspaceRoots)

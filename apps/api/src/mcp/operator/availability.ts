@@ -125,7 +125,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['operator_chat_list', 'operator_chat_history_get', 'operator_chat_activity_get'].includes(name)) scope = 'global'
   if (['workflow_create','workspace_get','workspace_update','workspace_archive','workspace_location_validate','workspace_location_set','agent_get'].includes(name)) scope = 'workspace'
   if (name === 'execution_readiness_get' || name === 'harness_registry_get') scope = 'global'
-  if (name === 'worker_execution_settings_get' || name.startsWith('build_computer_')) scope = 'global'
+  if (name === 'computer_activity_list' || name === 'worker_execution_settings_get' || name.startsWith('build_computer_')) scope = 'global'
   if (name.startsWith('workspace_root_')) scope = 'workspace'
   if (name.startsWith('source_')) scope = 'workspace'
   if (name.startsWith('device_connection_')) scope = 'global'
@@ -231,6 +231,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (['harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get'].includes(name) && !service.harnessSettings) return false
   if (['codex_plugins_list', 'codex_plugin_get'].includes(name) && !service.harnessSettings?.plugins) return false
   if (name.startsWith('interaction_') && !service.interactions) return false
+  if (name === 'computer_activity_list' && !service.computerActivity) return false
   if (name.startsWith('build_computer_') && !service.buildComputers) return false
   if (name === 'worker_execution_settings_get' && !service.workerExecution) return false
   if (['agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update'].includes(name) && !service.settings) return false

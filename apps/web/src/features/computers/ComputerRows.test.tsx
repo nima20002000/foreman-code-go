@@ -1,0 +1,140 @@
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
+import { expect, it } from 'vitest'
+import type { BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
+import { server } from '../../mocks/server'
+import { computerKey } from '../../shared/api/computerActivity'
+import { ComputerRows } from './ComputerRows'
+import { computersFixture, deviceName, deviceTarget, mainId, mainTarget, registration } from './computersTestFixture'
+
+function rows() {
+  return within(screen.getByRole('list', { name: 'Computers in build priority order' })).getAllByRole('listitem')
+}
+async function ready() {
+  await waitFor(() => expect(screen.getAllByRole('button', { name: /^Move .+ (up|down)$/ })
+    .filter(button => !(button as HTMLButtonElement).disabled)).toHaveLength(2))
+}
+it('shows Main and paired computers as rows with presence, roles, build controls and utilization', async () => {
+  computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  await ready()
+  expect(rows()).toHaveLength(2)
+  expect(rows()[0]).toHaveAccessibleName('Main PC')
+  expect(within(rows()[0]!).getByText('Idle')).toBeVisible()
+  expect(within(rows()[1]!).getByText('Offline')).toBeVisible()
+  expect(screen.getByRole('combobox', { name: 'Build role for Main PC' })).toHaveValue('primary')
+  expect(screen.getByRole('combobox', { name: `Build role for ${deviceName}` })).toHaveValue('backup')
+  expect(screen.getByRole('switch', { name: 'Builds on Main PC' })).toBeChecked()
+  expect(screen.getAllByRole('meter', { name: 'CPU' })).toHaveLength(2)
+  expect(screen.getAllByRole('meter', { name: 'Memory' })).toHaveLength(2)
+})
+it('persists role, allowance and build edits with the latest saved revision', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  const user = userEvent.setup()
+  await ready()
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Build role for Main PC' }), 'backup')
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Increase allowance for Main PC' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: 'Increase allowance for Main PC' }))
+  await waitFor(() => expect(screen.getByRole('switch', { name: 'Builds on Main PC' })).toBeEnabled())
+  await user.click(screen.getByRole('switch', { name: 'Builds on Main PC' }))
+  await waitFor(() => expect(f.writes).toHaveLength(3))
+  expect(f.writes.map(value => value.expectedRevision)).toEqual([1, 2, 3])
+  expect(f.statuses.get(computerKey(mainTarget))?.preference).toMatchObject({
+    buildRole: 'backup', buildAllowancePercent: 70, buildEnabled: false,
+  })
+  expect(new Set(f.writes.map(value => value.commandId)).size).toBe(3)
+  await waitFor(() => expect(screen.getByRole('switch', { name: 'Builds on Main PC' })).not.toBeChecked())
+  expect(screen.getByRole('status', { name: 'Allowance for Main PC' })).toHaveTextContent('70%')
+})
+it('optimistically reorders with keyboard controls and persists higher priority for the top computer', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  let release!: () => void
+  const held = new Promise<void>(resolve => { release = resolve })
+  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
+    const input = await request.json() as BuildComputerUpdate
+    f.writes.push(input)
+    await held
+    return HttpResponse.json(f.update(input))
+  }))
+  await ready()
+  const button = screen.getByRole('button', { name: `Move ${deviceName} up` })
+  button.focus()
+  await userEvent.setup().keyboard('{Enter}')
+  await waitFor(() => expect(rows()[0]).toHaveAccessibleName(deviceName))
+  expect(screen.getByRole('switch', { name: 'Builds on Main PC' })).toBeDisabled()
+  release()
+  await ready()
+  expect(f.writes).toHaveLength(2)
+  expect(f.writes.every(value => value.expectedRevision === 1)).toBe(true)
+  expect(f.statuses.get(computerKey(deviceTarget))?.preference.buildPriority).toBe(100)
+  expect(f.statuses.get(computerKey(mainTarget))?.preference.buildPriority).toBe(0)
+  // Moved above a Primary, the former Backup is now a Primary so Auto placement tries it first.
+  expect(f.statuses.get(computerKey(deviceTarget))?.preference.buildRole).toBe('primary')
+  expect(screen.getByRole('combobox', { name: `Build role for ${deviceName}` })).toHaveValue('primary')
+})
+it('reorders by dragging and reuses command IDs after an uncertain response', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
+    const input = await request.json() as BuildComputerUpdate
+    f.writes.push(input)
+    if (f.writes.length === 1) {
+      f.update(input)
+      return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Try again' } }, { status: 503 })
+    }
+    if (f.writes.length === 2) return HttpResponse.json(f.statuses.get(computerKey(input.target)))
+    return HttpResponse.json(f.update(input))
+  }))
+  await ready()
+  const handle = within(rows()[1]!).getByTitle('Drag to reorder')
+  fireEvent.dragStart(handle, { dataTransfer: { setData() {}, effectAllowed: '' } })
+  fireEvent.dragOver(rows()[0]!)
+  fireEvent.drop(rows()[0]!)
+  await waitFor(() => expect(rows()[0]).toHaveAccessibleName(deviceName))
+  await ready()
+  expect(f.writes).toHaveLength(3)
+  expect(f.writes[0]?.commandId).toBe(f.writes[1]?.commandId)
+})
+it('rolls back optimistic order and completed writes when another computer conflicts', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
+    const input = await request.json() as BuildComputerUpdate
+    f.writes.push(input)
+    if (f.writes.length === 2) return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Changed elsewhere' } }, { status: 409 })
+    return HttpResponse.json(f.update(input))
+  }))
+  await ready()
+  await userEvent.setup().click(screen.getByRole('button', { name: `Move ${deviceName} up` }))
+  expect(await screen.findByText('Settings changed elsewhere. Order restored; try again.')).toBeVisible()
+  await ready()
+  expect(rows()[0]).toHaveAccessibleName('Main PC')
+  expect(f.writes).toHaveLength(3)
+  expect(f.writes[2]).toMatchObject({ target: deviceTarget, expectedRevision: 2, buildPriority: 50 })
+  expect(f.statuses.get(computerKey(deviceTarget))?.preference.buildPriority).toBe(50)
+})
+it('restores row controls when a save is denied', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  await ready()
+  server.use(http.post('*/api/management/settings/build-computers/update', () => HttpResponse.json({
+    error: { code: 'ACCESS_DENIED', message: 'Settings permission is required.' },
+  }, { status: 403 })))
+  await userEvent.setup().click(screen.getByRole('switch', { name: 'Builds on Main PC' }))
+  expect(await screen.findByText('Settings permission is required.')).toBeVisible()
+  expect(screen.getByRole('switch', { name: 'Builds on Main PC' })).toBeChecked()
+  expect(f.statuses.get(computerKey(mainTarget))?.preference.buildEnabled).toBe(true)
+})
+
+it('reports a failed compensation and refreshes persisted priorities instead of hiding partial saves', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
+    const input = await request.json() as BuildComputerUpdate
+    f.writes.push(input)
+    if (f.writes.length > 1) return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Changed elsewhere' } }, { status: 409 })
+    return HttpResponse.json(f.update(input))
+  }))
+  await ready()
+  await userEvent.setup().click(screen.getByRole('button', { name: `Move ${deviceName} up` }))
+  expect(await screen.findByText('Some changes could not be restored. Refresh to see the saved order.')).toBeVisible()
+  await ready()
+  expect(f.writes).toHaveLength(3)
+  expect(f.statuses.get(computerKey(deviceTarget))?.preference).toMatchObject({ buildPriority: 100, revision: 2 })
+})
