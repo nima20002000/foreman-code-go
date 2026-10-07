@@ -25,7 +25,7 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 - Give each workflow Agent its own git worktree and branch of the workspace's GitHub repository on its computer; the Run, the Board and `context_get` show the branch.
 - Agent CI runs on the Agent's own computer first and moves to the next build computer in order only when its own is busy; it tests the Agent's current files, sent as a git bundle, with nothing pushed.
 - Build computers prepare their own CI runtime for a commit with no human step: offline packages, verification image, profile update, protected refresh and requalification (`build_computer_prepare`, and automatically when a commit changes dependency files).
-- Connect Google Drive on any computer through rclone: sign in to Google on Main, and Drive mounts at `~/Foreman Code Drive` on that computer. Agents get their workspace's shared Drive folder from `context_get`.
+- Connect Google Drive on any computer through rclone: sign in to Google on Main, and the app's "Foreman Code" Drive folder mounts at `~/Foreman Code Drive` on that computer. The app sees only files it created in that folder (`drive.file`), not the rest of the Drive. Agents get their workspace's shared Drive folder from `context_get`.
 - Update every Agent that uses an older version of a skill, and re-save the workflows that pin them, in one click (`skill_users_update`).
 
 ### Changed

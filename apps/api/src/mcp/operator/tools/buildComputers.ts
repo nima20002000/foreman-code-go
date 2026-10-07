@@ -57,7 +57,9 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
     description: 'Connect Google Drive on Main or a paired computer through rclone. Installs rclone for that computer\'s user if missing '
       + '(checksum-verified), then returns authorizationUrl: a Google sign-in link served by rclone on Main (127.0.0.1:53682), to open in a '
       + 'browser on Main. After sign-in the authorization is written only to that computer\'s rclone config, Drive mounts at '
-      + '~/Foreman Code Drive as a user service, and Main keeps no token. Requires global settings:update. Follow with '
+      + '~/Foreman Code Drive as a user service, and Main keeps no token. The authorization uses the drive.file scope and the mount is '
+      + 'rooted at one "Foreman Code" folder, so Agents see only files the app created there, never the rest of the Drive. '
+      + 'Requires global settings:update. Follow with '
       + 'computer_drive_connect_status until connected. One sign-in at a time.',
     inputSchema: ComputerDriveInputSchema, outputSchema: DriveLoginStateSchema, annotations: writeAnnotations,
   }, input => invokeOperatorTool(context, 'computer_drive_connect_start',

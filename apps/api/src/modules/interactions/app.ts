@@ -123,7 +123,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
     if (!row?.name) return undefined
     const mount = await this.driveMount(row.device_id ? { kind: 'device', deviceId: row.device_id } : { kind: 'main' })
     if (!mount) return undefined
-    return { provider: 'google-drive' as const, path: join(mount, 'Foreman Code', driveFolderName(row.name)) }
+    return { provider: 'google-drive' as const, path: join(mount, driveFolderName(row.name)) }
   }
 
   /** The branch this credential's execution works on; null for workspaces without a repository. */

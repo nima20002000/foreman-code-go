@@ -78,7 +78,7 @@ it('tells the Agent where its workspace Google Drive folder is mounted on its ow
   const service = Object.assign(new PostgresAppInteractionService({ query } as unknown as pg.Pool, {} as never, {} as never), {
     driveMount: async (hostRef: unknown) => { mounts.push(hostRef); return mounts.length === 1 ? '/home/dexter/Foreman Code Drive' : null } })
   expect((await service.context(worker) as { sharedFiles?: unknown }).sharedFiles).toEqual({ provider: 'google-drive',
-    path: '/home/dexter/Foreman Code Drive/Foreman Code/Cross-computer team' })
+    path: '/home/dexter/Foreman Code Drive/Cross-computer team' })
   expect(mounts).toEqual([{ kind: 'device', deviceId }])
   // No Drive mounted on that computer: no shared folder is offered.
   expect(await service.context(worker)).not.toHaveProperty('sharedFiles')

@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { DRIVE_MOUNT_DIRECTORY, DRIVE_REMOTE, DriveComputerRequestSchema, DriveComputerStateSchema,
+import { DRIVE_APP_FOLDER, DRIVE_MOUNT_DIRECTORY, DRIVE_REMOTE, DriveComputerRequestSchema, DriveComputerStateSchema,
   type DriveComputerState } from '@foreman-code/contracts/computer-accounts'
 import { DomainError } from '../errors.js'
 
@@ -87,9 +87,15 @@ export class DriveComputer {
       throw new DomainError('DRIVE_TOKEN_INVALID', 'Google did not return a usable Drive authorization.', 400)
     }
     await this.install()
-    const config = await this.ports.readText(this.config) ?? ''
+    const config = withoutSection(await this.ports.readText(this.config) ?? '', DRIVE_REMOTE).trimEnd()
+    // drive.file: the authorization reaches only files the app created, never the rest of the owner's Drive.
+    const remote = (folder?: string) => `${config}\n\n[${DRIVE_REMOTE}]\ntype = drive\nscope = drive.file\n`
+      + `${folder ? `root_folder_id = ${folder}\n` : ''}token = ${JSON.stringify(parsed)}\n`
     await this.ports.mkdir(join(this.ports.home, '.config', 'rclone'))
-    await this.ports.writePrivate(this.config, `${withoutSection(config, DRIVE_REMOTE).trimEnd()}\n\n[${DRIVE_REMOTE}]\ntype = drive\nscope = drive\ntoken = ${JSON.stringify(parsed)}\n`)
+    await this.ports.writePrivate(this.config, remote())
+    // Every computer roots its remote at the one app folder, so the mount shows only that folder.
+    const folder = await this.appFolder()
+    await this.ports.writePrivate(this.config, remote(folder))
     await this.ports.mkdir(this.mountPath)
     await this.ports.mkdir(join(this.ports.home, '.config', 'systemd', 'user'))
     await this.ports.writePrivate(join(this.ports.home, '.config', 'systemd', 'user', UNIT), [
@@ -103,6 +109,24 @@ export class DriveComputer {
     await this.systemctl(['restart', UNIT])
     for (let attempt = 0; attempt < 30 && !await this.ports.mounted(this.mountPath); attempt++) await this.ports.wait(1000)
     if (!await this.ports.mounted(this.mountPath)) throw new DomainError('DRIVE_MOUNT_FAILED', 'Google Drive is connected but did not mount.', 502)
+  }
+
+  /** The app's Drive folder (created once by whichever computer connects first; visible to all of them). */
+  private async appFolder(): Promise<string> {
+    const binary = (await this.binary())!
+    const find = async () => {
+      const listed = await this.ports.run(binary, ['lsjson', `${DRIVE_REMOTE}:`, '--dirs-only', '--no-modtime', '--no-mimetype'], { timeoutMs: 60_000 })
+      if (listed.code !== 0) throw new DomainError('DRIVE_CONNECT_FAILED', `Google Drive could not be read: ${listed.stderr.trim().slice(-300)}`, 502)
+      return (JSON.parse(listed.stdout) as { Name: string; ID?: string }[]).find(item => item.Name === DRIVE_APP_FOLDER)?.ID
+    }
+    let id = await find()
+    if (!id) {
+      const made = await this.ports.run(binary, ['mkdir', `${DRIVE_REMOTE}:${DRIVE_APP_FOLDER}`], { timeoutMs: 60_000 })
+      if (made.code !== 0) throw new DomainError('DRIVE_CONNECT_FAILED', `The app folder could not be created: ${made.stderr.trim().slice(-300)}`, 502)
+      id = await find()
+    }
+    if (!id || !/^[A-Za-z0-9_-]{10,200}$/u.test(id)) throw new DomainError('DRIVE_CONNECT_FAILED', 'The app folder has no Drive ID.', 502)
+    return id
   }
 
   private async disconnect() {

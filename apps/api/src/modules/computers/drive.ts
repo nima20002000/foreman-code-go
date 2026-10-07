@@ -127,7 +127,9 @@ export class ComputerDriveService {
 export function rcloneAuthorizer(environment: NodeJS.ProcessEnv = process.env): DriveAuthorizer {
   return {
     start(rclone) {
-      const child: ChildProcess = spawn(rclone, ['authorize', 'drive', '--auth-no-open-browser'],
+      // Only files the app creates (drive.file), not the owner's whole Drive.
+      const scope = Buffer.from(JSON.stringify({ scope: 'drive.file' })).toString('base64url')
+      const child: ChildProcess = spawn(rclone, ['authorize', 'drive', scope, '--auth-no-open-browser'],
         { stdio: ['ignore', 'pipe', 'pipe'], env: { ...environment, NO_COLOR: '1' } })
       let output = ''
       let resolveUrl!: (value: string) => void, rejectUrl!: (error: Error) => void

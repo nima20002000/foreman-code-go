@@ -56,6 +56,8 @@ export const COMPUTER_DRIVE_NAMESPACE = 'computer-drive-v1'
 /** The rclone remote and user service the app manages on each computer. */
 export const DRIVE_REMOTE = 'foreman-drive'
 export const DRIVE_MOUNT_DIRECTORY = 'Foreman Code Drive'
+/** The one Drive folder the app's remote is rooted at; the mount shows only this folder. */
+export const DRIVE_APP_FOLDER = 'Foreman Code'
 /** Requests Main sends to one computer. The OAuth token is written to that computer's rclone config and never stored by Main. */
 export const DriveComputerRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status') }).strict(),
