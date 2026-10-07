@@ -266,6 +266,7 @@
   "apps/api/src/modules/runs/remote/workerNativeOutputRegistry.ts",
   "apps/api/src/modules/runs/remote/workflowPhysicalReadout.ts",
   "apps/api/src/modules/skills/instructions.ts",
+  "apps/api/src/modules/sources/agentSnapshot.ts",
   "apps/api/src/modules/sources/bindingHash.ts",
   "apps/api/src/modules/sources/capture.ts",
   "apps/api/src/modules/sources/gitWorktree.ts",

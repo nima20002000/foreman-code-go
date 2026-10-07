@@ -107,6 +107,24 @@ describe('CI over the authenticated unified MCP transport', () => {
     } finally { await f.app.close() }
   })
 
+  it('tests an Agent\'s current files and tries its own computer first', async () => {
+    const f = await fixture()
+    try {
+      f.agentExecution.id = 'execution-agent'
+      const started = CiRunOutputSchema.parse((await f.call('ci_run', { suite: 'unit', commandId: 'agent-ci' })).result.structuredContent)
+      expect(f.snapshotCalls).toEqual([{ hostRef: { kind: 'device', mainId: f.agent.mainId, deviceId: f.agent.deviceId },
+        path: '/home/laptop/root/x/tree', baseCommit: 'b'.repeat(40) }])
+      expect(f.approvals.at(-1)).toMatchObject({ snapshot: { commit: 'c'.repeat(40), baseCommit: 'b'.repeat(40) } })
+      expect(f.enqueued.at(-1)).toMatchObject({ placementOverride: { kind: 'prefer',
+        hostRef: { kind: 'device', mainId: f.agent.mainId, deviceId: f.agent.deviceId } } })
+      const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId: started.ticketId })).result.structuredContent)
+      expect(read.queue.definition.spec.source.commit).toBe('c'.repeat(40))
+      // An explicit commit is tested as given, still preferring the Agent's computer.
+      await f.call('ci_run', { suite: 'unit', commandId: 'agent-ci-commit', commit: 'd'.repeat(40) })
+      expect(f.snapshotCalls).toHaveLength(1)
+    } finally { await f.app.close() }
+  })
+
   it('runs and reads CI with equivalent scoped Operator grants', async () => {
     const f = await fixture()
     try {

@@ -14,7 +14,7 @@ export const CI_RUN_ACTIONS: ManagementAction[] = [
 export const CI_GET_ACTIONS: ManagementAction[] = ['jobs:read', 'job_logs:read', 'job_artifacts:read']
 export interface CiAuthority {
   resolve(caller: ManagementPrincipal, workspaceId: string | undefined, actions: ManagementAction[]):
-    Promise<{ principal: ManagementPrincipal; workspaceId: string }>
+    Promise<{ principal: ManagementPrincipal; workspaceId: string; executionId?: string | undefined }>
 }
 
 export class RunCiAuthority implements CiAuthority {
@@ -26,10 +26,11 @@ export class RunCiAuthority implements CiAuthority {
       await sql.query('begin')
       let principalId = caller.id
       let workspaceId = requestedWorkspace
+      let executionId: string | undefined
       if (caller.audience === 'worker') {
         await assertWave25WorkerBinding(sql, caller.id)
         const binding = (await sql.query<{ workspace_id: string; workflow_id: string; run_id: string;
-          authorization_principal_id: string }>(`select b.workspace_id,b.workflow_id,b.run_id,
+          authorization_principal_id: string; execution_id: string | null }>(`select b.workspace_id,b.workflow_id,b.run_id,b.execution_id,
             r.record->>'authorizationPrincipalId' as authorization_principal_id
           from worker_credential_bindings b join runs r on r.id=b.run_id and r.workspace_id=b.workspace_id
           join run_authority_principals a on a.run_id=r.id and a.principal_id=r.record->>'authorizationPrincipalId'
@@ -43,6 +44,7 @@ export class RunCiAuthority implements CiAuthority {
         }
         workspaceId = binding.workspace_id
         principalId = binding.authorization_principal_id
+        executionId = binding.execution_id ?? undefined
       }
       if (!workspaceId) throw new DomainError('INVALID_REQUEST', 'Operator CI requires workspaceId.', 400)
       const accepted = (await currentOperatorAuthority(sql, principalId)).principal
@@ -52,7 +54,7 @@ export class RunCiAuthority implements CiAuthority {
       }]) }
       for (const action of actions) requireAuthorization(principal, action, { workspaceId })
       await sql.query('commit')
-      return { principal, workspaceId }
+      return { principal, workspaceId, executionId }
     } catch (error) {
       await sql.query('rollback')
       throw error

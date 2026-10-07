@@ -1,0 +1,63 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { SourceError } from './manifest.js'
+import type { GitWorktreePorts } from './gitWorktree.js'
+
+/** Bundles of an Agent's own changes are small; larger work belongs on GitHub. */
+export const AGENT_SNAPSHOT_MAX_BYTES = 700 * 1024
+const COMMIT = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u
+const author = { GIT_AUTHOR_NAME: 'Foreman Code', GIT_AUTHOR_EMAIL: 'ci@foreman-code.invalid',
+  GIT_COMMITTER_NAME: 'Foreman Code', GIT_COMMITTER_EMAIL: 'ci@foreman-code.invalid' }
+
+/** Commits an Agent's current files (tracked and untracked, honoring .gitignore) without moving its branch,
+ * and returns a git bundle of that commit relative to the base its worktree started from. */
+export async function snapshotAgentWorktree(ports: Pick<GitWorktreePorts, 'git'>, input: { path: string; baseCommit: string },
+  signal: AbortSignal): Promise<{ commit: string; bundle: Buffer }> {
+  if (!COMMIT.test(input.baseCommit)) throw new SourceError('SOURCE_SNAPSHOT_INVALID', 'The base commit is invalid.')
+  const scratch = await mkdtemp(join(tmpdir(), 'foreman-ci-snapshot-'))
+  const git = async (args: string[], env: Record<string, string> = {}) => {
+    const result = await ports.git(args, { cwd: input.path, signal, env })
+    if (result.code !== 0) throw new SourceError('SOURCE_SNAPSHOT_FAILED',
+      `git ${args[0]} failed: ${result.stderr.trim().split('\n').at(-1)?.slice(0, 300) ?? 'unknown error'}`)
+    return result.stdout.trim()
+  }
+  try {
+    if ((await ports.git(['merge-base', '--is-ancestor', input.baseCommit, 'HEAD'], { cwd: input.path, signal })).code !== 0) {
+      throw new SourceError('SOURCE_SNAPSHOT_INVALID', 'This folder is not an Agent worktree of the approved base.')
+    }
+    const index = { GIT_INDEX_FILE: join(scratch, 'index') }
+    await git(['read-tree', 'HEAD'], index)
+    await git(['add', '-A'], index)
+    const tree = await git(['write-tree'], index)
+    const commit = await git(['commit-tree', tree, '-p', 'HEAD', '-m', 'Foreman Code CI snapshot'], author)
+    const ref = `refs/foreman/ci/${commit}`
+    await git(['update-ref', ref, commit])
+    try {
+      await git(['bundle', 'create', join(scratch, 'snapshot.bundle'), ref, `^${input.baseCommit}`])
+    } finally { await ports.git(['update-ref', '-d', ref], { cwd: input.path, signal }) }
+    const bundle = await readFile(join(scratch, 'snapshot.bundle'))
+    if (bundle.length > AGENT_SNAPSHOT_MAX_BYTES) {
+      throw new SourceError('SOURCE_SNAPSHOT_TOO_LARGE', 'These changes are too large to send for CI; push the branch instead.')
+    }
+    return { commit, bundle }
+  } finally { await rm(scratch, { recursive: true, force: true }) }
+}
+
+/** Adds an Agent snapshot bundle to this computer's clone so the commit can be approved and checked out. */
+export async function importAgentSnapshot(ports: Pick<GitWorktreePorts, 'git'>, clone: string,
+  snapshot: { commit: string; bundle: Buffer }, signal: AbortSignal): Promise<void> {
+  if (!COMMIT.test(snapshot.commit)) throw new SourceError('SOURCE_SNAPSHOT_INVALID', 'The snapshot commit is invalid.')
+  const scratch = await mkdtemp(join(tmpdir(), 'foreman-ci-import-'))
+  try {
+    const file = join(scratch, 'snapshot.bundle')
+    await writeFile(file, snapshot.bundle, { mode: 0o600 })
+    const ref = `refs/foreman/ci/${snapshot.commit}`
+    const fetched = await ports.git(['fetch', '--no-tags', file, `${ref}:${ref}`], { cwd: clone, signal })
+    if (fetched.code !== 0) throw new SourceError('SOURCE_SNAPSHOT_FAILED', 'The Agent snapshot could not be added to the clone.')
+    const head = await ports.git(['rev-parse', '--verify', `${ref}^{commit}`], { cwd: clone, signal })
+    if (head.code !== 0 || head.stdout.trim() !== snapshot.commit) {
+      throw new SourceError('SOURCE_SNAPSHOT_FAILED', 'The Agent snapshot does not contain the expected commit.')
+    }
+  } finally { await rm(scratch, { recursive: true, force: true }) }
+}

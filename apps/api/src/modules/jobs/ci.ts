@@ -10,11 +10,24 @@ import { CI_GET_ACTIONS, CI_RUN_ACTIONS, type CiAuthority } from './ciAuthority.
 import { canonical, jobDigest } from './digest.js'
 import { DomainError } from '../errors.js'
 import { DeviceAccessError } from '../devices/access.js'
+import { z } from 'zod'
+import { MaterializationReceiptSchema } from '@foreman-code/contracts/source-materialization'
+
+/** The few facts CI needs from an Agent's accepted native placement. */
+const AgentPlacementFacts = z.object({
+  materialization: z.object({ receipt: z.object({ binding: z.object({ mainId: z.uuid(), deviceId: z.uuid().nullable() }).loose(),
+    worktree: MaterializationReceiptSchema.shape.worktree }).loose() }).loose(),
+  workingTree: z.object({ canonicalProjectRoot: z.string().startsWith('/') }).loose(),
+}).loose()
+
+export type AgentHostRef = { kind: 'main'; mainId: string } | { kind: 'device'; mainId: string; deviceId: string }
 
 export class CiService {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly authority: CiAuthority, private readonly sources: PostgresSourceService,
     private readonly jobs: JobService) {}
+  /** Reads an Agent's current files from the computer it runs on (Main locally, laptops over their channel). */
+  snapshots?: (hostRef: AgentHostRef, path: string, baseCommit: string) => Promise<{ commit: string; bundle: Buffer }>
 
   async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string }) {
     const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS)
@@ -23,9 +36,13 @@ export class CiService {
       commandId: input.commandId, targetKey: scope.workspaceId, payload: input, dedicatedConnection: true,
       authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
       perform: async () => {
+        // An Agent's CI tests its current files and runs on its own computer first, then spills over in build order.
+        const agent = scope.executionId ? await this.agentWorkspace(scope.executionId) : undefined
+        const snapshot = agent?.worktree && !input.commit && this.snapshots ? { baseCommit: agent.worktree.commit,
+          ...await this.snapshots(agent.hostRef, agent.path, agent.worktree.commit) } : undefined
         const source = await this.sources.approveProject(scope.principal, {
           workspaceId: scope.workspaceId, commandId: `${commandKey}:source`,
-          ...(input.commit ? { commit: input.commit } : {}),
+          ...(input.commit ? { commit: input.commit } : {}), ...(snapshot ? { snapshot } : {}),
         })
         const lock = await this.pool.connect()
         const lockKey = `ci:${scope.workspaceId}:${input.suite}`
@@ -39,6 +56,7 @@ export class CiService {
           const admitted = await this.jobs.enqueue(scope.principal, 'mcp', scope.workspaceId, {
             commandId: `${commandKey}:enqueue`, definitionId: prepared.value.id,
             expectedRevision: prepared.value.revision,
+            ...(agent ? { placementOverride: { kind: 'prefer', hostRef: agent.hostRef } } : {}),
           })
           if (admitted.kind === 'retained-execution') {
             throw new DomainError('CI_QUEUE_CONFLICT', 'The CI command belongs to an earlier nonqueued execution.', 409)
@@ -52,6 +70,17 @@ export class CiService {
       },
     })
     return CiRunOutputSchema.parse(outcome.value)
+  }
+
+  private async agentWorkspace(executionId: string) {
+    const row = (await this.pool.query<{ record: unknown }>('select record from execution_native_placements where execution_id=$1',
+      [executionId])).rows[0]
+    if (!row) return undefined
+    const placement = AgentPlacementFacts.parse(row.record)
+    const binding = placement.materialization.receipt.binding
+    const hostRef: AgentHostRef = binding.deviceId ? { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId }
+      : { kind: 'main', mainId: binding.mainId }
+    return { hostRef, path: placement.workingTree.canonicalProjectRoot, worktree: placement.materialization.receipt.worktree }
   }
 
   private async prepare(principal: ManagementPrincipal, workspaceId: string, suite: CiRunInput['suite'],

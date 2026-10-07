@@ -10,6 +10,8 @@ const PositiveInteger = DeviceSafeIntegerSchema.positive()
 export const JobPlacementIntentSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('auto') }).strict(),
   z.object({ kind: z.literal('explicit'), target: JobTargetSchema }).strict(),
+  /** Auto placement that tries this computer first (an Agent's own computer), then the others in build order. */
+  z.object({ kind: z.literal('prefer'), hostRef: JobTargetSchema.shape.hostRef }).strict(),
 ])
 export type JobPlacementIntent = z.infer<typeof JobPlacementIntentSchema>
 export const JobQueuedStartSchema = z.object({

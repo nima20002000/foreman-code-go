@@ -73,6 +73,8 @@ export function ciFixture() {
     { offline: true, source: null, selection: { rootPolicyId: 'offline-root' },
       binding: { rootId: randomUUID(), bindingRevision: 1, accessMode: 'exclusive-write' } },
   ]
+  const approvals: unknown[] = [], enqueued: unknown[] = []
+  const agentExecution: { id?: string } = {}
   const authority: CiAuthority = { resolve: async (caller, requested, actions) => {
     if (caller.audience === 'worker' && caller.id !== worker.id) {
       throw new DomainError('ACCESS_DENIED', 'Unknown Run workspace.', 403)
@@ -83,16 +85,16 @@ export function ciFixture() {
     }
     const principal = caller.audience === 'worker' ? accepted : caller
     for (const action of actions) requireAuthorization(principal, action, { workspaceId: resolved })
-    return { principal, workspaceId: resolved }
+    return { principal, workspaceId: resolved, ...(caller.audience === 'worker' && agentExecution.id ? { executionId: agentExecution.id } : {}) }
   } }
   const sources = {
-    approveProject: async (principal: ManagementPrincipal, input: { workspaceId: string; commandId: string; commit?: string }) =>
-      (await commands.execute({ principal, source: 'mcp', operation: 'source.project.capture',
+    approveProject: async (principal: ManagementPrincipal, input: { workspaceId: string; commandId: string; commit?: string
+      snapshot?: { commit: string } }) => (approvals.push(input), await commands.execute({ principal, source: 'mcp', operation: 'source.project.capture',
         commandId: input.commandId, targetKey: workspaceId, payload: input, perform: async () => {
           sourceCaptures++
           const manifest = createSourceManifest({ version: 1, approvedSourceId: randomUUID(), snapshotId: randomUUID(),
             capturePolicy: 'git-tree-v1', executablePolicy: 'preserve-approved', deletions: [],
-            git: { commit: input.commit ?? head, tree: 'c'.repeat(40), objectFormat: 'sha1' },
+            git: { commit: input.snapshot?.commit ?? input.commit ?? head, tree: 'c'.repeat(40), objectFormat: 'sha1' },
             entries: ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].sort().map(path => ({
               path, sha256: 'a'.repeat(64), kind: 'file', executable: false, byteSize: 1,
             })) })
@@ -124,6 +126,7 @@ export function ciFixture() {
     },
     enqueue: async (principal: ManagementPrincipal, _source: string, scope: string, input: { commandId: string }) => {
       enqueues++
+      enqueued.push(input)
       expectDefinition()
       const now = new Date().toISOString()
       ticket = JobQueueTicketSchema.parse({ schemaVersion: 1, id: randomUUID(), workspaceId: scope, revision: 1,
@@ -149,10 +152,20 @@ export function ciFixture() {
     readArtifact: async () => ({ bytes: Buffer.from(JSON.stringify(summary)) }),
   } as unknown as JobService
   function expectDefinition() { if (!definition) throw new Error('Missing saved definition') }
-  const pool = { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }) } as unknown as pg.Pool
-  const createCi = () => new CiService(pool, commands, authority, sources, jobs)
+  const agent = { mainId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222' }
+  const pool = { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }),
+    query: async (text: string) => text.includes('execution_native_placements') ? { rows: [{ record: {
+      materialization: { receipt: { binding: { mainId: agent.mainId, deviceId: agent.deviceId },
+        worktree: { repository: 'octo/site', branch: 'foreman/review/coder-1', commit: 'b'.repeat(40) } } },
+      workingTree: { canonicalProjectRoot: '/home/laptop/root/x/tree' } } }] } : { rows: [] } } as unknown as pg.Pool
+  const snapshotCalls: { hostRef: unknown; path: string; baseCommit: string }[] = []
+  const createCi = () => Object.assign(new CiService(pool, commands, authority, sources, jobs), {
+    snapshots: async (hostRef: unknown, path: string, baseCommit: string) => {
+      snapshotCalls.push({ hostRef, path, baseCommit })
+      return { commit: 'c'.repeat(40), bundle: Buffer.from('bundle') }
+    } })
   const services = { commands, ci: createCi() } as unknown as OperatorServices
-  return { workspaceId, worker, operator, readonly, services, audits, createCi, roots,
+  return { workspaceId, worker, operator, readonly, services, audits, createCi, roots, snapshotCalls, approvals, enqueued, agent, agentExecution,
     counts: () => ({ sourceCaptures, enqueues }), advanceHead: () => { head = 'd'.repeat(40) },
     complete: () => {
       if (!ticket) throw new Error('Missing queued ticket')

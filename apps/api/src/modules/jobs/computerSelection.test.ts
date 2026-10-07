@@ -7,7 +7,7 @@ import { buildComputerTarget, type BuildComputerSettings } from '../settings/bui
 import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import type { JobSql } from './repository.js'
 import { buildComputerFixture } from '../../../test/helpers/buildComputerFixture.js'
-import { JobComputerSelection, compatibleJobComputer, jobComputerCapacity, jobComputerCapacityDecision, jobEligibilityReason, orderBuildComputers } from './computerSelection.js'
+import { JobComputerSelection, compatibleJobComputer, jobComputerCapacity, jobComputerCapacityDecision, jobEligibilityReason, orderBuildComputers, orderForPlacement } from './computerSelection.js'
 
 const mainId = '11111111-1111-4111-8111-111111111111'
 function capacityRows(profile: ReturnType<typeof verificationCapacityFixture>, computing: number, retained = 0): JobSql {
@@ -109,6 +109,17 @@ describe('build computer ordering', () => {
     ['unexpected_runtime_error', 'eligibility_check_failed'],
   ])('reports %s as %s without treating unknown eligibility failures as capacity', (code, reason) => {
     expect(jobEligibilityReason(code)).toBe(reason)
+  })
+  it('tries the calling Agent\'s own computer first, then the rest in build order', () => {
+    const primary = enrolled(100, true, '11111111-1111-4111-8111-111111111112')
+    const backup = enrolled(90, true, '11111111-1111-4111-8111-111111111113', 'backup')
+    const agentHost = enrolled(10, true, '11111111-1111-4111-8111-111111111114', 'backup')
+    const prefer = { kind: 'prefer' as const, hostRef: agentHost.spec.target.hostRef }
+    expect(orderForPlacement([primary, backup, agentHost], prefer)).toEqual([agentHost, primary, backup])
+    expect(orderForPlacement([primary, backup, agentHost], { kind: 'auto' })).toEqual([primary, backup, agentHost])
+    // A busy or offline own computer is skipped like any other; the job spills to the next computer.
+    const offline = { ...agentHost, ready: false, reasons: ['offline'] }
+    expect(orderForPlacement([primary, backup, offline], prefer)).toEqual([primary, backup])
   })
   it('skips a disabled high priority computer and prefers 100 to 50', () => {
     const disabled = enrolled(100, false)

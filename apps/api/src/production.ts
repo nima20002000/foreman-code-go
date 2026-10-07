@@ -1,6 +1,9 @@
 import { ComputerActivityService } from './modules/computers/activity.js'
 import { registerComputerActivityRoutes } from './routes/computerActivity.js'
 import { ComputerAccountsService } from './modules/computers/accounts.js'
+import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
+import { snapshotAgentWorktree } from './modules/sources/agentSnapshot.js'
+import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
 import { ComputerGitHubService } from './modules/computers/github.js'
 import { registerComputerGitHubRoutes } from './routes/computerGitHub.js'
@@ -376,6 +379,7 @@ export function buildProductionApp(
       { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 65_536, maxBinaryBytes: 0 },
       { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16_384, maxBinaryBytes: 0 },
+      { namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
         handle: async (payload, context) => {
@@ -1697,6 +1701,17 @@ export function buildProductionApp(
       registerBuildComputerRoutes(app, jobRuntime.buildComputers)
       runtimeServices.jobs = jobRuntime.jobs
       runtimeServices.ci = jobRuntime.ci
+      jobRuntime.ci.snapshots = async (hostRef, path, baseCommit) => {
+        const signal = AbortSignal.timeout(150_000)
+        if (hostRef.kind === 'main') return snapshotAgentWorktree(systemGitWorktreePorts(), { path, baseCommit }, signal)
+        const endpoint = deviceRuntime.endpointForDomains()
+        if (!endpoint.capabilities(hostRef.deviceId).some(value => value.namespace === AGENT_SNAPSHOT_NAMESPACE && value.mainCanRequest)) {
+          throw new DomainError('COMPUTER_OFFLINE', 'The Agent\'s computer is offline or its app is too old to send its files.', 409)
+        }
+        const reply = AgentSnapshotResultSchema.parse((await endpoint.request(hostRef.deviceId, AGENT_SNAPSHOT_NAMESPACE,
+          { path, baseCommit }, { signal })).payload)
+        return { commit: reply.commit, bundle: Buffer.from(reply.bundleBase64, 'base64') }
+      }
       runtimeServices.jobRuntimeProfiles = jobRuntime.profiles
       registerSourceRoutes(app, jobRuntime.sources)
       registerJobRoutes(app, jobRuntime.jobs)

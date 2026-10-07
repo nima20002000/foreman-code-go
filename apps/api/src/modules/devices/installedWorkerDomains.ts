@@ -1,3 +1,4 @@
+import { realpath } from 'node:fs/promises'
 import { recoverInstalledJobRuntimeQualifications } from '../jobs/installedRuntimeQualification.js'
 import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
 import { JOB_OUTPUT_NAMESPACE } from '../files/jobs/workerProtocol.js'
@@ -42,6 +43,9 @@ import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/inst
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
 import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccountsRequestSchema, GitHubLoginRequestSchema } from '@foreman-code/contracts/computer-accounts'
 import { GitHubLoginRunner } from '../computers/githubLogin.js'
+import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotRequestSchema, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
+import { snapshotAgentWorktree } from '../sources/agentSnapshot.js'
+import { systemGitWorktreePorts } from '../sources/gitWorktree.js'
 import { readInstalledWorkflowConfiguration } from '../runs/remote/installedWorkflowConfiguration.js'
 import { probeComputerAccounts, systemPorts } from '../computers/accountProbe.js'
 import { inspectInstalledOpenCode } from '../harnesses/installedOpenCodeInspection.js'
@@ -254,6 +258,24 @@ export async function createInstalledWorkerDomains(input: {
         ...(selected?.opencode ? { opencode: selected.opencode.binary } : {}), ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
       return { payload: await probeComputerAccounts(systemPorts(process.env, binaries),
         AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(20_000)])) }
+    },
+  })
+  extensions.push({ namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+    async handle(payload, context) {
+      const request = AgentSnapshotRequestSchema.parse(payload)
+      if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
+        throw new DomainError('AGENT_SNAPSHOT_STALE', 'Agent snapshots require the actual authenticated worker channel.', 409)
+      }
+      // Only an app-managed Agent worktree under this computer's approved roots can be read.
+      const allowed = await roots()
+      const path = await realpath(request.path)
+      if (!path.endsWith('/tree') || ![allowed.managedRuntimeRoot, ...allowed.bases.map(base => base.canonicalPath)]
+        .some(base => path.startsWith(`${base.replace(/\/$/u, '')}/`))) {
+        throw new DomainError('AGENT_SNAPSHOT_DENIED', 'This folder is not an Agent worktree on this computer.', 403)
+      }
+      const snapshot = await snapshotAgentWorktree(systemGitWorktreePorts(process.env), { path, baseCommit: request.baseCommit },
+        AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(120_000)]))
+      return { payload: AgentSnapshotResultSchema.parse({ commit: snapshot.commit, bundleBase64: snapshot.bundle.toString('base64') }) }
     },
   })
   const githubLogin = new GitHubLoginRunner()

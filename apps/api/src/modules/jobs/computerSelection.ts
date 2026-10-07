@@ -72,6 +72,14 @@ export function compatibleJobComputer(candidate: JobComputerCandidate, request: 
   return canonical(jobPolicyRequirementsRecord(candidate.spec.policy)) === canonical(request.policy)
     && canonical(jobRuntimeProfileLimits(candidate.profile)) === canonical(request.limits)
 }
+/** Local first: a preferred computer (an Agent's own) leads; the rest keep primary/backup and priority order. */
+export function orderForPlacement(candidates: EnrolledCandidate[], placement?: JobPlacementIntent | null): EnrolledCandidate[] {
+  const ordered = orderBuildComputers(candidates)
+  if (placement?.kind !== 'prefer') return ordered
+  const preferred = canonical(placement.hostRef)
+  return [...ordered.filter(candidate => canonical(candidate.spec.target.hostRef) === preferred),
+    ...ordered.filter(candidate => canonical(candidate.spec.target.hostRef) !== preferred)]
+}
 export function orderBuildComputers(candidates: EnrolledCandidate[]): EnrolledCandidate[] {
   return candidates.filter(candidate => candidate.ready && candidate.preference.buildEnabled).sort((left, right) => {
     // Every primary is tried before any backup; within a role the higher priority goes first.
@@ -212,7 +220,7 @@ export class JobComputerSelection {
     const exceedsMaximum = enrolled.length > 0 && maximumCandidates.length === 0
       && enrolled.every(candidate => candidate.profile.schemaVersion !== 2 || candidate.profile.measurement !== null)
     const waitingHosts: string[] = []
-    for (const candidate of orderBuildComputers(enrolled)) {
+    for (const candidate of orderForPlacement(enrolled, options.placementOverride)) {
       if (!this.fitsEmptyComputer(candidate)) {
         reasons.push('request_exceeds_maximum')
         continue

@@ -1,5 +1,5 @@
 import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -15,6 +15,8 @@ import { DomainError } from '../errors.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import { WorkspaceSchema, type RunExecutionLocation } from '@foreman-code/contracts'
 import { captureGitSource, qualifiedGit } from './capture.js'
+import { ensureClone, ensureCommit, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
+import { importAgentSnapshot } from './agentSnapshot.js'
 import { SOURCE_LIMITS, sourceSha256, verifySourceManifest } from './manifest.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
 import { authorizeSource } from './authority.js'
@@ -115,7 +117,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
       return { items, nextSnapshotId: result.rows.length > input.limit ? items.at(-1)!.manifest.snapshotId : null }
     })
   }
-  async approve(principal: ManagementPrincipal, source: Transport, raw: unknown) {
+  /** `repository` captures from Main's own clone of the workspace's GitHub repository instead of its project folder. */
+  async approve(principal: ManagementPrincipal, source: Transport, raw: unknown, repository?: { repository: string; clone: string }) {
     const input = SourceApproveInputSchema.parse(raw)
     requireAuthorization(principal, 'sources:approve', input); requireAuthorization(principal, 'sources:read', input)
     requireAuthorization(principal, 'workspace_locations:read', input)
@@ -140,7 +143,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
             if (existing.state === 'failed') throw new DomainError('SOURCE_CAPTURE_FAILED', 'This capture failed. Approve a new explicit command after correcting the source.', 409)
             return existing
           }
-          const location = await this.locations.snapshot(sql, input.workspaceId, input.expectedLocationRevision, 'read-only')
+          const location = repository ? await this.repositoryOrigin(sql, input.workspaceId, input.expectedLocationRevision, repository)
+            : await this.locations.snapshot(sql, input.workspaceId, input.expectedLocationRevision, 'read-only')
           // Authorize first, then probe only the server-owned canonical namespace.
           const fs = await this.store.storageIdentity(), approvedSourceId = randomUUID(), snapshotId = randomUUID()
           const reservation = await this.reservations.reserve(sql, { scopeId: this.scope(null, null, fs), ownerKind: 'capture', ownerId: snapshotId,
@@ -162,7 +166,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
             snapshotId: origin.snapshot_id, commit: input.commit, approvedPaths: input.approvedPaths, executablePolicy: input.executablePolicy, sink: this.store })
           if (manifest.approvedSourceId !== origin.approved_source_id || manifest.git?.commit !== input.commit || manifest.executablePolicy !== input.executablePolicy
             || !isDeepStrictEqual(manifest.entries.map(e => e.path).sort(), [...input.approvedPaths].sort())) throw new DomainError('SOURCE_FACT_CONFLICT', 'Recovered source bytes do not match the original approval.', 409)
-          await this.locations.revalidateSnapshot(input.workspaceId, origin.origin.location, 'read-only')
+          if (!repository) await this.locations.revalidateSnapshot(input.workspaceId, origin.origin.location, 'read-only')
         } catch (error) {
           await this.transaction(async sql => { await sql.query(`update source_approvals set state='failed' where approved_source_id=$1 and state='capturing'`, [origin.approved_source_id]);
             await this.reservations.retain(sql, origin.origin.reservation, 'uncertain') })
@@ -187,12 +191,56 @@ export class PostgresSourceService implements SourceAdmissionPort {
         })
       } })
   }
+  private async repositoryOrigin(sql: Sql, workspaceId: string, expectedLocationRevision: number, repository: { repository: string; clone: string }) {
+    const row = (await sql.query<{ location_revision: string; record: unknown }>(
+      'select location_revision,record from workspaces where id=$1 for share', [workspaceId])).rows[0]
+    const configured = row && WorkspaceSchema.parse(row.record).repository
+    if (!row || !configured || `${configured.owner}/${configured.name}` !== repository.repository) {
+      throw new DomainError('SOURCE_REPOSITORY_CHANGED', 'The workspace repository changed.', 409)
+    }
+    if (Number(row.location_revision) !== expectedLocationRevision) {
+      throw new DomainError('SOURCE_APPROVAL_CONFLICT', 'Workspace location changed during source capture.', 409)
+    }
+    return { runnerId: 'runner-local', rootPath: repository.clone, locationRevision: expectedLocationRevision,
+      identityHash: `sha256:${createHash('sha256').update(`github:${repository.repository}`).digest('hex')}` } satisfies RunExecutionLocation
+  }
+  /** Main's own clone of the workspace's GitHub repository (fetched with this computer's gh sign-in). */
+  git: GitWorktreePorts = systemGitWorktreePorts()
+  /** Approves a commit for CI: from Main's repository clone when the workspace names a GitHub repository
+   * (including an Agent's snapshot bundle), otherwise from the workspace folder on Main. */
   async approveProject(principal: ManagementPrincipal, input: {
     workspaceId: string; commandId: string; commit?: string
+    snapshot?: { commit: string; baseCommit: string; bundle: Buffer }
   }): Promise<ApprovedSource> {
+    await this.transaction(async sql => authorizeSource(sql, principal, 'sources:approve', input.workspaceId))
+    const configured = await this.transaction(async sql => WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
+      'select record from workspaces where id=$1', [input.workspaceId])).rows[0]?.record ?? { id: input.workspaceId, name: '-' }).repository)
+    const signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
+    let commit = input.snapshot?.commit ?? input.commit
+    let repository: { repository: string; clone: string } | undefined
+    if (configured) {
+      const name = `${configured.owner}/${configured.name}`
+      if (input.snapshot) {
+        const clone = await ensureCommit(this.git, name, input.snapshot.baseCommit, signal)
+        await importAgentSnapshot(this.git, clone, input.snapshot, signal)
+        repository = { repository: name, clone }
+      } else if (commit) repository = { repository: name, clone: await ensureCommit(this.git, name, commit, signal) }
+      else {
+        const clone = this.git.cloneDirectory(name)
+        await ensureClone(this.git, name, signal)
+        const fetched = await this.git.git(['fetch', '--no-tags', 'origin', configured.defaultBranch], { cwd: clone, signal })
+        const head = fetched.code === 0 ? await this.git.git(['rev-parse', 'FETCH_HEAD^{commit}'], { cwd: clone, signal }) : fetched
+        if (head.code !== 0) throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', `Main could not fetch ${name}@${configured.defaultBranch}. Sign GitHub in on Main.`, 409)
+        commit = head.stdout.trim()
+        repository = { repository: name, clone }
+      }
+    } else if (input.snapshot) {
+      throw new DomainError('SOURCE_REPOSITORY_REQUIRED', 'Set the workspace GitHub repository before running CI on an Agent\'s files.', 409)
+    }
+    const payload = { workspaceId: input.workspaceId, commandId: input.commandId, ...(commit ? { commit } : {}) }
     const captured = await this.commands.execute({ principal, source: 'mcp',
       operation: 'source.project.capture', commandId: input.commandId, targetKey: input.workspaceId,
-      payload: input, dedicatedConnection: true,
+      payload, dedicatedConnection: true,
       authorize: async sql => {
         await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
         await authorizeSource(sql, principal, 'sources:read', input.workspaceId)
@@ -204,23 +252,24 @@ export class PostgresSourceService implements SourceAdmissionPort {
           await this.workspace(sql, input.workspaceId)
           const row = (await sql.query<{ location_revision: string }>(
             'select location_revision from workspaces where id=$1 for share', [input.workspaceId])).rows[0]!
-          return this.locations.snapshot(sql, input.workspaceId, Number(row.location_revision), 'read-only')
+          return repository ? this.repositoryOrigin(sql, input.workspaceId, Number(row.location_revision), repository)
+            : this.locations.snapshot(sql, input.workspaceId, Number(row.location_revision), 'read-only')
         })
-        const commit = input.commit ?? (await qualifiedGit(location.rootPath,
+        commit ??= (await qualifiedGit(location.rootPath,
           ['rev-parse', '--verify', 'HEAD^{commit}'])).toString('utf8').trim()
         const names = await qualifiedGit(location.rootPath,
-          ['ls-tree', '-rz', '--name-only', '--full-tree', commit], 8 * 1024 * 1024)
+          ['ls-tree', '-rz', '--name-only', '--full-tree', commit!], 8 * 1024 * 1024)
         const approvedPaths = names.toString('utf8').split('\0').filter(Boolean)
         if (!Buffer.from(names.toString('utf8')).equals(names) || approvedPaths.length > SOURCE_LIMITS.entries) {
           throw new DomainError('SOURCE_CAPACITY', 'Tracked source inventory exceeds the supported source limits.', 413)
         }
-        await this.locations.revalidateSnapshot(input.workspaceId, location, 'read-only')
+        if (!repository) await this.locations.revalidateSnapshot(input.workspaceId, location, 'read-only')
         return SourceApproveInputSchema.parse({ workspaceId: input.workspaceId, commandId: input.commandId,
           expectedLocationRevision: location.locationRevision, commit, approvedPaths,
           executablePolicy: 'preserve-approved' })
       },
     })
-    return (await this.approve(principal, 'mcp', captured.value)).value
+    return (await this.approve(principal, 'mcp', captured.value, repository)).value
   }
   async resolveRootBinding(sql: Sql, principal: ManagementPrincipal,
     input: { workspaceId: string; rootId: string; bindingRevision: number; source: ApprovedSourcePin }): Promise<SourceRootRecord> {

@@ -8,7 +8,7 @@ export interface WorktreeRequest { repository: string; branch: string }
 export interface GitWorktreePorts {
   /** One clone per repository on this computer, outside every approved root. */
   cloneDirectory(repository: string): string
-  git(args: string[], options: { cwd?: string; signal: AbortSignal }): Promise<{ code: number; stdout: string; stderr: string }>
+  git(args: string[], options: { cwd?: string; signal: AbortSignal; env?: Record<string, string> }): Promise<{ code: number; stdout: string; stderr: string }>
 }
 
 const REPOSITORY = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/u
@@ -29,20 +29,13 @@ export async function addGitWorktree(ports: GitWorktreePorts, request: WorktreeR
   signal: AbortSignal): Promise<{ branch: string; commit: string }> {
   assertWorktreeRequest(request)
   if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(commit)) throw new SourceError('SOURCE_WORKTREE_INVALID', 'The approved commit is invalid.')
-  const clone = ports.cloneDirectory(request.repository)
+  const clone = await ensureCommit(ports, request.repository, commit, signal)
   const run = async (args: string[], cwd?: string) => {
     const result = await ports.git(args, { ...(cwd ? { cwd } : {}), signal })
     if (result.code !== 0) throw new SourceError('SOURCE_WORKTREE_FAILED',
       `git ${args[0]} failed: ${result.stderr.trim().split('\n').at(-1)?.slice(0, 300) ?? 'unknown error'}`)
     return result.stdout
   }
-  const exists = await ports.git(['rev-parse', '--git-dir'], { cwd: clone, signal }).then(result => result.code === 0, () => false)
-  if (!exists) {
-    await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
-    await run(['clone', '--no-checkout', '--filter=blob:none', `https://github.com/${request.repository}.git`, clone])
-  }
-  const present = (await ports.git(['cat-file', '-e', `${commit}^{commit}`], { cwd: clone, signal })).code === 0
-  if (!present) await run(['fetch', '--no-tags', 'origin', commit], clone)
   // A branch already used by an earlier attempt keeps that attempt's commits; this attempt gets the next free name.
   for (let index = 1; index <= 20; index++) {
     const branch = index === 1 ? request.branch : `${request.branch}-${index}`
@@ -56,6 +49,30 @@ export async function addGitWorktree(ports: GitWorktreePorts, request: WorktreeR
   throw new SourceError('SOURCE_WORKTREE_CONFLICT', 'Too many branches already exist for this agent.')
 }
 
+/** This computer's clone of the repository, holding the commit (fetched from GitHub when missing). */
+export async function ensureCommit(ports: GitWorktreePorts, repository: string, commit: string, signal: AbortSignal): Promise<string> {
+  const clone = await ensureClone(ports, repository, signal)
+  if ((await ports.git(['cat-file', '-e', `${commit}^{commit}`], { cwd: clone, signal })).code !== 0) {
+    await runGit(ports, ['fetch', '--no-tags', 'origin', commit], clone, signal)
+  }
+  return clone
+}
+export async function ensureClone(ports: GitWorktreePorts, repository: string, signal: AbortSignal): Promise<string> {
+  const clone = ports.cloneDirectory(repository)
+  const exists = await ports.git(['rev-parse', '--git-dir'], { cwd: clone, signal }).then(result => result.code === 0, () => false)
+  if (!exists) {
+    await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
+    await runGit(ports, ['clone', '--no-checkout', `https://github.com/${repository}.git`, clone], undefined, signal)
+  }
+  return clone
+}
+async function runGit(ports: GitWorktreePorts, args: string[], cwd: string | undefined, signal: AbortSignal) {
+  const result = await ports.git(args, { ...(cwd ? { cwd } : {}), signal })
+  if (result.code !== 0) throw new SourceError('SOURCE_WORKTREE_FAILED',
+    `git ${args[0]} failed: ${result.stderr.trim().split('\n').at(-1)?.slice(0, 300) ?? 'unknown error'}`)
+  return result.stdout
+}
+
 export function systemGitWorktreePorts(environment: NodeJS.ProcessEnv = process.env): GitWorktreePorts {
   const home = environment.HOME ?? homedir()
   return {
@@ -64,7 +81,7 @@ export function systemGitWorktreePorts(environment: NodeJS.ProcessEnv = process.
     git: (args, options) => new Promise(resolve => {
       // Worktree files stay private to this user, like every other app-managed source directory.
       execFile('/bin/sh', ['-c', 'umask 077 && exec git "$@"', 'git', ...args], { ...(options.cwd ? { cwd: options.cwd } : {}), signal: options.signal, timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024,
-        encoding: 'utf8', env: { ...environment, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' } }, (error, stdout, stderr) => {
+        encoding: 'utf8', env: { ...environment, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...options.env } }, (error, stdout, stderr) => {
         const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0
         resolve({ code, stdout, stderr })
       })
