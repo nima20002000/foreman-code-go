@@ -190,6 +190,7 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
       let ready = false
       mainFailure = ''
       const started = spawn(process.execPath, [
+        '--import', 'tsx',
         fileURLToPath(new URL('../fixtures/remote-review-main.mjs', import.meta.url)), mainConfiguration], {
         cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
