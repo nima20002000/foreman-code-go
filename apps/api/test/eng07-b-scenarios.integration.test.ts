@@ -27,7 +27,16 @@ async function approveThroughHttp(f: Harness, started: Started) {
       stopRequested: false, cleanupPending: false })
   }, { timeout: 25000, interval: 50 })
   const page = ListInteractionsResponseSchema.parse(await list()), interaction = page.items[0]!
-  const monitoring = ManagedInteractionPageSchema.parse(await f.mcp('interaction_list', { workspaceId, workflowId, runId, limit: 10 }))
+  const reader = await f.base.access.issue({
+    name: 'Run interaction reader', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
+    grants: [{ actions: ['interactions:read'], scope: { runIds: [runId] } }],
+  })
+  const monitor = await f.connect(reader.token)
+  const monitoringResult = await monitor.callTool({
+    name: 'interaction_list', arguments: { workspaceId, workflowId, runId, limit: 10 },
+  })
+  expect(monitoringResult.isError).not.toBe(true)
+  const monitoring = ManagedInteractionPageSchema.parse(monitoringResult.structuredContent)
   expect(monitoring.items).toEqual(page.items)
   expect(f.base.provider.startedNodes).toEqual(f.scenario.nodes.slice(0, 2).map((node) => node.id))
   const current = RepeatGraphSnapshotV3Schema.parse(await f.graph(started.scope, 'snapshot'))
@@ -40,13 +49,18 @@ async function approveThroughHttp(f: Harness, started: Started) {
   const input = RespondToInteractionRequestSchema.parse({ interactionId: interaction.id,
     expectedRevision: interaction.revision, optionId: option!.optionId })
   const path = `/api/user/interactions/${interaction.id}/respond`
-  // Operator MCP is read-only monitoring of a human-handled interaction.
   const tools = await f.client.listTools()
-  expect(tools.tools.map((tool) => tool.name)).not.toContain('interaction_respond')
+  expect(tools.tools.map((tool) => tool.name)).toContain('interaction_respond')
+  const readerTools = await monitor.listTools()
+  expect(readerTools.tools.map((tool) => tool.name)).not.toContain('interaction_respond')
+  const deniedMcp = await monitor.callTool({ name: 'interaction_respond', arguments: input })
+  expect(deniedMcp.isError).toBe(true)
+  expect(JSON.stringify(deniedMcp.content)).toContain('ACCESS_DENIED')
   const denied = await f.rawHttp('POST', path, input)
   expect(denied.status).toBe(403)
   expect(denied.body).toMatchObject({ error: { code: 'MCP_BROWSER_REVIEW_REQUIRED' } })
   expect(f.base.provider.counts.responses).toBe(0)
+  expect(await f.base.repository.get(interaction.id)).toEqual(interaction)
   // Prove that the original approval is still open BEFORE the first response.
   // These are observations only; no authority, budget or cleanup fence is reset.
   const authority = (await f.base.db.pool.query(`select r.execution_state as run_state,
@@ -95,7 +109,11 @@ async function approveThroughHttp(f: Harness, started: Started) {
   expect(f.base.provider.counts).toEqual(counts)
   const final = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, ''))
   expect(final.interaction).toEqual(decision.interaction)
-  const finalMonitor = ManagedInteractionPageSchema.parse(await f.mcp('interaction_list', { workspaceId, workflowId, runId, limit: 10 }))
+  const finalMonitoringResult = await monitor.callTool({
+    name: 'interaction_list', arguments: { workspaceId, workflowId, runId, limit: 10 },
+  })
+  expect(finalMonitoringResult.isError).not.toBe(true)
+  const finalMonitor = ManagedInteractionPageSchema.parse(finalMonitoringResult.structuredContent)
   expect(finalMonitor.items).toEqual(ListInteractionsResponseSchema.parse(await list()).items)
 }
 
