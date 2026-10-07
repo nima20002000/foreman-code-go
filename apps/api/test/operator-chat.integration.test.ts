@@ -1,5 +1,6 @@
 import { SessionControlStore } from '../src/modules/conversations/sessionControls/store.js'
 import { SessionPreferencesSchema } from '@foreman-code/contracts'
+import { CLAUDE_FULL_ACCESS_REQUIRED } from '@foreman-code/contracts/claude'
 import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
@@ -665,7 +666,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
           operator: { ...input.value.operator, harness: { ...configuration, sandbox: 'read-only' } } },
       } })
       expect(unsupported.isError, JSON.stringify(unsupported)).toBe(true)
-      expect(JSON.stringify(unsupported)).toContain('CLAUDE_FULL_ACCESS_REQUIRED')
+      expect(unsupported.content).toEqual([{ type: 'text', text: expect.stringContaining(CLAUDE_FULL_ACCESS_REQUIRED) }])
       expect(await read()).toEqual(before)
       expect(validated).toHaveLength(0)
       expect(prepared).toHaveLength(0)
