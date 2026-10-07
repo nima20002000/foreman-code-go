@@ -29,10 +29,10 @@ function root(deviceId: string, rootId: string, bindingRevision: number, source 
     ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner', registration: { workerInstallationId: deviceId, keyRevision: 1, authorizationRevision: 1 },
     attestationId: 'attestation', attestationDigest: '7'.repeat(64), boundAt: '2026-10-07T00:00:00.000Z' }
 }
-function profile(id: string, name: string, deviceId: string, rootId: string, suites: string[]) {
+function profile(id: string, name: string, deviceId: string, rootId: string, suites: string[], memoryBytes = 6 * 2 ** 30) {
   return { schemaVersion: 2, id, name, revision: 3, status: 'qualified', sourceCommit: 'a'.repeat(40), root: root(deviceId, rootId, 1),
     approvalConfig: { review: { decisionDigest: 'e'.repeat(64) } },
-    spec: { rootId, bindingRevision: 1, suites, resources: {}, approvalConfig: {}, policy: { imageDigest: oldImage, toolchainDigest: 't' } } }
+    spec: { rootId, bindingRevision: 1, suites, resources: { limits: { memoryBytes } }, approvalConfig: {}, policy: { imageDigest: oldImage, toolchainDigest: 't' } } }
 }
 
 async function fixture(options: { prepareFails?: boolean } = {}) {
@@ -42,6 +42,8 @@ async function fixture(options: { prepareFails?: boolean } = {}) {
     ['p-install', profile('p-install', 'Dexter install', dexter, dexterRoot, ['install'])],
     ['p-unit', profile('p-unit', 'Dexter unit', dexter, dexterRoot, ['install', 'unit'])],
     ['p-mana', profile('p-mana', 'Mana install', mana, manaRoot, ['install'])],
+    // Another runtime size on the same computer cannot share its one protected runtime.
+    ['p-small', profile('p-small', 'Dexter small', dexter, dexterRoot, ['install'], 2 ** 30)],
   ])
   const calls = { prepare: [] as unknown[], bind: [] as unknown[], saves: [] as Array<{ id: string; spec: { bindingRevision: number; policy: { imageDigest: string } } }>,
     refresh: [] as unknown[], qualified: [] as string[] }
@@ -149,6 +151,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.qualified.sort()).toEqual(['p-install', 'p-unit'])
       // Readback: Mana's profile was not touched; Dexter's carry the commit.
       expect(f.profiles.get('p-mana')).toMatchObject({ revision: 3, spec: { policy: { imageDigest: oldImage } } })
+      expect(f.profiles.get('p-small')).toMatchObject({ revision: 3, spec: { policy: { imageDigest: oldImage } } })
       expect(f.profiles.get('p-unit')).toMatchObject({ revision: 4, status: 'qualified', sourceCommit: commit })
       expect(f.audits).toContainEqual({ principalId: f.operator.id, action: 'build_computer_prepare', outcome: 'succeeded' })
     } finally { await f.app.close() }

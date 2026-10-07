@@ -119,8 +119,13 @@ export class CiRuntimeProvisioner {
     const root = canonical(current.source) === canonical(pin) ? current : (await this.sources.bindRoot(principal, source, {
       workspaceId: input.workspaceId, source: pin, selection: current.selection, accessMode: current.binding.accessMode,
       expectedBindingRevision: current.binding.bindingRevision, commandId: `${input.commandId}:root` })).value
+    // The computer's one protected runtime serves the profiles that share its resources and policy; this one first.
+    const runtime = (value: JobVerificationProfile) => canonical({ resources: value.spec.resources, network: value.spec.policy.network,
+      toolchain: value.spec.policy.toolchainDigest, approval: value.spec.approvalConfig })
     const group = (await this.profiles.list(principal, input.workspaceId)).profiles.map(value => value.profile)
-      .filter((value): value is JobVerificationProfile => value.schemaVersion === 2 && value.root.binding.rootId === rootId)
+      .filter((value): value is JobVerificationProfile => value.schemaVersion === 2 && value.root.binding.rootId === rootId
+        && runtime(value) === runtime(profile))
+      .sort((left, right) => Number(right.id === profile.id) - Number(left.id === profile.id))
     const saved: JobVerificationProfile[] = []
     for (const value of group) {
       saved.push(await this.profiles.save(principal, source, input.workspaceId, { commandId: `${input.commandId}:profile:${value.id}`,
