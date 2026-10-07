@@ -19,6 +19,7 @@ import {
   type PendingNativeInteraction,
   type ReviewJob,
   HarnessExecutionRequestSchema,
+  ReviewJobSchema,
 } from '@foreman-code/contracts'
 
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, WORKER_CREDENTIAL_RENEWAL_WINDOW_MS,
@@ -1022,6 +1023,18 @@ export class ApprovalExecutionCoordinator {
     const current = await owner.oneShotConnection().transaction(sql => readRetainedRemoteReviewer(sql, execution))
     if (!isDeepStrictEqual(current, retained)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
       'The retained reviewer changed while its original writer lease expired.', 409)
+    const jobs = job ? [job] : (await owner.oneShotConnection().query<{ record: unknown }>(`select record
+      from review_jobs where execution_id=$1 and lease_expires_at>clock_timestamp()
+        and state in ('leased','submitted','acknowledged','uncertain') limit 2`, [execution.id])).rows
+      .map(row => ReviewJobSchema.parse(row.record))
+    if (jobs.length > 1) throw new DomainError('REVIEWER_AUTHORITY_AMBIGUOUS',
+      'Multiple live review jobs reference the retained process.', 409)
+    const currentJob = jobs[0]
+    if (currentJob) {
+      if (!this.credentials.bindReviewerJob) throw new DomainError('REVIEWER_CREDENTIAL_LOST',
+        'The original reviewer credential cannot bind its current job.', 409)
+      await this.credentials.bindReviewerJob(execution.id, { principalId: retained.principalId }, currentJob)
+    }
     const identity = reviewPreflightIdentity(lane, `execution:${execution.id}`)
     const resolved = this.resolveManager(context, owner)
     resolved.beginStart?.()
@@ -1040,7 +1053,7 @@ export class ApprovalExecutionCoordinator {
       if (!resolved.manager.retainsReviewerSession) throw new DomainError('REVIEWER_AUTHORITY_LOST',
         'The original remote reviewer lifetime has already closed.', 409)
       const access = await resolved.manager.originalApplicationAccess(session, signal)
-      const credential = await this.credentials.recoverRemote(execution.id, access, job)
+      const credential = await this.credentials.recoverRemote(execution.id, access, currentJob)
       if (credential.principalId !== retained.principalId) throw new DomainError('REVIEWER_AUTHORITY_LOST',
         'The original reviewer credential changed during recovery.', 409)
       this.managerCredentials.set(owned.manager, credential)
