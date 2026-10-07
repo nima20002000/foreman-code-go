@@ -40,7 +40,8 @@ import { SourceOperationWorkerService } from '../sources/operationWorker.js'
 import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '../runs/remote/installedWorkflowHost.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
-import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsRequestSchema } from '@foreman-code/contracts/computer-accounts'
+import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccountsRequestSchema, GitHubLoginRequestSchema } from '@foreman-code/contracts/computer-accounts'
+import { GitHubLoginRunner } from '../computers/githubLogin.js'
 import { readInstalledWorkflowConfiguration } from '../runs/remote/installedWorkflowConfiguration.js'
 import { probeComputerAccounts, systemPorts } from '../computers/accountProbe.js'
 import { inspectInstalledOpenCode } from '../harnesses/installedOpenCodeInspection.js'
@@ -253,6 +254,17 @@ export async function createInstalledWorkerDomains(input: {
         ...(selected?.opencode ? { opencode: selected.opencode.binary } : {}), ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
       return { payload: await probeComputerAccounts(systemPorts(process.env, binaries),
         AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(20_000)])) }
+    },
+  })
+  const githubLogin = new GitHubLoginRunner()
+  lifetime.signal.addEventListener('abort', () => githubLogin.close(), { once: true })
+  extensions.push({ namespace: COMPUTER_GITHUB_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 16_384, maxBinaryBytes: 0,
+    async handle(payload, context) {
+      const request = GitHubLoginRequestSchema.parse(payload)
+      if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
+        throw new DomainError('COMPUTER_GITHUB_STALE', 'GitHub sign-in requires the actual authenticated worker channel.', 409)
+      }
+      return { payload: await githubLogin.handle(request) }
     },
   })
   extensions.push({ namespace: 'harness-discovery-v1', version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,

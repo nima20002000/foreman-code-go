@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
-import { ComputerAccountsListSchema } from '@foreman-code/contracts/computer-accounts'
+import { ComputerAccountsListSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema, GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
 import type { OperatorRequestContext } from '../types.js'
@@ -29,6 +29,28 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
     }, input => invokeOperatorTool(context, 'computer_accounts_list',
       () => context.services.computerAccounts!.list(context.principal, 'mcp', input.refresh === true)))
   }
+  const github = context.services.computerGitHub
+  const writeAnnotations = { readOnlyHint: false, idempotentHint: false, destructiveHint: false, openWorldHint: true }
+  if (github && operatorToolAvailable(context, 'computer_github_login_start')) server.registerTool('computer_github_login_start', {
+    description: 'Start GitHub CLI sign-in (github.com) on Main or a paired computer. Returns a one-time device code and '
+      + 'https://github.com/login/device; the owner enters the code in a browser. Requires global settings:update. The token stays '
+      + 'on that computer and git is set to use it. Follow with computer_github_login_status until signed-in.',
+    inputSchema: ComputerGitHubInputSchema, outputSchema: GitHubLoginStateSchema, annotations: writeAnnotations,
+  }, input => invokeOperatorTool(context, 'computer_github_login_start',
+    () => github.handle(context.principal, 'mcp', input.target, { operation: 'login-start' })))
+  if (github && operatorToolAvailable(context, 'computer_github_login_status')) server.registerTool('computer_github_login_status', {
+    description: 'Read an active GitHub sign-in on that computer: waiting (with its code), signed-in (with the username), failed or expired. '
+      + 'Requires global settings:update.',
+    inputSchema: ComputerGitHubStatusInputSchema, outputSchema: GitHubLoginStateSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
+  }, input => invokeOperatorTool(context, 'computer_github_login_status',
+    () => github.handle(context.principal, 'mcp', input.target, { operation: 'login-status', loginId: input.loginId })))
+  if (github && operatorToolAvailable(context, 'computer_github_logout')) server.registerTool('computer_github_logout', {
+    description: 'Sign the GitHub CLI out of github.com on that computer. Requires global settings:update.',
+    inputSchema: ComputerGitHubInputSchema, outputSchema: GitHubLoginStateSchema,
+    annotations: { ...writeAnnotations, destructiveHint: true },
+  }, input => invokeOperatorTool(context, 'computer_github_logout',
+    () => github.handle(context.principal, 'mcp', input.target, { operation: 'logout' })))
   const service = context.services.buildComputers
   if (!service) return
   const annotations = { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false }

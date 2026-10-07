@@ -7,6 +7,7 @@ import { useBuildComputers } from '../../shared/api/buildComputers'
 import { computerKey, useComputerActivity } from '../../shared/api/computerActivity'
 import { useComputerAccounts } from '../../shared/api/computerAccounts'
 import { ComputerAccountChips } from './ComputerAccounts'
+import { GitHubSignInDialog } from './GitHubSignIn'
 import { Alert, Button, IconButton, LoadingState, Switch, Select } from '../../shared/ui/nocturne'
 import { computerState } from './computerState'
 import { ComputerUtilization } from './ComputerUtilization'
@@ -26,6 +27,7 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
   const reads = useBuildComputers(targets)
   const activity = useComputerActivity()
   const accounts = useComputerAccounts()
+  const openGitHub = useComputerUi(state => state.openGitHub)
   const save = useComputerEdits()
   const drag = useComputerUi(state => state.drag)
   const draggedKey = useComputerUi(state => state.draggedKey)
@@ -73,7 +75,10 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
           {read.isError && <Button size="sm" onClick={() => void read.refetch()}>Retry build settings</Button>}
           {read.data && !read.isError && <ComputerControls status={read.data} name={computerName(target)}
             disabled={save.isPending} onEdit={patch => save.mutate([preferenceEdit(read.data!, patch)])} />}
-          <ComputerAccountChips accounts={accounts.data?.computers.find(computer => computerKey(computer.target) === key)?.accounts} />
+          <ComputerAccountChips accounts={accounts.data?.computers.find(computer => computerKey(computer.target) === key)?.accounts}
+            onGitHub={() => openGitHub(key)} />
+          <GitHubSignInDialog target={target} name={computerName(target)} account={accounts.data?.computers
+            .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'github')} />
           <ComputerUtilization target={target} online={observed?.online ?? false} />
           {target.hostRef.kind === 'device' && onSelectComputer && <IconButton label={`Open ${computerName(target)}`}
             variant="ghost" size="sm" onClick={() => {

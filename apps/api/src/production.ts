@@ -2,7 +2,9 @@ import { ComputerActivityService } from './modules/computers/activity.js'
 import { registerComputerActivityRoutes } from './routes/computerActivity.js'
 import { ComputerAccountsService } from './modules/computers/accounts.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
-import { COMPUTER_ACCOUNTS_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
+import { ComputerGitHubService } from './modules/computers/github.js'
+import { registerComputerGitHubRoutes } from './routes/computerGitHub.js'
+import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
 import { sessionStartDirectory } from './modules/harnesses/sessionStart.js'
 import { recoverPersistedClaudeCompaction } from './modules/harnesses/claudeSdk/recoverCompaction.js'
 import { registerBuildComputerRoutes } from './routes/buildComputers.js'
@@ -373,6 +375,7 @@ export function buildProductionApp(
         infrastructure?.deviceDomains?.extensions.find(value => value.namespace === BYTE_TRANSFER_NAMESPACE),()=>jobRuntime?.outputs),
       { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 65_536, maxBinaryBytes: 0 },
+      { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16_384, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
         handle: async (payload, context) => {
@@ -1687,6 +1690,9 @@ export function buildProductionApp(
       runtimeServices.computerAccounts = new ComputerAccountsService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands)
       registerComputerAccountsRoutes(app, runtimeServices.computerAccounts)
+      runtimeServices.computerGitHub = new ComputerGitHubService(database.pool, machine.installationId,
+        () => deviceRuntime.endpointForDomains(), commands)
+      registerComputerGitHubRoutes(app, runtimeServices.computerGitHub)
       runtimeServices.buildComputers = jobRuntime.buildComputers
       registerBuildComputerRoutes(app, jobRuntime.buildComputers)
       runtimeServices.jobs = jobRuntime.jobs

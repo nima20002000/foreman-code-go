@@ -15,6 +15,7 @@
   "apps/api/src/modules/byte-transfer/sender.ts",
   "apps/api/src/modules/byte-transfer/service.ts",
   "apps/api/src/modules/computers/accountProbe.ts",
+  "apps/api/src/modules/computers/githubLogin.ts",
   "apps/api/src/modules/conversations/conversationAppAccess.ts",
   "apps/api/src/modules/conversations/installedClaudeConversationProfile.ts",
   "apps/api/src/modules/conversations/installedConversationDirectory.ts",

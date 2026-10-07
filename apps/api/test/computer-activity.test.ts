@@ -10,6 +10,8 @@ import { DomainError } from '../src/modules/errors.js'
 import { BuildComputerSettings } from '../src/modules/settings/buildComputers.js'
 import { ComputerActivityService } from '../src/modules/computers/activity.js'
 import { ComputerAccountsService } from '../src/modules/computers/accounts.js'
+import { ComputerGitHubService } from '../src/modules/computers/github.js'
+import { COMPUTER_GITHUB_NAMESPACE, GitHubLoginStateSchema, type GitHubLoginRequest } from '@foreman-code/contracts/computer-accounts'
 import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsListSchema, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -74,6 +76,7 @@ async function fixture() {
   vi.spyOn(pool, 'connect').mockImplementation((async () => ({ query, release() {} })) as unknown as typeof pool.connect)
   const commands = new PostgresCommandCoordinator(pool)
   const audit = vi.spyOn(commands, 'recordDenied').mockResolvedValue(undefined)
+  const audited = vi.spyOn(commands, 'recordAudit').mockResolvedValue(undefined)
   const service = new ComputerActivityService(pool, mainId, () => observed, commands)
   const access = new PostgresAccessService(pool)
   vi.spyOn(access, 'authenticate').mockImplementation(async token => {
@@ -92,7 +95,21 @@ async function fixture() {
     capabilities: () => observed ? [{ namespace: COMPUTER_ACCOUNTS_NAMESPACE, mainCanRequest: true }] : [],
     request: async () => { deviceAnswers.calls++; return { payload: accountsOf(deviceAnswers.email) } },
   }), commands, async () => { mainProbes.calls++; return accountsOf('main@example.com') })
-  const services = { computerActivity: service, computerAccounts, buildComputers, commands } as unknown as OperatorServices
+  const githubCalls: { where: string; request: GitHubLoginRequest }[] = []
+  const githubState = (request: GitHubLoginRequest) => GitHubLoginStateSchema.parse(request.operation === 'logout'
+    ? { loginId: null, state: 'signed-out', code: null, verificationUrl: null, expiresAt: null, account: null, message: null }
+    : { loginId: '66666666-6666-4666-8666-666666666666', state: request.operation === 'login-start' ? 'waiting' : 'signed-in',
+      code: request.operation === 'login-start' ? 'AB12-CD34' : null,
+      verificationUrl: request.operation === 'login-start' ? 'https://github.com/login/device' : null,
+      expiresAt: '2026-10-07T00:15:00.000Z', account: request.operation === 'login-start' ? null : 'octo-owner', message: null })
+  const computerGitHub = new ComputerGitHubService(pool, mainId, () => ({
+    capabilities: () => observed ? [{ namespace: COMPUTER_GITHUB_NAMESPACE, mainCanRequest: true }] : [],
+    request: async (_device, _namespace, payload) => {
+      githubCalls.push({ where: 'device', request: payload as GitHubLoginRequest })
+      return { payload: githubState(payload as GitHubLoginRequest) }
+    },
+  }), commands, { handle: async request => { githubCalls.push({ where: 'main', request }); return githubState(request) } })
+  const services = { computerActivity: service, computerAccounts, computerGitHub, buildComputers, commands } as unknown as OperatorServices
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services } })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -103,7 +120,7 @@ async function fixture() {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
     return client
   }
-  return { app, service, jobs, agents, principals, audit, connect, deviceAnswers, mainProbes, setPresence(value: DevicePresence | null) { observed = value },
+  return { app, service, jobs, agents, principals, audit, audited, connect, deviceAnswers, mainProbes, githubCalls, setPresence(value: DevicePresence | null) { observed = value },
     close: async () => { await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end() } }
 }
 afterEach(() => vi.restoreAllMocks())
@@ -212,5 +229,36 @@ it('reads every computer signed-in account through HTTP and MCP, caching probes 
     expect((await reader.callTool({ name: 'computer_accounts_list', arguments: {} })).isError).toBe(true)
     expect((await f.app.inject({ url: '/api/management/computers/accounts',
       headers: { authorization: 'Bearer denied' } })).statusCode).toBe(403)
+  } finally { await f.close() }
+})
+
+it('starts, follows and ends GitHub sign-in on Main and a paired computer, denying settings readers', async () => {
+  const f = await fixture()
+  try {
+    const client = await f.connect('owner')
+    const mainTarget = { hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId, keyRevision: null, authorizationRevision: null }
+    const startCall = await client.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })
+    const started = GitHubLoginStateSchema.parse(startCall.structuredContent)
+    expect(started).toMatchObject({ state: 'waiting', code: 'AB12-CD34' })
+    const done = GitHubLoginStateSchema.parse((await client.callTool({ name: 'computer_github_login_status',
+      arguments: { target, loginId: started.loginId } })).structuredContent)
+    expect(done).toMatchObject({ state: 'signed-in', account: 'octo-owner' })
+    const http = await f.app.inject({ method: 'POST', url: '/api/management/computers/github/logout',
+      headers: { authorization: 'Bearer owner' }, payload: { target } })
+    expect(GitHubLoginStateSchema.parse(http.json()).state).toBe('signed-out')
+    expect(f.githubCalls.map(call => [call.where, call.request.operation])).toEqual([
+      ['main', 'login-start'], ['device', 'login-status'], ['device', 'logout']])
+    const stale = await client.callTool({ name: 'computer_github_login_start',
+      arguments: { target: { ...target, authorizationRevision: 2 } } })
+    expect(JSON.stringify(stale)).toContain('COMPUTER_NOT_FOUND')
+    const reader = await f.connect('settings-reader')
+    expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_github_login_start')
+    expect((await reader.callTool({ name: 'computer_github_login_start', arguments: { target } })).isError).toBe(true)
+    expect((await f.app.inject({ method: 'POST', url: '/api/management/computers/github/login',
+      headers: { authorization: 'Bearer settings-reader' }, payload: { target } })).statusCode).toBe(403)
+    expect(f.githubCalls).toHaveLength(3)
+    expect(f.audited.mock.calls.map(call => [call[2], call[4]])).toEqual([
+      ['computer_github_login_start', 'succeeded'], ['computer_github_logout', 'succeeded']])
+    expect(f.audit).toHaveBeenCalledWith('settings-reader', 'http', 'computer_github_login_start', `device:${deviceId}`)
   } finally { await f.close() }
 })

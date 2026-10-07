@@ -143,9 +143,33 @@ it('shows which accounts each computer is signed in to without listing offline c
   computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
   const main = await screen.findByRole('group', { name: 'Accounts' })
   expect(within(main).getByLabelText('Codex: coder@example.com')).toBeInTheDocument()
-  expect(within(main).getByLabelText('GitHub: octo-owner')).toBeInTheDocument()
+  expect(within(main).getByRole('button', { name: 'GitHub: octo-owner. Manage GitHub' })).toBeInTheDocument()
   expect(within(main).getByLabelText('OpenCode: OpenCode Go')).toBeInTheDocument()
   expect(within(main).getByLabelText('Claude: signed out')).toBeInTheDocument()
   expect(within(main).getByLabelText('Google Drive: not installed')).toBeInTheDocument()
   expect(screen.getAllByRole('group', { name: 'Accounts' })).toHaveLength(1)
 })
+
+it('connects GitHub on a computer with a one-time code and shows the signed-in account', async () => {
+  const user = userEvent.setup()
+  const state = { polls: 0 }
+  const waiting = { loginId: '66666666-6666-4666-8666-666666666666', state: 'waiting', code: 'AB12-CD34',
+    verificationUrl: 'https://github.com/login/device', expiresAt: '2026-10-07T00:15:00.000Z', account: null, message: null }
+  const bodies: unknown[] = []
+  server.use(
+    http.post('*/api/management/computers/github/login', async ({ request }) => { bodies.push(await request.json()); return HttpResponse.json(waiting) }),
+    http.post('*/api/management/computers/github/login/status', () => {
+      state.polls++
+      return HttpResponse.json(state.polls < 2 ? waiting : { ...waiting, state: 'signed-in', code: null, verificationUrl: null, account: 'new-owner' })
+    }),
+  )
+  computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  await user.click(await screen.findByRole('button', { name: 'GitHub: octo-owner. Manage GitHub' }))
+  const dialog = await screen.findByRole('dialog', { name: 'GitHub on Main PC' })
+  expect(within(dialog).getByText('octo-owner')).toBeInTheDocument()
+  await user.click(within(dialog).getByRole('button', { name: 'Switch account' }))
+  expect(await within(dialog).findByLabelText('One-time code')).toHaveTextContent('AB12-CD34')
+  expect(within(dialog).getByRole('link', { name: /github.com\/login\/device/ })).toHaveAttribute('href', 'https://github.com/login/device')
+  expect(bodies).toEqual([{ target: mainTarget }])
+  await waitFor(() => expect(within(dialog).getByText('new-owner')).toBeInTheDocument(), { timeout: 8000 })
+}, 15_000)
