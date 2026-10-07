@@ -431,8 +431,10 @@ describe('production remote review and native recovery through authenticated MCP
       expect((await fixture.db.pool.query<{ state: string }>(
         'select state from source_execution_materializations where operation_id=$1',
         [original.intent.operationId])).rows[0]?.state).toBe('closed')
+      expect(fixture.registry.closedRegistration(active.owner, entry.initialLaunchId))
+        .toEqual(closedLaunches.find(launch => launch.launchId === entry.initialLaunchId))
       expect(fixture.registry.snapshot().launches.filter(launch => launch.owner === active.owner)
-        .map(launch => launch.launchId).sort()).toEqual(originalLaunchIds.sort())
+        .map(launch => launch.launchId).sort()).toEqual(originalLaunches.map(launch => launch.launchId).sort())
       expect((await fixture.provider.calls()).filter(call => 'requesterSessionBlocked' in call)).toHaveLength(1)
       expect((await fixture.provider.calls()).filter(call => call.method === 'turn/start'
         && call.correlationId === `execution:${requester.id}`)).toHaveLength(0)
