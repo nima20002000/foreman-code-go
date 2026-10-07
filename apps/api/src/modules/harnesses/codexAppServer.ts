@@ -864,6 +864,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   contextSnapshot(session: NativeSessionReference): ContextSnapshot | null {
+    // A Worker can read retained history after its provider runtime closed; no live context remains then.
+    const loaded = this.runtimes.get(session.nativeSessionId) ?? this.childRuntimes.get(session.nativeSessionId)?.runtime
+    if (!loaded || loaded.disposed) return null
     return this.requireRuntime(session).context ?? null
   }
 

@@ -17,6 +17,8 @@ export function query() { throw new Error('This recorded SDK cannot execute a na
 export async function getSessionInfo(id) { return { sessionId: id } }
 export async function getSessionMessages() { return [{ selectedSdk: 'explicit-installation' }] }
 export async function forkSession(id) { return { sessionId: id + '-fork' } }
+export async function listSubagents() { return [] }
+export async function getSubagentMessages() { return [] }
 `)
   return { root, entrypoint }
 }
@@ -32,12 +34,15 @@ it('loads native history helpers from the explicitly selected SDK without starti
     .toEqual([{ selectedSdk: 'explicit-installation' }])
 })
 
-it('refuses an unqualified SDK version or a relative entrypoint before loading its module', async () => {
+it('accepts another SDK release by its method contract and refuses a missing method or relative entrypoint', async () => {
+  const profile = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
   const f = await installedModule('0.3.999')
-  await writeFile(f.entrypoint, "throw new Error('Unqualified module must not load')")
   const recovery = { root: f.root, owner: 'recorded-owner' }
-  await expect(loadOfficialClaudeSdk('/recorded-profile', recovery, '/not-executed/claude', f.entrypoint))
-    .rejects.toThrow('exact qualification candidate')
-  await expect(loadOfficialClaudeSdk('/recorded-profile', recovery, '/not-executed/claude', './sdk.mjs'))
+  expect((await loadOfficialClaudeSdk(profile, recovery, '/not-executed/claude', f.entrypoint)).sdkVersion).toBe('0.3.999')
+  const missing = await installedModule('0.3.998')
+  await writeFile(missing.entrypoint, 'export function query() {}\n')
+  await expect(loadOfficialClaudeSdk(profile, { root: missing.root, owner: 'recorded-owner' }, '/not-executed/claude',
+    missing.entrypoint)).rejects.toMatchObject({ result: { error: { code: 'CLAUDE_CONTRACT_UNSUPPORTED' } } })
+  await expect(loadOfficialClaudeSdk(profile, recovery, '/not-executed/claude', './sdk.mjs'))
     .rejects.toThrow('qualified absolute entrypoint')
 })

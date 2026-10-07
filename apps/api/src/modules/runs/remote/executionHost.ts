@@ -1,4 +1,4 @@
-import type { SessionMode } from '@foreman-code/contracts'
+import type { ContextSnapshot, SessionMode } from '@foreman-code/contracts'
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
@@ -486,13 +486,19 @@ export class RemoteExecutionHost {
       const workflow = correlation === `execution:${resident.intent.executionId}` && status.status === 'known'
         ? status.receipt.retainedReviewer : undefined
       let history: NativeHistory
+      // Context usage is observed only from a live provider runtime, before settlement closes it.
+      let context: ContextSnapshot | null = null
       if (workflow) {
         if (!resident.workflowHistory) throw new Error('Original workflow history requires durable recovery')
         history = structuredClone(resident.workflowHistory)
       } else {
         const archived = review?.settled ? await this.ports.journal.reviewHistory(operationId, correlation) : undefined
-        history = archived ?? (resident.settlementHistory ? structuredClone(resident.settlementHistory)
-          : await resident.manager.reconcile(resident.session, correlation))
+        if (archived) history = archived
+        else if (resident.settlementHistory) history = structuredClone(resident.settlementHistory)
+        else {
+          history = await resident.manager.reconcile(resident.session, correlation)
+          context = resident.manager.contextSnapshot?.(resident.session) ?? null
+        }
       }
       if (!workflow && correlation === `execution:${resident.intent.executionId}` && history.terminalTurn?.correlationId === correlation)
         await this.settle(resident, correlation)
@@ -500,8 +506,7 @@ export class RemoteExecutionHost {
         await this.ports.journal.acknowledgeReviewTurn(operationId, correlation, history.nativeTurnId)
         if (history.terminalTurn?.correlationId === correlation) await this.ports.journal.settleReviewTurn(operationId, history)
       }
-      return { context: resident.manager.contextSnapshot?.(resident.session) ?? null, history,
-        status: await this.ports.journal.status(operationId) }
+      return { context, history, status: await this.ports.journal.status(operationId) }
     }
     if (method === 'pending') return resident.settlementHistory
       ? resident.settlementHistory.pendingInteraction ?? resident.settlementHistory.pendingInteractions[0] : resident.manager.pending(resident.session)
