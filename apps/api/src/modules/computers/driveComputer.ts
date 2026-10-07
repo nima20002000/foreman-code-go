@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { DRIVE_APP_FOLDER, DRIVE_MOUNT_DIRECTORY, DRIVE_REMOTE, DriveComputerRequestSchema, DriveComputerStateSchema,
@@ -211,8 +211,11 @@ export function systemDrivePorts(environment: NodeJS.ProcessEnv = process.env): 
       await rename(temporary, path)
     },
     install: async (path, source) => {
-      await chmod(source, 0o755)
-      await rename(source, path)
+      // The download cache may sit on another filesystem: copy beside the target, then rename atomically.
+      const temporary = `${path}.${process.pid}.tmp`
+      await copyFile(source, temporary)
+      await chmod(temporary, 0o755)
+      await rename(temporary, path)
     },
     mkdir: async path => { await mkdir(path, { recursive: true, mode: 0o700 }) },
     remove: path => rm(path, { recursive: true, force: true }),
