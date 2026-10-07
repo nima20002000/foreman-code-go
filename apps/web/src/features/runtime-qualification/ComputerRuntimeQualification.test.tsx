@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, expect, it } from 'vitest'
 import { JobRuntimeApprovalSchema, JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
@@ -53,4 +54,25 @@ it('shows a paired computer captured fingerprint as ready to qualify, with no ap
 it('asks for a new capture when the fingerprint expired', async () => {
   handlers({ ...deviceCandidate, expiresAt: '2020-01-01T00:00:00.000Z' }); renderPanel()
   expect(await screen.findByText('Expired — capture the installed runtime again')).toBeInTheDocument()
+})
+it('prepares the computer automatically and follows its stages', async () => {
+  const base = handlers()
+  const pending = JobVerificationProfileSchema.parse({ ...verificationProfile, root })
+  const commit = 'c'.repeat(40)
+  let started: unknown
+  const status = (state: string, stage: string | null) => ({ profileId: pending.id, deviceId, state, commit, stage, message: null,
+    profiles: [], startedAt: '2026-10-07T00:00:00.000Z', updatedAt: '2026-10-07T00:00:00.000Z' })
+  server.use(http.get(`${base}/runtime-profiles`, () => HttpResponse.json({ profiles: [{ profile: pending,
+    ready: false, reasons: ['dependencies_changed'], sideEffects: false }], approvals: [] })),
+  http.post(`${base}/runtime-profiles/${pending.id}/computer-preparation`, async ({ request }) => {
+    started = await request.json(); return HttpResponse.json(status('preparing', 'fetch-packages'))
+  }),
+  http.get(`${base}/runtime-profiles/${pending.id}/computer-preparation`, () => HttpResponse.json(started
+    ? status('preparing', 'fetch-packages') : { ...status('idle', null), commit: null, startedAt: null, updatedAt: null })))
+  renderPanel()
+  await userEvent.click(await screen.findByRole('button', { name: 'Prepare automatically' }))
+  expect(await screen.findByText(`Building the offline packages and image at ${commit.slice(0, 12)} — fetch-packages`)).toBeInTheDocument()
+  expect(started).toEqual({ commandId: expect.any(String) })
+  expect(screen.getByRole('button', { name: 'Preparing…' })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
 })

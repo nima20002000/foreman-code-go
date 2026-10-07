@@ -12,6 +12,7 @@ import { DomainError } from '../errors.js'
 import { DeviceAccessError } from '../devices/access.js'
 import { z } from 'zod'
 import { MaterializationReceiptSchema } from '@foreman-code/contracts/source-materialization'
+import type { CiRuntimeProvisioner } from './ciRuntimeProvisioner.js'
 
 /** The few facts CI needs from an Agent's accepted native placement. */
 const AgentPlacementFacts = z.object({
@@ -28,6 +29,8 @@ export class CiService {
     private readonly jobs: JobService) {}
   /** Reads an Agent's current files from the computer it runs on (Main locally, laptops over their channel). */
   snapshots?: (hostRef: AgentHostRef, path: string, baseCommit: string) => Promise<{ commit: string; bundle: Buffer }>
+  /** Prepares build computers whose runtime was qualified on other dependency files. */
+  provisioner?: Pick<CiRuntimeProvisioner, 'prepareForCommit'>
 
   async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string }) {
     const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS)
@@ -60,6 +63,11 @@ export class CiService {
           })
           if (admitted.kind === 'retained-execution') {
             throw new DomainError('CI_QUEUE_CONFLICT', 'The CI command belongs to an earlier nonqueued execution.', 409)
+          }
+          // A commit with new dependency files waits until its build computers are prepared and requalified for them.
+          if (admitted.kind !== 'accepted' && admitted.ticket.waitingReasons.includes('dependencies_changed')) {
+            void this.provisioner?.prepareForCommit(scope.principal, scope.workspaceId, input.suite, source.manifest.git!.commit)
+              .catch(() => undefined)
           }
           return CiRunOutputSchema.parse({ ticketId: admitted.kind === 'accepted' ? admitted.ticketId : admitted.ticket.id,
             ...(admitted.kind === 'accepted' ? { executionId: admitted.executionId } : {}) })

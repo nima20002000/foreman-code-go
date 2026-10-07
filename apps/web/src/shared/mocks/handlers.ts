@@ -400,6 +400,8 @@ export const handlers: RequestHandler[] = [
     return HttpResponse.json({ items, pageInfo: { nextCursor: null } })
   }),
   http.get('/api/management/workspaces/:workspaceId/jobs/runtime-profiles', () => HttpResponse.json({ profiles: [], approvals: [] })),
+  http.get('/api/management/workspaces/:workspaceId/jobs/runtime-profiles/:profileId/computer-preparation', ({ params }) => HttpResponse.json({
+    profileId: params.profileId, deviceId: null, state: 'idle', commit: null, stage: null, message: null, profiles: [], startedAt: null, updatedAt: null })),
   http.get('/api/management/workspace-storage/folders', () => HttpResponse.json({
     rootPath: '/workspaces', items: [], pageInfo: { nextCursor: null },
   })),

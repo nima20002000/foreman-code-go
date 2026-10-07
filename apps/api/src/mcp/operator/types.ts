@@ -26,6 +26,7 @@ export interface OperatorServices {
   workerExecution?: import('../../modules/settings/workerExecution.js').WorkerExecutionPolicy
   jobs?: import('../../modules/jobs/service.js').JobService
   jobRuntimeProfiles?: import('../../modules/jobs/runtimeProfiles.js').JobRuntimeProfiles
+  ciRuntime?: import('../../modules/jobs/ciRuntimeProvisioner.js').CiRuntimeProvisioner
   resourceTelemetry?: {
     reads: import('@foreman-code/contracts/resource-telemetry').TelemetryReadService<ManagementPrincipal>
     selectors: import('@foreman-code/contracts/resource-telemetry').TelemetrySelectorService<ManagementPrincipal>

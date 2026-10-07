@@ -3,6 +3,8 @@ import { registerComputerActivityRoutes } from './routes/computerActivity.js'
 import { ComputerAccountsService } from './modules/computers/accounts.js'
 import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
 import { snapshotAgentWorktree } from './modules/sources/agentSnapshot.js'
+import { CiRuntimeProvisioner } from './modules/jobs/ciRuntimeProvisioner.js'
+import { CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
 import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
 import { ComputerGitHubService } from './modules/computers/github.js'
@@ -380,6 +382,7 @@ export function buildProductionApp(
       { namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 65_536, maxBinaryBytes: 0 },
       { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16_384, maxBinaryBytes: 0 },
       { namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
+      { namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
         handle: async (payload, context) => {
@@ -1713,9 +1716,12 @@ export function buildProductionApp(
         return { commit: reply.commit, bundle: Buffer.from(reply.bundleBase64, 'base64') }
       }
       runtimeServices.jobRuntimeProfiles = jobRuntime.profiles
+      runtimeServices.ciRuntime = new CiRuntimeProvisioner(database.pool, jobRuntime.profiles, jobRuntime.sources,
+        () => deviceRuntime.endpointForDomains(), commands)
+      jobRuntime.ci.provisioner = runtimeServices.ciRuntime
       registerSourceRoutes(app, jobRuntime.sources)
       registerJobRoutes(app, jobRuntime.jobs)
-      registerJobRuntimeProfileRoutes(app, jobRuntime.profiles)
+      registerJobRuntimeProfileRoutes(app, jobRuntime.profiles, runtimeServices.ciRuntime)
       assertOpen()
       await harnessRegistry.initialize(machine.installationId)
       assertOpen()

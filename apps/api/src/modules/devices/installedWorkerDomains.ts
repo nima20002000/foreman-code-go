@@ -45,6 +45,10 @@ import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccount
 import { GitHubLoginRunner } from '../computers/githubLogin.js'
 import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotRequestSchema, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
 import { snapshotAgentWorktree } from '../sources/agentSnapshot.js'
+import { CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
+import { CiRuntimeWorker } from '../jobs/ciRuntimeWorker.js'
+import { prepareCiRuntime } from '../jobs/ciRuntimePrepare.js'
+import { lastCiRuntimeRefresh, scheduleCiRuntimeRefresh } from '../jobs/ciRuntimeRefresh.js'
 import { systemGitWorktreePorts } from '../sources/gitWorktree.js'
 import { readInstalledWorkflowConfiguration } from '../runs/remote/installedWorkflowConfiguration.js'
 import { probeComputerAccounts, systemPorts } from '../computers/accountProbe.js'
@@ -246,6 +250,17 @@ export async function createInstalledWorkerDomains(input: {
     qualification = createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
     currentBinding: current, request, journal: jobJournal, registry: jobRegistry, signal: lifetime.signal })
     extensions.push(qualification)
+    const ciRuntime = new CiRuntimeWorker(input.stateDirectory, { git: systemGitWorktreePorts(process.env),
+      managedRuntimeRoot: async () => (await roots()).managedRuntimeRoot, prepare: prepareCiRuntime,
+      refresh: scheduleCiRuntimeRefresh, lastRefresh: lastCiRuntimeRefresh, now: () => new Date() }, lifetime.signal)
+    extensions.push({ namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+      async handle(payload, context) {
+        if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
+          throw new DomainError('CI_RUNTIME_STALE', 'CI runtime preparation requires the actual authenticated worker channel.', 409)
+        }
+        return { payload: await ciRuntime.handle(payload) }
+      },
+    })
   }
   extensions.push({ namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 65_536, maxBinaryBytes: 0,
     async handle(payload, context) {

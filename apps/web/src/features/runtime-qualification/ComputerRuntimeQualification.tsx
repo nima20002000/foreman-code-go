@@ -1,7 +1,7 @@
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import type { JobRuntimeApprovalRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { useWorkspacePages } from '../../shared/api/query'
-import { useJobRuntimeProfiles } from '../../shared/api/jobRuntimeProfiles'
+import { useComputerPreparation, useJobRuntimeProfiles } from '../../shared/api/jobRuntimeProfiles'
 import { Alert, Button, LoadingState } from '../../shared/ui/nocturne'
 
 /** A paired computer is a build machine: a captured candidate is qualified directly, never approved. */
@@ -23,6 +23,22 @@ function Candidate({ candidate, name }: { candidate: JobRuntimeApprovalRecord; n
       </dl>
     </details>
   </article>
+}
+const PREPARATION_STATES: Record<string, string> = { approving: 'Approving the commit', preparing: 'Building the offline packages and image',
+  binding: 'Moving profiles to the new image', refreshing: 'Restarting the computer\'s Worker', qualifying: 'Qualifying',
+  qualified: 'Qualified', failed: 'Preparation failed' }
+/** One click: the computer builds its runtime for the workspace's latest commit and requalifies, with no approval. */
+function Preparation({ workspaceId, profileId }: { workspaceId: string; profileId: string }) {
+  const { status, start } = useComputerPreparation(workspaceId, profileId)
+  const current = status.data
+  const busy = start.isPending || (current && !['idle', 'qualified', 'failed'].includes(current.state))
+  return <div>
+    {current && current.state !== 'idle' ? <p role="status">{PREPARATION_STATES[current.state]}
+      {current.commit ? ` at ${current.commit.slice(0, 12)}` : ''}{current.stage ? ` — ${current.stage}` : ''}
+      {current.message ? `: ${current.message}` : ''}</p> : null}
+    {start.isError ? <Alert tone="warning" title={`Preparation could not start: ${start.error.message}`} /> : null}
+    <Button disabled={Boolean(busy)} onClick={() => start.mutate()}>{busy ? 'Preparing…' : 'Prepare automatically'}</Button>
+  </div>
 }
 function WorkspaceQualification({ workspaceId, name, registration }: { workspaceId: string; name: string; registration: DeviceRegistration }) {
   const read = useJobRuntimeProfiles(workspaceId)
@@ -56,6 +72,7 @@ function WorkspaceQualification({ workspaceId, name, registration }: { workspace
           <div><dt>Requested suites</dt><dd>{profile.spec.suites.join(', ')}</dd></div>
           <div><dt>Requested CPU / memory / processes</dt><dd>{profile.spec.resources.limits.cpuLimit} CPU / {profile.spec.resources.limits.memoryBytes} bytes / {profile.spec.resources.limits.pidsLimit} processes</dd></div>
         </dl>
+        <Preparation workspaceId={workspaceId} profileId={profile.id} />
       </article>
     })}
     {candidates.map(value => <Candidate key={value.id} candidate={value} name={read.data.profiles.find(item => item.profile.id === value.profileId)!.profile.name} />)}</section> : null
