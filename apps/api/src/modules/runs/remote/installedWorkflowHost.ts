@@ -900,7 +900,12 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           return { payload: { status: await log.status(frame.intent.operationId),
             applicationAccess: structuredClone(resident.applicationAccess!) } }
         }
-        if(frame.method==='physical-readout')return {payload:pagePhysicalReadout(await physical.read(frame), frame.metadata)}
+        if (frame.method === 'physical-readout') {
+          await host.waitForSettlement(frame.intent.operationId)
+          context.signal.throwIfAborted()
+          current(context.binding)
+          return { payload: pagePhysicalReadout(await physical.read(frame), frame.metadata) }
+        }
         if(frame.method==='physical-ack') {
           const resident = operation(frame.intent)
           const status = await log.status(frame.intent.operationId)
