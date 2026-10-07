@@ -1,6 +1,6 @@
 import { JobRuntimeProfileListRecordSchema } from '@foreman-code/contracts/job-verification-runtime'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
+import { BuildComputerPrepareStatusSchema, type BuildComputerPrepareStatus } from '@foreman-code/contracts'
 import { apiClient, ApiError } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
@@ -25,7 +25,7 @@ export function useComputerPreparation(workspaceId: string, profileId: string) {
   const cache = useQueryClient()
   const key = [...keys.root, 'preparation', sessionGeneration(), workspaceId, profileId] as const
   const url = `${path(workspaceId)}/runtime-profiles/${encodeURIComponent(profileId)}/computer-preparation`
-  const status = useQuery({ queryKey: key, enabled: Boolean(workspaceId) && !sessionIsSwitching(), retry: false,
+  const status = useQuery<BuildComputerPrepareStatus>({ queryKey: key, enabled: Boolean(workspaceId) && !sessionIsSwitching(), retry: false,
     refetchInterval: query => ['idle', 'qualified', 'failed'].includes(query.state.data?.state ?? 'idle') ? false : 5_000,
     queryFn: ({ signal }) => apiClient.request(url, BuildComputerPrepareStatusSchema, { signal }) })
   const start = useMutation({ retry: false,
