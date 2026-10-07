@@ -129,9 +129,12 @@ describe('production remote review and native recovery through authenticated MCP
       const catalog = HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'codex' }))
       expect(catalog.capability).toBeNull()
       expect(catalog.discoveryError?.code).toBe('HARNESS_MODEL_DEFAULT_UNAVAILABLE')
-      const options = HarnessOptionsResultSchema.parse(await fixture.value('harness_options_get', { harness: 'codex' }))
+      const initialOptions = HarnessOptionsResultSchema.parse(await fixture.value('harness_options_get', { harness: 'codex' }))
+      expect(initialOptions.models).toEqual([])
+      const options = HarnessOptionsResultSchema.parse(await fixture.value('harness_options_refresh', { harness: 'codex' }))
       expect(options.models.map(model => model.id)).toContain('test-model')
       expect(options.models.find(model => model.id === 'test-model')).toMatchObject({ defaultPriority: 0 })
+      expect(HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'codex' }))).toEqual(catalog)
       const configuration = (await fixture.db.pool.query<{ record: { harness: { model: string } } }>(
         'select record from agent_configuration_versions where id=$1',
         [fixture.version.agentConfigurationVersionIds[fixture.version.approval.designatedOrchestratorAgentId!]])
