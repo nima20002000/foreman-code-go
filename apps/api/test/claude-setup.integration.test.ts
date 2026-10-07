@@ -39,7 +39,7 @@ it.skipIf(!postgresEnabled)('configures Claude MCP through authenticated HTTP/MC
     expect(http.status).toBe(200); expect(await http.json()).toEqual(setup)
     const original = await new PostgresSettingsRepository(f.db.pool).getManagedHarnessDefaults()
     const configuration = { harness: 'claude', model: 'explicit-model', authMode: 'subscription', configDirectory: f.db.directory,
-      permissionMode: 'default', sandbox: 'read-only', tools: [], permissionRules: [], instructions: '', mcpServers: { graphql: setup.graphqlMcp } }
+      permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: '', mcpServers: { graphql: setup.graphqlMcp } }
     const input = { commandId: randomUUID(), expectedRevision: original.revision, defaults: { ...original.defaults, claude: configuration } }
     const reader = await f.access.issue({ name: 'Claude setup reader', audience: 'operator', expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['harnesses:read'], scope: {} }] })
     const readClient = await connect(reader.token)

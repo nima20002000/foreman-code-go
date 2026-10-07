@@ -22,7 +22,7 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
   let app: ReturnType<typeof buildApp> | undefined
   try {
     const harness: ClaudeHarnessConfiguration = { harness: 'claude', model: 'recorded-model', authMode: 'subscription',
-      configDirectory: '/recorded/profile', permissionMode: 'default', sandbox: 'read-only', tools: [],
+      configDirectory: '/recorded/profile', permissionMode: 'default', sandbox: 'danger-full-access', tools: [],
       permissionRules: [], instructions: '', mcpServers: {} }
     const fixture = makeCurrentWorkflowFixture(randomUUID(), 'sequential')
     fixture.configurations = fixture.configurations.map(value => AgentConfigurationVersionSchema.parse({ ...value, harness }))
@@ -40,7 +40,7 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
       getForWorkspace: async () => { throw new Error('Agent rollover must not read or create a Run.') },
       executionPages() { throw new Error('Agent rollover must not select a Run execution.') },
     }, (id, configuration, cwd) => {
-      transport = claudeSdkToolTransport(cwd, () => [])
+      transport ??= claudeSdkToolTransport(cwd, () => [])
       const start = { kind: 'workflow' as const, correlationId: `agent:${id}:first`, request: {
         executionId: `agent-chat:${id}`, runId: `agent-chat:${id}`, workspaceId: seeded.scope.workspaceId,
         workflowNodeId: node.id, configuration, input: {}, workingDirectory: cwd, runtimeDirectory: join(db.directory, 'agent-chat', id),
