@@ -51,9 +51,32 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
       [workspaceId, JSON.stringify({ id: workspaceId, name: 'Build selection fixture' })])
     const computers = [0, 1, 2].map(() => buildComputerFixture(mainId, workspaceId))
-    for (const computer of computers) await database.pool.query(`insert into device_registrations
-      (id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,'fixture',$4::jsonb)`,
-    [computer.registration.deviceId, mainId, computer.registration.workerInstallationId, JSON.stringify(computer.registration)])
+    const source = { ...computers[0]!.candidate.spec.source, approvedSourceId: randomUUID(), snapshotId: randomUUID() }
+    await database.pool.query(`insert into source_approvals
+      (approved_source_id,snapshot_id,workspace_id,owner_principal_id,requested_by,command_id,input_hash,state,origin,request)
+      values($1,$2,$3,$4,$4,$5,$6,'approved','{}','{}')`,
+    [source.approvedSourceId, source.snapshotId, workspaceId, writer.principal.id, randomUUID(), source.manifestDigest])
+    await database.pool.query(`insert into source_snapshots(snapshot_id,approved_source_id,workspace_id,manifest_digest,record)
+      values($1,$2,$3,$4,'{}')`, [source.snapshotId, source.approvedSourceId, workspaceId, source.manifestDigest])
+    for (const computer of computers) {
+      computer.candidate.spec.source = source
+      computer.auto.source = source
+      const profile = computer.candidate.profile
+      const root = profile.root
+      root.source = source
+      root.binding.snapshotId = source.snapshotId
+      await database.pool.query(`insert into device_registrations
+        (id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,'fixture',$4::jsonb)`,
+      [computer.registration.deviceId, mainId, computer.registration.workerInstallationId, JSON.stringify(computer.registration)])
+      await database.pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
+        values($1,$2,$3,1)`, [root.binding.rootId, workspaceId, randomUUID()])
+      await database.pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
+        values($1,1,$2,$3,$4::jsonb)`, [root.binding.rootId, workspaceId, source.snapshotId, JSON.stringify(root)])
+      await database.pool.query(`insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record)
+        values($1,$2,1,$3,1,$4::jsonb)`, [profile.id, workspaceId, root.binding.rootId, JSON.stringify(profile)])
+      await database.pool.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,1,$2::jsonb)',
+        [profile.id, JSON.stringify(profile)])
+    }
     const settings = new BuildComputerSettings(database.pool, commands, async () => ({
       state: 'ready', reasons: [], remoteExecutionEnabled: options.startupEnabled ?? true,
     }))
