@@ -247,7 +247,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
   } else {
     send({ id: message.id, error: { code: -32601, message: 'Unrecorded provider method' } })
   }
-})
+}).on('close', () => process.exit(process.exitCode ?? 0))
 
 setInterval(() => {
   if (!thread) return
