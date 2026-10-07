@@ -8,6 +8,7 @@ import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { graphHead, postgresEnabled } from './helpers/wave25Agent3.js'
+import { ApprovalTransportFaults } from './helpers/eng06ApprovalFaults.js'
 
 function fanInFixture() {
   const fixture = makeCurrentWorkflowFixture(randomUUID())
@@ -96,10 +97,12 @@ describe.skipIf(!postgresEnabled)('Current workflow result and checkpoint durabi
     }, 60000)
   })
   it('a cold engine closes the waiting native lifetime without replaying the completed predecessor', async () => {
-    const t = await checkpointRuntimeFixture(1, 1, { recoverNativeProcesses: async (executionId, signal) => {
-      signal.throwIfAborted()
-      return t.provider.closedSessions.has(`native-${executionId}`)
-    } })
+    const faults = new ApprovalTransportFaults()
+    const t = await checkpointRuntimeFixture(1, 1, {
+      recoverNativeProcesses: (executionId, signal) => faults.recoverNativeProcesses(executionId, signal),
+    })
+    const connection = t.provider.connection.bind(t.provider)
+    vi.spyOn(t.provider, 'connection').mockImplementation(() => faults.wrap(connection()))
     try {
       await t.engine.start(t.f.run.id)
       const pending = (await t.pending())[0]!
@@ -107,6 +110,7 @@ describe.skipIf(!postgresEnabled)('Current workflow result and checkpoint durabi
       const acceptedBefore = (await t.db.pool.query<{ count: string }>(
         "select count(*)::text as count from run_graph_effects where run_id=$1 and effect_kind='result.accept'",
         [t.f.run.id])).rows[0]!.count
+      faults.killOnRestart = true
       await t.engine.shutdown()
       const recovered = t.compose()
       await recovered.engine.resume(t.f.run.id)
