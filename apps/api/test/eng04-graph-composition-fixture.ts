@@ -117,10 +117,12 @@ export function graphHeaders(token?: string) {
 }
 export interface RpcResult {
   tools?: { name: string }[]; isError?: boolean; structuredContent?: unknown; content?: { type: string; text?: string }[]
+  nextCursor?: string
 }
-interface RpcEnvelope { result?: RpcResult; error?: unknown }
+export interface RpcEnvelope { result?: RpcResult; error?: unknown }
 const origins = new WeakMap<FastifyInstance, Promise<string>>()
-export async function graphRpc(app: FastifyInstance, token: string, method: string, params: Record<string, unknown> = {}) {
+export async function graphRpc(app: FastifyInstance, token: string, method: string,
+  params: Record<string, unknown> = {}): Promise<{ status: number } & RpcEnvelope> {
   let origin = origins.get(app)
   if (!origin) {
     const address = app.server.address()
@@ -135,6 +137,12 @@ export async function graphRpc(app: FastifyInstance, token: string, method: stri
   const text = await response.text()
   const message: RpcEnvelope = JSON.parse(response.headers.get('content-type')?.includes('text/event-stream')
     ? text.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n') : text)
+  if (method === 'tools/list' && message.result?.nextCursor) {
+    const page = await graphRpc(app, token, method, { ...params, cursor: message.result.nextCursor })
+    if (page.error || !page.result) return page
+    return { status: response.status, result: { ...page.result,
+      tools: [...(message.result.tools ?? []), ...(page.result.tools ?? [])] } }
+  }
   return { status: response.status, ...message }
 }
 export function graphRpcValue(result: {
