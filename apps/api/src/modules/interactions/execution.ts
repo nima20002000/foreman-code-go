@@ -992,13 +992,15 @@ export class ApprovalExecutionCoordinator {
     const run = await this.runs.get(execution.runId, owner)
     if (!run || !['running', 'waiting'].includes(run.executionState) || !this.workflowClosures
       || !this.credentials?.recoverRemote) return false
+    const retained = await owner.oneShotConnection().transaction(sql => readRetainedRemoteReviewer(sql, execution))
+    if (!retained) return false
     const resolved = this.resolveManager(context, owner)
     resolved.beginStart?.()
     const owned = this.ownSession(execution, { ...context, purpose: 'reviewer' }, resolved.manager)
     owned.runOwner = owner
     const signal = AbortSignal.any([owned.controller.signal, ...(parentSignal ? [parentSignal] : [])])
-    owned.closureRegistration = this.workflowClosures.begin(execution)
-    owned.closureGeneration = await owned.closureRegistration
+    owned.closureRegistration = Promise.resolve(retained.generation)
+    owned.closureGeneration = retained.generation
     try {
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
         workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
@@ -1013,7 +1015,9 @@ export class ApprovalExecutionCoordinator {
       this.managerCredentials.set(owned.manager, credential)
       resolved.markResident?.()
       await owner.oneShotConnection().transaction(async sql => {
-        if (!await readRetainedRemoteReviewer(sql, execution)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
+        const current = await readRetainedRemoteReviewer(sql, execution)
+        if (!current || current.generation !== retained.generation
+          || !isDeepStrictEqual(current.session, retained.session)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
           'The retained reviewer no longer matches its original terminal and process lease.', 409)
       })
       this.maintainRetainedReviewer(owned)
