@@ -110,7 +110,7 @@ if (verificationScripts.every(path => committedScripts.has(path))) {
 }
 await writeFile(join(output, 'install'), snapshotSource('apps/worker/artifacts/install.sh.in').toString('utf8').replaceAll('@NODE_VERSION@', target.node), { mode: 0o700 });
 if (runtime) await writeFile(join(output, 'artifacts/node-runtime.json'), snapshotSource(relative(root, resolve(runtimeFile))), { mode: 0o600 });
-const store = execFileSync('corepack', ['pnpm', 'store', 'path'], { cwd: root, encoding: 'utf8' }).trim();
+const { storeDir: store } = parse(await readFile(join(root, 'node_modules/.modules.yaml'), 'utf8'));
 const database = new DatabaseSync(join(store, 'index.db'), { readOnly: true });
 let nativePackages;
 try {
