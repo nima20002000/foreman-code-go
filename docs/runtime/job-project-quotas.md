@@ -55,3 +55,15 @@ observed UUID in the protected pool. Recovery checks UUID, project IDs, limits,
 inheritance and namespace inodes before deleting the original materialization.
 The existing immutable loopback backing-file proof remains available for volumes
 that use it; its size is volume geometry rather than a single Job's allowance.
+
+## Root-once installation
+
+`scripts/build-computer/install.sh` is the only step that needs root on a build
+computer. It installs rootless podman prerequisites, creates the ext4 project-quota
+volume and mounts it persistently at `~/.local/share/foreman-code/ci-verification/volume`
+as a system mount unit, installs the Worker artifact's quota observer with only
+`cap_sys_admin`, and, given an installation plan, provisions the control and
+per-Job quota directories (`provision-quotas.py`). After that, the app prepares the
+offline package seed, verification image, protected runtime refresh and
+requalification as the computer's own user (`build_computer_prepare`), including
+automatically when a commit changes dependency files.
