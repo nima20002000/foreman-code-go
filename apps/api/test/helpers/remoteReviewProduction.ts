@@ -110,7 +110,7 @@ export async function remoteReviewProduction(options: {
     }
     // The Codex fixture never chooses an ambient Claude model during startup.
     const claude = ClaudeHarnessConfigurationSchema.parse({ harness: 'claude', model: 'claude-haiku-4-5-20251001',
-      configDirectory: claudeProfile, authMode: 'subscription', permissionMode: 'default', sandbox: 'read-only',
+      configDirectory: claudeProfile, authMode: 'subscription', permissionMode: 'default', sandbox: 'full-access',
       tools: [], permissionRules: [], instructions: '', mcpServers: {} })
     await db.pool.query(`insert into application_settings(key,record,revision)
       values('harness-defaults',$1::jsonb,1)`, [JSON.stringify({ claude })])
