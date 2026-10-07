@@ -25,7 +25,14 @@ async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void
     console.error('Remote review production error codes', fixture.failures())
     console.error('Remote review jobs', (await fixture.db.pool.query(`select id,state,
       record->'error' as error,record->>'retryAfter' as retry_after,
-      record->>'providerTurnOrMessageId' as provider_turn from review_jobs order by created_at`)).rows)
+      record->>'providerTurnOrMessageId' as provider_turn,record->>'attempt' as attempt,
+      lease_expires_at>clock_timestamp() as lease_active from review_jobs order by created_at`)).rows)
+    console.error('Remote review writer leases', (await fixture.db.pool.query(`select native_session_id,
+      record->>'correlationId' as correlation,record->>'leaseToken' is not null as claimed,
+      record->>'leaseExpiresAt' as expires_at from native_session_lanes`)).rows)
+    console.error('Remote review credential fences', (await fixture.db.pool.query(`select b.execution_id,b.purpose,
+      b.approval_review_lease_fence=j.lease_fence as current_job_fence
+      from worker_credential_bindings b left join review_jobs j on j.id=b.approval_review_job_id`)).rows)
     console.error('Remote review interactions', (await fixture.db.pool.query(`select id,status,
       record->>'deliveryState' as delivery_state from durable_interactions`)).rows)
     console.error('Remote review delivery attempts', (await fixture.db.pool.query(`select interaction_id,attempt,state,error,
