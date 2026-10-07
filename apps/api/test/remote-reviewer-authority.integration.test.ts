@@ -60,14 +60,17 @@ describe.skipIf(!postgresEnabled)('reviewer assignment and authenticated decisio
         expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['interactions:read'], scope: { runIds: [f.run.id] } }] })
       const requester = await f.credentials.issueForExecution(f.requester.id)
       const before = await f.repository.get(f.interaction.id)
-      for (const token of [reader.token, requester.environment.variables.GRAPHQL_MCP_TOKEN!]) {
+      for (const [token, code] of [
+        [reader.token, 'ACCESS_DENIED'],
+        [requester.environment.variables.GRAPHQL_MCP_TOKEN!, 'ROLE_NOT_ALLOWED'],
+      ] as const) {
         const client = new Client({ name: 'review-scope-test', version: '1' })
         clients.push(client)
         await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), { authProvider: { token: async () => token } }))
         expect((await client.listTools()).tools.map(tool => tool.name)).not.toContain('interaction_respond')
         const denied = await client.callTool({ name: 'interaction_respond', arguments: br1002Response(f.interaction) })
         expect(denied.isError).toBe(true)
-        expect(JSON.stringify(denied.content)).toContain('ROLE_NOT_ALLOWED')
+        expect(JSON.stringify(denied.content)).toContain(code)
       }
       expect(await f.repository.get(f.interaction.id)).toEqual(before)
       expect(f.counts().responses).toBe(0)
