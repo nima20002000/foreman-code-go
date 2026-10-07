@@ -3,6 +3,7 @@ import { createHash, randomUUID, sign, X509Certificate } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { request } from 'node:https'
 import { createServer } from 'node:net'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -33,6 +34,7 @@ import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemot
 import { createRemoteReviewTransport } from './remoteReviewTransport.js'
 
 const execute = promisify(execFile)
+const tsxLoader = createRequire(import.meta.url).resolve('tsx')
 
 export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
   description: string): Promise<T> {
@@ -190,7 +192,7 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
       let ready = false
       mainFailure = ''
       const started = spawn(process.execPath, [
-        '--import', 'tsx',
+        '--import', tsxLoader,
         fileURLToPath(new URL('../fixtures/remote-review-main.mjs', import.meta.url)), mainConfiguration], {
         cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
