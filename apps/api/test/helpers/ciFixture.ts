@@ -128,12 +128,13 @@ export function ciFixture() {
       enqueues++
       enqueued.push(input)
       expectDefinition()
-      const now = new Date().toISOString()
+      // One instant: the deadline is exactly the queue timeout after enqueue, even on a loaded machine.
+      const at = Date.now(), now = new Date(at).toISOString()
       ticket = JobQueueTicketSchema.parse({ schemaVersion: 1, id: randomUUID(), workspaceId: scope, revision: 1,
         commandId: input.commandId, commandDigest: jobDigest(input), principalId: principal.id, definition,
         executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(), workflow: null, gateId: null,
         placement: { kind: 'auto' }, placementOverride: null, resources: runtime.spec.verification.resources,
-        enqueueSequence: '1', enqueuedAt: now, deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+        enqueueSequence: '1', enqueuedAt: now, deadlineAt: new Date(at + 60_000).toISOString(),
         state: 'waiting', waitingReasons: ['busy'], compatibleTargetCount: 1, queuePosition: 1, estimatedStartAt: null,
         reservationId: null, cancelRequestedAt: null, terminalReason: null, finishedAt: null })
       return { kind: 'pending-admission', ticket: structuredClone(ticket) }
