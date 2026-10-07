@@ -292,15 +292,23 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     operators = new PostgresOperatorRepository(pool)
     repository = new PostgresOperatorConversationRepository(pool)
     const responseJournal = new NativeResponseJournal(join(f.directory, 'responses'))
+    const processRegistry = new NativeProcessRegistry(join(f.directory, 'processes'))
     nativeFactories = new NativeHarnessFactories({ ...config.harnesses,
       openCodeFileStorageRoot: config.fileStorageRoot!,
-      appMcpEndpoint: managementEndpoint, responseJournal })
+      appMcpEndpoint: managementEndpoint, responseJournal,
+      auxiliaryRecovery: role => processRegistry.scope(`${role}:${randomUUID()}`),
+      admitRecovery: recovery => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
+      abandonRecovery: async recovery => { await processRegistry.abandonReservedLaunch(recovery) },
+      closeRecovery: async recovery => {
+        if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')
+      },
+    })
     authority = new PostgresOperatorChatAuthority(pool, access, new NativeRollout({ NODE_ENV: 'test', HOST: '127.0.0.1' }), cwd,
       managementEndpoint, (manager) => nativeFactories.inspector(manager))
     prepare = vi.spyOn(authority, 'prepare')
     resolve = productionOperatorManagers({ app: () => app, pool, config, workingDirectory: cwd,
       endpointHost: '127.0.0.1', appMcpEndpoint: managementEndpoint, managers,
-      processRegistry: new NativeProcessRegistry(join(f.directory, 'processes')),
+      processRegistry,
       responseJournal, nativeFactories })
     chat = new OperatorChatService(repository, operators, resolve, cwd, authority)
     const commands = new PostgresCommandCoordinator(pool)
