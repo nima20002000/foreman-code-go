@@ -30,8 +30,12 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
   try {
     await pool.query(`create table source_execution_materializations (materialization_id uuid primary key, record jsonb not null,
       state text not null, execution_id text not null, reservation_id uuid not null);
-      create table runs (id text primary key, execution_state text not null);
+      create table runs (id text primary key, execution_state text not null, stop_requested_at timestamptz);
       create table harness_executions (id text primary key, run_id text not null, record jsonb not null);
+      create table run_cleanup_intents (run_id text primary key, pending boolean not null);
+      create table execution_native_sessions (execution_id text primary key, workflow_finalized_at timestamptz, reference jsonb);
+      create table execution_native_closures (execution_id text not null, generation bigint not null,
+        closed_at timestamptz, detached_at timestamptz, expected_reference jsonb);
       create table source_preparation_reconciliations (operation_id text primary key, status text not null);
       create table source_storage_reservations (reservation_id uuid primary key, scope_id text not null, owner_kind text not null,
       owner_id text not null, state text not null, reserved_bytes bigint not null, record jsonb not null)`)
@@ -50,7 +54,7 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
       reservationId: reservation.reservationId, sourceBindingHash: attempt.placementHash, finalDispatchBindingHash: null, state: 'prepared' })
     await pool.query(`insert into source_execution_materializations values ($1,$2,'prepared',$3,$4)`,
       [receipt.materializationId, record, receipt.executionId, record.reservationId])
-    await pool.query(`insert into runs values ('ongoing-workflow','running')`)
+    await pool.query(`insert into runs(id,execution_state) values ('ongoing-workflow','running')`)
     await pool.query(`insert into harness_executions values ($1,'ongoing-workflow',$2)`,
       [receipt.executionId, { state: 'running' }])
     await pool.query(`insert into source_storage_reservations values ($1,$2,$3,$4,'owned',$5,$6)`, [reservation.reservationId, reservation.scopeId, reservation.ownerKind, reservation.ownerId, reservation.reservedBytes, reservation])
