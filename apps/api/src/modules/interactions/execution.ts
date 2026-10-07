@@ -184,8 +184,12 @@ export class ApprovalExecutionCoordinator {
     owner ??= await this.runs.acquireOwnership(owned.execution.runId, () => owned.controller.abort())
     if (!owner) throw new DomainError('SESSION_LANE_BUSY', 'The Run is still draining its native owner.', 409)
     this.adoptRunOwner(owner)
+    const releaseOwner = owner.retain(() => owned.controller.abort())
     try { await this.closeWorkflowSessionOwned(owned, restart) }
-    finally { if (acquired) await owner.release() }
+    finally {
+      await releaseOwner()
+      if (acquired) await owner.release()
+    }
   }
   private async closeWorkflowSessionOwned(owned: OwnedNativeSession, restart: boolean): Promise<void> {
     const session = owned.session
