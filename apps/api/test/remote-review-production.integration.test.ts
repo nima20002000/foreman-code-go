@@ -371,6 +371,7 @@ describe('production remote review and native recovery through authenticated MCP
       expect(original.native).toBeUndefined()
       expect(original.terminal).toBeUndefined()
       const owners = fixture.registry.snapshot().launches.filter(launch => launch.owner === `execution:${requester.id}`)
+      let originalLaunches = owners
       const active = owners.find(owner => owner.provider?.pid === provider.pid)!
       expect(active.lifecycle).toBe('active')
       expect(active.boundary?.kind).toBe('cgroup-v2')
@@ -378,7 +379,10 @@ describe('production remote review and native recovery through authenticated MCP
         workspaceId: started.run.workspaceId, operationId: original.intent.operationId,
       }))
       expect(preparation.materializationId).not.toBeNull()
-      await fixture.restartWorker()
+      // Startup can reserve another launch before the Worker exits.
+      await fixture.restartWorker(() => {
+        originalLaunches = fixture.registry.snapshot().launches.filter(launch => launch.owner === active.owner)
+      })
       await fixture.value('run_stop', { workspaceId: started.run.workspaceId,
         runId: started.run.id, commandId: randomUUID() })
       const closed = await waitForRemoteReview(async () => {
@@ -393,7 +397,8 @@ describe('production remote review and native recovery through authenticated MCP
       expect(closed!.terminal?.entryClosure).toMatchObject({ intent: original.intent,
         connection: original.connection, owner: `execution:${requester.id}` })
       const closedLaunches = closed!.terminal!.entryClosure!.launches
-      expect(closedLaunches.map(launch => launch.launchId).sort()).toEqual(owners.map(launch => launch.launchId).sort())
+      expect(closedLaunches.map(launch => launch.launchId).sort())
+        .toEqual(originalLaunches.map(launch => launch.launchId).sort())
       expect(closedLaunches.find(launch => launch.launchId === active.launchId)).toMatchObject({
         guardian: active.guardian, provider: active.provider, boundary: active.boundary,
         lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty',
@@ -419,7 +424,7 @@ describe('production remote review and native recovery through authenticated MCP
         'select state from source_execution_materializations where operation_id=$1',
         [original.intent.operationId])).rows[0]?.state).toBe('closed')
       expect(fixture.registry.snapshot().launches.filter(launch => launch.owner === active.owner)
-        .map(launch => launch.launchId).sort()).toEqual(owners.map(launch => launch.launchId).sort())
+        .map(launch => launch.launchId).sort()).toEqual(originalLaunches.map(launch => launch.launchId).sort())
       expect((await fixture.provider.calls()).filter(call => 'requesterSessionBlocked' in call)).toHaveLength(1)
       expect((await fixture.provider.calls()).filter(call => call.method === 'turn/start'
         && call.correlationId === `execution:${requester.id}`)).toHaveLength(0)

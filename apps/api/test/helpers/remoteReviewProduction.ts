@@ -495,8 +495,9 @@ export async function remoteReviewProduction(options: {
         await startMain()
         await waitForRemoteReview(async () => ready, value => value, 'Worker reconnect after Main restart')
       },
-      async restartWorker() {
+      async restartWorker(afterCrash?: () => void) {
         await stopWorker('SIGKILL')
+        afterCrash?.()
         await startWorker()
       },
       async pending(runId: string) {
