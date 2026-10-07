@@ -62,18 +62,20 @@ describe('execution allocation cleanup ownership', () => {
     expect(createSession).not.toHaveBeenCalled()
   })
 
-  it('retains the complete workflow request for inspection and refuses a changed request', async () => {
+  it.each([false, true])('pins the complete workflow request and refuses changes (allocated before request: %s)', async (early) => {
     const request: HarnessExecutionRequest = { executionId: context.executionId, runId: 'run', workspaceId: 'workspace',
       workflowNodeId: 'node', workingDirectory: context.workingDirectory, runtimeDirectory: '/runtime',
       configuration: context.configuration, input: { accepted: true }, initialPrompt: 'accepted notice',
       executionContext: { parentRequest: null } }
     const create = vi.fn(input => {
-      expect(input.workflowRequest).toEqual(request)
+      expect(input.workflowRequest).toEqual(early ? undefined : request)
       return { harness: 'codex', dispose: async () => undefined } as NativeHarnessSessionManager
     })
     const resolver = new ExecutionScopedNativeSessionManagerResolver(create)
     try {
+      const allocated = early ? resolver.resolve(context) : undefined
       const original = resolver.resolve({ ...context, workflowRequest: request })
+      if (allocated) expect(original).toBe(allocated)
       expect(resolver.resolve(context).manager).toBe(original.manager)
       expect(() => resolver.resolve({ ...context, workflowRequest: { ...request,
         executionContext: { parentRequest: { requestId: 'foreign', requesterNodeId: 'foreign' } } } }))

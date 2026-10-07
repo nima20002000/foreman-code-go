@@ -92,7 +92,9 @@ describe.skipIf(!postgresEnabled)('pending workflow approval restart', () => {
     const response = await runtime.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(pending!))
     expect(response.interaction).toMatchObject({ id: pending!.id, nativeSessionId: pending!.nativeSessionId,
       nativeRequestId: pending!.nativeRequestId, status: 'delivered', deliveryState: 'delivered' })
-    expect(await runtime.runs.get(runId)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+    await vi.waitFor(async () => {
+      expect(await runtime.runs.get(runId)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+    }, { timeout: 10_000 })
     expect(await runtime.runs.hasPendingCleanup(runId)).toBe(false)
     expect(f.provider.counts).toEqual({ ...counts, attaches: counts.attaches + 2, responses: counts.responses + 1 })
     expect(f.provider.startedExecutions).toHaveLength(executions.length)

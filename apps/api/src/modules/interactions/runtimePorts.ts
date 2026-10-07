@@ -78,7 +78,8 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
         || !isDeepStrictEqual(existing.context.acceptedPlacement, context.acceptedPlacement)
         || !isDeepStrictEqual(existing.context.artifactOutputs, context.artifactOutputs)
         || !isDeepStrictEqual(existing.context.configuration, context.configuration)
-        || context.workflowRequest !== undefined && !isDeepStrictEqual(existing.context.workflowRequest, context.workflowRequest)) {
+        || context.workflowRequest !== undefined && existing.context.workflowRequest !== undefined
+          && !isDeepStrictEqual(existing.context.workflowRequest, context.workflowRequest)) {
         throw new Error('A durable execution cannot change native manager ownership context.')
       }
       if (existing.lifecycle === 'failed') throw new Error('The failed native manager is being released.')
@@ -89,6 +90,10 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
         }
         if (existing.admission.owner !== owner) existing.admission.generation = randomUUID()
         existing.admission.owner = owner
+      }
+      // Restart attachment can allocate before the engine reconstructs the complete request.
+      if (context.workflowRequest !== undefined && existing.context.workflowRequest === undefined) {
+        existing.context.workflowRequest = structuredClone(context.workflowRequest)
       }
       return existing.resolved
     }
