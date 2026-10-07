@@ -162,6 +162,7 @@ interface Retained {
   assertCurrent(): Promise<void>
   observe(): NativeLaunchObservation
   closure(): NativeLaunchObservation | null
+  waitForSettlement?: () => Promise<void>
 }
 /** Only the installed original host remembers its own replies. Request selectors
  * locate those immutable originals; they can never supply or reconstruct proof. */
@@ -204,7 +205,8 @@ export class InstalledWorkflowPhysicalReadouts {
   }
   clear() { this.originals.clear();this.events.clear();this.results.clear(); this.byteSize = 0 }
   remember(input: { readout: RemoteWorkflowPhysicalReadout; placement: AcceptedNodePlacement; source: WorkflowOriginalNativeSource;
-    leaseExpiresAt: string; assertOwnerCurrent(): Promise<void>; assertCurrent(): Promise<void>; observe(): NativeLaunchObservation; closure(): NativeLaunchObservation | null }): void {
+    leaseExpiresAt: string; assertOwnerCurrent(): Promise<void>; assertCurrent(): Promise<void>; observe(): NativeLaunchObservation; closure(): NativeLaunchObservation | null;
+    waitForSettlement?: () => Promise<void> }): void {
     this.purgeExpired()
     const parsed = RemoteWorkflowPhysicalReadoutSchema.parse(input.readout)
     canonicalGraphJson(input.source, REMOTE_NATIVE_SOURCE_LIMIT)
@@ -260,7 +262,8 @@ export class InstalledWorkflowPhysicalReadouts {
       else this.results.set(payload.digest, { value: freezeTree(payload.value), bytes: payload.bytes, references: 1 })
     }
     const retained:Retained={ receipt, placement, source, readout, expiresAt, bytes,aliases,resultDigests,
-      assertOwnerCurrent: input.assertOwnerCurrent, assertCurrent: input.assertCurrent, observe: input.observe, closure: input.closure }
+      assertOwnerCurrent: input.assertOwnerCurrent, assertCurrent: input.assertCurrent, observe: input.observe, closure: input.closure,
+      ...(input.waitForSettlement ? { waitForSettlement: input.waitForSettlement } : {}) }
     entries.set(key,retained)
     this.originals.set(receipt.intent.operationId, entries); this.byteSize = nextByteSize
     const events=this.events.get(receipt.intent.operationId)??new Map<string,{retained:Retained;source:WorkflowOriginalNativeSource}>()
@@ -284,8 +287,14 @@ export class InstalledWorkflowPhysicalReadouts {
       'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original physical reply selector changed.', 409,
       { reason: 'selector_changed', operationId: input.intent.operationId, receiptSequence: input.receiptSequence })
     try { await retained.assertCurrent() } catch (error) { this.purge(input.intent.operationId); throw error }
-    const observation = retained.observe()
-    const closure = retained.closure()
+    let observation = retained.observe()
+    let closure = retained.closure()
+    if (!closure && observation.lifecycle !== 'active' && retained.waitForSettlement) {
+      await retained.waitForSettlement()
+      await retained.assertCurrent()
+      observation = retained.observe()
+      closure = retained.closure()
+    }
     if (closure && (!hasNativeClosure(observation) || !isDeepStrictEqual(observation,closure))) return unavailable()
     if (!closure && observation.lifecycle !== 'active') return unavailable()
     if (retained.expiresAt <= Date.now()) return unavailable()
