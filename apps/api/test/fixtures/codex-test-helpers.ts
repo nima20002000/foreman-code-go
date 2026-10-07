@@ -61,7 +61,7 @@ export async function finish(directory: string, sessionId: string, answer = 'cor
   assert(Array.isArray(turn.items))
   await emit(directory, { method: 'turn/completed', params: { threadId: sessionId, turn: {
     ...turn, status: 'completed', completedAt: 2,
-    items: [...turn.items, agentMessage('final-item', answer)],
+    items: [...turn.items, agentMessage(`answer:${turn.id}`, answer)],
   } } })
 }
 export async function until<T>(probe: () => Promise<T | undefined | false>, timeout = 5_000): Promise<T> {
