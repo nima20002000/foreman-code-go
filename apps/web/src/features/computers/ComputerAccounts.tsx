@@ -12,7 +12,7 @@ const TOOLS: Record<ComputerAccount['tool'], { label: string; icon: React.ReactN
 function accountSummary(account: ComputerAccount) {
   const name = TOOLS[account.tool].label
   if (!account.installed) return `${name}: not installed`
-  if (account.signedIn === null) return `${name}: sign-in unknown`
+  if (account.signedIn === null) return `${name}: ${account.details[0] ?? 'sign-in unknown'}`
   if (!account.signedIn) return `${name}: signed out`
   const who = account.account ?? account.details.join(', ')
   return who ? `${name}: ${who}` : `${name}: signed in`

@@ -51,6 +51,10 @@ async function claude(ports: AccountProbePorts, signal: AbortSignal): Promise<Co
   const binary = await ports.find('claude')
   if (!binary) return missing('claude')
   const result = await ports.run(binary, ['auth', 'status'], signal)
+  // An install whose executable cannot start (for example a missing loader) says nothing at all.
+  if (result.code === null && !result.stdout && !result.stderr) {
+    return { tool: 'claude', installed: true, signedIn: null, account: null, details: ['cannot start'] }
+  }
   let status: { loggedIn?: unknown; email?: unknown; authMethod?: unknown }
   try { status = JSON.parse(result.stdout) as typeof status } catch {
     // Signed-out releases print a login prompt instead of JSON.

@@ -52,3 +52,10 @@ it('prefers the app Drive remote and reports where it is mounted', async () => {
   expect(result.accounts.find(account => account.tool === 'drive')).toEqual({ tool: 'drive', installed: true, signedIn: true,
     account: 'owner@gmail.com', details: ['foreman-drive:', 'mount:/home/agent/Foreman Code Drive'] })
 })
+
+it('reports an installed Claude that cannot start', async () => {
+  const result = await probeComputerAccounts({ ...ports(['claude'], {}),
+    run: async () => ({ code: null, stdout: '', stderr: '' }) })
+  expect(result.accounts.find(account => account.tool === 'claude')).toEqual({ tool: 'claude', installed: true, signedIn: null,
+    account: null, details: ['cannot start'] })
+})
