@@ -1,14 +1,26 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 
-const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
-if (!artifact) throw new Error('Build the worker artifact before running its conversation behavior test.');
+const repository = fileURLToPath(new URL('../../../', import.meta.url));
 
-test('packaged conversations use the existing authenticated carrier and do not allocate on a fresh read', async () => {
+test('packaged conversations use the existing authenticated carrier and do not allocate on a fresh read', async t => {
+  let artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
+  if (!artifact) {
+    const directory = await mkdtemp(join(persistentFixtureRoot, 'worker-conversations-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    artifact = join(directory, 'release');
+    execFileSync(process.execPath, ['scripts/build-worker-artifact.mjs',
+      'apps/worker/artifacts/ubuntu-26.04-x64-target.json', artifact,
+      'apps/worker/artifacts/node-22.23.3-linux-x64.json'],
+    { cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  }
   const { createWorkerExecutionDomains } = await import(pathToFileURL(join(artifact, 'src/worker.mjs')).href);
   const connection = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
     bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 1,
