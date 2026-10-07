@@ -187,7 +187,7 @@ describe('production remote review and native recovery through authenticated MCP
       const denied = await fixture.call('interaction_respond', { interactionId: active.interaction.id,
         optionId: option.optionId, expectedRevision: active.interaction.revision }, reader.token)
       expect(denied.isError).toBe(true)
-      expect(JSON.stringify(denied.content)).toContain('ROLE_NOT_ALLOWED')
+      expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
       expect(await new PostgresInteractionRepository(fixture.db.pool).get(active.interaction.id)).toEqual(before)
       expect((await fixture.provider.calls()).filter(call => 'approvalResponse' in call)).toHaveLength(0)
       await fixture.provider.releaseReview()
