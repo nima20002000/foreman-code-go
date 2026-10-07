@@ -19,8 +19,8 @@ it('keeps root fixtures private with genuine filesystem identities despite an un
     vi.stubEnv('TMPDIR', unsafe)
     const fixture = await workspaceRootDirectory()
     try {
-      expect(fixture.startsWith('/tmp/w08-workspace-root-')).toBe(true)
-      expect(fixture.startsWith(unsafe)).toBe(false)
+      const fixtureRoot = await openPrivateRoot(fixture)
+      await fixtureRoot.close()
       const metadata = await stat(fixture)
       expect(metadata.uid).toBe(process.getuid!())
       expect(metadata.mode & 0o777).toBe(0o700)

@@ -184,6 +184,8 @@ describe('mixed immutable version history uses current Run/workflow grants', () 
       else if (q.startsWith('select workspace_id,workflow_id from runs')) rows = [{ workspace_id: f.run.workspaceId, workflow_id: f.run.workflowId }]
       else if (q.includes('from management_principals')) rows = [{ ...principal, grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }]
       else if (q.startsWith('select r.id,r.workspace_id')) rows = [currentUnitRunRow(f)]
+      else if (q.startsWith('with pinned_version as materialized')) rows = [{ versions: [currentUnitVersionRow(f)],
+        configurations: currentUnitConfigurationRows(f) }]
       else if (q.includes('from workflow_versions')) rows = [currentUnitVersionRow(f)]
       else if (q.includes('from agent_configuration_versions')) rows = currentUnitConfigurationRows(f)
       else if (q.startsWith('select id from harness_executions')) rows = []

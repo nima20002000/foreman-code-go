@@ -67,6 +67,11 @@ export function reviewCoordination(initial = reviewJob()) {
     async assertReviewJobLease(_id: string, token: string) { assert.equal(token, job.leaseToken) },
     async renewReviewJob() { return new Date(Date.now() + 60_000).toISOString() },
     async isReviewPending() { return true },
+    async appendReviewNativeHistory(assigned: ReviewJob, events: readonly NativeHarnessEvent[],
+      options: Parameters<PostgresInteractionCoordinationRepository['appendReviewNativeHistory']>[2]) {
+      if (!options?.nativeCapture) throw new Error('Original review history capture required.')
+      for (const event of events) await value.appendReviewNativeEvent(assigned, event, options)
+    },
     async appendReviewNativeEvent(assigned: ReviewJob, event: NativeHarnessEvent,
       options: { writer?: WriterFence; nativeCapture?: ReviewNativeCapture }) {
       const source = original(options.nativeCapture, assigned, options.writer)

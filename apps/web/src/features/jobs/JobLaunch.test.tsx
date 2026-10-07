@@ -7,7 +7,7 @@ import type { JobStart } from '@foreman-code/contracts/jobs'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { server } from '../../mocks/server'
 import { JobLaunch } from './JobLaunch'
-import { definition, execution, queueTicket, verificationDefinition, verificationExecution,
+import { definition, execution, queueTicket, autoDefinition, autoQueueTicket, verificationDefinition, verificationExecution,
   verificationTemplate, verificationQueueTicket } from './fixtures'
 import { jobKeys } from './query'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
@@ -221,27 +221,27 @@ it('explicit rerun discloses changed revision without changing the old accepted 
   render(<QueryClientProvider client={new QueryClient()}><JobLaunch workspaceId={definition.workspaceId} definition={{ ...definition, revision: 2, versionId: 'version-b' }} rerun={execution} onClose={vi.fn()} onAccepted={vi.fn()} /></QueryClientProvider>)
   expect(await screen.findByText(/Resource offline/)).toBeInTheDocument()
   expect(screen.getByText(/old result stays pinned to revision 1/)).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Rerun as new execution' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Rerun as new execution' })).toBeDisabled()
   expect(screen.getByText('Readiness issues; request can queue')).toBeInTheDocument()
   expect(execution.acceptedSpec.definitionRevision).toBe(1)
 })
 
-it('saves an offline fixed request as queued and allows closing after acknowledgment', async () => {
+it('queues a valid auto request while its computer is offline and closes after acknowledgment', async () => {
   const close = vi.fn()
   const accepted = vi.fn()
-  let current = queueTicket
+  let current = autoQueueTicket
   server.use(http.post(`${root}/validate`, () =>
-    HttpResponse.json({ valid: false, reasons: ['Computer offline'], sideEffects: false })),
+    HttpResponse.json({ valid: true, reasons: [], sideEffects: false })),
   http.post(`${root}/executions`, async ({ request }) => {
     const input = await request.json() as JobStart
-    current = { ...queueTicket, commandId: input.commandId }
+    current = { ...autoQueueTicket, commandId: input.commandId }
     return HttpResponse.json({ admission: { kind: 'pending-admission', ticket: current } })
   }), http.get(`${root}/queue/:ticketId`, () => HttpResponse.json({ ticket: current })))
   render(<QueryClientProvider client={new QueryClient()}>
-    <JobLaunch workspaceId={definition.workspaceId} definition={definition} onClose={close} onAccepted={accepted} />
+    <JobLaunch workspaceId={definition.workspaceId} definition={autoDefinition} onClose={close} onAccepted={accepted} />
   </QueryClientProvider>)
   const user = userEvent.setup()
-  await screen.findByText('Computer offline')
+  await screen.findByText('Configuration valid')
   await user.click(screen.getByRole('button', { name: 'Start job' }))
   await screen.findByText('Queued · waiting')
   expect(screen.getByText(queueTicket.deadlineAt)).toBeInTheDocument()

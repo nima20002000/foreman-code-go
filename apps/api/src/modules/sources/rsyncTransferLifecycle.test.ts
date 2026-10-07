@@ -11,6 +11,7 @@ import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { PrivateSourceMaterializer } from './materialization.js'
 import { qualifyApprovedRootAllowlist } from './rootAttestation.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
+import { sourceMaterializationClaimName } from './quotaClaims.js'
 import { sourceBindingHash } from './bindingHash.js'
 import { sourcePackageHeader } from './operationPackage.js'
 import { PostgresSourceRsyncLifecycle, createWorkerSourceRsyncAcknowledgement } from './rsyncTransferLifecycle.js'
@@ -147,7 +148,8 @@ describe('worker actual source adoption acknowledgement', () => {
   })
   it('does not ACK a verified byte transfer without an actual local ready receipt', async () => {
     const f = await fixture()
-    await rm(join(f.namespace, `binding-${f.admitted.root.binding.rootId}.lock`))
+    await rm(join(f.namespace, sourceMaterializationClaimName(f.admitted.root.binding, f.record.receipt,
+      f.record.receipt.quota, f.record.receipt.claimScope)))
     await expect(f.worker.acknowledged(f.admitted.intent, f.context)).rejects.toThrow('actual local ready source receipt')
   })
   it('rejects a changed detached tree even with a genuine Main committed receipt', async () => {

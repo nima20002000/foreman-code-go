@@ -31,7 +31,7 @@ async function fixture() {
   await journal.jobAcknowledgeLaunch(intent.operationId, { containerId, supervisorIdentity: jobSupervisorIdentity(execution), processIdentityDigest: '1'.repeat(64) })
   const state = { stopped: false }
   const stopExecution = vi.fn(async () => { state.stopped = true; return true })
-  const supervisor = { stopExecution, reconcile: vi.fn(async () => ({ containerId, stopped: state.stopped,
+  const supervisor = { stopExecution, removeExecution: vi.fn(async () => {}), reconcile: vi.fn(async () => ({ containerId, stopped: state.stopped,
     exitCode: state.stopped ? 137 : null, timedOut: false, execError: false, logGapPossible: true })) } as unknown as PodmanJobSupervisor
   const authorize = vi.fn(async () => {})
   const forbidden = vi.fn(async () => { throw new Error('No native relaunch or source preparation allowed') })

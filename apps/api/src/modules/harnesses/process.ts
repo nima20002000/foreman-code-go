@@ -1,4 +1,4 @@
-import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
+import { timeRuntimeOperation } from '../diagnostics/runtimeTiming.js'
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { Readable } from 'node:stream'
 import { nativeOutputCollector } from './nativeCommandOutput.js'

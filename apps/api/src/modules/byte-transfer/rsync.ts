@@ -7,7 +7,7 @@ import { BYTE_TRANSFER_POLICY as POLICY, TransferContextSchema, TransferIntentSc
 import { nativeProcessExit } from '../harnesses/recovery/processRegistry.js'
 import type { RsyncProcessLaunch, RsyncRemoteWriter } from './rsyncWriterOwnership.js'
 import type { TransferAuthorization, TransferOperation } from './service.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 
 const log = componentLogger('byte-transfer')
 

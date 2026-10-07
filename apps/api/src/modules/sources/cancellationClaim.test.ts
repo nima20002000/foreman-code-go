@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { MaterializationReceiptSchema, type RootBinding } from '@foreman-code/contracts/source-materialization'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
+import { sourceMaterializationClaimName } from './quotaClaims.js'
 import { openPrivateRoot, identity } from './privateFilesystem.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim,
   releaseMaterializationClaimForCancellation } from './materialization.js'
@@ -33,7 +34,7 @@ async function fixture() {
   const receipt = MaterializationReceiptSchema.parse({ ...original,
     binding: { ...original.binding, filesystem: { ...filesystem, mountId: '999999' } },
     localTreeIdentity: { ...original.localTreeIdentity, mountId: '999999' } })
-  const claimPath = join(namespace, `binding-${binding.rootId}.lock`)
+  const claimPath = join(namespace, sourceMaterializationClaimName(binding, attempt, receipt.quota, receipt.claimScope))
   const materialization = join(namespace, receipt.materializationId)
   const claim = { version: 1, materializationId: receipt.materializationId, binding: receipt.binding, attempt }
   await writeFile(claimPath, JSON.stringify(claim), { mode: 0o600 })

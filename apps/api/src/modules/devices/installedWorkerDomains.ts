@@ -1,7 +1,7 @@
 import { recoverInstalledJobRuntimeQualifications } from '../jobs/installedRuntimeQualification.js'
 import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
 import { JOB_OUTPUT_NAMESPACE } from '../files/jobs/workerProtocol.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { createWorkerSourceRsyncAcknowledgement } from '../sources/rsyncTransferLifecycle.js'
 import { createInstalledRsyncComposition, type InstalledRsyncProviders } from '../byte-transfer/productionComposition.js'
 import { randomUUID } from 'node:crypto'

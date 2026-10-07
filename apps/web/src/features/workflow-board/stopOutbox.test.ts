@@ -26,7 +26,7 @@ describe('current selected-Run Stop: exact durable command and truthful settleme
     const receipt = await send((await reserveBoardStop(selected)))
     await recordBoardStopReceipt(first, receipt)
     expect(fetch.mock.calls[1]![1]?.body).toEqual(fetch.mock.calls[0]![1]?.body)
-    expect(fetch.mock.calls[1]![1]?.credentials).toBe('same-origin')
+    expect(fetch.mock.calls[1]![1]?.credentials).toBe('omit')
     expect(readBoardStop(selected)?.receipt?.status).toBe('accepted')
     // An ACK is deliberately not settlement; only the caller's exact canonical
     // terminal + cleanup-false readback may invoke settleBoardStop.

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { ZodError } from 'zod'
 import type { NativeSessionReference } from '@foreman-code/contracts'
-import { componentLogger } from '../../../infrastructure/logger.js'
+import { componentLogger } from '../../diagnostics/logger.js'
 import type { CodexFileCall, CodexFileCallResult } from './port.js'
 import type { CodexFileTurn } from './turn.js'
 

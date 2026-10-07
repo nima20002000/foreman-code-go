@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 const fixtureGitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
 import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
@@ -246,7 +247,8 @@ test('the pinned pnpm reads the enforced offline store and cache from its suppor
   { env: environment, encoding: 'utf8', timeout: 5000 }));
   assert.ok(heapBytes >= 1536 * 2**20 && heapBytes < 2 * 2**30);
   const config = JSON.parse(execFileSync('corepack', ['pnpm', 'config', 'list', '--json'], {
-    env: { ...environment, HOME: directory, TMPDIR: directory, COREPACK_HOME: process.env.COREPACK_HOME },
+    env: { ...environment, HOME: directory, TMPDIR: directory, COREPACK_HOME: process.env.COREPACK_HOME ?? join(
+      process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'node', 'corepack') },
     encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024,
   }));
   assertEffectiveVerificationStore(config);

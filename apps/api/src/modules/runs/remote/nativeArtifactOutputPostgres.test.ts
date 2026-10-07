@@ -34,7 +34,8 @@ async function fixture() {
   const query = vi.fn(async (sql: string, args: unknown[] = []) => {
     state.queries.push(sql)
     let rows: unknown[] = [], count = 0
-    if (sql.startsWith('begin')) { before = structuredClone(state.row); state.committed = false }
+    if (sql === 'select pg_backend_pid() as pid') rows = [{ pid: 123 }]
+    else if (sql.startsWith('begin')) { before = structuredClone(state.row); state.committed = false }
     else if (sql === 'commit') { state.committed = true; if (state.loseAck) { state.loseAck = false; throw new Error('COMMIT acknowledgment lost') } }
     else if (sql === 'rollback') { if (!state.committed) state.row = before }
     else if (sql.includes('select p.record from file_tool_publications')) rows = state.missing ? [] : [{ record: state.link }]

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { componentLogger } from '../../../infrastructure/logger.js'
+import { componentLogger } from '../../diagnostics/logger.js'
 import { isDeepStrictEqual } from 'node:util'
 import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'

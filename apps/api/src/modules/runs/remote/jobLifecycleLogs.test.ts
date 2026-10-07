@@ -49,7 +49,7 @@ async function fixture(failLog: boolean) {
   if (failLog) appendLog.mockRejectedValueOnce(new Error('final stdout transport failed'))
   const forbidden = vi.fn(async () => { throw new Error('No source or input I/O in executor unit double') })
   const collectOutputs = vi.fn(async () => {})
-  const host = new RemoteJobExecutionHost({ journal, connection, incarnationId: randomUUID(), supervisor: {} as PodmanJobSupervisor,
+  const host = new RemoteJobExecutionHost({ journal, connection, incarnationId: randomUUID(), supervisor: { removeExecution: vi.fn(async () => {}) } as unknown as PodmanJobSupervisor,
     source: { verify: forbidden }, inputs: { prepare: forbidden }, authorize: async () => {}, appendLog, collectOutputs,
     observeReceipt: async receipt => { state.latest = receipt; if (receipt.publication === 'complete') state.released = true },
   }); hosts.push(host)

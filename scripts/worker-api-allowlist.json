@@ -1,7 +1,5 @@
 [
   "apps/api/src/infrastructure/logComponent.ts",
-  "apps/api/src/infrastructure/logger.ts",
-  "apps/api/src/infrastructure/runtimeTiming.ts",
   "apps/api/src/mcp/shared/results.ts",
   "apps/api/src/modules/access/credentialLifetime.ts",
   "apps/api/src/modules/byte-transfer/carrier.ts",
@@ -48,6 +46,8 @@
   "apps/api/src/modules/devices/installedWorkerDomains.ts",
   "apps/api/src/modules/devices/rsyncWriterControl.ts",
   "apps/api/src/modules/devices/workerConnection.ts",
+  "apps/api/src/modules/diagnostics/logger.ts",
+  "apps/api/src/modules/diagnostics/runtimeTiming.ts",
   "apps/api/src/modules/errors.ts",
   "apps/api/src/modules/files/claude/callResolver.ts",
   "apps/api/src/modules/files/claude/sdkServer.ts",

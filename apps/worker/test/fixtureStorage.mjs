@@ -1,2 +1,2 @@
-// Verification sets TMPDIR to its private quota-backed executable scratch.
-export const persistentFixtureRoot = process.env.TMPDIR ?? '/var/tmp';
+// Filesystem fixtures need persistent storage independently of scheduler scratch.
+export const persistentFixtureRoot = '/var/tmp';

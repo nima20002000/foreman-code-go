@@ -1,5 +1,5 @@
 import { verifyJobInputDirectory } from './inputs.js'
-import { componentLogger } from '../../infrastructure/logger.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { isDeepStrictEqual as same } from 'node:util'
 import { constants } from 'node:fs'
 import { open, realpath, readFile } from 'node:fs/promises'

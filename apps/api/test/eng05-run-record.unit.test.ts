@@ -55,7 +55,7 @@ describe('bounded private Run record service', () => {
     const before = structuredClone(snapshot)
     const result = await service.record(caller, input)
     expect(withCurrentRunRead).toHaveBeenCalledTimes(1)
-    expect(withCurrentRunRead).toHaveBeenCalledWith(pool, caller, input.workspaceId, input.runId, 'runs:read', expect.any(Function))
+    expect(withCurrentRunRead).toHaveBeenCalledWith(pool, caller, input.workspaceId, input.runId, 'runs:read', expect.any(Function), expect.any(Function))
     expect(query).not.toHaveBeenCalled()
     expect(Object.keys(result).sort()).toEqual(['cleanupPending', 'run', 'stopRequested'])
     expect(result.run).toEqual(Object.fromEntries(Object.entries(before.run)

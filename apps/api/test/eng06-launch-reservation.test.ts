@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { NativeProcessRegistry, spawnNativeProcess } from '../src/modules/harnesses/recovery/processRegistry.js'
-import { processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
+import { bootIdentity, processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { privateDirectory, readRecord, writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 import { reserveFromExitedParent } from './helpers/eng06LaunchReservation.testSupport.js'
 
@@ -37,10 +37,12 @@ describe.skipIf(process.platform !== 'linux')('write-ahead native launch handoff
     expect(readRecord(join(launch, 'birth.json'))).toBeUndefined()
     expect(await t.registry.closeOwner(t.owner)).toBe(true)
     const retired = readRecord(join(t.directory, 'retired.json'))
-    expect(retired).toEqual({ format: 2, owner: t.owner, id: scope.launchId })
+    expect(retired).toEqual({ format: 2, owner: t.owner, id: scope.launchId, observation: {
+      owner: t.owner, launchId: scope.launchId, bootId: bootIdentity(), lifecycle: 'closed', closureEvidence: 'native_not_started',
+    } })
     expect(await new NativeProcessRegistry(t.root).closeOwner(t.owner)).toBe(true)
     expect(readRecord(join(t.directory, 'retired.json'))).toEqual(retired)
-    expect(readdirSync(t.directory)).toEqual(['retired.json'])
+    expect(readdirSync(t.directory)).toEqual([`closed-${scope.launchId}.json`, 'retired.json'])
   })
 
   it('cannot close a still-live parent reservation or allocate over it', async () => {

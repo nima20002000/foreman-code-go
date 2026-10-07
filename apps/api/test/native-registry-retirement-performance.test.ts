@@ -39,12 +39,12 @@ describe.skipIf(process.platform!=='linux')('bounded original native retirement 
       return scans===1?snapshot():{revision:projection.revision(),launches:[]}
     })
     try {
-      for(let index=0;index<10_005;index++)f.seedClosed(randomUUID(),index<3)
+      const ids = Array.from({ length: 10_005 }, (_, index) => f.seedClosed(randomUUID(), index < 3).id)
       const started=performance.now()
       expect(await f.registry.closeOwner(f.owner)).toBe(true)
       const elapsedMs=Math.round(performance.now()-started)
       process.stdout.write(`${JSON.stringify({probe:'F11-retirement',registrations:10_005,fullScans:scans,targetedCaptures:captures.mock.calls.length,elapsedMs})}\n`)
-      expect(readdirSync(f.ownerDirectory)).toEqual(['retired.json'])
+      expect(readdirSync(f.ownerDirectory).sort()).toEqual([...ids.map(id => `closed-${id}.json`), 'retired.json'].sort())
       expect(scans).toBeLessThanOrEqual(1)
       expect(captures).toHaveBeenCalledTimes(10_005)
       const event=await pending

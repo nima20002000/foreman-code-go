@@ -34,7 +34,7 @@ it('reports the sanitized original OpenCode restart closure cause while retainin
     {} as Dependencies[2], {} as Dependencies[3], 60_000, undefined, undefined, closures)
   // Seed only the resident-lifetime seam, not SQL ownership or native proof.
   // No provider process, database, listener, qualification or replacement runs.
-  const owned = { execution, manager: native, controller: new AbortController(), generation: 1,
+  const owned = { execution, context: input, manager: native, controller: new AbortController(), generation: 1,
     closureGeneration: 'original-generation', session }
   const internals = coordinator as unknown as {
     ownedSessions: Map<string, typeof owned>

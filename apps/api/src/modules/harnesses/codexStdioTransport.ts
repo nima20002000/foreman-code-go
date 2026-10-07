@@ -1,4 +1,4 @@
-import { beginRuntimeTiming, runtimeTimingPoint } from '../../infrastructure/runtimeTiming.js'
+import { beginRuntimeTiming, runtimeTimingPoint } from '../diagnostics/runtimeTiming.js'
 import { HarnessExecutionError } from './errors.js'
 import { spawnOwnedStdioProcess } from './process.js'
 import { nativeProcessExit, type NativeProcessRecovery } from './recovery/processRegistry.js'

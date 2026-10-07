@@ -22,7 +22,7 @@ it('saves verified HTML as an octet-stream attachment without app-origin navigat
   expect(bytes.type).toBe('application/octet-stream')
   expect(bytes.size).toBe(3)
   expect(requested!.url).toContain('/file-a/revisions/revision-a/content')
-  expect(requested!.credentials).toBe('same-origin')
+  expect(requested!.credentials).toBe('omit')
   vi.unstubAllGlobals()
 })
 it('does not read expired artifact bytes or substitute a newer revision', async () => {

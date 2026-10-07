@@ -31,8 +31,9 @@ function candidate(): JobQualificationCandidate {
 }
 export function verificationRuntimeFixture() {
   const f = verificationFixture()
-  const now = new Date().toISOString()
-  const expiry = new Date(Date.now() + 3_600_000).toISOString()
+  const approvedAt = Date.now()
+  const now = new Date(approvedAt).toISOString()
+  const expiry = new Date(approvedAt + 3_600_000).toISOString()
   const baseline = candidate().fingerprint
   const resources = f.resources
   const fingerprint = {

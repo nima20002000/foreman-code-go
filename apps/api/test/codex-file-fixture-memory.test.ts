@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import { readFile, rm } from 'node:fs/promises'
 import * as path from 'node:path'
 import { runInNewContext } from 'node:vm'
@@ -15,14 +16,14 @@ it('file fixture retains shared MCP configuration and exact CLI disable flags wi
         appendFileSync: () => undefined }
       const process = { argv: ['node', fixture.binary, 'app-server',
         ...(disabled ? ['-c', 'mcp_servers.graphql.enabled=false'] : [])], env: {}, pid: 501,
-        stdin: {}, cwd: () => fixture.directory, on: () => undefined,
+        stdin: new EventEmitter(), cwd: () => fixture.directory, on: () => undefined,
         exit: () => { throw new Error('Unexpected fixture exit') },
         stdout: { write: (value: string) => replies.push(JSON.parse(value)) } }
       const require = (name: string): unknown => {
         if (name === 'node:fs') return fs
         if (name === 'node:path') return path
         if (name === 'node:readline') return { createInterface: () => ({
-          on: (_event: string, callback: (line: string) => void) => { receive = callback },
+          on: (event: string, callback: (line: string) => void) => { if (event === 'line') receive = callback },
         }) }
         throw new Error(`Unexpected native fixture module ${name}`)
       }
