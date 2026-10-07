@@ -144,12 +144,23 @@ export function rcloneAuthorizer(environment: NodeJS.ProcessEnv = process.env): 
         child.stderr?.on('data', read)
         child.once('error', error => { rejectUrl(error); reject(error) })
         child.once('exit', code => {
-          const pasted = /--->\s*(\{[\s\S]*?\})\s*<---End paste/u.exec(output)?.[1]
-          if (code === 0 && pasted) resolve(pasted)
+          const pasted = code === 0 ? rcloneToken(/--->\s*(\S[\s\S]*?)\s*<---End paste/u.exec(output)?.[1]) : undefined
+          if (pasted) resolve(pasted)
           else { const error = new Error('rclone authorize did not complete.'); rejectUrl(error); reject(error) }
         })
       })
       return { url, token, cancel: () => child.kill('SIGTERM') }
     },
   }
+}
+
+/** rclone prints the token as JSON, or (when given a config blob) as base64url JSON carrying it under `token`. */
+export function rcloneToken(pasted: string | undefined): string | undefined {
+  if (!pasted) return undefined
+  const parse = (text: string) => { try { return JSON.parse(text) as unknown } catch { return undefined } }
+  const value = parse(pasted) ?? parse(Buffer.from(pasted.trim(), 'base64url').toString('utf8'))
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as { token?: unknown; access_token?: unknown }
+  if (typeof record.access_token === 'string') return JSON.stringify(record)
+  return typeof record.token === 'string' && parse(record.token) ? record.token : undefined
 }

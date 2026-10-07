@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { DriveComputer, type DriveComputerPorts } from './driveComputer.js'
+import { rcloneToken } from './drive.js'
 
 const zip = Buffer.from('rclone release archive')
 function computer(options: { checksum?: string } = {}) {
@@ -68,5 +69,14 @@ describe('Google Drive on one computer', () => {
   it('rejects an authorization without Drive tokens', async () => {
     const { drive } = computer()
     await expect(drive.handle({ operation: 'connect', token: '{"error":"denied"}' })).rejects.toMatchObject({ code: 'DRIVE_TOKEN_INVALID' })
+  })
+})
+
+describe('rclone authorization output', () => {
+  const token = '{"access_token":"a","token_type":"Bearer","refresh_token":"r","expiry":"2026-10-07T00:00:00Z"}'
+  it('reads plain JSON and the base64url blob rclone prints for a scoped sign-in', () => {
+    expect(rcloneToken(token)).toBe(JSON.stringify(JSON.parse(token)))
+    expect(rcloneToken(Buffer.from(JSON.stringify({ token })).toString('base64url'))).toBe(token)
+    expect(rcloneToken('not a token')).toBeUndefined()
   })
 })
