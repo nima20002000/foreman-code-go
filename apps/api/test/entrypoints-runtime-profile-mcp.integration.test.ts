@@ -65,7 +65,10 @@ async function fixture() {
         hostRef: profile.root.selection.hostRef, registration: profile.root.registration, mainInstallationId: mainId,
         resources: profile.spec.resources, limits: profile.spec.resources.limits, sourceCommit: profile.sourceCommit,
         network: profile.spec.policy.network, approvalConfig: profile.approvalConfig,
-        imageDigest: profile.spec.policy.imageDigest, toolchainDigest: profile.spec.policy.toolchainDigest })
+        imageDigest: profile.spec.policy.imageDigest, toolchainDigest: profile.spec.policy.toolchainDigest,
+        quotaPool: { ...metadata.quotaPool!, slots: metadata.quotaPool!.slots.map(slot => ({
+          ...slot, filesystem: { ...profile.root.binding.filesystem, inode: slot.filesystem.inode },
+        })) } })
     }
     return JobRuntimeFingerprintSchema.parse({ schemaVersion: 1,
     profileId: profile.id, profileRevision: profile.revision, specDigest: profile.specDigest, hostRef: root.selection.hostRef,
