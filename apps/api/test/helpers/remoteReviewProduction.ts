@@ -182,12 +182,18 @@ export async function remoteReviewProduction(options: {
           let parsed: unknown
           try { parsed = JSON.parse(line) } catch { continue }
           if (!parsed || typeof parsed !== 'object') continue
-          const event = parsed as { level?: unknown; code?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown }; msg?: unknown; phase?: unknown; errorType?: unknown; errorLocation?: unknown }
-          const code = event.err?.code ?? event.code
+          const event = parsed as { level?: unknown; code?: unknown; errorCode?: unknown; stackFrames?: unknown;
+            runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown }; msg?: unknown;
+            phase?: unknown; errorType?: unknown; errorLocation?: unknown }
+          const code = event.err?.code ?? event.code ?? event.errorCode
             ?? (event.msg === 'Device extension request failed' ? 'DEVICE_EXTENSION_FAILED' : undefined)
+            ?? (event.msg === 'Operator tool failed' ? 'OPERATOR_TOOL_FAILED' : undefined)
           if (!['warn', 'error', 'fatal'].includes(String(event.level)) || typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(code)) continue
+          const frames = Array.isArray(event.stackFrames)
+            ? event.stackFrames.filter((frame): frame is string => typeof frame === 'string').slice(0, 2) : []
           failures.push({ code, phase: event.phase, errorType: event.errorType,
-            errorLocation: event.errorLocation ?? (typeof event.err?.stack === 'string'
+            errorLocation: event.errorLocation ?? (frames.length ? frames.map(frame => frame.trim()).join(' ') : undefined)
+              ?? (typeof event.err?.stack === 'string'
               ? event.err.stack.split('\n').slice(1, 3).map(line => line.trim()).join(' ') : undefined),
             runId: typeof event.runId === 'string' && /^run-[a-z0-9-]{1,100}$/.test(event.runId) ? event.runId : null })
           if (failures.length > 32) failures.shift()
