@@ -169,7 +169,7 @@ export async function remoteReviewProduction(options: {
         stopped.kill(signal)
       })
     }
-    closes.push(() => stopMain())
+    closes.push(stopMain)
     // Vitest silences the product logger; Main and Worker warnings carry the failure codes read here.
     const logEnvironment = { ...process.env, LOG_LEVEL: process.env.LOG_LEVEL ?? 'warn' }
     const collectFailures = (child: ChildProcess) => {
@@ -292,7 +292,7 @@ export async function remoteReviewProduction(options: {
         [command.executionId, command.operationId, command.owner.grantId, command.owner.epoch])
         if (changed.rowCount !== 1) throw new Error('The original response grant was unavailable for the denial scenario.')
       } })
-    closes.push(transport.close)
+    closes.splice(closes.indexOf(stopMain), 0, transport.close)
     const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId,
       deviceId: paired.registration.deviceId, workerInstallationId: identity.workerInstallationId,
       keyRevision: paired.registration.keyRevision, authorizationRevision: paired.registration.authorizationRevision,
@@ -352,7 +352,8 @@ export async function remoteReviewProduction(options: {
         stopped.kill(signal)
       })
     }
-    closes.push(() => stopWorker())
+    // Main closes its native sessions while the Worker transport is still available.
+    closes.splice(closes.indexOf(stopMain), 0, () => stopWorker())
     await startWorker()
     const inventory = await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
       await value('harness_registry_get', hostRef)), value => value.installations.some(
