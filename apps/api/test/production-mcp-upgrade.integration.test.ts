@@ -122,14 +122,20 @@ it.each(cases)(
       commandId: randomUUID(), expectedRevision: initial.revision, value,
     } })
     expect(saved.isError).not.toBe(true)
+    const assertDeniedUpdate = async (client: Client) => {
+      const denied = await client.callTool({ name: 'workspace_defaults_update', arguments: {
+        commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value,
+      } })
+      expect(denied.isError).toBe(true)
+      const body = denied.content.find((item) => item.type === 'text')
+      expect(JSON.parse(body!.text as string)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+    }
     const assertReadback = async (settings: FoundationSettingsManagementService) => {
       expect((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent)
         .toMatchObject({ value })
       expect((await readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent)
         .toMatchObject({ value })
-      await expect(readerClient.callTool({ name: 'workspace_defaults_update', arguments: {
-        commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value,
-      } })).rejects.toThrow('not found')
+      await assertDeniedUpdate(readerClient)
       expect(await settings.getWorkspaceDefaults(owner.principal)).toMatchObject({ value })
     }
     await assertReadback(first.settings)
@@ -186,9 +192,7 @@ it.each(cases)(
     const restartedReaderClient = await connect(reader.token)
     expect((await restartedOwnerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent)
       .toMatchObject({ value })
-    await expect(restartedReaderClient.callTool({ name: 'workspace_defaults_update', arguments: {
-      commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value,
-    } })).rejects.toThrow('not found')
+    await assertDeniedUpdate(restartedReaderClient)
     const digest = createHash('sha256').update(owner.token).digest('hex')
     const route = await readFile(join(dirname(savedLauncher), 'routes', `${digest}.json`), 'utf8')
     expect(route).not.toContain(owner.token)
