@@ -900,13 +900,13 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           return { payload: { status: await log.status(frame.intent.operationId),
             applicationAccess: structuredClone(resident.applicationAccess!) } }
         }
-        if(frame.method==='physical-readout')return {payload:pagePhysicalReadout(await physical.read(frame), frame.metadata)}
+        if(frame.method==='physical-readout')return {payload:pagePhysicalReadout(await physical.read(frame, context.signal), frame.metadata)}
         if(frame.method==='physical-ack') {
           const resident = operation(frame.intent)
           const status = await log.status(frame.intent.operationId)
           if (frame.retire && resident.physicalClosure
             && status.status === 'known' && status.receipt.terminal && status.receipt.sequence === frame.receiptSequence) {
-            const readout = await physical.read(frame)
+            const readout = await physical.read(frame, context.signal)
             const terminalSource = frame.sourceDigest === remoteWorkflowSourceDigest({ type: 'boundary' })
               || readout.history && frame.sourceDigest === remoteWorkflowSourceDigest({
                 type: 'history', history: remoteWorkflowNativeHistory(readout.history),
@@ -972,7 +972,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
                 current(context.binding)},
               observe:()=>matchingOriginalRegistryLaunch(registry,resident.native!.launch),
               closure:()=>resident.physicalClosure??null,
-              waitForSettlement: () => host.waitForSettlement(frame.intent.operationId) })
+              waitForSettlement: signal => host.waitForSettlement(frame.intent.operationId, signal) })
           }
         }
         return {payload:response}

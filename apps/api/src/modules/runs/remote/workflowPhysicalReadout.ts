@@ -162,7 +162,7 @@ interface Retained {
   assertCurrent(): Promise<void>
   observe(): NativeLaunchObservation
   closure(): NativeLaunchObservation | null
-  waitForSettlement?: () => Promise<void>
+  waitForSettlement?: (signal: AbortSignal) => Promise<void>
 }
 /** Only the installed original host remembers its own replies. Request selectors
  * locate those immutable originals; they can never supply or reconstruct proof. */
@@ -206,7 +206,7 @@ export class InstalledWorkflowPhysicalReadouts {
   clear() { this.originals.clear();this.events.clear();this.results.clear(); this.byteSize = 0 }
   remember(input: { readout: RemoteWorkflowPhysicalReadout; placement: AcceptedNodePlacement; source: WorkflowOriginalNativeSource;
     leaseExpiresAt: string; assertOwnerCurrent(): Promise<void>; assertCurrent(): Promise<void>; observe(): NativeLaunchObservation; closure(): NativeLaunchObservation | null;
-    waitForSettlement?: () => Promise<void> }): void {
+    waitForSettlement?: (signal: AbortSignal) => Promise<void> }): void {
     this.purgeExpired()
     const parsed = RemoteWorkflowPhysicalReadoutSchema.parse(input.readout)
     canonicalGraphJson(input.source, REMOTE_NATIVE_SOURCE_LIMIT)
@@ -271,7 +271,9 @@ export class InstalledWorkflowPhysicalReadouts {
     for(const alias of aliases)events.set(alias.key,{retained,source:alias.source})
     if(events.size)this.events.set(receipt.intent.operationId,events)
   }
-  async read(input: { intent: DispatchIntent; placement: AcceptedNodePlacement; receiptSequence: number; sourceDigest: string }): Promise<RemoteWorkflowPhysicalReadout> {
+  async read(input: { intent: DispatchIntent; placement: AcceptedNodePlacement; receiptSequence: number; sourceDigest: string },
+    signal?: AbortSignal): Promise<RemoteWorkflowPhysicalReadout> {
+    signal?.throwIfAborted()
     const key=this.key(input.receiptSequence,input.sourceDigest)
     const previous = this.originals.get(input.intent.operationId)?.get(key)
       ?? this.events.get(input.intent.operationId)?.get(key)?.retained
@@ -290,7 +292,11 @@ export class InstalledWorkflowPhysicalReadouts {
     let observation = retained.observe()
     let closure = retained.closure()
     if (!closure && observation.lifecycle !== 'active' && retained.waitForSettlement) {
-      await retained.waitForSettlement()
+      const remaining = retained.expiresAt - Date.now()
+      if (remaining <= 0) return unavailable()
+      const expiry = AbortSignal.timeout(remaining)
+      await retained.waitForSettlement(signal ? AbortSignal.any([signal, expiry]) : expiry)
+      signal?.throwIfAborted()
       await retained.assertCurrent()
       observation = retained.observe()
       closure = retained.closure()

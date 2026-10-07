@@ -71,8 +71,22 @@ export class RemoteExecutionHost {
   handle(raw: unknown): Promise<unknown> {
     return this.track(() => this.handleOwned(raw))
   }
-  async waitForSettlement(operationId: string): Promise<void> {
-    await this.residents.get(operationId)?.settlementTask
+  async waitForSettlement(operationId: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    const task = this.residents.get(operationId)?.settlementTask
+    if (!task) return
+    await new Promise<void>((resolve, reject) => {
+      const aborted = () => reject(signal.reason)
+      signal.addEventListener('abort', aborted, { once: true })
+      void task.then(() => {
+        signal.removeEventListener('abort', aborted)
+        resolve()
+      }, error => {
+        signal.removeEventListener('abort', aborted)
+        reject(error)
+      })
+    })
+    signal.throwIfAborted()
   }
   private track<T>(work: () => Promise<T>): Promise<T> {
     if (this.closing) return Promise.reject(new Error('Worker execution host is shutting down.'))
