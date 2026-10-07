@@ -8,7 +8,7 @@ import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.
 import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartPublication.js'
 import { admitRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
 import { PostgresScheduleDispatcher } from '../../src/modules/schedules/postgresDispatcher.js'
-import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
+import { LOCAL_RUNNER_ID, WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
 
 export interface Sch11ChildInput {
   schema: string
@@ -59,7 +59,8 @@ async function run(input: Sch11ChildInput) {
   const pool = new pg.Pool({ connectionString: url, max: 4,
     application_name: `sch11_child_${process.pid}`,
     options: `-c search_path=${input.schema} -c statement_timeout=15000 -c lock_timeout=10000` })
-  const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool), input.runtimeRoot, 'local', input.projectRoot)
+  const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool),
+    input.runtimeRoot, LOCAL_RUNNER_ID, input.projectRoot)
   try {
     const dispatcher = new PostgresScheduleDispatcher(pool, async (principal, request, guard) => {
       if (input.mode === 'prepared') {

@@ -13,7 +13,7 @@ import { admitRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
 import { PostgresScheduleDispatcher, type ScheduledStart } from '../../src/modules/schedules/postgresDispatcher.js'
 import { WorkflowScheduleService } from '../../src/modules/schedules/service.js'
 import { WorkflowManagementService } from '../../src/modules/workflows/management.js'
-import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
+import { LOCAL_RUNNER_ID, WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
 import { agent3Database, seedAgent3 } from './wave25Agent3.js'
 import { sch11Once } from './sch11ClockCases.js'
 
@@ -46,7 +46,7 @@ export async function sch11Fixture(database: Sch11Database, initialNow = '2030-0
   const commands = new PostgresCommandCoordinator(database.pool)
   const workflows = new WorkflowManagementService(database.pool, commands)
   const service = new WorkflowScheduleService(database.pool, commands, clock)
-  const locations = new WorkspaceLocationService(database.pool, commands, runtimeRoot, 'local', projectRoot)
+  const locations = new WorkspaceLocationService(database.pool, commands, runtimeRoot, LOCAL_RUNNER_ID, projectRoot)
   const issue = (actions: ManagementGrant['actions'], workspaceId = scope.workspaceId) => access.issue({
     name: 'SCH-11 synthetic human', audience: 'operator', expiresAt: new Date(Date.now() + 3_600_000),
     grants: [{ actions, scope: { workspaceIds: [workspaceId] } }],

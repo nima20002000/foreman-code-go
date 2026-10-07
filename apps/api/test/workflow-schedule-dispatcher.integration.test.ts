@@ -16,7 +16,7 @@ import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { PostgresScheduleDispatcher, type ScheduledStart } from '../src/modules/schedules/postgresDispatcher.js'
 import { WorkflowScheduleService } from '../src/modules/schedules/service.js'
 import { ScheduleOccurrencePageSchema } from '../src/modules/schedules/transportSchemas.js'
-import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { LOCAL_RUNNER_ID, WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { agent3Database, deferred, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 
@@ -64,7 +64,7 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
     const identity = await stat(directory, { bigint: true })
     await database.pool.query('update workspaces set execution_location_identity=$2::jsonb where id=$1',
       [scope.workspaceId, JSON.stringify({ device: String(identity.dev), inode: String(identity.ino) })])
-    locations = new WorkspaceLocationService(database.pool, commands, runtimeRoot, 'local', projectRoot)
+    locations = new WorkspaceLocationService(database.pool, commands, runtimeRoot, LOCAL_RUNNER_ID, projectRoot)
     writer = await issue(actions)
     reader = await issue(['workflows:read', 'capabilities:read'])
     service = new WorkflowScheduleService(database.pool, commands, () => new Date(now))
