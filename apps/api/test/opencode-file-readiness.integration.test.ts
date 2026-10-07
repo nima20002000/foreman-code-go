@@ -20,7 +20,7 @@ function barrier() {
   return { promise, release }
 }
 
-// The pinned executable resolves MCP tools and sends the first request to a loopback model.
+// The installed executable resolves MCP tools and sends the first request to a loopback model.
 it('waits for the file manifest before the first native model request and keeps file calls behind acknowledgement',
   async () => {
     const f = await fileToolFixture()
@@ -108,7 +108,9 @@ it('waits for the file manifest before the first native model request and keeps 
       const harness = { ...configuration(), model: 'fixture/manifest', variant: '' }
       const nativeRequest = { ...request(harness), workingDirectory: directory, runtimeDirectory: directory }
       const session = await manager.createSession({ request: nativeRequest, environment })
-      expect(session.providerVersion).toBe('1.18.31')
+      const health = await server.request('/global/health')
+      expect(health.ok).toBe(true)
+      expect(await health.json()).toMatchObject({ healthy: true, version: session.providerVersion })
       running = (async () => {
         const observer = manager.startTurn(session, { prompt: 'Say ready.',
           clientCorrelationId: 'manifest-turn', onSubmitted: async () => {
