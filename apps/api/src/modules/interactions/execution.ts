@@ -1011,31 +1011,6 @@ export class ApprovalExecutionCoordinator {
       || !this.credentials?.recoverRemote) return false
     const retained = await owner.oneShotConnection().transaction(sql => readRetainedRemoteReviewer(sql, execution))
     if (!retained) return false
-    let lane = await this.interactions.coordination.getLane(native.session.harness, native.session.nativeSessionId)
-    while (lane?.leaseExpiresAt && Date.parse(lane.leaseExpiresAt) > Date.now()) {
-      owner.assertOwned()
-      parentSignal?.throwIfAborted()
-      await delay(Math.min(100, Date.parse(lane.leaseExpiresAt) - Date.now()), undefined, { signal: parentSignal })
-      lane = await this.interactions.coordination.getLane(native.session.harness, native.session.nativeSessionId)
-    }
-    owner.assertOwned()
-    parentSignal?.throwIfAborted()
-    const current = await owner.oneShotConnection().transaction(sql => readRetainedRemoteReviewer(sql, execution))
-    if (!isDeepStrictEqual(current, retained)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
-      'The retained reviewer changed while its original writer lease expired.', 409)
-    const jobs = job ? [job] : (await owner.oneShotConnection().query<{ record: unknown }>(`select record
-      from review_jobs where execution_id=$1 and lease_expires_at>clock_timestamp()
-        and state in ('leased','submitted','acknowledged','uncertain') limit 2`, [execution.id])).rows
-      .map(row => ReviewJobSchema.parse(row.record))
-    if (jobs.length > 1) throw new DomainError('REVIEWER_AUTHORITY_AMBIGUOUS',
-      'Multiple live review jobs reference the retained process.', 409)
-    const currentJob = jobs[0]
-    if (currentJob) {
-      if (!this.credentials.bindReviewerJob) throw new DomainError('REVIEWER_CREDENTIAL_LOST',
-        'The original reviewer credential cannot bind its current job.', 409)
-      await this.credentials.bindReviewerJob(execution.id, { principalId: retained.principalId }, currentJob)
-    }
-    const identity = reviewPreflightIdentity(lane, `execution:${execution.id}`)
     const resolved = this.resolveManager(context, owner)
     resolved.beginStart?.()
     const owned = this.ownSession(execution, { ...context, purpose: 'reviewer' }, resolved.manager)
@@ -1044,6 +1019,31 @@ export class ApprovalExecutionCoordinator {
     owned.closureRegistration = Promise.resolve(retained.generation)
     owned.closureGeneration = retained.generation
     try {
+      let lane = await this.interactions.coordination.getLane(native.session.harness, native.session.nativeSessionId)
+      while (lane?.leaseExpiresAt && Date.parse(lane.leaseExpiresAt) > Date.now()) {
+        owner.assertOwned()
+        signal.throwIfAborted()
+        await delay(Math.min(100, Date.parse(lane.leaseExpiresAt) - Date.now()), undefined, { signal })
+        lane = await this.interactions.coordination.getLane(native.session.harness, native.session.nativeSessionId)
+      }
+      owner.assertOwned()
+      signal.throwIfAborted()
+      const current = await owner.oneShotConnection().transaction(sql => readRetainedRemoteReviewer(sql, execution))
+      if (!isDeepStrictEqual(current, retained)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
+        'The retained reviewer changed while its original writer lease expired.', 409)
+      const jobs = job ? [job] : (await owner.oneShotConnection().query<{ record: unknown }>(`select record
+        from review_jobs where execution_id=$1 and lease_expires_at>clock_timestamp()
+          and state in ('leased','submitted','acknowledged','uncertain') limit 2`, [execution.id])).rows
+        .map(row => ReviewJobSchema.parse(row.record))
+      if (jobs.length > 1) throw new DomainError('REVIEWER_AUTHORITY_AMBIGUOUS',
+        'Multiple live review jobs reference the retained process.', 409)
+      const currentJob = jobs[0]
+      if (currentJob) {
+        if (!this.credentials.bindReviewerJob) throw new DomainError('REVIEWER_CREDENTIAL_LOST',
+          'The original reviewer credential cannot bind its current job.', 409)
+        await this.credentials.bindReviewerJob(execution.id, { principalId: retained.principalId }, currentJob)
+      }
+      const identity = reviewPreflightIdentity(lane, `execution:${execution.id}`)
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
         workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
         runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input })
