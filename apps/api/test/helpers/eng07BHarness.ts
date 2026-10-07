@@ -13,6 +13,7 @@ import { buildApp } from '../../src/app.js'
 import { OperatorInteractionService } from '../../src/modules/interactions/operator.js'
 import { RunGraphReadService } from '../../src/modules/run-graph/readService.js'
 import { registerUserInteractions } from '../../src/routes/userInteractions.js'
+import { LOCAL_RUNNER_ID } from '../../src/modules/workspaces/location.js'
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 import type { Scenario, SuccessfulResult } from './eng07BScenarios.js'
 import { waitForSuccessfulRunCleanup } from './runSettlement.testSupport.js'
@@ -113,7 +114,7 @@ export async function scenarioHarness(scenario: Scenario) {
     // A public location_set must preserve the runner accepted by the synthetic
     // provider. Otherwise credential preflight fails before the first gate,
     // unlike the preseeded Run that already carries the fixture's local runner.
-    expect(base.f.run.executionLocation?.runnerId).toBe('local')
+    expect(base.f.run.executionLocation?.runnerId).toBe(LOCAL_RUNNER_ID)
     expect(base.locations.runnerId, 'Checkpoint location service must use the seeded provider runner')
       .toBe(base.f.run.executionLocation!.runnerId)
     const address = await app.listen({ host: '127.0.0.1', port: 0 })

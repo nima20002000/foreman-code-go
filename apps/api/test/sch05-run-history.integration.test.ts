@@ -11,6 +11,7 @@ import { withExclusiveGraphConnection } from '../src/modules/run-graph/connectio
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
 import { insertRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { encodeRunHistoryCursor } from '../src/modules/runs/historyCursor.js'
+import { LOCAL_RUNNER_ID } from '../src/modules/workspaces/location.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 import { waitForSuccessfulRunCleanup } from './helpers/runSettlement.testSupport.js'
@@ -138,7 +139,7 @@ describe.skipIf(!postgresEnabled)('SCH-05 immutable Board/history authenticated 
 
       // Qualify the fixture's existing real directory before a public new Start.
       const location = await f.locations.set(f.writer.principal, 'http', { workspaceId: args.workspaceId,
-        commandId: randomUUID(), expectedLocationRevision: 1, runnerId: 'local', rootPath: f.db.directory })
+        commandId: randomUUID(), expectedLocationRevision: 1, runnerId: LOCAL_RUNNER_ID, rootPath: f.db.directory })
       const graph = structuredClone(f.f.version.definition)
       graph.nodes = graph.nodes.filter((node) => node.id !== y.id)
       graph.edges = graph.edges.filter((edge) => edge.source !== y.id && edge.target !== y.id)
