@@ -1,5 +1,6 @@
 [
   "apps/api/src/infrastructure/logComponent.ts",
+  "apps/api/src/infrastructure/logger.ts",
   "apps/api/src/mcp/shared/results.ts",
   "apps/api/src/modules/access/credentialLifetime.ts",
   "apps/api/src/modules/byte-transfer/carrier.ts",
@@ -80,6 +81,7 @@
   "apps/api/src/modules/harnesses/claudeSdk/nativeCompactionCapture.ts",
   "apps/api/src/modules/harnesses/claudeSdk/nativeEvents.ts",
   "apps/api/src/modules/harnesses/claudeSdk/nativeProfileQualification.ts",
+  "apps/api/src/modules/harnesses/claudeSdk/profileRevision.ts",
   "apps/api/src/modules/harnesses/claudeSdk/normalization.ts",
   "apps/api/src/modules/harnesses/claudeSdk/official.ts",
   "apps/api/src/modules/harnesses/claudeSdk/ownedOperation.ts",
