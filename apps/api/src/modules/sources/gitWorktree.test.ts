@@ -38,6 +38,17 @@ it('gives each agent its own branch at the approved commit and keeps an earlier 
   expect(git(join(f.root, 'a'), 'log', '-1', '--format=%s')).toBe('agent work')
 })
 
+it('forgets worktrees whose Run directory was removed while keeping their branches', async () => {
+  const f = await fixture()
+  const signal = AbortSignal.timeout(30_000)
+  await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/review/coder-old' }, f.commit, join(f.root, 'old'), signal)
+  await rm(join(f.root, 'old'), { recursive: true, force: true })
+  await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/review/coder-new' }, f.commit, join(f.root, 'new'), signal)
+  const clone = join(f.root, 'clones', 'octo', 'site')
+  expect(git(clone, 'worktree', 'list')).not.toContain(join(f.root, 'old'))
+  expect(git(clone, 'branch', '--list', 'foreman/review/coder-old')).toContain('foreman/review/coder-old')
+})
+
 it('refuses unsafe repository and branch names before running git', async () => {
   const f = await fixture()
   const signal = AbortSignal.timeout(10_000)

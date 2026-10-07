@@ -36,6 +36,8 @@ export async function addGitWorktree(ports: GitWorktreePorts, request: WorktreeR
       `git ${args[0]} failed: ${result.stderr.trim().split('\n').at(-1)?.slice(0, 300) ?? 'unknown error'}`)
     return result.stdout
   }
+  // Worktrees whose Run directory was retired leave stale entries; their branches and commits stay in the clone.
+  await run(['worktree', 'prune'], clone)
   // A branch already used by an earlier attempt keeps that attempt's commits; this attempt gets the next free name.
   for (let index = 1; index <= 20; index++) {
     const branch = index === 1 ? request.branch : `${request.branch}-${index}`
