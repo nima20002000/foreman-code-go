@@ -238,10 +238,11 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
   } else if (message.method === 'mcpServerStatus/list') {
     reply(message.id, { data: [], nextCursor: null })
   } else if (message.method === 'model/list') {
-    reply(message.id, { data: [{ id: 'test-model', model: 'test-model', displayName: 'Test model',
+    const models = [{ id: 'test-model', model: 'test-model', displayName: 'Test model',
       description: 'External protocol fixture', hidden: false, isDefault: true, defaultReasoningEffort: 'low',
       supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Low' },
-        { reasoningEffort: 'medium', description: 'Medium' }] }], nextCursor: null })
+        { reasoningEffort: 'medium', description: 'Medium' }] }]
+    reply(message.id, { data: existsSync(join(root, 'hide-models')) ? [] : models, nextCursor: null })
   } else if (message.method === 'config/mcpServer/reload') {
     reply(message.id, {})
   } else {

@@ -78,7 +78,9 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
 
 /** Fresh production instances share only persisted data; the Worker runs the
  * shipped installed domains in a separate process with its own native owners. */
-export async function remoteReviewProduction(options: { workflow?: 'approval' | 'sequential' } = {}) {
+export async function remoteReviewProduction(options: {
+  workflow?: 'approval' | 'sequential'; modelCatalog?: 'empty-at-startup'
+} = {}) {
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
     const errors: unknown[] = []
@@ -94,6 +96,7 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
     closes.push(() => rm(directory, { recursive: true, force: true }))
     const workerRelease = await buildRemoteReviewWorkerRelease(directory)
     const provider = await createRemoteReviewProvider(join(directory, 'provider'))
+    if (options.modelCatalog) await provider.hideModels()
     const tls = await createRemoteReviewTls(join(directory, 'tls'))
     const certificate = await readFile(tls.certificateFile)
     const project = join(directory, 'projects', 'project')
@@ -215,6 +218,7 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
       }, value => value, 'production Main startup')
     }
     await startMain()
+    if (options.modelCatalog) await provider.showModels()
     async function call(name: string, args: Record<string, unknown>, token = writer.token) {
       const client = new Client({ name: 'Production remote review integration', version: '1' })
       try {

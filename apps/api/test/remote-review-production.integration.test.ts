@@ -15,8 +15,9 @@ import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteRev
 
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
 
-async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>) {
-  const fixture = await remoteReviewProduction()
+async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>,
+  options: Parameters<typeof remoteReviewProduction>[0] = {}) {
+  const fixture = await remoteReviewProduction(options)
   try {
     await check(fixture)
   } catch (error) {
@@ -123,14 +124,14 @@ async function receipts(fixture: Fixture, runId: string) {
 }
 
 describe('production remote review and native recovery through authenticated MCP', () => {
-  it('keeps unranked native defaults unavailable through authenticated HTTP and MCP while Main starts', async () => {
+  it('keeps unavailable native defaults until an explicit choice through authenticated HTTP and MCP', async () => {
     await withRemoteReviewFixture(async fixture => {
       const catalog = HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'codex' }))
       expect(catalog.capability).toBeNull()
       expect(catalog.discoveryError?.code).toBe('HARNESS_MODEL_DEFAULT_UNAVAILABLE')
       const options = HarnessOptionsResultSchema.parse(await fixture.value('harness_options_get', { harness: 'codex' }))
       expect(options.models.map(model => model.id)).toContain('test-model')
-      expect(options.models.every(model => model.defaultPriority === undefined && model.releasedAt === undefined)).toBe(true)
+      expect(options.models.find(model => model.id === 'test-model')).toMatchObject({ defaultPriority: 0 })
       const configuration = (await fixture.db.pool.query<{ record: { harness: { model: string } } }>(
         'select record from agent_configuration_versions where id=$1',
         [fixture.version.agentConfigurationVersionIds[fixture.version.approval.designatedOrchestratorAgentId!]])
@@ -170,7 +171,7 @@ describe('production remote review and native recovery through authenticated MCP
         .then(result => ({ result }), (error: unknown) => ({ error }))
       if ('error' in deniedSave) expect(deniedSave.error).toMatchObject({ code: -32602 })
       else expect(deniedSave.result.isError).toBe(true)
-    })
+    }, { modelCatalog: 'empty-at-startup' })
   }, 240_000)
 
   it('persists a delivered remote decision and denies a read-only caller on the same product endpoint', async () => {
