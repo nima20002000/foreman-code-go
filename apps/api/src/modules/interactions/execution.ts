@@ -1237,6 +1237,12 @@ export class ApprovalExecutionCoordinator {
           owned.releaseReviewOwner = releaseOwner
           this.adoptRunOwner(owner)
           const combined = AbortSignal.any([owned.controller.signal, controller.signal, ...(signal ? [signal] : [])])
+          if (context.reviewJob) {
+            const credential = this.managerCredentials.get(owned.manager)
+            if (!credential || !this.credentials?.bindReviewerJob) throw new DomainError('REVIEWER_CREDENTIAL_LOST',
+              'The original reviewer credential cannot bind its current job.', 409)
+            await this.credentials.bindReviewerJob(execution.id, credential, context.reviewJob)
+          }
           await this.validateReviewer(owned, sessionReference, combined)
           return { manager: owned.manager, session: sessionReference, signal: combined }
         } catch (error) {
