@@ -13,7 +13,7 @@ import { memoryClaudeCallbackJournal } from './support/claudeCallbackJournal.js'
 
 const scope = { deviceId: 'device', profilePath: '/profile', configRevision: 'revision', cwd: '/work' }
 const configuration: ClaudeHarnessConfiguration = { harness: 'claude', model: 'fixture', authMode: 'subscription',
-  configDirectory: '/profile', permissionMode: 'default', sandbox: 'read-only', tools: ['Read'],
+  configDirectory: '/profile', permissionMode: 'default', sandbox: 'danger-full-access', tools: ['Read'],
   permissionRules: [{ tool: 'Read', effect: 'ask' }], instructions: '', mcpServers: {} }
 export const start: NativeSessionStart = { kind: 'operator', correlationId: 'owner',
   configuration: OperatorConfigurationVersionSchema.parse({ id: 'configuration', operatorId: 'operator', version: 1,

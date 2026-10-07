@@ -1,3 +1,4 @@
+import { memorySessionControlPool } from './support/sessionControls.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -61,7 +62,11 @@ it('RH-02 keeps new, in-steer replay and ordinary replay responses on the explic
     nodes: saved.version.definition.nodes.map((entry) => ({ id: entry.id, name: entry.name ?? 'Snapshot node', agentId: entry.agentId,
       agentConfigurationVersionId: saved.version.agentConfigurationVersionIds[entry.agentId], position: entry.position ?? { x: 0, y: 0 },
       size: { width: entry.width ?? 208, height: entry.height ?? 112 } })), edges: saved.version.definition.edges })
+  const controls = memorySessionControlPool()
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+    if (sql.includes('conversation_session_') || sql.includes('as compaction')) {
+      return controls.query(sql, values)
+    }
     if (['begin', 'commit', 'rollback'].includes(sql)) return { rows: [] }
     if (sql.includes('management_principals')) return { rows: [{ ...principal, grants: principal.grants,
       expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] }
@@ -86,6 +91,13 @@ it('RH-02 keeps new, in-steer replay and ordinary replay responses on the explic
       latestRequestId: receipts.get(id)?.at(-1)?.requestId ?? null, activeStartedAt: id === selected.id ? new Date(saved.createdAt) : null,
       unfinishedActivities: [], publicationReceipts: [], activityPage: { activities: [], itemRevisions: {}, nextCursor: null } })),
     open: vi.fn(async () => [selected]), restoreUnsettled: vi.fn(async () => selected),
+    abandon: vi.fn(async (id: string, requestId: string, message: string) => {
+      const row = rows.find(entry => entry.id === id && entry.active_request_id === requestId)
+      if (row) {
+        row.turn_state = 'uncertain'
+        row.last_error = message
+      }
+    }),
     unconfirmedSteers: vi.fn(async () => []), accepted: vi.fn(async () => true), pending: vi.fn(async () => {}),
     turn: vi.fn(async (id: string, requestId: string) => {
       const prior = receipts.get(id)?.find((turn) => turn.requestId === requestId)

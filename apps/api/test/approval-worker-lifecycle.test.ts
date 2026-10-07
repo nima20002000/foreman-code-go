@@ -44,14 +44,14 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
   const session: NativeSessionReference = {
     harness, providerVersion: harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: 'exact-native-session',
   }
-  const context = {
-    harness, executionId: execution.id, agentId: configuration.agentId, workingDirectory: '/project', configuration,
-    runId: execution.runId, attempt: execution.attempt,
-  }
   const request: HarnessExecutionRequest = {
     executionId: execution.id, runId: execution.runId, workspaceId: configuration.workspaceId,
     workflowNodeId: execution.workflowNodeId, workingDirectory: '/project', runtimeDirectory: '/runtime',
     configuration, input: {},
+  }
+  const context = {
+    harness, executionId: execution.id, agentId: configuration.agentId, workingDirectory: '/project', configuration,
+    runId: execution.runId, attempt: execution.attempt, workflowRequest: request,
   }
   function manager() {
     return {

@@ -44,7 +44,7 @@ it('owns Worker metadata reads separately and pins their binary, directory and c
       await io.runCommand('/different-codex', ['mcp', 'list', '--json'], '/different-directory',
         undefined, { GRAPHQL_MCP_TOKEN: 'injected' }, { recovery: f.writer })
     }, f.writer)
-    expect(f.qualify).toHaveBeenCalledWith(f.pin.binary, f.pin.expectedVersion, f.pin.cwd,
+    expect(f.qualify).toHaveBeenCalledWith(f.pin.binary, f.pin.cwd,
       { HOST_SETTING: 'kept' }, true, expect.any(AbortSignal), f.recovery)
     expect(f.qualifyModel).toHaveBeenCalledWith(DEFAULT_HARNESS_DEFAULTS.codex, f.pin.binary, f.pin.cwd,
       { HOST_SETTING: 'kept' }, expect.any(AbortSignal), f.recovery,

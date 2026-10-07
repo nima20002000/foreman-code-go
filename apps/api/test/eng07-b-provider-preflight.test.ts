@@ -1,3 +1,4 @@
+import { LOCAL_RUNNER_ID } from '../src/modules/workspaces/location.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IssuedWorkerCredential } from '../src/modules/access/workerCredentials.js'
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../src/modules/access/workerCredentials.js'
@@ -18,7 +19,7 @@ type Ports = Parameters<typeof providerLaunchCredentials>
 /** Unit scope: the fixture's real runner/directory/configuration guard and real
  * MCP preflight. SQL continuation and issuance are observed ports, not claims
  * of database authorization. The PG scenarios retain all real authority checks. */
-function fixture(runnerId = 'local') {
+function fixture(runnerId = LOCAL_RUNNER_ID) {
   const signal = new AbortController().signal
   const input = { executionId: 'eng07-execution', harness: 'codex' as const,
     workingDirectory: '/eng07-test-project', signal }
@@ -42,7 +43,7 @@ function fixture(runnerId = 'local') {
       endpoint: providerAppEndpoint, enabled: true, credentialEnvironmentVariable: APP_MCP_TOKEN_ENVIRONMENT_VARIABLE,
       status: 'connected' } }))
   const inspector = vi.fn(() => ({ inspect }))
-  const provider = providerLaunchCredentials(runs as unknown as Ports[0], { runnerId: 'local' } as Ports[1],
+  const provider = providerLaunchCredentials(runs as unknown as Ports[0], { runnerId: LOCAL_RUNNER_ID } as Ports[1],
     managers as unknown as Ports[2], credentials as unknown as Ports[3], inspector, {} as Ports[5])
   return { provider, input, execution, configuration, run, runs, managers, credentials, inspect, inspector, credential }
 }
@@ -66,7 +67,7 @@ describe('ENG07-B provider preflight keeps the strict seeded-runner boundary', (
       workingDirectory: f.execution.workingDirectory, configuration: f.configuration,
       runId: f.execution.runId, attempt: f.execution.attempt, ...(purpose ? { purpose } : {}) } as NativeManagerResolutionContext
     const original = managers.resolve(context)
-    const provider = providerLaunchCredentials(f.runs as unknown as Ports[0], { runnerId: 'local' } as Ports[1],
+    const provider = providerLaunchCredentials(f.runs as unknown as Ports[0], { runnerId: LOCAL_RUNNER_ID } as Ports[1],
       managers, f.credentials as unknown as Ports[3], f.inspector, {} as Ports[5])
     await expect(provider.prepare({ ...f.input, ...(purpose ? { purpose } : {}) })).resolves.toMatchObject({ credential: f.credential })
     expect(create).toHaveBeenCalledOnce()
@@ -91,7 +92,7 @@ describe('ENG07-B provider preflight keeps the strict seeded-runner boundary', (
         input = { ...input, workingDirectory: f.execution.workingDirectory }
       }
       if (changed === 'configuration') f.configuration.id = 'another-configuration'
-      const provider = providerLaunchCredentials(f.runs as unknown as Ports[0], { runnerId: 'local' } as Ports[1],
+      const provider = providerLaunchCredentials(f.runs as unknown as Ports[0], { runnerId: LOCAL_RUNNER_ID } as Ports[1],
         managers, f.credentials as unknown as Ports[3], f.inspector, {} as Ports[5])
       await expect(provider.prepare(input)).rejects.toThrow('A durable execution cannot change native manager ownership context.')
       expect(create).toHaveBeenCalledOnce()
@@ -110,16 +111,16 @@ describe('ENG07-B provider preflight keeps the strict seeded-runner boundary', (
       agentId: f.execution.agentId, harness: 'codex', workingDirectory: f.input.workingDirectory,
       configuration: f.configuration, runId: f.execution.runId, attempt: f.execution.attempt })
     expect(f.inspect).toHaveBeenCalledTimes(1)
-    expect(f.inspect.mock.calls[0]![0]).toMatchObject({ runnerId: 'local',
+    expect(f.inspect.mock.calls[0]![0]).toMatchObject({ runnerId: LOCAL_RUNNER_ID,
       workingDirectory: f.input.workingDirectory, harness: 'codex', phase: 'configuration' })
     expect(f.credentials.revokeSupersededForExecution).toHaveBeenCalledExactlyOnceWith(f.input.executionId)
     expect(f.credentials.revokeForExecution).not.toHaveBeenCalled()
     expect(f.credentials.issueForExecution).toHaveBeenCalledExactlyOnceWith(f.input.executionId)
     expect(prepared.credential).toBe(f.credential)
-    expect(prepared.detection).toMatchObject({ runnerId: 'local', detection: { state: 'connected' } })
+    expect(prepared.detection).toMatchObject({ runnerId: LOCAL_RUNNER_ID, detection: { state: 'connected' } })
     expect({ execution: f.execution, configuration: f.configuration, run: f.run }).toEqual(before)
   })
-  it.each(['runner-local', 'different-runner'])('rejects %s BEFORE provider inspection or credential mutation', async (runnerId) => {
+  it.each(['local', 'different-runner'])('rejects %s BEFORE provider inspection or credential mutation', async (runnerId) => {
     const f = fixture(runnerId)
     await expect(f.provider.prepare(f.input)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_IDENTITY_INVALID',
       message: 'Credential preflight requires the pinned local execution.' })

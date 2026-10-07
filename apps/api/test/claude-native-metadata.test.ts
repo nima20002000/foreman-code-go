@@ -14,7 +14,7 @@ import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { OperatorWorkspaceControls } from '../src/modules/workspaces/operatorControls.js'
 
 const configuration = ClaudeHarnessConfigurationSchema.parse({ harness: 'claude', model: 'observed-model', authMode: 'subscription',
-  configDirectory: '/selected-profile', permissionMode: 'default', sandbox: 'read-only', tools: ['Read'],
+  configDirectory: '/selected-profile', permissionMode: 'default', sandbox: 'danger-full-access', tools: ['Read'],
   permissionRules: [], instructions: '', mcpServers: {} })
 const qualification = HarnessQualificationSchema.parse({ harness: 'claude', version: '2.1.117', authenticated: true,
   ready: false, structuredEvents: false, supportsResume: false, supportsCancellation: false,
@@ -54,7 +54,7 @@ describe('selected Claude native metadata producer', () => {
       expect(current).toMatchObject({ harness: 'claude', providerVersion: '2.1.118', authenticated: false, models: [] })
       expect(discover).toHaveBeenCalledTimes(2)
       expect(discover).toHaveBeenLastCalledWith('/selected-workspace', expect.any(AbortSignal))
-      expect(current.settings.find(field => field.field === 'sandbox')?.support).toBe('conditional')
+      expect(current.settings.find(field => field.field === 'sandbox')?.support).toBe('supported')
       expect(qualify).not.toHaveBeenCalled(); expect(f.allocate).not.toHaveBeenCalled(); expect(f.command).not.toHaveBeenCalled()
     } finally { await f.service.shutdownChecks() }
   })

@@ -62,7 +62,7 @@ describe('installed worker Claude metadata and saved profile admission', () => {
     const target = (await inspectInstalledClaude({ ...f.input, environment: process.env })).currentTarget!
     const harness = ClaudeHarnessConfigurationSchema.parse({ harness: 'claude', model: 'recorded-model',
       authMode: 'subscription', configDirectory: join(f.root, 'profile'), permissionMode: 'default',
-      sandbox: 'read-only', tools: [], permissionRules: [], instructions: '', mcpServers: {} })
+      sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: '', mcpServers: {} })
     const override: HostHarnessOverride = { instanceId: randomUUID(), revision: 1, instanceRevision: 'profile-1',
       target: target.target, presetId: 'claude', enabled: true, driverId: 'claude', configuration: harness,
       configurationFingerprint: commandInputHash(harness), qualification: 'qualified' }
@@ -95,7 +95,7 @@ describe('installed worker Claude metadata and saved profile admission', () => {
     try {
       roots = ApprovedRootAllowlistSchema.parse({ schemaVersion: 1, hostRef: target.target.hostRef,
         applicationInstallationId: target.target.applicationInstallationId, configurationRevision: '1',
-        bases: [{ baseId: randomUUID(), canonicalPath: project, filesystem: await identity(baseHandle), accessModes: ['read-only'] }],
+        bases: [{ baseId: randomUUID(), canonicalPath: project, filesystem: await identity(baseHandle), accessModes: ['read-only', 'read-write'] }],
         managedRuntimeRoot: runtime, runtimeFilesystem: await identity(runtimeHandle) })
     } finally { await baseHandle.close(); await runtimeHandle.close() }
     const source: WorkerConversationRpcRequest = { method: 'conversation.initial-turn', binding, configuration,
@@ -122,7 +122,7 @@ describe('installed worker Claude metadata and saved profile admission', () => {
       proof.claudeProof!.pin.cliVersion = '2.1.286'
       await expect(allocation.start(start)).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
       proof.claudeProof!.pin.cliVersion = '2.1.284'
-      proof.claudeProof!.checks.readOnlySandbox!.state = 'failed'
+      proof.claudeProof!.checks.fullAccessPolicy!.state = 'failed'
       await expect(allocation.start(start)).rejects.toMatchObject({ result: { error: { code: 'CLAUDE_POLICY_UNQUALIFIED' } } })
     } finally {
       if (originalHint === undefined) delete process.env.NATIVE_PROFILE_FIXTURE_HINT
