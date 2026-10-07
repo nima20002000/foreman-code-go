@@ -1286,12 +1286,14 @@ export class ApprovalExecutionCoordinator {
       throw new DomainError('WORKER_EXECUTION_TERMINAL', 'A completed workflow execution cannot resume native work.', 409)
     }
     await this.validateContinuation?.(execution.id, signal)
-    const resolutionContext = await this.managerContext(execution, configuration, context.purpose)
     const request = HarnessExecutionRequestSchema.parse({
       executionId: execution.id, runId: execution.runId, workspaceId: run.workspaceId,
       workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
       runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input,
     })
+    const resolutionContext = {
+      ...await this.managerContext(execution, configuration, context.purpose), workflowRequest: request,
+    }
     if (this.stoppingRuns.has(execution.runId)) throw new Error('The Run is stopping.')
     const resolved = this.resolveManager(resolutionContext, options.restartOwner)
     // Claim outside cleanup: losing a concurrent startup race does not own its credentials.
