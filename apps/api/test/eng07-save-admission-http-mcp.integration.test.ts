@@ -51,6 +51,8 @@ async function recoveredFixture(form: 'single' | 'repeat') {
     // lifetime, NOT absence in a new resolver/registry. No create/attach/replay.
     await f.provider.close(session)
     disposed.add(execution.id)
+    // Restart preserves pending approvals; settlement needs an explicit Stop.
+    await f.stop()
     const cold = f.compose()
     await cold.engine.start(f.f.run.id)
     await assertSettled(f)
