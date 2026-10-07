@@ -160,8 +160,24 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('NIM-2691 bounded Activiti
         await app.ready()
         const path = `/api/management/workspaces/${t.scope.workspaceId}/runs/${t.run.id}`
         const args = { workspaceId: t.scope.workspaceId, runId: t.run.id }
-        const listed = await graphRpc(app, t.writer.token, 'tools/list')
-        const names = listed.result?.tools?.map((tool) => tool.name) ?? []
+        const listToolNames = async (token: string) => {
+          const names: string[] = []
+          const cursors = new Set<string>()
+          let cursor: string | undefined
+          do {
+            const listed = await graphRpc(app, token, 'tools/list', cursor ? { cursor } : {})
+            expect(listed.error).toBeUndefined()
+            expect(listed.result?.tools).toBeDefined()
+            names.push(...listed.result!.tools!.map(tool => tool.name))
+            cursor = listed.result?.nextCursor
+            if (cursor) {
+              expect(cursors.has(cursor)).toBe(false)
+              cursors.add(cursor)
+            }
+          } while (cursor)
+          return names
+        }
+        const names = await listToolNames(t.writer.token)
         expect(names).toContain('run_handoffs_get_v1')
         expect(names).toContain('run_activities_get_v1')
         const handoffsHttp = await app.inject({ method: 'GET', url: `${path}/handoffs`,
@@ -183,9 +199,9 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('NIM-2691 bounded Activiti
         expect(RunActivitiesPageSchema.parse(graphRpcValue(activityMcp.result))).toEqual(page)
         const denied = await t.credential([{ actions: ['workflows:read'],
           scope: { workspaceIds: [t.scope.workspaceId] } }])
-        const hidden = await graphRpc(app, denied.token, 'tools/list')
-        expect(hidden.result?.tools?.some((tool) => tool.name === 'run_handoffs_get_v1'
-          || tool.name === 'run_activities_get_v1')).not.toBe(true)
+        const hidden = await listToolNames(denied.token)
+        expect(hidden).not.toContain('run_handoffs_get_v1')
+        expect(hidden).not.toContain('run_activities_get_v1')
         const before = (await pool.query('select count(*)::integer as n from run_activity where run_id=$1',
           [t.run.id])).rows[0]?.n
         const deniedHttp = await app.inject({ method: 'GET', url: `${path}/activities`,
@@ -202,9 +218,9 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('NIM-2691 bounded Activiti
           headers: graphHeaders(reader.token) })).statusCode).toBe(200)
         expect((await app.inject({ method: 'GET', url: `${path}/handoffs`,
           headers: graphHeaders(reader.token) })).statusCode).toBe(403)
-        const readerTools = await graphRpc(app, reader.token, 'tools/list')
-        expect(readerTools.result?.tools?.some((tool) => tool.name === 'run_activities_get_v1')).toBe(true)
-        expect(readerTools.result?.tools?.some((tool) => tool.name === 'run_handoffs_get_v1')).not.toBe(true)
+        const readerTools = await listToolNames(reader.token)
+        expect(readerTools).toContain('run_activities_get_v1')
+        expect(readerTools).not.toContain('run_handoffs_get_v1')
         await t.access.revoke(reader.principal.id)
         expect((await app.inject({ method: 'GET', url: `${path}/activities?cursor=${encodeURIComponent(page.nextCursor)}`,
           headers: graphHeaders(reader.token) })).statusCode).not.toBe(200)
