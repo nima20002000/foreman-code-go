@@ -21,7 +21,8 @@ import {
   HarnessExecutionRequestSchema,
 } from '@foreman-code/contracts'
 
-import { WORKER_CREDENTIAL_RENEWAL_WINDOW_MS, type IssuedWorkerCredential } from '../access/workerCredentials.js'
+import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, WORKER_CREDENTIAL_RENEWAL_WINDOW_MS,
+  type IssuedWorkerCredential } from '../access/workerCredentials.js'
 import type { NativeHarnessSessionManager, NativeHistory } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
@@ -1257,6 +1258,24 @@ export class ApprovalExecutionCoordinator {
     owned.session = sessionReference
     signal = signal ? AbortSignal.any([signal, owned.controller.signal]) : owned.controller.signal
     try {
+      if (continuing) {
+        if (!this.credentials?.restore || !resolved.manager.originalApplicationAccess) throw new DomainError(
+          'NATIVE_CREDENTIAL_RECOVERY_REQUIRED', 'The original remote process credential cannot be restored.', 409)
+        const session = await this.openingSession(owned, resolved.manager.attachSession(sessionReference,
+          { kind: 'workflow', correlationId: `execution:${execution.id}`, request }, signal))
+        this.assertSessionIdentity(sessionReference, session)
+        const access = await resolved.manager.originalApplicationAccess(session, signal)
+        const credential = await this.credentials.restore(execution.id, { agentId: execution.agentId,
+          variables: { [APP_MCP_TOKEN_ENVIRONMENT_VARIABLE]: access.token } })
+        const current = await readOpenRemoteWorkflowSession(options.restartOwner!, execution)
+        if (credential.principalId !== continuing.principalId || !isDeepStrictEqual(current, continuing))
+          throw new DomainError('NATIVE_CREDENTIAL_RECOVERY_REQUIRED', 'The original remote process lease changed.', 409)
+        this.managerCredentials.set(resolved.manager, credential)
+        await this.validateContinuation?.(execution.id, signal)
+        signal.throwIfAborted()
+        resolved.markResident?.()
+        return { manager: resolved.manager, session, signal: owned.controller.signal }
+      }
       const environment = await this.prepareEnvironment(resolutionContext, resolved, {
         signal, purpose: context.purpose, restartOwner: options.restartOwner,
       })
