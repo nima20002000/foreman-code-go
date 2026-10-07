@@ -83,7 +83,7 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
       const settings = new PostgresFoundationSettingsRepository(pool)
       const defaults = await settings.getAgentDefaults()
       const harness: ClaudeHarnessConfiguration = { harness: 'claude', model: 'transport-fixture', authMode: 'subscription',
-        configDirectory: '/test-profile', permissionMode: 'default', sandbox: 'read-only', tools: ['Read'],
+        configDirectory: '/test-profile', permissionMode: 'default', sandbox: 'danger-full-access', tools: ['Read'],
         permissionRules: [{ tool: 'Read', effect: 'ask' }], instructions: '', mcpServers: {} }
       await settings.updateAgentDefaults({ ...defaults.value, operator: { ...defaults.value.operator, harness } }, defaults.revision)
       const repository = new PostgresOperatorConversationRepository(pool)
@@ -222,7 +222,13 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
           expect(terminal?.history?.responseDeliveries).toHaveLength(1)
           expect(terminal?.history?.events.some(event => event.type === 'claude.text')).toBe(true)
           expect(terminal?.historyPersisted).toBe(false)
+          const disposalFault = vi.spyOn(owned.manager, 'dispose').mockRejectedValue(new Error('Native cleanup interrupted'))
           await expect(chat.shutdown()).rejects.toThrow('incomplete')
+          expect((await repository.get(id))?.activeRequestId).toBe('model-request')
+          expect(await repository.terminal(id, 'model-request')).toMatchObject({
+            historyPersisted: false, closureState: 'pending',
+          })
+          disposalFault.mockRestore()
           await owned.manager.dispose!()
           historyFault!.mockRestore()
           chat = createChat()
