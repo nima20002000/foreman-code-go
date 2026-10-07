@@ -323,3 +323,19 @@ describe('F1 A-R14: queue-head cancellation and worker wakeups', () => {
     assert.deepEqual(f.manager.starts, ['A', 'B'])
   })
 })
+
+it('queues a Plan task as one new turn when the caller selected steering', async () => {
+  const f = setup()
+  await f.active()
+  const sent = await f.send('plan-task', { intent: 'steer', expectedNativeTurnId: 'turn-A',
+    content: '/plan Inspect the repository', sessionMode: 'plan' })
+  assert.equal(sent.turn.intent, 'next_turn')
+  assert.deepEqual(f.manager.steers, [])
+  assert.equal((await f.send('plan-task', { intent: 'steer', expectedNativeTurnId: 'turn-A',
+    content: '/plan Inspect the repository', sessionMode: 'plan' })).replayed, true)
+  f.manager.finish('A')
+  await f.idle()
+  assert.deepEqual(f.manager.starts, ['A', 'plan-task'])
+  assert.equal(f.manager.modes.at(-1), 'plan')
+  assert.equal(f.manager.prompts.at(-1), 'Inspect the repository')
+})

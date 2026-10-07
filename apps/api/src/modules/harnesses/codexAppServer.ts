@@ -1,6 +1,11 @@
 import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { beginRuntimeTiming, runtimeTimingPoint, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
+import { isWorkflowStart, sessionStartConfiguration, sessionStartDirectory, sessionStartOwner, sessionStartCorrelation } from './sessionStart.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
+import { SessionPreferencesSchema, type SessionPreferences } from '@foreman-code/contracts'
+import { codexCollaborationMode, codexCompactionNotification, codexContextSnapshot } from './codexSessionControls.js'
+import type { CompactionState, ContextSnapshot, SessionControlCapabilities } from '@foreman-code/contracts'
+import type { NativeCompactInput } from './port.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames, appMcpServerName, appLauncherTokenName, isAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -156,6 +161,11 @@ interface StartingTurn {
 }
 interface Runtime extends TurnSnapshot {
   parent?: Runtime
+  contextBudgetLimit?: number
+  sessionPreferences?: SessionPreferences
+  compactionPreviousTurns?: Set<string>
+  compaction?: CompactionState
+  context?: ContextSnapshot
   readonly connectionId: string
   readonly schemaIdentity: string
   arrivalOrdinal: number
@@ -199,6 +209,7 @@ interface Runtime extends TurnSnapshot {
   disposed: boolean
 }
 interface Prepared {
+  contextBudgetLimit?: number | undefined
   input: NativeSessionStart
   harnessConfiguration: CodexHarnessConfiguration
   workingDirectory: string
@@ -248,23 +259,23 @@ export interface CodexQualificationEvidence {
 function advanced(value: CodexHarnessConfiguration): CodexAdvancedConfiguration {
   return value.advanced ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION
 }
-function accepted(input: NativeSessionStart) {
-  return input.kind === 'operator' ? input.configuration : input.request.configuration
-}
+function accepted(input: NativeSessionStart) { return sessionStartConfiguration(input) }
 function ownerId(input: NativeSessionStart): string {
-  return input.kind === 'operator' ? input.configuration.operatorId : input.request.configuration.agentId
+  return sessionStartOwner(input)
 }
 function binding(input: NativeSessionStart): string {
-  return input.kind === 'operator'
-    ? canonical({ kind: 'operator', ownerId: ownerId(input), cwd: input.workingDirectory })
-    : canonical({ kind: 'workflow', ownerId: ownerId(input), workspaceId: input.request.workspaceId,
+  if (input.kind === 'operator') return canonical({ kind: 'operator', ownerId: ownerId(input), cwd: input.workingDirectory })
+  if (input.kind === 'agent-chat') return canonical({ kind: input.kind, conversationId: input.conversationId,
+    ownerId: ownerId(input), workspaceId: input.configuration.workspaceId,
+    workflowId: input.workflowId, workflowNodeId: input.workflowNodeId, cwd: input.workingDirectory })
+  return canonical({ kind: 'workflow', ownerId: ownerId(input), workspaceId: input.request.workspaceId,
       runId: input.request.runId, workflowNodeId: input.request.workflowNodeId, cwd: input.request.workingDirectory })
 }
 /** App-owned developer instructions: the accepted configuration's pinned bundle, never the live catalog.
  * Native base instructions stay Codex's own. Earlier accepted configurations keep their system prompt only. */
 function instructions(input: NativeSessionStart): string | null {
   if (input.kind === 'operator') return agentInstructionBundle(input.configuration)?.text ?? null
-  const configuration = input.request.configuration
+  const configuration = input.kind === 'agent-chat' ? input.configuration : input.request.configuration
   if (configuration.instructionDelivery !== 'native-v1') return configuration.prompt.system ?? null
   return agentInstructionBundle(configuration)?.text ?? null
 }
@@ -294,7 +305,7 @@ function validateEnvironmentOwner(input: NativeSessionStart, requiredVariable?: 
   if (input.environment && input.environment.agentId !== ownerId(input)) {
     throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The scoped process environment belongs to another Agent.')
   }
-  if (input.kind !== 'operator' && input.request.workspaceId !== input.request.configuration.workspaceId) {
+  if (isWorkflowStart(input) && input.request.workspaceId !== input.request.configuration.workspaceId) {
     throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The accepted configuration belongs to another workspace.')
   }
   const token = requiredVariable && isSupportedAppMcpTokenName(requiredVariable)
@@ -340,6 +351,10 @@ function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'wor
     runtimeWorkspaceRoots: [prepared.workingDirectory, ...draft.additionalWritableDirectories],
     approvalPolicy: draft.approvalPolicy, approvalsReviewer: draft.approvalsReviewer,
     sandbox: value.sandbox, config: { ...configOverrides(value),
+      ...(prepared.input.sessionPreferences?.contextBudget != null
+        ? { model_context_window: prepared.input.sessionPreferences.contextBudget } : {}),
+      ...(prepared.input.sessionPreferences?.autoCompactTokens != null
+        ? { model_auto_compact_token_limit: prepared.input.sessionPreferences.autoCompactTokens } : {}),
       ...Object.fromEntries(prepared.disabledAppMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
       ...(prepared.input.kind === 'operator' ? { model_reasoning_summary: prepared.input.configuration.showThinking ? 'auto' : 'none' } : {}),
     },
@@ -395,6 +410,7 @@ function deadline<T>(promise: Promise<T>, signal?: AbortSignal, milliseconds = R
 
 export class CodexAppServerSessionManager implements NativeHarnessSessionManager {
   readonly harness = 'codex' as const
+  private startupPreferences: SessionPreferences | undefined
   private readonly runtimes = new Map<string, Runtime>()
   private readonly locks = new Set<string>()
   private readonly creations = new Map<string, Creation>()
@@ -511,7 +527,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     options: { forkSource?: NativeSessionReference; signal?: AbortSignal | undefined }): Promise<NativeSessionReference> {
     const { forkSource, signal } = options
     this.shutdownController.signal.throwIfAborted()
-    const input = structuredClone(source)
+    const input = structuredClone(this.startupPreferences && !source.sessionPreferences
+      ? { ...source, sessionPreferences: this.startupPreferences } : source)
     if (forkSource && input.kind !== 'operator') input.instructionsDelivered = true
     const key = this.creationKey(input)
     const identity = this.creationIdentity(input, forkSource)
@@ -549,7 +566,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private creationIdentity(input: NativeSessionStart, source?: NativeSessionReference): string {
     return canonical({ binding: binding(input), configuration: accepted(input),
-      environment: input.environment ?? null, source: source ?? null })
+      environment: input.environment ?? null, source: source ?? null,
+      sessionPreferences: input.sessionPreferences ?? this.startupPreferences ?? null })
   }
 
   private async rejectCreation(creation: Creation): Promise<never> {
@@ -560,7 +578,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private creationKey(input: NativeSessionStart): string {
-    const correlation = input.correlationId ?? (input.kind === 'operator' ? undefined : input.request.executionId)
+    const correlation = sessionStartCorrelation(input)
     if (!correlation) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Session creation requires a stable correlation ID.')
     return canonical([binding(input), correlation])
   }
@@ -657,7 +675,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     this.assertSessionVersion(session)
     const runtime = this.runtimes.get(session.nativeSessionId)
     if (!runtime) return undefined
-    const input = structuredClone(source), reference = structuredClone(session)
+    const input = structuredClone(this.startupPreferences && !source.sessionPreferences
+      ? { ...source, sessionPreferences: this.startupPreferences } : source), reference = structuredClone(session)
     this.assertOriginalBinding(runtime, session, input)
     if (!this.isOriginalResident(runtime)) return undefined
     const residency: CodexOriginalResidency = {
@@ -672,7 +691,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   /** Reattach only the surviving original stdio runtime. Cold/generation reconnect is unsupported. */
   async reattachOriginalSession(session: NativeSessionReference, source: NativeSessionStart,
     residency: CodexOriginalResidency, signal?: AbortSignal): Promise<NativeSessionReference> {
-    const input = structuredClone(source), pin = structuredClone(residency)
+    const input = structuredClone(this.startupPreferences && !source.sessionPreferences
+      ? { ...source, sessionPreferences: this.startupPreferences } : source), pin = structuredClone(residency)
     return this.exclusive(session.nativeSessionId, async () => {
       signal?.throwIfAborted()
       const runtime = this.requireOriginalResidency(session, input, pin)
@@ -748,7 +768,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
     }
     return this.exclusive(session.nativeSessionId, async () => {
-      const input = structuredClone(source)
+      const input = structuredClone(this.startupPreferences && !source.sessionPreferences
+      ? { ...source, sessionPreferences: this.startupPreferences } : source)
       const loaded = this.runtimes.get(session.nativeSessionId)
       if (loaded) {
         if (loaded.disposed) throw new HarnessExecutionError('CODEX_SESSION_UNAVAILABLE', 'Session closure is still unconfirmed; retry cleanup before attaching.')
@@ -788,6 +809,145 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  async configureSessionPreferences(preferences: SessionPreferences) {
+    if (this.runtimes.size) throw new HarnessExecutionError('CODEX_SETTINGS_BUSY', 'Startup settings require an idle new allocation.')
+    this.startupPreferences = SessionPreferencesSchema.parse(preferences)
+  }
+
+  async applySessionPreferences(session: NativeSessionReference, preferences: SessionPreferences, signal?: AbortSignal) {
+    await this.exclusive(session.nativeSessionId, async () => {
+      const runtime = this.requireRuntime(session)
+      this.assertIdle(runtime)
+      const capabilities = await this.sessionControlCapabilities(session)
+      if (preferences.contextBudget !== null && !capabilities.contextBudgets.includes(preferences.contextBudget)) {
+        throw new HarnessExecutionError('CODEX_CONTEXT_BUDGET_INVALID', 'Choose a qualified native context budget.')
+      }
+      const start = { ...runtime.input, sessionPreferences: preferences }
+      const prepared = await this.prepareIdleInput(runtime, start, signal)
+      const response = object(await runtime.transport.request('thread/resume', {
+        ...threadParameters(prepared, true), threadId: session.nativeSessionId, excludeTurns: true,
+      }, signal), 'CODEX_THREAD_RESUME_INVALID')
+      this.validateThreadResponse(prepared, response, session.nativeSessionId)
+      runtime.input = start
+      runtime.sessionPreferences = structuredClone(preferences)
+      if (runtime.context) runtime.context = { ...runtime.context, stale: true }
+    })
+  }
+
+  appliedSessionPreferences(session: NativeSessionReference): SessionPreferences | null {
+    const runtime = this.requireRuntime(session)
+    // Native thread startup/resume acknowledges configuration; usable context can include a provider reserve.
+    return runtime.sessionPreferences ?? runtime.input.sessionPreferences ?? SessionPreferencesSchema.parse({})
+  }
+
+  async sessionControlCapabilities(session: NativeSessionReference): Promise<SessionControlCapabilities> {
+    const runtime = this.requireRuntime(session)
+    const supports = (method: string, params: JsonObject) => {
+      try { runtime.qualified.protocol.request({ id: 0, method, params }); return true } catch { return false }
+    }
+    const plan = supports('turn/start', { threadId: session.nativeSessionId, input: [],
+      collaborationMode: codexCollaborationMode('plan', runtime.configuration.model, runtime.configuration.reasoningEffort) })
+    const compact = supports('thread/compact/start', { threadId: session.nativeSessionId })
+    const supportedBudget = supports('thread/resume', { threadId: session.nativeSessionId, config: { model_context_window: 100000 } })
+    const capacity = runtime.contextBudgetLimit
+      ?? (runtime.input.sessionPreferences?.contextBudget == null ? runtime.context?.capacityTokens ?? null : null)
+    if (capacity !== null && runtime.input.sessionPreferences?.contextBudget == null) runtime.contextBudgetLimit = capacity
+    const budgets = supportedBudget && capacity !== null
+      ? [...new Set([Math.floor(capacity / 2), capacity])].filter(value => value > 0) : []
+    const contextBudgetReason = !supportedBudget ? 'This qualified app-server schema has no per-thread context override.'
+      : capacity === null ? 'A native default context-window observation is required before choosing a budget.' : null
+    const unsupported = { supported: false, reason: 'This installed profile has no automatic-compaction toggle.' }
+    return { compact: { supported: compact, reason: compact ? null : 'Native compaction is unavailable in this schema.' },
+      plan: { supported: plan, reason: plan ? null : 'Native Plan mode is unavailable in this schema.' },
+      autoCompact: unsupported, autoCompactBudget: unsupported, contextBudgetReason, contextBudgets: budgets, contextProfiles: [],
+      modelCapacity: capacity, model: runtime.configuration.model, profileKey: createHash('sha256').update(runtime.configurationIdentity).digest('hex') }
+  }
+
+  contextSnapshot(session: NativeSessionReference): ContextSnapshot | null {
+    return this.requireRuntime(session).context ?? null
+  }
+
+  async compactSession(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal): Promise<CompactionState> {
+    return this.exclusive(session.nativeSessionId, async () => {
+      const runtime = this.requireRuntime(session)
+      this.assertIdle(runtime)
+      if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconnect before compacting.')
+      const before = await codexRequest(runtime.transport, 'thread/read', { threadId: session.nativeSessionId, includeTurns: true }, signal)
+      runtime.compactionPreviousTurns = new Set(before.thread.turns.map(turn => turn.id))
+      runtime.compaction = { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
+        baselineTurnId: before.thread.turns.at(-1)?.id ?? null,
+        nativeOperationId: null, status: 'accepted', message: 'Compaction is starting.',
+        beforeTokens: runtime.context?.usedTokens ?? null, observedAt: new Date().toISOString() }
+      let dispatched = false
+      try {
+        await input.onProgress(runtime.compaction)
+        await input.onDispatch?.()
+        dispatched = true
+        await runtime.transport.request('thread/compact/start', { threadId: session.nativeSessionId }, signal)
+        await input.onProgress(runtime.compaction)
+        const waitSignal = AbortSignal.any([this.shutdownController.signal, AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
+        while (['accepted', 'running'].includes(runtime.compaction.status) && !runtime.closed) {
+          await this.wait(runtime, waitSignal)
+          await input.onProgress(runtime.compaction)
+        }
+        if (runtime.closed) runtime.compaction = { ...runtime.compaction, status: 'uncertain', message: 'Reconnect to recover compaction.' }
+        this.record(runtime, 'session.compaction', { ...runtime.compaction })
+        return runtime.compaction
+      } catch (error) {
+        const definite = !dispatched || error instanceof CodexRpcError && error.method === 'thread/compact/start' && !error.uncertain
+        runtime.compaction = { ...runtime.compaction, status: definite ? 'failed' : 'uncertain',
+          message: definite ? 'Codex rejected compaction.' : 'Native compaction is unconfirmed.' }
+        throw error
+      }
+    })
+  }
+
+  async readCompaction(session: NativeSessionReference, start: NativeSessionStart,
+    state: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
+    this.assertSessionVersion(session)
+    if (state.nativeSessionId !== session.nativeSessionId) return state
+    const prepared = await this.prepareInput(start, signal)
+    const candidate = await this.transport(prepared, 0, signal)
+    try {
+      const result = await codexRequest(candidate.transport, 'thread/read', {
+        threadId: session.nativeSessionId, includeTurns: true,
+      }, signal)
+      if (result.thread.id !== session.nativeSessionId) throw new Error('Codex read a different native thread')
+      return this.compactionFromTurns(state, result.thread.turns)
+    } finally { await candidate.transport.close() }
+  }
+
+  async reconcileCompaction(session: NativeSessionReference, state: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
+    const runtime = this.requireRuntime(session)
+    if (runtime.compaction?.requestId === state.requestId) {
+      state = runtime.compaction
+      if (!['accepted', 'running', 'uncertain'].includes(state.status)) return state
+    }
+    if (state.nativeSessionId !== session.nativeSessionId) return state
+    const result = await codexRequest(runtime.transport, 'thread/read', { threadId: session.nativeSessionId, includeTurns: true }, signal)
+    if (result.thread.id !== session.nativeSessionId) throw new Error('Codex read a different native thread')
+    const recovered = this.compactionFromTurns(state, result.thread.turns)
+    runtime.compaction = recovered
+    if (recovered.status === 'completed' && runtime.context) runtime.context = { ...runtime.context, stale: true }
+    return recovered
+  }
+
+  private compactionFromTurns(state: CompactionState,
+    turns: Array<{ id: string; status: string; items: Array<{ type: string }> }>): CompactionState {
+    let turn = turns.find(entry => entry.id === state.nativeOperationId)
+    if (!turn && state.baselineTurnId !== undefined) {
+      const baseline = state.baselineTurnId === null ? -1
+        : turns.findIndex(entry => entry.id === state.baselineTurnId)
+      const matches = baseline < 0 && state.baselineTurnId !== null ? [] : turns.slice(baseline + 1)
+        .filter(entry => entry.items.some(item => item.type === 'contextCompaction'))
+      if (matches.length === 1) turn = matches[0]
+    }
+    if (!turn) return state
+    return codexCompactionNotification({ ...state, nativeOperationId: turn.id }, 'turn/completed', {
+      threadId: state.nativeSessionId, turn,
+    })
+  }
+
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
     const subscriber = new AbortController()
     const iterator = this.streamTurn(session, input, signal, subscriber.signal)
@@ -810,8 +970,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       signal?.throwIfAborted()
       if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
       if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before starting another turn.')
+      if (runtime.compaction && ['accepted', 'running', 'uncertain'].includes(runtime.compaction.status)) {
+        throw new HarnessExecutionError('CODEX_COMPACT_PENDING', 'Recover native compaction before sending another turn.')
+      }
       if (runtime.phase !== 'idle' || runtime.streamActive || runtime.interactions.size > 0) {
         throw new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This session has an active or uncertain turn or interaction.')
+      }
+      if (input.sessionPreferences && canonical(input.sessionPreferences) !== canonical(runtime.sessionPreferences ?? runtime.input.sessionPreferences ?? SessionPreferencesSchema.parse({}))) {
+        await this.applySessionPreferences(session, input.sessionPreferences, signal)
       }
       if (!input.clientCorrelationId.trim()) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Turn startup requires a stable correlation ID.')
     } catch (error) {
@@ -916,6 +1082,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         const result = await codexRequest(runtime.transport, 'turn/start', {
           threadId: session.nativeSessionId, clientUserMessageId: input.clientCorrelationId,
           input: nativeInput,
+          ...(input.sessionMode ? { collaborationMode: codexCollaborationMode(input.sessionMode, runtime.configuration.model, runtime.configuration.reasoningEffort) } : {}),
           serviceTierForTurn: runtime.configuration.serviceTier === 'priority' ? 'fast' : 'default',
         }, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]), (value, error) => {
           if (runtime.starting !== starting || runtime.disposed) return
@@ -938,6 +1105,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           throw error
         })
         await this.acceptStartedTurn(runtime, starting, result)
+        await input.onSettingsApplied?.()
         while (!signal?.aborted && !subscriberSignal.aborted) {
           const firstSequence = runtime.events[0]?.sequence ?? runtime.sequence
           if (cursor < firstSequence) throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'The in-memory event window was exceeded; reload durable history.')
@@ -1233,7 +1401,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   subagentControl(child: RunSubagent, assertOwner: () => void): SubagentControlLease | undefined {
     const runtime = [...this.runtimes.values()].find((candidate) => {
       const input = candidate.input
-      return input.kind !== 'operator' && input.request.executionId === child.parentExecutionId
+      return input.kind !== 'operator' && input.kind !== 'agent-chat' && input.request.executionId === child.parentExecutionId
         && input.request.runId === child.runId && input.request.workspaceId === child.workspaceId
         && input.request.configuration.agentId === child.parentAgentId
     })
@@ -1311,6 +1479,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       fileRequests: new Map(), interactions: new Map(), resolvedRequests: new Map(), callbackOwners: parent.callbackOwners,
       responseDecisions: new Map(), responseDeliveries: new Map(), rejectedStarts: new Map(), seenNotifications: new Set(),
       events: [], eventSizes: [], eventBytes: 0, sequence: 0, wake: new Set(), cancellation: undefined }
+    delete runtime.context
+    delete runtime.compaction
+    delete runtime.compactionPreviousTurns
     this.childRuntimes.set(thread.id, { runtime, child, assertCurrent })
   }
 
@@ -1703,7 +1874,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private async prepareInput(source: NativeSessionStart, signal?: AbortSignal, io: CodexDiagnosticOperations = this.dependencies, binary = this.binary): Promise<Prepared> {
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
-    const input = structuredClone(source)
+    const input = structuredClone(this.startupPreferences && !source.sessionPreferences
+      ? { ...source, sessionPreferences: this.startupPreferences } : source)
     validateEnvironmentOwner(input)
     validateEnvironmentVariables(input.environment)
     if (this.chatFiles && this.appMcpAccess === 'scoped' && input.kind !== 'operator') {
@@ -1714,7 +1886,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
     }
     const harnessConfiguration = configuration(input)
-    const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+    const workingDirectory = sessionStartDirectory(input)
     const environment = io.environment(input.environment)
     const qualified = await io.qualify(binary, workingDirectory, environment, true, signal)
     await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal, io)
@@ -1742,13 +1914,13 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     validateEnvironmentOwner(input, scopedCredentialVariable)
     const strippedCredentialVariable = this.appMcpAccess === 'none' ? excludedCredentialVariable : scopedCredentialVariable
     const scopedEnvironment = this.dependencies.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
-    await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
+    const modelFacts = await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
       io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal,
       undefined, { qualified, assertUnchanged: io.assertUnchanged,
         runCommand: io.runCommand,
         transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
     if (this.nativeOutputs) {
-      if (input.kind === 'operator' || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox === 'read-only'
+      if (!isWorkflowStart(input) || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox === 'read-only'
         || harnessConfiguration.sandbox === 'danger-full-access' && this.nativeOutputs.storageKind !== 'buffer') {
         throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native outputs require an original writable workflow, scoped App MCP and compatible output storage.')
       }
@@ -1757,7 +1929,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       signal.throwIfAborted()
     }
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, strippedCredentialVariable, environment: scopedEnvironment, qualified,
-      disabledAppMcpServerNames,
+      disabledAppMcpServerNames, contextBudgetLimit: typeof modelFacts === 'object' ? modelFacts.contextWindow ?? undefined : undefined,
     }
   }
 
@@ -1888,6 +2060,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private runtime(prepared: Prepared, session: NativeSessionReference, transport: CodexTransport, attached = false): Runtime {
     return {
+      ...(prepared.contextBudgetLimit ? { contextBudgetLimit: prepared.contextBudgetLimit } : {}),
       connectionId: this.dependencies.id(), schemaIdentity: prepared.qualified.schemaManifestSha256, arrivalOrdinal: 0, attached,
       binding: binding(prepared.input), ownerId: ownerId(prepared.input), configurationIdentity: canonical(accepted(prepared.input)),
       input: prepared.input, workingDirectory: prepared.workingDirectory, configuration: prepared.harnessConfiguration,
@@ -2478,6 +2651,19 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         this.handleNotification(child.runtime, method, params, staged)
       }
     }
+    if (method === 'thread/tokenUsage/updated') {
+      const context = codexContextSnapshot(params, runtime.session.nativeSessionId, runtime.configuration.model, arrivalOrdinal)
+      if (context) runtime.context = { ...context, generation: `${runtime.connectionId}:${runtime.generation}` }
+    }
+    if (runtime.compaction && ['accepted', 'running', 'uncertain'].includes(runtime.compaction.status)
+      && params.threadId === runtime.session.nativeSessionId && ['turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)) {
+      const turnId = text(params.turnId) ?? text(isObject(params.turn) ? params.turn.id : undefined)
+      if (turnId && runtime.compactionPreviousTurns?.has(turnId)) return
+      runtime.compaction = codexCompactionNotification(runtime.compaction, method, params)
+      if (runtime.compaction.status === 'completed' && runtime.context) runtime.context = { ...runtime.context, stale: true }
+      this.wake(runtime)
+      return
+    }
     if (method === 'protocol/malformed') { this.record(runtime, 'native.malformed', params); return }
     if (['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed',
       'item/agentMessage/delta'].includes(method)) {
@@ -2581,7 +2767,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     runtime.events.push(event)
     const item = isObject(payload.item) ? payload.item : undefined
     runtimeTimingPoint('harness', 'native.event', { nativeSessionId: runtime.session.nativeSessionId,
-      ...(runtime.input.kind !== 'operator'
+      ...(isWorkflowStart(runtime.input)
         ? { runId: runtime.input.request.runId, executionId: runtime.input.request.executionId } : {}),
       eventType: type, sequence: event.sequence,
       ...(typeof payload.nativeMethod === 'string' ? { nativeMethod: payload.nativeMethod } : {}),

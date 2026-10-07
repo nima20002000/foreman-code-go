@@ -348,6 +348,16 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
       if (!this.entries.size && this.root) { await this.root.close(); this.root = undefined }
     })
   }
+
+  /** Called only after native process closure; directory ownership remains in the worker journal. */
+  close(): Promise<void> {
+    return this.exclusive(async () => {
+      for (const entry of this.entries.values()) await entry.directory.close()
+      this.entries.clear()
+      await this.root?.close()
+      this.root = undefined
+    })
+  }
 }
 
 /** Verify exact immutable source paths AND their parents. Call from the native host/OS identity.
@@ -355,9 +365,8 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
  * The composition root must provide ALL vault paths/aliases, not merely selected reference files.
  * For a directory vault, deny traversal or prove an entirely read-only filesystem separately.
  */
-export async function assertProtectedSourcePaths(nativePid: number, paths: readonly string[], signal: AbortSignal): Promise<void> {
-  checkFileCondition(process.platform === 'linux' && Number.isSafeInteger(nativePid) && nativePid > 0
-    && paths.length > 0, 'FILE_SOURCE_ISOLATION_REQUIRED', 'Verify native identity and all protected source paths.')
+export async function assertOpenCodeFileProcess(nativePid: number): Promise<void> {
+  checkFileCondition(process.platform === 'linux' && Number.isSafeInteger(nativePid) && nativePid > 0, 'FILE_SOURCE_ISOLATION_REQUIRED', 'Verify the native file execution identity.')
   const status = await readFile(`/proc/${nativePid}/status`, 'utf8')
   const ids = (text: string, field: string) => new RegExp(`^${field}:\\s+(.*)$`, 'm').exec(text)?.[1]?.trim().split(/\s+/).map(Number) ?? []
   const uids = ids(status, 'Uid'), uid = uids[1]
@@ -370,6 +379,12 @@ export async function assertProtectedSourcePaths(nativePid: number, paths: reado
     && group(status) === group(self)
     && await readlink(`/proc/${nativePid}/ns/mnt`) === await readlink('/proc/self/ns/mnt'),
   'FILE_SOURCE_ISOLATION_REQUIRED', 'Source checks must use the non-root native UID, groups and mount namespace without DAC capabilities.')
+}
+
+export async function assertProtectedSourcePaths(nativePid: number, paths: readonly string[], signal: AbortSignal): Promise<void> {
+  checkFileCondition(paths.length > 0, 'FILE_SOURCE_ISOLATION_REQUIRED', 'Verify all protected source paths.')
+  await assertOpenCodeFileProcess(nativePid)
+  const uid = process.geteuid?.()
   const visited = new Set<string>()
   for (const source of paths) {
     checkFileCondition(isAbsolute(source) && normalize(source) === source,

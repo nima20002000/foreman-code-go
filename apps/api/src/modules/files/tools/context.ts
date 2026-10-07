@@ -94,4 +94,12 @@ export class FileToolSessions {
     return this.current(context, tool && isMutation(tool) ? 'write' : 'read')
   }
   async revoke(token: string): Promise<void> { await this.repository.revokeSession(digest(token)) }
+  /** Reconnect only an already issued native context, preserving its permission restrictions. */
+  async recoverAcceptedSession(binding: FileToolContext): Promise<void> {
+    const context = FileToolContextSchema.parse(binding)
+    await this.current(context, context.allowMutation && context.allowedTools.some(isMutation) ? 'write' : 'read')
+    if (!await this.repository.revokeAcceptedSessions(context)) {
+      throw new DomainError('FILE_SESSION_RECOVERY_REQUIRED', 'The original native file context was not found.', 409)
+    }
+  }
 }

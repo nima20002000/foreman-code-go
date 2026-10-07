@@ -9,7 +9,7 @@ import { memoryClaudeCallbackJournal } from '../../../../test/support/claudeCall
 const tool = 'mcp__graphql__workspace_list'
 const configuration: ClaudeHarnessConfiguration = {
   harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: '/profile',
-  permissionMode: 'default', sandbox: 'read-only', tools: [tool], permissionRules: [], instructions: '',
+  permissionMode: 'default', sandbox: 'danger-full-access', tools: [tool], permissionRules: [], instructions: '',
   mcpServers: { graphql: { type: 'http', url: 'http://127.0.0.1/mcp' } },
 }
 const session = { harness: 'claude' as const, providerVersion: '2.1.284', nativeSessionId: 'session' }
@@ -29,6 +29,19 @@ function fixture(accepted = configuration, callbackJournal = memoryClaudeCallbac
     tools: ['workspace_list', 'workspace_create'] }])
   return { bridge, validate, persisted, callbackJournal }
 }
+
+it.each(['read-only', 'workspace-write'] as const)('refuses %s before tool approval is created', sandbox => {
+  expect(() => fixture({ ...configuration, sandbox })).toThrow(/Claude requires Full access/)
+})
+
+it('retains an explicit Write denial with Full access', async () => {
+  const f = fixture({ ...configuration, tools: ['Write'], permissionRules: [{ tool: 'Write', effect: 'deny' }] })
+  try {
+    expect(await f.bridge.beforeToolUse(identity, 'Write', { file_path: '/fixture/file' })).toMatchObject({ permissionDecision: 'deny' })
+    expect(await f.bridge.canUseTool(identity, 'Write', { file_path: '/fixture/file' }, new AbortController().signal)).toMatchObject({ behavior: 'deny' })
+    expect(f.bridge.pendingInteractions(session)).toEqual([])
+  } finally { f.bridge.close() }
+})
 
 it.each(['allow', 'ask', 'deny'] as const)('enforces the saved MCP %s effect after manifest and current authority checks', async effect => {
   const f = fixture({ ...configuration, permissionRules: [{ tool, effect }] })

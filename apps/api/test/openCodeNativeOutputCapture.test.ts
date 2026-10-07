@@ -194,6 +194,51 @@ it('recovers confirmed native auto call approval from the protected journal with
   }
 })
 
+it.each(['busy', 'approval wait', 'idle unfinished'])(
+  'retains the original output callback only for active native work after restart (%s)', async status => {
+  const f = await setup({ sessionPolicy: 'ask' })
+  let restored: OpenCodeNativeSessionManager | undefined
+  try {
+    if (status !== 'busy') f.server.statuses.clear()
+    if (status === 'approval wait') f.server.permissions = [f.permission]
+    const before = await f.native.captureNativeOutputCall(f.session, toolName, f.args)
+    await f.turn.return?.()
+    await f.native.closeForRestart(f.session)
+    await f.native.dispose()
+    const submissions = f.server.calls.filter(call => call.path.includes('/prompt_async')).length
+    const restarts = f.server.restartEnvironments.length
+    restored = new OpenCodeNativeSessionManager({ server: f.server, ownerAgentId: 'agent-1' })
+    const recovered = restored.recoverEnvironment()
+    await restored.attachSession(f.session, { request: request(f.harness), correlationId,
+      ...(recovered ? { environment: recovered } : {}) })
+    const history = await restored.reconcile(f.session, correlationId)
+    if (status === 'idle unfinished') {
+      const terminal = history.terminalResult
+      assert(terminal?.outcome === 'failed')
+      assert.equal(terminal.error?.code, 'OPENCODE_TURN_INTERRUPTED')
+      await assert.rejects(restored.captureNativeOutputCall(f.session, toolName, f.args),
+        errorCode('OPENCODE_NATIVE_OUTPUT_CALL_UNAVAILABLE'))
+      assert.equal(f.server.calls.filter(call => call.path.includes('/prompt_async')).length, submissions)
+      assert.equal(f.server.restartEnvironments.length, restarts)
+      return
+    }
+    assert.equal(history.terminalResult, undefined)
+    if (status === 'approval wait') assert.equal(history.pendingInteractions[0]?.turn.nativeRequestId, f.permission.id)
+    const after = await restored.captureNativeOutputCall(f.session, toolName, f.args)
+    assert.deepEqual(after.descriptor, before.descriptor)
+    assert.equal(after.effectivePolicy, 'ask')
+    after.assertCurrent()
+    assert.equal(f.server.calls.filter(call => call.path.includes('/prompt_async')).length, submissions)
+    assert.equal(f.server.calls.filter(call => call.path.includes('/reply')).length, 0)
+    assert.equal(f.server.restartEnvironments.length, restarts)
+    f.server.generation++
+    assert.throws(after.assertCurrent, errorCode('OPENCODE_NATIVE_OUTPUT_CALL_UNAVAILABLE'))
+  } finally {
+    await restored?.dispose()
+    await f.close()
+  }
+})
+
 it('does not produce a callback when its original resident process changes during inspection', async () => {
   const f = await setup()
   try {

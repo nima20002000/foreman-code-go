@@ -16,6 +16,7 @@ import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/module
 import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import type { RepeatNativeEvidence } from '../../src/modules/runs/repeatNativeRepository.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
+import { LOCAL_RUNNER_ID } from '../../src/modules/workspaces/location.js'
 import { assertFixtureResourcesSettled } from '../../../../scripts/test-resources.mjs'
 import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
 
@@ -64,7 +65,7 @@ export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL
 }
 
 export async function seedAgent3(pool: pg.Pool, directory: string, fixture = makeCurrentWorkflowFixture(randomUUID()), options: { run?: boolean } = {}) {
-  const location = { runnerId: 'local', rootPath: directory, locationRevision: 1, identityHash: 'sha256:' + '1'.repeat(64) }
+  const location = { runnerId: LOCAL_RUNNER_ID, rootPath: directory, locationRevision: 1, identityHash: 'sha256:' + '1'.repeat(64) }
   fixture.run = WorkflowRunV3Schema.parse({ ...fixture.run, executionLocation: location })
   await pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)
     values($1,$2::jsonb,$3::jsonb,$4::jsonb,1)`, [fixture.scope.workspaceId, JSON.stringify({ id: fixture.scope.workspaceId, name: 'Synthetic Agent 3 test' }),

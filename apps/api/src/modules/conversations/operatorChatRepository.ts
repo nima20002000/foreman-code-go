@@ -1,4 +1,6 @@
 import type { TextTruncation } from '@foreman-code/contracts/activity-text'
+import { admitSessionMessage } from './sessionControls/messageAdmission.js'
+import { SessionControlStore } from './sessionControls/store.js'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import type { NativeHistory } from '../harnesses/port.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -105,7 +107,7 @@ function handoffContext(previous: string | null, inheritedOmitted: number, messa
 }
 
 export function commandPayload(input: SendOperatorMessageRequest) {
-  return { content: input.content, ...(input.settings ? { settings: input.settings } : {}),
+  return { content: input.content, ...(input.sessionMode ? { sessionMode: input.sessionMode } : {}), ...(input.settings ? { settings: input.settings } : {}),
     ...(input.configurationVersionId === undefined ? {} : { configurationVersionId: input.configurationVersionId }),
     ...(input.defaultsRevision === undefined ? {} : { defaultsRevision: input.defaultsRevision }),
     ...(input.forkExpectedRevision === undefined ? {} : { forkExpectedRevision: input.forkExpectedRevision }),
@@ -201,6 +203,8 @@ export class PostgresOperatorConversationRepository {
       needsAttention: row.needs_attention, ...(row.background_activity !== undefined ? { backgroundActivity: row.background_activity } : {}),
     }))
   }
+
+  createSessionControls() { return new SessionControlStore(this.pool, 'operator') }
 
   createControlCommands() { return new OperatorChatCommands(this.pool) }
 
@@ -556,6 +560,7 @@ export class PostgresOperatorConversationRepository {
         }
         // Receipt-only replay above does not require still-live bytes. A fresh admission or
         // definitely-failed relaunch does; hold lifecycle locks through message/receipt commit.
+        if (!prior) await admitSessionMessage(client, id, input.sessionMode)
         await validateMessageAttachments(client, id, input.attachments)
         if (!prior) {
           await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash,operator_configuration_version_id)

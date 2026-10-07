@@ -15,8 +15,8 @@ function renderClaudeFields(props: Parameters<typeof HostHarnessConfigurationFie
 }
 
 it.each([
-  ['read-only', 'Read only'],
-  ['workspace-write', 'Workspace write'],
+  ['read-only', 'Read only · unsupported'],
+  ['workspace-write', 'Workspace write · unsupported'],
   ['danger-full-access', 'Full access'],
 ] as const)('shows the exact stored Claude sandbox %s without modifying the profile', (sandbox, label) => {
   const configuration = { ...savedClaudeConfiguration, sandbox }
@@ -27,19 +27,19 @@ it.each([
   expect(field).toHaveValue(sandbox)
   expect(field).toHaveDisplayValue(label)
   expect(onChange).not.toHaveBeenCalled()
-  expect(prepareHarnessEditor(editor)).toEqual(configuration)
+  if (sandbox === 'danger-full-access') expect(prepareHarnessEditor(editor)).toEqual(configuration)
+  else expect(() => prepareHarnessEditor(editor)).toThrow(/Claude requires Full access/)
 })
 
-it('retains the explicit supported Claude sandbox selection through prepared save and readback', () => {
+it('requires an explicit Full access choice before saving an unsupported stored profile', () => {
   const onChange = vi.fn()
-  const view = renderClaudeFields({ editor: createHarnessEditor(savedClaudeConfiguration), onChange })
-  for (const sandbox of ['danger-full-access', 'workspace-write', 'read-only'] as const) {
-    fireEvent.change(screen.getByRole('combobox', { name: 'Sandbox' }), { target: { value: sandbox } })
-    const saved = prepareHarnessEditor(onChange.mock.calls.at(-1)![0])
-    expect(saved).toEqual({ ...savedClaudeConfiguration, sandbox })
-    view.rerender(<HostHarnessConfigurationFields editor={createHarnessEditor(saved)} onChange={onChange} />)
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue(sandbox)
-  }
+  const old = { ...savedClaudeConfiguration, sandbox: 'read-only' as const }
+  renderClaudeFields({ editor: createHarnessEditor(old), onChange })
+  expect(onChange).not.toHaveBeenCalled()
+  expect(() => prepareHarnessEditor(createHarnessEditor(old))).toThrow(/Claude requires Full access/)
+  fireEvent.change(screen.getByRole('combobox', { name: 'Sandbox' }), { target: { value: 'danger-full-access' } })
+  const saved = prepareHarnessEditor(onChange.mock.calls.at(-1)![0])
+  expect(saved).toEqual({ ...old, sandbox: 'danger-full-access' })
 })
 
 it.each([

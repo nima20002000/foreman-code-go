@@ -10,12 +10,11 @@ import { HarnessInstanceRegistry, localHarnessDrivers, type ConfiguredHarnessIns
 import type { HarnessInstallationRegistry, RegistryHarnessSelection } from './installationRegistry.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { discoverLauncher } from './hostDiscovery.js'
-import { CodexAppServerSessionManager, type CodexSessionDependencies, type CodexDiagnosticPin, type CodexDiagnosticOperations } from './codexAppServer.js'
+import { CodexAppServerSessionManager, type CodexSessionDependencies } from './codexAppServer.js'
 import { qualifyCodex, assertCodexUnchanged } from './codexProtocol.js'
-import { qualifyNativeCodexModel } from './codexQualification.js'
+import { CodexDiagnostics } from './codexDiagnostics.js'
 import { runCommand } from './process.js'
 import { binaryCacheIdentity } from './binaryIdentity.js'
-import { inheritedAgentEnvironment } from './secrets.js'
 import type { CodexNativeOutputs } from './codexNativeOutput.js'
 import type { CodexChatFiles } from './codexFiles/runtime.js'
 import { codexMcpInspectorAdapter } from './codexMcpInspectorAdapter.js'
@@ -73,7 +72,7 @@ export class NativeHarnessFactories {
   private auxiliaryClosing = false
   private readonly auxiliaries = new Map<NativeHarnessSessionManager, { recovery: NativeProcessRecovery | undefined; admitted: boolean; admissionError?: unknown; disposal?: Promise<void> }>()
   private readonly closedAuxiliaries = new WeakSet<NativeHarnessSessionManager>()
-  private readonly codexDiagnostics = new Set<CodexDiagnosticLifetime>()
+  private readonly codexDiagnostics: CodexDiagnostics
   private readonly versionDiagnostics = new Set<CodexDiagnosticLifetime>()
   private readonly originalCodexManagers = new WeakMap<NativeHarnessSessionManager, () => CodexAppServerSessionManager | undefined>()
   private readonly inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
@@ -96,6 +95,13 @@ export class NativeHarnessFactories {
     closeRecovery?: (recovery: NativeProcessRecovery) => Promise<void>
     claudeVersionCommand?: typeof runCommand
   }, private readonly infrastructure: NativeFactoryInfrastructure = { mode: 'native' }) {
+    this.codexDiagnostics = new CodexDiagnostics({
+      native: infrastructure.codex,
+      createRecovery: config.auxiliaryRecovery ? () => config.auxiliaryRecovery!('diagnostics') : undefined,
+      admitRecovery: config.admitRecovery,
+      abandonRecovery: config.abandonRecovery,
+      closeRecovery: config.closeRecovery,
+    })
     this.instances = config.instances ?? new HarnessInstanceRegistry(localHarnessDrivers)
     if (infrastructure.mode === 'native' && infrastructure.codex?.mode === 'replay') {
       throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay dependencies require the complete replay environment.', 500)
@@ -226,7 +232,7 @@ export class NativeHarnessFactories {
             await (this.infrastructure.codex?.assertUnchanged ?? assertCodexUnchanged)(qualified)
             if (input.selection) await this.assertInstallationUnchanged(input.selection)
           },
-          withDiagnostics: (pin, run) => this.withCodexDiagnostics(pin, async (io) => {
+          withDiagnostics: (pin, run) => this.codexDiagnostics.run(pin, async (io) => {
             if (input.selection) await this.assertInstallationUnchanged(input.selection, pin.signal)
             const result = await run(io)
             if (input.selection) await this.assertInstallationUnchanged(input.selection, pin.signal)
@@ -296,6 +302,36 @@ export class NativeHarnessFactories {
       this.auxiliaries.set(result.manager, { recovery, admitted: false })
       const inspector = result.inspector
       result.inspector = { inspect: (request) => { this.admitAuxiliary(result.manager); return inspector.inspect(request) } }
+    } else if (this.infrastructure.mode === 'native') {
+      const inspector = result.inspector
+      result.inspector = { inspect: async request => {
+        if (request.phase !== 'configuration') return inspector.inspect(request)
+        await input.revalidateSelection?.(request.signal)
+        const diagnosticRecovery = this.config.auxiliaryRecovery?.('diagnostics')
+        if (recovery && (!diagnosticRecovery || diagnosticRecovery.owner === recovery.owner
+          || !this.config.admitRecovery || !this.config.abandonRecovery || !this.config.closeRecovery)) {
+          throw new DomainError('HARNESS_DIAGNOSTIC_OWNER_REQUIRED',
+            'Configuration inspection requires a separate owned process lifetime.', 503)
+        }
+        const diagnostic = this.allocate({
+          harness: input.harness,
+          role: 'diagnostics',
+          workingDirectory: input.workingDirectory,
+          ownerAgentId: input.ownerAgentId,
+          appMcpAccess: 'none',
+          ...(diagnosticRecovery ? { processRecovery: diagnosticRecovery } : {}),
+          ...(input.selection ? { selection: input.selection } : {}),
+          ...(input.configured ? { configured: input.configured } : {}),
+          ...(input.revalidateSelection ? { revalidateSelection: input.revalidateSelection } : {}),
+          ...(input.harness === 'opencode' && input.advancedConfiguration
+            ? { advancedConfiguration: input.advancedConfiguration } : {}),
+        })
+        try {
+          return await diagnostic.inspector.inspect(request)
+        } finally {
+          await this.disposeAuxiliary(diagnostic.manager)
+        }
+      } }
     }
     this.inspectors.set(result.manager, result.inspector)
     return result
@@ -406,7 +442,8 @@ export class NativeHarnessFactories {
 
   stopAuxiliaries(): void {
     this.auxiliaryClosing = true
-    for (const owned of [...this.codexDiagnostics, ...this.versionDiagnostics]) owned.controller.abort(new Error('Native diagnostics are shutting down.'))
+    this.codexDiagnostics.stop()
+    for (const owned of this.versionDiagnostics) owned.controller.abort(new Error('Native diagnostics are shutting down.'))
     // Disposal aborts each real adapter's in-flight diagnostic requests. The
     // drain/dispose phase joins these same retained attempts and reports failures.
     for (const manager of this.auxiliaries.keys()) void this.disposeAuxiliary(manager).catch(() => undefined)
@@ -446,115 +483,18 @@ export class NativeHarnessFactories {
   }
 
   async disposeAuxiliaries(): Promise<void> {
-    await Promise.allSettled([...this.codexDiagnostics, ...this.versionDiagnostics].flatMap((owned) => owned.task ? [owned.task] : []))
-    const results = await Promise.allSettled([...this.auxiliaries.keys()].map((manager) => this.disposeAuxiliary(manager)))
-    results.push(...await Promise.allSettled([...this.codexDiagnostics].map((owned) => this.closeCodexDiagnostics(owned))))
-    results.push(...await Promise.allSettled([...this.versionDiagnostics].map(owned => this.closeVersionDiagnostic(owned))))
+    const diagnosticResults = await Promise.allSettled([
+      this.codexDiagnostics.dispose(),
+      Promise.allSettled([...this.versionDiagnostics].flatMap(owned => owned.task ? [owned.task] : [])),
+    ])
+    const results = [
+      ...diagnosticResults,
+      ...await Promise.allSettled([...this.auxiliaries.keys()].map(manager => this.disposeAuxiliary(manager))),
+      ...await Promise.allSettled([...this.versionDiagnostics].map(owned => this.closeVersionDiagnostic(owned))),
+    ]
     const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
     if (errors.length) throw new AggregateError(errors, 'Native diagnostic/qualification cleanup was incomplete.')
   }
-
-  private withCodexDiagnostics<T>(pin: CodexDiagnosticPin, run: (io: CodexDiagnosticOperations) => Promise<T>,
-    writerRecovery?: NativeProcessRecovery): Promise<T> {
-    if (this.auxiliaryClosing) return Promise.reject(new DomainError('NATIVE_RUNTIME_CLOSING', 'Native diagnostics are shutting down.', 503))
-    if (!this.config.auxiliaryRecovery || !this.config.admitRecovery || !this.config.abandonRecovery || !this.config.closeRecovery) {
-      return Promise.reject(new DomainError('CODEX_DIAGNOSTIC_OWNER_REQUIRED', 'Native diagnostics require their own admitted and verified process owner.', 503))
-    }
-    if (this.codexDiagnostics.size >= 32) return Promise.reject(new DomainError('CODEX_DIAGNOSTIC_LIMIT', 'Too many native diagnostics are already owned.', 503))
-    if ([...this.codexDiagnostics].some((owned) => owned.writerOwner === writerRecovery?.owner && !owned.active)) {
-      return Promise.reject(new DomainError('CODEX_DIAGNOSTIC_CLEANUP_PENDING', 'Retry retained diagnostic cleanup before another inspection.', 409))
-    }
-    const recovery = this.config.auxiliaryRecovery('diagnostics')
-    if (recovery.owner === writerRecovery?.owner) return Promise.reject(new DomainError(
-      'CODEX_DIAGNOSTIC_OWNER_REQUIRED', 'Native diagnostics cannot share the live session process owner.', 503))
-    const owned: CodexDiagnosticLifetime = { recovery, writerOwner: writerRecovery?.owner, controller: new AbortController(), operations: new Set(), active: true, admitted: false }
-    const signal = pin.signal ? AbortSignal.any([pin.signal, owned.controller.signal]) : owned.controller.signal
-    const native = this.infrastructure.codex
-    const environment = { ...(native?.environment?.(undefined, pin.scopedCredentialVariables) ?? inheritedAgentEnvironment()) }
-    for (const name of Object.keys(environment)) {
-      if (/^(?:GRAPHQL_|FOREMAN_CODE_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PGPASSWORD$)/.test(name)
-        || pin.scopedCredentialVariables.includes(name)) delete environment[name]
-    }
-    this.codexDiagnostics.add(owned)
-    const guard = () => {
-      if (this.auxiliaryClosing) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'Native diagnostics are shutting down.', 503)
-      if (!owned.active) throw new DomainError('CODEX_DIAGNOSTIC_CLOSED', 'This diagnostic capability is already closed.', 409)
-      signal.throwIfAborted()
-    }
-    const combined = (request?: AbortSignal) => request ? AbortSignal.any([signal, request]) : signal
-    const track = <R>(operation: () => Promise<R>): Promise<R> => {
-      guard()
-      const task = Promise.resolve().then(() => { guard(); return operation() })
-      owned.operations.add(task)
-      void task.then(() => owned.operations.delete(task), () => owned.operations.delete(task))
-      return task
-    }
-    const io: CodexDiagnosticOperations = {
-      environment: (_input, excluded = []) => { guard(); return Object.fromEntries(Object.entries(environment).filter(([name]) => !excluded.includes(name))) },
-      qualify: (_binary, _cwd, _environment, authentication, request) => track(() =>
-        (native?.qualify ?? qualifyCodex)(pin.binary, pin.cwd, { ...environment }, authentication, combined(request), recovery)),
-      assertUnchanged: (qualified) => track(() => {
-        if (qualified.binary !== pin.binary) throw new DomainError('CODEX_DIAGNOSTIC_PIN_MISMATCH', 'The diagnostic binary differs from its native session pin.', 409)
-        return (native?.assertUnchanged ?? assertCodexUnchanged)(qualified)
-      }),
-      qualifyModel: (configuration, _binary, _cwd, _environment, request, _recovery, inspection) => track(() =>
-        (native?.qualifyModel ?? qualifyNativeCodexModel)(configuration, pin.binary, pin.cwd,
-          { ...environment }, combined(request), recovery,
-          inspection ? { ...inspection, assertUnchanged: io.assertUnchanged } : undefined)),
-      runCommand: (_binary, args, _cwd, request, _environment, options) => track(() => {
-        const readonlyCommand = (args.length === 4 && args[0] === 'mcp' && args[1] === 'get' && args[3] === '--json')
-          || (args.length === 3 && args[0] === 'mcp' && args[1] === 'list' && args[2] === '--json')
-          || (args.length === 2 && args[0] === 'debug' && args[1] === 'models')
-        if (!readonlyCommand) throw new DomainError('CODEX_DIAGNOSTIC_COMMAND_DENIED', 'Native diagnostics support only bounded configuration and model reads.', 403)
-        return (native?.runCommand ?? runCommand)(pin.binary, args, pin.cwd, combined(request), { ...environment }, { ...options, recovery })
-      }),
-    }
-    const schedule = native?.schedule ?? setTimeout
-    const cancelTimer = native?.cancelTimer ?? clearTimeout
-    let timer: NodeJS.Timeout | undefined
-    let failed = false
-    let failure: unknown
-    const task = Promise.resolve().then(async () => {
-      guard()
-      owned.admitted = true
-      this.config.admitRecovery!(recovery)
-      timer = schedule(() => owned.controller.abort(new Error('Native diagnostic deadline exceeded.')), 60_000)
-      timer.unref()
-      return await run(io)
-    }).catch((error: unknown) => { failed = true; failure = error; throw error }).finally(async () => {
-      owned.active = false
-      owned.controller.abort(new Error('Native diagnostic capability closed.'))
-      cancelTimer(timer)
-      await Promise.allSettled([...owned.operations])
-      try { await this.closeCodexDiagnostics(owned) } catch (error) {
-        if (failed) throw new AggregateError([failure, error], 'Native diagnostics and their cleanup both failed.', { cause: error })
-        throw error
-      }
-      // Physical cleanup can outlive successful work. A factory stop or caller
-      // cancellation during that await must still prevent the native reload.
-      if (!failed) {
-        pin.signal?.throwIfAborted()
-        if (this.auxiliaryClosing) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'Native diagnostics are shutting down.', 503)
-      }
-    })
-    owned.task = task
-    return task
-  }
-
-  private closeCodexDiagnostics(owned: CodexDiagnosticLifetime): Promise<void> {
-    if (owned.cleanup) return owned.cleanup
-    const attempt = Promise.resolve().then(async () => {
-      if (owned.admitted) {
-        await this.config.abandonRecovery!(owned.recovery)
-        await this.config.closeRecovery!(owned.recovery)
-      }
-      this.codexDiagnostics.delete(owned)
-    })
-    owned.cleanup = attempt
-    void attempt.catch(() => { if (owned.cleanup === attempt) delete owned.cleanup })
-    return attempt
-  }
-
   inspector(manager: NativeHarnessSessionManager): NativeMcpInspector {
     const inspector = this.inspectors.get(manager)
     if (!inspector) throw new DomainError('HARNESS_INSPECTOR_UNAVAILABLE', 'The allocated driver has no MCP inspector.', 503)

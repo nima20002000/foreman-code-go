@@ -1,3 +1,7 @@
+import { isWorkflowStart, sessionStartConfiguration, sessionStartDirectory, sessionStartCorrelation } from './sessionStart.js'
+import { openCodeCompactionResult, openCodeContextSnapshot, openCodeSessionAgent } from './opencodeSessionControls.js'
+import type { CompactionState, ContextSnapshot, SessionMode, SessionControlCapabilities } from '@foreman-code/contracts'
+import type { NativeCompactInput } from './port.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
@@ -11,6 +15,8 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
 import {
+  SessionPreferencesSchema,
+  type SessionPreferences,
   NativeHarnessCapabilitiesSchema,
   NativeHarnessEventSchema,
   NativeSessionReferenceSchema,
@@ -98,6 +104,8 @@ interface OwnedTurn {
   fileIdentity?: string
 }
 interface SessionState {
+  compaction?: CompactionState
+  context?: ContextSnapshot
   readonly connectionId: string
   responsesInFlight: Set<string>
   responsesUncertain: Set<string>
@@ -336,7 +344,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       let creationAccepted = false
       try {
         combined.throwIfAborted()
-        const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+        const directory = sessionStartDirectory(input)
         const configuration = this.configuration(input)
         const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
@@ -348,7 +356,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const value = await this.mutate(withDirectory('/session', directory), {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            title: input.kind === 'operator' ? `Foreman Code Operator ${input.correlationId}` : `Foreman Code ${input.request.executionId}`,
+            title: input.kind === 'operator' ? `Foreman Code Operator ${input.correlationId}` : `Foreman Code ${sessionStartCorrelation(input)}`,
             agent: configuration.nativeAgent,
             model: { providerID, id: model.join('/'), variant: configuration.variant },
             permission: nativePolicy(configuration),
@@ -382,7 +390,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       let creationAccepted = false
       try {
         combined.throwIfAborted()
-        const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+        const directory = sessionStartDirectory(input)
         const configuration = this.configuration(input)
         const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
@@ -435,7 +443,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         if (this.sessions.has(session.nativeSessionId)) {
           throw new HarnessExecutionError('OPENCODE_SESSION_ALREADY_ATTACHED', 'This manager already owns that session; attaching must not discard its writer state.')
         }
-        const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+        const directory = sessionStartDirectory(input)
         const configuration = this.configuration(input)
         const instructions = sessionInstructions(input)
         if (options.purpose === 'observation') {
@@ -470,8 +478,134 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  async sessionControlCapabilities(session: NativeSessionReference): Promise<SessionControlCapabilities> {
+    const state = this.requireSession(session)
+    const signal = this.signal(AbortSignal.timeout(10000))
+    await this.ready(signal)
+    const agents = await this.json('/agent', state.directory, signal)
+    const plan = Array.isArray(agents) && agents.some(value => {
+      const agent = object(value)
+      return agent.name === 'plan' && agent.mode !== 'subagent' && agent.hidden !== true
+    })
+    const doc = object(await this.json('/doc', undefined, signal))
+    const compact = '/session/{sessionID}/summarize' in object(doc.paths)
+    const [providerId, ...modelId] = state.configuration.model.split('/')
+    const providers = object(await this.json('/provider', state.directory, signal))
+    const provider = Array.isArray(providers.all) ? providers.all.map(object).find(value => value.id === providerId) : undefined
+    const model = provider ? object(object(provider.models)[modelId.join('/')]) : {}
+    const capacity = object(model.limit).context
+    const modelCapacity = typeof capacity === 'number' && capacity > 0 ? capacity : null
+    const unsupported = { supported: false, reason: 'OpenCode has no qualified session-local context override.' }
+    const page = await this.messagePage(session.nativeSessionId, state.directory, undefined, signal)
+    const context = openCodeContextSnapshot(page.messages, session.nativeSessionId, state.configuration.model, modelCapacity)
+    if (context) state.context = { ...context, generation: `${state.connectionId}:${this.generation}` }
+    return { compact: { supported: compact, reason: compact ? null : 'Native summarize is unavailable.' },
+      plan: { supported: plan, reason: plan ? null : 'No permitted Plan primary agent was discovered.' },
+      autoCompact: unsupported, autoCompactBudget: unsupported, contextBudgets: [], contextProfiles: [],
+      modelCapacity, model: state.configuration.model, profileKey: digest(state.configuration) }
+  }
+
+  async applySessionPreferences(session: NativeSessionReference, preferences: SessionPreferences, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    this.requireSession(session)
+    if (!isDeepStrictEqual(SessionPreferencesSchema.parse(preferences), SessionPreferencesSchema.parse({}))) {
+      throw new HarnessExecutionError('SESSION_PREFERENCE_UNSUPPORTED', 'OpenCode uses native context defaults.')
+    }
+  }
+
+  appliedSessionPreferences(session: NativeSessionReference): SessionPreferences {
+    this.requireSession(session)
+    return SessionPreferencesSchema.parse({})
+  }
+
+  contextSnapshot(session: NativeSessionReference): ContextSnapshot | null {
+    return this.requireSession(session).context ?? null
+  }
+
+  async compactSession(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal): Promise<CompactionState> {
+    return this.exclusive(async () => {
+      const state = this.requireSession(session)
+      const combined = this.signal(signal)
+      await this.ready(combined)
+      if (state.admissionPending || state.turn && !state.turn.terminalResult
+        || await this.ownedStatus(session, state, combined) !== 'idle'
+        || (await this.pendingReady(session, combined)).length > 0) {
+        throw new OpenCodeNativeDeliveryError('OPENCODE_SESSION_BUSY', 'Wait for native work and approvals to finish.', 'definite')
+      }
+      const page = await this.messagePage(session.nativeSessionId, state.directory, undefined, combined)
+      const baseline = page.messages.at(-1)?.info.id
+      if (typeof baseline !== 'string') return { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
+        nativeOperationId: null, status: 'no-op', message: 'There is no native history to compact.',
+        beforeTokens: null, observedAt: new Date().toISOString() }
+      state.compaction = { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
+        nativeOperationId: baseline, status: 'running', message: 'Compacting context.',
+        beforeTokens: state.context?.usedTokens ?? null, observedAt: new Date().toISOString() }
+      const [providerID, ...model] = state.configuration.model.split('/')
+      let accepted: unknown
+      let dispatched = false
+      try {
+        await input.onProgress(state.compaction)
+        await input.onDispatch?.()
+        dispatched = true
+        accepted = await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/summarize`, state.directory), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerID, modelID: model.join('/'), auto: false }),
+      }, combined)
+      } catch (error) {
+        const definite = !dispatched || error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite'
+        state.compaction = { ...state.compaction, status: definite ? 'failed' : 'uncertain',
+          message: definite ? 'OpenCode rejected compaction.' : 'Read to recover native compaction.' }
+        throw error
+      }
+      if (accepted !== true) {
+        if (accepted === false) state.compaction = { ...state.compaction, status: 'failed', message: 'OpenCode declined compaction.' }
+        else throw new OpenCodeNativeDeliveryError('OPENCODE_COMPACT_UNCONFIRMED', 'The accepted summarize response was invalid.', 'uncertain')
+      } else state.compaction = await this.reconcileCompaction(session, state.compaction, combined)
+      if (state.compaction.status === 'running') state.compaction = { ...state.compaction, status: 'uncertain', message: 'Read to recover compaction.' }
+      if (state.context) state.context = { ...state.context, stale: true }
+      this.recordSynthetic(state, 'session.compaction', { ...state.compaction })
+      return state.compaction
+    })
+  }
+
+  async readCompaction(session: NativeSessionReference, start: NativeSessionStart,
+    control: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
+    const combined = this.signal(signal)
+    await this.ready(combined)
+    this.validateReference(session)
+    const directory = sessionStartDirectory(start)
+    await this.options.server.importFileSession?.(session.nativeSessionId, directory, combined)
+    const native = object(await this.json(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory, combined))
+    await this.verifyAttachedSession(native, session.nativeSessionId, directory, this.configuration(start), combined)
+    return this.compactionFromHistory(session, directory, control, combined)
+  }
+
+  async reconcileCompaction(session: NativeSessionReference, control: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
+    const state = this.requireSession(session)
+    const result = await this.compactionFromHistory(session, state.directory, control, this.signal(signal))
+    state.compaction = result
+    return result
+  }
+
+  private async compactionFromHistory(session: NativeSessionReference, directory: string,
+    control: CompactionState, signal: AbortSignal): Promise<CompactionState> {
+    const messages: OpenCodeMessage[] = []
+    let cursor: string | undefined
+    for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
+      const page = await this.messagePage(session.nativeSessionId, directory, cursor, signal)
+      messages.unshift(...page.messages)
+      if (page.messages.some(message => message.info.id === control.nativeOperationId) || !page.nextCursor) break
+      cursor = page.nextCursor
+    }
+    return openCodeCompactionResult(control, messages)
+  }
+
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
-    yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal), input.onSubmitted)
+    if (input.sessionMode === 'plan' && !(await this.sessionControlCapabilities(session)).plan.supported) {
+      throw new OpenCodeNativeDeliveryError('OPENCODE_PLAN_UNAVAILABLE', 'No permitted Plan primary agent is available.', 'definite')
+    }
+    const submitted = async (id: string) => { await input.onSubmitted?.(id); await input.onSettingsApplied?.() }
+    yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal), submitted, input.sessionMode)
   }
 
   /** Explicit nonmutating recovery seam: this method never submits prompt_async. */
@@ -480,8 +614,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async *watchTurn(session: NativeSessionReference, correlationId: string, prompt: string | undefined, signal: AbortSignal,
-    onSubmitted?: (nativeTurnId: string) => Promise<void>): AsyncIterable<NativeHarnessEvent> {
+    onSubmitted?: (nativeTurnId: string) => Promise<void>, sessionMode?: SessionMode): AsyncIterable<NativeHarnessEvent> {
     const state = this.requireSession(session)
+    if (state.compaction && ['accepted', 'running', 'uncertain'].includes(state.compaction.status)) throw new HarnessExecutionError('OPENCODE_COMPACT_PENDING', 'Recover compaction before sending another turn.')
     if (state.observationOnly && prompt !== undefined) throw new HarnessExecutionError(
       'OPENCODE_OBSERVATION_ONLY', 'An observation attachment cannot submit prompts.')
     if (state.admissionPending) throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'This session already has pending turn admission.')
@@ -578,7 +713,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ messageID, model: { providerID, modelID: model.join('/') },
               variant: state.configuration.variant,
-              agent: state.configuration.nativeAgent, parts: [
+              agent: openCodeSessionAgent(sessionMode, state.configuration.nativeAgent), parts: [
                 { type: 'text', text: turn.files ? `${prompt ?? ''}\n\n${turn.files.inputs.promptSuffix}` : prompt },
                 ...(turn.files?.inputs.imageParts ?? []),
               ],
@@ -1305,10 +1440,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (state.turn && !state.turn.terminalResult) {
         throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'A different owned turn is still active; recovery cannot replace it.')
       }
+      const active = statusBefore !== 'idle' || pendingInteractions.length > 0
       turn = {
         correlationId, messageID, promptHash: undefined, submitted: true, observing: false,
-        // A recovered idle prompt without a final answer is interrupted, not a new submission.
-        generation: this.generation - 1, submittedAt: 0, idleObserved: false,
+        // Active native work belongs to the verified resident; an idle unfinished prompt remains interrupted.
+        generation: active ? generation : generation - 1, submittedAt: 0, idleObserved: false,
         scopedError: undefined, terminalResult: undefined,
       }
       state.turn = turn
@@ -1449,7 +1585,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   originalSessionLifetime(session: NativeSessionReference, source: NativeSessionStart) {
-    if (source.kind === 'operator') return undefined
+    if (!isWorkflowStart(source)) return undefined
     const state = this.sessions.get(session.nativeSessionId)
     const generation = this.generation
     const fingerprint = this.options.server.credentialEnvironmentFingerprint
@@ -1725,7 +1861,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE',
         'Only Operator chat can combine file tools with application management credentials.')
     }
-    const configuration = input.kind === 'operator' ? input.configuration.harness : input.request.configuration.harness
+    const configuration = sessionStartConfiguration(input).harness
     if (configuration.harness !== 'opencode') throw new HarnessExecutionError('HARNESS_CONFIGURATION_MISMATCH', 'OpenCode received a different harness configuration.')
     const parsed = OpenCodeHarnessConfigurationSchema.safeParse(configuration)
     if (!parsed.success) throw new HarnessExecutionError('OPENCODE_CONFIGURATION_INVALID', 'The accepted OpenCode settings are invalid or contain conflicting permission modes.')
@@ -1858,6 +1994,16 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private record(state: SessionState, native: OpenCodeEvent): NativeHarnessEvent | undefined {
+    if (native.type === 'message.updated') {
+      const info = object(object(native.properties).info)
+      const sessionId = [...this.sessions.entries()].find(([, owned]) => owned === state)?.[0]
+      if (sessionId && info.sessionID === sessionId) {
+        if (info.summary === true && state.context) state.context = { ...state.context, stale: true }
+        const context = openCodeContextSnapshot([{ info, parts: [] }], sessionId, state.configuration.model,
+          state.context?.capacityTokens ?? null)
+        if (context) state.context = { ...context, generation: `${state.connectionId}:${this.generation}` }
+      }
+    }
     // Provider-controlled SSE cannot impersonate our history-scan observation.
     if (native.type === OPENCODE_RECONCILIATION_EVENT) return undefined
     const key = native.id ?? native.sseId
@@ -2053,7 +2199,7 @@ function historyWithOwnedTerminal(history: NativeHistory, turn: OwnedTurn, gener
 
 /** Resolved before any native side effect, so invalid pinned instructions fail before task work. */
 function sessionInstructions(input: NativeSessionStart): AgentInstructionBundle | undefined {
-  return agentInstructionBundle(input.kind === 'operator' ? input.configuration : input.request.configuration)
+  return agentInstructionBundle(sessionStartConfiguration(input))
 }
 /** A reused correlation must match both task text and the accepted instruction identity. */
 function turnDigest(prompt: string, instructions: AgentInstructionBundle | undefined, fileIdentity?: string): string {

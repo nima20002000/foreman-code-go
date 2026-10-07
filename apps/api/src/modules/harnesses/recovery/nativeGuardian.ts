@@ -1,3 +1,4 @@
+import { CLAUDE_COMPACTION_CAPTURE_SOURCE } from '../claudeSdk/nativeCompactionCapture.js'
 /**
  * A self-contained Node program. Keeping it in the compiled module avoids a
  * missing .js asset when the API runs through Vitest/tsx rather than dist/.
@@ -6,7 +7,7 @@
  */
 export const NATIVE_GUARDIAN_SOURCE = `
 const { spawn } = require('node:child_process')
-const { timingSafeEqual, randomUUID } = require('node:crypto')
+const { timingSafeEqual, randomUUID, createHash } = require('node:crypto')
 const { createServer } = require('node:net')
 const { join, dirname, resolve, parse, sep } = require('node:path')
 const fs = require('node:fs')
@@ -88,6 +89,9 @@ function contain(id, dir, owner, boot) {
   }
 }
 let containmentFd
+${CLAUDE_COMPACTION_CAPTURE_SOURCE}
+let capture
+let disconnected=false
 let stopping=false,started=false,leader=false,detached=false
 function killTree() {
   // The cgroup includes detached descendants and is pinned by an open fd.
@@ -114,9 +118,14 @@ function stopAfterNativeExit() {
 }
 process.on('SIGTERM',stop)
 process.on('SIGINT',stop)
-process.on('disconnect',()=>{if(!detached)stop()})
-process.stdout.on('error',error=>{if(!detached||error.code!=='EPIPE')stop()})
-process.stderr.on('error',error=>{if(!detached||error.code!=='EPIPE')stop()})
+process.on('disconnect',()=>{
+  disconnected=true
+  if(detached)return
+  if(capture?.pending())setTimeout(stop,120000).unref()
+  else stop()
+})
+process.stdout.on('error',error=>{if(!capture&&(!detached||error.code!=='EPIPE'))stop()})
+process.stderr.on('error',error=>{if(!capture&&(!detached||error.code!=='EPIPE'))stop()})
 process.on('uncaughtException',stop)
 process.on('unhandledRejection',stop)
 process.on('message',input=>{
@@ -178,8 +187,27 @@ process.on('message',input=>{
         if(stopping || !process.connected){stop();return}
         const detachable=config.restartDetachable===true
         const native=spawn(config.binary,config.args,{cwd:config.cwd,env:environment,
-          detached:false,stdio:detachable?['ignore','pipe','pipe']:['inherit','inherit','inherit'],windowsHide:true})
-        if(detachable) {
+          detached:false,stdio:config.claudeSessionScope?['pipe','pipe','pipe']:detachable?['ignore','pipe','pipe']:['inherit','inherit','inherit'],windowsHide:true})
+        if(config.claudeSessionScope) {
+          capture=claudeCompactionCapture(config.claudeSessionScope,()=>{if(disconnected)stop()})
+          let stdoutClosed=false,stderrClosed=false
+          process.stdout.on('error',error=>{if(error.code==='EPIPE'){stdoutClosed=true;native.stdout.resume()}else stop()})
+          process.stderr.on('error',error=>{if(error.code==='EPIPE'){stderrClosed=true;native.stderr.resume()}else stop()})
+          native.stdin.on('error',stop)
+          process.stdin.on('data',chunk=>{
+            capture.consume('input',chunk)
+            if(!native.stdin.write(chunk))process.stdin.pause()
+          })
+          native.stdin.on('drain',()=>process.stdin.resume())
+          process.stdin.on('end',()=>{if(!capture.pending())native.stdin.end()})
+          native.stdout.on('data',chunk=>{
+            capture.consume('output',chunk)
+            if(!stdoutClosed && !process.stdout.write(chunk))native.stdout.pause()
+          })
+          process.stdout.on('drain',()=>native.stdout.resume())
+          native.stderr.on('data',chunk=>{if(!stderrClosed && !process.stderr.write(chunk))native.stderr.pause()})
+          process.stderr.on('drain',()=>native.stderr.resume())
+        } else if(detachable) {
           native.stdout.on('data',chunk=>{if(!detached&&process.connected)process.stdout.write(chunk)})
           native.stderr.on('data',chunk=>{if(!detached&&process.connected)process.stderr.write(chunk)})
         }

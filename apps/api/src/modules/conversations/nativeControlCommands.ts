@@ -44,6 +44,8 @@ export class NativeConversationControlCommands<State> {
 
   constructor(private readonly pool: Pick<pg.Pool, 'query'>, private readonly contract: {
     operation: 'agent_chat_control' | 'operator_chat_control'; parse(value: unknown): State; prefix: string; label: string;
+    recoverOutcome?(state: State, payload: unknown, requestId: string, principalId: string): boolean;
+    auditOutcome?(state: State, payload: unknown): 'succeeded' | 'failed' | 'uncertain';
   }) {}
 
   execute(principal: ManagementPrincipal, source: 'http' | 'mcp', conversationId: string, requestId: string,
@@ -158,6 +160,20 @@ export class NativeConversationControlCommands<State> {
         [...key, JSON.stringify(recovered), JSON.stringify(prior.result), source])
         if (saved.rowCount === 1) return state
       }
+      if (readCurrent && this.contract.recoverOutcome) {
+        const state = this.contract.parse(await readCurrent())
+        if (this.contract.recoverOutcome(state, payload, requestId, principal.id)) {
+          const result = { ...prior.result, status: 'completed', state }
+          await this.pool.query(`with recovered as (
+            update management_command_receipts set result=$5::jsonb
+            where principal_id=$1 and operation=$2 and command_id=$3 and result=$4::jsonb returning target_key
+          ) insert into management_audit(principal_id,source,action,target_key,outcome,details)
+            select $1,$6,$2,target_key,$7,jsonb_build_object('commandId',$3::text,'phase','reconciled') from recovered`,
+          [...key, JSON.stringify(prior.result), JSON.stringify(result), source,
+            this.contract.auditOutcome?.(state, payload) ?? 'succeeded'])
+          return state
+        }
+      }
       throw unconfirmed(requestId, this.contract.prefix)
     }
 
@@ -214,12 +230,17 @@ export class NativeConversationControlCommands<State> {
         throw unconfirmed(requestId, this.contract.prefix)
       }
     }
+    const auditOutcome = () => {
+      if (outcome.status === 'completed') return this.contract.auditOutcome?.(outcome.state, payload) ?? 'succeeded'
+      if (outcome.status === 'rejected') return 'failed'
+      return 'uncertain'
+    }
     const save = () => this.pool.query(`with settled as (
         update management_command_receipts set result=$4::jsonb
         where principal_id=$1 and operation=$2 and command_id=$3 and result->>'status'='pending' returning target_key
       ) insert into management_audit (principal_id,source,action,target_key,outcome,details)
         select $1,$5,$2,target_key,$6,jsonb_build_object('commandId',$3::text) from settled returning 1`,
-      [...key, JSON.stringify(outcome), source, outcome.status === 'completed' ? 'succeeded' : outcome.status === 'rejected' ? 'failed' : 'uncertain'])
+      [...key, JSON.stringify(outcome), source, auditOutcome()])
     try {
       const saved = await save()
       if (saved.rowCount !== 1) throw unconfirmed(requestId, this.contract.prefix)

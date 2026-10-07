@@ -88,12 +88,12 @@ export function productionClaudeManager(input: {
     const domain = createPostgresClaudeInteractionBridge({ database: input.pool, binding: input.binding,
       configuration: compiled.configuration, manager: { nativeCallbackContext: (sessionId, toolUseId) => actual?.nativeCallbackContext(sessionId, toolUseId) } })
     policyBridge = domain.bridge
-    let callbackAuthority = await domain.callbackAdmission()
+    let callbackAuthority = await domain.callbackAdmissionIfActive()
     signal.throwIfAborted()
     const scope = { deviceId: accepted.override.target.hostRef.mainId, profilePath: compiled.configuration.configDirectory,
       configRevision: accepted.currentBinding.pin.configRevision, cwd: input.workingDirectory }
     const runner = createClaudeSdkRunner({ loadClient: async () => {
-      await input.profiles!.revalidate(profileOwner, accepted)
+      await input.profiles!.revalidate({ ...input.binding, admissionSignal: signal }, accepted)
       await input.factories.assertInstallationUnchanged(installation, signal)
       signal.throwIfAborted()
       return (input.loadClient ?? ((selected) => loadOfficialClaudeSdk(selected.profilePath, selected.recovery, selected.binary)))({
@@ -125,7 +125,7 @@ export function productionClaudeManager(input: {
       manager.attachSession = async (session, start, effectSignal) => {
         if (input.appMcpAccess === 'none' && APP_MCP_TOKEN_NAMES.some((name) => start.environment?.variables[name])) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
           'This Claude owner cannot inherit an application MCP credential.', 403)
-        await domain.callbackAdmission()
+        await domain.callbackAdmissionIfActive()
         effectSignal?.throwIfAborted()
         const attached = await attach(session, start, effectSignal)
         sessionStart = structuredClone(start)
@@ -180,12 +180,16 @@ export function productionClaudeManager(input: {
       responseDeliveries: session => domain.bridge.deliveryEvidence(session),
       messageSubmitted: correlationId => domain.authority.messageSubmitted(correlationId),
       ownerForStart: () => ({ ownerId: input.binding.kind === 'workflow' ? input.binding.runId : input.binding.conversationId,
-        attemptId: callbackAuthority.attemptId, generation: input.recovery.launchId ?? callbackAuthority.attemptId }),
+        attemptId: callbackAuthority?.attemptId ?? 'session-control',
+        generation: input.recovery.launchId ?? callbackAuthority?.attemptId ?? 'session-control' }),
       // Filled by the common factory's construction callback below, before any SDK query.
       inspector: claudeProductionMcpInspector({ manager: () => actual!, start: inspectionStart,
         workingDirectory: input.workingDirectory, cliVersion: accepted.currentBinding.pin.cliVersion }),
     }
   }, result => allocated?.(result.manager))
+  result.manager.setSessionControlPrincipal = principalId => {
+    if (input.binding.kind === 'operator' || input.binding.kind === 'agent') input.binding.controlPrincipalId = principalId
+  }
   // Factory initialization remains lazy; the admitted allocator's exact instance
   // is captured in the construction callback rather than selected by harness ID.
   const refresh = result.manager.refreshInspectionCredentials.bind(result.manager)

@@ -9,7 +9,7 @@ import { WORKER_BINDING_ELIGIBLE } from './workerEligibility.js'
 
 export const APP_MCP_TOKEN_ENVIRONMENT_VARIABLE = 'GRAPHQL_MCP_TOKEN'
 export const DEFAULT_WORKER_CREDENTIAL_TTL_MS = 15 * 60 * 1000
-export const WORKER_CREDENTIAL_EXPIRY_MARGIN_MS = 30_000
+export { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS } from './credentialLifetime.js'
 export const WORKER_CREDENTIAL_RENEWAL_WINDOW_MS = 60_000
 
 export interface IssuedWorkerCredential {

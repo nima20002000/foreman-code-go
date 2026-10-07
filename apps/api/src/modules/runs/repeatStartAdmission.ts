@@ -17,7 +17,7 @@ import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.j
 import { acceptRunAuthority, bindRunAuthority } from '../access/runAuthority.js'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
+import { assertClaudeFullAccess, assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import { assertGraphTransaction, beforeGraphCommit, withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
 import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit, type RepeatCanonicalReceipt } from '../run-graph/repeatReceipts.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
@@ -153,6 +153,7 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
       workspaceId: input.workspaceId, id: version.agentConfigurationVersionIds[row.agent_id]!, agentId: row.agent_id,
     }))
     signal.throwIfAborted()
+    for (const configuration of configurations) assertClaudeFullAccess(configuration.harness)
     ExecutableWorkflowV3Schema.parse({ version, configurations })
     for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, version.approval,
       version.approval.handler === 'orchestrator' && configuration.agentId === version.approval.designatedOrchestratorAgentId)

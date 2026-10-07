@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { changeCodexSandbox, OpenCodeHarnessConfigurationSchema, withAdvancedDefaults, type HarnessConfiguration, type OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
 import { Button, Select, TextField } from '../../shared/ui/nocturne'
+import { CLAUDE_FULL_ACCESS_REQUIRED } from '@foreman-code/contracts/claude'
+import { claudeAccessOptions } from '../settings/claudeAccess'
 
 const sandboxChoices = [
   { value: 'read-only', label: 'Read only' },
@@ -24,7 +26,9 @@ export function OperatorAccessPicker({ value, disabled, saving = false, saveErro
     <small>Access changes apply to new chats and harness handoffs. Existing chats keep their accepted access policy.</small>
     {saving ? <small role="status">Saving Operator access…</small> : null}
     {saveError ? <p role="alert">{saveError}</p> : null}
-    {value.harness === 'codex' || value.harness === 'claude' ? <Select label="Sandbox" value={value.sandbox} options={sandboxChoices} disabled={disabled}
+    {value.harness === 'codex' || value.harness === 'claude' ? <Select label="Sandbox" value={value.sandbox}
+      options={value.harness === 'claude' ? claudeAccessOptions(value.sandbox) : sandboxChoices} disabled={disabled}
+      error={value.harness === 'claude' && value.sandbox !== 'danger-full-access' ? CLAUDE_FULL_ACCESS_REQUIRED : undefined}
       onChange={(event) => {
         const choice = sandboxChoices.find((item) => item.value === event.target.value)
         if (choice) void onChange(value.harness === 'codex' ? changeCodexSandbox(value, choice.value) : { ...value, sandbox: choice.value })

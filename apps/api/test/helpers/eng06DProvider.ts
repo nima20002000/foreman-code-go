@@ -1,3 +1,4 @@
+import { isWorkflowStart } from '../../src/modules/harnesses/sessionStart.js'
 import {
   ExecutionResultSchema, NativeHarnessEventSchema,
   type ExecutionResult, type HarnessExecutionRequest, type NativeHarnessEvent, type NativeSessionReference,
@@ -121,7 +122,7 @@ export class RecoveryProvider {
       async inspectMcp() { return { harness: 'codex', serverName: 'graphql', state: 'connected',
         endpointMatches: true, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString() } },
       async createSession(input) {
-        if (input.kind === 'operator') throw new Error('Only workflow requests belong to this provider fixture')
+        if (!isWorkflowStart(input)) throw new Error('Only workflow requests belong to this provider fixture')
         const request = structuredClone(input.request), accepted = RunAcceptedInputValueSchema.parse(request.input)
         const occurrenceId = accepted.occurrence?.identity.occurrenceId ?? null
         const attempt = 1 + provider.submissions.filter((item) => item.request.runId === request.runId
@@ -135,7 +136,7 @@ export class RecoveryProvider {
       },
       async attachSession(reference, input) {
         const session = provider.lookup(reference)
-        if (input.kind === 'operator' || input.request.executionId !== session.submission.request.executionId) throw new Error('Attachment changed execution identity')
+        if (!isWorkflowStart(input) || input.request.executionId !== session.submission.request.executionId) throw new Error('Attachment changed execution identity')
         if (!session.alive && !session.terminal) throw new Error('Native process is gone; replacement attachment is forbidden')
         owned = reference; provider.counts.attaches++
         return reference

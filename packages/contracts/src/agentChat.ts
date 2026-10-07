@@ -4,6 +4,13 @@ import { z } from "zod";
 import { ActivitySnapshotV1Schema } from "./activity.js";
 import { MessageAttachmentFields } from "./files.js";
 import { OperatorConversationHistoryQuerySchema } from "./operatorChat.js";
+import { SavedNodePlacementSchema } from './nodePlacement.js';
+import { WorkspaceRootPolicySchema } from './workspaceRootPolicies.js';
+
+export const AgentChatDirectoryBindingSchema = z.object({ workflowVersionId: z.string().min(1),
+  placement: SavedNodePlacementSchema, policy: WorkspaceRootPolicySchema,
+}).strict();
+export type AgentChatDirectoryBinding = z.infer<typeof AgentChatDirectoryBindingSchema>;
 
 import {
   AgentHarnessSchema, ExecutionResultSchema, IdSchema, MessageSchema, OperatorActivityCursorSchema,
@@ -201,6 +208,7 @@ export const SendAgentChatMessageRequestSchema = z.object({
   ...MessageAttachmentFields,
   context: AgentChatQuerySchema,
   content: z.string().trim().max(32000),
+  sessionMode: z.enum(['regular', 'plan']).optional(),
   intent: AgentChatIntentSchema.default("next_turn")
     .describe("steer supports text only; send attachments with next_turn or interrupt_and_send"),
   /** Null = the client saw no conversation (first message). A mismatch returns 409 context_stale. */

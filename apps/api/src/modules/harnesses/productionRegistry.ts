@@ -11,6 +11,7 @@ import type { DevicePresence, DeviceSessionBinding } from '@foreman-code/contrac
 import { commandInputHash } from '../commands/postgres.js'
 import { authorizeDeviceHost, assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { DomainError } from '../errors.js'
+import { CLAUDE_PROFILE_CHECK_REVISION } from './claudeSdk/profileRevision.js'
 import { discoverLauncher, type TargetEnvironment } from './hostDiscovery.js'
 import { passiveDriverPayloads } from './payloadDiscovery.js'
 import { HarnessInstanceRegistry, localHarnessDrivers, localDefaultInstances, type ConfiguredHarnessInstance } from './instanceRegistry.js'
@@ -268,10 +269,11 @@ export class ProductionHarnessRegistry {
     const target = { ...value.target, installationFingerprint: installation.installationFingerprint }
     const connectionGeneration = value.target.hostRef.kind === 'main' ? this.mainGeneration
       : this.remoteGeneration(value.target.hostRef.deviceId)
+    const suiteRevision = value.driverId === 'claude' ? CLAUDE_PROFILE_CHECK_REVISION : `${value.driverId}-profile-check-v1`
     if (commandInputHash(proof.target) !== commandInputHash(target) || proof.instanceRevision !== value.instanceRevision
       || proof.configurationFingerprint !== commandInputHash(withAdvancedDefaults(value.configuration))
       || proof.driverId !== value.driverId || proof.driverRevision !== installation.driverRevision
-      || proof.protocolRevision !== installation.protocolRevision || proof.suiteRevision !== `${value.driverId}-profile-check-v1`
+      || proof.protocolRevision !== installation.protocolRevision || proof.suiteRevision !== suiteRevision
       || proof.environmentGeneration !== installation.environmentGeneration || proof.connectionGeneration !== connectionGeneration
       || !proof.authenticated || !proof.compatible || !proof.qualified) return null
     return proof

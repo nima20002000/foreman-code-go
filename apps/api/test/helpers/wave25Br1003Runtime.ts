@@ -35,7 +35,7 @@ import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { continuationValidator } from '../../src/modules/runs/continuation.js'
 import { registerApprovalCheckpointResume } from '../../src/modules/runs/approvalCheckpointRegistration.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
-import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
+import { LOCAL_RUNNER_ID, WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
 import { agent3Database, seedAgent3 } from './wave25Agent3.js'
 import { CheckpointTestProvider } from './wave25Br1003Provider.js'
 import { approvalFixture } from './wave25ApprovalFixture.js'
@@ -91,9 +91,6 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     await saver.setup()
     function compose(checkpointer: ApprovalPostgresSaver = saver) {
       const workflows = new PostgresWorkflowRepository(db.pool)
-      // seedAgent3 and providerLaunchCredentials use the deterministic runner
-      // "local". The product default is "runner-local"; inheriting it makes a
-      // public location_set/Start fail credential preflight before createSession.
       const locations = new WorkspaceLocationService(db.pool, new PostgresCommandCoordinator(db.pool),
         undefined, f.run.executionLocation!.runnerId)
       // No native binaries or accepted runner filesystem are qualified here.
@@ -191,7 +188,7 @@ export function providerLaunchCredentials(runs: PostgresRunRepository, locations
       const configuration = await runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
       const run = await runs.get(execution.runId)
       if (!configuration || configuration.agentId !== execution.agentId || configuration.harness.harness !== input.harness
-        || !run?.executionLocation || run.executionLocation.runnerId !== 'local') throw new DomainError(
+        || !run?.executionLocation || run.executionLocation.runnerId !== LOCAL_RUNNER_ID) throw new DomainError(
         'WORKER_EXECUTION_IDENTITY_INVALID', 'Credential preflight requires the pinned local execution.', 409)
       const { manager } = managers.resolve({ executionId: execution.id, agentId: execution.agentId,
         harness: input.harness, workingDirectory: input.workingDirectory, configuration,

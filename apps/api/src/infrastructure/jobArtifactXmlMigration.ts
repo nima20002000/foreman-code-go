@@ -1,5 +1,5 @@
 export const jobArtifactXmlMigration = {
-  version: 2026100601,
+  version: 2026100607,
   sql: `
     alter table file_revisions drop constraint file_revisions_class_check;
     alter table file_revisions add constraint file_revisions_class_check check (

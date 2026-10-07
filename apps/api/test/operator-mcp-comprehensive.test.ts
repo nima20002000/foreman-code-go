@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { OperatorConversationStateSchema, CancelOperatorTurnResponseSchema } from '@foreman-code/contracts'
 import { DeviceSetupOptionsSchema } from '@foreman-code/contracts/device-setup'
 import { ActivitySnapshotV1Schema } from '@foreman-code/contracts/activity'
 import { DeviceListResultSchema, DeviceRegistrationSchema, DevicePairingGrantResultSchema, MainDeviceIdentityPublicSchema } from '@foreman-code/contracts/device-identity'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import { OperatorConversationStateSchema, CancelOperatorTurnResponseSchema, SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
 import { buildApp } from '../src/app.js'
 import { createGraphqlMcpServer } from '../src/mcp/unified/server.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -107,7 +107,28 @@ describe('current device and Operator control MCP parity', () => {
       state = { ...state, responseDelivery: 'submitted', revision: 9 }
       return state
     })
-    const chat: NonNullable<typeof c.services.operatorChat> = { cancel, respond, get: async () => ({ ...state, activitySnapshot, qualificationKey: 'c'.repeat(64) }),
+    const controls = SessionControlStateSchema.parse({
+      conversationId: state.conversation.id,
+      revision: 7,
+      profileKey: 'configuration',
+      desiredMode: 'regular',
+      appliedMode: 'regular',
+      defaults: {},
+      desired: {},
+      applied: {},
+      applicability: 'applied',
+      capabilities: unavailableSessionControls('configuration'),
+      context: null,
+      nativeSessionId: null,
+      nativeProviderVersion: null,
+      compaction: null,
+      compactions: [],
+      busyReason: 'Wait for the active turn to finish.',
+    })
+    const chat: NonNullable<typeof c.services.operatorChat> = {
+      readSessionControls: vi.fn(async () => controls),
+      changeSessionControls: vi.fn(async () => controls),
+      cancel, respond, get: async () => ({ ...state, activitySnapshot, qualificationKey: 'c'.repeat(64) }),
       setup: async () => ({ harness: 'codex', status: 'configured', endpoint: 'http://127.0.0.1/mcp', checkedAt: new Date().toISOString() }),
       create: async () => state.conversation, send: async () => ({ state, replayed: false }),
       list: async () => [state.conversation],

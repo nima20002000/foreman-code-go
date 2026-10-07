@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { SessionControlStateSchema, unavailableSessionControls, type CompactionState } from '@foreman-code/contracts'
 import { afterEach, describe, it } from 'vitest'
 import { agentChatCorrelation } from '../src/modules/conversations/agentChatRepository.js'
 import { context, deferred, eventually, fixture } from './helpers/agentChatF1.js'
@@ -236,5 +237,68 @@ describe('G2 A2-PF-06: conversation-before-receipt transaction ordering', () => 
     assert.equal(f.store.messages.size, 1)
     assert.equal(f.store.row.active_request_id, 'A')
     assert.equal(f.store.row.active_native_turn_id, 'native-A')
+  })
+})
+
+describe('session controls during message admission', () => {
+  function storedControls(f: ReturnType<typeof fixture>, status: CompactionState['status'] | null) {
+    const record = SessionControlStateSchema.parse({
+      conversationId: f.store.row.id,
+      revision: 0,
+      profileKey: 'profile',
+      desiredMode: 'regular',
+      appliedMode: null,
+      defaults: {},
+      desired: {},
+      applied: null,
+      applicability: 'next-turn',
+      capabilities: unavailableSessionControls('profile'),
+      context: null,
+      nativeSessionId: f.manager.session.nativeSessionId,
+      nativeProviderVersion: f.manager.session.providerVersion,
+      compaction: status ? {
+        requestId: 'compact-command',
+        nativeSessionId: f.manager.session.nativeSessionId,
+        nativeOperationId: null,
+        status,
+        message: 'Waiting for native compaction.',
+        beforeTokens: null,
+        observedAt: new Date().toISOString(),
+      } : null,
+      compactions: [],
+      busyReason: null,
+    })
+    f.store.sessionControls.set(f.store.row.id, record)
+  }
+
+  for (const status of ['accepted', 'running', 'uncertain'] as const) {
+    it(`rejects messages while compaction is ${status} without recording or starting a turn`, async () => {
+      const f = setup()
+      storedControls(f, status)
+      await assert.rejects(enqueue(f, 'queued'), { code: 'SESSION_COMPACT_UNCONFIRMED' })
+      await assert.rejects(f.send('sent'), { code: 'SESSION_COMPACT_UNCONFIRMED' })
+      assert.equal(f.store.messages.size, 0)
+      assert.equal(f.store.turns.size, 0)
+      assert.deepEqual(f.manager.starts, [])
+      assert.equal(f.store.sessionControls.get(f.store.row.id)?.revision, 0)
+    })
+  }
+
+  it('persists the Plan choice with the admitted message before starting a native turn', async () => {
+    const f = setup()
+    storedControls(f, null)
+    const admitted = await f.repository.admit({
+      key: f.store.row.agent_key,
+      context,
+      request: f.request('planned', { sessionMode: 'plan' }),
+      delivery: 'queued',
+    })
+    assert.equal(admitted.turn.delivery, 'queued')
+    const state = f.store.sessionControls.get(f.store.row.id)!
+    assert.equal(state.desiredMode, 'plan')
+    assert.equal(state.applicability, 'next-turn')
+    assert.equal(state.revision, 1)
+    assert.equal(f.store.messages.size, 1)
+    assert.deepEqual(f.manager.starts, [])
   })
 })

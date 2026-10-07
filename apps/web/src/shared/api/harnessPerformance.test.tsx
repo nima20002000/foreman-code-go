@@ -3,6 +3,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { HarnessDefaultsUpdateInputSchema } from '@foreman-code/contracts/management'
 import { apiClient } from './client'
 import { queryKeys, useHarnessDefaultsQuery, useManagedHarnessCatalogQuery, useUpdateManagedHarnessDefaultsMutation } from './query'
 import { harnessSettingsKeys, useApplyManagedMcpChange, useNativeHarnessOptions, useNativeMcpPlans, useNativeMcpServers } from './harnessSettings'
@@ -45,7 +46,7 @@ it('does not read the catalog when its only defaults observer is disabled', asyn
 it('publishes confirmed defaults in the shared catalog without retaining old readiness or accepting a lower revision', async () => {
   const { client, Wrapper } = wrapper()
   client.setQueryData(queryKeys.managedHarnessCatalog, catalog.map(entry => ({ ...entry, capability: { ready: true } })))
-  const defaults = { ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, instructions: 'Saved instructions' } }
+  const defaults = HarnessDefaultsUpdateInputSchema.shape.defaults.parse({ ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, instructions: 'Saved instructions' } })
   const request = vi.spyOn(apiClient, 'request').mockResolvedValue({ value: { defaults, revision: 7 }, replayed: false })
   const mutation = renderHook(() => useUpdateManagedHarnessDefaultsMutation(), { wrapper: Wrapper })
   await act(async () => { await mutation.result.current.mutateAsync({ defaults, expectedRevision: 6, commandId: crypto.randomUUID() }) })
@@ -55,7 +56,7 @@ it('publishes confirmed defaults in the shared catalog without retaining old rea
     expect.objectContaining({ harness: 'claude', defaults: defaults.claude, defaultsRevision: 7, capability: null }),
   ])
   request.mockResolvedValue({ value: { defaults: DEFAULT_HARNESS_DEFAULTS, revision: 6 }, replayed: true })
-  await act(async () => { await mutation.result.current.mutateAsync({ defaults: DEFAULT_HARNESS_DEFAULTS, expectedRevision: 5, commandId: crypto.randomUUID() }) })
+  await act(async () => { await mutation.result.current.mutateAsync({ defaults: HarnessDefaultsUpdateInputSchema.shape.defaults.parse(DEFAULT_HARNESS_DEFAULTS), expectedRevision: 5, commandId: crypto.randomUUID() }) })
   expect(client.getQueryData(queryKeys.managedHarnessCatalog)).toEqual(expect.arrayContaining([
     expect.objectContaining({ harness: 'claude', defaults: defaults.claude, defaultsRevision: 7 }),
   ]))

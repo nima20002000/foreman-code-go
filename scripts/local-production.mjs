@@ -10,7 +10,7 @@ import { readProductEnvironment } from '../packages/contracts/src/productEnviron
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
 import {
-  copyVerificationRuntime, deployProductionApi, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
+  copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   removeUninstalledRelease, readProductionIdentity, renderEnvironment, waitForProductionReady, withInstallationLock,
 } from './local-production-runtime.mjs'
 
@@ -236,7 +236,7 @@ async function openDashboard() {
   // Chrome joins the owner's browser session; closing the launcher must not close their browser.
   await new Promise((resolve, reject) => {
     const child = spawn('/usr/bin/google-chrome', [`--app=${origin}/workspaces`, '--class=graphql-production'], {
-      detached: true, stdio: 'ignore',
+      detached: true, stdio: 'ignore', env: desktopLaunchEnvironment(process.env),
     })
     child.once('error', reject)
     child.once('spawn', () => {

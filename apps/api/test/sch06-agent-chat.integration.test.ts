@@ -141,7 +141,7 @@ describe.skipIf(!postgresEnabled)('SCH-06 selected historical Run chat PostgreSQ
       const a = (await executions(f, f.f.run.id)).find((entry) => entry.workflowNodeId === y.id)!
       expect(a.nativeSessionId).toBeTruthy()
       const location = await f.locations.set(f.writer.principal, 'http', { workspaceId, commandId: randomUUID(),
-        expectedLocationRevision: 1, runnerId: 'local', rootPath: f.db.directory })
+        expectedLocationRevision: 1, runnerId: f.locations.runnerId, rootPath: f.db.directory })
       const revision = Number((await f.db.pool.query<{ revision: string }>('select revision::text from workflows where id=$1', [workflowId])).rows[0]!.revision)
       const started = RunStartV3ResultSchema.parse(body(await f.client.callTool({ name: 'run_start', arguments: {
         workspaceId, workflowId, workflowVersionId: f.f.version.id, executionSemanticsVersion: 3,
@@ -196,11 +196,13 @@ describe.skipIf(!postgresEnabled)('SCH-06 selected historical Run chat PostgreSQ
         expect(native.session.nativeSessionId).not.toBe(execution.nativeSessionId)
         const start = native.forks[0]!.input
         expect(start.environment).toBeUndefined()
-        expect(start.kind).toBe('workflow')
-        if (start.kind === 'operator') throw new Error('Expected the existing isolated Agent chat descriptor')
-        expect(start.request.runId).toBe(`agent-chat:${id}`)
-        expect(start.request.executionId).toBe(`agent-chat:${id}`)
-        expect(start.request.configuration.id).toBe(execution.agentConfigurationVersionId)
+        expect(start.kind).toBe('agent-chat')
+        if (start.kind !== 'agent-chat') throw new Error('Expected the Agent conversation owner')
+        expect(start.conversationId).toBe(id)
+        expect(start.workflowId).toBe(workflowId)
+        expect(start.workflowNodeId).toBe(y.id)
+        expect(start.configuration.id).toBe(execution.agentConfigurationVersionId)
+        expect('request' in start).toBe(false)
         expect(start.instructionsDelivered).toBe(true)
         // A foreign native receipt must not settle this chat or alter its Run.
         native.wrongReceipt = index === 0

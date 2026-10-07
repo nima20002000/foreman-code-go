@@ -4,7 +4,21 @@ import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+import { readProductEnvironment, resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+
+export function desktopLaunchEnvironment(source) {
+  const environment = { ...source }
+  if (!readProductEnvironment(source, 'HEAVY_JOB_TOKEN')) return environment
+  const baseTemporaryDirectory = readProductEnvironment(source, 'HEAVY_BASE_TMPDIR')
+  for (const name of ['TMPDIR', 'TMP', 'TEMP']) {
+    if (baseTemporaryDirectory) environment[name] = baseTemporaryDirectory
+    else delete environment[name]
+  }
+  for (const name of Object.keys(environment)) {
+    if (/^(?:FOREMAN_CODE|GRAPHQL)_HEAVY_/.test(name)) delete environment[name]
+  }
+  return environment
+}
 
 export function hasNativeTurnStarted(harness, execution, event) {
   const session = execution.nativeSessionId

@@ -1,8 +1,8 @@
-import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import { registerAppRoute } from '../../harnesses/appMcpLauncher.js'
-import type { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
+import type { ChildProcessEnvironment } from '../../harnesses/port.js'
+import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema, type AgentFilePublishInput, type AgentFilePublishResult } from '@foreman-code/contracts/files'
 import { TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
 import { WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
@@ -32,24 +32,38 @@ export function observedWorkflowArtifactPublication(body: unknown, response: z.i
 
 /** The admitted worker owns this private route until its original native owner closes.
  * Main reauthorizes every relayed request; neither this endpoint nor its route file grants access. */
-export async function createWorkerMcpEndpoint(input: {
-  relay: Awaited<ReturnType<typeof prepareWorkerApplicationAccess>>
+export interface WorkerMcpRelay {
+  environment: ChildProcessEnvironment
+  expiresAt: string
+  request(body: unknown, protocolVersion?: string, signal?: AbortSignal): Promise<z.infer<typeof WorkerMcpRelayResponseSchema>>
+  /** Renews the same scoped lease with Main and returns its new expiry. */
+  refresh?(signal?: AbortSignal): Promise<string>
+}
+
+interface WorkerMcpEndpointOptions {
   launcher: string
   signal: AbortSignal
   onArtifactPublication?(input: { transferId: string; publication: AgentFilePublishInput }, result: AgentFilePublishResult): void
-}) {
+}
+
+export async function createWorkerMcpEndpoint(input: WorkerMcpEndpointOptions & { relay: WorkerMcpRelay }) {
+  const endpoint = await createUnboundWorkerMcpEndpoint(input)
+  try { await endpoint.bindRelay(input.relay); return endpoint }
+  catch (error) { await endpoint.close(); throw error }
+}
+
+/** Inspection keeps a stable native URL; requests remain unauthorized until Main supplies its scoped lease. */
+export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOptions) {
   input.signal.throwIfAborted()
-  let expiresAt = input.relay.expiresAt
-  const token = readProductEnvironment(input.relay.environment.variables, 'MCP_TOKEN')
-  if (!token || Date.parse(expiresAt) <= Date.now()) throw new Error('The original Main MCP lease is unavailable.')
-  const digest = createHash('sha256').update(`Bearer ${token}`).digest()
-  const active = new Set<Promise<unknown>>()
+  let bound: { relay: WorkerMcpRelay; digest: Buffer; expiresAt: string } | undefined
+  const active = new Set<Promise<void>>()
   let closing = false, shutdown: Promise<void> | undefined
   const server = createServer((request, response) => {
     const task = (async () => {
       response.setHeader('cache-control', 'no-store')
-      if (closing || Date.parse(expiresAt) <= Date.now()
-        || !timingSafeEqual(digest, createHash('sha256').update(request.headers.authorization ?? '').digest())) {
+      const lease = bound
+      if (closing || !lease || Date.parse(lease.expiresAt) <= Date.now()
+        || !timingSafeEqual(lease.digest, createHash('sha256').update(request.headers.authorization ?? '').digest())) {
         response.writeHead(401); response.end(); return
       }
       if (request.method !== 'POST' || request.url !== '/mcp') { response.writeHead(405); response.end(); return }
@@ -71,7 +85,8 @@ export async function createWorkerMcpEndpoint(input: {
         catch { response.writeHead(400); response.end(); return }
         const protocol = request.headers['mcp-protocol-version']
         if (Array.isArray(protocol) || (protocol?.length ?? 0) > 64) { response.writeHead(400); response.end(); return }
-        const result = await input.relay.request(body, protocol, controller.signal)
+        const result = await lease.relay.request(body, protocol, controller.signal)
+        if (bound !== lease || closing) throw new Error('The Main MCP lease changed during the request.')
         controller.signal.throwIfAborted()
         const publication = input.onArtifactPublication && observedWorkflowArtifactPublication(body, result)
         if (publication) input.onArtifactPublication!(publication.input, publication.result)
@@ -94,26 +109,46 @@ export async function createWorkerMcpEndpoint(input: {
     closing = true
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     await Promise.all([...active])
+    await updates
     await unregister?.()
   })()
-  try {
-    input.signal.throwIfAborted()
-    unregister = await registerAppRoute(token, endpoint, expiresAt, input.launcher)
-    input.signal.throwIfAborted()
-  } catch (error) { await close(); throw error }
-  const refreshLease = () => {
-    const task = (async () => {
-      if (closing) throw new Error('The original worker MCP endpoint is closing.')
-      const renewedExpiry = await input.relay.refresh(input.signal)
+  let updates: Promise<void> = Promise.resolve()
+  const bindRelay = (relay: WorkerMcpRelay) => {
+    const task = updates.then(async () => {
       input.signal.throwIfAborted()
-      if (closing) throw new Error('The original worker MCP endpoint is closing.')
-      unregister = await registerAppRoute(token, endpoint, renewedExpiry, input.launcher)
-      expiresAt = renewedExpiry
-      return expiresAt
-    })()
-    active.add(task)
-    void task.then(() => active.delete(task), () => active.delete(task))
+      const token = readProductEnvironment(relay.environment.variables, 'MCP_TOKEN')
+      if (closing || !token || !Number.isFinite(Date.parse(relay.expiresAt)) || Date.parse(relay.expiresAt) <= Date.now()) {
+        throw new Error('The original Main MCP lease is unavailable.')
+      }
+      bound = undefined
+      await unregister?.()
+      unregister = undefined
+      const release = await registerAppRoute(token, endpoint, relay.expiresAt, input.launcher)
+      if (closing || input.signal.aborted) {
+        await release()
+        throw new Error('The private worker MCP listener closed.')
+      }
+      unregister = release
+      bound = { relay, digest: createHash('sha256').update(`Bearer ${token}`).digest(), expiresAt: relay.expiresAt }
+    })
+    updates = task.then(() => undefined, () => undefined)
     return task
   }
-  return { endpoint, close, refreshLease }
+  /** Long native turns renew the bound lease in place; the native URL and bearer stay the same. */
+  const refreshLease = () => {
+    const task = updates.then(async () => {
+      const lease = bound
+      if (closing || !lease?.relay.refresh) throw new Error('The original worker MCP endpoint is closing.')
+      const renewedExpiry = await lease.relay.refresh(input.signal)
+      input.signal.throwIfAborted()
+      if (closing || bound !== lease) throw new Error('The original worker MCP endpoint is closing.')
+      const token = readProductEnvironment(lease.relay.environment.variables, 'MCP_TOKEN')!
+      unregister = await registerAppRoute(token, endpoint, renewedExpiry, input.launcher)
+      lease.expiresAt = renewedExpiry
+      return renewedExpiry
+    })
+    updates = task.then(() => undefined, () => undefined)
+    return task
+  }
+  return { endpoint, bindRelay, refreshLease, close }
 }

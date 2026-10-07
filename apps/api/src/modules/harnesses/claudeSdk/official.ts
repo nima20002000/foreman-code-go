@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module'
 import { readFile, realpath } from 'node:fs/promises'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import type { ChildProcess } from 'node:child_process'
 import { NativeProcessRegistry, spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from '../recovery/processRegistry.js'
@@ -10,6 +10,9 @@ import { createClaudeSdkRunner } from './runner.js'
 import type { Options, SDKUserMessage, McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import type { ClaudeSdkClient } from './port.js'
 
+
+export const CLAUDE_CLI_CANDIDATE_VERSION = '2.1.284'
+export const CLAUDE_SDK_CANDIDATE_VERSION = '0.3.284'
 
 /** Native history helpers read the SDK process profile, not query's child env. */
 function assertHelperProfile(profilePath: string): void {
@@ -26,13 +29,24 @@ export function assertClaudeSdkContract(sdk: unknown, version: string): void {
 }
 
 /** Loading occurs only at admitted startup, never at synchronous factory allocation. */
-export async function loadOfficialClaudeSdk(profilePath: string, recovery: NativeProcessRecovery, binary: string): Promise<ClaudeSdkClient> {
+export async function loadInstalledClaudeSdk(sdkEntrypoint?: string): Promise<typeof import('@anthropic-ai/claude-agent-sdk')> {
   const require = createRequire(import.meta.url)
-  const entrypoint = await realpath(require.resolve('@anthropic-ai/claude-agent-sdk'))
-  const manifest = JSON.parse(await readFile(join(dirname(entrypoint), 'package.json'), 'utf8')) as { version?: unknown }
-  if (typeof manifest.version !== 'string' || !manifest.version) throw new Error('Claude SDK manifest version is missing')
+  const selected = sdkEntrypoint ?? require.resolve('@anthropic-ai/claude-agent-sdk')
+  if (!isAbsolute(selected) || selected.includes('\0')) throw new Error('Claude SDK requires its qualified absolute entrypoint')
+  const entrypoint = await realpath(selected)
+  const manifest = JSON.parse(await readFile(join(dirname(entrypoint), 'package.json'), 'utf8')) as { name?: unknown; version?: unknown }
+  if (manifest.name !== '@anthropic-ai/claude-agent-sdk' || typeof manifest.version !== 'string' || !manifest.version) throw new Error('Claude SDK manifest is invalid')
   const sdk = await import(pathToFileURL(entrypoint).href) as typeof import('@anthropic-ai/claude-agent-sdk')
   assertClaudeSdkContract(sdk, manifest.version)
+  return sdk
+}
+
+export async function loadOfficialClaudeSdk(profilePath: string, recovery: NativeProcessRecovery, binary: string,
+  sdkEntrypoint?: string): Promise<ClaudeSdkClient> {
+  const sdk = await loadInstalledClaudeSdk(sdkEntrypoint)
+  const require = createRequire(import.meta.url)
+  const entrypoint = await realpath(sdkEntrypoint ?? require.resolve('@anthropic-ai/claude-agent-sdk'))
+  const manifest = JSON.parse(await readFile(join(dirname(entrypoint), 'package.json'), 'utf8')) as { version: string }
   return {
     sdkVersion: manifest.version,
     ...ownedClaudeSdkQueries({ sdk, recovery, binary }),
@@ -55,7 +69,7 @@ export function ownedClaudeSdkQueries(input: {
   let usedReservation = false
   return {
     requiresRuntimeClosure: () => unclosed.size > 0,
-    async query({ prompt, options }) {
+    async query({ prompt, options, scope }) {
       const recovery = input.recovery.launchId && !usedReservation
         ? input.recovery : registry.reserveLaunch(input.recovery.owner)
       usedReservation = true
@@ -82,7 +96,7 @@ export function ownedClaudeSdkQueries(input: {
             controller?.signal.throwIfAborted()
             spawn.signal.throwIfAborted()
             const child = spawnNativeProcess(spawn.command, spawn.args, {
-              cwd: spawn.cwd ?? String(options.cwd), env: spawn.env, recovery,
+              cwd: spawn.cwd ?? String(options.cwd), env: spawn.env, recovery, ...(scope ? { claudeSessionScope: scope } : {}),
             })
             children.add(child)
             return child
@@ -90,6 +104,8 @@ export function ownedClaudeSdkQueries(input: {
         } })
         return {
           [Symbol.asyncIterator]: () => query[Symbol.asyncIterator](),
+          setPermissionMode: mode => query.setPermissionMode(mode),
+          getContextUsage: options => query.getContextUsage(options),
           interrupt: () => query.interrupt(),
           initializationResult: () => query.initializationResult(),
           mcpServerStatus: () => query.mcpServerStatus(),

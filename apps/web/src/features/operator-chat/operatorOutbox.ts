@@ -108,13 +108,13 @@ async function exclusive<T>(id: string, work: (key: string) => T): Promise<T> {
 
 /** Reserve once before submission. Every tab and every lost-response retry reuses that identity. */
 export function reserveOperatorMessage(id: string, content: string, route: string, settings?: OperatorChatSettings,
-  forkExpectedRevision?: number, binding?: Pick<SendOperatorMessageRequest, 'configurationVersionId' | 'defaultsRevision'>,
+  forkExpectedRevision?: number, binding?: Pick<SendOperatorMessageRequest, 'configurationVersionId' | 'defaultsRevision' | 'sessionMode'>,
   attachments: readonly MessageAttachmentRef[] = []): Promise<SendOperatorMessageRequest> {
   return exclusive(id, (key) => {
     const pending = readKey(key)
     if (pending.error) throw new Error(pending.error)
     if (pending.command) {
-      if (pending.command.content !== content || !sameAttachmentRefs(pending.command.attachments, attachments)) throw new Error('Retry the previous pending message before sending a different command. Your new draft is preserved.')
+      if (pending.command.content !== content || pending.command.sessionMode !== binding?.sessionMode || !sameAttachmentRefs(pending.command.attachments, attachments)) throw new Error('Retry the previous pending message before sending a different command. Your new draft is preserved.')
       return pending.command // Includes the originally accepted route context and configuration binding.
     }
     const command = SendOperatorMessageRequestSchema.parse({ requestId: crypto.randomUUID(), content, context: { route },

@@ -1,3 +1,4 @@
+import { admitSessionMessage } from './sessionControls/messageAdmission.js'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -10,6 +11,7 @@ import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, t
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
   type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
+  type AgentChatDirectoryBinding,
 } from '@foreman-code/contracts/agent-chat'
 
 import { DomainError } from '../errors.js'
@@ -46,6 +48,7 @@ export interface AgentConversationRow {
   last_result: ExecutionResult | null
   record: {
     origin: AgentChatOrigin; workingDirectory: string; runtimeDirectory: string; startupDelivered?: boolean; sessionUnavailable?: string
+    directoryBinding?: AgentChatDirectoryBinding
     sessionUnavailableReason?: 'native_session_missing' | 'harness_unavailable'
     /** Durable fence: an unbound native creation is never permission to create a replacement. */
     sessionCreation?: { requestId: string }
@@ -86,10 +89,11 @@ export function agentChatCorrelation(conversationId: string, requestId: string):
   return `agent-chat:${conversationId}:${requestId}`
 }
 export function agentChatInputHash(input: Pick<SendAgentChatMessageRequest, 'content' | 'intent' | 'context' | 'expectedNativeTurnId'>
-  & Partial<Pick<SendAgentChatMessageRequest, 'requestId' | 'attachments'>>): string {
+  & Partial<Pick<SendAgentChatMessageRequest, 'requestId' | 'attachments' | 'sessionMode'>>): string {
   // Keep untargeted receipt identities stable; a supplied native precondition is part of the command.
   return createHash('sha256').update(JSON.stringify([input.content, input.intent, input.context,
     ...(input.expectedNativeTurnId === undefined ? [] : [input.expectedNativeTurnId]),
+    ...(input.sessionMode ? [{ sessionMode: input.sessionMode }] : []),
     ...(input.attachments?.length ? [{ attachmentIdentity: messageAttachmentIdentity({ requestId: input.requestId!, attachments: input.attachments }) }] : [])])).digest('hex')
 }
 
@@ -129,6 +133,7 @@ export interface NewAgentConversation {
   origin: AgentChatOrigin
   workingDirectory: string
   runtimeDirectory: string
+  directoryBinding?: AgentChatDirectoryBinding
 }
 
 export class PostgresAgentChatRepository {
@@ -140,6 +145,35 @@ export class PostgresAgentChatRepository {
     return (await query.query<AgentConversationRow>(
       `select * from operator_conversations where kind='agent' and agent_key=$1 and deleted_at is null`, [key])).rows[0]
   }
+  async ensureForControls(key: string, create: NewAgentConversation,
+    authorize: (client: pg.PoolClient) => Promise<void>): Promise<AgentConversationRow> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', [`agent-chat:${key}`])
+      await authorize(client)
+      let row = await this.byKey(key, client)
+      if (!row) {
+        const id = randomUUID()
+        const { context, origin, workingDirectory, runtimeDirectory, directoryBinding } = create
+        await client.query(`insert into operator_conversations
+          (id,kind,agent_key,workspace_id,workflow_id,workflow_node_id,agent_id,agent_configuration_version_id,
+           origin_run_id,origin_execution_id,harness,record)
+          values($1,'agent',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
+        [id,key,context.workspaceId,context.workflowId,context.workflowNodeId,context.agentId,
+          create.agentConfigurationVersionId,origin.kind === 'run_execution' ? origin.runId : null,
+          origin.kind === 'run_execution' ? origin.executionId : null,create.harness,
+          JSON.stringify({ origin, workingDirectory, runtimeDirectory, ...(directoryBinding ? { directoryBinding } : {}) })])
+        row = (await this.get(id, client))!
+      }
+      await client.query('commit')
+      return row
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally { client.release() }
+  }
+
   async get(id: string, query: Queryable = this.pool): Promise<AgentConversationRow | undefined> {
     return (await query.query<AgentConversationRow>(
       `select * from operator_conversations where kind='agent' and id=$1 and deleted_at is null`, [id])).rows[0]
@@ -195,6 +229,19 @@ export class PostgresAgentChatRepository {
       where conversation_id=$1 and request_id=$2 and intent is not null`, [id, requestId])).rows[0]
     return row ? turn(row) : undefined
   }
+  async turnPrincipalId(id: string, requestId: string): Promise<string | undefined> {
+    const result = await this.pool.query<{ owner: string | null }>(`select payload->>'ownerPrincipalId' as owner
+      from operator_conversation_turns where conversation_id=$1 and request_id=$2`, [id, requestId])
+    return result.rows[0]?.owner ?? undefined
+  }
+
+  async turnSessionMode(id: string, requestId: string): Promise<'regular' | 'plan' | undefined> {
+    const result = await this.pool.query<{ mode: unknown }>(`select payload->>'sessionMode' as mode
+      from operator_conversation_turns where conversation_id=$1 and request_id=$2`, [id, requestId])
+    const mode = result.rows[0]?.mode
+    return mode === 'regular' || mode === 'plan' ? mode : undefined
+  }
+
   async turnContent(id: string, requestId: string): Promise<string | undefined> {
     return (await this.pool.query<{ content: string }>(`select payload->>'content' as content from operator_conversation_turns
       where conversation_id=$1 and request_id=$2`, [id, requestId])).rows[0]?.content
@@ -289,14 +336,14 @@ export class PostgresAgentChatRepository {
       if (!row) {
         if (!input.create) throw new DomainError('AGENT_CHAT_CONTEXT_STALE', 'The conversation for this Agent changed. Reload it before sending.', 409)
         const id = randomUUID()
-        const { context, origin, workingDirectory, runtimeDirectory } = input.create
+        const { context, origin, workingDirectory, runtimeDirectory, directoryBinding } = input.create
         await client.query(`insert into operator_conversations (id,kind,agent_key,workspace_id,workflow_id,workflow_node_id,agent_id,
             agent_configuration_version_id,origin_run_id,origin_execution_id,harness,record)
           values ($1,'agent',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
         [id, input.key, context.workspaceId, context.workflowId, context.workflowNodeId, context.agentId,
           input.create.agentConfigurationVersionId, origin.kind === 'run_execution' ? origin.runId : null,
           origin.kind === 'run_execution' ? origin.executionId : null, input.create.harness,
-          JSON.stringify({ origin, workingDirectory, runtimeDirectory })])
+          JSON.stringify({ origin, workingDirectory, runtimeDirectory, ...(directoryBinding ? { directoryBinding } : {}) })])
         row = (await this.get(id, client))!
         created = true
       }
@@ -309,6 +356,7 @@ export class PostgresAgentChatRepository {
         ? { requestId: row.active_request_id, nativeTurnId: row.active_native_turn_id } : undefined
       const targetNativeTurnId = input.request.intent === 'interrupt_and_send'
         ? input.request.expectedNativeTurnId ?? interruptTarget?.nativeTurnId : input.targetNativeTurnId
+      await admitSessionMessage(client, row.id, input.request.sessionMode)
       await validateMessageAttachments(client, row.id, input.request.attachments)
       const now = new Date().toISOString()
       const message = MessageSchema.parse({ id: randomUUID(), conversationId: row.id, role: 'user', requestId: input.request.requestId,
@@ -318,7 +366,7 @@ export class PostgresAgentChatRepository {
       const inserted = (await client.query<TurnRow>(`insert into operator_conversation_turns
           (conversation_id,request_id,payload,input_hash,intent,delivery,message_id,target_native_turn_id)
         values ($1,$2,$3::jsonb,$4,$5,$6,$7,$8) returning ${TURN_COLUMNS}`,
-      [row.id, input.request.requestId, JSON.stringify({ content: input.request.content, requestIdentityVersion: 1,
+      [row.id, input.request.requestId, JSON.stringify({ content: input.request.content, ...(input.request.sessionMode ? { sessionMode: input.request.sessionMode } : {}), requestIdentityVersion: 1,
           ...(input.ownerPrincipalId ? { ownerPrincipalId: input.ownerPrincipalId } : {}),
           ...(interruptTarget ? { interruptRequestId: interruptTarget.requestId } : {}) }), hash, input.request.intent,
         input.delivery, message.id, targetNativeTurnId ?? null])).rows[0]!

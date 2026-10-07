@@ -72,6 +72,7 @@ export interface FileToolRepository {
   putSession(tokenHash: string, session: FileToolSession): Promise<void>
   session(tokenHash: string, asOfUtc: string): Promise<FileToolSession | undefined>
   revokeSession(tokenHash: string): Promise<void>
+  revokeAcceptedSessions(context: FileToolContext): Promise<boolean>
   createArtifact(artifact: FileToolArtifact): Promise<void>
   artifact(binding: string, artifactId: string): Promise<FileToolArtifact | undefined>
   beginWrite(binding: string, artifactId: string, writeId: string, baseRevisionId?: string): Promise<boolean>

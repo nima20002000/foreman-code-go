@@ -1,5 +1,11 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { SessionPreferencesSchema } from '@foreman-code/contracts'
 import { describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import type { NativeSessionStart } from '../port.js'
+import type { HarnessExecutionRequest } from '@foreman-code/contracts'
 import { ClaudeBoundedQueue } from './queue.js'
 import { createClaudeSdkRunner } from './runner.js'
 import { claudePromptUuid, createClaudeNativeSessionManager, type ClaudeMessageTurnInput } from './sessionManager.js'
@@ -8,7 +14,7 @@ import type { ClaudeSdkClient, ClaudeSdkUserMessage } from './port.js'
 const scope = { deviceId: 'device-a', profilePath: '/profile-a', configRevision: 'revision-a', cwd: '/work' }
 const qualification = { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: true, history: true }
 const start = { kind: 'operator', correlationId: 'operator:one', configuration: {}, workingDirectory: '/work' } as NativeSessionStart
-function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionManager>[0]['decodeFactory'], extra: Partial<Pick<Parameters<typeof createClaudeNativeSessionManager>[0], 'liveCallbacks' | 'interactionPort' | 'qualification' | 'pendingInteractions' | 'inspectionStart' | 'expectedMcp' | 'credentialEnvironmentVariables' | 'appMcpAccess' | 'sdkOptions' | 'initializationTimeoutMs'>> = {}, nativeVersion = '2.1.284') {
+function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionManager>[0]['decodeFactory'], extra: Partial<Pick<Parameters<typeof createClaudeNativeSessionManager>[0], 'liveCallbacks' | 'interactionPort' | 'qualification' | 'pendingInteractions' | 'inspectionStart' | 'expectedMcp' | 'credentialEnvironmentVariables' | 'appMcpAccess' | 'sdkOptions' | 'initializationTimeoutMs' | 'scope'>> = {}, nativeVersion = '2.1.284') {
   const frames = new ClaudeBoundedQueue<unknown>(32)
   let messages: AsyncIterator<ClaudeSdkUserMessage>
   let ready!: () => void
@@ -42,6 +48,18 @@ function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionMana
     return value!
   } }
 }
+
+function workflowRequest(): HarnessExecutionRequest {
+  return { executionId: 'execution', runId: 'run', workspaceId: 'workspace',
+    workflowNodeId: 'node', workingDirectory: '/work', runtimeDirectory: '/runtime',
+    configuration: { id: 'config', workspaceId: 'workspace', agentId: 'agent', version: 1,
+      prompt: {}, assignedSkills: [], contentHash: 'recorded', createdAt: '2026-10-06T00:00:00.000Z',
+      harness: { harness: 'claude', model: 'recorded-model', authMode: 'subscription', configDirectory: '/profile-a',
+        permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [],
+        instructions: '', mcpServers: {} } }, initialPrompt: 'workflow notice',
+    executionContext: { parentRequest: null }, input: { first: 'one', second: 'two' } }
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason: unknown) => void
@@ -136,6 +154,59 @@ describe('Claude native session manager admission', () => {
     await second
     expect((await f.manager.reconcile(session, 'request-2')).terminalResult?.output).toBe('again')
     await f.manager.close(session); await f.manager.close(session); await f.manager.dispose?.()
+  })
+  it.each(['settings persistence', 'mode control'])(
+    'reports %s failure before offer as definite and accepts a later task', async stage => {
+      const f = fixture()
+      const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+        nativeSessionId: 'native-session' }, start)
+      const input: ClaudeMessageTurnInput = { prompt: 'unoffered task', clientCorrelationId: 'before-offer',
+        ...(stage === 'mode control' ? { sessionMode: 'plan' } : {}),
+        onSettingsApplied: async () => { if (stage === 'settings persistence') throw new Error('Storage failed') },
+      }
+      await expect(drain(f.manager.startTurn(session, input))).rejects.toMatchObject({
+        certainty: 'definite', deliveryState: 'not-delivered',
+      })
+      expect(f.offers).not.toHaveBeenCalled()
+      const output = drain(f.manager.startTurn(session, { prompt: 'next task', clientCorrelationId: 'next-offer',
+        sessionPreferences: SessionPreferencesSchema.parse({}) }))
+      const message = await f.nextMessage()
+      await f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'next-reply', user_message_uuid: message.uuid })
+      await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'next-result', user_message_uuid: message.uuid,
+        subtype: 'success', is_error: false, result: 'done' })
+      await output
+      expect(f.offers).toHaveBeenCalledTimes(1)
+      await f.manager.dispose?.()
+    })
+
+  it('recovers safe-resume failure before offer and accepts the next task on the saved session', async () => {
+    const f = fixture()
+    const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+      nativeSessionId: 'native-session' }, start)
+    const open = f.runner.open.bind(f.runner)
+    vi.spyOn(f.runner, 'open').mockRejectedValueOnce(new Error('Resume failed')).mockImplementation(open)
+    await expect(drain(f.manager.startTurn(session, { prompt: 'unoffered', clientCorrelationId: 'resume-failure',
+      sessionPreferences: SessionPreferencesSchema.parse({ autoCompact: 'off' }) }))).rejects.toMatchObject({
+      certainty: 'definite', deliveryState: 'not-delivered',
+    })
+    expect(f.offers).not.toHaveBeenCalled()
+    const frames = new ClaudeBoundedQueue<unknown>(8)
+    let messages!: AsyncIterator<ClaudeSdkUserMessage>
+    f.client.query = input => {
+      messages = input.prompt[Symbol.asyncIterator]()
+      return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), interrupt: async () => {},
+        initializationResult: async () => ({ models: [], account: {} }), close: () => frames.close() }
+    }
+    const output = drain(f.manager.startTurn(session, { prompt: 'follow-up', clientCorrelationId: 'resume-follow-up',
+      sessionPreferences: SessionPreferencesSchema.parse({}) }))
+    await vi.waitFor(() => expect(messages).toBeDefined())
+    const message = (await messages.next()).value!
+    await frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'resumed-reply', user_message_uuid: message.uuid })
+    await frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'resumed-result', user_message_uuid: message.uuid,
+      subtype: 'success', is_error: false, result: 'done' })
+    await output
+    expect(f.offers).toHaveBeenCalledTimes(1)
+    await f.manager.dispose?.()
   })
   it('accepts newer native init behavior and keeps the observed version as provenance', async () => {
     const f = fixture(undefined, {}, '2.2.0')
@@ -369,7 +440,8 @@ describe('Claude native session manager admission', () => {
     const changed = fixture()
     changed.client.query = () => {
       void changed.frames.offer({ type: 'system', subtype: 'init', session_id: 'wrong', claude_code_version: '2.1.286', cwd: '/foreign' })
-      return { [Symbol.asyncIterator]: () => changed.frames[Symbol.asyncIterator](), close: () => changed.frames.close(), interrupt: async () => undefined }
+      return { [Symbol.asyncIterator]: () => changed.frames[Symbol.asyncIterator](), close: () => changed.frames.close(),
+        initializationResult: async () => ({ models: [], account: {} }), interrupt: async () => undefined }
     }
     const changedResult = drain(changed.manager.startInitialTurn(start, { prompt: 'one', clientCorrelationId: 'operator:one', onSessionObserved: async () => undefined }))
     await expect(changedResult).rejects.toThrow('Claude Code 2.1.286 does not satisfy the init version/cwd contract')
@@ -488,6 +560,86 @@ describe('Claude native session manager admission', () => {
     expect(observed?.nativeSessionId).toBe('native-session'); expect(f.queries).toHaveBeenCalledTimes(1)
     await f.manager.dispose?.()
   })
+
+  it('keeps the complete accepted workflow request through JSON readback', async () => {
+    const f = fixture()
+    const request = workflowRequest()
+    const workflow = { request, correlationId: 'execution:execution' }
+    const readback = { correlationId: workflow.correlationId,
+      request: { ...request, input: { second: 'two', first: 'one' } } }
+    const prompt = 'first\nworkflow notice'
+    try {
+      await f.manager.prepareInspection(workflow)
+      await f.manager.prepareInspection(readback)
+      await expect(f.manager.prepareInspection({ ...workflow, request: { ...request,
+        input: { first: 'changed', second: 'two' } } })).rejects.toThrow('immutable inspection context')
+      await expect(f.manager.prepareInspection({ ...workflow, request: { ...request,
+        initialPrompt: 'changed' } })).rejects.toThrow('immutable inspection context')
+      await expect(f.manager.prepareInspection({ ...workflow, request: { ...request,
+        executionContext: { parentRequest: { requestId: 'foreign', requesterNodeId: 'foreign' } } } }))
+        .rejects.toThrow('immutable inspection context')
+      const running = drain(f.manager.startInitialTurn(readback, { prompt,
+        clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
+      const input = await f.nextMessage()
+      void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
+      void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid,
+        subtype: 'success', is_error: false, result: 'done' })
+      await running
+      await drain(f.manager.startInitialTurn(workflow, { prompt,
+        clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
+      expect(() => f.manager.startInitialTurn(readback, { prompt: 'changed',
+        clientCorrelationId: 'execution:execution', onSessionObserved: async () => undefined }))
+        .toThrow('another accepted scope')
+      expect(f.queries).toHaveBeenCalledTimes(1)
+      expect(f.offers).toHaveBeenCalledTimes(1)
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
+
+  it.each(['native-v1', 'legacy'] as const)('delivers pinned Agent instructions through the %s channel', async delivery => {
+    const f = fixture(undefined, { sdkOptions: { systemPrompt: 'Harness policy' } })
+    const request = workflowRequest()
+    const text = 'Follow the saved output format.'
+    request.configuration.prompt.system = 'Return one raw JSON object.'
+    request.configuration.assignedSkills = [{ skillId: 'format', version: '1' }]
+    request.configuration.resolvedSkills = [{ skillId: 'format', version: '1', name: 'Format', instructions: text,
+      contentHash: `sha256:${createHash('sha256').update(text).digest('hex')}` }]
+    if (delivery === 'native-v1') request.configuration.instructionDelivery = 'native-v1'
+    try {
+      await f.manager.prepareInspection({ request, correlationId: 'execution:execution' })
+      const options = f.queries.mock.calls[0]![0].options
+      if (delivery === 'native-v1') {
+        expect(options.systemPrompt).toBe('Harness policy\n\nReturn one raw JSON object.\n\n# Skill: Format (format@1)\n\n' + text)
+      } else {
+        expect(options.systemPrompt).toBe('Harness policy')
+      }
+      expect(f.offers).not.toHaveBeenCalled()
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
+
+  it('retains the original attributed result in terminal history for workflow validation', async () => {
+    const f = fixture(() => raw => {
+      const frame = raw as Record<string, unknown>
+      return frame.type === 'result' ? [{ type: 'claude.result', payload: { source: { eventId: frame.uuid } } }] : []
+    })
+    let history: import('../port.js').NativeHistory | undefined
+    try {
+      const running = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'operator:one',
+        onSessionObserved: async () => undefined, onTerminal: async terminal => { history = terminal.history } }))
+      const input = await f.nextMessage()
+      void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
+      const result = { type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid,
+        subtype: 'success', is_error: false, result: 'done' }
+      void f.frames.offer(result)
+      await running
+      expect(history?.events.find(event => event.type === 'claude.result')?.payload.nativeResult).toEqual(result)
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
   it('does not treat saved MCP config as live connected or replace a prepared owner/query', async () => {
     const f = fixture(undefined, { expectedMcp: { serverName: 'graphql', url: 'http://127.0.0.1:3000/mcp/app' } })
     f.statuses.mockResolvedValueOnce([{ name: 'graphql', status: 'pending', source: 'dynamic', config: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app', headers: { Authorization: 'secret-token' } }, tools: [] }])
@@ -497,6 +649,60 @@ describe('Claude native session manager admission', () => {
     await expect(f.manager.prepareInspection({ ...start, correlationId: 'other-owner' } as NativeSessionStart)).rejects.toThrow('immutable inspection context')
     expect(f.queries).toHaveBeenCalledTimes(1)
     await f.manager.dispose?.()
+  })
+
+  it('refreshes only the managed HTTP credential while retaining the same in-process SDK server', async () => {
+    const instance: { self?: unknown } = {}
+    instance.self = instance
+    const fileServer = { type: 'sdk', name: 'graphql-files', instance }
+    const http = { type: 'http', url: 'http://127.0.0.1:3000/mcp/app' }
+    const base = { graphql: http, 'graphql-files': fileServer }
+    const f = fixture(undefined, { sdkOptions: { mcpServers: base }, appMcpAccess: 'management' })
+    const tokenFree = { ...start, environment: { agentId: 'operator', variables: {} } }
+    const credentialed = { ...start, environment: { agentId: 'operator',
+      variables: { FOREMAN_CODE_MCP_TOKEN: 'scoped-credential' } } }
+    const servers = { ...base, graphql: { ...http, headers: { Authorization: 'Bearer scoped-credential' } } }
+    try {
+      await f.manager.prepareInspection(tokenFree)
+      const inspected = await f.manager.refreshInspectionCredentials(credentialed, servers)
+      expect(inspected.httpCredentialAcknowledgement?.endpoint).toBe(http.url)
+      expect(f.setServers).toHaveBeenCalledWith(servers)
+      expect(f.queries).toHaveBeenCalledOnce()
+      await expect(f.manager.refreshInspectionCredentials(credentialed, {
+        ...servers, 'graphql-files': { ...fileServer, instance: {} },
+      })).rejects.toThrow('unrelated native MCP servers')
+      await expect(f.manager.refreshInspectionCredentials(credentialed, {
+        ...servers, graphql: { ...servers.graphql, url: 'http://127.0.0.1:9999/mcp' },
+      })).rejects.toThrow('server names, endpoints')
+      expect(f.setServers).toHaveBeenCalledOnce()
+    } finally { await f.manager.dispose?.() }
+  })
+  it('refreshes a token-free failed HTTP connection on the same query before offering input', async () => {
+    const endpoint = 'http://127.0.0.1:3000/mcp/app'
+    const servers = { graphql: { type: 'http', url: endpoint } }
+    const f = fixture(undefined, { sdkOptions: { mcpServers: servers }, appMcpAccess: 'management',
+      expectedMcp: { serverName: 'graphql', url: endpoint } })
+    f.statuses.mockResolvedValueOnce([{ name: 'graphql', status: 'failed', source: 'dynamic',
+      config: { type: 'http', url: endpoint, headers: { Authorization: '' } }, tools: [] }])
+    try {
+      const tokenFree = { ...start, environment: { agentId: 'operator', variables: {} } }
+      const inspection = await f.manager.prepareInspection(tokenFree)
+      expect(inspection.servers[0]?.status).toBe('failed')
+      expect(inspection.httpCredentialAcknowledgement).toBeUndefined()
+      expect(f.offers).not.toHaveBeenCalled()
+      const credentialed = { ...start, environment: { agentId: 'operator', variables: {
+        FOREMAN_CODE_MCP_TOKEN: 'scoped-token',
+      } } }
+      await f.manager.refreshInspectionCredentials(credentialed, {
+        graphql: { ...servers.graphql, headers: { Authorization: 'Bearer scoped-token' } },
+      })
+      expect(await f.manager.inspectMcp()).toMatchObject({ state: 'connected',
+        credentialArrangement: { kind: 'scoped_http_header' } })
+      expect(f.queries).toHaveBeenCalledTimes(1)
+      expect(f.offers).not.toHaveBeenCalled()
+    } finally {
+      await f.manager.dispose?.()
+    }
   })
 
   it.each([
@@ -793,4 +999,112 @@ describe('Claude native instruction delivery', () => {
     await vi.waitFor(() => expect(f.queries).toHaveBeenCalled())
     expect(f.queries.mock.calls[0]![0].options.systemPrompt).toBe('Harness instructions.')
   })
+})
+
+it('applies preferences by idle exact-session resume and retains the admitted security configuration', async () => {
+  const security = { model: 'sonnet', permissionMode: 'default', tools: ['Read'],
+    sandbox: { enabled: true, allowUnsandboxedCommands: false }, settingSources: [], strictMcpConfig: true }
+  const f = fixture(undefined, { sdkOptions: security })
+  let frames = f.frames
+  f.client.query = input => {
+    f.queries(input)
+    frames = new ClaudeBoundedQueue(32)
+    return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](),
+      initializationResult: async () => ({ models: [{ value: 'sonnet', resolvedModel: 'claude-sonnet' },
+        { value: 'sonnet[1m]', resolvedModel: 'claude-sonnet', displayName: 'Sonnet (1M)' }] }),
+      getContextUsage: async () => ({ rawMaxTokens: input.options.model === 'sonnet[1m]' ? 1000000 : 200000,
+        maxTokens: 200000, totalTokens: 10,
+        model: input.options.model === 'sonnet[1m]' ? 'Sonnet (1M)' : String(input.options.model),
+        isAutoCompactEnabled: (input.options.env as Record<string, string>)?.DISABLE_AUTO_COMPACT !== '1' }),
+      interrupt: f.interrupt, close: () => frames.close(), setPermissionMode: async () => {},
+    }
+  }
+  const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+    nativeSessionId: 'native-session' }, start)
+  const desired = SessionPreferencesSchema.parse({ autoCompact: 'off', autoCompactTokens: 150000 })
+  await f.manager.applySessionPreferences!(session, desired)
+  expect(f.manager.appliedSessionPreferences!(session)).toEqual(desired)
+  const resumed = f.queries.mock.calls.at(-1)![0]
+  expect(resumed.options).toMatchObject({ ...security, resume: 'native-session',
+    env: { DISABLE_AUTO_COMPACT: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '150000' } })
+  await f.manager.applySessionPreferences!(session, SessionPreferencesSchema.parse({
+    autoCompact: 'on', contextProfile: 'sonnet[1m]', autoCompactTokens: 500000,
+  }))
+  expect(f.manager.appliedSessionPreferences!(session)?.contextProfile).toBe('sonnet[1m]')
+  expect((await f.manager.sessionControlCapabilities!(session)).modelCapacity).toBe(1000000)
+  expect(f.queries.mock.calls.at(-1)![0].options).toMatchObject({ ...security, model: 'sonnet[1m]', resume: 'native-session' })
+  await f.manager.dispose!()
+})
+
+it('rejects an oversized fresh budget before the first model input', async () => {
+  const f = fixture(undefined, { sdkOptions: { model: 'sonnet' } })
+  const query = f.client.query
+  f.client.query = input => ({ ...query(input), getContextUsage: async () => ({ rawMaxTokens: 200000,
+    maxTokens: 200000, totalTokens: 0, model: 'sonnet', isAutoCompactEnabled: true }) })
+  await f.manager.configureSessionPreferences!(SessionPreferencesSchema.parse({ autoCompactTokens: 1000000 }))
+  const events = drain(f.manager.startInitialTurn(start, { prompt: 'task', clientCorrelationId: 'operator:one',
+    onSessionObserved: async () => {} }))
+  await expect(events).rejects.toThrow('context capacity')
+  await expect(events).rejects.toMatchObject({ certainty: 'definite', deliveryState: 'not-delivered' })
+  expect(f.offers).not.toHaveBeenCalled()
+  await f.manager.dispose!()
+})
+
+for (const result of ['no-op', 'failed'] as const) it(`recovers a lost ${result} compaction result while resident and after restart`, async () => {
+  const profilePath = await mkdtemp(join(tmpdir(), 'claude-controls-'))
+  const localScope = { ...scope, profilePath }
+  const f = fixture(undefined, { scope: localScope })
+  const open = f.runner.open
+  f.runner.open = async input => {
+    const sdk = await open(input)
+    return { ...sdk, output: { async *[Symbol.asyncIterator]() {
+      for await (const output of sdk.output) {
+        if ((output.raw as { type?: string }).type !== 'result') yield output
+      }
+    } } }
+  }
+  f.runner.compactionHistory = async () => ({ cursor: { scope: 'scope', identity: 'identity', offset: 0 }, boundaries: [] })
+  const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
+  await f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId,
+    cwd: '/work', claude_code_version: '2.1.284', slash_commands: ['compact'] })
+  await vi.waitFor(async () => expect((await f.manager.sessionControlCapabilities!(session)).compact.supported).toBe(true))
+  const abort = new AbortController()
+  let state: import('@foreman-code/contracts').CompactionState | undefined
+  const compact = f.manager.compactSession!(session, { requestId: 'compact-request', clientCorrelationId: 'compact-correlation',
+    onProgress: async value => { state = value } }, abort.signal)
+  const message = await f.nextMessage()
+  await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+    is_error: result === 'failed', subtype: result === 'failed' ? 'error_during_execution' : 'success', result: 'Nothing to compact' })
+  await vi.waitFor(async () => expect(await f.runner.compactionOutcome!({ ...localScope, nativeSessionId: session.nativeSessionId },
+    localScope, message.uuid)).toMatchObject({ status: result }))
+  abort.abort(new Error('Native notification was lost'))
+  await expect(compact).rejects.toThrow('lost')
+  const pending = { ...state!, status: 'uncertain' as const }
+  expect((await f.manager.reconcileCompaction!(session, pending)).status).toBe(result)
+  await f.manager.dispose!()
+  const restarted = fixture(undefined, { scope: localScope })
+  const rebound = await restarted.manager.attachSession(session, start)
+  expect((await restarted.manager.reconcileCompaction!(rebound, pending)).status).toBe(result)
+  await restarted.manager.dispose!()
+  await rm(profilePath, { recursive: true, force: true })
+})
+
+it('releases its runtime fence after a failed pre-dispatch save without offering compact', async () => {
+  const f = fixture()
+  f.runner.compactionHistory = async () => ({ cursor: { scope: 'scope', identity: 'identity', offset: 0 }, boundaries: [] })
+  const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
+  await f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, cwd: '/work',
+    claude_code_version: '2.1.284', slash_commands: ['compact'] })
+  await vi.waitFor(async () => expect((await f.manager.sessionControlCapabilities!(session)).compact.supported).toBe(true))
+  await expect(f.manager.compactSession!(session, { requestId: 'compact-request', clientCorrelationId: 'control-request',
+    onProgress: async () => {}, onDispatch: async () => { throw new Error('Dispatch storage failed') } }))
+    .rejects.toThrow('Dispatch storage failed')
+  expect(f.offers).not.toHaveBeenCalled()
+  const output = drain(f.manager.startTurn(session, { prompt: 'follow-up', clientCorrelationId: 'next-task' }))
+  const message = await f.nextMessage()
+  await f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: message.uuid })
+  await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'next-result', user_message_uuid: message.uuid,
+    subtype: 'success', is_error: false, result: 'done' })
+  await output
+  await f.manager.dispose!()
 })

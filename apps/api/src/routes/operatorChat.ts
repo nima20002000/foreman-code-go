@@ -1,3 +1,4 @@
+import { SessionControlRequestSchema, SessionControlStateSchema } from '@foreman-code/contracts'
 import {
   OperatorChatSetupSchema, OperatorChatSetupQuerySchema, OperatorActivityPageSchema, OperatorActivityQuerySchema, DeleteOperatorConversationResponseSchema, CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema,
   CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
@@ -22,6 +23,10 @@ const MAX_BOOTSTRAP_BYTES = 256 * 1024
 const MAX_BOOTSTRAP_EVENTS = 128
 
 export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorChatService): void {
+  app.get<{ Params: ConversationParams }>('/api/operator/conversations/:conversationId/session-controls', async request =>
+    SessionControlStateSchema.parse(await chat.readSessionControls(request.params.conversationId, requirePrincipal(request))))
+  app.post<{ Params: ConversationParams; Body: unknown }>('/api/operator/conversations/:conversationId/session-controls', async request =>
+    SessionControlStateSchema.parse(await chat.changeSessionControls(request.params.conversationId, SessionControlRequestSchema.parse(request.body), requirePrincipal(request))))
   const streams = new Map<() => void, string>()
   app.addHook('preClose', async () => { for (const stop of streams.keys()) stop(); streams.clear() })
 

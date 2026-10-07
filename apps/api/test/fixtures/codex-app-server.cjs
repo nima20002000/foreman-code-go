@@ -263,6 +263,19 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     if (flag('hold-thread-fork-ack')) return
     if (flag('late-thread-fork')) setTimeout(() => replyThread(owner, message.id, params), 800)
     else replyThread(owner, message.id, params)
+  } else if (message.method === 'thread/compact/start') {
+    const owner = loadThread(params.threadId)
+    if (!owner) { fail(message.id); return }
+    const turnNumber = owner.turns.length + 1
+    const compact = turn(`compact-${turnNumber}`, 'completed')
+    compact.items.push({ id: `boundary-${turnNumber}`, type: 'contextCompaction' })
+    owner.turns.push(compact)
+    store(owner)
+    result(message.id, {})
+    if (!flag('drop-compact-events')) {
+      send({ method: 'turn/started', params: { threadId: owner.id, turn: { ...compact, status: 'inProgress' } } })
+      send({ method: 'turn/completed', params: { threadId: owner.id, turn: compact } })
+    }
   } else if (message.method === 'thread/resume') {
     if (flag('fail-resume')) { fail(message.id); return }
     const owner = read(`state-${params.threadId}.json`, thread('not-the-requested-thread', params))

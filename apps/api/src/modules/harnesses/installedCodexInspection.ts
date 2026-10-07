@@ -25,7 +25,7 @@ export interface InstalledHarnessInspection {
   readonly inventory: HarnessRegistryReadback
   readonly currentTarget: CurrentInstalledHarnessTarget | null
 }
-const unavailable = (reason: string): never => { throw new DomainError('HARNESS_INVENTORY_STALE', 'Installed harness evidence changed or is unavailable.', 409, { reason }) }
+const unavailable = (reason: string): never => { throw new DomainError('HARNESS_INVENTORY_STALE', 'Installed native harness evidence changed or is unavailable.', 409, { reason }) }
 
 /** Worker-safe file inspection only: no DB, version/login command, model turn,
  * installation, qualification run, or authority inferred from a config flag. */
@@ -111,7 +111,8 @@ export async function retainInstalledHarnessInventory(input: {
   qualifications: Pick<HarnessQualificationRepository, 'findInstalled'>
   binding: DeviceSessionBinding
   inventory: unknown
-  suiteRevisions: Readonly<Partial<Record<'codex' | 'opencode', string>>>
+  suiteRevision: string
+  opencodeSuiteRevision?: string
 }): Promise<void> {
   const inventory = HarnessRegistryReadbackSchema.parse(input.inventory)
   for (const installation of inventory.installations) {
@@ -120,7 +121,7 @@ export async function retainInstalledHarnessInventory(input: {
     installation.observedVersion = null; installation.qualified = false
     installation.authenticated = null; installation.compatible = null
     const sha256 = installation.launcher.payloadFingerprints?.find(value => value.path === installation.launcher.resolvedLauncher)?.fingerprint
-    const suiteRevision = input.suiteRevisions[harness]
+    const suiteRevision = harness === 'codex' ? input.suiteRevision : input.opencodeSuiteRevision
     if (!sha256 || !installation.installationFingerprint || !suiteRevision) continue
     const target = { hostRef: installation.hostRef, applicationInstallationId: input.binding.workerInstallationId,
       harnessInstallationId: installation.harnessInstallationId, installationFingerprint: installation.installationFingerprint }
@@ -154,9 +155,4 @@ export async function inspectInstalledWorkflowHarnesses(
   const opencode = await inspectInstalledHarness({ ...input, harness: 'opencode' })
   return HarnessRegistryReadbackSchema.parse({ ...codex.inventory,
     installations: [...codex.inventory.installations, ...opencode.inventory.installations] })
-}
-
-export function retainInstalledCodexInventory(input: Omit<Parameters<typeof retainInstalledHarnessInventory>[0], 'suiteRevisions'>
-  & { suiteRevision: string }) {
-  return retainInstalledHarnessInventory({ ...input, suiteRevisions: { codex: input.suiteRevision } })
 }

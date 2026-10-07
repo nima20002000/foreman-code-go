@@ -8,8 +8,9 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { ProductionHarnessRegistry } from '../src/modules/harnesses/productionRegistry.js'
 import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { describe, expect, it, vi } from 'vitest'
-import { inspectInstalledCodex, inspectInstalledHarness, inspectInstalledWorkflowHarnesses, readInstalledHarnessQualification, readInstalledCodexQualification, retainInstalledCodexInventory } from '../src/modules/harnesses/installedCodexInspection.js'
+import { inspectInstalledCodex, inspectInstalledHarness, inspectInstalledWorkflowHarnesses, readInstalledHarnessQualification, readInstalledCodexQualification, retainInstalledHarnessInventory } from '../src/modules/harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
+import { inspectInstalledOpenCode } from '../src/modules/harnesses/installedOpenCodeInspection.js'
 import type { HarnessQualification } from '@foreman-code/contracts/harness-qualification'
 
 async function fixture(version = '0.132.0') {
@@ -32,6 +33,26 @@ function proof(target: NonNullable<Awaited<ReturnType<typeof inspectInstalledCod
 }
 
 describe('passive installed worker Codex evidence producer', () => {
+  it('discovers OpenCode only from an explicit protected selection and never treats its expected version as qualification', async () => {
+    const f = await fixture()
+    try {
+      expect((await inspectInstalledOpenCode(f.input)).currentTarget).toBeNull()
+      const binary = join(f.root, 'opencode')
+      await writeFile(binary, Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.from('opencode-fixture-image')]), { mode: 0o700 })
+      const selected = JSON.parse(await readFile(f.path, 'utf8'))
+      await writeFile(f.path, JSON.stringify({ ...selected, opencode: { binary, expectedVersion: '1.18.31', payloadPaths: [] } }), { mode: 0o600 })
+      const inspected = await inspectInstalledOpenCode(f.input)
+      expect(inspected.currentTarget).toMatchObject({ expectedVersion: '1.18.31',
+        installation: { driverId: 'opencode', observedVersion: null, authenticated: null, qualified: false,
+          protocolRevision: 'opencode-native-adapter-v1' } })
+      expect(inspected.currentTarget!.target.harnessInstallationId)
+        .not.toBe((await inspectInstalledCodex(f.input)).currentTarget!.target.harnessInstallationId)
+      const acceptRemoteSnapshot = vi.fn()
+      await retainInstalledHarnessInventory({ registry: { acceptRemoteSnapshot }, qualifications: { findInstalled: async () => [] },
+        binding: f.input.binding, inventory: inspected.inventory, suiteRevision: 'codex-suite', opencodeSuiteRevision: 'opencode-suite' })
+      expect(acceptRemoteSnapshot.mock.calls[0]![1].installations[0]).toMatchObject({ qualified: false, observedVersion: null })
+    } finally { await rm(f.root, { recursive: true, force: true }) }
+  })
   it('derives installed metadata and the exact W07 tuple without promoting 0.132 selection or login to trust', async () => {
     const f = await fixture()
     try {
@@ -141,7 +162,7 @@ describe('passive installed worker Codex evidence producer', () => {
       () => connected ? binding : null, {})
     try {
       const report = (await inspectInstalledCodex(f.input)).inventory
-      await retainInstalledCodexInventory({ registry, qualifications: { findInstalled: async () => [] }, binding, inventory: report, suiteRevision: 'actual-suite-v1' })
+      await retainInstalledHarnessInventory({ registry, qualifications: { findInstalled: async () => [] }, binding, inventory: report, suiteRevision: 'actual-suite-v1' })
       const host = { kind: 'device' as const, mainId: binding.mainId, deviceId: binding.deviceId }
       const readback = await registry.get(principal, host)
       expect(readback.installations).toEqual(report.installations)
@@ -172,7 +193,7 @@ describe('passive installed worker Codex evidence producer', () => {
       const qualifications = { findInstalled: async (target: typeof next.target) => records
         .filter(row => row.target.installationFingerprint === target.installationFingerprint).map(row => row.record) }
       const acceptRemoteSnapshot = vi.fn()
-      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications,
+      await retainInstalledHarnessInventory({ registry: { acceptRemoteSnapshot }, qualifications,
         binding: f.input.binding, inventory: current.inventory, suiteRevision: 'actual-suite-v1' })
       expect(acceptRemoteSnapshot.mock.calls[0]?.[1].installations[0]).toMatchObject({ observedVersion: '0.160.0', qualified: true })
       expect(await readInstalledCodexQualification(qualifications, current.currentTarget!, 'actual-suite-v1')).toEqual(next.record)
@@ -188,14 +209,14 @@ describe('passive installed worker Codex evidence producer', () => {
       inspection.inventory.installations[0]!.observedVersion = '0.154.0'
       inspection.inventory.installations[0]!.authenticated = true
       const acceptRemoteSnapshot = vi.fn()
-      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { findInstalled: async () => [] },
+      await retainInstalledHarnessInventory({ registry: { acceptRemoteSnapshot }, qualifications: { findInstalled: async () => [] },
         binding: f.input.binding, inventory: inspection.inventory, suiteRevision: 'actual-suite-v1' })
       expect(acceptRemoteSnapshot.mock.calls[0]?.[1].installations[0]).toMatchObject({ observedVersion: null, qualified: false, authenticated: null })
       const actual = proof(target)
-      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { findInstalled: async () => [actual] },
+      await retainInstalledHarnessInventory({ registry: { acceptRemoteSnapshot }, qualifications: { findInstalled: async () => [actual] },
         binding: f.input.binding, inventory: inspection.inventory, suiteRevision: 'actual-suite-v1' })
       expect(acceptRemoteSnapshot.mock.calls[1]?.[1].installations[0]).toMatchObject({ observedVersion: '0.132.0', qualified: true, authenticated: null })
-      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { findInstalled: async () => [actual, { ...actual, version: 'ambiguous-version' }] },
+      await retainInstalledHarnessInventory({ registry: { acceptRemoteSnapshot }, qualifications: { findInstalled: async () => [actual, { ...actual, version: 'ambiguous-version' }] },
         binding: f.input.binding, inventory: inspection.inventory, suiteRevision: 'actual-suite-v1' })
       expect(acceptRemoteSnapshot.mock.calls[2]?.[1].installations[0]).toMatchObject({ observedVersion: null, qualified: false })
     } finally { await rm(f.root, { recursive: true, force: true }) }

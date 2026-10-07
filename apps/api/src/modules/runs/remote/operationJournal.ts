@@ -1,3 +1,4 @@
+import { CompactionStateSchema, type CompactionState } from '@foreman-code/contracts'
 import { open, readFile, rename, mkdir, unlink, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -16,6 +17,8 @@ import { JobLogChunkSchema, type JobLogChunk } from '@foreman-code/contracts/job
 import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
+import { WorkerConversationReceiptSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { WorkerConversationJournal } from '../../conversations/workerJournal.js'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema, RemoteOwnerReconciliationSchema,
   type RemoteOperationReceipt, type RemoteOperationStatus, type RemoteOwnerControl,
   type RemoteInteractionTarget, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOwnerReconciliation } from '@foreman-code/contracts/remote-execution'
@@ -41,6 +44,9 @@ const ArchivedWorkflowSchema = z.object({
 }).strict()
 const JournalSchema = z.object({
   schemaVersion: z.literal(1),
+  conversations: z.array(WorkerConversationReceiptSchema).default([]),
+  nativeControls: z.array(z.object({ operationId: z.string(), requestId: z.string(), inputHash: z.string(),
+    native: RemoteNativeIdentitySchema, state: CompactionStateSchema }).strict()).default([]),
   archivedWorkflows: z.array(ArchivedWorkflowSchema).default([]),
   controlDeliveries: z.array(ControlDeliverySchema).default([]),
   jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]),
@@ -70,13 +76,23 @@ export class RemoteOperationJournal {
   private closed = false
   private faulted = false
   private tail: Promise<unknown> = Promise.resolve()
+  readonly conversations: WorkerConversationJournal
   private constructor(
     private readonly path: string,
     private data: z.infer<typeof JournalSchema>,
     private readonly capacity: number,
     private readonly byteLimit: number,
     private readonly lock: Awaited<ReturnType<typeof acquireJournalOwner>>,
-  ) {}
+  ) {
+    this.conversations = new WorkerConversationJournal({
+      read: async () => {
+        await this.tail
+        if (this.closed || this.faulted) throw new Error('Journal unavailable: recovery required')
+        return structuredClone(this.data.conversations)
+      },
+      change: apply => this.change(data => apply(data.conversations)),
+    }, capacity)
+  }
   static async open(path: string,
     options: { initializeNewInstallation?: boolean; capacity?: number; byteLimit?: number;
       /** The packaged Worker's exclusive state socket must still be held. */
@@ -101,10 +117,10 @@ export class RemoteOperationJournal {
         if (lock.recovered || !options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') {
           throw new Error('Journal unavailable: recovery required', { cause: error })
         }
-        data = { schemaVersion: 1, archivedWorkflows: [], controlDeliveries: [], receipts: [],
+        data = { schemaVersion: 1, conversations: [], nativeControls: [], archivedWorkflows: [], controlDeliveries: [], receipts: [],
           qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
       }
-      if (data.receipts.length + data.qualificationReceipts.length > capacity) throw new Error('Journal exceeds capacity')
+      if (data.receipts.length + data.qualificationReceipts.length + data.conversations.length > capacity) throw new Error('Journal exceeds capacity')
       const journal = new RemoteOperationJournal(path, data, capacity, byteLimit, lock)
       await journal.persist(journal.serialize(data, { skipControlReserve: true }))
       await journal.compactReviewResults()
@@ -302,6 +318,9 @@ export class RemoteOperationJournal {
       if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
       const next = structuredClone(this.data)
       const result = await apply(next)
+      if (next.receipts.length + next.qualificationReceipts.length + next.conversations.length > this.capacity) {
+        throw new Error('Journal full: explicit retention disposition required')
+      }
       if (same(next, this.data)) return structuredClone(result)
       const serialized = this.serialize(next, options)
       try { await this.persist(serialized) } catch (error) { this.faulted = true; throw error }
@@ -369,7 +388,7 @@ export class RemoteOperationJournal {
       return receipt
     })
   }
-  reserveTurn(operationId: string, input: { correlationId: string; promptDigest: string }) {
+  reserveTurn(operationId: string, input: { correlationId: string; promptDigest: string; sessionMode?: 'regular' | 'plan' }) {
     return this.change(async data => {
       const archived = await this.archivedReceipt(data, operationId)
       if (archived) {
@@ -377,9 +396,10 @@ export class RemoteOperationJournal {
         return { reserved: false, receipt: archived }
       }
       const receipt = this.receipt(data, operationId)
-      if (receipt.turnInput && !same(receipt.turnInput, input)) throw new Error('Turn input binding conflict')
+      const turnInput = { ...input, sessionMode: input.sessionMode ?? 'regular' }
+      if (receipt.turnInput && !same(receipt.turnInput, turnInput)) throw new Error('Turn input binding conflict')
       if (receipt.stopFence || receipt.turnEntryAttempted || receipt.phase !== 'start_acknowledged') return { reserved: false, receipt }
-      receipt.turnEntryAttempted = true; receipt.turnInput = input; receipt.sequence++; return { reserved: true, receipt }
+      receipt.turnEntryAttempted = true; receipt.turnInput = turnInput; receipt.sequence++; return { reserved: true, receipt }
     })
   }
   acknowledgeTurn(operationId: string, turnId: string) {
@@ -510,6 +530,39 @@ export class RemoteOperationJournal {
       receipt.interaction = target; receipt.sequence++; return receipt
     })
   }
+  reserveSessionControl(operationId: string, input: { requestId: string; clientCorrelationId: string }, native: RemoteNativeIdentity) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      if (!same(receipt.native, native)) throw new Error('Wrong native session control owner')
+      const inputHash = JSON.stringify(input)
+      const prior = data.nativeControls.find(control => control.operationId === operationId && control.requestId === input.requestId)
+      if (prior) {
+        if (prior.inputHash !== inputHash || !same(prior.native, native)) throw new Error('Session control identity conflict')
+        return { dispatch: false, state: prior.state }
+      }
+      const state: CompactionState = { requestId: input.requestId, nativeSessionId: native.sessionId,
+        nativeOperationId: null, status: 'accepted', dispatchPhase: 'reserved',
+        reservationOwner: receipt.workerIncarnationId, message: 'Native compaction is pending.', beforeTokens: null,
+        observedAt: new Date().toISOString() }
+      data.nativeControls.push({ operationId, requestId: input.requestId, inputHash, native, state })
+      return { dispatch: true, state }
+    })
+  }
+
+  async sessionControl(operationId: string, requestId: string) {
+    await this.tail
+    return structuredClone(this.data.nativeControls.find(control => control.operationId === operationId && control.requestId === requestId))
+  }
+
+  saveSessionControl(operationId: string, state: CompactionState) {
+    return this.change(data => {
+      const control = data.nativeControls.find(item => item.operationId === operationId && item.requestId === state.requestId)
+      if (!control || control.native.sessionId !== state.nativeSessionId) throw new Error('Wrong native control result')
+      control.state = CompactionStateSchema.parse(state)
+      return control.state
+    })
+  }
+
   control(command: RemoteOwnerControl) {
     return this.change(async data => {
       command = RemoteOwnerControlSchema.parse(command)

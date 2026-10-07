@@ -43,7 +43,7 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
     }
     return join(directory, 'opencode.json')
   }
-  private contents(file: string): Promise<string> { return readNativeUserFile(file, true) }
+  private contents(file: string): Promise<string> { return readNativeUserFile(file, { whenMissing: '{}\n' }) }
   async read(signal: AbortSignal): Promise<NativeMcpSnapshot> {
     const { configDirectory, effective, effectivePermissions } = await this.inspect(signal)
     const file = await this.userFile(configDirectory)

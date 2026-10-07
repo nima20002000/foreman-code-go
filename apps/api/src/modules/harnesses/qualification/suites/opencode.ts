@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import type { File, FileRevision } from '@foreman-code/contracts/files'
 import type { FileMcpService } from '../../../files/tools/mcpServer.js'
-import { createQualificationFileMcpListener } from '../fileMcpListener.js'
+import { createQualificationFileServer } from '../fileServer.js'
 import type { FileToolContext } from '../../../files/tools/types.js'
 import { ManagedOpenCodeServer } from '../../opencodeTransport.js'
 import { collectChecks, nonempty, object, requireCondition, type Check } from './checks.js'
@@ -22,16 +22,15 @@ export const opencodeQualificationSuite: QualificationSuite = {
   harness: 'opencode', revision: 'opencode-live-6',
   async run(input: NativeQualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
-    const server = new ManagedOpenCodeServer({
-      binary: input.binary, workingDirectory: input.workDirectory,
+    const server = new ManagedOpenCodeServer({ binary: input.binary, workingDirectory: input.workDirectory,
       ...(input.processRecovery ? { processRecovery: input.processRecovery } : {}),
       ...(input.assertInstallation ? { assertInstallation: input.assertInstallation } : {}),
-      ownerAgentId: 'qualification', appMcpAccess: 'none', startupTimeoutMs: 30_000,
+      ownerAgentId: 'qualification', appMcpAccess: 'none', startupTimeoutMs: 30_000 })
+    const app = createQualificationFileServer(() => fileService, (request, statusCode) => {
+      fileRequests.push({ ...request, body: redact(request.body), statusCode })
     })
-    let fileListener: Awaited<ReturnType<typeof createQualificationFileMcpListener>> | undefined
     const releaseServer = input.ownCleanup?.(() => server.dispose())
-    const closeFiles = async () => { await fileListener?.close() }
-    const releaseApp = input.ownCleanup?.(closeFiles)
+    const releaseApp = input.ownCleanup?.(() => app.close())
     const evidence: Record<string, unknown> = { profile: input.profile, binarySha256: input.binarySha256, model: input.model }
     const nativeTurns: Array<{ messageId: string; messages: unknown }> = []
     const fileRequests: Array<{ method: string; body: unknown; statusCode?: number }> = []
@@ -209,15 +208,9 @@ export const opencodeQualificationSuite: QualificationSuite = {
       }],
       ['mcp-file-tools', async () => {
         await writeFile(sourcePath, sourceBytes, { flag: 'wx', mode: 0o400 })
-        fileListener = await createQualificationFileMcpListener(fileService, token, {
-          observeRequest: (request) => {
-            const observed: typeof fileRequests[number] = { method: request.method, body: redact(request.body) }
-            fileRequests.push(observed)
-            return (statusCode) => { observed.statusCode = statusCode }
-          },
-        })
+        const address = await app.listen()
         mcpName = `graphql_files_qualification_${randomUUID().replaceAll('-', '').slice(0, 12)}`
-        await request('/mcp', { name: mcpName, config: { type: 'remote', url: fileListener.endpoint, enabled: true,
+        await request('/mcp', { name: mcpName, config: { type: 'remote', url: `${address}/mcp/files`, enabled: true,
           oauth: false, headers: { Authorization: `Bearer ${token}` } } })
         mcpReady = true
         requireCondition(object(object(await request('/mcp'))[mcpName]).status === 'connected', 'File MCP did not connect.')
@@ -239,7 +232,7 @@ export const opencodeQualificationSuite: QualificationSuite = {
       if (mcpReady && mcpName) await request(`/mcp/${encodeURIComponent(mcpName)}/disconnect`, {}).catch(() => undefined)
       await closeQualificationResources([
         { close: () => server.dispose(), release: releaseServer },
-        { close: closeFiles, release: releaseApp },
+        { close: () => app.close(), release: releaseApp },
       ])
     }
   },

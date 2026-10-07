@@ -5,6 +5,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { fileToolFixture } from './support/fileTools.js'
 import { productionClaudeFixture, managementEndpoint } from './support/claudeProduction.js'
+import { PostgresClaudeInteractionAuthority } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
 
 async function offeredTool(f: ReturnType<typeof productionClaudeFixture>, name: string, input: Record<string, unknown>,
   provenance: { name: string; source: string }) {
@@ -18,8 +19,8 @@ async function offeredTool(f: ReturnType<typeof productionClaudeFixture>, name: 
     })) observed.push(event.type)
   })()
   const message = (await (await f.ready.promise).next()).value!
-  void f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, claude_code_version: session.providerVersion, cwd: '/recorded/work' })
-  void f.frames.offer({ type: 'assistant', uuid: 'tool-reply', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+  await f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId, claude_code_version: session.providerVersion, cwd: '/recorded/work' })
+  await f.frames.offer({ type: 'assistant', uuid: 'tool-reply', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
     parent_tool_use_id: null, message: { id: 'tool-api-message', content: [{ type: 'tool_use', id: 'observed-tool', name, input }] } })
   await vi.waitFor(() => expect(f.manager.nativeCallbackContext(session.nativeSessionId, 'observed-tool')).toBeDefined())
   const options = f.sdkQuery.mock.calls[0]![0].options as Options
@@ -32,7 +33,10 @@ async function offeredTool(f: ReturnType<typeof productionClaudeFixture>, name: 
     signal: controller.signal, mcpServer: provenance })
   return { session, message, output, observed, options, controller, hookInput, policy, permission,
     finish: async () => {
-      void f.frames.offer({ type: 'result', uuid: 'tool-result', session_id: session.nativeSessionId,
+      await f.frames.offer({ type: 'assistant', uuid: 'final-reply', session_id: session.nativeSessionId,
+        user_message_uuid: message.uuid, parent_tool_use_id: null,
+        message: { id: 'final-api-message', content: [{ type: 'text', text: 'DONE' }] } })
+      await f.frames.offer({ type: 'result', uuid: 'tool-result', session_id: session.nativeSessionId,
         user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'DONE' })
       await output
     } }
@@ -100,35 +104,54 @@ describe('production Claude approval composition', () => {
   })
 
   it('keeps an allow-once selection uncertain when the SDK aborts before callback completion', async () => {
+    const stage = (name: string) => console.info(`Recorded approval abort: ${name}`)
     const endpoint = await managementEndpoint()
     const f = productionClaudeFixture('operator', undefined, endpoint.url)
+    const validateResponse = PostgresClaudeInteractionAuthority.prototype.validateResponse
+    const validation = vi.spyOn(PostgresClaudeInteractionAuthority.prototype, 'validateResponse')
     try {
       f.start.environment = { agentId: 'operator', variables: { GRAPHQL_MCP_TOKEN: 'synthetic-scoped-token' } }
       await f.manager.inspectMcp()
+      stage('inspection complete')
       await f.manager.refreshInspectionCredentials(f.start, { graphql: { type: 'http', url: endpoint.url,
         headers: { Authorization: 'Bearer synthetic-scoped-token' } } })
+      stage('credential refresh complete')
       const call = await offeredTool(f, 'mcp__graphql__workspace_list', {}, { name: 'graphql', source: 'dynamic' })
+      stage('tool observed')
       const decision = call.permission()
       await vi.waitFor(async () => expect(await f.manager.pending(call.session)).toBeDefined())
       const pending = (await f.manager.pending(call.session))!
+      stage('approval pending')
       f.claim(call.session, 'observed-permission', 'observed-tool')
-      const query = f.query.getMockImplementation()!
       let validations = 0
-      f.query.mockImplementation(async (sql, values) => {
-        if (sql.includes('select principal_id,result from management_command_receipts') && ++validations === 2) {
+      validation.mockImplementation(async function (this: PostgresClaudeInteractionAuthority, identity, answer) {
+        await validateResponse.call(this, identity, answer)
+        if (++validations === 2) {
           call.controller.abort(new Error('SDK callback canceled after selection'))
         }
-        return query(sql, values)
       })
       await expect(f.manager.respond(call.session, 'observed-permission', pending.responseOptions[0]!)).rejects.toThrow('canceled')
+      stage('response uncertain')
       expect(await decision).toMatchObject({ behavior: 'deny', interrupt: true })
+      stage('SDK callback completed')
       const observed = await f.manager.reconcileResponse!(call.session, { nativeRequestId: 'observed-permission',
         nativeRequestType: pending.nativeRequestType, option: pending.responseOptions[0]! })
+      stage('response reconciled')
       expect(observed.responseDeliveries).toEqual([])
       expect(observed.interactionDeliveries).toMatchObject([{ state: 'uncertain' }])
       expect(endpoint.list).not.toHaveBeenCalled()
-      await call.finish()
-    } finally { await f.manager.dispose?.(); await endpoint.app.close() }
+      const closed = expect(call.output).rejects.toThrow('submission remains uncertain')
+      f.frames.close()
+      await closed
+      stage('SDK output closed')
+    } finally {
+      stage('disposing')
+      validation.mockRestore()
+      await f.manager.dispose?.()
+      stage('native manager disposed')
+      await endpoint.app.close()
+      stage('cleanup complete')
+    }
   })
 
   it('admits a real local file MCP call and revokes its credential before the same request finishes', async () => {

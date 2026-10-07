@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import type pg from 'pg'
-import type { AgentConfigurationVersion, AgentHarness, ExecutionResult, Message, NativeSessionReference } from '@foreman-code/contracts'
 import type { AgentChatContext, AgentChatTurn, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { AgentConfigurationVersion, AgentHarness, ExecutionResult, Message, NativeSessionReference, SessionControlState, SessionMode } from '@foreman-code/contracts'
 import { AgentChatService } from '../../src/modules/conversations/agentChat.js'
 import { agentChatKey, type AgentConversationRow, PostgresAgentChatRepository } from '../../src/modules/conversations/agentChatRepository.js'
 import type { OperatorActivityChange } from '../../src/modules/conversations/operatorActivity.js'
@@ -40,7 +40,7 @@ interface Receipt {
   request_id: string; turn_sequence: string; intent: AgentChatTurn['intent']; delivery: AgentChatTurn['delivery']
   message_id: string; native_turn_id: string | null; target_native_turn_id: string | null
   delivery_error: { code: string; message: string } | null; input_hash: string
-  payload: { content: string; interruptRequestId?: string; ownerPrincipalId?: string; nativeSubmission?: { kind: string; nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string } }; result?: ExecutionResult
+  payload: { content: string; sessionMode?: SessionMode; interruptRequestId?: string; ownerPrincipalId?: string; nativeSubmission?: { kind: string; nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string } }; result?: ExecutionResult
   created_at: Date; updated_at: Date; started_at?: Date | null
 }
 
@@ -58,6 +58,7 @@ export class F1Store {
   }
   readonly turns = new Map<string, Receipt>()
   readonly messages = new Map<string, Message>()
+  readonly sessionControls = new Map<string, SessionControlState>()
   readonly publications: Array<{ binding: string; owner_principal_id: string; request_id: string; file_id: string; revision_id: string }> = []
   readonly allocations: Array<{ owner_principal_id: string; request_id: string; file_id: string; revision_id: string; state: string }> = []
   readonly files = new Map<string, { owner_principal_id: string; activity_record_revision: string; state: string }>()
@@ -93,6 +94,32 @@ export class F1Store {
         grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [])
     }
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    if (sql === 'select record from conversation_session_controls where conversation_id=$1'
+      || sql === 'select record from conversation_session_controls where conversation_id=$1 for update') {
+      const record = this.sessionControls.get(String(values[0]))
+      return result(record ? [{ record }] : [])
+    }
+    if (sql === 'update conversation_session_controls set record=$2::jsonb where conversation_id=$1') {
+      const conversationId = String(values[0])
+      if (!this.sessionControls.has(conversationId)) return result()
+      this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
+      return result([], 1)
+    }
+    if (sql.startsWith('select record from conversation_session_defaults')) return result()
+    if (sql.startsWith('insert into conversation_session_controls(conversation_id,record)')) {
+      const conversationId = String(values[0])
+      if (this.sessionControls.has(conversationId)) return result()
+      this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
+      return result([], 1)
+    }
+    if (sql === "update conversation_session_controls set record=$2::jsonb where conversation_id=$1 and (record->>'revision')::bigint=$3") {
+      const conversationId = String(values[0])
+      if (this.sessionControls.get(conversationId)?.revision !== Number(values[2])) return result()
+      this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
+      return result([], 1)
+    }
+    // This message fixture has no admitted compaction command receipts.
+    if (sql.startsWith("select result#>'{state,compaction}' as compaction from management_command_receipts")) return result()
     if (sql.startsWith('with candidates as materialized ( select r.principal_id,r.operation,r.command_id')) return result() // No accepted controls in this fixture.
     if (sql.startsWith('select a.conversation_id,a.request_id,a.activity_id,a.source_provenance')) {
       assert.equal(values[0], 'agent')
@@ -175,7 +202,11 @@ export class F1Store {
       return result([...this.turns.values()].filter((entry) => entry.intent !== 'steer'
         && ['submitting', 'accepted', 'unknown'].includes(entry.delivery)).slice(0, 1).map(() => ({ '1': 1 })))
     }
-    if (sql.startsWith('select payload')) return result(receipt ? [{ content: receipt.payload.content }] : [])
+    if (sql.startsWith('select payload')) return result(receipt ? [{
+      content: receipt.payload.content,
+      mode: receipt.payload.sessionMode ?? null,
+      owner: receipt.payload.ownerPrincipalId ?? null,
+    }] : [])
     if (sql.startsWith('with open as (')) {
       const deliveries = values[1] as string[]
       const limit = Number(values[2])
@@ -287,6 +318,8 @@ export class F1Native implements NativeHarnessSessionManager {
   readonly harness: AgentHarness = 'codex'
   readonly session: NativeSessionReference = { harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'session' }
   readonly starts: string[] = []
+  readonly modes: Array<NativeTurnInput['sessionMode']> = []
+  readonly prompts: string[] = []
   readonly cancels: string[] = []
   readonly steers: NativeSteerInput[] = []
   readonly holds = new Map<string, ReturnType<typeof deferred>>()
@@ -299,9 +332,13 @@ export class F1Native implements NativeHarnessSessionManager {
   async attachSession(): Promise<NativeSessionReference> { throw new Error('Unused: fixture session is already resident.') }
   async *startTurn(_session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     const requestId = input.clientCorrelationId.split(':').at(-1)!
-    this.starts.push(requestId); this.active = requestId
+    this.starts.push(requestId)
+    this.modes.push(input.sessionMode)
+    this.prompts.push(input.prompt)
+    this.active = requestId
     const history: NativeHistory = { correlationId: input.clientCorrelationId, nativeTurnId: `turn-${requestId}`, events: [], pendingInteractions: [] }
     this.histories.set(input.clientCorrelationId, history)
+    await input.onSettingsApplied?.()
     await input.onSubmitted?.(history.nativeTurnId!)
     const hold = this.holds.get(requestId)
     if (hold) {

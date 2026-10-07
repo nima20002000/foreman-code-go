@@ -19,6 +19,7 @@ import { LocalWorkflowNativeOutputRepository } from './localWorkflowNativeOutput
 import { workflowArtifactsAreLocal } from './localWorkflowArtifactAuthority.js'
 import type { LocalWorkflowArtifacts } from './localWorkflowArtifacts.js'
 import { openCodeWorkflowOutputAllowed } from './localWorkflowOutputPolicy.js'
+import { admitNativeOutputContext } from './localOutputContext.js'
 
 interface Ports {
   pool: pg.Pool
@@ -85,18 +86,12 @@ export class LocalWorkflowNativeOutputMcp implements WorkerArtifactMcpExtension 
     const declaration = await this.declaration(principal, command.operation)
     const executionId = declaration.bound.execution_id
     const signal = AbortSignal.timeout(120_000)
-    const native = await this.ports.nativeCall(executionId, WORKER_NATIVE_OUTPUT_TOOL_NAMES[command.operation], originalArgs, signal)
     const artifacts = this.ports.artifacts()
-    let accepted: Awaited<ReturnType<LocalWorkflowArtifacts['authority']['context']>>
-    for (;;) {
-      try { accepted = await artifacts.authority.context(executionId, { mutation: true, operation: command.operation }); break }
-      catch (error) {
-        if (!(error instanceof DomainError) || error.code !== 'NATIVE_ARTIFACT_CONTEXT_PENDING') throw error
-        native.assertCurrent()
-        await this.declaration(principal, command.operation)
-        await delay(25, undefined, { signal })
-      }
-    }
+    const { native, accepted } = await admitNativeOutputContext({ signal,
+      capture: () => this.ports.nativeCall(executionId, WORKER_NATIVE_OUTPUT_TOOL_NAMES[command.operation], originalArgs, signal),
+      context: () => artifacts.authority.context(executionId, { mutation: true, operation: command.operation }),
+      checkDeclaration: () => this.declaration(principal, command.operation),
+    })
     if (native.descriptor.nativeSessionId !== accepted.caller.context.nativeSessionId
       || native.descriptor.rootTurnId !== accepted.caller.context.turnId
       || declaration.bound.native_session_id !== accepted.caller.context.nativeSessionId) throw denied()

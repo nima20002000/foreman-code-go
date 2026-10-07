@@ -17,6 +17,9 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 - Run CI Jobs on paired laptops: Main selects a qualified Worker, transfers the approved source and collects reports and logs.
 - Mark build computers primary or backup and set how much of each computer's CPU and memory builds may use; backups take Jobs only when no primary has room.
 - Place Claude Agents on Main in workflows that also run Agents on other computers.
+- Workflow Agents run CI themselves: `ci_run` queues install, typecheck, lint, unit or build for their Run's workspace on the connected build computers, and `ci_get` reads the result (Operator MCP has the same tools).
+- Computers settings lists each computer as a row in build order, with drag-to-reorder, Primary/Backup, builds on/off, build allowance and live CPU and memory; the sidebar shows busy computers and opens their running Jobs and Agents.
+- Run CI for any commit whose dependency files match the commit a computer was qualified with.
 
 ### Changed
 
@@ -54,6 +57,71 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 
 - Retain sandbox permissions, scoped credentials, assignment checks and owner fences across local and remote artifact and review paths.
 - Preserve kernel-backed native closure evidence and revalidate authenticated reconnects without authorizing replacement launches.
+
+## [0.0.50] - 2026-10-06
+
+### Added
+
+- Add shared Operator and Agent chat session controls for manual compaction, Plan mode, context usage and supported native context settings, with matching HTTP and Operator MCP operations.
+- Add capability-driven chat controls and persistent command receipts, preserving drafts, native session identity and denied-caller behavior.
+
+### Fixed
+
+- Keep native context observations separate from editable settings revisions and retain newer Worker receipts when replies arrive out of order.
+- Give configuration inspection separate process ownership, preserve saved OpenCode connection facts and observed version, and retain the caller on authorized Agent control reads.
+- Page complete MCP tool catalogs within existing Worker relay limits while retaining schemas, annotations, grant filtering and cursor validation.
+
+### Validation
+
+- Retain prior focused passing checks, including 85 conversation integrations, 123 Codex adapter cases, Worker ownership and callback checks, MCP catalog/permission checks, and actual namespace routing.
+- Codex Operator on Main and device, Codex Agent on Main, and OpenCode Agent on Main passed their ordinary native control journeys on earlier candidates.
+- Integrated main v0.0.49 once and passed direct typecheck and lint. Release was completed under the owner order without further native tests or a complete acceptance rerun.
+
+
+### Verification
+
+- not verified: paired Worker restart case (moved to crosscomputer lane)
+- not verified / follow-up: Codex Agent/device first-turn callback timeout; remaining OpenCode Operator and device control journeys; Claude Full-access context-setting live coverage. Main’s explicit Full-access Claude policy is preserved.
+- not verified / follow-up: browser acceptance and interrupted compaction dispatch recovery. The full session-control acceptance matrix is incomplete; no complete native or browser acceptance is claimed.
+- not verified / follow-up: final caller-context and saved OpenCode inspection adjustments received typecheck/lint only under the owner release order; native reruns were stopped.
+## [0.0.49] - 2026-10-06
+
+### Changed
+
+- Require explicit Full access for Claude profiles, presets and Agents at Save and Start through the UI and Operator MCP. Existing unsupported values remain readable until explicitly corrected; they are never upgraded silently.
+- Retire Claude read-only and workspace-write execution policy and the custom AppArmor prerequisite. Application grants, permission rules and native qualification still apply to Full access.
+
+### Fixed
+
+- Retain the saved Claude host profile for local workflow execution and the complete accepted request during native inspection, including its execution context and correlation. Compare JSON values independently of object key order.
+- Deliver the scoped application bearer credential to the inspected Claude HTTP connection before requiring connected health, while retaining endpoint validation and the SDK credential acknowledgement.
+- Deliver pinned Agent instructions and verified skills through the Claude SDK instruction channel.
+- Persist Claude native correlations through an upgrade migration and validate workflow completion against the original SDK result and native message receipt.
+- Preserve sanitized native failure diagnostics before cleanup and keep detached desktop browser files outside temporary build directories.
+
+### Verified
+
+- Passed typecheck, lint, build and the affected contract, API, UI, authenticated MCP and PostgreSQL regressions, including denied callers, persisted Full access readback, invalid-mode Start refusal and database upgrade behavior.
+- Installed and qualified Claude Haiku (`claude-haiku-4-5-20251001`) with Full access on the local PC; completed a saved-profile workflow with a real native session and accepted result.
+- Confirmed Claude, Codex and OpenCode saved presets are eligible, installed services are active, the production database is separate, and the dashboard and desktop icons resolve.
+- The approval-case timeout passed its single unchanged rerun. The installed service also recovered an initial database response deadline on its unchanged automatic startup retry; final installed verification passed.
+
+## [0.0.48] - 2026-10-06
+
+### Fixed
+
+- Route managed MCP requests from native PID namespaces through the authenticated owning endpoint, preserving scope checks and revocation.
+- Preserve the original active OpenCode turn generation during recovery, and recapture the same running output call when an approval observer releases its writer lease.
+- Open the scoped Run graph publication before adopting artifacts with retained native approval receipts, preserving original approvals and publication results across restart.
+- Register native fixture databases and recover only idle owned databases after process closure, retaining active or foreign resources for confirmed cleanup.
+- Share private credential copying between the native runner and Haiku qualification fixture, preserving refreshed test credentials and the original host login.
+- Apply the artifact restart fixture's exact four-approval and zero-join expectations to its single-entry scenario.
+
+### Verified
+
+- Completed all 20 previously untested single-computer OpenCode cases locally: artifacts, mixed-provider handoffs, review returns, joins, approvals, handoff limits, audited qualification, Agent chat fork and terminal human-access isolation.
+- Qualified Claude Haiku (`claude-haiku-4-5-20251001`) through real native lifecycle and tool-policy checks. In-app Codex subjects used `gpt-5.6-luna` at medium reasoning; OpenCode used the pinned 1.18.31 binary.
+- Passed focused unit, authenticated MCP and PostgreSQL regressions, plus typecheck, lint and build. Two timing-only failures passed their single unchanged-case reruns under the owner rule; assertions and deadlines remain unchanged.
 
 ## [0.0.47] - 2026-10-06
 
@@ -156,8 +224,8 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 
 - Retain every terminal handoff activation in Run output, including results from repeated review revisions.
 - Preserve frozen activation inputs during upgrades and provide the original caller through trusted execution context.
-- Sixteen real-native workflow cases covering OpenCode artifacts, mixed Codex/OpenCode handoffs, review returns, joins, approvals and handoff limits are untested on Claude/OpenCode (laptops are Codex-only): selected OpenCode provider qualification reports missing authentication before workflow launch. All three Codex-only cases passed.
-- The OpenCode approval-wait lifecycle case is also untested on Claude/OpenCode (laptops are Codex-only): its qualification reports the same missing provider authentication.
+- Sixteen real-native workflow cases covering OpenCode artifacts, mixed Codex/OpenCode handoffs, review returns, joins, approvals and handoff limits were verified locally in v0.0.48. All three Codex-only cases passed in the original gate.
+- The OpenCode approval-wait lifecycle case was verified locally in v0.0.48.
 
 ### Fixed
 
@@ -278,7 +346,7 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 - Qualify native acceptance per provider, allowing Codex cases to run independently of an unused OpenCode installation.
 - Correlate late session and turn acknowledgements with the original accepted request and retain startup output until admission is persisted.
 - Run selected native acceptance files with invocation-owned databases and preserve process-group cleanup and qualification diagnostics.
-- OpenCode approval isolation (E03-A01), OpenCode Agent chat fork and terminal OpenCode local-human isolation are untested on Claude/OpenCode (laptops are Codex-only): the selected OpenCode Go provider is not connected on the laptops.
+- OpenCode approval isolation (E03-A01), OpenCode Agent chat fork and terminal OpenCode local-human isolation were verified locally in v0.0.48.
 
 ### Fixed
 
@@ -316,7 +384,7 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 - Pass the owned fixture directory explicitly to terminal OpenCode requests, preventing inherited PWD from creating the native session in the surrounding checkout.
 - Verify native MCP startup reads the fixture's unique placement marker while preserving every local HTTP denial, scoped MCP permission and cleanup assertion.
 - Check the selected native OpenCode model and provider through the shared qualification service before terminal launch, keeping unsupported models separate from missing provider credentials and closing the diagnostic process before the unregistered isolation client starts.
-- Terminal OpenCode local-human isolation remains untested on Claude/OpenCode (laptops are Codex-only). Its native model lookup failed before the MCP probe; native preflight now reports missing provider credentials explicitly. Both Codex isolation cases passed on Mana.
+- Terminal OpenCode local-human isolation was verified locally in v0.0.48. Native preflight reports missing provider credentials explicitly. Both Codex isolation cases passed on Mana in the original gate.
 
 ## [0.0.33] - 2026-10-06
 
@@ -336,7 +404,7 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 - Discover file tools before model input and bind file-operation credentials after native acknowledgement.
 - Support the full accepted image attachment count and size with bounded native media identities and recovery history.
 - Keep native acceptance histories, caches, configuration changes and MCP routes in disposable storage, and retain redacted failure codes in run logs.
-- OpenCode approval isolation (E03-A01), audited OpenCode qualification and OpenCode Agent chat fork are untested on Claude/OpenCode (laptops are Codex-only): native checks on Mana returned OPENCODE_AUTH_REQUIRED. Codex lifecycle and fork cases passed; this group adds no Claude provider case.
+- OpenCode approval isolation (E03-A01), audited OpenCode qualification and OpenCode Agent chat fork were verified locally in v0.0.48. Codex lifecycle and fork cases passed in the original gate; this group adds no Claude provider case.
 
 ### Fixed
 
@@ -366,7 +434,7 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 - Give native workflow acceptance invocation-owned CLI configuration and a temporary managed launcher, routing scoped credentials to the fixture API instead of an ambient installation's fixed endpoint.
 - Preserve installed MCP names and credential references, reject unmanaged connections through native preflight, and remove invocation-owned launcher resources during fixture cleanup.
 - Keep the selected Codex login in the private fixture CLI home, with private file permissions and cleanup after native processes close; leave the original native configuration untouched.
-- E03-A01 approval isolation: untested on Claude/OpenCode (laptops are Codex-only). The selected OpenCode Go provider and model were advertised, but that provider was not connected on the laptop.
+- E03-A01 approval isolation was verified locally with the connected OpenCode Go provider in v0.0.48.
 
 ## [0.0.29] - 2026-10-06
 
@@ -422,7 +490,7 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 
 - Open local development and production dashboards without account setup, login, passkeys, browser tokens or cookies.
 - Preserve the former browser owner's conversations, attachments, permissions and command retries across upgrade and restart.
-- Auth native verification: untested on Claude/OpenCode (laptops are Codex-only); credentialed local results are retained separately.
+- Native human-access isolation and credentialed OpenCode qualification were verified locally in v0.0.48; Claude Haiku lifecycle and tool-policy qualification also passed.
 
 ### Removed
 
@@ -464,7 +532,7 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 
 - Scope OpenCode live qualification to its approval case so Codex-only cases can run independently, retaining each provider's qualification and original assertions and deadlines.
 - Use explicit verification subject models without changing user defaults: interim Codex gpt-5.6-luna with medium reasoning and Claude Haiku when selected.
-- Native laptop gate: untested on Claude/OpenCode (laptops are Codex-only). Desktop production installation and native recovery verification remain required separately.
+- Single-computer OpenCode lifecycle, qualification, fork and isolation cases were verified locally in v0.0.48, along with Claude Haiku qualification. Desktop production installation and native recovery verification are recorded separately.
 
 ## [0.0.20] - 2026-10-05
 

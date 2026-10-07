@@ -1,3 +1,4 @@
+import { sessionStartConfiguration, sessionStartDirectory } from '../../src/modules/harnesses/sessionStart.js'
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentFileToolService } from '../../src/modules/files/tools/service.js'
 import Fastify from 'fastify'
@@ -27,22 +28,26 @@ import type { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { PostgresAgentChatRepository } from '../../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
 
-export const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
+export const deferred = <T>() => {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
 const createdAt = '2026-10-01T00:00:00.000Z'
 /** Synthetic installed/profile records and redacted SDK frames. Exercises actual
  * admission/domain/factory/manager classes without native or PostgreSQL claims. */
 export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sharedFactories?: NativeHarnessFactories, endpoint = 'http://127.0.0.1:3000/mcp', fileService?: AgentFileToolService,
   runtime?: { database: pg.Pool; binding: ClaudeDomainBinding; start: NativeSessionStart; sdk: ClaudeSdkClient }) {
   const kind = surface === 'selected-run' ? 'agent' : surface
-  const selection = runtime?.start.kind === 'operator' ? runtime.start.configuration.harnessProfileSelection
-    : runtime?.start.request.configuration.harnessProfileSelection
+  const selection = runtime ? sessionStartConfiguration(runtime.start).harnessProfileSelection : undefined
   const target = selection?.target ?? { hostRef: { kind: 'main' as const, mainId: '77d29f00-408e-4000-8000-000000000001' },
     applicationInstallationId: '77d29f00-408e-4000-8000-000000000001', harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload' }
   const defaultHarness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'subscription' as const,
-    configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
+    configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
     tools: ['mcp__graphql__workspace_list', 'mcp__graphql-files__files.read'], permissionRules: [], instructions: 'Pinned fixture instructions', mcpServers: { graphql: { type: 'http' as const, url: endpoint } } }
   const harness = runtime
-    ? (runtime.start.kind === 'operator' ? runtime.start.configuration.harness : runtime.start.request.configuration.harness)
+    ? sessionStartConfiguration(runtime.start).harness
     : defaultHarness
   if (harness.harness !== 'claude') throw new Error('The production fixture requires a Claude configuration.')
   const override: HostHarnessOverride = { instanceId: selection?.instanceId ?? 'recorded-profile',
@@ -109,6 +114,12 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
       row.pending_interaction = values[2] ? JSON.parse(String(values[2])) : null
       return { rows: [], rowCount: 1 }
     }
+    if (sql === 'select active_request_id from operator_conversations where id=$1') {
+      return { rows: [{ active_request_id: row.active_request_id }] }
+    }
+    if (sql === 'select * from operator_conversations where id=$1') {
+      return { rows: [row] }
+    }
     if (sql.includes('m.id as message_id')) return { rows: [{ ...row, sender_id: 'sender',
       message_id: 'user-message', native_submission: row.payload.nativeSubmission }] }
     if (sql.includes('select kind,id,owner_principal_id,operator_id')) return { rows: [{ ...row, id: surface, agent_id: 'agent' }] }
@@ -135,9 +146,17 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
   const setMcpServers = vi.fn(async () => ({ added: ['graphql'], removed: [], errors: {} }))
   const sdkQuery = vi.fn<ClaudeSdkClient['query']>(options => {
     const frames = queries.length ? new ClaudeBoundedQueue<unknown>(64) : initialFrames
-    const messages = options.prompt[Symbol.asyncIterator]()
+    const incoming = options.prompt[Symbol.asyncIterator]()
+    const first = incoming.next()
+    let firstRead = false
+    const messages: AsyncIterator<ClaudeSdkUserMessage> = { next() {
+      if (firstRead) return incoming.next()
+      firstRead = true
+      return first
+    } }
     queries.push({ frames, messages })
-    ready.resolve(messages)
+    // An inspection query can stay empty; readiness belongs to the SDK query that consumes the input.
+    void first.then(value => { if (!value.done) ready.resolve(messages) }, error => ready.reject(error))
     return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), close: () => frames.close(), interrupt: async () => undefined,
       initializationResult: async () => ({}), setMcpServers,
       mcpServerStatus: async () => [{ name: 'graphql', status: 'connected', config: { type: 'http', url: harness.mcpServers.graphql!.url }, tools: [] }] }
@@ -149,7 +168,7 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     installationDiscovery: async () => launcher })
   const result = productionClaudeManager({ pool, factories, registry: { pinOverride: () => binding } as unknown as ProductionHarnessRegistry,
     profiles, selector: { instanceId: override.instanceId, instanceRevision: override.instanceRevision, target }, binding: domain,
-    role: kind === 'agent' ? 'agent-chat' : kind, configuration: harness, workingDirectory: start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory, ownerAgentId: surface,
+    role: kind === 'agent' ? 'agent-chat' : kind, configuration: harness, workingDirectory: sessionStartDirectory(start), ownerAgentId: surface,
     recovery: { root: '/forbidden-native-recovery', owner: surface }, appMcpAccess: kind === 'agent' ? 'none' : 'scoped', mode: 'replay',
     inspectionStart: async () => start, loadClient,
     ...(fileService ? { files: { service: () => fileService, sdk: async () => ({ createSdkMcpServer, tool }) } } : {}) })

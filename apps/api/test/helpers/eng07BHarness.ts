@@ -1,3 +1,4 @@
+import { isWorkflowStart } from '../../src/modules/harnesses/sessionStart.js'
 import { randomUUID } from 'node:crypto'
 import { expect, vi } from 'vitest'
 import type { HarnessExecutionRequest } from '@foreman-code/contracts'
@@ -73,7 +74,7 @@ export async function scenarioHarness(scenario: Scenario) {
     const raw = connection()
     return { ...raw,
       async createSession(input, signal) {
-        if (input.kind === 'operator') throw new Error('ENG07 only supplies workflow-provider sessions')
+        if (!isWorkflowStart(input)) throw new Error('ENG07 only supplies workflow-provider sessions')
         const session = await raw.createSession(input, signal)
         requests.set(session.nativeSessionId, structuredClone(input.request))
         return session

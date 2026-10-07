@@ -1,3 +1,6 @@
+import { CompactionActivity } from '../sessionControls/CompactionActivity'
+import { useSessionControls } from '../sessionControls/useSessionControls'
+import { parseSessionCommand, type SessionMode } from '@foreman-code/contracts'
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AgentChatContext, AgentChatIntent, AgentChatSessionState, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import { ChatAttachmentControl, useConversationAttachments } from '../../attachments'
@@ -36,6 +39,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const chat = useAgentChat(context, selected), state = chat.state
   const conversation = state?.conversation
   const conversationId = conversation?.id
+  const sessionControls = useSessionControls(conversationId, context.workspaceId, context, selected?.selection.executionId)
   const resendFileClient = useMemo(() => conversationId ? createFileCardHttpClient({
     download: `/api/workspaces/${encodeURIComponent(context.workspaceId)}/agent-chat/conversations/${encodeURIComponent(conversationId)}/files/{fileId}/revisions/{revisionId}/content`,
   }) : undefined, [context.workspaceId, conversationId])
@@ -60,9 +64,12 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     }
   }, [state])
   const focus = () => composer.current?.focus({ preventScroll: true })
-  const submit = (intent: AgentChatIntent, content = draft) => {
+  const submit = (intent: AgentChatIntent, content = draft, sessionMode?: SessionMode) => {
+    const command = parseSessionCommand(content)
+    const mode = command.kind === 'plan-task' ? 'plan' : sessionMode ?? sessionControls.state?.desiredMode
+    const nextIntent = intent === 'steer' && mode === 'plan' ? 'next_turn' : intent
     const attempt = prepareChatAttachments(attachments)
-    if (attempt) chat.send(content, intent, true, false, attempt)
+    if (attempt) chat.send(content, nextIntent, true, false, attempt, mode)
     focus()
   }
   if (selected && chat.access.isPending) return <p role="status">Loading…</p>
@@ -113,6 +120,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     .flatMap((message) => message.attachments ?? []) : []
   const legacyNotices = <div className="agent-chat-notices">
     {runActivity}
+    <CompactionActivity controls={sessionControls} />
     {state ? <p className="agent-chat-session-label" role="status">{!state.conversation && !state.availability.canSend
       ? context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
       : state.sessionState === 'idle' && background ? background.label : stateLabels[state.sessionState]}</p> : null}
@@ -179,11 +187,11 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
       onRefresh={chat.refresh} refreshing={chat.query.isFetching} onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={(content, pins) => setSendAgain({ content, attachments: pins })} />
       : <ConversationViewport revision="loading">{() => notices}</ConversationViewport>}
     {showComposer || canStop ? <div className="agent-chat-composer-controls" role="group" aria-label="Chat actions" aria-describedby={reasonId} {...drop.dropTargetProps}>
-      {showComposer ? <ConversationComposer conversationId={chat.draftKey} inputRef={composer} maxLength={32_000}
+      {showComposer ? <ConversationComposer sessionControls={sessionControls} conversationId={chat.draftKey} inputRef={composer} maxLength={32_000}
         allowEditingWhileSending isSending={chat.pending} sendDisabled={!!nextReason || attachments.hasBlockingAttachments}
         hasAttachments={attachments.hasAttachments}
         attachmentControl={<ChatAttachmentControl draft={attachments} disabled={!!writeReason} composerDrop={drop} />} error={chat.localError}
-        sendLabel={busy ? 'Queue message' : 'Send message'} onSubmit={(content) => submit('next_turn', content)} /> : null}
+        sendLabel={busy ? 'Queue message' : 'Send message'} onSubmit={(content, mode) => submit('next_turn', content, mode)} /> : null}
       {(!selected || !sessionMissing) && (state?.activeTurn || canStop) ? <div className="agent-chat-controls" role="group" aria-label="Active turn controls">
         {state?.activeTurn && (state.capabilities.steer !== 'unavailable' || state.capabilities.unavailable.steer) ? <Button size="sm" disabled={!!steerReason || empty}
           title={steerReason} aria-describedby={reasonId} onClick={() => submit('steer')}>Steer</Button> : null}

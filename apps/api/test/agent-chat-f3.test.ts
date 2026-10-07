@@ -52,6 +52,8 @@ class MemoryConversations {
   async nextQueued() { return undefined }
   async turn(_id: string, requestId: string) { return this.turns.find((turn) => turn.requestId === requestId) }
   async turnContent(_id: string, requestId: string) { return `content-${requestId}` }
+  async turnSessionMode() { return undefined }
+  async turnPrincipalId() { return undefined }
   async cancelQueued() { await this.beforeCancel?.(); this.cancels++; return true }
   async beginSessionCreation(_id: string, requestId: string) {
     if (this.row?.active_request_id !== requestId || this.row.record.sessionCreation) return false
@@ -180,6 +182,7 @@ async function setup(options: { harness?: 'codex' | 'opencode'; ephemeral?: bool
   const query = async (text: string, values: unknown[] = []) => {
     const sql = text.replace(/\s+/g, ' ').trim()
     if (['begin', 'commit', 'rollback'].includes(sql)) return { rows: [] }
+    if (sql.startsWith('select record from conversation_session_controls where conversation_id=$1')) return { rows: [] }
     if (sql.includes('from management_principals')) return { rows: values[0] === principal.id
       ? [{ id: principal.id, name: principal.name, audience: principal.audience, grants: principal.grants,
         expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [] }
@@ -237,11 +240,14 @@ describe('F3 native availability and ownership', () => {
       }
       assert.deepEqual(f.native.calls.map((call) => call.kind), [mode]); assert.equal(f.native.prompts.length, 0)
       const input = f.native.calls[0]!.input
-      assert.equal(input.environment, undefined); assert.notEqual(input.kind, 'operator')
-      if (input.kind !== 'operator') {
-        assert.equal(input.request.runId, 'agent-chat:conversation-f3')
-        assert.equal(input.request.configuration.harness.harness, 'codex')
-        assert.deepEqual(input.request.configuration, before)
+      assert.equal(input.environment, undefined); assert.equal(input.kind, 'agent-chat')
+      if (input.kind === 'agent-chat') {
+        assert.equal(input.conversationId, 'conversation-f3')
+        assert.equal(input.workflowNodeId, f.context.workflowNodeId)
+        assert.equal(input.workflowId, f.context.workflowId)
+        assert.equal(input.configuration.harness.harness, 'codex')
+        assert.deepEqual(input.configuration, before)
+        assert.equal('request' in input, false)
       }
       assert.deepEqual(f.configuration, before)
       const state = await f.chat.readConversation(principal, f.context.workspaceId, f.repository.row!.id)

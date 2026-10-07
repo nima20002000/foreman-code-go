@@ -27,7 +27,7 @@ export function rootSelectionDigest(selection: WorkspaceRootSelection): string {
 export function rootAttestationDigest(value: Omit<WorkspaceRootAttestation, 'attestationDigest'>): string {
   return sourceSha256(Buffer.from(JSON.stringify(value)))
 }
-async function openRootDirectory(base: string, relativePath: string, expectedIdentity: ApprovedRootAllowlist['runtimeFilesystem']): Promise<FileHandle> {
+export async function openRootDirectory(base: string, relativePath: string, expectedIdentity: ApprovedRootAllowlist['runtimeFilesystem']): Promise<FileHandle> {
   rootRelativePath(relativePath)
   let directory = await openPrivateRoot(base, false)
   try {

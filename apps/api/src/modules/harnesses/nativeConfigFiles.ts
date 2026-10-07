@@ -4,11 +4,15 @@ import { dirname, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { DomainError } from '../errors.js'
 
-export async function readNativeUserFile(file: string, allowMissing = false): Promise<string> {
+export async function readNativeUserFile(file: string, options: {
+  whenMissing?: string
+  requireDirectory?: boolean
+} = {}): Promise<string> {
   let directory: string
   try { directory = await realpath(dirname(file)) }
   catch (error) {
-    if (allowMissing && (error as NodeJS.ErrnoException).code === 'ENOENT') return '{}\n'
+    if (options.whenMissing !== undefined && !options.requireDirectory
+      && (error as NodeJS.ErrnoException).code === 'ENOENT') return options.whenMissing
     throw error
   }
   if (directory !== resolve(dirname(file))) {
@@ -24,7 +28,9 @@ export async function readNativeUserFile(file: string, allowMissing = false): Pr
       return await handle.readFile('utf8')
     } finally { await handle.close() }
   } catch (error) {
-    if (allowMissing && (error as NodeJS.ErrnoException).code === 'ENOENT') return '{}\n'
+    if (options.whenMissing !== undefined && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return options.whenMissing
+    }
     throw error
   }
 }

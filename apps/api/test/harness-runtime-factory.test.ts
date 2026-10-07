@@ -7,6 +7,53 @@ import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/har
 import { HarnessInstallationRegistry, type HarnessInstallationRecord } from '../src/modules/harnesses/installationRegistry.js'
 
 describe('native runtime construction', () => {
+  it.each([false, true])('keeps OpenCode configuration inspection separate from its writer; failure=%s', async fails => {
+    const writer = { root: '/recorded-registry', owner: 'conversation:writer' }
+    const diagnostic = { root: writer.root, owner: 'diagnostics:configuration' }
+    const closed = vi.fn(async () => undefined)
+    const admit = vi.fn()
+    const abandon = vi.fn(async () => undefined)
+    const servers: { options: ManagedOpenCodeServerOptions; dispose: ReturnType<typeof vi.fn> }[] = []
+    const factories = new NativeHarnessFactories({
+      codexBinary: 'unused', openCodeBinary: '/recorded-opencode',
+      auxiliaryRecovery: () => diagnostic, admitRecovery: admit,
+      abandonRecovery: abandon, closeRecovery: closed,
+    }, { mode: 'native', openCodeServer: options => {
+      const dispose = vi.fn(async () => undefined)
+      servers.push({ options, dispose })
+      return {
+        expectedVersion: '1.18.31', ownerAgentId: options.ownerAgentId,
+        ensure: vi.fn(), request: vi.fn(), dispose,
+        inspectMcpConfiguration: async () => {
+          if (options.processRecovery?.owner === writer.owner) throw new Error('Writer is already active.')
+          if (fails) throw new Error('Configuration read failed.')
+          return { name: 'foreman-code', transport: 'stdio', automaticEndpoint: true,
+            enabled: true, credentialEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN' }
+        },
+      }
+    } })
+    const allocation = factories.allocate({
+      harness: 'opencode', role: 'operator', workingDirectory: '/recorded-workspace',
+      ownerAgentId: 'operator', processRecovery: writer, appMcpAccess: 'scoped',
+    })
+    try {
+      const inspected = allocation.inspector.inspect({
+        harness: 'opencode', runnerId: 'runner-local', workingDirectory: '/recorded-workspace',
+        serverName: 'foreman-code', phase: 'configuration',
+      })
+      if (fails) await expect(inspected).rejects.toThrow('Configuration read failed.')
+      else expect((await inspected).entry).toMatchObject({ name: 'foreman-code', enabled: true })
+      expect(admit).toHaveBeenCalledExactlyOnceWith(diagnostic)
+      expect(abandon).toHaveBeenCalledExactlyOnceWith(diagnostic)
+      expect(closed).toHaveBeenCalledExactlyOnceWith(diagnostic)
+      expect(servers[0]!.dispose).not.toHaveBeenCalled()
+      expect(servers[1]!.dispose).toHaveBeenCalledTimes(1)
+    } finally {
+      await allocation.manager.dispose()
+      await factories.disposeAuxiliaries()
+    }
+  })
+
   it('allocates diagnostics against the canonical default and fences changed payload bytes before native startup', async () => {
     const instances = new HarnessInstanceRegistry(localHarnessDrivers)
     instances.reload([{ instanceId: 'local-default:opencode', instanceRevision: '8', driverId: 'opencode',

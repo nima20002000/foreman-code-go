@@ -33,6 +33,7 @@ export function productionOperatorManagers(input: {
   nativeFactories?: NativeHarnessFactories
   createSelected?: (configuration: OperatorConfigurationVersion, conversationId: string, fileInputs: boolean, recovery: ReturnType<NativeProcessRegistry['scope']>) => NativeHarnessSessionManager
   createClaude?: (configuration: OperatorConfigurationVersion, conversationId: string, fileInputs: boolean, recovery: ReturnType<NativeProcessRegistry['scope']>) => NativeHarnessSessionManager
+  createDevice?: (configuration: OperatorConfigurationVersion, conversationId: string, fileInputs: boolean) => NativeHarnessSessionManager
   selectInstallation?: (configuration: OperatorConfigurationVersion) => RegistryHarnessSelection | undefined
 }): NativeManagerResolver {
   const factories = input.nativeFactories ?? new NativeHarnessFactories({ ...input.config.harnesses,
@@ -47,6 +48,13 @@ export function productionOperatorManagers(input: {
       return existing
     }
     const recovery = input.processRegistry.scope(`conversation:${conversationId}`)
+    if (configuration.harnessProfileSelection?.target.hostRef.kind === 'device') {
+      if (!input.createDevice) throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE', 'The selected worker chat runtime is not composed.', 503)
+      const manager = input.createDevice(configuration, conversationId, fileInputs)
+      input.managers.set(conversationId, manager)
+      modes.set(conversationId, fileInputs)
+      return manager
+    }
     if (configuration.harness.harness === 'claude') {
       if (!input.createClaude) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'Claude Operator profile admission is not composed.', 409)
       const manager = input.createClaude(configuration, conversationId, fileInputs, recovery)

@@ -94,7 +94,7 @@ export const createOpenCodeSdkTransport: OpenCodeClientFactory = options => asyn
                     : session && parts.length === 2 && request.method === 'DELETE' ? 'delete'
                       : session && parts.length === 2 && request.method === 'PATCH' ? 'update'
                         : session && request.method === 'GET' && [3, 4].includes(parts.length) && parts[2] === 'message' ? (parts[3] ? 'message' : 'messages')
-                          : session && request.method === 'POST' && parts.length === 3 && ['prompt_async', 'abort', 'fork'].includes(parts[2] ?? '') ? parts[2] : undefined
+                          : session && request.method === 'POST' && parts.length === 3 && ['prompt_async', 'abort', 'fork', 'summarize'].includes(parts[2] ?? '') ? parts[2] : undefined
   if (!name || [...url.searchParams.keys()].some(key => key !== 'directory' && !(name === 'messages' && ['limit', 'before'].includes(key)))) {
     return createOpenCodeBoundFetch(options)(request)
   }
@@ -127,6 +127,7 @@ export const createOpenCodeSdkTransport: OpenCodeClientFactory = options => asyn
         case 'delete': return client.session.delete(selected, fields)
         case 'update': return client.session.update({ ...body, ...selected } as Parameters<typeof client.session.update>[0], fields)
         case 'prompt_async': return client.session.promptAsync({ ...body, ...selected } as Parameters<typeof client.session.promptAsync>[0], fields)
+        case 'summarize': return client.session.summarize({ ...body, ...selected } as Parameters<typeof client.session.summarize>[0], fields)
         case 'abort': return client.session.abort(selected, fields)
         case 'fork': return client.session.fork({ ...body, ...selected }, fields)
         case 'message': return client.session.message({ ...selected, messageID: parts[3]! }, fields)

@@ -1,6 +1,7 @@
+import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
+import { mkdtemp } from 'node:fs/promises'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
-import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -27,6 +28,9 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { seedAgent3 } from './helpers/wave25Agent3.js'
+import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
+import { SavedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
+import { workspaceRootHostScope } from '../src/modules/sources/rootPolicies.js'
 
 const connectionString = process.env.TEST_DATABASE_URL!
 
@@ -34,6 +38,7 @@ const connectionString = process.env.TEST_DATABASE_URL!
 class FakeNative implements NativeHarnessSessionManager {
   static all: FakeNative[] = []
   created: NativeSessionStart[] = []; attached: NativeSessionStart[] = []; forked: Array<{ source: string; input: NativeSessionStart }> = []
+  modes: Array<string | undefined> = []
   prompts: string[] = []; steers: NativeSteerInput[] = []; cancels = 0
   hold = false
   deferCancelTerminal = false
@@ -57,6 +62,8 @@ class FakeNative implements NativeHarnessSessionManager {
   }
   async *startTurn(_session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.prompts.push(input.prompt)
+    this.modes.push(input.sessionMode)
+    await input.onSettingsApplied?.()
     const id = `turn-${++this.turn}`
     this.histories.set(input.clientCorrelationId, { correlationId: input.clientCorrelationId, nativeTurnId: id, events: [], pendingInteractions: [] })
     await input.onSubmitted?.(id)
@@ -215,6 +222,159 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     } finally { await service.shutdown() }
   })
 
+  it('admits a saved node directory through authenticated MCP and retains it before the first message', async () => {
+    const nativeFixture = makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'single')
+    const mainId = (await pool.query<{ id: string }>('select id from application_installation where singleton=true')).rows[0]!.id
+    const deviceId = randomUUID()
+    const installationId = randomUUID()
+    const instanceId = randomUUID()
+    const baseId = randomUUID()
+    const rootPolicyId = randomUUID()
+    const hostRef = { kind: 'device' as const, mainId, deviceId }
+    const filesystem = { device: '1', inode: '2', mountId: '3' }
+    const configuration = AgentConfigurationVersionSchema.parse({ ...nativeFixture.configurations[0]!,
+      harnessProfileSelection: { instanceId, instanceRevision: '1', target: { hostRef,
+        applicationInstallationId: installationId, harnessInstallationId: 'recorded-installation', installationFingerprint: 'recorded-bytes' } } })
+    nativeFixture.configurations = [configuration]
+    const placement = SavedNodePlacementSchema.parse({ schemaVersion: 1, hostRef,
+      rootPolicyId, rootPolicyRevision: '1', locationRevision: '1', projectRoot: '/worker/saved-project',
+      cwdPolicy: 'project-subdirectory', relativeCwd: 'src', instanceId, instanceRevision: '1',
+      harnessInstallationId: 'recorded-installation' })
+    nativeFixture.version.definition.nodes[0]!.placement = placement
+    const seeded = await seedAgent3(pool, root, nativeFixture, { run: false })
+    const approved = ApprovedRootAllowlistSchema.parse({ schemaVersion: 1, hostRef,
+      applicationInstallationId: installationId, configurationRevision: '1',
+      bases: [{ baseId, canonicalPath: '/worker', filesystem, accessModes: ['read-only'] }],
+      managedRuntimeRoot: '/worker/runtime', runtimeFilesystem: filesystem })
+    const policy = WorkspaceRootPolicySchema.parse({ schemaVersion: 1, rootPolicyId, rootPolicyRevision: '1',
+      workspaceId: seeded.scope.workspaceId, hostRef, applicationInstallationId: installationId,
+      registration: { workerInstallationId: installationId, keyRevision: 1, authorizationRevision: 1 },
+      locationRevision: '1', ownerPrincipalId: writer.id, allowedBaseId: baseId, configurationRevision: '1',
+      relativePath: 'saved-project', accessMode: 'read-only', canonicalProjectRoot: placement.projectRoot,
+      filesystem, directoryIdentityHash: 'a'.repeat(64), managedRuntimeRoot: approved.managedRuntimeRoot,
+      runtimeFilesystem: filesystem, attestationId: randomUUID(), attestationDigest: 'b'.repeat(64) })
+    const hostScope = workspaceRootHostScope(hostRef)
+    await pool.query(`insert into workspace_root_host_configurations
+      (host_scope,configuration_revision,main_id,application_installation_id,record,digest) values($1,1,$2,$3,$4::jsonb,$5)`,
+    [hostScope, mainId, installationId, JSON.stringify(approved), 'recorded-root-digest'])
+    await pool.query('insert into workspace_root_host_configuration_heads(host_scope,configuration_revision) values($1,1)', [hostScope])
+    await pool.query(`insert into workspace_root_policies
+      (root_policy_id,root_policy_revision,workspace_id,host_scope,location_revision,record) values($1,1,$2,$3,1,$4::jsonb)`,
+    [rootPolicyId, seeded.scope.workspaceId, hostScope, JSON.stringify(policy)])
+    const { service } = makeService()
+    const app = buildApp({ logger: false,
+      readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+      operator: { access, services: { agentChat: service, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    const client = new Client({ name: 'node-directory-writer', version: '1' })
+    const reader = new Client({ name: 'node-directory-reader', version: '1' })
+    try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => writerToken } }))
+      await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => readOnlyToken } }))
+      const node = seeded.version.definition.nodes[0]!
+      const context = { workflowId: seeded.scope.workflowId,
+        workflowNodeId: node.id, agentId: configuration.agentId }
+      const target = { workspaceId: seeded.scope.workspaceId, context }
+      const control = { ...target, request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: 0 } }
+      const updated = await client.callTool({ name: 'agent_chat_controls_update', arguments: control })
+      expect(updated.isError).not.toBe(true)
+      const controls = SessionControlStateSchema.parse(updated.structuredContent)
+      expect(controls.conversationId).toBeTruthy()
+      expect(controls.nativeSessionId).toBeNull()
+      expect(FakeNative.all).toHaveLength(0)
+      const row = await new PostgresAgentChatRepository(pool).get(controls.conversationId!)
+      expect(row?.record).toMatchObject({ workingDirectory: '/worker/saved-project/src',
+        directoryBinding: { workflowVersionId: seeded.version.id, placement, policy } })
+      const denied = await reader.callTool({ name: 'agent_chat_controls_update', arguments: {
+        ...control, request: { ...control.request, requestId: randomUUID(), mode: 'regular', expectedRevision: controls.revision } } })
+      expect(denied.isError).toBe(true)
+      const persisted = SessionControlStateSchema.parse((await reader.callTool({
+        name: 'agent_chat_controls_get', arguments: target })).structuredContent)
+      expect(persisted.desiredMode).toBe('plan')
+      expect(persisted.conversationId).toBe(controls.conversationId)
+    } finally {
+      await Promise.all([client.close(), reader.close()])
+      await app.close()
+      await service.shutdown()
+    }
+  })
+  it('creates only an application conversation for fresh control admission and applies Plan on the first message', async () => {
+    const { service } = makeService()
+    const context = { workspaceId: fixture.scope.workspaceId, ...query(codexNode) }
+    try {
+      const preview = await service.readContextControls(writer, context)
+      expect(preview.conversationId).toBeNull()
+      expect(FakeNative.all).toHaveLength(0)
+      const admitted = await service.changeContextControls(writer, context,
+        { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: 0 })
+      expect(admitted.conversationId).toBeTruthy()
+      expect(admitted.nativeSessionId).toBeNull()
+      expect(FakeNative.all).toHaveLength(0)
+      const state = await service.read(writer, context.workspaceId, query(codexNode))
+      expect(state.messages).toHaveLength(0)
+      expect(state.turns).toHaveLength(0)
+      const noop = await service.changeContextControls(writer, context,
+        { kind: 'compact', requestId: randomUUID(), expectedRevision: admitted.revision })
+      expect(noop.compaction?.status).toBe('no-op')
+      await service.send(writer, context.workspaceId, request(codexNode, 'First planned task', state.conversation!.id))
+      await settled(service, () => service.read(writer, context.workspaceId, query(codexNode)))
+      expect(FakeNative.all[0]!.modes).toEqual(['plan'])
+      expect(FakeNative.all[0]!.prompts).toEqual(['First planned task'])
+    } finally { await service.shutdown() }
+  })
+
+  it('isolates native controls for two nodes using the same Agent and enforces authenticated MCP grants', async () => {
+    const twin = makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential')
+    const firstNode = twin.version.definition.nodes[0]!
+    const secondNode = twin.version.definition.nodes[1]!
+    secondNode.agentId = firstNode.agentId
+    twin.configurations = twin.configurations.filter(configuration => configuration.agentId === firstNode.agentId)
+    twin.version.agentConfigurationVersionIds = { [firstNode.agentId]: twin.configurations[0]!.id }
+    const seeded = await seedAgent3(pool, root, twin, { run: false })
+    const { service, managers } = makeService()
+    const context = (nodeId: string) => ({ workflowId: seeded.scope.workflowId, workflowNodeId: nodeId, agentId: firstNode.agentId })
+    const read = (nodeId: string) => service.read(writer, seeded.scope.workspaceId, context(nodeId))
+    try {
+      for (const node of [firstNode, secondNode]) {
+        await service.send(writer, seeded.scope.workspaceId, { requestId: randomUUID(), content: 'Seed this node',
+          context: context(node.id), expectedConversationId: null, intent: 'next_turn' })
+        await settled(service, () => read(node.id))
+      }
+      const first = (await read(firstNode.id)).conversation!
+      const second = (await read(secondNode.id)).conversation!
+      expect(first.id).not.toBe(second.id)
+      expect(first.nativeSession!.nativeSessionId).not.toBe(second.nativeSession!.nativeSessionId)
+      for (const manager of managers.values()) Object.assign(manager, { async sessionControlCapabilities() {
+        return { ...unavailableSessionControls('fixture'), plan: { supported: true, reason: null } }
+      } })
+      const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+        operator: { access, services: { agentChat: service, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+      const client = new Client({ name: 'node-session-controls', version: '1' })
+      const reader = new Client({ name: 'node-session-controls-reader', version: '1' })
+      try {
+        const address = await app.listen({ host: '127.0.0.1', port: 0 })
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => writerToken } }))
+        await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => readOnlyToken } }))
+        const target = { workspaceId: seeded.scope.workspaceId, conversationId: first.id }
+        const before = SessionControlStateSchema.parse((await client.callTool({ name: 'agent_chat_controls_get', arguments: target })).structuredContent)
+        const result = await client.callTool({ name: 'agent_chat_controls_update', arguments: { ...target,
+          request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: before.revision } } })
+        expect(result.isError).not.toBe(true)
+        expect(SessionControlStateSchema.parse(result.structuredContent).desiredMode).toBe('plan')
+        expect((await service.readSessionControls(writer, seeded.scope.workspaceId, second.id)).desiredMode).toBe('regular')
+        const denied = await app.inject({ method: 'POST',
+          url: `/api/workspaces/${seeded.scope.workspaceId}/agent-chat/conversations/${first.id}/session-controls`,
+          headers: { authorization: `Bearer ${readOnlyToken}` },
+          payload: { kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: before.revision + 1 } })
+        expect(denied.statusCode).toBe(403)
+        const refusal = await reader.callTool({ name: 'agent_chat_controls_update', arguments: { ...target,
+          request: { kind: 'mode', mode: 'regular', requestId: randomUUID(), expectedRevision: before.revision + 1 } } })
+        expect(refusal.isError).toBe(true)
+        expect((await service.readSessionControls(writer, seeded.scope.workspaceId, first.id)).desiredMode).toBe('plan')
+      } finally { await client.close(); await reader.close(); await app.close() }
+    } finally { await service.shutdown() }
+  })
+
   it('creates exactly one native session on first send and continues it after completion', async () => {
     const { service } = makeService()
     const empty = await service.read(writer, fixture.scope.workspaceId, query(codexNode))
@@ -310,6 +470,34 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     expect(done.turns.find((turn) => turn.requestId === steer.turn.requestId)?.delivery).toBe('completed')
     expect(done.messages.some((message) => message.content === 'stale')).toBe(false)
   })
+
+  it.each(['/plan Inspect the repository', 'Inspect the repository'])(
+    'queues one Plan turn instead of steering a regular turn for %s', async content => {
+      const { service } = makeService()
+      const workspace = fixture.scope.workspaceId
+      const read = () => service.read(writer, workspace, query(codexNode))
+      try {
+        const first = await service.send(writer, workspace, request(codexNode, 'warm', null))
+        await settled(service, read)
+        const native = FakeNative.all[0]!
+        native.hold = true
+        await service.send(writer, workspace, request(codexNode, 'regular work', first.state.conversation!.id))
+        const active = await settled(service, read, value => Boolean(value.activeTurn?.nativeTurnId))
+        const input = request(codexNode, content, active.conversation!.id,
+          { intent: 'steer', sessionMode: 'plan', expectedNativeTurnId: active.activeTurn!.nativeTurnId! })
+        const accepted = await service.send(writer, workspace, input)
+        expect(accepted.turn).toMatchObject({ intent: 'next_turn', delivery: 'queued' })
+        expect((await service.send(writer, workspace, input)).replayed).toBe(true)
+        expect(native.steers).toHaveLength(0)
+        native.hold = false
+        native.finish()
+        await settled(service, read)
+        expect(native.modes).toHaveLength(3)
+        expect(native.modes.at(-1)).toBe('plan')
+        expect(native.modes.slice(0, 2)).not.toContain('plan')
+        expect(native.prompts.filter(prompt => prompt.includes('Inspect the repository'))).toHaveLength(1)
+      } finally { await service.shutdown() }
+    })
 
   it('reports OpenCode steering as unavailable and refuses it honestly', async () => {
     const { service } = makeService()

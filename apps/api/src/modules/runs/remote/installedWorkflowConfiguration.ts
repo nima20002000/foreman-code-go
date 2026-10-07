@@ -14,13 +14,14 @@ export const InstalledWorkflowConfigurationSchema = z.object({
   expectedVersion: version.optional(),
   payloadPaths: payloadPaths.optional(),
   opencode: z.object({ binary: path, expectedVersion: version, payloadPaths }).strict().optional(),
+  claude: z.object({ binary: path, installedLockPath: path, sdkEntrypoint: path.optional() }).strict().optional(),
 }).strict().superRefine((value, context) => {
   const codexSelected = value.codexBinary !== undefined || value.expectedVersion !== undefined
     || value.payloadPaths !== undefined
   if (codexSelected && (!value.codexBinary || !value.expectedVersion || !value.payloadPaths)) {
     context.addIssue({ code: 'custom', message: 'The Codex selection requires its binary, version and payload paths.' })
   }
-  if (!codexSelected && !value.opencode) {
+  if (!codexSelected && !value.opencode && !value.claude) {
     context.addIssue({ code: 'custom', message: 'Select at least one installed workflow harness.' })
   }
 })

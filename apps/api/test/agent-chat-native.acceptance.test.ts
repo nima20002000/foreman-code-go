@@ -10,7 +10,7 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { closeQualificationResources } from '../src/modules/harnesses/qualification/cleanup.js'
-import type { NativeHarnessSessionManager, WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
+import type { NativeHarnessSessionManager, AgentChatNativeSessionStart } from '../src/modules/harnesses/port.js'
 import { readNativeSource } from './helpers/agentChatNativeSource.js'
 import { describeNativeFailure, nativeFailureSummary } from './helpers/nativeFailureEvidence.js'
 
@@ -32,10 +32,10 @@ function configuration(harness: 'codex' | 'opencode'): AgentConfigurationVersion
     prompt: { system: 'Answer in at most five words.' }, assignedSkills: [], contentHash: `sha256:${'0'.repeat(64)}`, createdAt: new Date().toISOString(),
   })
 }
-function start(config: AgentConfigurationVersion, directory: string, conversation: string, delivered: boolean): WorkflowNativeSessionStart {
-  return { kind: 'workflow', correlationId: `agent-chat:${conversation}:${randomUUID()}`, instructionsDelivered: delivered, request: {
-    executionId: `agent-chat:${conversation}`, runId: `agent-chat:${conversation}`, workspaceId: config.workspaceId, workflowNodeId: 'node-native-chat',
-    workingDirectory: directory, runtimeDirectory: directory, configuration: config, input: {} } }
+function start(config: AgentConfigurationVersion, directory: string, conversation: string, delivered: boolean): AgentChatNativeSessionStart {
+  return { kind: 'agent-chat', conversationId: conversation, workflowId: 'workflow-native-chat',
+    workflowNodeId: 'node-native-chat', correlationId: `agent-chat:${conversation}:${randomUUID()}`,
+    instructionsDelivered: delivered, workingDirectory: directory, configuration: config }
 }
 async function turn(manager: NativeHarnessSessionManager, session: NativeSessionReference, conversation: string, prompt: string) {
   const correlation = `agent-chat:${conversation}:${randomUUID()}`

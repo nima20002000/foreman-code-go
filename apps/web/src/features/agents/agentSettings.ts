@@ -7,6 +7,7 @@ import {
   type HarnessDefaults,
   type AgentProductRole,
 } from '@foreman-code/contracts'
+import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
 
 export const STANDARD_EFFORTS: readonly NonNullable<Agent['effort']>[] = [
   'low', 'medium', 'high', 'xhigh', 'max',
@@ -55,8 +56,7 @@ export function configuredHarness(
   if (!current) throw new Error('Claude requires an explicitly configured host-local profile.')
   if (current.harness !== harness) throw new Error('The configuration must match the selected harness.')
   if (current.harness === 'claude') {
-    if (sandbox === 'danger-full-access') throw new Error('Claude does not support this sandbox mode.')
-    return { ...current, model, sandbox }
+    return ClaudeFullAccessConfigurationSchema.parse({ ...current, model, sandbox })
   }
   if (current.harness === 'opencode') {
     const opencode = current

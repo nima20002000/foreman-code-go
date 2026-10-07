@@ -15,6 +15,7 @@ import { runAsQualificationCandidate } from './qualification/gate.js'
 import { withNativeQualificationOwnership, type NativeQualificationSuiteInput } from './qualification/nativeOwnership.js'
 import { codexQualificationSuite } from './qualification/suites/codex.js'
 import { opencodeQualificationSuite } from './qualification/suites/opencode.js'
+import type { CompatibilityHarness } from '@foreman-code/contracts'
 import { qualificationRevisionWithIdentity } from './qualification/identity.js'
 import { QUALIFICATION_TARGET_PROFILE, normalizeHarnessVersion, runWithQualificationProfile } from './qualification/profiles.js'
 import type { QualificationSuite } from './qualification/types.js'
@@ -24,17 +25,16 @@ export const CODEX_COMPLETED_QUALIFICATION_CHECKS = Object.freeze(['static-compa
   'thread-start', 'text-turn', 'file-tools', 'thread-resume', 'selected-profile', 'owned-resource-closure'])
 export const OPENCODE_COMPLETED_QUALIFICATION_CHECKS = Object.freeze(['static-compatibility', 'binary-sha256',
   'server-health', 'openapi-paths', 'session-create', 'text-turn', 'mcp-file-tools', 'selected-profile', 'owned-resource-closure'])
-export const INSTALLED_NATIVE_QUALIFICATION_CHECKS = Object.freeze({
-  codex: CODEX_COMPLETED_QUALIFICATION_CHECKS,
-  opencode: OPENCODE_COMPLETED_QUALIFICATION_CHECKS,
-})
+export function completedNativeQualificationChecks(harness: CompatibilityHarness) {
+  return harness === 'codex' ? CODEX_COMPLETED_QUALIFICATION_CHECKS : OPENCODE_COMPLETED_QUALIFICATION_CHECKS
+}
 const denied = (): never => { throw new DomainError('HARNESS_QUALIFICATION_TARGET_CHANGED', 'Explicit qualification requires the exact current installed host and selected profile.', 409) }
 const same = (a: unknown, b: unknown) => commandInputHash(a) === commandInputHash(b)
 
 /** This is only the existing authenticated profile-check handler's native
  * qualifier. It never allocates a workflow manager or accepts incoming proof. */
-export function createInstalledHarnessNativeQualifier(input: {
-  harness: 'codex' | 'opencode'
+export function createInstalledNativeQualifier(input: {
+  harness: CompatibilityHarness
   binding: Readonly<DeviceSessionBinding>
   trustedCurrentBinding(): Readonly<DeviceSessionBinding> | null
   inspect(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<InstalledHarnessInspection>
@@ -113,12 +113,12 @@ export function createInstalledHarnessNativeQualifier(input: {
         releaseProbe()
       }
       if (!failureReason) {
-        const directory = await mkdtemp(join(input.workingRoot, `${harness}-qualification-`))
+        const directory = await mkdtemp(join(input.workingRoot, `native-${harness}-qualification-`))
         directories.add(directory); localDirectories.add(directory)
         const selectedSuite: QualificationSuite = { harness, revision: suite.revision,
           async run(scope: NativeQualificationSuiteInput) {
             const result = await suite.run(scope)
-            const nativeChecks = INSTALLED_NATIVE_QUALIFICATION_CHECKS[harness].filter(id =>
+            const nativeChecks = completedNativeQualificationChecks(harness).filter(id =>
               !['static-compatibility', 'selected-profile', 'owned-resource-closure'].includes(id))
             const passed = result.checks.length > 0 && result.checks.every(check => check.passed)
               && nativeChecks.every(id => result.checks.some(check => check.id === id && check.passed))
@@ -135,7 +135,7 @@ export function createInstalledHarnessNativeQualifier(input: {
                 signal.throwIfAborted()
                 const code = error instanceof DomainError ? error.code
                   : error instanceof HarnessExecutionError && error.result.outcome === 'failed' ? error.result.error?.code : undefined
-                if (!code || !/^(?:CODEX|OPENCODE)_(?:SETTING|MODEL|MCP|REQUIRED_MCP|APP_SERVER_AUTH|AUTH_REQUIRED|CONFIGURATION)/.test(code)) throw error
+                if (!code || !/^(?:CODEX_(?:SETTING|MODEL|MCP|REQUIRED_MCP|APP_SERVER_AUTH|AUTH_REQUIRED|CONFIGURATION)|OPENCODE_(?:SETTING|MODEL|PROVIDER|AGENT|VARIANT|MCP|REQUIRED_MCP|SERVER_VERSION|AUTH_REQUIRED|CONFIGURATION))/.test(code)) throw error
                 failureReason = 'The selected host profile did not pass its native configuration checks.'
               }
               await scope.assertInstallation(signal)
@@ -158,7 +158,7 @@ export function createInstalledHarnessNativeQualifier(input: {
       }
       await assertInstallation(signal)
       checks.push({ id: 'owned-resource-closure', passed: true, detail: null })
-      const passed = INSTALLED_NATIVE_QUALIFICATION_CHECKS[harness].every(id => checks.some(check => check.id === id && check.passed))
+      const passed = completedNativeQualificationChecks(harness).every(id => checks.some(check => check.id === id && check.passed))
         && checks.every(check => check.passed)
       const checkedAt = new Date().toISOString()
       const record = HarnessQualificationSchema.parse({ harness, version, binarySha256: target.binarySha256,
@@ -191,9 +191,4 @@ export function createInstalledHarnessNativeQualifier(input: {
       for (const directory of directories) { await rm(directory, { recursive: true, force: true }); directories.delete(directory) }
     },
   }
-}
-
-export function createInstalledCodexNativeQualifier(
-  input: Omit<Parameters<typeof createInstalledHarnessNativeQualifier>[0], 'harness'>) {
-  return createInstalledHarnessNativeQualifier({ ...input, harness: 'codex' })
 }

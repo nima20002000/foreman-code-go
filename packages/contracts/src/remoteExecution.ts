@@ -66,7 +66,7 @@ export const RemoteOperationReceiptSchema = z.object({
   connection: DeviceConnectionIdentitySchema, workerIncarnationId: z.uuid(),
   sequence: z.number().int().positive(), phase: RemoteOperationPhaseSchema,
   interaction: RemoteInteractionTargetSchema.optional(), native: RemoteNativeIdentitySchema.optional(), terminal: RemoteTerminalEvidenceSchema.optional(),
-  entryAttempted: z.boolean(), turnEntryAttempted: z.boolean(), turnInput: z.object({ correlationId: z.string().min(1), promptDigest: PlacementDigestSchema }).strict().optional(), stopFence: z.boolean(), controls: z.array(RemoteOwnerControlSchema).max(128),
+  entryAttempted: z.boolean(), turnEntryAttempted: z.boolean(), turnInput: z.object({ correlationId: z.string().min(1), promptDigest: PlacementDigestSchema, sessionMode: z.enum(['regular', 'plan']).default('regular') }).strict().optional(), stopFence: z.boolean(), controls: z.array(RemoteOwnerControlSchema).max(128),
   uncertainty: z.string().max(500).optional(),
   retainedReviewer: z.object({ agentId: z.string().min(1), expiresAt: z.string().datetime(),
     workflowTurnId: z.string().min(1), result: z.lazy(() => ExecutionResultSchema) }).strict().optional(),

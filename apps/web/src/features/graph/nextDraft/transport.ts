@@ -1,4 +1,5 @@
 import { AgentMutationResultSchema, ManagedWorkspaceSchema, StagedAgentSchema, type GraphValidationResultSchema, type AgentCreateInputSchema, type AgentUpdateInput } from '@foreman-code/contracts/management'
+import { SupportedHarnessConfigurationSchema } from '@foreman-code/contracts'
 import {
   GraphEditReadResultV3Schema, GraphEditReadInputV3Schema, GraphEditStageInputV3Schema, GraphEditAdvanceInputV3Schema, GraphEditDiscardInputV3Schema,
   type GraphEditReadInputV3, type GraphEditStageInputV3, type GraphEditAdvanceInputV3, type GraphEditDiscardInputV3, type GraphEditReadResultV3,
@@ -125,9 +126,10 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
           ...(configure.graphqlTools ? { graphqlTools: configure.graphqlTools } : {}),
           ...(configure.description ? { description: configure.description } : {}), ...(configure.role ? { role: configure.role } : {}),
         } : { prompt: {}, assignedSkills: [] }
+        const configuration = configure?.type === 'agent.configure' ? configure.configuration : operation.configuration
         const pending = structuredClone({ path: agentsPath, method: 'POST' as const, body: {
           commandId: command, agentId: operation.agentId, name: operation.name, productRole: operation.productRole,
-          configuration: configure?.type === 'agent.configure' ? configure.configuration : operation.configuration, ...content } })
+          configuration: configuration ? SupportedHarnessConfigurationSchema.parse(configuration) : undefined, ...content } })
         pendingAgentCommands.set(pendingKey, pending)
         await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
         created.add(operation.agentId)
@@ -137,7 +139,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
         if (!agent?.agent.configurationVersionId) throw new ApiError({ code: 'AGENT_NOT_FOUND', message: 'The edited Agent is unavailable. Reload before saving.' }, 409)
         const body = {
           ...(edit.rename ? { name: edit.rename.name } : {}),
-          ...(edit.configure ? { configuration: edit.configure.configuration, prompt: edit.configure.prompt,
+          ...(edit.configure ? { configuration: SupportedHarnessConfigurationSchema.parse(edit.configure.configuration), prompt: edit.configure.prompt,
             assignedSkills: edit.configure.assignedSkills, description: edit.configure.description ?? null,
             ...(edit.configure.graphqlTools ? { graphqlTools: edit.configure.graphqlTools } : {}),
             role: edit.configure.role ?? null } : {}),

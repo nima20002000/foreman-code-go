@@ -19,6 +19,49 @@ async function collect(events: AsyncIterable<NativeHarnessEvent>) {
   return result
 }
 
+it('dispatches manual summarize once after checking idle status and pending requests in its serial operation', async () => {
+  const server = new FixtureServer()
+  server.paths = { ...server.paths, '/session/{sessionID}/summarize': {} }
+  const native = manager(server)
+  try {
+    const session = await sessionFor(native)
+    const previous = server.user('before-compact', 'retained context', session.nativeSessionId)
+    server.assistant(String(previous.info.id), 'remembered context', 'stop', true, session.nativeSessionId)
+    server.beforeRequest = (path, init) => {
+      if (!new URL(path, 'http://fixture.invalid').pathname.endsWith('/summarize')) return undefined
+      assert.equal(init.method, 'POST')
+      const manual = server.user('manual-compact', '', session.nativeSessionId)
+      manual.parts = [{ id: 'manual-part', sessionID: session.nativeSessionId, messageID: manual.info.id,
+        type: 'compaction', auto: false }]
+      server.assistant(String(manual.info.id), 'retained summary', 'stop', true, session.nativeSessionId).info.summary = true
+      return json(true)
+    }
+    let dispatches = 0
+    const result = await native.compactSession(session, { requestId: 'manual-control',
+      clientCorrelationId: 'manual-control', onProgress: async () => {}, onDispatch: async () => { dispatches++ } })
+    assert.equal(result.status, 'completed')
+    assert.equal(result.nativeSessionId, session.nativeSessionId)
+    assert.equal(dispatches, 1)
+    assert.equal(server.calls.filter(call => new URL(call.path, 'http://fixture.invalid').pathname.endsWith('/summarize')).length, 1)
+  } finally {
+    await native.dispose()
+  }
+})
+
+it('refuses manual compaction with an owned pending approval before native dispatch', async () => {
+  const server = new FixtureServer()
+  const native = manager(server)
+  try {
+    const session = await sessionFor(native)
+    server.permissions = [permission('pending-compact', session.nativeSessionId)]
+    await assert.rejects(native.compactSession(session, { requestId: 'blocked-control',
+      clientCorrelationId: 'blocked-control', onProgress: async () => {} }), errorCode('OPENCODE_SESSION_BUSY'))
+    assert.equal(server.calls.some(call => new URL(call.path, 'http://fixture.invalid').pathname.endsWith('/summarize')), false)
+  } finally {
+    await native.dispose()
+  }
+})
+
 it('carries confirmed non-creation from MCP preflight and permits an explicit retry after cleanup', async () => {
   const server = new FixtureServer()
   const native = manager(server)

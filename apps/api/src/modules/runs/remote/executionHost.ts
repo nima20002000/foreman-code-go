@@ -1,3 +1,4 @@
+import type { SessionMode } from '@foreman-code/contracts'
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
@@ -67,7 +68,7 @@ export class RemoteExecutionHost {
       await manager.dispose()
     }))
   }
-  handle(raw: unknown) {
+  handle(raw: unknown): Promise<unknown> {
     return this.track(() => this.handleOwned(raw))
   }
   private track<T>(work: () => Promise<T>): Promise<T> {
@@ -98,6 +99,7 @@ export class RemoteExecutionHost {
     if (recorded.status === 'known' && !isDeepStrictEqual(recorded.receipt.intent, frame.intent)) throw new Error('RPC stale execution owner')
     let action: 'start' | 'read' | 'control' | 'stop' = 'read'
     if (frame.method === 'control') action = frame.command.action.kind === 'stop' ? 'stop' : 'control'
+    else if (frame.method === 'session-compact' || frame.method === 'session-preferences-apply') action = 'control'
     else if (frame.method === 'prepare' || frame.method === 'start-turn' && !frame.review) action = 'start'
     await this.ports.authorize(frame.intent, placement, action)
     if (frame.method === 'control-delivery') {
@@ -115,6 +117,55 @@ export class RemoteExecutionHost {
     if (frame.method === 'prepare') return this.prepare(frame)
     if (frame.method === 'reattach') return this.reattach(frame)
     if (frame.method === 'capabilities' || frame.method === 'inspect-mcp') return this.inspect(frame, frame.method === 'capabilities' ? 'capabilities' : 'inspectMcp')
+    if (frame.method === 'session-controls-read' || frame.method === 'session-preferences-apply' || frame.method === 'session-compact' || frame.method === 'session-compact-reconcile') {
+      const resident = await this.resident(frame.intent.operationId, ['session-compact', 'session-preferences-apply'].includes(frame.method) ? 'control' : 'read')
+      const status = await this.ports.journal.status(frame.intent.operationId)
+      if (status.status !== 'known' || !isDeepStrictEqual(status.receipt.native, frame.native)
+        || resident.session.nativeSessionId !== frame.native.sessionId) throw new Error('Wrong native control target or generation')
+      if (frame.method === 'session-preferences-apply') {
+        if (!resident.manager.applySessionPreferences) throw new Error('Native safe-resume preferences are unavailable')
+        await resident.manager.applySessionPreferences(resident.session, frame.preferences, resident.controller.signal)
+        return { status: await this.ports.journal.status(frame.intent.operationId) }
+      }
+      if (frame.method === 'session-controls-read') {
+        if (!resident.manager.sessionControlCapabilities) throw new Error('Native session controls are unavailable')
+        return { capabilities: await resident.manager.sessionControlCapabilities(resident.session),
+          context: resident.manager.contextSnapshot?.(resident.session) ?? null,
+          preferences: resident.manager.appliedSessionPreferences?.(resident.session) ?? null, status }
+      }
+      if (frame.method === 'session-compact-reconcile') {
+        const saved = await this.ports.journal.sessionControl(frame.intent.operationId, frame.state.requestId)
+        if (!saved || !isDeepStrictEqual(saved.native, frame.native)) throw new Error('The original compaction is not in this worker journal')
+        const undispatched = saved.state.dispatchPhase && saved.state.dispatchPhase !== 'dispatched'
+          && saved.state.reservationOwner !== this.ports.incarnationId
+        const state = undispatched ? { ...saved.state, status: 'failed' as const,
+          message: 'The worker stopped before native dispatch.' } : resident.manager.reconcileCompaction
+          ? await resident.manager.reconcileCompaction(resident.session, saved.state) : saved.state
+        return { compaction: await this.ports.journal.saveSessionControl(frame.intent.operationId, state), status }
+      }
+      if (!resident.manager.compactSession) throw new Error('Native compact is unavailable')
+      const input = { requestId: frame.requestId, clientCorrelationId: frame.clientCorrelationId }
+      const reserved = await this.ports.journal.reserveSessionControl(frame.intent.operationId, input, frame.native)
+      if (!reserved.dispatch) return { compaction: reserved.state, status }
+      let result = reserved.state
+      let dispatched = false
+      try {
+        await this.ports.authorize(resident.intent, resident.placement, 'control')
+        result = await resident.manager.compactSession(resident.session, { ...input,
+          onProgress: async state => {
+            result = { ...result, ...state }
+            await this.ports.journal.saveSessionControl(frame.intent.operationId, result)
+          }, onDispatch: async () => {
+            result = { ...result, dispatchPhase: 'dispatched' }
+            await this.ports.journal.saveSessionControl(frame.intent.operationId, result)
+            dispatched = true
+          } }, resident.controller.signal)
+      } catch (error) {
+        const definite = !dispatched || error && typeof error === 'object' && 'certainty' in error && error.certainty === 'definite'
+        result = { ...result, status: definite ? 'failed' : 'uncertain', message: 'Read the original worker compaction to recover its outcome.' }
+      }
+      return { compaction: await this.ports.journal.saveSessionControl(frame.intent.operationId, result), status }
+    }
     if (frame.method === 'reconcile-response') {
       const resident = await this.resident(frame.intent.operationId, 'read')
       // Settlement retains the last provider history before closing its runtime.
@@ -132,7 +183,7 @@ export class RemoteExecutionHost {
       await this.authorizeReview(resident, frame.review)
       return this.ports.journal.status(frame.intent.operationId)
     }
-    if (frame.method === 'start-turn') return this.startTurn(frame.intent.operationId, frame.prompt, frame.correlationId, frame.review)
+    if (frame.method === 'start-turn') return this.startTurn(frame.intent.operationId, frame.prompt, frame.correlationId, frame.review, frame.sessionMode)
     if (frame.method === 'status') return this.status(frame.intent.operationId)
     if (frame.method === 'physical-readout' || frame.method === 'physical-ack') throw new Error('Actual installed physical readout is unavailable on this generic execution host.')
     if (frame.method === 'receipt-continuation') throw new Error('Receipt continuations require the installed response owner.')
@@ -171,7 +222,7 @@ export class RemoteExecutionHost {
       return await resolved.manager[method](controller.signal)
     } finally { controllers.delete(controller); if (!controllers.size) this.inspections.delete(intent.operationId) }
   }
-  prepare(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined }) {
+  prepare(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@foreman-code/contracts').SessionPreferences | undefined }) {
     const intent = DispatchIntentSchema.parse(raw.intent)
     const task = this.track(() => this.prepareOwned(raw))
     const entries = this.pendingEntries.get(intent.operationId) ?? new Set<Promise<unknown>>()
@@ -189,7 +240,7 @@ export class RemoteExecutionHost {
     for (const controller of this.inspections.get(operationId) ?? []) controller.abort()
     await Promise.allSettled(this.pendingEntries.get(operationId) ?? [])
   }
-  private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined }) {
+  private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@foreman-code/contracts').SessionPreferences | undefined }) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
     const executionPlacement = 'kind' in placement.source && placement.source.kind === 'pending'
       ? readNativeExecutionBinding(placement, intent, raw.executionPlacement) : undefined
@@ -229,6 +280,7 @@ export class RemoteExecutionHost {
       controller.signal.throwIfAborted()
       this.allocatedManagers.set(intent.operationId, { manager: resolved.manager, context })
       resolved.beginStart?.()
+      if (raw.sessionPreferences) await resolved.manager.configureSessionPreferences?.(raw.sessionPreferences)
       const session = await resolved.manager.createSession({ request, correlationId: `execution:${intent.executionId}`, ...(environment ? { environment } : {}) }, controller.signal)
       resolved.markResident?.()
       const native = await this.ports.nativeEvidence(intent, session, { manager: resolved.manager, request, signal: controller.signal })
@@ -329,21 +381,24 @@ export class RemoteExecutionHost {
     await this.ports.authorizeReview(resident.intent, resident.placement, review)
     await this.ports.journal.loadReviewTurn(resident.intent.operationId, review.correlationId)
   }
-  startTurn(operationId: string, prompt: string, correlationId: string, review?: RemoteReviewerRequest) {
-    return this.track(() => this.startTurnOwned(operationId, prompt, correlationId, review))
+  startTurn(operationId: string, prompt: string, correlationId: string, review?: RemoteReviewerRequest, sessionMode?: SessionMode) {
+    return this.track(() => this.startTurnOwned(operationId, prompt, correlationId, review, sessionMode))
   }
-  private async startTurnOwned(operationId: string, prompt: string, correlationId: string, review?: RemoteReviewerRequest) {
+  private async startTurnOwned(operationId: string, prompt: string, correlationId: string, review?: RemoteReviewerRequest,
+    sessionMode?: SessionMode) {
     const resident = await this.resident(operationId, review ? 'read' : 'start')
     if (review) return this.startReviewTurn(resident, prompt, correlationId, review)
     if (correlationId !== `execution:${resident.intent.executionId}` || !prompt || prompt.length > 1_000_000) throw new Error('Native turn correlation mismatch')
-    const reserved = await this.ports.journal.reserveTurn(operationId, { correlationId, promptDigest: createHash('sha256').update(prompt).digest('hex') })
+    const reserved = await this.ports.journal.reserveTurn(operationId, {
+      correlationId, promptDigest: createHash('sha256').update(prompt).digest('hex'), sessionMode: sessionMode ?? 'regular',
+    })
     if (!reserved.reserved) return this.ports.journal.status(operationId)
     resident.turn = (async () => {
       try {
         await this.ports.authorize(resident.intent, resident.placement, 'start')
         const status = await this.ports.journal.status(operationId)
         if (status.status !== 'known' || status.receipt.stopFence) return
-        for await (const event of resident.manager.startTurn(resident.session, { prompt, clientCorrelationId: correlationId,
+        for await (const event of resident.manager.startTurn(resident.session, { prompt, clientCorrelationId: correlationId, ...(sessionMode ? { sessionMode } : {}),
           onSubmitted: async turnId => { await this.ports.journal.acknowledgeTurn(operationId, turnId); const current = await this.ports.journal.status(operationId); if (current.status === 'known' && current.receipt.stopFence) await resident.manager.cancel(resident.session, undefined, turnId); else await this.ports.journal.markRunning(operationId) } }, resident.controller.signal)) { void event }
         await this.settle(resident, correlationId)
       } catch { try { await this.ports.journal.uncertain(operationId, 'Native turn acknowledgment or closure unavailable') } catch { /* A faulted journal already denies entry and requires recovery. */ } }
@@ -445,7 +500,8 @@ export class RemoteExecutionHost {
         await this.ports.journal.acknowledgeReviewTurn(operationId, correlation, history.nativeTurnId)
         if (history.terminalTurn?.correlationId === correlation) await this.ports.journal.settleReviewTurn(operationId, history)
       }
-      return { history, status: await this.ports.journal.status(operationId) }
+      return { context: resident.manager.contextSnapshot?.(resident.session) ?? null, history,
+        status: await this.ports.journal.status(operationId) }
     }
     if (method === 'pending') return resident.settlementHistory
       ? resident.settlementHistory.pendingInteraction ?? resident.settlementHistory.pendingInteractions[0] : resident.manager.pending(resident.session)

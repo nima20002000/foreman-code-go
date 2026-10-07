@@ -1,6 +1,6 @@
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentConfigurationVersion } from '@foreman-code/contracts'
+import type { AgentConfigurationVersion, HarnessExecutionRequest } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 
@@ -60,6 +60,30 @@ describe('execution allocation cleanup ownership', () => {
     mutable.configuration.prompt = { system: 'changed' }
     expect(() => resolver.resolve(mutable)).toThrow('cannot change')
     expect(createSession).not.toHaveBeenCalled()
+  })
+
+  it('retains the complete workflow request for inspection and refuses a changed request', async () => {
+    const request: HarnessExecutionRequest = { executionId: context.executionId, runId: 'run', workspaceId: 'workspace',
+      workflowNodeId: 'node', workingDirectory: context.workingDirectory, runtimeDirectory: '/runtime',
+      configuration: context.configuration, input: { accepted: true }, initialPrompt: 'accepted notice',
+      executionContext: { parentRequest: null } }
+    const create = vi.fn(input => {
+      expect(input.workflowRequest).toEqual(request)
+      return { harness: 'codex', dispose: async () => undefined } as NativeHarnessSessionManager
+    })
+    const resolver = new ExecutionScopedNativeSessionManagerResolver(create)
+    try {
+      const original = resolver.resolve({ ...context, workflowRequest: request })
+      expect(resolver.resolve(context).manager).toBe(original.manager)
+      expect(() => resolver.resolve({ ...context, workflowRequest: { ...request,
+        executionContext: { parentRequest: { requestId: 'foreign', requesterNodeId: 'foreign' } } } }))
+        .toThrow('cannot change')
+      expect(() => resolver.resolve({ ...context, workflowRequest: { ...request, initialPrompt: 'changed' } }))
+        .toThrow('cannot change')
+      expect(create).toHaveBeenCalledOnce()
+    } finally {
+      await resolver.dispose()
+    }
   })
 })
 

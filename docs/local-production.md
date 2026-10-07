@@ -135,6 +135,16 @@ Its Bubblewrap namespace hides the API file vault and other native owners'
 storage. The installer keeps its cache separate; accepted harness permissions
 and file-tool grants still control each operation.
 
+## Claude access mode
+
+Claude runs only with Full access (`danger-full-access`). Read only, Workspace
+write and other access modes are rejected when saving a preset, host profile or
+agent and before starting a workflow. Existing saved configurations retain their
+values until the owner explicitly selects Full access; they are not upgraded.
+Tool approval rules, application grants and qualification still apply. Qualify
+an explicitly selected Full access profile before using the installed preset.
+No Claude-specific AppArmor exception is required or installed.
+
 For an environment-based provider credential, explicitly add the provider's
 variable, such as `OPENCODE_API_KEY`, as a string in private `operator.json`,
 then rerun `production:install`. This is an OS-owner setting, outside Operator

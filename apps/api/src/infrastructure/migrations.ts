@@ -1,3 +1,5 @@
+import { sessionControlsMigration } from './sessionControlsMigration.js'
+import { workerConversationBindingMigration } from './workerConversationBindingMigration.js'
 import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
 import { localWorkflowNativeOutputMigration } from './localWorkflowNativeOutputMigration.js'
 import { workExhaustedRouteMigration } from './workExhaustedRouteMigration.js'
@@ -11,6 +13,7 @@ import { workflowPresentationMigration } from './workflowPresentationMigration.j
 import { operatorTerminalMigration } from './operatorTerminalMigration.js'
 import { operatorTerminalHistoryMigration } from './operatorTerminalHistoryMigration.js'
 import { claudeCallbackMigration } from './claudeCallbackMigration.js'
+import { nativeCorrelationProvidersMigration } from './nativeCorrelationProvidersMigration.js'
 import { runSubagentsMigration } from './runSubagentsMigration.js'
 import { deviceIdentityMigration } from '../modules/devices/migration.js'
 import { activitySnapshotMigration } from './activitySnapshotMigration.js'
@@ -838,6 +841,8 @@ export const migrations = [
   hostHarnessMeasurementsMigration,
   sourceCleanupLeaseMigration,
   compactCommandActivityMigration,
+  sessionControlsMigration,
+  workerConversationBindingMigration,
   runSubagentsMigration,
   jobAdmissionQueueMigration,
   jobQueueCleanupMigration,
@@ -857,6 +862,7 @@ export const migrations = [
   localWorkflowNativeOutputMigration,
   localHumanMigration,
   claudeCallbackMigration,
+  nativeCorrelationProvidersMigration,
   jobArtifactXmlMigration,
   jobRuntimeCaptureWithoutApprovalMigration,
   buildComputerRoleMigration,

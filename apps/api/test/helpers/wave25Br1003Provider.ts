@@ -1,3 +1,4 @@
+import { isWorkflowStart } from '../../src/modules/harnesses/sessionStart.js'
 import {
   CODEX_APPROVAL_OPTIONS_FIXTURE, NativeHarnessEventSchema,
   type HarnessExecutionRequest, type NativeHarnessCapabilities, type NativeHarnessEvent, type NativeSessionReference,
@@ -48,7 +49,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
       endpointMatches: true, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString() }
   }
   async createSession(input: NativeSessionStart): Promise<NativeSessionReference> {
-    if (input.kind === 'operator') throw new Error('The checkpoint fixture accepts only workflow requests')
+    if (!isWorkflowStart(input)) throw new Error('The checkpoint fixture accepts only workflow requests')
     const session = { harness: this.harness, providerVersion: '0.154.0', nativeSessionId: `native-${input.request.executionId}` }
     if (this.requests.has(session.nativeSessionId)) throw new Error('Duplicate native session creation')
     this.counts.sessions++
@@ -56,7 +57,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
     return session
   }
   async attachSession(session: NativeSessionReference, input: NativeSessionStart): Promise<NativeSessionReference> {
-    if (input.kind === 'operator' || !this.requests.has(session.nativeSessionId)) throw new Error('Unknown persisted provider session')
+    if (!isWorkflowStart(input) || !this.requests.has(session.nativeSessionId)) throw new Error('Unknown persisted provider session')
     const original = this.requests.get(session.nativeSessionId)!
     if (original.executionId !== input.request.executionId) throw new Error('Attachment changed the execution identity')
     this.counts.attaches++

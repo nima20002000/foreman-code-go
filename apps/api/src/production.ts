@@ -1,12 +1,13 @@
 import { ComputerActivityService } from './modules/computers/activity.js'
 import { registerComputerActivityRoutes } from './routes/computerActivity.js'
+import { sessionStartDirectory } from './modules/harnesses/sessionStart.js'
+import { recoverPersistedClaudeCompaction } from './modules/harnesses/claudeSdk/recoverCompaction.js'
 import { registerBuildComputerRoutes } from './routes/buildComputers.js'
 import { WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
 import { PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { appMcpServerName } from './modules/harnesses/appMcpLauncher.js'
-import { acceptsClaudePreCredentialEntry } from './modules/harnesses/claudeSdk/appMcpPreflight.js'
 import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
 import {
@@ -73,20 +74,24 @@ import { createClaudeProductionDiscovery } from './modules/harnesses/claudeSdk/b
 import { productionClaudeMetadata } from './modules/harnesses/claudeSdk/productionMetadata.js'
 import { initializeNativeDefaults } from './modules/harnesses/initializeDefaults.js'
 import { qualifyClaudeNativeProfile } from './modules/harnesses/claudeSdk/nativeProfileQualification.js'
+import { installedClaudeProfilePin } from './modules/harnesses/claudeSdk/installedProfilePin.js'
 import { discoverLauncher } from './modules/harnesses/hostDiscovery.js'
 import { passiveDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
 import { runCommand } from './modules/harnesses/process.js'
 import { productionClaudeManager, type ClaudeProfileOwner } from './modules/harnesses/claudeSdk/production.js'
 import { requireClaudeProductionCredentialDelivery } from './modules/harnesses/claudeSdk/productionCredentials.js'
+import { assertClaudeCredentialEndpoint } from './modules/harnesses/claudeSdk/mcpInspection.js'
 import { PostgresClaudeInteractionAuthority } from './modules/harnesses/claudeSdk/domainAuthority.js'
 import { productionSelectedProfileManager } from './modules/harnesses/selectedProfileProduction.js'
+import { createProductionWorkerConversations } from './modules/conversations/workerProduction.js'
+import { WorkerConversationCallbackSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { credentialAuthority } from './modules/interactions/wave25/credentialAuthority.js'
 import type { GraphSqlClient } from './modules/run-graph/connection.js'
 import { currentOperatorAuthority } from './modules/access/runAuthority.js'
 import { requireAuthorization } from './modules/access/policy.js'
 import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from './modules/harnesses/instanceSettings/acceptedProfile.js'
+import { workflowProfileSelection } from './modules/harnesses/workflowProfileSelection.js'
 import { authorizeOperatorProfileObservation } from './modules/harnesses/operatorProfileObservation.js'
-import type { AcceptedProfileSelector } from './modules/harnesses/instanceSettings/acceptedProfile.js'
 import { HarnessExecutionRequestSchema, OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
 import { inspectClaudeOperatorConfiguration } from './modules/harnesses/claudeSdk/operatorConfigurationInspection.js'
 import { requireClaudePolicyQualification } from './modules/harnesses/claudeSdk/configuration.js'
@@ -225,7 +230,7 @@ import { ProductionHostHarnessProfileQualifier } from './modules/harnesses/produ
 import { HarnessInstanceSettingsRepository } from './modules/harnesses/instanceSettings/repository.js'
 import { HostHarnessProfileEvidenceRepository } from './modules/harnesses/instanceSettings/profileRepository.js'
 import { HostHarnessInstanceProfileChecks } from './modules/harnesses/instanceSettings/profileChecks.js'
-import { createInstalledHarnessQualificationRetention } from './modules/harnesses/installedCodexQualificationRetention.js'
+import { createInstalledNativeQualificationRetention } from './modules/harnesses/installedNativeQualificationRetention.js'
 import { HostHarnessOverrideService, type HostHarnessOverrideAuthority } from './modules/harnesses/instanceSettings/service.js'
 import { commandInputHash } from './modules/commands/postgres.js'
 import { authorizeDeviceHost, assertDeviceHostInstallation } from './modules/devices/hostAuthorization.js'
@@ -345,6 +350,11 @@ export function buildProductionApp(
       } },
       { namespace: WORKER_MCP_EXTENSION.namespace, version: WORKER_MCP_EXTENSION.version, role: 'server',
         maxJsonBytes: WORKER_MCP_EXTENSION.maxJsonBytes, maxBinaryBytes: 0, async handle(payload, context) {
+          if (payload && typeof payload === 'object' && 'operation' in payload
+            && typeof payload.operation === 'string' && payload.operation.startsWith('conversation-mcp.')) {
+            if (context.bytes !== undefined) throw new DomainError('WORKER_CONVERSATION_MCP_DENIED', 'Chat MCP cannot carry transfer bytes.', 403)
+            return { payload: await workerChats.mcp.handle(payload, context.binding, context.signal) }
+          }
           if (!mainWorkerMcp) throw new DomainError('WORKER_MCP_UNAVAILABLE', 'The original Main worker MCP authority has not initialized.', 503)
           context.signal.throwIfAborted()
           const result = await mainWorkerMcp.handle(payload, context.binding, context.signal)
@@ -362,6 +372,11 @@ export function buildProductionApp(
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
         handle: async (payload, context) => {
+          if (WorkerConversationCallbackSchema.safeParse(payload).success) {
+            if (!workerChats || context.bytes !== undefined) throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE',
+              'The Main conversation callback authority is unavailable.', 503)
+            return { payload: await workerChats.bridge.handle(payload, context.binding, context.signal) }
+          }
           if (RemoteJobMainRpcRequestRecordSchema.safeParse(payload).success) {
             if (!jobRuntime) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual main Job application bridge is unavailable.', 503)
             return { payload: await jobRuntime.application.handle(payload, context.binding) }
@@ -403,9 +418,7 @@ export function buildProductionApp(
           { operation: 'discover', refreshId: randomUUID() }, { signal })
         signal.throwIfAborted()
         if (selectedSuites) await retainInstalledHarnessInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
-          binding, inventory: result.payload, suiteRevisions: {
-            codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
-          } })
+          binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision, opencodeSuiteRevision: selectedSuites.opencode.revision })
         else harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
       }
       if (infrastructure?.deviceDomains) await infrastructure.deviceDomains.reconcile(binding, signal, endpoint)
@@ -627,13 +640,21 @@ export function buildProductionApp(
         if (!configuration || configuration.contentHash !== binding.configurationHash || !isDeepStrictEqual(configuration.harnessProfileSelection, selector)) {
           throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The exact saved Operator configuration changed before its read-only inspection.', 409)
         }
-      } else await new PostgresClaudeInteractionAuthority(client, binding, { nativeCallbackContext: () => undefined }).callbackAdmission()
+      } else await new PostgresClaudeInteractionAuthority(client, binding, { nativeCallbackContext: () => undefined }).profileAdmission()
       await assertDeviceHostInstallation(client, selector.target.hostRef, selector.target.applicationInstallationId)
       binding.admissionSignal?.throwIfAborted()
     },
     async current(binding, value, client) {
       if (value.driverId === 'claude') {
         requireClaudeProductionCredentialDelivery(value.configuration)
+        if (value.target.hostRef.kind === 'device') {
+          const registry = harnessRegistry.pinOverride(value)
+          const proof = await hostProfileEvidence.latest(value.instanceId, value.revision, client)
+          const pin = installedClaudeProfilePin(value, registry, proof)
+          harnessRegistry.installations.assertCurrent(registry)
+          return { registry, pin, applicationInstallationId: value.target.applicationInstallationId,
+            suiteRevision: 'claude-profile-check-v1' }
+        }
         const current = infrastructure?.claudeCurrentProfile ?? (infrastructure?.mode === 'replay' ? undefined : claudeDiscovery.current)
         if (!current) throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Claude replay requires its current installed profile metadata port.', 500)
         return current(binding, value, client)
@@ -662,10 +683,8 @@ export function buildProductionApp(
           directory: resolve(config.harnesses.workspaceRoot, 'claude-native-qualification'), recovery, signal: input.signal,
           assertCurrent: async () => { await nativeFactories.assertInstallationUnchanged(binding, input.signal); harnessRegistry.installations.assertCurrent(binding) } }) }
         finally { await close() }
-      } }, workerExecution), selectedSuites ? createInstalledHarnessQualificationRetention({
-      repository: qualificationRepository, suiteRevisions: {
-        codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
-      },
+      } }, workerExecution), selectedSuites ? createInstalledNativeQualificationRetention({
+      repository: qualificationRepository, suiteRevision: selectedSuites.codex.revision, opencodeSuiteRevision: selectedSuites.opencode.revision,
       currentBinding: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, 'host-harness-check-v1')?.binding ?? null,
       currentInstallation: value => harnessRegistry.pinOverride(value).installation,
       async refreshInstallation(value, signal) {
@@ -676,9 +695,7 @@ export function buildProductionApp(
         const result = await captured.request({ operation: 'discover', refreshId: randomUUID() }, { signal: bounded })
         bounded.throwIfAborted()
         await retainInstalledHarnessInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
-          binding: captured.binding, inventory: result.payload, suiteRevisions: {
-            codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
-          } })
+          binding: captured.binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision, opencodeSuiteRevision: selectedSuites.opencode.revision })
       },
     }) : undefined)
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
@@ -724,7 +741,6 @@ export function buildProductionApp(
     const recovery = processRegistry.scope(`execution:${context.executionId}`)
     const remote = remoteWorkflow!.manager(context, getOwner)
     if (remote) return remote
-    const placement = context.acceptedPlacement
     const nativeOutputs = configuration.harness === 'codex' && context.artifactOutputs && !context.purpose
       ? createLocalWorkflowNativeOutputs({ executionId: context.executionId, artifacts: () => {
         if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
@@ -737,18 +753,8 @@ export function buildProductionApp(
           'The local workflow no longer owns its native output turn.', 409)
         owner.assertOwned()
       }, qualification: { registry: processRegistry, qualify: qualifyCodex, command: runCommand } }) : undefined
-    let selector: AcceptedProfileSelector | undefined
-    if (placement) {
-      if (placement.payload.kind !== 'agent' || placement.payload.agentId !== context.agentId
-        || placement.payload.agentConfigurationVersionId !== context.configuration.id
-        || placement.runId !== context.runId || (remoteWorkflow!.binding(context.executionId)?.executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd) !== context.workingDirectory
-        || placement.payload.driverId !== configuration.harness) throw new DomainError('PLACEMENT_BINDING_CONFLICT',
-        'The native role must use its exact accepted workflow placement.', 409)
-      selector = { instanceId: placement.payload.instanceId, instanceRevision: placement.payload.instanceRevision,
-        target: { hostRef: placement.hostRef, applicationInstallationId: placement.hostRef.kind === 'main'
-          ? placement.hostRef.mainId : placement.registration!.workerInstallationId,
-        harnessInstallationId: placement.payload.harnessInstallationId, installationFingerprint: placement.payload.installationFingerprint } }
-    }
+    const selector = workflowProfileSelection(context,
+      remoteWorkflow!.binding(context.executionId)?.executionPlacement?.workingTree.canonicalCwd)
     if (configuration.harness === 'claude') {
       requireClaudeProductionCredentialDelivery(configuration)
       if (!context.runId || !context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE',
@@ -764,10 +770,10 @@ export function buildProductionApp(
           if (!owner) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The workflow native owner is unavailable.', 409)
           const execution = await runs.getExecution(context.executionId, owner), run = await runs.get(context.runId!, owner)
           if (!execution || !run || execution.attempt !== context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The persisted execution attempt changed.', 409)
-          const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
+          const request = HarnessExecutionRequestSchema.parse({ ...context.workflowRequest,
+            executionId: execution.id, runId: execution.runId,
             workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
             runtimeDirectory: execution.runtimeDirectory, configuration: context.configuration, input: execution.input })
-          // The engine starts every workflow turn with this correlation; inspection must match it exactly.
           return execution.nativeSessionId ? { kind: 'workflow', correlationId: `execution:${execution.id}`, request }
             : { request, correlationId: `execution:${execution.id}` }
         },
@@ -906,13 +912,7 @@ export function buildProductionApp(
         if (!claude || configuration.harness.harness !== 'claude') throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The exact Claude launch is unavailable.', 409)
         const inspected = await nativeFactories.inspector(manager).inspect({ harness: 'claude', runnerId,
           workingDirectory: input.workingDirectory, serverName: PRODUCT_SLUG, phase: 'configuration', ...(input.signal ? { signal: input.signal } : {}) })
-        const entry = inspected.entry
-        if (!acceptsClaudePreCredentialEntry(entry, appMcpEndpoint)) {
-          const observed = entry ? { name: entry.name, transport: entry.transport, endpointMatches: entry.endpoint === appMcpEndpoint,
-            enabled: entry.enabled ?? null, status: entry.status ?? null } : null
-          componentLogger('harness').warn({ executionId: input.executionId, entry: observed }, 'Claude Foreman Code MCP preflight rejected')
-          throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The owned Claude query has no accepted Foreman Code HTTP endpoint.', 409, { entry: observed })
-        }
+        assertClaudeCredentialEndpoint(inspected.entry, appMcpEndpoint)
         await credentials.revokeSupersededForExecution(input.executionId)
         input.signal?.throwIfAborted()
         const credential = await (input.purpose === 'reviewer' ? credentials.issueForReviewer(input.executionId) : credentials.issueForExecution(input.executionId))
@@ -1057,9 +1057,66 @@ export function buildProductionApp(
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const operatorConversations = new PostgresOperatorConversationRepository(database.pool)
+  const agentConversations = new PostgresAgentChatRepository(database.pool)
+  const workerChats = createProductionWorkerConversations({ pool: database.pool,
+    endpoint: () => deviceRuntime.endpointForDomains(), profiles: selectedProfiles, claudeProfiles,
+    operators: operatorConversations, agents: agentConversations, registry: harnessRegistry,
+    qualifications: qualificationRepository, access, mcpForward: () => selectedMainMcpForward(app),
+    fileService: () => productionFileTools(app),
+    fileStorageRoot,
+    files: (conversationId, configuration, workingDirectory) => async ({ host, assertHost, ...turn }) => {
+      const admissions = 'operatorId' in configuration
+        ? operatorCodexFileAdmissions(() => app, database.pool, configuration, workingDirectory, fileStorageRoot,
+          { host, assertCurrent: assertHost })
+        : postgresCodexChatFiles(database.pool, () => {
+          if (!fileStorage) throw new Error('Production file storage is not registered.')
+          return fileStorage
+        }, async () => host, { assertCurrent: assertHost })
+      return productionCodexChatFiles(() => app, conversationId, admissions).prepare(turn)
+    },
+    suiteRevisions: selectedSuites ? {
+      codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
+    } : {} })
+  const recoverChatCompaction = async (
+      configuration: import('@foreman-code/contracts').OperatorConfigurationVersion | import('@foreman-code/contracts').AgentConfigurationVersion,
+      conversationId: string, session: import('@foreman-code/contracts').NativeSessionReference,
+      start: import('./modules/harnesses/port.js').NativeSessionStart, state: import('@foreman-code/contracts').CompactionState,
+      principalId: string, signal: AbortSignal,
+    ) => {
+      if (configuration.harnessProfileSelection?.target.hostRef.kind === 'device') {
+        const manager = workerChats.create({ configuration, conversationId, workingDirectory: sessionStartDirectory(start),
+          appMcpAccess: 'none', observationPrincipalId: principalId })
+        try { return await manager.readCompaction!(session, start, state, signal) }
+        finally { await manager.dispose?.() }
+      }
+      if (session.harness === 'claude') return recoverPersistedClaudeCompaction(state)
+      const binding: ClaudeProfileOwner = 'operatorId' in configuration
+        ? { kind: 'operator', conversationId, repository: operatorConversations, observationPrincipalId: principalId }
+        : { kind: 'agent', conversationId, workspaceId: configuration.workspaceId,
+          repository: agentConversations, observationPrincipalId: principalId }
+      const accepted = configuration.harnessProfileSelection
+        ? await selectedProfiles.admit({ ...binding, admissionSignal: signal }, configuration.harnessProfileSelection) : undefined
+      const selection = accepted ? harnessRegistry.pinOverride(accepted.override)
+        : harnessRegistry.pinAccepted({ id: configuration.id,
+          agentId: 'operatorId' in configuration ? configuration.operatorId : configuration.agentId,
+          harness: configuration.harness })
+      const common = { selection, configured: selection.instance, role: 'diagnostics' as const,
+        workingDirectory: sessionStartDirectory(start),
+        ownerAgentId: 'operatorId' in configuration ? configuration.operatorId : configuration.agentId,
+        appMcpAccess: 'none' as const,
+        ...(accepted ? { revalidateSelection: (effectSignal?: AbortSignal) => selectedProfiles.revalidate(
+          { ...binding, admissionSignal: effectSignal ?? signal }, accepted) } : {}) }
+      const { manager } = nativeFactories.allocate({ ...common, harness: session.harness })
+      try {
+        nativeFactories.admitAuxiliary(manager)
+        return await manager.readCompaction!(session, start, state, signal)
+      } finally { await nativeFactories.disposeAuxiliary(manager) }
+    }
   const resolveOperatorManager = productionOperatorManagers({
     app: () => app, pool: database.pool, config, workingDirectory: operatorWorkingDirectory,
     endpointHost, appMcpEndpoint, processRegistry, responseJournal, managers: operatorManagers, nativeFactories,
+    createDevice: (configuration, conversationId, fileInputs) => workerChats!.create({
+      configuration, conversationId, workingDirectory: operatorWorkingDirectory, appMcpAccess: fileInputs ? 'none' : 'scoped' }),
     createSelected: (configuration, conversationId, fileInputs, recovery) => {
       if (!configuration.harnessProfileSelection || configuration.harness.harness === 'claude') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The selected Operator driver profile is unavailable.', 409)
       return productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
@@ -1078,18 +1135,21 @@ export function buildProductionApp(
     createClaude: (configuration, conversationId, fileInputs, recovery) => {
       if (configuration.harness.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude requires the pinned Claude configuration.', 409)
       requireClaudeProductionCredentialDelivery(configuration.harness)
+      const controlBinding: Extract<import('./modules/harnesses/claudeSdk/domainAuthority.js').ClaudeDomainBinding, { kind: 'operator' }>
+        = { kind: 'operator', conversationId, repository: operatorConversations }
       const claude = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
         profiles: claudeProfiles,
         ...(configuration.harnessProfileSelection ? { selector: configuration.harnessProfileSelection } : {}),
-        binding: { kind: 'operator', conversationId, repository: operatorConversations }, role: 'operator',
+        binding: controlBinding, role: 'operator',
         configuration: configuration.harness, workingDirectory: operatorWorkingDirectory, ownerAgentId: configuration.operatorId,
         recovery, appMcpAccess: fileInputs ? 'none' : 'scoped', mode: infrastructure?.mode ?? 'native',
         ...(fileInputs ? { files: { service: () => productionFileTools(app), ...(infrastructure?.claudeFileSdk ? { sdk: infrastructure.claudeFileSdk } : {}) } } : {}),
         ...(infrastructure?.claudeClient ? { loadClient: infrastructure.claudeClient } : {}),
         inspectionStart: async () => {
           const row = await operatorConversations.active(conversationId)
-          if (!row?.active_request_id || row.operator_configuration_version_id !== configuration.id) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The accepted Operator turn is unavailable.', 409)
-          return { kind: 'operator', correlationId: nativeCorrelation(conversationId, row.active_request_id), configuration,
+          if (!row || !row.active_request_id && !controlBinding.controlPrincipalId
+            || row.operator_configuration_version_id !== configuration.id) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The accepted Operator turn is unavailable.', 409)
+          return { kind: 'operator', correlationId: nativeCorrelation(conversationId, row.active_request_id ?? 'session-control'), configuration,
             workingDirectory: operatorWorkingDirectory, environment: { agentId: configuration.operatorId, variables: {} } }
         },
       })
@@ -1101,7 +1161,7 @@ export function buildProductionApp(
   })
   const chatAuthority = new PostgresOperatorChatAuthority(
     database.pool, access, rollout, operatorWorkingDirectory, appMcpEndpoint,
-    (manager) => nativeFactories.inspector(manager),
+    (manager) => workerChats!.inspector(manager) ?? nativeFactories.inspector(manager),
     async (manager, configuration, environment, signal) => {
       const claude = claudeLaunches.get(manager)
       const servers: ClaudeHarnessConfiguration['mcpServers'] = configuration.harness.harness === 'claude'
@@ -1109,13 +1169,17 @@ export function buildProductionApp(
       const serverName = appMcpServerName(servers)
       const configured = servers[serverName]
       const token = readProductEnvironment(environment.variables, 'MCP_TOKEN')
-      if (!claude || !configured || configured.type !== 'http' || configured.url !== appMcpEndpoint || !token) throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'The accepted Claude HTTP credential arrangement is unavailable.', 409)
-      await claude.manager.refreshInspectionCredentials({ ...await claude.inspectionStart(), environment }, {
-        ...(configuration.harness.harness === 'claude' ? configuration.harness.mcpServers : {}),
-        [serverName]: { ...configured, headers: { Authorization: `Bearer ${token}` } },
-      }, signal)
-      const checked = await new McpDetectionService(nativeFactories.inspector(manager), appMcpEndpoint).preflight({
-        harness: 'claude', runnerId: 'runner-local', workingDirectory: operatorWorkingDirectory, signal,
+      const worker = workerChats!.deliverClaudeCredential(manager)
+      if ((!claude && !worker) || !configured || configured.type !== 'http' || configured.url !== appMcpEndpoint || !token) throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'The accepted Claude HTTP credential arrangement is unavailable.', 409)
+      if (worker) await worker(token, signal)
+      else if (claude) await claude.manager.refreshInspectionCredentials({ ...await claude.inspectionStart(), environment }, {
+          ...(configuration.harness.harness === 'claude' ? configuration.harness.mcpServers : {}),
+          [serverName]: { ...configured, headers: { Authorization: `Bearer ${token}` } },
+        }, signal)
+      const context = manager.mcpInspectionContext ? await manager.mcpInspectionContext(signal)
+        : { runnerId: 'runner-local', workingDirectory: operatorWorkingDirectory }
+      const checked = await new McpDetectionService(workerChats!.inspector(manager) ?? nativeFactories.inspector(manager), appMcpEndpoint).preflight({
+        harness: 'claude', ...context, signal,
       })
       if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Claude did not acknowledge the scoped Operator credential on its current query.', 409)
     },
@@ -1139,15 +1203,20 @@ export function buildProductionApp(
       finally { await close() }
     },
   )
+  resolveOperatorManager.recoverCompaction = recoverChatCompaction
   const chat = new OperatorChatService(
     operatorConversations, operators,
     resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
   )
-  const agentConversations = new PostgresAgentChatRepository(database.pool)
   const agentChatManagers = new Map<string, NativeHarnessSessionManager>()
   const resolveAgentChatManager: AgentChatManagerFactory = (conversationId, configuration, workingDirectory) => {
     const existing = agentChatManagers.get(conversationId)
     if (existing) return existing
+    if (configuration.harnessProfileSelection?.target.hostRef.kind === 'device') {
+      const manager = workerChats!.create({ configuration, conversationId, workingDirectory, appMcpAccess: 'none' })
+      agentChatManagers.set(conversationId, manager)
+      return manager
+    }
     // Chat processes have their own owner scope; they never share a workflow execution's manager.
     const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
     const harness = configuration.harness
@@ -1192,6 +1261,7 @@ export function buildProductionApp(
     agentChatManagers.set(conversationId, manager)
     return manager
   }
+  resolveAgentChatManager.recoverCompaction = recoverChatCompaction
   resolveAgentChatManager.release = (conversationId) => { agentChatManagers.delete(conversationId) }
   const agentChat = new AgentChatService(database.pool, agentConversations,
     new PostgresOperatorConversationRepository(database.pool), workflows, runs, resolveAgentChatManager, config.harnesses.workspaceRoot)
@@ -1390,6 +1460,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
+      { name: 'worker conversation callback admissions', run: async () => { await workerChats?.close() } },
       { name: 'installed rsync canonical receiver', run: () => entrypoint ? entrypoint.close() : undefined },
       { name: 'workflow artifact byte receiver', run: async () => { await workflowArtifacts?.receiver.close() } },
       { name: 'closed local native output bytes', run: async () => { await localNativeOutputMcp?.cleanupClosed() } },

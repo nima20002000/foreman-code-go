@@ -1,3 +1,5 @@
+import { z } from 'zod'
+import { SessionControlRequestSchema, SessionControlStateSchema } from '@foreman-code/contracts'
 import type { FastifyInstance } from 'fastify'
 
 import {
@@ -24,6 +26,19 @@ const MAX_BOOTSTRAP_BYTES = 256 * 1024
 export function registerAgentChatRoutes(app: FastifyInstance, chat: AgentChatService): void {
   const root = '/api/workspaces/:workspaceId/agent-chat'
   registerSelectedRunChatRoutes(app, chat)
+  app.get<{ Params: WorkspaceParams; Querystring: unknown }>(`${root}/session-controls`, request => {
+    const { executionId, ...query } = AgentChatQuerySchema.extend({ executionId: z.string().min(1).optional() }).parse(request.query)
+    const context = { workspaceId: request.params.workspaceId, ...query }
+    return chat.readContextControls(requirePrincipal(request), context, executionId)
+  })
+  app.post<{ Params: WorkspaceParams; Body: unknown }>(`${root}/session-controls`, request => {
+    const body = z.object({ context: AgentChatQuerySchema, request: SessionControlRequestSchema, executionId: z.string().min(1).optional() }).strict().parse(request.body)
+    return chat.changeContextControls(requirePrincipal(request), { workspaceId: request.params.workspaceId, ...body.context }, body.request, 'http', body.executionId)
+  })
+  app.get<{ Params: ConversationParams }>('/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/session-controls', async request =>
+    SessionControlStateSchema.parse(await chat.readSessionControls(requirePrincipal(request), request.params.workspaceId, request.params.conversationId)))
+  app.post<{ Params: ConversationParams; Body: unknown }>('/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/session-controls', async request =>
+    SessionControlStateSchema.parse(await chat.changeSessionControls(requirePrincipal(request), request.params.workspaceId, request.params.conversationId, SessionControlRequestSchema.parse(request.body))))
   const streams = new Map<() => void, string>()
   app.addHook('preClose', async () => { for (const stop of streams.keys()) stop(); streams.clear() })
 

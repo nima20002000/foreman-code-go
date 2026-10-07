@@ -16,7 +16,7 @@ import { probeTrustedVersion } from '../src/modules/harnesses/hostDiscovery.js'
 import { HarnessInstallationRegistry } from '../src/modules/harnesses/installationRegistry.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
-import { referenceTestAuthenticationFile } from '../../../scripts/test-resources.mjs'
+import { copyTestAuthenticationFile } from '../../../scripts/test-resources.mjs'
 
 it.runIf(process.env.RUN_CLAUDE_PROFILE_NATIVE_TESTS === '1')(
   'qualifies the installed Haiku profile through real native lifecycle and tool-policy scenarios', async () => {
@@ -25,7 +25,7 @@ it.runIf(process.env.RUN_CLAUDE_PROFILE_NATIVE_TESTS === '1')(
     await mkdir(evidenceRoot, { recursive: true, mode: 0o700 })
     const directory = await mkdtemp(join(evidenceRoot, 'claude-haiku-'))
     const authentication = process.env.FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE
-    if (authentication) referenceTestAuthenticationFile({ directory: process.env.FOREMAN_CODE_TEST_ROOT!,
+    if (authentication) copyTestAuthenticationFile({ directory: process.env.FOREMAN_CODE_TEST_ROOT!,
       token: process.env.FOREMAN_CODE_TEST_OWNER! }, authentication,
       join(process.env.CLAUDE_CONFIG_DIR!, '.credentials.json'))
     const configuration = ClaudeHarnessConfigurationSchema.parse({

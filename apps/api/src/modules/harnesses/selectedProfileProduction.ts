@@ -27,7 +27,7 @@ export function productionSelectedProfileManager(input: {
   openCodeFiles?: Extract<NativeHarnessAllocation, { harness: 'opencode' }>['chatFiles']
 }) {
   input = { ...input, configuration: structuredClone(input.configuration), selector: structuredClone(input.selector) }
-  return input.factories.allocateAdmitted(input.configuration.harness, async (signal, admission) => {
+  const result = input.factories.allocateAdmitted(input.configuration.harness, async (signal, admission) => {
     let binding = input.binding
     if (admission.purpose === 'observation' && binding.kind === 'operator') {
       if (admission.start.kind !== 'operator') throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT',
@@ -58,4 +58,8 @@ export function productionSelectedProfileManager(input: {
       : { ...common, harness: 'opencode', ...(input.configuration.advanced ? { advancedConfiguration: input.configuration.advanced } : {}),
         ...(input.openCodeFiles ? { chatFiles: input.openCodeFiles } : {}) }
   })
+  result.manager.setSessionControlPrincipal = principalId => {
+    if (input.binding.kind === 'operator' || input.binding.kind === 'agent') input.binding.controlPrincipalId = principalId
+  }
+  return result
 }

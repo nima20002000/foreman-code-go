@@ -85,6 +85,7 @@ export interface ManagedOpenCodeServerOptions {
   advancedConfiguration?: OpenCodeAdvancedConfiguration
   protectedFileStorageRoot?: string
   managedFileRoot?: string
+  managedFileOwner?: { id: string; prepareDirectory(root: string, signal: AbortSignal): Promise<void> }
   nativeStorage?: { root: string; owner: string }
   /** One budget for version probing, spawning, readiness and health, not per stage. */
   startupTimeoutMs?: number
@@ -135,7 +136,12 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   private restartDetached = false
 
   constructor(private readonly options: ManagedOpenCodeServerOptions) {
-    this.ownedFileRoot = options.managedFileRoot ? join(options.managedFileRoot, randomUUID()) : undefined
+    if (options.managedFileOwner && (!options.managedFileRoot
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(options.managedFileOwner.id))) {
+      throw new HarnessExecutionError('FILE_SOURCE_ISOLATION_REQUIRED', 'Native file ownership requires a registered directory.')
+    }
+    this.ownedFileRoot = options.managedFileRoot
+      ? join(options.managedFileRoot, options.managedFileOwner?.id ?? randomUUID()) : undefined
     if (options.nativeStorage) {
       this.conversationStorage = new OpenCodeConversationStorage(options.nativeStorage.root, options.nativeStorage.owner)
     }
@@ -273,7 +279,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       pure: this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true,
       ...(signal ? { signal } : {}),
     })
-    return evidence && (this.disabledAppMcpServerName === serverName || this.advancedConfiguration?.mcp.serverEnabled[serverName] === false)
+    return evidence && this.advancedConfiguration?.mcp.serverEnabled[serverName] === false
       ? { ...evidence, enabled: false, status: 'disabled' } : evidence
   }
 
@@ -496,7 +502,10 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       }
       const pure = this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
       const args = ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])]
-      if (this.ownedFileRoot) await mkdir(this.ownedFileRoot, { recursive: true, mode: 0o700 })
+      if (this.ownedFileRoot) {
+        if (this.options.managedFileOwner) await this.options.managedFileOwner.prepareDirectory(this.ownedFileRoot, abort.signal)
+        else await mkdir(this.ownedFileRoot, { recursive: true, mode: 0o700 })
+      }
       const hiddenStorage = await this.conversationStorage?.prepare(environment)
       this.fileIsolation = this.options.protectedFileStorageRoot
         ? new OpenCodeVaultIsolation(this.options.protectedFileStorageRoot,

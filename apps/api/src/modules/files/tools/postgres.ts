@@ -2,7 +2,8 @@ import type pg from 'pg'
 import type { MessageAttachmentRef, RunFileProvenance } from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import { bindingIdentity } from './context.js'
-import type { ArtifactSnapshot, CopyReceipt, FileToolArtifact, FileToolRepository, FileToolSession, PublicationLink } from './types.js'
+import type { ArtifactSnapshot, CopyReceipt, FileToolArtifact, FileToolContext,
+  FileToolRepository, FileToolSession, PublicationLink } from './types.js'
 
 export class PostgresFileToolRepository implements FileToolRepository {
   constructor(private readonly pool: pg.Pool) {}
@@ -21,6 +22,14 @@ export class PostgresFileToolRepository implements FileToolRepository {
   }
   async revokeSession(tokenHash: string): Promise<void> {
     await this.pool.query('update file_tool_sessions set revoked_at=coalesce(revoked_at,now()) where token_hash=$1', [tokenHash])
+  }
+  async revokeAcceptedSessions(context: FileToolContext): Promise<boolean> {
+    const result = await this.pool.query(`with ownership as materialized (
+      select pg_advisory_xact_lock(hashtextextended($1,273605))
+    ) update file_tool_sessions set revoked_at=coalesce(revoked_at,now()) from ownership
+      where record->>'binding'=$1 and record->'context'=$2::jsonb and record->>'transport'='opencode'`,
+    [bindingIdentity(context), JSON.stringify(context)])
+    return (result.rowCount ?? 0) > 0
   }
   async createArtifact(artifact: FileToolArtifact): Promise<void> {
     await this.pool.query('insert into file_tool_artifacts (artifact_id,binding,record) values ($1,$2,$3::jsonb)',

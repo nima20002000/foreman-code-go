@@ -1622,12 +1622,12 @@ export class ApprovalExecutionCoordinator {
       // Read the durable reference before resolving a manager: a repository
       // failure must not evict a resident session still needed by run cleanup.
       const existing = execution.nativeSessionId ? await this.interactions.getForExecution(execution.id) : undefined
-      context = await this.managerContext(execution, input.request.configuration)
       const request = HarnessExecutionRequestSchema.parse({
         ...input.request, executionId: execution.id, runId: execution.runId,
         workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
         runtimeDirectory: execution.runtimeDirectory, input: execution.input,
       })
+      context = { ...await this.managerContext(execution, input.request.configuration), workflowRequest: request }
       await this.validateContinuation?.(execution.id, signal)
       {
         await repeat.assertExecutionAdmission(execution.id)
@@ -1907,6 +1907,11 @@ export class ApprovalExecutionCoordinator {
       const restarting = input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART'
       if (restarting) throw error
       if (held) {
+        let code = 'NATIVE_EXECUTION_FAILED'
+        if (error instanceof HarnessExecutionError) code = error.result.error?.code ?? code
+        if (error instanceof DomainError) code = error.code
+        componentLogger('harness').warn({ executionId: execution.id, code, err: error },
+          'Workflow native execution failed before cleanup')
         await this.runs.requestCleanup(execution.runId, input.owner)
         if (ownedSession) {
           resolved?.markFailed?.()

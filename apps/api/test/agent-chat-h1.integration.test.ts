@@ -114,10 +114,11 @@ describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
       manager['transport'] = async (prepared) => {
         assert.equal(prepared.input.environment, undefined)
         assert.equal(prepared.environment.GRAPHQL_MCP_TOKEN, undefined)
-        assert.notEqual(prepared.input.kind, 'operator')
-        if (prepared.input.kind !== 'operator') {
-          assert.equal(prepared.input.request.runId, `agent-chat:${id}`)
-          assert.equal(prepared.input.request.executionId, `agent-chat:${id}`)
+        assert.equal(prepared.input.kind, 'agent-chat')
+        if (prepared.input.kind === 'agent-chat') {
+          assert.equal(prepared.input.conversationId, id)
+          assert.deepEqual(prepared.input.configuration, configuration)
+          assert.equal('request' in prepared.input, false)
         }
         const transport = {
           request: async (method: string, params: JsonObject = {}) => {

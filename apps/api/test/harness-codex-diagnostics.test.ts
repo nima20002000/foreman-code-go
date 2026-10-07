@@ -68,6 +68,29 @@ function fixture() {
     block: (value: NonNullable<typeof blockDiagnostic>) => { blockDiagnostic = value } }
 }
 
+it('configuration reinspection uses a separate owner while the original Codex session remains open', async () => {
+  const f = fixture()
+  try {
+    await f.manager.createSession(f.source)
+    const earlierCommands = f.commands.length
+    const inspected = await f.factories.inspector(f.manager).inspect({
+      harness: 'codex', runnerId: 'runner-local', workingDirectory: '/recorded-workspace',
+      serverName: 'foreman-code', phase: 'configuration',
+    })
+    expect(inspected.entry).toMatchObject({ name: 'foreman-code', enabled: true })
+    const scope = f.admit.mock.calls[0]![0]
+    expect(scope.owner).not.toBe(f.writer.owner)
+    expect(f.commands.slice(earlierCommands).every(command => command.recovery === scope)).toBe(true)
+    expect(f.closeRecovery).toHaveBeenCalledExactlyOnceWith(scope)
+    expect(f.abandon).toHaveBeenCalledExactlyOnceWith(scope)
+    expect(f.close).not.toHaveBeenCalled()
+    expect(f.requests).toEqual(['thread/start'])
+  } finally {
+    await f.manager.dispose()
+    await f.factories.disposeAuxiliaries()
+  }
+})
+
 it('same-process ephemeral reload uses separately admitted diagnostics with no scoped application credentials', async () => {
   const f = fixture()
   try {

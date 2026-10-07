@@ -1,6 +1,7 @@
 import type { NativeMessageSubmission } from '@foreman-code/contracts'
 import type { DeviceHistoryGap } from '@foreman-code/contracts/device-application'
 export type { NativeMessageSubmission } from '@foreman-code/contracts'
+import type { CompactionState, ContextSnapshot, SessionControlCapabilities, SessionMode, SessionPreferences } from '@foreman-code/contracts'
 import type {
   AgentHarness,
   ExecutionResult,
@@ -15,6 +16,7 @@ import type {
   PendingNativeInteraction,
   OperatorConfigurationVersion,
   ReviewJob,
+  AgentConfigurationVersion,
 } from '@foreman-code/contracts'
 
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
@@ -39,6 +41,7 @@ export interface ChildProcessEnvironment {
 }
 
 export interface WorkflowNativeSessionStart {
+  sessionPreferences?: SessionPreferences
   kind?: 'workflow'
   correlationId?: string
   nativeTurnId?: string
@@ -49,6 +52,7 @@ export interface WorkflowNativeSessionStart {
 }
 
 export interface OperatorNativeSessionStart {
+  sessionPreferences?: SessionPreferences
   kind: 'operator'
   correlationId: string
   configuration: OperatorConfigurationVersion
@@ -59,10 +63,35 @@ export interface OperatorNativeSessionStart {
   environment?: ChildProcessEnvironment
 }
 
-export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSessionStart
+export interface AgentChatNativeSessionStart {
+  kind: 'agent-chat'
+  conversationId: string
+  workflowId: string
+  workflowNodeId: string
+  correlationId: string
+  configuration: AgentConfigurationVersion
+  workingDirectory: string
+  nativeTurnId?: string
+  environment?: ChildProcessEnvironment
+  instructionsDelivered?: boolean
+  sessionPreferences?: SessionPreferences
+}
 
+export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSessionStart | AgentChatNativeSessionStart
+
+
+export interface NativeCompactInput {
+  requestId: string
+  clientCorrelationId: string
+  onProgress(state: CompactionState): Promise<void>
+  /** Persist dispatch and recovery metadata before sending the native command. */
+  onDispatch?(): Promise<void>
+}
 
 export interface NativeTurnInput {
+  sessionMode?: SessionMode
+  onSettingsApplied?(): Promise<void>
+  sessionPreferences?: SessionPreferences
   prompt: string
   clientCorrelationId: string
   /** Await persistence of the provider identity immediately after submission acknowledgement. */
@@ -181,6 +210,19 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   prepareReview?(session: NativeSessionReference, job: ReviewJob, signal?: AbortSignal): Promise<void>
   originalApplicationAccess?(session: NativeSessionReference, signal?: AbortSignal):
     Promise<import('@foreman-code/contracts/remote-execution').RemoteApplicationAccess>
+  mcpInspectionContext?(signal?: AbortSignal): Promise<{ runnerId: string; workingDirectory: string }>
+  /** The domain supplies the authenticated control caller; native callbacks still require a message owner. */
+  setSessionControlPrincipal?(principalId: string): void
+  applySessionPreferences?(session: NativeSessionReference, preferences: SessionPreferences, signal?: AbortSignal): Promise<void>
+  configureSessionPreferences?(preferences: SessionPreferences): Promise<void>
+  sessionControlCapabilities?(session: NativeSessionReference): Promise<SessionControlCapabilities>
+  compactSession?(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal): Promise<CompactionState>
+  /** Inspect persisted native history without attaching a writer or offering input. */
+  readCompaction?(session: NativeSessionReference, start: NativeSessionStart,
+    state: CompactionState, signal?: AbortSignal): Promise<CompactionState>
+  reconcileCompaction?(session: NativeSessionReference, state: CompactionState, signal?: AbortSignal): Promise<CompactionState>
+  appliedSessionPreferences?(session: NativeSessionReference): SessionPreferences | null
+  contextSnapshot?(session: NativeSessionReference): ContextSnapshot | null
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
   createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>

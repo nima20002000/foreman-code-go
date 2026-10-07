@@ -109,11 +109,12 @@ describe.skipIf(!postgresEnabled)('SCH-12 historical Run-scoped chat PostgreSQL 
         expect(row.native_session_id).toBe(native.session.nativeSessionId)
         expect(row.native_session_id).not.toBe(source.nativeSessionId)
         const start = native.forks[0]!.input
-        expect(start.kind).toBe('workflow')
-        if (start.kind === 'operator') throw new Error('Historical Agent chat must use its isolated descriptor')
+        expect(start.kind).toBe('agent-chat')
+        if (start.kind !== 'agent-chat') throw new Error('Historical Agent chat must use its conversation owner')
         expect(start.environment).toBeUndefined()
-        expect(start.request).toMatchObject({ runId: `agent-chat:${id}`, executionId: `agent-chat:${id}`,
-          configuration: { id: execution.agentConfigurationVersionId } })
+        expect(start).toMatchObject({ conversationId: id, workflowId: f.f.scope.workflowId,
+          workflowNodeId: execution.workflowNodeId, configuration: { id: execution.agentConfigurationVersionId } })
+        expect('request' in start).toBe(false)
         expect(start.instructionsDelivered).toBe(true)
         retained.push({ execution, id, marker })
       }

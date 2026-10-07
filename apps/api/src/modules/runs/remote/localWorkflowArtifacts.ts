@@ -18,7 +18,9 @@ import type { WorkflowNativeCapture } from '../../interactions/workflowNativeCap
 import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction,
   type GraphTransactionSql } from '../../run-graph/connection.js'
 import { requireRepeatCanonicalReceiptBeforeCommit } from '../../run-graph/repeatReceipts.js'
+import { openRunGraphPublication } from '../../run-graph/publication.js'
 import { repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
+import { workflowRunScope } from '../repeatLifecycle.js'
 import { readAcceptedRepeatRunLocked } from '../repeatStartRead.js'
 import { readRepeatExecutionLocked } from '../repeatPostgres.js'
 import { assertSettlementLocked } from '../repeatSettlementServices.js'
@@ -169,6 +171,7 @@ export class LocalWorkflowArtifacts {
     if (execution.state !== 'completed' || execution.result?.outcome !== 'succeeded') return
     const original = await owner.oneShotConnection().transaction(async sql => {
       const snapshot = await readAcceptedRepeatRunLocked(sql, owner.runId)
+      await openRunGraphPublication(sql, workflowRunScope(snapshot.run))
       const stored = await readRepeatExecutionLocked(sql, snapshot, execution.id)
       if (!same(stored.execution, execution) || snapshot.stopRequested || snapshot.cleanupPending) return conflict()
       const source = await readWorkflowTerminalReceiptLocked(sql, snapshot, stored)

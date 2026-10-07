@@ -1,6 +1,6 @@
 import { GRAPHQL_OPERATOR_TOOLS } from '../graphqlMcpTools.js'
 import { NativeInteractionSupportSchema } from '../nativeInteractionSupport.js'
-import { ClaudeHarnessConfigurationSchema } from '../claude.js';
+import { ClaudeFullAccessConfigurationSchema, ClaudeHarnessConfigurationSchema } from '../claude.js';
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
 import { z } from "zod";
@@ -21,6 +21,7 @@ import {
   OpenCodeHarnessConfigurationSchema,
   HarnessQualificationSchema,
   HarnessConfigurationSchema,
+  SupportedHarnessConfigurationSchema,
   GetRunResponseSchema,
   ExecutionLocationSchema,
   RunActivitySchema,
@@ -543,7 +544,7 @@ export const GraphDraftRevertAppliedResultSchema = z.object({
 
 export const HarnessDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields,
-  defaults: ManagementHarnessDefaultsSchema,
+  defaults: ManagementHarnessDefaultsSchema.safeExtend({ claude: ClaudeFullAccessConfigurationSchema.optional() }),
   /** Explicitly select a preset even when its template values did not change. */
   configure: AgentHarnessSchema.array().max(3).optional(),
 }).strict();
@@ -580,7 +581,14 @@ export const ManagedWorkflowDefaultsSchema = z.object({
   value: WorkflowDefaultsSchema, revision: ExpectedRevisionSchema, versionId: IdSchema.nullable(),
 }).strict();
 export const AgentDefaultsUpdateInputSchema = z.object({
-  ...RevisionMutationFields, value: AgentDefaultsSchema,
+  ...RevisionMutationFields, value: AgentDefaultsSchema.superRefine((value, context) => {
+    for (const role of ['orchestrator', 'coder', 'operator'] as const) {
+      const result = SupportedHarnessConfigurationSchema.safeParse(value[role].harness);
+      if (!result.success) for (const issue of result.error.issues) context.addIssue({
+        ...issue, path: [role, 'harness', ...issue.path],
+      });
+    }
+  }),
 }).strict();
 export const WorkflowDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields, value: WorkflowDefaultsSchema,
@@ -697,6 +705,7 @@ export const OperatorToolNameSchema = z.enum([
   "resource_telemetry_read", "resource_telemetry_selector_get",
   ...REPEAT_OPERATOR_TOOL_NAMES,
   "operator_mcp_setup_get",
+  "operator_chat_controls_get", "operator_chat_controls_update", "agent_chat_controls_get", "agent_chat_controls_update",
   "operator_chat_create", "operator_chat_list", "operator_chat_get", "operator_chat_history_get", "operator_chat_activity_get",
   "operator_chat_send", "operator_chat_cancel", "operator_chat_respond", "operator_handoff_history_get",
   "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",

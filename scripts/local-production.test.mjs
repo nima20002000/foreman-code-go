@@ -6,10 +6,65 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { copyVerificationRuntime, hasNativeTurnStarted, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
+import { copyVerificationRuntime, desktopLaunchEnvironment, hasNativeTurnStarted, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   removeUninstalledRelease, renderEnvironment,
   waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+
+test('desktop launch preserves the normal user environment without job ownership', () => {
+  const source = { PATH: '/user/bin', HOME: '/user', TMPDIR: '/user/tmp' }
+  const environment = desktopLaunchEnvironment(source)
+  assert.deepEqual(environment, source)
+  assert.notEqual(environment, source)
+})
+
+test('desktop launch drops job temporary overrides when no original directory was recorded', () => {
+  const source = { PATH: '/user/bin', TMPDIR: '/job/tmp', TMP: '/job/tmp', TEMP: '/job/tmp',
+    FOREMAN_CODE_HEAVY_JOB_TOKEN: 'owned-job', GRAPHQL_HEAVY_JOB_TOKEN: 'owned-job' }
+  assert.deepEqual(desktopLaunchEnvironment(source), { PATH: '/user/bin' })
+  assert.equal(source.TMPDIR, '/job/tmp')
+})
+
+test('a desktop child can create temporary files after its launching build job is removed', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'production-desktop-environment-'))
+  const base = join(directory, 'base')
+  const job = join(directory, 'job')
+  let child
+  try {
+    await mkdir(base)
+    await mkdir(job)
+    const environment = desktopLaunchEnvironment({ ...process.env,
+      TMPDIR: job, TMP: job, TEMP: job,
+      FOREMAN_CODE_HEAVY_JOB_TOKEN: 'owned-job', GRAPHQL_HEAVY_JOB_TOKEN: 'owned-job',
+      FOREMAN_CODE_HEAVY_BASE_TMPDIR: base, GRAPHQL_HEAVY_BASE_TMPDIR: base,
+    })
+    child = spawn(process.execPath, ['-e', `
+      const { mkdirSync, mkdtempSync } = require('node:fs');
+      const { tmpdir } = require('node:os');
+      const { join } = require('node:path');
+      process.on('message', () => {
+        mkdirSync(tmpdir(), { recursive: true });
+        const directory = mkdtempSync(join(tmpdir(), 'desktop-'));
+        process.send({ directory, ownsJob: Object.keys(process.env).some(key => /^(FOREMAN_CODE|GRAPHQL)_HEAVY_/.test(key)) });
+      });
+    `], { env: environment, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] })
+    await once(child, 'spawn')
+    await rm(job, { recursive: true })
+    const message = once(child, 'message')
+    child.send('create')
+    const [result] = await message
+    assert.equal(result.ownsJob, false)
+    assert.equal((await stat(result.directory)).isDirectory(), true)
+    await assert.rejects(stat(job), { code: 'ENOENT' })
+  } finally {
+    if (child && child.exitCode === null) {
+      const exited = once(child, 'exit')
+      child.kill('SIGTERM')
+      await exited
+    }
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('failed release cleanup removes only uninstalled staging and retains the active release through aliases', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'production-release-cleanup-'))

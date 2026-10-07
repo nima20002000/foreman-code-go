@@ -173,15 +173,20 @@ export async function withNativeAcceptanceDatabase(configured, evidenceRoot, exe
   return record
 }
 
+export function nativeAcceptanceCommand(arguments_) {
+  const cli = join(dirname(require.resolve('vitest/package.json')), 'vitest.mjs')
+  return { executable: process.execPath,
+    arguments: [join(root, 'scripts/heavy-job.mjs'), '--', process.execPath, cli, ...arguments_],
+    directory: join(root, 'apps/api') }
+}
+
 async function runNativeAcceptance(environment, files) {
   const invocation = { directory: environment.FOREMAN_CODE_TEST_ROOT, token: environment.FOREMAN_CODE_TEST_OWNER }
   const cleanupId = registerTestResourceCleanup(invocation,
     { kind: 'native-acceptance-process-group', wrapperPid: process.pid, databaseUrl: environment.TEST_DATABASE_URL })
-  const child = spawn(process.execPath, [
-    'scripts/heavy-job.mjs', '--', 'corepack', 'pnpm', '--filter', '@foreman-code/api', 'exec',
-    'vitest', ...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=1',
-  ], {
-    cwd: root, stdio: 'inherit', detached: true,
+  const command = nativeAcceptanceCommand([...nativeAcceptanceVitestArguments(files, environment), '--maxWorkers=12'])
+  const child = spawn(command.executable, command.arguments, {
+    cwd: command.directory, stdio: 'inherit', detached: true,
     env: environment,
   })
   let interrupted
@@ -214,15 +219,12 @@ async function runNativeAcceptance(environment, files) {
   return code
 }
 
-async function main() {
-  const files = nativeAcceptanceFiles(process.argv.slice(2))
-  const contracts = spawnSync('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'], {
-    cwd: root, stdio: 'inherit',
-  })
-  if (contracts.status !== 0) {
-    process.exitCode = contracts.status ?? 1
-    return
-  }
+export async function runNativeAcceptanceCases(arguments_ = []) {
+  const files = nativeAcceptanceFiles(arguments_)
+  return executeNativeAcceptance(files)
+}
+
+async function executeNativeAcceptance(files) {
   const configuration = nativeAcceptanceConfiguration(process.env)
   const opencode = nativeAcceptanceOpenCodeBinary(process.env)
   const record = await withNativeAcceptanceDatabase(configuration.databaseUrl,
@@ -233,7 +235,19 @@ async function main() {
         RUN_REAL_HARNESS_TESTS: '1', NIM2691_REAL_NATIVE: '1', NIM2691_POSTGRES: '1',
         ...(opencode ? { ENG03_A_OPENCODE_BINARY: opencode } : {}) }, files)
     })
-  process.exitCode = record.exitCode
+  return record.exitCode
+}
+
+async function main() {
+  const files = nativeAcceptanceFiles(process.argv.slice(2))
+  const contracts = spawnSync('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'], {
+    cwd: root, stdio: 'inherit',
+  })
+  if (contracts.status !== 0) {
+    process.exitCode = contracts.status ?? 1
+    return
+  }
+  process.exitCode = await executeNativeAcceptance(files)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

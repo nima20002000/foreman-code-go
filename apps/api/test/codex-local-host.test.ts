@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { test } from 'vitest'
 import { codexChatHostDirectory, localCodexChatHost } from '../src/modules/harnesses/codexFiles/localHost.js'
-import { assertOperatorCodexHost } from '../src/modules/harnesses/operatorFiles/codex.js'
+import { assertCodexChatHost } from '../src/modules/harnesses/codexFiles/localHost.js'
 
 test('Codex chat host delivers verified read-only bytes and rejects mutable paths', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codex-host-test-'))
@@ -37,8 +37,8 @@ test('write-mode Operator host stays outside the default temporary harness root'
   try {
     const workingDirectory = join(root, 'operator')
     await mkdir(workingDirectory)
-    await assertOperatorCodexHost(join(root, 'files'), workingDirectory, [], true)
-    await assert.rejects(assertOperatorCodexHost(join(unsafe, 'files'), workingDirectory, [], true),
+    await assertCodexChatHost(join(root, 'files'), workingDirectory, [], true)
+    await assert.rejects(assertCodexChatHost(join(unsafe, 'files'), workingDirectory, [], true),
       { code: 'CODEX_FILE_HOST_UNAVAILABLE' })
   } finally {
     await rm(root, { recursive: true, force: true })

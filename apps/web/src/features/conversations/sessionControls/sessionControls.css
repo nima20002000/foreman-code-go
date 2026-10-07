@@ -1,0 +1,11 @@
+.session-controls { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; font-size: .75rem; min-width: 0; }
+.session-controls .n-field { margin: 0; max-width: 12rem; }
+.session-controls small { opacity: .7; }
+.session-context { position: relative; }
+.session-context-popover { position: absolute; bottom: calc(100% + .5rem); right: 0; z-index: 30; width: min(20rem, 80vw); padding: .8rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--surface); color: var(--text); overflow-y: auto; box-shadow: 0 .5rem 2rem rgb(0 0 0 / .2); }
+.session-context-popover p { margin: .4rem 0; }
+.session-context-popover details { margin: .6rem 0; }
+.session-context-popover input { max-width: 100%; }
+.session-command-menu { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: .4rem; background: var(--surface); }
+.session-command-menu button { text-align: left; padding: .4rem .6rem; }
+.session-command-menu [aria-selected="true"] { background: var(--surface-hover); }

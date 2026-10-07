@@ -1,3 +1,4 @@
+import { SessionPreferencesSchema, type CompactionState } from '@foreman-code/contracts'
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
@@ -13,8 +14,9 @@ import { afterEach, beforeEach, describe, it, onTestFailed, vi } from 'vitest'
 
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
 import { DomainError } from '../src/modules/errors.js'
+import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
-import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
+import type { WorkflowNativeSessionStart, AgentChatNativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { ThreadItem, Turn } from '../src/modules/harnesses/codexMethodTypes.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { isObject } from '../src/modules/harnesses/codexStdioTransport.js'
@@ -219,6 +221,130 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     if (failure?.status === 'rejected') throw failure.reason
     removeTestRoot(scratch)
     completeTestResourceCleanup(invocation, scratchCleanupId)
+  })
+
+  it('owns two node chats independently with one Agent configuration and no workflow execution descriptor', async () => {
+    const chats = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none')
+    managers.push(chats)
+    const first: AgentChatNativeSessionStart = { kind: 'agent-chat', conversationId: 'node-chat-one',
+      workflowId: 'saved-workflow', workflowNodeId: 'first-node', correlationId: 'same-request',
+      configuration: source.request.configuration, workingDirectory: f.directory }
+    const second = { ...first, conversationId: 'node-chat-two', workflowNodeId: 'second-node' }
+    const one = await chats.createSession(first)
+    const two = await chats.createSession(second)
+    assert.notEqual(one.nativeSessionId, two.nativeSessionId)
+    assert.deepEqual(await chats.createSession(first), one)
+    await assert.rejects(chats.attachSession(one, second), errorCode('CODEX_SESSION_OWNER_MISMATCH'))
+    const starts = await wire('thread/start')
+    assert.equal(starts.length, 2)
+    for (const frame of starts) {
+      assert.equal((frame.params as JsonObject).sandbox, codex().sandbox)
+      assert.equal((frame.params as JsonObject).cwd, f.directory)
+    }
+  })
+
+  it('releases the native fence when dispatch metadata cannot be saved before sending', async () => {
+    const session = await manager.createSession(source)
+    await assert.rejects(manager.compactSession(session, { requestId: 'compact-request', clientCorrelationId: 'control-request',
+      onProgress: async () => {}, onDispatch: async () => { throw new Error('Dispatch storage failed') } }), /Dispatch storage failed/)
+    assert.equal((await wire('thread/compact/start')).length, 0)
+    const task = await start(session, 'follow-up', 'after-preflight')
+    await finish(f.directory, session.nativeSessionId)
+    await task.result
+  })
+
+  it('recovers a resident compaction from native history when completion notifications are lost', async () => {
+    const session = await manager.createSession(source)
+    await flag('drop-compact-events')
+    const abort = new AbortController()
+    let control: CompactionState | undefined
+    const operation = manager.compactSession(session, { requestId: 'compact-request', clientCorrelationId: 'control-request',
+      onProgress: async value => { control = value } }, abort.signal)
+    await until(async () => (await wire('thread/compact/start')).length === 1)
+    abort.abort(new Error('Completion notification lost'))
+    await assert.rejects(operation)
+    const recovered = await manager.reconcileCompaction(session, { ...control!, status: 'uncertain' })
+    assert.equal(recovered.status, 'completed')
+    assert.equal((await wire('thread/compact/start')).length, 1)
+    const turn = await start(session, 'follow-up', 'after-compaction')
+    await finish(f.directory, session.nativeSessionId)
+    await turn.result
+  })
+
+  it('recovers a cold compaction through thread read without resume or another dispatch', async () => {
+    const session = await manager.createSession(source)
+    await flag('drop-compact-events')
+    const abort = new AbortController()
+    let control: CompactionState | undefined
+    const operation = manager.compactSession(session, { requestId: 'cold-compact-request', clientCorrelationId: 'cold-control',
+      onProgress: async value => { control = value } }, abort.signal)
+    await until(async () => (await wire('thread/compact/start')).length === 1)
+    abort.abort(new Error('API observer lost'))
+    await assert.rejects(operation)
+    await manager.shutdown()
+    const before = (await wire()).length
+    const cold = makeManager()
+    const recovered = await cold.readCompaction(session, source, { ...control!, status: 'uncertain' })
+    assert.equal(recovered.status, 'completed')
+    const reads = (await wire()).slice(before).map(entry => entry.method)
+    assert(reads.includes('thread/read'))
+    assert(!reads.includes('thread/resume'))
+    assert(!reads.includes('turn/start'))
+    assert.equal((await wire('thread/compact/start')).length, 1)
+  })
+
+  it('offers budgets from native default usage and retains the capacity while an override is applied', async () => {
+    const session = await manager.createSession(source)
+    assert.deepEqual((await manager.sessionControlCapabilities(session)).contextBudgets, [])
+    await assertCode(manager.applySessionPreferences(session,
+      SessionPreferencesSchema.parse({ contextBudget: 100000 })), 'CODEX_CONTEXT_BUDGET_INVALID')
+    await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'default-window' }))
+    const turnId = (await state(f.directory, session.nativeSessionId)).turns.at(-1)!.id
+    const usage = { inputTokens: 900, cachedInputTokens: 0, outputTokens: 100,
+      reasoningOutputTokens: 0, totalTokens: 1000 }
+    await emit(f.directory, { method: 'thread/tokenUsage/updated', params: {
+      threadId: session.nativeSessionId, turnId,
+      tokenUsage: { last: usage, total: usage, modelContextWindow: 200000 },
+    } })
+    await until(async () => manager.contextSnapshot(session)?.capacityTokens === 200000)
+    assert.deepEqual((await manager.sessionControlCapabilities(session)).contextBudgets, [100000, 200000])
+    await manager.applySessionPreferences(session, SessionPreferencesSchema.parse({ contextBudget: 100000 }))
+    assert.equal(manager.appliedSessionPreferences(session)?.contextBudget, 100000)
+    await emit(f.directory, { method: 'thread/tokenUsage/updated', params: {
+      threadId: session.nativeSessionId, turnId,
+      tokenUsage: { last: usage, total: usage, modelContextWindow: 100000 },
+    } })
+    await until(async () => manager.contextSnapshot(session)?.capacityTokens === 100000)
+    const capabilities = await manager.sessionControlCapabilities(session)
+    assert.equal(capabilities.modelCapacity, 200000)
+    assert.deepEqual(capabilities.contextBudgets, [100000, 200000])
+    const last = (await wire('thread/resume')).at(-1)!
+    assert.equal((last.params as { config: Record<string, unknown> }).config.model_context_window, 100000)
+  })
+
+  it('preserves a saved budget on creation and cold resume without inventing model capacity', async () => {
+    source = { ...source, sessionPreferences: SessionPreferencesSchema.parse({ contextBudget: 100000 }) }
+    const session = await manager.createSession(source)
+    const capabilities = await manager.sessionControlCapabilities(session)
+    assert.deepEqual(capabilities.contextBudgets, [])
+    assert.equal(capabilities.modelCapacity, null)
+    assert(capabilities.contextBudgetReason)
+    assert.equal(manager.appliedSessionPreferences(session)?.contextBudget, 100000)
+    const creation = (await wire('thread/start')).at(-1)!
+    assert.equal((creation.params as { config: Record<string, unknown> }).config.model_context_window, 100000)
+    await manager.closeForRestart(session)
+    const resumed = makeManager()
+    assert.deepEqual(await resumed.attachSession(session, source), session)
+    assert.equal(resumed.appliedSessionPreferences(session)?.contextBudget, 100000)
+    assert.deepEqual((await resumed.sessionControlCapabilities(session)).contextBudgets, [])
+    const resumes = (await wire('thread/resume')).length
+    await assertCode(resumed.applySessionPreferences(session,
+      SessionPreferencesSchema.parse({ contextBudget: 200000 })), 'CODEX_CONTEXT_BUDGET_INVALID')
+    assert.equal((await wire('thread/resume')).length, resumes)
+    await resumed.applySessionPreferences(session, SessionPreferencesSchema.parse({}))
+    assert.equal(resumed.appliedSessionPreferences(session)?.contextBudget, null)
+    const last = (await wire('thread/resume')).at(-1)!
+    assert.equal((last.params as { config: Record<string, unknown> }).config.model_context_window, undefined)
   })
 
   it('reattaches an original resident without launching, resuming, replaying or reading turn history', async () => {
@@ -475,6 +601,17 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await manager.history(session)).terminalResult, undefined)
   })
 
+  it('preserves observed version provenance and rejects altered loaded references', async () => {
+    const pinned = new CodexAppServerSessionManager(f.binary)
+    managers.push(pinned)
+    const session = await pinned.createSession(source)
+    assert.equal(session.providerVersion, 'codex-cli 0.154.0')
+    assert.equal((await pinned.history(session)).terminalResult, undefined)
+    assert.equal((await pinned.sessionControlCapabilities(session)).compact.supported, true)
+    await assertCode(pinned.history({ ...session, providerVersion: '0.154.0' }), 'CODEX_SESSION_VERSION_MISMATCH')
+    await assertCode(pinned.history({ ...session, providerVersion: 'codex-cli 0.156.1' }), 'CODEX_SESSION_VERSION_MISMATCH')
+  })
+
   it('F02: refuses every accepted configuration change, not just model/effort/cwd', async () => {
     codex().sandbox = 'danger-full-access'
     const session = await manager.createSession(source)
@@ -561,6 +698,45 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await events
     assert.equal((await wire('turn/interrupt')).length, 2)
     assert.equal((await manager.history(session)).terminalResult?.outcome, 'canceled')
+  })
+
+  it('withdraws unsent preparation without interrupting the previous completed turn', async () => {
+    const uncredentialed = structuredClone(source)
+    delete uncredentialed.environment
+    let preparing!: () => void
+    const prepared = new Promise<void>((resolve) => { preparing = resolve })
+    const fileManager = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none', {
+      prepare: async ({ clientCorrelationId, signal }) => {
+        if (clientCorrelationId !== 'unsent') return undefined
+        preparing()
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener('abort', () => { reject(signal.reason) }, { once: true })
+        })
+        return undefined
+      },
+    })
+    managers.push(fileManager)
+    const session = await fileManager.createSession(uncredentialed)
+    await collect(fileManager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'previous' }))
+    const previous = (await fileManager.history(session)).terminalResult
+    const stream = collect(fileManager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'unsent' }))
+    const rejected = assert.rejects(stream, (error: unknown) => {
+      assert(error instanceof NativeDeliveryError)
+      assert.equal(error.operation, 'turn_submission')
+      assert.equal(error.delivery, 'not_sent')
+      assert.equal(error.cleanup, 'confirmed')
+      assert(error.cause instanceof Error)
+      assert.equal(error.cause.name, 'AbortError')
+      return true
+    })
+    await prepared
+    assert.equal(await fileManager.cancel(session), false)
+    await rejected
+    assert.equal((await wire('turn/start')).length, 1)
+    assert.equal((await wire('turn/interrupt')).length, 0)
+    assert.deepEqual((await fileManager.history(session)).terminalResult, previous)
+    await collect(fileManager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'after-cancel' }))
+    assert.equal((await wire('turn/start')).length, 2)
   })
 
   it('F05: foreign, old-turn and malformed notifications cannot clear approval or replace the answer', async () => {

@@ -1,4 +1,3 @@
-import { markdownReadText } from './markdownReadText.js'
 import { McpServer } from '@modelcontextprotocol/server'
 import { ZodError } from 'zod'
 import {
@@ -14,13 +13,13 @@ import { isMutation } from './context.js'
 import type { AgentFileToolService } from './service.js'
 import { FileTransferError } from './transfers.js'
 import { ALL_FILE_TOOL_NAMES, type FileToolOperation } from './types.js'
+import { markdownReadText } from './markdownReadText.js'
 
 /** A native facade may wrap these operations without changing any frozen tool schema. */
 export type FileMcpService = Pick<AgentFileToolService, 'list' | 'read' | 'createWorkingCopy' | 'publish'>
   & Partial<Pick<AgentFileToolService, 'writeWorkingCopy' | 'applyFormatEdit'>> & {
   sessions: Pick<AgentFileToolService['sessions'], 'authenticate'>
     & Partial<Pick<AgentFileToolService['sessions'], 'authenticateSharedEndpoint'>>
-    // Discovery authorizes the manifest; operation callbacks still authenticate file access.
     & { discover?: AgentFileToolService['sessions']['authenticate'] }
   /** Trusted runner annotation only; never a tool input or an immutable source path. */
   workingCopyLocation?(token: string, artifactId: string): Promise<string>
@@ -88,4 +87,3 @@ export async function createFileMcpServer(service: FileMcpService, token: string
   return server
 }
 
-/** Separate authenticated surface, not the workflow /mcp server or an Operator credential exchange. */

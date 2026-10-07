@@ -1,4 +1,6 @@
 import { z } from 'zod'
+export { WorkerConversationMcpRequestSchema, WorkerConversationMcpAuthorizationSchema,
+  type WorkerConversationMcpRequest } from './workerConversationMcp.js'
 import { DispatchIntentSchema, AcceptedNodePlacementSchema } from './nodePlacement.js'
 import { WorkerNativeOutputOperationSchema } from './workerNativeOutput.js'
 import { RemoteApplicationAccessSchema } from './remoteExecution.js'

@@ -6,10 +6,8 @@ import { requireLocalRequest } from '../../access/http.js'
 import { DomainError } from '../../errors.js'
 import { toolFailure } from '../../../mcp/shared/results.js'
 import { ALL_FILE_TOOL_NAMES, type FileToolOperation } from './types.js'
-
 import { createFileMcpServer, type FileMcpService } from './mcpServer.js'
 export { createFileMcpServer, type FileMcpService } from './mcpServer.js'
-
 export const FILE_TOOLS_MCP_PATH = '/mcp/files'
 const openCodeMounts = new WeakMap<FastifyInstance, Map<string, FileMcpService>>()
 /** The mounted facade authenticates the exact turn token. No shared-service fallback exists here. */
@@ -22,7 +20,7 @@ export function mountOpenCodeFileMcp(app: FastifyInstance, mountId: string, serv
 const bearer = (header: string | undefined) => /^Bearer (gql_file_[A-Za-z0-9_-]{43})$/i.exec(header ?? '')?.[1]
 const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.string() }).passthrough() }).passthrough()
-
+/** Separate authenticated surface, not the workflow /mcp server or an Operator credential exchange. */
 export function registerFileToolsMcp(app: FastifyInstance, service: FileMcpService): void {
   const mounted = new Map<string, FileMcpService>()
   openCodeMounts.set(app, mounted)

@@ -1,3 +1,6 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { nativeAcceptanceCommand } from './test-native-acceptance.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -178,4 +181,23 @@ test('physical transfer and provider cases are selected explicitly as acceptance
   const files = ['src/modules/byte-transfer/rsync.physical.acceptance.test.ts',
     'test/codex-app-server.acceptance.test.ts']
   assert.deepEqual(nativeAcceptanceFiles(['--files', ...files]), files)
+})
+
+test('native execution uses installed Vitest after the data directory changes without installing dependencies', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-acceptance-dependencies-'))
+  const bin = join(directory, 'bin')
+  try {
+    await mkdir(bin)
+    await writeFile(join(bin, 'corepack'), '#!/bin/sh\nexit 82\n', { mode: 0o700 })
+    const environment = { ...process.env, HOME: directory,
+      XDG_DATA_HOME: join(directory, 'data'), XDG_CACHE_HOME: join(directory, 'cache'),
+      PATH: [bin, process.env.PATH].join(delimiter) }
+    const command = nativeAcceptanceCommand(['--version'])
+    const result = await promisify(execFile)(command.executable, command.arguments, {
+      cwd: command.directory, env: environment, timeout: 30000,
+    })
+    assert.match(result.stdout, /vitest\//)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

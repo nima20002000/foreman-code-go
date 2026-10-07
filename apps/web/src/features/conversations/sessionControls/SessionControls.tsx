@@ -1,0 +1,115 @@
+import { useFloatingSurface } from '../../../shared/ui/nocturne/useFloatingSurface'
+import { useEffect, useId, useRef, useState } from 'react'
+import { compactionBlocksSend, type SessionPreferences } from '@foreman-code/contracts'
+import { Button, TextField, Select } from '../../../shared/ui/nocturne'
+import type { ComposerSessionControls } from './useSessionControls'
+import './sessionControls.css'
+
+export function SessionControls({ controls }: { controls: ComposerSessionControls }) {
+  const state = controls.state
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  const [budget, setBudget] = useState('')
+  const [budgetEdited, setBudgetEdited] = useState(false)
+  useEffect(() => {
+    setBudget(String(state?.desired.autoCompactTokens ?? ''))
+    setBudgetEdited(false)
+  }, [state?.conversationId, state?.profileKey, state?.desired.autoCompactTokens])
+  const anchor = useRef<HTMLButtonElement>(null)
+  const surface = useRef<HTMLDivElement>(null)
+  const restoringFocus = useRef(false)
+  useFloatingSurface(open, anchor, surface, 320, 'end')
+  useEffect(() => { setOpen(false) }, [state?.conversationId])
+  useEffect(() => {
+    if (!open) return
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !surface.current?.contains(event.target) && !anchor.current?.contains(event.target)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', outside)
+    return () => document.removeEventListener('pointerdown', outside)
+  }, [open])
+  const close = () => {
+    restoringFocus.current = true
+    setOpen(false)
+    anchor.current?.focus()
+    queueMicrotask(() => { restoringFocus.current = false })
+  }
+  if (!state) return <span role="status">{!controls.conversationId ? 'No native context yet' : controls.query.isError ? 'Context unavailable' : 'Context loading…'}</span>
+  const context = state.context
+  const known = context?.usedTokens != null && context.capacityTokens != null
+  const percentage = known ? Math.round(context.usedTokens! / context.capacityTokens! * 100) : null
+  const estimated = context?.accuracy === 'estimated'
+  const percentagePrefix = estimated ? 'About ' : ''
+  const usagePrefix = estimated ? 'Estimated usage: ' : ''
+  const compactReason = state.busyReason ?? (compactionBlocksSend(state.compaction) ? 'Compaction is still unconfirmed. Refresh its status.'
+    : state.capabilities.compact.reason)
+  const pending = controls.mutation.isPending
+  const update = (preferences: SessionPreferences) => { void controls.change({ kind: 'preferences', preferences }).catch(() => undefined) }
+  return <div className="session-controls" aria-label="Native session controls">
+    <Select label="Conversation mode" value={state.desiredMode} disabled={pending || !state.capabilities.plan.supported}
+      options={[{ value: 'regular', label: 'Regular' }, { value: 'plan', label: 'Plan' }]}
+      title={state.capabilities.plan.reason ?? undefined}
+      onChange={event => { void controls.change({ kind: 'mode', mode: event.target.value === 'plan' ? 'plan' : 'regular' }).catch(() => undefined) }} />
+    {state.desiredMode !== state.appliedMode ? <small>Next turn</small> : null}
+    <div className="session-context">
+      <Button ref={anchor} size="sm" variant="secondary" aria-expanded={open} aria-controls={`${id}-context`}
+        onClick={() => setOpen(true)} onFocus={() => { if (!restoringFocus.current) setOpen(true) }} onMouseEnter={() => setOpen(true)}>
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" opacity=".2" strokeWidth="2" />
+          {percentage !== null ? <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2"
+            strokeDasharray={`${Math.min(100, percentage) * .5655} 56.55`} transform="rotate(-90 12 12)" /> : null}
+        </svg>
+        {percentage === null ? 'Context unknown' : `${percentagePrefix}${percentage}% context`}
+        {context?.stale ? ' · stale' : ''}
+      </Button>
+      {open ? <div ref={surface} popover="manual" id={`${id}-context`} className="session-context-popover" onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() }
+      }}>
+        <p>{context?.usedTokens == null ? 'Current usage unknown'
+          : `${usagePrefix}${context.usedTokens.toLocaleString()} tokens in context`}
+          {context?.capacityTokens != null ? ` / ${context.capacityTokens.toLocaleString()} native context window` : ''}</p>
+        {state.applied?.contextBudget ? <p>Configured budget: {state.applied.contextBudget.toLocaleString()}</p> : null}
+        {state.capabilities.modelCapacity !== null ? <p>Model capacity: {state.capabilities.modelCapacity.toLocaleString()}</p> : null}
+        {state.capabilities.nativeDefaultCapacity != null ? <p>
+          Native default window: {state.capabilities.nativeDefaultCapacity.toLocaleString()} tokens
+        </p> : null}
+        {context?.stale ? <p>Last known usage. Waiting for a native update.</p> : null}
+        {context?.lifetimeTokens != null ? <p>Total processed: {context.lifetimeTokens.toLocaleString()}</p> : null}
+        {context?.cost != null ? <p>Total cost: {context.cost}</p> : null}
+        <p>Automatic compaction: {state.applied?.autoCompact ?? 'Native default'}</p>
+        {state.applied?.autoCompactTokens ? <p>Automatic budget: {state.applied.autoCompactTokens.toLocaleString()}</p> : null}
+        <details><summary>Context options for this chat</summary>
+          {state.capabilities.contextBudgets.length ? <Select label="Context budget" value={String(state.desired.contextBudget ?? '')}
+            options={[{ value: '', label: 'Native default' }, ...state.capabilities.contextBudgets.map(value => ({ value: String(value), label: value.toLocaleString() }))]}
+            disabled={pending} onChange={event => update({ ...state.desired, contextBudget: event.target.value ? Number(event.target.value) : null })} /> : <p>{state.capabilities.contextBudgetReason ?? 'Context size follows the native model/profile.'}</p>}
+          {state.capabilities.contextProfiles.length ? <Select label="Context profile" options={[{ value: '', label: 'Native default' }, ...state.capabilities.contextProfiles.map(profile => ({ value: profile.id, label: profile.label }))]} value={state.desired.contextProfile ?? ''} disabled={pending}
+            onChange={event => update({ ...state.desired, contextProfile: event.target.value || null })} /> : null}
+          {state.capabilities.autoCompact.supported ? <Select label="Auto compact" options={[{ value: 'default', label: 'Default' }, { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }]} value={state.desired.autoCompact} disabled={pending}
+            onChange={event => update({ ...state.desired, autoCompact: event.target.value as SessionPreferences['autoCompact'] })} /> : null}
+          {state.capabilities.autoCompactBudget.supported ? <TextField label="Auto-compaction budget" type="number" min="100000" max={state.capabilities.modelCapacity ?? 1000000}
+              placeholder="Native default" value={budget} disabled={pending}
+              onChange={event => { setBudget(event.target.value); setBudgetEdited(true) }}
+              onBlur={() => {
+                if (!budgetEdited) return
+                setBudgetEdited(false)
+                const tokens = budget ? Number(budget) : null
+                if (tokens !== state.desired.autoCompactTokens) update({ ...state.desired, autoCompactTokens: tokens })
+              }} /> : null}
+          <p>{state.applicability === 'applied' ? 'Applied now' : `Applies ${state.applicability.replace('-', ' ')}`}</p>
+          <Button size="sm" variant="secondary" disabled={pending} onClick={() => {
+            void controls.change({ kind: 'save-default', preferences: state.desired }).catch(() => undefined)
+          }}>Save as default for future chats</Button>
+        </details>
+        <Button size="sm" disabled={pending || !!compactReason} title={compactReason ?? undefined}
+          onClick={() => { void controls.change({ kind: 'compact' }).catch(() => undefined) }}>Compact context</Button>
+        {compactReason ? <p>{compactReason}</p> : null}
+        {state.compaction ? <p role="status">{state.compaction.message}</p> : null}
+        <Button size="sm" variant="secondary" onClick={() => { void controls.query.refetch() }}>Refresh status</Button>
+        <Button size="sm" variant="secondary" onClick={close}>Close context details</Button>
+      </div> : null}
+    </div>
+    {controls.mutation.isError ? <p role="alert">{controls.mutation.error.message}</p> : null}
+  </div>
+}

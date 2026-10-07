@@ -1,5 +1,3 @@
-import { mkdir, realpath } from 'node:fs/promises'
-import { resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
 import type pg from 'pg'
@@ -8,27 +6,15 @@ import { MAX_FILE_READ_BYTES, type MessageAttachmentRef } from '@foreman-code/co
 import { DomainError } from '../../errors.js'
 import { productionFileTools } from '../../files/tools/production.js'
 import type { FileToolContext } from '../../files/tools/types.js'
-import { pathsOverlap } from '../../workspaces/filesystem.js'
 import { codexChatFileTools } from '../codexFiles/declarations.js'
-import { codexChatHostDirectory, localCodexChatHost } from '../codexFiles/localHost.js'
+import { assertCodexChatHost, localCodexChatHost } from '../codexFiles/localHost.js'
 import type { ProductionCodexChatFiles } from '../codexFiles/production.js'
+import type { CodexFileHostLease } from '../codexFiles/port.js'
 import { acceptedOperatorFileInputs, adoptOperatorFilePublications } from './postgres.js'
 
-/** Uses the same byte/auth service as the native OpenCode bridge. The pre-ACK
- * reader is server-only: it does not issue or expose a file-session credential. */
-export async function assertOperatorCodexHost(fileStorageRoot: string, workingDirectory: string,
-  additionalWritableDirectories: readonly string[], allowMutation: boolean): Promise<void> {
-  const hostDirectory = codexChatHostDirectory(fileStorageRoot)
-  await mkdir(hostDirectory, { recursive: true, mode: 0o700 })
-  const canonicalHost = await realpath(hostDirectory)
-  const roots = await Promise.all([workingDirectory, ...additionalWritableDirectories].map((path) => realpath(path)))
-  if (canonicalHost !== resolve(hostDirectory) || roots.some((root) => pathsOverlap(root, canonicalHost))
-    || allowMutation && ['/tmp', '/var/tmp'].some((root) => pathsOverlap(root, canonicalHost))) throw new DomainError(
-    'CODEX_FILE_HOST_UNAVAILABLE', 'The file host overlaps a Codex writable root.', 409)
-}
-
 export function operatorCodexFileAdmissions(app: () => FastifyInstance, pool: pg.Pool,
-  configuration: OperatorConfigurationVersion, workingDirectory: string, fileStorageRoot: string): ProductionCodexChatFiles {
+  configuration: OperatorConfigurationVersion, workingDirectory: string, fileStorageRoot: string,
+  workerHost?: { host: CodexFileHostLease; assertCurrent(): Promise<void> }): ProductionCodexChatFiles {
   return { async resolve(input) {
     input.signal.throwIfAborted()
     const harness = configuration.harness
@@ -40,7 +26,8 @@ export function operatorCodexFileAdmissions(app: () => FastifyInstance, pool: pg
     if (allowMutation) await accepted.authorization.resolve(accepted.owner,
       { kind: 'operator', conversationId: input.conversationId }, 'write')
     const allowedTools = codexChatFileTools(harness)
-    await assertOperatorCodexHost(fileStorageRoot, workingDirectory,
+    if (workerHost) await workerHost.assertCurrent()
+    else await assertCodexChatHost(fileStorageRoot, workingDirectory,
       harness.advanced?.additionalWritableDirectories ?? [], allowMutation)
     const service = productionFileTools(app())
     const context: FileToolContext = { ownerPrincipalId: accepted.row.owner_principal_id, scope: accepted.scope,
@@ -57,7 +44,7 @@ export function operatorCodexFileAdmissions(app: () => FastifyInstance, pool: pg
       return result
     }
     input.signal.throwIfAborted()
-    const host = await localCodexChatHost(fileStorageRoot)
+    const host = workerHost?.host ?? await localCodexChatHost(fileStorageRoot)
     return {
       clientCorrelationId: input.clientCorrelationId,
       accepted: { ownerPrincipalId: context.ownerPrincipalId, scope: context.scope,

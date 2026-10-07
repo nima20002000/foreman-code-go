@@ -250,7 +250,7 @@ export function protocolFromBundle(bundle: JsonObject, providerVersion = 'unknow
       check(`ServerNotification:${message.method}`, branch('ServerNotification', message.method), message)
     },
     response: (method, value) => {
-      if (method === 'config/mcpServer/reload') {
+      if (method === 'config/mcpServer/reload' || method === 'thread/compact/start') {
         // This method's response is the native empty object, with no params type.
         if (!isObject(value) || Object.keys(value).length !== 0) throw new Error('Invalid reload response.')
         return

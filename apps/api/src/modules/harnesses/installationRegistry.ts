@@ -15,6 +15,7 @@ export interface HarnessInstallationRecord {
   readonly environmentGeneration: string
   readonly connectionGeneration: string
   readonly launcher: LauncherEvidence
+  readonly claudeSdk?: { version: string; integrity: string } | undefined
   readonly observedVersion: string | null
   readonly installed: boolean
   readonly authenticated: boolean | null

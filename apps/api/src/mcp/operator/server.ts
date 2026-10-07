@@ -1,4 +1,5 @@
 import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
+import { registerSessionControlTools } from './tools/sessionControls.js'
 import { registerSubagentTools } from './tools/subagents.js'
 import { operatorToolAvailable } from './availability.js'
 import { registerHarnessRegistryTools } from '../../modules/harnesses/registryManagement.js'
@@ -15,6 +16,7 @@ import { registerDeviceOperatorTools } from './tools/devices.js'
 import { registerSourceTools } from '../../modules/sources/mcp.js'
 import { registerFileReferenceTools } from './tools/fileReferences.js'
 import { McpServer } from '@modelcontextprotocol/server'
+import { paginateToolLists } from '../toolListPagination.js'
 
 import type { OperatorRequestContext } from './types.js'
 import { registerAgentTools } from './tools/agents.js'
@@ -37,6 +39,7 @@ import { registerFileRetentionTools } from './tools/fileRetention.js'
 
 export function createOperatorMcpServer(context: OperatorRequestContext): McpServer {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' })
+  paginateToolLists(server)
   registerOperatorTools(server, context)
   return server
 }
@@ -64,6 +67,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerHarnessMcpTools(server, context)
   registerSettingsTools(server, context)
   registerAgentChatTools(server, context)
+  registerSessionControlTools(server, context)
   registerWorkspaceDefaultsTools(server, context)
   registerFileRetentionTools(server, context)
   registerWorkspaceTools(server, context)

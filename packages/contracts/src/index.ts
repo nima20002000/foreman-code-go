@@ -5,7 +5,7 @@ import { NativeInteractionInputSchema } from './interactionInput.js';
 export * from './interactionInput.js';
 export * from './nativeInteractionSupport.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
-import { ClaudeEffortSchema, ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
+import { CLAUDE_FULL_ACCESS_REQUIRED, ClaudeEffortSchema, ClaudeFullAccessConfigurationSchema, ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
 import { changeCodexSandbox } from './harnessEditing.js';
 export * from './claude.js';
 export * from './claudeQualification.js';
@@ -15,6 +15,7 @@ import { z } from "zod";
 import { McpCredentialArrangementSchema } from './mcpDetection.js';
 export { McpCredentialArrangementSchema } from './mcpDetection.js';
 export type { McpCredentialArrangement } from './mcpDetection.js';
+export { PairedMcpEndpointSchema, type PairedMcpEndpoint } from './mcpDetection.js';
 import { FileWithRevisionSchema, MessageAttachmentFields, MessageAttachmentRefsSchema } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
 export { IdSchema, TimestampSchema } from "./schemaPrimitives.js";
@@ -273,6 +274,11 @@ export const HarnessConfigurationSchema = z.discriminatedUnion("harness", [
   ClaudeHarnessConfigurationSchema,
 ]);
 export type HarnessConfiguration = z.infer<typeof HarnessConfigurationSchema>;
+export const SupportedHarnessConfigurationSchema = z.discriminatedUnion("harness", [
+  CodexHarnessConfigurationSchema,
+  OpenCodeHarnessConfigurationSchema,
+  ClaudeFullAccessConfigurationSchema,
+]);
 
 /** Preserve native variants in harnessConfiguration; this is only a legacy display projection. */
 export function projectHarnessEffort(configuration: HarnessConfiguration): AgentEffort | undefined {
@@ -286,6 +292,9 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   workflowApprovalHandler: ApprovalHandlerSchema.optional(),
   designatedOrchestrator: z.boolean().default(false),
 }).strict().superRefine((value, context) => {
+  if (value.configuration.harness === 'claude' && value.configuration.sandbox !== 'danger-full-access') {
+    context.addIssue({ code: 'custom', path: ['configuration', 'sandbox'], message: CLAUDE_FULL_ACCESS_REQUIRED });
+  }
   if (!value.workflowApprovalHandler) return;
   if (value.workflowApprovalHandler === "native") {
     const configuration = value.configuration;
@@ -1583,6 +1592,7 @@ export const SendOperatorMessageRequestSchema = z.object({
   requestId: IdSchema,
   ...MessageAttachmentFields,
   content: z.string().trim(),
+  sessionMode: z.enum(['regular', 'plan']).optional(),
   context: OperatorConversationContextSchema.optional(),
   settings: OperatorChatSettingsSchema.optional(),
   forkExpectedRevision: z.number().int().nonnegative().optional(),
@@ -1786,3 +1796,7 @@ export * from './ci.js'
 export * from './jobVerification.js'
 export * from './jobVerificationRuntime.js'
 export * from './jobVerificationGate.js'
+
+export * from './sessionControls.js'
+
+export * from './sessionCommands.js'

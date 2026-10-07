@@ -72,7 +72,8 @@ function fixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sh
       execution_closed: false, native_reference: null, finalized: false, generation: null, native_owner: null, budget_active: true }]
       : sql.includes("record->>'authorizationPrincipalId'") ? [{ principal_id: 'sender' }]
         : sql.includes('from management_principals where id=') ? [{ id: 'sender', name: 'Recorded sender', audience: 'operator', grants: [{ actions: ['runs:start', 'operator_chat:read', 'operator_chat:write', 'agent_chat:read', 'agent_chat:write'], scope: {} }], expires_at: new Date('2099-01-01'), revoked_at: null, delegated_from: null }]
-          : sql.includes('join operator_conversation_turns t') ? [row] : undefined
+          : sql.includes('join operator_conversation_turns t') || sql.startsWith('select active_request_id from operator_conversations')
+            ? [row] : undefined
     if (!rows) throw new Error('Unexpected SQL in fixture: ' + sql.slice(0, 80))
     return { rows }
   })

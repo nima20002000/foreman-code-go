@@ -10,10 +10,12 @@ function outcome(status: unknown): 'succeeded' | 'failed' | 'canceled' | undefin
   return status === 'completed' ? 'succeeded' : status === 'failed' ? 'failed' : status === 'interrupted' ? 'canceled' : undefined
 }
 
-/** Claude identifies its turn by the exact submitted message; Codex/OpenCode by the provider turn. */
-export function pinnedWorkflowTurn(session: NativeSessionReference, history: NativeHistory): string | undefined {
+export function workflowProviderId(session: NativeSessionReference, history: NativeHistory): string | undefined {
   if (session.harness !== 'claude') return history.nativeTurnId
-  return history.nativeSubmission?.kind === 'message' ? history.nativeSubmission.nativeMessageId : undefined
+  const submission = history.nativeSubmission
+  if (submission?.kind !== 'message' || submission.nativeSessionId !== session.nativeSessionId
+    || submission.clientCorrelationId !== history.correlationId) return undefined
+  return submission.nativeMessageId
 }
 
 /** Used only AFTER private original-source capture verification. Convenience
@@ -23,12 +25,28 @@ export function pinnedWorkflowTurn(session: NativeSessionReference, history: Nat
 export function assertOriginalWorkflowTerminal(execution: Pick<HarnessExecution, 'id' | 'agentId'>,
   session: NativeSessionReference, history: NativeHistory): void {
   const command = `execution:${execution.id}`, terminal = history.terminalTurn
-  const fail = (reason: string): never => { throw new DomainError('NATIVE_TERMINAL_SOURCE_REQUIRED',
-    'The exact original native terminal frame and pinned turn are required.', 409, { reason }) }
-  if (!terminal) return fail('terminal_missing')
-  if (terminal.correlationId !== command || history.correlationId !== command) return fail('correlation_mismatch')
-  if (!terminal.providerId || terminal.providerId !== pinnedWorkflowTurn(session, history)) return fail('turn_mismatch')
-  if (history.pendingInteraction || history.pendingInteractions.length) return fail('interaction_pending')
+  const fail = (): never => { throw new DomainError('NATIVE_TERMINAL_SOURCE_REQUIRED',
+    'The exact original native terminal frame and pinned turn are required.', 409) }
+  if (!terminal || terminal.correlationId !== command || history.correlationId !== command
+    || !terminal.providerId || terminal.providerId !== workflowProviderId(session, history)
+    || history.pendingInteraction || history.pendingInteractions.length) return fail()
+  if (session.harness === 'claude') {
+    for (const event of history.events) {
+      const payload = object(event.payload)
+      const raw = object(payload.nativeResult)
+      const prompts = Array.isArray(raw.user_message_uuids) ? raw.user_message_uuids : [raw.user_message_uuid]
+      if (event.type !== 'claude.result' || payload.clientCorrelationId !== command
+        || raw.type !== 'result' || raw.session_id !== session.nativeSessionId || raw.parent_tool_use_id != null
+        || typeof raw.uuid !== 'string' || !raw.uuid || object(payload.source).eventId !== raw.uuid
+        || !prompts.includes(terminal.providerId) || raw.deferred_tool_use != null) continue
+      if (raw.subtype === 'success' && raw.is_error === false && terminal.result.outcome === 'succeeded'
+        && raw.result === terminal.result.output) return
+      if (raw.is_error === true && ['error_during_execution', 'error_max_turns', 'error_max_budget_usd',
+        'error_max_structured_output_retries'].includes(String(raw.subtype))
+        && terminal.result.outcome === 'failed' && terminal.result.error?.code === 'CLAUDE_NATIVE_RESULT_ERROR') return
+    }
+    return fail()
+  }
   if (session.harness === 'opencode') {
     for (const event of history.events) {
       const proof = readOpenCodeReconciliation(event, { ownerAgentId: execution.agentId,
@@ -36,18 +54,9 @@ export function assertOriginalWorkflowTerminal(execution: Pick<HarnessExecution,
         correlationId: command, nativeTurnId: terminal.providerId })
       if (proof && proof.outcome === terminal.result.outcome && history.events.some((source) => matchesOpenCodeHistorySource(proof, source))) return
     }
-    return fail('opencode_frame_missing')
+    return fail()
   }
-  if (session.harness === 'claude') {
-    // Claude's owned SDK query records its result frame as turn.completed for the exact submitted message.
-    if (history.events.some(event => event.type === 'turn.completed'
-      && object(event.payload).nativeSessionId === session.nativeSessionId
-      && object(event.payload).nativeMessageId === terminal.providerId
-      && object(event.payload).clientCorrelationId === command
-      && object(object(event.payload).result).outcome === terminal.result.outcome)) return
-    return fail('claude_frame_missing')
-  }
-  if (session.harness !== 'codex') return fail('unsupported_harness')
+  if (session.harness !== 'codex') return fail()
   for (const event of history.events) {
     const payload = object(event.payload), turn = object(payload.turn)
     if ((event.type === 'turn.completed' || event.type === 'turn/completed')
@@ -64,5 +73,5 @@ export function assertOriginalWorkflowTerminal(execution: Pick<HarnessExecution,
         && (current.clientUserMessageId === undefined || current.clientUserMessageId === command)) return
     }
   }
-  return fail('codex_frame_missing')
+  return fail()
 }

@@ -301,10 +301,10 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
   })
   vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => {
     let closed = false
-    return { endpoint: 'http://unit.invalid/mcp', close: vi.fn(async () => { closed = true }),
+    return { endpoint: 'http://unit.invalid/mcp', close: vi.fn(async () => { closed = true }), bindRelay: async () => {},
       refreshLease: () => {
         if (closed) throw new Error('MCP endpoint already closed')
-        return relay.refresh()
+        return relay.refresh!()
       } }
   })
   const session: NativeSessionReference = { harness: 'codex', providerVersion: '0.132.0', nativeSessionId: 'original-session' }
@@ -1064,7 +1064,7 @@ describe('installed workflow construction concurrency', () => {
   it('refuses declared installed OpenCode artifact outputs before starting a provider', async () => {
     const ensure = vi.spyOn(InstalledOpenCodeServer.prototype, 'ensure')
     vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
-      endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+      endpoint: 'http://unit.invalid/mcp', close: async () => {}, bindRelay: async () => {}, refreshLease: () => relay.refresh!(),
     }))
     const f = await constructionFixture({ harness: 'opencode', artifactOutputKeys: ['report'] })
     vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => ({ ...f.registry.scope(owner), launchId: f.launch.launchId }))
@@ -1108,7 +1108,7 @@ describe('installed workflow construction concurrency', () => {
       })
       vi.spyOn(f.registry, 'closedRegistration').mockReturnValue(closed)
       vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
-        endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+        endpoint: 'http://unit.invalid/mcp', close: async () => {}, bindRelay: async () => {}, refreshLease: () => relay.refresh!(),
       }))
       const access = { kind: 'scoped-worker-mcp', token: 'original-token', executionId: f.intent.executionId,
         agentId: f.request.configuration.agentId, operationId: f.intent.operationId, attemptId: f.intent.attemptId,
@@ -1222,7 +1222,7 @@ describe('installed workflow construction concurrency', () => {
       assertCurrent: () => {},
     })
     vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
-      endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+      endpoint: 'http://unit.invalid/mcp', close: async () => {}, bindRelay: async () => {}, refreshLease: () => relay.refresh!(),
     }))
     vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockResolvedValue({ events: [], pendingInteractions: [],
       correlationId: `execution:${f.intent.executionId}` })
@@ -1286,7 +1286,7 @@ describe('installed workflow construction concurrency', () => {
       assertCurrent: () => {},
     })
     vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
-      endpoint: 'http://unit.invalid/mcp', close: async () => {}, refreshLease: () => relay.refresh(),
+      endpoint: 'http://unit.invalid/mcp', close: async () => {}, bindRelay: async () => {}, refreshLease: () => relay.refresh!(),
     }))
     const history = { events: [], pendingInteractions: [], correlationId: `execution:${f.intent.executionId}` }
     vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockResolvedValue(history)

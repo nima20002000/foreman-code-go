@@ -63,7 +63,7 @@ it('does not reuse an earlier successful check for a changed configuration', () 
   expect(screen.queryByText('Ready')).not.toBeInTheDocument()
 })
 
-it.each([['read-only', 'Read only'], ['workspace-write', 'Workspace write'], ['danger-full-access', 'Full access']] as const)(
+it.each([['read-only', 'Read only · unsupported'], ['workspace-write', 'Workspace write · unsupported'], ['danger-full-access', 'Full access']] as const)(
   'preserves the selected %s sandbox while showing qualification guidance', (sandbox, label) => {
     show('model', sandbox)
     expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue(sandbox)

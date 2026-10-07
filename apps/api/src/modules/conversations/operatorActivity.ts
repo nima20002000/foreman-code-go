@@ -83,6 +83,26 @@ export function openCodeTurnEvents(sessionId: string, turnId: () => string | nul
 
 /** Classify only structured native evidence. Opaque shell scripts remain commands. */
 export function operatorActivity(event: NativeHarnessEvent, harness: AgentHarness, requestId: string): OperatorActivityChange | undefined {
+  if (event.type === 'session.compaction' || event.type === 'session.compacted') {
+    const id = string(event.payload.nativeOperationId) || string(event.payload.nativeEventId)
+      || `${harness}-compaction-${event.connectionId ?? 'session'}-${event.sequence}`
+    let title = 'Context compacted'
+    let status: OperatorActivity['status'] = 'completed'
+    let output = 'Native compaction boundary observed. Waiting for updated context usage.'
+    if (event.payload.status === 'failed') {
+      title = 'Compaction failed'
+      status = 'failed'
+      output = 'The native provider did not finish compaction.'
+    } else if (event.payload.status === 'uncertain' || event.payload.status === 'running' || event.payload.status === 'accepted') {
+      title = 'Compaction unconfirmed'
+      status = 'running'
+      output = 'Read this conversation to recover compaction.'
+    } else if (event.payload.status === 'no-op') {
+      title = 'Context unchanged'
+      output = 'The native session had nothing to compact.'
+    }
+    return bounded({ id, requestId, kind: 'tool', title, status, output })
+  }
   if (harness === 'claude') return claudeConversationActivity(event, requestId)
   const payload = event.payload
   if (harness === 'codex' && event.type === 'interaction.unsupported') {
@@ -97,6 +117,7 @@ export function operatorActivity(event: NativeHarnessEvent, harness: AgentHarnes
     if (!id) return
     const base = { id, requestId, status: status(item.status, event.type === 'item.completed' || payload.nativeTurnStatus === 'completed') }
     switch (item.type) {
+      case 'contextCompaction': return bounded({ ...base, kind: 'tool', title: 'Compact context' })
       case 'reasoning': {
         // Only the provider's public summary, never encrypted or raw reasoning content.
         const summary = Array.isArray(item.summary) ? item.summary.filter((value): value is string => typeof value === 'string').join('\n\n') : ''

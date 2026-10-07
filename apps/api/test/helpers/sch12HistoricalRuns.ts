@@ -186,7 +186,7 @@ export async function allExecutions(f: HistoricalFixture, runId = f.f.run.id): P
 }
 export async function qualifyLocation(f: HistoricalFixture) {
   return (await f.locations.set(f.writer.principal, 'http', { workspaceId: f.f.scope.workspaceId,
-    commandId: randomUUID(), expectedLocationRevision: 1, runnerId: 'local', rootPath: f.db.directory })).value
+    commandId: randomUUID(), expectedLocationRevision: 1, runnerId: f.locations.runnerId, rootPath: f.db.directory })).value
 }
 export async function saveWithoutY(f: HistoricalFixture) {
   const location = await qualifyLocation(f)
