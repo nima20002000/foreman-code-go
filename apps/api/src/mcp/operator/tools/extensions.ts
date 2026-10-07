@@ -122,11 +122,19 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_create', () => extension.skills.create(context.principal,input,'mcp')))
   if (skillTools) server.registerTool('skill_update', {
-    description: "Save a skill's name, description and instructions as a new immutable version. Requires expectedRevision from skill_get/skill_list; a stale revision returns SKILL_REVISION_CONFLICT. An identical save creates no version (changed=false). Existing Agent assignments stay pinned to their versions until explicitly updated.", inputSchema: contracts.SkillUpdateInputSchema, outputSchema: contracts.SkillMutationResultSchema,
+    description: "Save a skill's name, description and instructions as a new immutable version. Requires expectedRevision from skill_get/skill_list; a stale revision returns SKILL_REVISION_CONFLICT. An identical save creates no version (changed=false). Existing Agent assignments stay pinned to their versions until explicitly updated; skill_usage_get lists them and skill_users_update moves them and their workflows to the new version.", inputSchema: contracts.SkillUpdateInputSchema, outputSchema: contracts.SkillMutationResultSchema,
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_update', () => extension.skills.update(context.principal,input,'mcp')))
   if (skillTools) server.registerTool('skill_archive', {
     description: "Archive (archived=true) or restore a skill. Requires skills:publish and skills:read in its workspace because the result includes the current version. Archived skills are hidden from default lists and cannot be newly assigned; versions and pinned Agent snapshots are kept.", inputSchema: contracts.SkillArchiveInputSchema, outputSchema: contracts.SkillMutationResultSchema,
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_archive', () => extension.skills.archive(context.principal,input,'mcp')))
+  if (skillTools) server.registerTool('skill_usage_get', {
+    description: "List the Agents still assigned an older version of a skill and the saved workflows that use them (or already use a changed Agent). Requires skills:read.", inputSchema: contracts.SkillUsageInputSchema, outputSchema: contracts.SkillUsageSchema,
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+  }, async (input) => invokeOperatorTool(context, 'skill_usage_get', () => extension.skillUsage.usage(context.principal,input)))
+  if (skillTools) server.registerTool('skill_users_update', {
+    description: "Move every Agent on an older version of this skill to its current version (normal Agent saves: agents:update and graph edit on their workflows), then re-save each affected workflow so its next Runs use the updated Agents. Running Agents keep their exact version. Per-item failures (for example a busy Agent) are returned in failed; retry with the same commandId.", inputSchema: contracts.SkillUsersUpdateInputSchema, outputSchema: contracts.SkillUsersUpdateResultSchema,
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+  }, async (input) => invokeOperatorTool(context, 'skill_users_update', () => extension.skillUsage.updateUsers(context.principal,'mcp',input)))
 }

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { useArchiveSkillMutation, useSkillQuery, useSkillVersionsQuery } from './skillsApi'
+import { useArchiveSkillMutation, useSkillQuery, useSkillUsageQuery, useSkillVersionsQuery, useUpdateSkillUsersMutation } from './skillsApi'
 import { Alert, Badge, Button, ConfirmDialog, Dialog, EmptyState, ErrorState, LoadingState } from '../../shared/ui/nocturne'
 import { ProtectedAccessError } from '../../shared/ui/ProtectedAccessError'
 import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
@@ -78,6 +78,7 @@ export function SkillDetailPage({ workspaceId, skillId, onCancel }: { workspaceI
     </header>
     {query.isError ? <p role="alert" className="skills-inline-error">Could not refresh this skill. Showing the last loaded version. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}
     {skill.archived ? <Alert tone="warning" title="This skill is archived.">It is hidden from the skill picker and cannot be newly assigned. Agents that already use it keep their saved version. Restore it to edit.</Alert> : null}
+    <SkillUsersBanner workspaceId={workspaceId} skillId={skillId} />
     <SkillEditor key={`${workspaceId}:${skillId}`} saved={query.data} workspaceOptions={[]} readOnly={skill.archived}
       onSaved={() => undefined} onCancel={onCancel} />
     <VersionHistory workspaceId={workspaceId} skillId={skillId} current={skill.version} />
@@ -86,4 +87,24 @@ export function SkillDetailPage({ workspaceId, skillId, onCancel }: { workspaceI
       description={skill.archived ? 'It will appear in the skill picker again.' : 'It will be hidden from the skill picker. Agents that already use it keep their saved version, and its history is kept.'}
       confirmLabel={skill.archived ? 'Restore' : 'Archive'} onConfirm={() => void toggleArchive()} />
   </section>
+}
+
+/** After an edit, Agents keep the version they were given; one click moves them and their workflows to this version. */
+function SkillUsersBanner({ workspaceId, skillId }: { workspaceId: string; skillId: string }) {
+  const usage = useSkillUsageQuery(workspaceId, skillId)
+  const update = useUpdateSkillUsersMutation(workspaceId, skillId)
+  const commandId = useRef(crypto.randomUUID())
+  const failed = update.data?.failed ?? []
+  if (!usage.data || (!usage.data.agents.length && !failed.length)) return null
+  const { agents, workflows } = usage.data
+  const count = (value: number, word: string) => `${value} ${word}${value === 1 ? '' : 's'}`
+  return <Alert tone={failed.length ? 'warning' : 'info'} title={agents.length
+    ? `${count(agents.length, 'Agent')}${workflows.length ? ` and ${count(workflows.length, 'workflow')}` : ''} still use an older version`
+    : 'Some updates did not finish'} action={<Button size="sm" variant="primary" disabled={update.isPending} onClick={() => {
+      update.mutate(commandId.current, { onSuccess: () => { commandId.current = crypto.randomUUID() } })
+    }}>{update.isPending ? 'Updating…' : `Update to v${usage.data.headVersion}`}</Button>}>
+    {agents.length ? <p className="skills-users">{agents.map(agent => `${agent.name} (v${agent.version})`).join(', ')}</p> : null}
+    {failed.length ? <p role="alert">{failed.map(item => item.message).join(' ')}</p> : null}
+    {update.isError ? <p role="alert">The update could not be sent. Try again.</p> : null}
+  </Alert>
 }

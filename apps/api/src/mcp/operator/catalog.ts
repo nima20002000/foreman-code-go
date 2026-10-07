@@ -95,6 +95,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'skill_create', action: 'skills:publish' },
   { name: 'skill_update', action: 'skills:publish' },
   { name: 'skill_archive', action: 'skills:publish' },
+  { name: 'skill_usage_get', action: 'skills:read' },
+  { name: 'skill_users_update', action: 'agents:update' },
   { name: 'workflow_trigger_get', action: 'workflow_triggers:read' },
   { name: 'workflow_trigger_update', action: 'workflow_triggers:update' },
   { name: 'workflow_trigger_disable', action: 'workflow_triggers:update' },

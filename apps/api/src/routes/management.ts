@@ -101,7 +101,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   registerHarnessSettingsRoutes(app, services)
   // Board authoring creates and edits Agents through the same service as the
   // Operator MCP agent_create/agent_update tools (graph:edit via HTTP policy).
-  if (services.extensions) registerSkillRoutes(app, services.extensions.skills)
+  if (services.extensions) registerSkillRoutes(app, services.extensions.skills, services.extensions.skillUsage)
   if (services.extensions) {
     const agents = services.extensions.agents
     app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/agents', async (request, reply) => {

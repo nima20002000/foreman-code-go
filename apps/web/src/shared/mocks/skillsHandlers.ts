@@ -9,13 +9,19 @@ interface Stored { summary: SkillSummary; versions: SkillVersion[] }
 let skills = new Map<string, Stored>()
 let receipts = new Map<string, { input: string; result: unknown }>()
 let sequence = 0
+interface SkillUser { agentId: string; name: string; version: string; workflows: { workflowId: string; name: string }[] }
+let users = new Map<string, SkillUser[]>()
 const key = (workspaceId: string, skillId: string) => `${workspaceId}/${skillId}`
 const now = () => new Date(Date.UTC(2026, 8, 27, 12, 0, sequence++)).toISOString()
 const hash = (text: string) => `sha256:${Array.from(text).reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 7).toString(16).padStart(64, '0')}`
 const error = (code: string, message: string, status: number, details?: Record<string, unknown>) =>
   HttpResponse.json({ error: { code, message, ...(details ? { details } : {}) } }, { status })
 
-export function resetSkillFixtures() { skills = new Map(); receipts = new Map(); sequence = 0 }
+export function resetSkillFixtures() { skills = new Map(); receipts = new Map(); users = new Map(); sequence = 0 }
+/** An Agent assigned a version of the skill, and the saved workflows that use it. */
+export function assignSkillUser(workspaceId: string, skillId: string, user: SkillUser) {
+  users.set(key(workspaceId, skillId), [...(users.get(key(workspaceId, skillId)) ?? []), user])
+}
 /** Seed one logical skill directly, as if saved earlier. */
 export function seedSkill(workspaceId: string, name: string, instructions: string, options: { skillId?: string; description?: string; archived?: boolean } = {}): SkillSummary {
   const skillId = options.skillId ?? `skill-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
@@ -76,6 +82,24 @@ export const skillsHandlers = [
     const wanted = new URL(request.url).searchParams.get('version') ?? stored.summary.version
     const version = stored.versions.find((item) => item.version === wanted)
     return version ? HttpResponse.json({ skill: stored.summary, version }) : error('SKILL_VERSION_NOT_FOUND', 'The skill version was not found.', 404)
+  }),
+  http.get('/api/management/workspaces/:workspaceId/skills/:skillId/usage', ({ params }) => {
+    const stored = skills.get(key(String(params.workspaceId), String(params.skillId)))
+    if (!stored) return error('SKILL_NOT_FOUND', 'The skill was not found.', 404)
+    const outdated = (users.get(key(String(params.workspaceId), String(params.skillId))) ?? []).filter(user => user.version !== stored.summary.version)
+    return HttpResponse.json({ skillId: stored.summary.skillId, headVersion: stored.summary.version,
+      agents: outdated.map(({ agentId, name, version }) => ({ agentId, name, version })),
+      workflows: outdated.flatMap(user => user.workflows) })
+  }),
+  http.post('/api/management/workspaces/:workspaceId/skills/:skillId/update-users', ({ params }) => {
+    const stored = skills.get(key(String(params.workspaceId), String(params.skillId)))
+    if (!stored) return error('SKILL_NOT_FOUND', 'The skill was not found.', 404)
+    const outdated = (users.get(key(String(params.workspaceId), String(params.skillId))) ?? []).filter(user => user.version !== stored.summary.version)
+    for (const user of outdated) user.version = stored.summary.version
+    return HttpResponse.json({ headVersion: stored.summary.version,
+      agents: outdated.map(user => ({ agentId: user.agentId, configurationVersionId: `${user.agentId}-config-v${stored.summary.version}` })),
+      workflows: outdated.flatMap(user => user.workflows.map(workflow => ({ workflowId: workflow.workflowId, workflowVersionId: `${workflow.workflowId}-next` }))),
+      failed: [] })
   }),
   http.get('/api/management/workspaces/:workspaceId/skills/:skillId/versions', ({ params }) => {
     const stored = skills.get(key(String(params.workspaceId), String(params.skillId)))

@@ -111,6 +111,14 @@ const extensions: Partial<Record<OperatorToolName,{scope:ScopeKind;extension:key
     "scope": "workspace",
     "extension": "skills"
   },
+  "skill_usage_get": {
+    "scope": "workspace",
+    "extension": "skills"
+  },
+  "skill_users_update": {
+    "scope": "workspace",
+    "extension": "skills"
+  },
 }
 
 export const TELEMETRY_READ_ACTIONS: readonly ManagementAction[] = ['devices:metrics:read', 'runs:read', 'jobs:read', 'agent_chat:read', 'operator_chat:read']
@@ -159,6 +167,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name.startsWith('agent_chat_') && name !== 'agent_chat_read') result.push({action:'agent_chat:read',scope:'resource'})
   if (['operator_chat_send', 'operator_chat_cancel', 'operator_chat_respond', 'operator_chat_controls_update'].includes(name)) result.push({action:'operator_chat:read',scope:'global'})
   if (name === 'skill_archive') result.push({action:'skills:read',scope:'workspace'})
+  if (name === 'skill_users_update') result.push({action:'skills:read',scope:'workspace'})
   if (name === 'workspace_folders_list') result.push({action:'harnesses:read',scope:'global'})
   if (['workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) result.push({action:'workspace_locations:read',scope:'global'})
   if (['harness_mcp_change_request', 'harness_mcp_managed_request'].includes(name)) result.push({action:'harnesses:read',scope:'global'})

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import {
   SkillArchiveInputSchema, SkillCreateInputSchema, SkillGetInputSchema, SkillGetResultSchema, SkillListInputSchema,
   SkillMutationResultSchema, SkillPageSchema, SkillUpdateInputSchema, SkillVersionListInputSchema, SkillVersionPageSchema,
+  SkillUsageInputSchema, SkillUsageSchema, SkillUsersUpdateInputSchema, SkillUsersUpdateResultSchema,
 } from '@foreman-code/contracts/management'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { SkillCatalogService } from '../modules/skills/catalog.js'
@@ -23,7 +24,8 @@ function page(query: Query) {
 }
 
 /** Thin HTTP client of the same Skills service the Operator MCP tools use. */
-export function registerSkillRoutes(app: FastifyInstance, skills: SkillCatalogService): void {
+export function registerSkillRoutes(app: FastifyInstance, skills: SkillCatalogService,
+  usage?: import('../modules/skills/usage.js').SkillUsageService): void {
   const base = '/api/management/workspaces/:workspaceId/skills'
   app.get<{ Querystring: Query }>('/api/management/skills', async (request) =>
     SkillPageSchema.parse(await skills.list(requirePrincipal(request), SkillListInputSchema.parse({ ...page(request.query),
@@ -44,4 +46,10 @@ export function registerSkillRoutes(app: FastifyInstance, skills: SkillCatalogSe
     SkillMutationResultSchema.parse(await skills.update(requirePrincipal(request), SkillUpdateInputSchema.parse(body(request.params, request.body)), 'http')))
   app.put<{ Params: Params; Body: unknown }>(`${base}/:skillId/archive`, async (request) =>
     SkillMutationResultSchema.parse(await skills.archive(requirePrincipal(request), SkillArchiveInputSchema.parse(body(request.params, request.body)), 'http')))
+  if (!usage) return
+  app.get<{ Params: Params }>(`${base}/:skillId/usage`, async (request) =>
+    SkillUsageSchema.parse(await usage.usage(requirePrincipal(request), SkillUsageInputSchema.parse(request.params))))
+  app.post<{ Params: Params; Body: unknown }>(`${base}/:skillId/update-users`, async (request) =>
+    SkillUsersUpdateResultSchema.parse(await usage.updateUsers(requirePrincipal(request), 'http',
+      SkillUsersUpdateInputSchema.parse(body(request.params, request.body)))))
 }

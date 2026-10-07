@@ -742,6 +742,8 @@ export const OperatorToolNameSchema = z.enum([
   "skill_create",
   "skill_update",
   "skill_archive",
+  "skill_usage_get",
+  "skill_users_update",
   "workflow_trigger_get",
   "workflow_trigger_update",
   "workflow_trigger_disable",

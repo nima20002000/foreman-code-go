@@ -10,6 +10,8 @@ import { OperatorLifecycleService } from '../../modules/workspaces/operatorLifec
 import { OperatorWorkspaceControls } from '../../modules/workspaces/operatorControls.js'
 import { VersionHistoryService } from '../../modules/workflows/historyManagement.js'
 import { SkillCatalogService } from '../../modules/skills/catalog.js'
+import { SkillUsageService } from '../../modules/skills/usage.js'
+import { CurrentWorkflowAuthoring } from '../../modules/workflows/currentAuthoring.js'
 
 export function createOperatorExtensions(input: {
   pool:pg.Pool;commands:PostgresCommandCoordinator;catalog:HarnessCatalogService;native:NativeConfigurationService;
@@ -17,9 +19,11 @@ export function createOperatorExtensions(input: {
   provisioningRoot?:string|undefined;
   harnessProfiles?: Pick<HostHarnessOverrideService, 'validateSelection'>;
 }) {
+  const agents = new OperatorAgentMutationService(input.pool,input.commands,input.catalog,input.harnessProfiles)
   return {
     native:input.native,
-    agents:new OperatorAgentMutationService(input.pool,input.commands,input.catalog,input.harnessProfiles),
+    agents,
+    skillUsage:new SkillUsageService(input.pool,agents,new CurrentWorkflowAuthoring(input.pool,input.commands)),
     history:new VersionHistoryService(input.pool),
     lifecycle:new OperatorLifecycleService(input.commands),
     workspace:new OperatorWorkspaceControls(input.pool,input.commands,input.locations,input.detection,input.provisioningRoot),

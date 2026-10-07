@@ -1,7 +1,7 @@
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import {
   SkillArchiveInputSchema, SkillCreateInputSchema, SkillGetResultSchema, SkillMutationResultSchema, SkillPageSchema,
-  SkillUpdateInputSchema, SkillVersionPageSchema,
+  SkillUpdateInputSchema, SkillVersionPageSchema, SkillUsageSchema, SkillUsersUpdateResultSchema,
   type SkillArchiveInput, type SkillCreateInput, type SkillMutationResult, type SkillUpdateInput, type SkillSummary,
 } from '@foreman-code/contracts/management'
 import { apiClient } from '../../shared/api/client'
@@ -18,6 +18,7 @@ export const skillKeys = {
   detail: (workspaceId: string, skillId: string) => [...skillKeys.all, 'detail', workspaceId, skillId] as const,
   version: (workspaceId: string, skillId: string, version: string) => [...skillKeys.detail(workspaceId, skillId), 'version', version] as const,
   versions: (workspaceId: string, skillId: string) => [...skillKeys.detail(workspaceId, skillId), 'versions'] as const,
+  usage: (workspaceId: string, skillId: string) => [...skillKeys.detail(workspaceId, skillId), 'usage'] as const,
 }
 function listPath(filter: SkillFilter, cursor?: string, limit = 50) {
   const query = new URLSearchParams()
@@ -65,6 +66,7 @@ function useSkillMutation<T>(send: (input: T) => Promise<SkillMutationResult>) {
     // Every mutation returns the head and its version; exact-version and history reads refresh.
     client.setQueryData(skillKeys.detail(skill.workspaceId, skill.skillId), { skill, version })
     void client.invalidateQueries({ queryKey: skillKeys.versions(skill.workspaceId, skill.skillId) }).catch(() => undefined)
+    void client.invalidateQueries({ queryKey: skillKeys.usage(skill.workspaceId, skill.skillId) }).catch(() => undefined)
     void client.invalidateQueries({ queryKey: skillKeys.lists() }).catch(() => undefined)
   } })
 }
@@ -85,4 +87,17 @@ export function useArchiveSkillMutation() {
     const body = SkillArchiveInputSchema.parse(input)
     return apiClient.request(`${skillPath(body.workspaceId, body.skillId)}/archive`, SkillMutationResultSchema, { method: 'PUT', body })
   })
+}
+
+/** Agents still on an older version of this skill, and the workflows that use them. */
+export function useSkillUsageQuery(workspaceId: string, skillId: string) {
+  return useQuery({ queryKey: skillKeys.usage(workspaceId, skillId), retry: false,
+    queryFn: ({ signal }) => apiClient.request(`${skillPath(workspaceId, skillId)}/usage`, SkillUsageSchema, { signal }) })
+}
+export function useUpdateSkillUsersMutation(workspaceId: string, skillId: string) {
+  const client = useQueryClient()
+  return useMutation({ retry: false,
+    mutationFn: (commandId: string) => apiClient.request(`${skillPath(workspaceId, skillId)}/update-users`, SkillUsersUpdateResultSchema,
+      { method: 'POST', body: { commandId } }),
+    onSettled: () => client.invalidateQueries({ queryKey: skillKeys.usage(workspaceId, skillId) }) })
 }

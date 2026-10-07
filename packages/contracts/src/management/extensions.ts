@@ -175,6 +175,24 @@ export const SkillMutationResultSchema = z.object({
     changed: z.boolean() }).strict(),
   replayed: z.boolean(),
 }).strict();
+/** Agents still assigned an older version of a skill, and the saved workflows that use them. */
+export const SkillUsageInputSchema = z.object({ ...SkillId }).strict();
+export const SkillUsageSchema = z.object({
+  skillId: IdSchema, headVersion: SkillVersionLabel,
+  agents: z.array(z.object({ agentId: IdSchema, name: z.string(), version: SkillVersionLabel }).strict()).max(1000),
+  workflows: z.array(z.object({ workflowId: IdSchema, name: z.string() }).strict()).max(1000),
+}).strict();
+/** Moves every listed Agent to the skill's current version through the normal Agent save, then re-saves each
+ * affected workflow so its next Runs use the updated Agents. Running Agents keep their exact version. */
+export const SkillUsersUpdateInputSchema = z.object({ ...SkillId, commandId: Command }).strict();
+export const SkillUsersUpdateResultSchema = z.object({
+  headVersion: SkillVersionLabel,
+  agents: z.array(z.object({ agentId: IdSchema, configurationVersionId: IdSchema }).strict()),
+  workflows: z.array(z.object({ workflowId: IdSchema, workflowVersionId: IdSchema }).strict()),
+  failed: z.array(z.object({ kind: z.enum(['agent', 'workflow']), id: IdSchema, code: z.string(), message: z.string() }).strict()),
+}).strict();
+export type SkillUsage = z.infer<typeof SkillUsageSchema>;
+export type SkillUsersUpdateResult = z.infer<typeof SkillUsersUpdateResultSchema>;
 export type SkillListInput = z.infer<typeof SkillListInputSchema>;
 export type SkillCreateInput = z.infer<typeof SkillCreateInputSchema>;
 export type SkillUpdateInput = z.infer<typeof SkillUpdateInputSchema>;

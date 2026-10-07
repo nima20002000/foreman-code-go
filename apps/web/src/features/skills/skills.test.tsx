@@ -7,7 +7,7 @@ import { HttpResponse, delay, http } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AssignedSkill } from '@foreman-code/contracts'
 import { server } from '../../mocks/server'
-import { editSkillElsewhere, seedSkill } from '../../shared/mocks/skillsHandlers'
+import { assignSkillUser, editSkillElsewhere, seedSkill } from '../../shared/mocks/skillsHandlers'
 import { SkillsLibrary, type SkillLibrarySearch } from './SkillsLibrary'
 import { SkillEditor, type SavedSkill } from './SkillEditor'
 import { SkillDetailPage } from './SkillPages'
@@ -296,5 +296,23 @@ describe('Board Agent skill assignment', () => {
     wrap(<Field initial={[{ skillId: skill.skillId, version: '1' }]} />)
     expect(await screen.findByText('Skills could not be loaded. Your selection is unchanged.')).toBeVisible()
     expect(screen.getByText(skill.skillId)).toBeVisible()
+  })
+})
+
+describe('Skill users', () => {
+  it('offers one click to move Agents and their workflows to the saved version', async () => {
+    const user = userEvent.setup()
+    const summary = seedSkill('workspace-a', 'Reviewer', 'First')
+    assignSkillUser('workspace-a', summary.skillId, { agentId: 'coder', name: 'Coder', version: '1',
+      workflows: [{ workflowId: 'website', name: 'Website' }] })
+    wrap(<SkillDetailPage workspaceId="workspace-a" skillId={summary.skillId} onCancel={vi.fn()} />)
+    const instructions = await screen.findByRole('textbox', { name: /^Instructions/ })
+    expect(screen.queryByText(/still use an older version/)).toBeNull()
+    await user.clear(instructions); await user.type(instructions, 'Second')
+    await user.click(screen.getByRole('button', { name: 'Save new version' }))
+    expect(await screen.findByText('1 Agent and 1 workflow still use an older version')).toBeVisible()
+    expect(screen.getByText('Coder (v1)')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Update to v2' }))
+    await waitFor(() => expect(screen.queryByText(/still use an older version/)).toBeNull())
   })
 })
