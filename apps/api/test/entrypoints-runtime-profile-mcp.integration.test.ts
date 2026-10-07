@@ -84,7 +84,8 @@ async function fixture() {
         [approval.profileId, approval.profileRevision])).rows[0].record)
       const fingerprint = approval.fingerprint
       const measurement = JobVerificationRuntimeMeasurementSchema.parse({ ...fixture.measurement, fingerprint,
-        approvedAt: approval.approvedAt, checkedAt: new Date().toISOString(), expiresAt: approval.expiresAt,
+        approvedAt: approval.approvedAt ?? approval.requestedAt,
+        checkedAt: new Date().toISOString(), expiresAt: approval.expiresAt,
         identity: { ...fixture.measurement.identity, profileId: profile.id, profileRevision: profile.revision,
           rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
           qualificationId: approval.qualificationId, fingerprintDigest: approval.fingerprintDigest,
