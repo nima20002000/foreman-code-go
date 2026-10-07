@@ -20,6 +20,13 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 - Workflow Agents run CI themselves: `ci_run` queues install, typecheck, lint, unit or build for their Run's workspace on the connected build computers, and `ci_get` reads the result (Operator MCP has the same tools).
 - Computers settings lists each computer as a row in build order, with drag-to-reorder, Primary/Backup, builds on/off, build allowance and live CPU and memory; the sidebar shows busy computers and opens their running Jobs and Agents.
 - Run CI for any commit whose dependency files match the commit a computer was qualified with.
+- Computers settings shows, per computer, whether Codex, Claude, OpenCode, the GitHub CLI and Google Drive are installed and which account each is signed in to (`computer_accounts_list`).
+- Sign the GitHub CLI in or out on any computer with a one-time code, from Computers settings or Operator MCP; git on that computer then uses the account.
+- Give each workflow Agent its own git worktree and branch of the workspace's GitHub repository on its computer; the Run, the Board and `context_get` show the branch.
+- Agent CI runs on the Agent's own computer first and moves to the next build computer in order only when its own is busy; it tests the Agent's current files, sent as a git bundle, with nothing pushed.
+- Build computers prepare their own CI runtime for a commit with no human step: offline packages, verification image, profile update, protected refresh and requalification (`build_computer_prepare`, and automatically when a commit changes dependency files).
+- Connect Google Drive on any computer through rclone: sign in to Google on Main, and Drive mounts at `~/Foreman Code Drive` on that computer. Agents get their workspace's shared Drive folder from `context_get`.
+- Update every Agent that uses an older version of a skill, and re-save the workflows that pin them, in one click (`skill_users_update`).
 
 ### Changed
 
@@ -32,6 +39,8 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 ### Fixed
 
 - Deliver an Agent's instructions to Claude in workflows and Agent chat.
+- Run the unit suite in CI with its own disposable PostgreSQL inside the offline verification image.
+- Forget retired Agent worktrees so their branches can be checked out again.
 - Run Claude workflow turns whose MCP check, execution correlation and terminal result now match the rest of the workflow engine.
 - Replace a source transfer that expired on the Worker and wait for the Worker to reconnect, instead of retrying the expired transfer until the Job times out.
 - Read per-Job quota source trees from their quota folder when preparing the private repository on a Worker.
