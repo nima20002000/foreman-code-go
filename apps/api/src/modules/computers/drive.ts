@@ -61,7 +61,7 @@ export class ComputerDriveService {
           const result = await this.computer(target, { operation: 'connect', token })
           session.state = { ...session.state, state: 'connected', account: result.account, mountPath: result.mountPath }
         } catch (error) {
-          session.state = { ...session.state, state: 'failed', message: error instanceof DomainError ? error.message.slice(0, 500) : 'Drive could not be connected.' }
+          session.state = { ...session.state, state: 'failed', message: error instanceof Error ? error.message.slice(0, 500) : 'Drive could not be connected.' }
         }
       }, () => {
         clearTimeout(timer)
@@ -119,7 +119,8 @@ export class ComputerDriveService {
       throw new DomainError('COMPUTER_OFFLINE', 'This computer is offline or its app is too old for Google Drive.', 409)
     }
     return DriveComputerStateSchema.parse((await endpoint.request(deviceId, COMPUTER_DRIVE_NAMESPACE, request,
-      { signal: AbortSignal.timeout(request.operation === 'install' ? 300_000 : 90_000) })).payload)
+      // Connecting finds or creates the app folder and waits for the mount; both can be slow on a laptop.
+      { signal: AbortSignal.timeout(request.operation === 'install' ? 300_000 : request.operation === 'connect' ? 240_000 : 90_000) })).payload)
   }
 }
 

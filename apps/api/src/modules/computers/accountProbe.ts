@@ -92,7 +92,8 @@ async function drive(ports: AccountProbePorts, signal: AbortSignal): Promise<Com
   const binary = await ports.find('rclone')
   if (!binary) return missing('drive')
   const remotes = plain((await ports.run(binary, ['listremotes', '--long'], signal)).stdout).split('\n')
-    .map(line => /^(\S+):\s+drive\s*$/u.exec(line.trim())?.[1]).filter((name): name is string => Boolean(name))
+    // `--long` adds a remote's description after its type.
+    .map(line => /^(\S+):\s+drive(?:\s|$)/u.exec(line.trim())?.[1]).filter((name): name is string => Boolean(name))
   if (!remotes.length) return { tool: 'drive', installed: true, signedIn: false, account: null, details: [] }
   const remote = remotes.includes(DRIVE_REMOTE) ? DRIVE_REMOTE : remotes[0]!
   const info = await ports.run(binary, ['config', 'userinfo', `${remote}:`, '--json'], signal)
