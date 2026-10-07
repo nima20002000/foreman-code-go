@@ -1411,7 +1411,9 @@ export function buildProductionApp(
     harnessCompatibility,
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
     operator: { access, services: runtimeServices },
-    appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, repository, commands, interactions) },
+    appMcp: { access, interactions: Object.assign(new PostgresAppInteractionService(database.pool, repository, commands, interactions), {
+      driveMount: (hostRef: { kind: 'main' } | { kind: 'device'; deviceId: string }) =>
+        runtimeServices.computerAccounts?.driveMount(hostRef) ?? Promise.resolve(null) }) },
     workerArtifacts: () => {
       const local = localNativeOutputMcp, remote = workflowArtifacts?.extension
       if (!local) return remote

@@ -43,3 +43,12 @@ it('separates missing tools, signed-out tools and unreadable sign-in state', asy
     ['codex', true, false], ['claude', true, null], ['opencode', false, null], ['github', true, false], ['drive', true, false],
   ])
 })
+
+it('prefers the app Drive remote and reports where it is mounted', async () => {
+  const result = await probeComputerAccounts(ports(['rclone'], {
+    'rclone listremotes --long': { stdout: 'shared:  drive\nforeman-drive: drive\n' },
+    'rclone config userinfo foreman-drive: --json': { stdout: JSON.stringify({ Email: 'owner@gmail.com' }) },
+  }, { '/proc/self/mountinfo': '1 2 0:1 / / rw - ext4 /dev/sda1 rw\n90 1 0:55 / /home/agent/Foreman\\040Code\\040Drive rw - fuse.rclone foreman-drive: rw\n' }))
+  expect(result.accounts.find(account => account.tool === 'drive')).toEqual({ tool: 'drive', installed: true, signedIn: true,
+    account: 'owner@gmail.com', details: ['foreman-drive:', 'mount:/home/agent/Foreman Code Drive'] })
+})
