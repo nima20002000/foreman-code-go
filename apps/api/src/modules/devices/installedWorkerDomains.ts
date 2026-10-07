@@ -41,6 +41,7 @@ import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
 import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsRequestSchema } from '@foreman-code/contracts/computer-accounts'
+import { readInstalledWorkflowConfiguration } from '../runs/remote/installedWorkflowConfiguration.js'
 import { probeComputerAccounts, systemPorts } from '../computers/accountProbe.js'
 import { inspectInstalledOpenCode } from '../harnesses/installedOpenCodeInspection.js'
 import { inspectInstalledClaude } from '../harnesses/installedClaudeInspection.js'
@@ -247,7 +248,10 @@ export async function createInstalledWorkerDomains(input: {
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
         throw new DomainError('COMPUTER_ACCOUNTS_STALE', 'Account facts require the actual authenticated worker channel.', 409)
       }
-      return { payload: await probeComputerAccounts(systemPorts(process.env),
+      const selected = await readInstalledWorkflowConfiguration(input.configuration).catch(() => null)
+      const binaries = { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
+        ...(selected?.opencode ? { opencode: selected.opencode.binary } : {}), ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
+      return { payload: await probeComputerAccounts(systemPorts(process.env, binaries),
         AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(20_000)])) }
     },
   })

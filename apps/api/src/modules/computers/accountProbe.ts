@@ -89,13 +89,19 @@ async function drive(ports: AccountProbePorts, signal: AbortSignal): Promise<Com
   return { tool: 'drive', installed: true, signedIn: info.code === 0 ? true : null, account: email, details: [`${remotes[0]}:`] }
 }
 
-export function systemPorts(environment: NodeJS.ProcessEnv = process.env): AccountProbePorts {
+/** `binaries` holds installer-selected executables (for example a Worker's configured Codex) checked before PATH. */
+export function systemPorts(environment: NodeJS.ProcessEnv = process.env,
+  binaries: Readonly<Partial<Record<string, string>>> = {}): AccountProbePorts {
   const home = environment.HOME ?? homedir()
   const directories = [...(environment.PATH ?? '').split(delimiter), join(home, '.local', 'bin'), '/usr/local/bin', '/usr/bin', '/bin']
     .filter((value, index, all) => value.startsWith('/') && all.indexOf(value) === index)
   return {
     environment,
     async find(name) {
+      const selected = binaries[name]
+      if (selected) {
+        try { await access(selected, constants.X_OK); return selected } catch { /* fall back to PATH */ }
+      }
       for (const directory of directories) {
         const candidate = join(directory, name)
         try { await access(candidate, constants.X_OK); return candidate } catch { continue }
