@@ -156,7 +156,8 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
       if (next.state === 'acknowledged' && !ack) return fail('REVIEW_ACKNOWLEDGEMENT_MISSING')
       const retained = current.acknowledgedAt && current.providerTurnOrMessageId && ack && context.reviewer
         ? await readRetainedRemoteReviewer(publication.sql, context.reviewer) : undefined
-      if (retained && evidence?.submissionId !== current.providerTurnOrMessageId) return fail('REVIEW_JOB_IDENTITY_CONFLICT')
+      if (retained && (!evidence || evidence.kind === 'transport'
+        || evidence.submissionId !== current.providerTurnOrMessageId)) return fail('REVIEW_JOB_IDENTITY_CONFLICT')
       if (retained) beforeGraphCommit(publication.sql, async () => {
         const original = await readRetainedRemoteReviewer(publication.sql, context.reviewer!)
         if (!sameWorkflowValue(original, retained)) return fail('REVIEWER_AUTHORITY_LOST')
