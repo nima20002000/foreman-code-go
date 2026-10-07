@@ -59,14 +59,15 @@ async function fixture(options: { prepareFails?: boolean } = {}) {
     git: { cloneDirectory: (repository: string) => `/clones/${repository}`,
       git: async () => ({ code: 0, stdout: '', stderr: '' }) },
     managedRuntimeRoot: async () => '/ci/managed',
-    prepare: async (input: { repository: string; commit: string; installer: string; keepImages?: readonly string[]; log?: (stage: string) => void }) => {
-      calls.prepare.push({ repository: input.repository, commit: input.commit, installer: input.installer, keepImages: input.keepImages })
+    prepare: async (input: { repository: string; commit: string; installer: string; keepImages?: readonly string[]; keepPaths?: readonly string[]; log?: (stage: string) => void }) => {
+      calls.prepare.push({ repository: input.repository, commit: input.commit, installer: input.installer, keepImages: input.keepImages, keepPaths: input.keepPaths })
       input.log?.('fetch-packages')
       if (options.prepareFails) throw new Error('podman build failed: no space left on device')
       return prepared
     },
     refresh: async (input: unknown) => { calls.refresh.push(input); refreshed = true; return { unit: 'refresh', workerUnit: 'worker.service' } },
     lastRefresh: async () => refreshed ? { commit, ok: true, log: 'exit=0' } : null,
+    currentRuntimePaths: async () => ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'],
     now: () => new Date('2026-10-07T00:00:00.000Z'),
   }
   let worker = new CiRuntimeWorker('/ci/state', workerPorts as never, new AbortController().signal)
@@ -146,7 +147,9 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       const done = await f.settle('p-install')
       expect(done).toMatchObject({ state: 'qualified', commit, deviceId: dexter, message: null })
       expect(done.profiles.map(value => [value.profileId, value.status]).sort()).toEqual([['p-install', 'qualified'], ['p-unit', 'qualified']])
-      expect(f.calls.prepare).toEqual([{ repository: '/clones/octo/site', commit, installer: '/ci/managed/installer', keepImages: [oldImage] }])
+      // The computer keeps the image and qualification source its current runtime still uses.
+      expect(f.calls.prepare).toEqual([{ repository: '/clones/octo/site', commit, installer: '/ci/managed/installer', keepImages: [oldImage],
+        keepPaths: ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'] }])
       expect(f.calls.bind).toEqual([expect.objectContaining({ source: newPin, expectedBindingRevision: 1, accessMode: 'exclusive-write' })])
       expect(f.calls.saves.map(value => [value.id, value.spec.bindingRevision, value.spec.policy.imageDigest]).sort())
         .toEqual([['p-install', 2, newImage], ['p-unit', 2, newImage]])

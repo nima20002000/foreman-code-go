@@ -19,10 +19,12 @@ export interface PreparedCiRuntime {
   qualificationSource: string
   unitCodex: { executable: string; sourceExecutable: string; version: string; binarySha256: string }
 }
-export async function prepareCiRuntime({ repository, commit, installer, review, keepImages = [], environment = process.env, log = () => {} }: {
+export async function prepareCiRuntime({ repository, commit, installer, review, keepImages = [], keepPaths = [], environment = process.env, log = () => {} }: {
   repository: string; commit: string; installer: string; review: CiRuntimeReview
   /** Image ids the current protected runtime still uses; every other CI image is removed first. */
   keepImages?: readonly string[]
+  /** Installer paths the current protected runtime still uses (its qualification source). */
+  keepPaths?: readonly string[]
   environment?: NodeJS.ProcessEnv; log?: (stage: string) => void
 }): Promise<PreparedCiRuntime> {
   if (!COMMIT.test(commit)) throw new Error('A full commit id is required.')
@@ -45,6 +47,8 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   if (head !== commit) throw new Error('The prepared checkout is not at the requested commit.')
 
   log('prune-images')
+  // Files first: a full quota also blocks podman from writing its own image metadata.
+  await pruneInstaller(installer, repository, short, keepPaths, env)
   await pruneCiImages(keepImages, env)
   // 1. The build stage fetches the frozen lockfile's packages with network into its own store.
   const buildContext = join(installer, `build-context-${short}`)
@@ -102,8 +106,14 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
     archive.stdout.pipe(extract.stdin)
     await Promise.all([closed(archive, 'git archive'), closed(extract, 'tar')])
   }
+  // The image holds the seed and context; keep only their receipts and drop the multi-gigabyte build inputs.
+  const seedReceiptPath = join(installer, `seed-receipt-${short}.json`), contextReceiptPath = join(installer, `context-receipt-${short}.json`)
+  await writeFile(seedReceiptPath, await readFile(join(context, 'seed-receipt.json')), { mode: 0o600 })
+  await writeFile(contextReceiptPath, await readFile(join(context, 'context-receipt.json')), { mode: 0o600 })
+  for (const path of [context, buildContext, seedRoot]) await rm(path, { recursive: true, force: true })
+  await run('git', ['-C', repository, 'worktree', 'remove', '--force', source], { env }).catch(() => undefined)
   return { commit, imageId: `sha256:${image.Id.replace(/^sha256:/u, '')}`, imageManifestDigest: image.Digest,
-    seedReceiptPath: join(context, 'seed-receipt.json'), contextReceiptPath: join(context, 'context-receipt.json'),
+    seedReceiptPath, contextReceiptPath,
     qualificationSource, unitCodex: { executable: '/opt/graphql-ci/tools/codex', sourceExecutable: unitCodex.path,
       version: unitCodex.version, binarySha256: unitCodex.sha256 } }
 }
@@ -198,8 +208,26 @@ const closed = (child: ChildProcess, name: string) => new Promise<void>((resolve
 })
 
 /** Removes CI images the protected runtime no longer uses, so storage quota never fills with old builds. */
+/** Earlier commits' preparation outputs, except what the current protected runtime still uses. */
+async function pruneInstaller(installer: string, repository: string, short: string, keepPaths: readonly string[], env: NodeJS.ProcessEnv) {
+  const kept = new Set(keepPaths)
+  for (const name of await readdir(installer).catch(() => [] as string[])) {
+    const match = /^(?:source|seed|context|build-context|qualification-source|seed-receipt|context-receipt)-([0-9a-f]{12})(?:\.json)?$/u.exec(name)
+    if (!match || match[1] === short || kept.has(join(installer, name))) continue
+    await rm(join(installer, name), { recursive: true, force: true })
+  }
+  await run('git', ['-C', repository, 'worktree', 'prune'], { env }).catch(() => undefined)
+}
+
 export async function pruneCiImages(keep: readonly string[], env: NodeJS.ProcessEnv) {
   const kept = new Set(keep.map(id => id.replace(/^sha256:/u, '')))
+  // Interrupted builds leave buildah working containers that pin their layers.
+  const external = JSON.parse(await podmanOut(['ps', '--all', '--external', '--format', 'json'], env).catch(() => '[]')) as { Id: string; Names?: string[] }[]
+  for (const container of external) {
+    if ((container.Names ?? []).some(name => /-working-container(?:-\d+)?$/u.test(name))) {
+      await podman(['rm', '--storage', '--force', container.Id], env).catch(() => undefined)
+    }
+  }
   const listed = JSON.parse(await podmanOut(['images', '--format', 'json'], env)) as { Id: string; Names?: string[] }[]
   for (const image of listed) {
     if (kept.has(image.Id.replace(/^sha256:/u, ''))) continue

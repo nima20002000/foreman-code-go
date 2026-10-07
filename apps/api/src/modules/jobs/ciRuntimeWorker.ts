@@ -13,6 +13,8 @@ export interface CiRuntimeWorkerPorts {
   prepare: typeof prepareCiRuntime
   refresh: typeof scheduleCiRuntimeRefresh
   lastRefresh: typeof lastCiRuntimeRefresh
+  /** Paths the current protected runtime configuration references. */
+  currentRuntimePaths(stateDirectory: string): Promise<string[]>
   now(): Date
 }
 
@@ -49,6 +51,7 @@ export class CiRuntimeWorker {
       const repository = await ensureCommit(this.ports.git, request.repository, request.commit, this.lifetime)
       const prepared = await this.ports.prepare({ repository, commit: request.commit,
         installer: join(await this.ports.managedRuntimeRoot(), 'installer'), review: request.review, keepImages: request.keepImages,
+        keepPaths: await this.ports.currentRuntimePaths(this.stateDirectory),
         log: stage => { if (this.state?.commit === request.commit) this.set({ ...this.state, stage }) } })
       this.set({ state: 'prepared', commit: request.commit, stage: null, prepared: PreparedCiRuntimeSchema.parse(prepared), message: null })
     })().catch(error => {

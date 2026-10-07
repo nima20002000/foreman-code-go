@@ -80,3 +80,11 @@ async function currentServiceUnit(): Promise<string> {
   if (!unit) throw new Error('This Worker is not running as a systemd user service, so it cannot restart itself.')
   return unit
 }
+
+/** The installer paths the current protected runtime uses; preparation keeps them. */
+export async function currentCiRuntimePaths(stateDirectory: string): Promise<string[]> {
+  const text = await readFile(join(stateDirectory, 'job-runtime.json'), 'utf8').catch(() => null)
+  if (!text) return []
+  const configuration = JSON.parse(text) as { qualificationSource?: { directory?: unknown } }
+  return typeof configuration.qualificationSource?.directory === 'string' ? [configuration.qualificationSource.directory] : []
+}
