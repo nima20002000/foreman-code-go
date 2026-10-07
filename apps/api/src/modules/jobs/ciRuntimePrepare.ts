@@ -87,7 +87,8 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   const tag = `localhost/foreman-code-verification:${short}`
   log('build-image')
   // The image's own pnpm check runs through the verification policy, which needs a finite memory reservation.
-  await podman(['build', '--pull=never', '--network=none', '--memory=2g', '--target', 'verification', '--layers=false', '--force-rm',
+  // Its toolchain layer (with PostgreSQL) is the one the networked package build just cached.
+  await podman(['build', '--pull=never', '--network=none', '--memory=2g', '--target', 'verification', '--layers=true', '--force-rm',
     '--label', 'io.foreman-code.installation=ci-verification', '-t', tag, context], env)
   const image = (JSON.parse(await podmanOut(['image', 'inspect', tag], env)) as { Id: string; Digest: string }[])[0]!
   await podman(['rmi', buildTag], env).catch(() => undefined)

@@ -50,6 +50,23 @@ export class ComputerAccountsService {
     return ComputerAccountsListSchema.parse({ computers })
   }
 
+  /** Where Google Drive is mounted on that computer, for the Agents placed there; null when it is not mounted. */
+  async driveMount(hostRef: { kind: 'main' } | { kind: 'device'; deviceId: string }): Promise<string | null> {
+    let target: DeviceProvisioningTarget = { hostRef: { kind: 'main', mainId: this.mainId }, applicationInstallationId: this.mainId,
+      keyRevision: null, authorizationRevision: null }
+    if (hostRef.kind === 'device') {
+      const row = (await this.pool.query<{ record: unknown }>(`select record from device_registrations
+        where main_id=$1 and record->>'deviceId'=$2 and record->>'status'='paired' limit 1`, [this.mainId, hostRef.deviceId])).rows[0]
+      if (!row) return null
+      const registration = DeviceRegistrationSchema.parse(row.record)
+      target = { hostRef: { kind: 'device', mainId: this.mainId, deviceId: registration.deviceId },
+        applicationInstallationId: registration.workerInstallationId, keyRevision: registration.keyRevision,
+        authorizationRevision: registration.authorizationRevision }
+    }
+    const drive = (await this.read(target, false))?.accounts.find(account => account.tool === 'drive' && account.signedIn)
+    return drive?.details.find(detail => detail.startsWith('mount:'))?.slice('mount:'.length) ?? null
+  }
+
   private read(target: DeviceProvisioningTarget, refresh: boolean): Promise<ComputerAccounts | null> {
     const key = `${target.applicationInstallationId}:${target.authorizationRevision ?? 0}`
     const cached = this.cache.get(key)

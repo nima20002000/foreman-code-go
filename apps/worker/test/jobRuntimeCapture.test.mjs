@@ -12,7 +12,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { buildCiRuntimeContext } from '../../../scripts/build-ci-runtime-context.mjs';
 import { acquireWorkerLock } from '../src/runtime.mjs';
 import { validateSeedReceipt, verifySeedFiles } from '../artifacts/ci-runtime/seed-policy.mjs';
-import { assertEffectivePackagePolicy, assertEffectiveVerificationStore, verificationEnvironment, verificationInstallArguments }
+import { assertEffectivePackagePolicy, assertEffectiveVerificationStore, needsTestDatabase, verificationEnvironment, verificationInstallArguments }
   from '../artifacts/ci-runtime/verification-policy.mjs';
 import { copyVerificationSeed, prepareVerificationWorkspace } from '../artifacts/ci-runtime/verification-policy.mjs';
 
@@ -451,4 +451,12 @@ test('packaged capture refuses active worker ownership and unsupported overwrite
     const result = f.run(args); assert.equal(result.status, 1); assert.match(result.stderr, /usage/);
   }
   assert.deepEqual(await readdir(f.state), before); await f.unchanged();
+});
+
+test('verification starts one disposable test database for the outer pnpm test only', () => {
+  assert.equal(needsTestDatabase(['pnpm', 'test'], {}), true);
+  assert.equal(needsTestDatabase(['pnpm', 'run', 'test'], {}), true);
+  assert.equal(needsTestDatabase(['pnpm', 'test'], { FOREMAN_CODE_CI_TEST_DATABASE: 'running' }), false);
+  assert.equal(needsTestDatabase(['pnpm', 'install', '--frozen-lockfile'], {}), false);
+  assert.equal(needsTestDatabase(['pnpm', 'lint'], {}), false);
 });

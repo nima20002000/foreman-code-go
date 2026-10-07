@@ -3,7 +3,7 @@ import { access, readFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { ComputerAccountsSchema, type ComputerAccount, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
+import { ComputerAccountsSchema, DRIVE_MOUNT_DIRECTORY, DRIVE_REMOTE, type ComputerAccount, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 
 export interface AccountProbePorts {
   /** Absolute executable path, or null when the tool is not installed. */
@@ -89,11 +89,17 @@ async function drive(ports: AccountProbePorts, signal: AbortSignal): Promise<Com
   const remotes = plain((await ports.run(binary, ['listremotes', '--long'], signal)).stdout).split('\n')
     .map(line => /^(\S+):\s+drive\s*$/u.exec(line.trim())?.[1]).filter((name): name is string => Boolean(name))
   if (!remotes.length) return { tool: 'drive', installed: true, signedIn: false, account: null, details: [] }
-  const info = await ports.run(binary, ['config', 'userinfo', `${remotes[0]}:`, '--json'], signal)
+  const remote = remotes.includes(DRIVE_REMOTE) ? DRIVE_REMOTE : remotes[0]!
+  const info = await ports.run(binary, ['config', 'userinfo', `${remote}:`, '--json'], signal)
   let email: string | null = null
   try { const parsed = JSON.parse(info.stdout) as { Email?: unknown }; if (typeof parsed.Email === 'string') email = parsed.Email.slice(0, 320) }
   catch { email = null }
-  return { tool: 'drive', installed: true, signedIn: info.code === 0 ? true : null, account: email, details: [`${remotes[0]}:`] }
+  // The app's own remote is mounted at ~/Foreman Code Drive; Agents on this computer share files there.
+  const mountPath = join(ports.environment.HOME ?? homedir(), DRIVE_MOUNT_DIRECTORY)
+  const mounted = (await ports.readText('/proc/self/mountinfo') ?? '').split('\n')
+    .some(line => line.split(' ')[4]?.replaceAll('\\040', ' ') === mountPath)
+  return { tool: 'drive', installed: true, signedIn: info.code === 0 ? true : null, account: email,
+    details: [`${remote}:`, ...(mounted ? [`mount:${mountPath}`] : [])] }
 }
 
 /** `binaries` holds installer-selected executables (for example a Worker's configured Codex) checked before PATH. */

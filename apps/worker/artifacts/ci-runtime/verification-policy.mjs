@@ -146,13 +146,53 @@ export async function prepareVerificationPnpm(argv, environment = process.env) {
   return { argv: ['pnpm', ...args], env };
 }
 
+const POSTGRES = '/usr/lib/postgresql/17/bin';
+const TEST_DATABASE = 'FOREMAN_CODE_CI_TEST_DATABASE';
+/** `pnpm test` needs the disposable test server on 127.0.0.1:55439; nested pnpm calls reuse the outer one. */
+export function needsTestDatabase(argv, environment) {
+  const script = argv[1] === 'run' ? argv[2] : argv[1];
+  return script === 'test' && environment[TEST_DATABASE] !== 'running';
+}
+
+/** A private PostgreSQL in job scratch, with the ownership markers the repository's test resources require. */
+export async function startTestDatabase(environment) {
+  const root = `${VERIFICATION_SCRATCH}/postgres`;
+  await mkdir(`${root}/socket`, { recursive: true, mode: 0o700 });
+  await writeFile(`${root}/password`, 'graphql_test_disposable_only\n', { mode: 0o600 });
+  const env = { ...environment, PGPASSWORD: 'graphql_test_disposable_only', LC_ALL: 'C.UTF-8' };
+  execFileSync(`${POSTGRES}/initdb`, ['-D', `${root}/data`, '-U', 'graphql_test_admin', '--pwfile', `${root}/password`,
+    '-A', 'scram-sha-256', '-E', 'UTF8', '--locale=C.UTF-8', '--no-sync'], { env, stdio: ['ignore', 'ignore', 'inherit'] });
+  const server = spawn(`${POSTGRES}/postgres`, ['-D', `${root}/data`, '-h', '127.0.0.1', '-p', '55439', '-k', `${root}/socket`,
+    '-c', 'max_connections=300', '-c', 'max_locks_per_transaction=512', '-c', 'fsync=off', '-c', 'synchronous_commit=off',
+    '-c', 'full_page_writes=off', '-c', 'dynamic_shared_memory_type=mmap', '-c', 'log_min_messages=warning'], { env, stdio: ['ignore', 'ignore', 'inherit'] });
+  const exited = new Promise(resolve => server.once('exit', resolve));
+  const psql = (database, sql) => execFileSync(`${POSTGRES}/psql`, ['-h', '127.0.0.1', '-p', '55439', '-U', 'graphql_test_admin',
+    '-d', database, '-v', 'ON_ERROR_STOP=1', '-qc', sql], { env, stdio: ['ignore', 'ignore', 'inherit'] });
+  for (let attempt = 0; ; attempt++) {
+    try { execFileSync(`${POSTGRES}/pg_isready`, ['-q', '-h', '127.0.0.1', '-p', '55439'], { env, stdio: 'ignore' }); break; }
+    catch (error) {
+      if (attempt >= 120 || server.exitCode !== null) throw new Error('The disposable test PostgreSQL did not start.', { cause: error });
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  }
+  psql('postgres', 'CREATE DATABASE graphql_test_control');
+  psql('postgres', "COMMENT ON DATABASE postgres IS 'graphql-disposable-test-server'");
+  psql('graphql_test_control', "COMMENT ON DATABASE graphql_test_control IS 'graphql-disposable-test-server'; REVOKE CREATE ON SCHEMA public FROM PUBLIC");
+  return { stop: async () => { if (server.exitCode === null) server.kill('SIGINT'); await exited; } };
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const { argv, env } = await prepareVerificationPnpm(process.argv.slice(2));
-    const child = spawn(process.execPath, [corepack, ...argv], { env, stdio: 'inherit', shell: false });
+    const database = needsTestDatabase(argv, env) ? await startTestDatabase(env) : null;
+    const child = spawn(process.execPath, [corepack, ...argv], { env: database ? { ...env, [TEST_DATABASE]: 'running' } : env,
+      stdio: 'inherit', shell: false });
     for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill(signal));
     child.once('error', error => { process.stderr.write(`${error.message}\n`); process.exitCode = 127; });
-    child.once('exit', (code, signal) => { process.exitCode = code ?? (signal === 'SIGTERM' ? 143 : 130); });
+    child.once('exit', (code, signal) => {
+      process.exitCode = code ?? (signal === 'SIGTERM' ? 143 : 130);
+      void database?.stop();
+    });
   } catch (error) {
     process.stderr.write(`Offline verification preparation failed: ${error.message}\n`);
     process.exitCode = 1;
