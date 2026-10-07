@@ -1012,14 +1012,15 @@ export class ApprovalExecutionCoordinator {
         'The original remote reviewer lifetime has already closed.', 409)
       const access = await resolved.manager.originalApplicationAccess(session, signal)
       const credential = await this.credentials.recoverRemote(execution.id, access, job)
+      if (credential.principalId !== retained.principalId) throw new DomainError('REVIEWER_AUTHORITY_LOST',
+        'The original reviewer credential changed during recovery.', 409)
       this.managerCredentials.set(owned.manager, credential)
-      resolved.markResident?.()
       await owner.oneShotConnection().transaction(async sql => {
         const current = await readRetainedRemoteReviewer(sql, execution)
-        if (!current || current.generation !== retained.generation
-          || !isDeepStrictEqual(current.session, retained.session)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
+        if (!isDeepStrictEqual(current, retained)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
           'The retained reviewer no longer matches its original terminal and process lease.', 409)
       })
+      resolved.markResident?.()
       this.maintainRetainedReviewer(owned)
       return true
     } catch (error) {
