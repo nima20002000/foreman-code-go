@@ -6,7 +6,8 @@ import { readWorkflowClosure } from '../workflowClosure.js'
 import { approvalAttentionFacts } from './attention.js'
 import { DurableInteractionSchema, ReviewJobSchema, type ReviewJob, type DurableInteraction, type NativeHarnessEvent } from '@foreman-code/contracts'
 import type pg from 'pg'
-import { type GraphEffect } from '@foreman-code/contracts/wave25'
+import { sameWorkflowValue, type GraphEffect } from '@foreman-code/contracts/wave25'
+import { beforeGraphCommit } from '../../run-graph/connection.js'
 import { PostgresInteractionCoordinationRepository, type WriterFence } from '../coordination.js'
 import { graphSourceDigest, type RunGraphPublication } from '../../run-graph/publication.js'
 import { fail, isCurrentApprovalRun, readContext, runFor, transact, requireLeaseAtCommit, type ApprovalContext } from './context.js'
@@ -18,6 +19,7 @@ import { runCleanupAllowed } from './cleanupAuthority.js'
 import { renewReviewLease } from './reviewLease.js'
 import { publicReviewRetirementFacts } from '../../run-graph/publicLifecycle.js'
 import { appendReviewNativeGraphEvent, appendReviewNativeGraphHistory } from './reviewNativeGraph.js'
+import { readRetainedRemoteReviewer } from '../retainedRemoteReviewer.js'
 
 function parseReviewJob(input: unknown): ReviewJob {
   return ReviewJobSchema.parse(JSON.parse(JSON.stringify(input)))
@@ -152,6 +154,13 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
         leaseOwner: owner, leaseToken: token, leaseExpiresAt: expiresAt, retryAfter: undefined, updatedAt: new Date().toISOString() })
       const evidence = await reviewEvidence(publication.sql, id), ack = acknowledgementId(evidence)
       if (next.state === 'acknowledged' && !ack) return fail('REVIEW_ACKNOWLEDGEMENT_MISSING')
+      const retained = current.acknowledgedAt && current.providerTurnOrMessageId && ack && context.reviewer
+        ? await readRetainedRemoteReviewer(publication.sql, context.reviewer) : undefined
+      if (retained && evidence?.submissionId !== current.providerTurnOrMessageId) return fail('REVIEW_JOB_IDENTITY_CONFLICT')
+      if (retained) beforeGraphCommit(publication.sql, async () => {
+        const original = await readRetainedRemoteReviewer(publication.sql, context.reviewer!)
+        if (!sameWorkflowValue(original, retained)) return fail('REVIEWER_AUTHORITY_LOST')
+      })
       const revision = String(BigInt(row.revision) + 1n)
       await publication.source({ evidence: sourceForReview(next, revision, ack ? evidence?.source : undefined),
         sourceDigest: graphSourceDigest({ next, nativeEvidence: evidence ?? null }), facts: [reviewFact(context, next, revision, ack), ...await approvalAttentionFacts(publication.sql, context, { review: next })] }, async (sql) => {
@@ -159,14 +168,21 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
           where id=$1 and revision=$4::bigint and (lease_expires_at is null or lease_expires_at<=clock_timestamp())
             and $5::timestamptz>clock_timestamp()`, [id, next.state, JSON.stringify(next), row.revision, expiresAt])
         if (result.rowCount !== 1) return fail('REVIEW_JOB_NOT_CLAIMABLE')
-        // A fresh, never-submitted job may use the Run-lifetime credential only
-        // after the prior job has real terminal settlement. An uncertain reclaim
-        // does NOT move the old token into the successor's owner epoch.
         if (!current.submittedAt) await sql.query(`update worker_credential_bindings b set approval_review_job_id=$1,
           approval_review_lease_fence=j.lease_fence from review_jobs j where j.id=$1 and b.execution_id=j.execution_id
           and b.purpose='reviewer' and b.revoked_at is null and (b.approval_review_job_id is null or b.approval_review_job_id=j.id
             or exists(select 1 from review_jobs prior where prior.id=b.approval_review_job_id and prior.state='completed'
               and prior.approval_native_evidence->>'kind'='terminal' and prior.approval_native_evidence->'terminal'->>'nativeSettled'='true'))`, [id])
+        if (retained) {
+          // The original process can call MCP while its observation lease is reclaimed.
+          const rebound = await sql.query(`update worker_credential_bindings b set approval_review_job_id=$1,
+            approval_review_lease_fence=j.lease_fence from review_jobs j
+            where j.id=$1 and b.principal_id=$2 and b.execution_id=j.execution_id
+              and b.purpose='reviewer' and b.revoked_at is null and b.approval_native_session_id=$3
+              and (b.approval_review_job_id is null or b.approval_review_job_id=j.id)
+            returning b.principal_id`, [id, retained.principalId, current.nativeSessionId])
+          if (rebound.rowCount !== 1) return fail('REVIEWER_CREDENTIAL_LOST')
+        }
       })
       return next
     })
