@@ -28,6 +28,7 @@ import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
+import { InstalledWorkflowRecovery } from '../../src/modules/runs/remote/installedWorkflowRecovery.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { agent3Database, seedAgent3 } from './wave25Agent3.js'
 import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemoteReviewTls } from './remoteReviewProvider.js'
@@ -473,6 +474,8 @@ export async function remoteReviewProduction(options: {
     return { db, directory, stateDirectory, provider, access, writer, hostRef, profiles, version,
       start, call, value, details, reconcile, registry, close, origin: () => origin,
       failures: () => structuredClone(failures),
+      entryCapture: (operationId: string) => new InstalledWorkflowRecovery(
+        join(stateDirectory, 'workflow-recovery'), registry).readEntry(operationId),
       workerPid: () => worker?.pid,
       inventory: () => value('harness_registry_get', hostRef).then(HarnessRegistryReadbackSchema.parse),
       denyNextReservedResponse: () => { denyReservedResponse = true },
