@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { NativeSessionReferenceSchema } from './index.js'
 import { DispatchIntentSchema } from './nodePlacement.js'
 import { IdSchema } from './schemaPrimitives.js'
-import { SourceHashSchema, MaterializationReceiptSchema } from './sourceMaterialization.js'
+import { SourceHashSchema, MaterializationReceiptSchema, SourceWorktreeRequestSchema } from './sourceMaterialization.js'
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema, SourcePinSchema, SourceCwdAttestationSchema, SourcePreparationClosureSchema } from './sourceAdmission.js'
 import { TransferIntentSchema } from './byteTransfer.js'
 import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
@@ -14,7 +14,8 @@ export const SourcePackageReferenceSchema = z.object({ transferId: z.uuid(), rec
   byteSize: z.number().int().nonnegative().max(128 * 1024 * 1024) }).strict()
 export const SourceFilesystemOperationSchema = z.discriminatedUnion('operation', [
   z.object({ version: z.literal(1), operation: z.literal('sources.prepare'), identity: SourcePreparationIdentitySchema,
-    root: SourceRootRecordSchema, attempt: SourceOperationAttemptSchema, package: SourcePackageReferenceSchema }).strict(),
+    root: SourceRootRecordSchema, attempt: SourceOperationAttemptSchema, package: SourcePackageReferenceSchema,
+    worktree: SourceWorktreeRequestSchema.optional() }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.verify'), record: SourceMaterializationRecordSchema,
     relativeCwd: z.string().max(1024).default('') }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.private-repository'), record: SourceMaterializationRecordSchema }).strict(),

@@ -268,6 +268,7 @@
   "apps/api/src/modules/skills/instructions.ts",
   "apps/api/src/modules/sources/bindingHash.ts",
   "apps/api/src/modules/sources/capture.ts",
+  "apps/api/src/modules/sources/gitWorktree.ts",
   "apps/api/src/modules/sources/manifest.ts",
   "apps/api/src/modules/sources/materialization.ts",
   "apps/api/src/modules/sources/nativeStamp.ts",

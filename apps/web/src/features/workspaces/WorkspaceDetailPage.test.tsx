@@ -95,4 +95,24 @@ describe('workspace settings actions', () => {
     await user.click(screen.getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(screen.getByRole('group', { name: 'Workspace actions' })).toBeVisible())
   })
+
+  it('saves the GitHub repository whose worktrees the agents will use', async () => {
+    const user = userEvent.setup()
+    const bodies: unknown[] = []
+    server.use(http.patch('/api/management/workspaces/workspace-1', async ({ request }) => {
+      bodies.push(await request.clone().json())
+      return undefined
+    }))
+    renderWithRouter(<WorkspaceDetailPage workspaceId="workspace-1" section="settings" />)
+    const section = within(await screen.findByRole('region', { name: 'GitHub repository' }))
+    const save = section.getByRole('button', { name: 'Save repository' })
+    await user.type(section.getByRole('textbox', { name: 'Repository' }), 'not a repo')
+    expect(section.getByText('Use owner/name')).toBeVisible()
+    expect(save).toBeDisabled()
+    await user.clear(section.getByRole('textbox', { name: 'Repository' }))
+    await user.type(section.getByRole('textbox', { name: 'Repository' }), 'https://github.com/octo-owner/website.git')
+    await user.click(save)
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toMatchObject({ repository: { provider: 'github', owner: 'octo-owner', name: 'website', defaultBranch: 'main' } })
+  })
 })

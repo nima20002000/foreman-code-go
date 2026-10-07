@@ -31,6 +31,7 @@ import {
   WorkflowApprovalConfigurationSchema,
   ExecutionConditionSchema,
   WorkspaceSchema,
+  WorkspaceRepositorySchema,
   DurableInteractionSchema,
   InteractionStatusSchema,
   ApprovalHandlerSchema,
@@ -231,7 +232,10 @@ export const WorkspaceUpdateInputSchema = z.object({
   ...RevisionMutationFields,
   name: z.string().trim().min(1).max(200).optional(),
   description: z.string().max(10_000).nullable().optional(),
-}).strict().refine((value) => value.name !== undefined || value.description !== undefined, "name or description is required");
+  /** null removes the repository; agents then work in copied folders without branches. */
+  repository: WorkspaceRepositorySchema.nullable().optional(),
+}).strict().refine((value) => value.name !== undefined || value.description !== undefined || value.repository !== undefined,
+  "name, description or repository is required");
 export const WorkspaceArchiveInputSchema = z.object({
   ...WorkspaceScopeSchema.shape,
   ...RevisionMutationFields,

@@ -81,7 +81,9 @@ export class PostgresAppInteractionService implements AppInteractionService {
     const responseAllowed = await this.canRespond(principal)
     const access = await this.toolAccess(principal)
     const enabled = (tool: string) => access.tools.includes(tool as never)
+    const worktree = await this.worktree(principal)
     return {
+      ...(worktree ? { worktree } : {}),
       principal: {
         id: principal.id,
         audience: 'worker' as const,
@@ -98,6 +100,16 @@ export class PostgresAppInteractionService implements AppInteractionService {
         interactionRespond: responseAllowed && enabled('interaction_respond'),
       },
     }
+  }
+
+  /** The branch this credential's execution works on; null for workspaces without a repository. */
+  private async worktree(principal: ManagementPrincipal) {
+    const row = (await this.pool.query<{ worktree: { repository: string; branch: string; commit: string } | null; path: string | null }>(
+      `select p.record#>'{materialization,receipt,worktree}' as worktree, p.record#>>'{workingTree,canonicalProjectRoot}' as path
+       from worker_credential_bindings b join execution_native_placements p on p.execution_id=b.execution_id
+       where b.principal_id=$1 and b.agent_id=$2 and b.revoked_at is null limit 1`, [principal.id, principal.agentId])).rows[0]
+    if (!row?.worktree || !row.path) return undefined
+    return { repository: row.worktree.repository, branch: row.worktree.branch, baseCommit: row.worktree.commit, path: row.path }
   }
 
   async toolAccess(principal: ManagementPrincipal): Promise<WorkerToolAccess> {

@@ -66,6 +66,8 @@ export const RunExecutionSummarySchema = extendGraphExecutionIdentitySchema({
   occurrence: RepeatOccurrenceIdentityV1Schema.optional(),
   /** Discovery only. The exact detail verifies the accepted result and canonical receipt. */
   acceptedResultAvailable: z.boolean(),
+  /** The Agent's own branch of the workspace repository (names only, never a path). */
+  worktree: z.object({ repository: z.string().max(200), branch: z.string().max(255) }).strict().optional(),
 })
 export type RunExecutionSummary = z.infer<typeof RunExecutionSummarySchema>
 const PageInfo = z.object({ nextCursor: Cursor.nullable() }).strict()

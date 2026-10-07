@@ -67,9 +67,15 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('moves Agents and their saved workflow
     }
     const workspace = (await call('workspace_create', c.ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Skills' })).value
     const workspaceId = workspace.workspace.id
+    const repository = { provider: 'github', owner: 'octo-owner', name: 'website', defaultBranch: 'main' }
+    const withRepository = (await call('workspace_update', c.ManagedWorkspaceCommandResultSchema, { workspaceId,
+      commandId: randomUUID(), expectedRevision: workspace.revision, repository })).value
+    expect((await call('workspace_get', c.ManagedWorkspaceSchema, { workspaceId })).workspace.repository).toEqual(repository)
+    expect((await client.callTool({ name: 'workspace_update', arguments: { workspaceId, commandId: randomUUID(),
+      expectedRevision: withRepository.revision, repository: { ...repository, owner: '../evil' } } })).isError).toBe(true)
     const project = join(parentPath, 'project'); await mkdir(project)
     await call('workspace_location_set', c.WorkspaceLocationSetResultSchema, { workspaceId, commandId: randomUUID(),
-      expectedLocationRevision: workspace.locationRevision, runnerId: 'runner-local', rootPath: project })
+      expectedLocationRevision: withRepository.locationRevision, runnerId: 'runner-local', rootPath: project })
     const skill = (await call('skill_create', c.SkillMutationResultSchema, { workspaceId, commandId: randomUUID(),
       name: 'Reviewer', instructions: 'Version one' })).value
     const skillId = skill.skill.skillId
@@ -95,6 +101,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('moves Agents and their saved workflow
     const reader = await connect((await access.issue({ name: 'Skill reader', audience: 'operator',
       grants: [{ actions: ['skills:read', 'workflows:read', 'graph:read'], scope: { workspaceIds: [workspaceId] } }],
       expiresAt: new Date(Date.now() + 120_000) })).token)
+    expect((await reader.callTool({ name: 'workspace_update', arguments: { workspaceId, commandId: randomUUID(),
+      expectedRevision: 1, repository: null } })).isError).toBe(true)
+    expect((await call('workspace_get', c.ManagedWorkspaceSchema, { workspaceId })).workspace.repository).toEqual(repository)
     const denied = await reader.callTool({ name: 'skill_users_update', arguments: { workspaceId, skillId, commandId: randomUUID() } })
     expect(denied.isError).toBe(true)
     expect((await pool.query('select count(*)::int as count from agent_configuration_versions where agent_id=$1', ['reviewer'])).rows[0].count).toBe(1)

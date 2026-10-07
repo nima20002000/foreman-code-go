@@ -186,3 +186,9 @@
     width: 1.5rem;
   }
 }
+.workspace-repository { margin-top: 2rem; display: grid; gap: .75rem; max-width: 36rem; }
+.workspace-repository h2 { margin: 0; font-size: 1rem; }
+.workspace-repository p { margin: 0; color: var(--n-muted); font-size: .85rem; }
+.workspace-repository-fields { display: grid; grid-template-columns: 2fr 1fr; gap: .75rem; }
+.workspace-repository-actions { display: flex; gap: .5rem; }
+@media (max-width: 640px) { .workspace-repository-fields { grid-template-columns: 1fr; } }

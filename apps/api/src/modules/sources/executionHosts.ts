@@ -1,3 +1,4 @@
+import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
 import type { RootBinding } from '@foreman-code/contracts/source-materialization'
 import type { SourceQuotaPool } from './materialization.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
@@ -42,7 +43,8 @@ export interface SourceAttemptAuthority {
   revalidateMaterialization(record: SourceMaterializationRecord): Promise<void>
 }
 export interface RemoteSourceMaterializationHost {
-  prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceMaterializationRecord['receipt']>
+  prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt,
+    options?: { sharedWritableTree?: true; worktree?: SourceWorktreeRequest }): Promise<SourceMaterializationRecord['receipt']>
   verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree>
   verify(record: SourceMaterializationRecord): Promise<string>
   releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<number>
@@ -80,9 +82,9 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
     return this.authority.authorizeFinal(sql, principal, record, hash)
   }
   async prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt,
-    options?: { sharedWritableTree?: true }) {
+    options?: { sharedWritableTree?: true; worktree?: SourceWorktreeRequest }) {
     if (root.binding.mainId !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source copy belongs to another main.', 403)
-    if (root.binding.deviceId !== null) return this.remote.prepare(manifest, root, attempt)
+    if (root.binding.deviceId !== null) return this.remote.prepare(manifest, root, attempt, options?.worktree ? { worktree: options.worktree } : undefined)
     const materializer = new PrivateSourceMaterializer(this.bytes, async () => this.authority.revalidate(root, attempt),
       await this.quotaPoolFor?.(root.binding, attempt))
     return materializer.prepare({ manifest, binding: root.binding, attempt, ...options })

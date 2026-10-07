@@ -37,6 +37,12 @@ export const SourceProjectQuotaSlotSchema = z.object({
   filesystem: RootBindingSchema.shape.filesystem,
 }).strict()
 export type SourceProjectQuotaSlot = z.infer<typeof SourceProjectQuotaSlotSchema>
+/** An agent's own git worktree and branch of the workspace repository, created at the approved commit. */
+export const SourceWorktreeRequestSchema = z.object({
+  repository: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/),
+  branch: z.string().regex(/^foreman\/[A-Za-z0-9._/-]{1,200}$/),
+}).strict()
+export type SourceWorktreeRequest = z.infer<typeof SourceWorktreeRequestSchema>
 export const MaterializationReceiptSchema = z.object({
   version: z.literal(1), materializationId: z.uuid(), binding: RootBindingSchema,
   quota: SourceProjectQuotaSlotSchema.optional(),
@@ -46,10 +52,14 @@ export const MaterializationReceiptSchema = z.object({
   verifiedBytes: z.number().int().nonnegative(), verifiedAt: z.string().datetime(),
   claimScope: z.literal('execution').optional(),
   sharedTree: z.object({ id: z.uuid(), referenceIdentity: RootBindingSchema.shape.filesystem }).strict().optional(),
+  worktree: SourceWorktreeRequestSchema.extend({ commit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/) }).strict().optional(),
   localTreeIdentity: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
 }).strict().superRefine((value, context) => {
   if (value.sharedTree && (value.binding.accessMode !== 'exclusive-write' || value.claimScope !== 'execution')) {
     context.addIssue({ code: 'custom', path: ['sharedTree'], message: 'Shared working trees require a writable execution claim.' })
+  }
+  if (value.worktree && !value.sharedTree) {
+    context.addIssue({ code: 'custom', path: ['worktree'], message: 'An agent worktree is a writable working tree.' })
   }
 })
 export type MaterializationReceipt = z.infer<typeof MaterializationReceiptSchema>

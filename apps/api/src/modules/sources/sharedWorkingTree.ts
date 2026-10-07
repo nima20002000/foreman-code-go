@@ -7,6 +7,8 @@ import { RootBindingSchema, type RootBinding, type MaterializationReceipt,
   type SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { anchored, entryParent, identity, openChildDirectory } from './privateFilesystem.js'
 import { SourceError, verifySourceBytes } from './manifest.js'
+import { join } from 'node:path'
+import { addGitWorktree, type GitWorktreePorts, type WorktreeRequest } from './gitWorktree.js'
 
 const SharedTreeSchema = z.object({
   version: z.literal(1),
@@ -19,7 +21,8 @@ function markerName(binding: RootBinding): string {
   return `working-tree-${binding.rootId}-${binding.bindingRevision}.json`
 }
 
-async function readMarker(root: FileHandle, name: string) {
+async function readMarker<T extends z.ZodType = typeof SharedTreeSchema>(root: FileHandle, name: string,
+  schema: T = SharedTreeSchema as unknown as T): Promise<z.infer<T> | null> {
   let file: FileHandle
   try { file = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK) }
   catch (error) {
@@ -32,7 +35,7 @@ async function readMarker(root: FileHandle, name: string) {
       || stat.mode & 0o077 || stat.size > 16384) {
       throw new SourceError('SOURCE_TREE_INVALID', 'Shared working tree metadata is invalid.')
     }
-    return SharedTreeSchema.parse(JSON.parse(await file.readFile('utf8')))
+    return schema.parse(JSON.parse(await file.readFile('utf8')))
   } finally { await file.close() }
 }
 
@@ -137,10 +140,81 @@ export async function prepareSharedWorkingTree(input: {
 
 export async function verifySharedWorkingTree(root: FileHandle, receipt: MaterializationReceipt): Promise<void> {
   if (!receipt.sharedTree) return
+  if (receipt.worktree) {
+    const raw = await readMarker(root, worktreeMarker(receipt.sharedTree.id), WorktreeMarkerSchema)
+    if (!raw || raw.id !== receipt.sharedTree.id || raw.executionId !== receipt.executionId
+      || !isDeepStrictEqual(raw.filesystem, receipt.localTreeIdentity)
+      || !isDeepStrictEqual(raw.worktree, receipt.worktree)) {
+      throw new SourceError('SOURCE_TREE_CHANGED', 'The execution is not bound to its original agent worktree.')
+    }
+    await assertTree(root, raw, receipt.binding)
+    return
+  }
   const record = await readMarker(root, markerName(receipt.binding))
   if (!record || record.id !== receipt.sharedTree.id
     || !isDeepStrictEqual(record.filesystem, receipt.localTreeIdentity)) {
     throw new SourceError('SOURCE_TREE_CHANGED', 'The execution is not bound to its original shared working tree.')
   }
   await assertTree(root, record, receipt.binding)
+}
+
+const WorktreeMarkerSchema = SharedTreeSchema.extend({
+  executionId: z.string().min(1),
+  worktree: z.object({ repository: z.string(), branch: z.string(), commit: z.string() }).strict(),
+}).strict()
+const worktreeMarker = (id: string) => `worktree-${id}.json`
+
+/** One writable git worktree per agent execution, verified against the approved manifest before it is used. */
+export async function prepareAgentWorktree(input: {
+  root: FileHandle
+  binding: RootBinding
+  executionId: string
+  manifest: SourceManifest
+  request: WorktreeRequest
+  ports: GitWorktreePorts
+  authorize(): Promise<void>
+  signal: AbortSignal
+}) {
+  const { root, binding, manifest, signal } = input
+  const commit = manifest.git?.commit
+  if (!commit) throw new SourceError('SOURCE_WORKTREE_INVALID', 'Only Git sources can become agent worktrees.')
+  const id = randomUUID()
+  await mkdir(anchored(root, id), { mode: 0o700 })
+  const path = join(binding.canonicalPath, id, 'tree')
+  const added = await addGitWorktree(input.ports, input.request, commit, path, signal)
+  const directory = await openChildDirectory(root, id)
+  try {
+    const tree = await openChildDirectory(directory, 'tree')
+    let filesystem: RootBinding['filesystem']
+    try {
+      await verifyWorktreeContent(tree, manifest, signal)
+      await input.authorize()
+      filesystem = await identity(tree)
+    } finally { await tree.close() }
+    const record = WorktreeMarkerSchema.parse({ version: 1, id, binding, filesystem, executionId: input.executionId,
+      worktree: { repository: input.request.repository, branch: added.branch, commit: added.commit } })
+    const file = await open(anchored(root, worktreeMarker(id)),
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+    try { await file.writeFile(JSON.stringify(record)); await file.sync() } finally { await file.close() }
+    await root.sync()
+    return record
+  } finally { await directory.close() }
+}
+
+/** The worktree holds exactly the approved files plus Git's own `.git` link file. */
+async function verifyWorktreeContent(tree: FileHandle, manifest: SourceManifest, signal: AbortSignal) {
+  for (const entry of manifest.entries) {
+    signal.throwIfAborted()
+    const { parent, leaf } = await entryParent(tree, entry.path, false)
+    try {
+      const file = await open(anchored(parent, leaf), constants.O_RDONLY | constants.O_NOFOLLOW)
+      try {
+        const stat = await file.stat()
+        if (!stat.isFile() || stat.size !== entry.byteSize || !!(stat.mode & 0o111) !== entry.executable) {
+          throw new SourceError('SOURCE_TREE_INVALID', 'The agent worktree differs from the approved source.')
+        }
+        verifySourceBytes(entry, await file.readFile())
+      } finally { await file.close() }
+    } finally { await parent.close() }
+  }
 }

@@ -1,3 +1,4 @@
+import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
 import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import type { PostgresSourceRsyncLifecycle } from './rsyncTransferLifecycle.js'
@@ -62,11 +63,13 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
     if (value.operation !== request.operation) throw new DomainError('SOURCE_RESPONSE_INVALID', 'Source response belongs to another operation.', 409)
     return value
   }
-  async prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt) {
+  async prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt,
+    options?: { worktree?: SourceWorktreeRequest }) {
     const identity = await this.owners.prepareIdentity(root, attempt)
     this.connection(root) // Validate actual host before any source transfer.
     const reference = await this.packages.send(manifest, root, attempt, identity)
-    const response = await this.call(root, { version: 1, operation: 'sources.prepare', root, attempt, identity, package: reference })
+    const response = await this.call(root, { version: 1, operation: 'sources.prepare', root, attempt, identity, package: reference,
+      ...(options?.worktree ? { worktree: options.worktree } : {}) })
     if (response.operation !== 'sources.prepare' || !isDeepStrictEqual(response.receipt.binding, root.binding) || response.receipt.executionId !== attempt.executionId
       || response.receipt.attemptId !== attempt.attemptId || response.receipt.placementHash !== attempt.placementHash || response.receipt.verifiedManifestDigest !== manifest.manifestDigest
       || response.receipt.verifiedEntries !== manifest.totalEntries || response.receipt.verifiedBytes !== manifest.totalBytes)

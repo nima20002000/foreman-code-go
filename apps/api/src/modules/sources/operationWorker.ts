@@ -168,7 +168,7 @@ export class SourceOperationWorkerService {
           if (packageReader!.readyToComplete) await packageReader!.complete()
         }, quotaPool).prepare({ manifest, binding: owner.root.binding, attempt: owner.attempt, signal: context.signal,
           ...(owner.preparationKind === 'workflow' && owner.root.binding.accessMode === 'exclusive-write'
-            ? { sharedWritableTree: true } : {}) })
+            ? { sharedWritableTree: true, ...(request.worktree ? { worktree: request.worktree } : {}) } : {}) })
         await packageReader.complete(); await reauthorize()
         return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, receipt: receiptValue })
       }

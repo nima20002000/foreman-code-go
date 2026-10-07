@@ -13,7 +13,8 @@ import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPor
 import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
 import { verifyJobQuotaOwnership, type JobQuotaReader } from '../jobs/quotaOwnership.js'
-import { prepareSharedWorkingTree, verifySharedWorkingTree } from './sharedWorkingTree.js'
+import { prepareAgentWorktree, prepareSharedWorkingTree, verifySharedWorkingTree } from './sharedWorkingTree.js'
+import { systemGitWorktreePorts, type GitWorktreePorts, type WorktreeRequest } from './gitWorktree.js'
 import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 
@@ -47,8 +48,11 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
   private active = 0
   constructor(private readonly bytes: SourceByteReader | null,
     private readonly authorize: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<void>,
-    private readonly quotaPool?: SourceQuotaPool) {}
-  async prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal; sharedWritableTree?: true }): Promise<MaterializationReceipt> {
+    private readonly quotaPool?: SourceQuotaPool,
+    private readonly git: GitWorktreePorts = systemGitWorktreePorts()) {}
+  async prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal; sharedWritableTree?: true
+    /** Workflow agents in a GitHub workspace get their own worktree and branch instead of the shared copy. */
+    worktree?: WorktreeRequest }): Promise<MaterializationReceipt> {
     if (!this.bytes) throw new SourceError('SOURCE_READ_ONLY_VERIFIER', 'A verification-only materializer cannot prepare source bytes.')
     const manifest = verifySourceManifest(input.manifest), binding = RootBindingSchema.parse(input.binding)
     if (binding.snapshotId !== manifest.snapshotId || binding.manifestDigest !== manifest.manifestDigest)
@@ -140,12 +144,16 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       try { if (!equal(await identity(current), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root replaced before activation.') }
       finally { await current.close() }
       const referenceIdentity = await identity(tree)
-      const shared = input.sharedWritableTree && binding.accessMode === 'exclusive-write'
+      const writable = input.sharedWritableTree && binding.accessMode === 'exclusive-write'
+      const worktree = writable && input.worktree ? await prepareAgentWorktree({ root, binding, executionId: attempt.executionId,
+        manifest, request: input.worktree, ports: this.git, signal, authorize: () => this.authorize(binding, attempt) }) : undefined
+      const shared = worktree ?? (writable
         ? await withClaimLock(root, () => prepareSharedWorkingTree({ root: root!, binding, manifest,
-          reference: tree!, signal, authorize: () => this.authorize(binding, attempt) })) : undefined
+          reference: tree!, signal, authorize: () => this.authorize(binding, attempt) })) : undefined)
       const receipt = MaterializationReceiptSchema.parse({ version: 1, materializationId: id, binding, ...attempt, ...(quota ? { quota } : {}),
         claimScope: 'execution',
         ...(shared ? { sharedTree: { id: shared.id, referenceIdentity } } : {}),
+        ...(worktree ? { worktree: worktree.worktree } : {}),
         verifiedManifestDigest: manifest.manifestDigest, verifiedEntries: manifest.totalEntries,
         verifiedBytes: manifest.totalBytes, verifiedAt: new Date().toISOString(), localTreeIdentity: shared?.filesystem ?? referenceIdentity })
       const record = await open(anchored(reservation, 'receipt.json'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)

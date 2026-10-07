@@ -23,7 +23,10 @@ export function inspectionExecutionsQuery(input: RunExecutionsListInput, after: 
         jsonb_strip_nulls(jsonb_build_object('executionId',e.record->'id','workflowNodeId',e.record->'workflowNodeId',
           'agentId',e.record->'agentId','agentConfigurationVersionId',e.record->'agentConfigurationVersionId',
           'attempt',e.record->'attempt','state',e.record->'state','createdAt',e.record->'createdAt',
-          'startedAt',e.record->'startedAt','finishedAt',e.record->'finishedAt','acceptedResultAvailable',e.accepted)) as summary,
+          'startedAt',e.record->'startedAt','finishedAt',e.record->'finishedAt','acceptedResultAvailable',e.accepted,
+          'worktree',(select jsonb_build_object('repository',np.record#>'{materialization,receipt,worktree,repository}',
+            'branch',np.record#>'{materialization,receipt,worktree,branch}') from execution_native_placements np
+            where np.execution_id=e.id and np.record#>'{materialization,receipt,worktree}' is not null))) as summary,
         e.record->'result'->>'outcome' as reported_outcome,
         x.identity,x.run_id as identity_run_id,x.occurrence_id as identity_occurrence_id,x.technical_attempt,
         s.slot_id,s.run_id as slot_run_id,s.workflow_node_id as slot_node_id,s.occurrence_id as slot_occurrence_id,

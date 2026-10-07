@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { ExecutionBranch } from './ExecutionBranch'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   readRunInspectionKey, runInspectionKey, type RepeatGraphScopeV3, type RunExecutionDetail,
@@ -85,6 +86,7 @@ export function ExecutionInspector({ scope, version }: { scope: RepeatGraphScope
         </Button>
         <p>Recorded {execution.state}. {execution.acceptedResultAvailable ? 'An accepted result is available.' : 'No accepted result reported by this page.'}</p>
         {execution.occurrence ? <p>{execution.occurrence.blockId} · business occurrence {execution.occurrence.occurrenceIndex} · <code>{execution.occurrence.occurrenceId}</code></p> : null}
+        <ExecutionBranch execution={execution} />
       </li>)}</ol>
       <div className="n-actions">
         {pages.hasNextPage && !pages.isError && !denied ? <Button size="sm" disabled={pages.isFetching}

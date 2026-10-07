@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { useManagedWorkspaceQuery } from '../../shared/api/query'
 import { Button, ErrorState, LoadingState, PageHeader } from '../../shared/ui/nocturne'
 import { WorkspaceSettingsHeader } from './WorkspaceSettingsHeader'
+import { WorkspaceRepositoryForm } from './WorkspaceRepositoryForm'
 import '../settings/settingsExperience.css'
 
 export function WorkspaceDetailPage({ workspaceId, section, children }: {
@@ -22,11 +23,15 @@ export function WorkspaceDetailPage({ workspaceId, section, children }: {
       </nav>
       <div className={`settings-editor-content workspace-detail-content${section === 'settings' ? ' workspace-detail-content--settings' : ''}`}>
         {children ?? (workspace.isError ? unavailable
-          : <div className="workspace-settings-actions" role="group" aria-label="Workspace actions">
-            <Button variant="ghost" onClick={actions.rename}>Rename workspace</Button>
-            <Button variant="ghost" onClick={actions.chooseLocation}>Choose location</Button>
-            <Button variant="danger" onClick={actions.remove}>Remove workspace</Button>
-          </div>)}
+          : <>
+            <div className="workspace-settings-actions" role="group" aria-label="Workspace actions">
+              <Button variant="ghost" onClick={actions.rename}>Rename workspace</Button>
+              <Button variant="ghost" onClick={actions.chooseLocation}>Choose location</Button>
+              <Button variant="danger" onClick={actions.remove}>Remove workspace</Button>
+            </div>
+            {current && <WorkspaceRepositoryForm key={`${workspaceId}:${current.revision}`} workspaceId={workspaceId}
+              revision={current.revision} repository={current.workspace.repository} />}
+          </>)}
       </div>
     </div>
   return <div className="settings-page settings-experience workspace-detail-page">

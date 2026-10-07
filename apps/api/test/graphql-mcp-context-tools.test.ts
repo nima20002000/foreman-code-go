@@ -55,3 +55,15 @@ it('advertises only declared OpenCode output tools permitted by the pinned setti
       .toEqual([])
   }
 })
+
+it('tells the Agent which worktree and branch it owns', async () => {
+  const query = vi.fn(async (text: string): Promise<{ rows: unknown[] }> => text.includes('execution_native_placements')
+    ? { rows: [{ worktree: { repository: 'octo/site', branch: 'foreman/review/coder-1a2b3c4d', commit: 'a'.repeat(40) },
+      path: '/home/agent/project/2c1d/tree' }] }
+    : { rows: [{ role: 'coder', defaults: ['context_get'], override: null }] })
+  const service = new PostgresAppInteractionService({ query } as unknown as pg.Pool, {} as never, {} as never)
+  expect((await service.context(worker) as { worktree?: unknown }).worktree).toEqual({ repository: 'octo/site',
+    branch: 'foreman/review/coder-1a2b3c4d', baseCommit: 'a'.repeat(40), path: '/home/agent/project/2c1d/tree' })
+  query.mockImplementation(async () => ({ rows: [{ role: 'coder', defaults: ['context_get'], override: null }] }))
+  expect(await service.context(worker)).not.toHaveProperty('worktree')
+})

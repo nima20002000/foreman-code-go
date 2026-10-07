@@ -1,3 +1,4 @@
+import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
@@ -12,7 +13,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { commandInputHash, type PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
-import type { RunExecutionLocation } from '@foreman-code/contracts'
+import { WorkspaceSchema, type RunExecutionLocation } from '@foreman-code/contracts'
 import { captureGitSource, qualifiedGit } from './capture.js'
 import { SOURCE_LIMITS, sourceSha256, verifySourceManifest } from './manifest.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
@@ -34,7 +35,7 @@ export interface SourceExecutionHostPort {
    * owner and placement before source service can prepare a native directory. */
   authorize(sql: GraphSqlClient, principal: ManagementPrincipal,
     input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }): Promise<void>
-  prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt, options?: { sharedWritableTree?: true }): Promise<SourceMaterializationRecord['receipt']>
+  prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt, options?: { sharedWritableTree?: true; worktree?: SourceWorktreeRequest }): Promise<SourceMaterializationRecord['receipt']>
   verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree>
   verify(record: SourceMaterializationRecord): Promise<string>
   releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<number>
@@ -326,13 +327,14 @@ export class PostgresSourceService implements SourceAdmissionPort {
         ownerKind: 'materialization', ownerId: input.operationId, reservedBytes: source.manifest.totalBytes * 3 + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024 })
       const workflow = await sql.query('select 1 from execution_dispatch_intents where execution_id=$1 and attempt_id=$2 and operation_id=$3',
         [input.attempt.executionId, input.attempt.attemptId, input.operationId])
-      return { root, source, record: null, reservation,
-        sharedWritableTree: root.binding.accessMode === 'exclusive-write' && workflow.rowCount === 1 }
+      const sharedWritableTree = root.binding.accessMode === 'exclusive-write' && workflow.rowCount === 1
+      return { root, source, record: null, reservation, sharedWritableTree,
+        worktree: sharedWritableTree ? await agentWorktree(sql, input.attempt.executionId) : undefined }
     })
     if (state.record) { await this.lifecycle.adopted?.(state.record); return state.record }
     // No main SQL transaction spans carrier/native filesystem I/O.
     const receipt = await this.executions.prepare(state.source.manifest, state.root, input.attempt,
-      state.sharedWritableTree ? { sharedWritableTree: true } : undefined)
+      state.sharedWritableTree ? { sharedWritableTree: true, ...(state.worktree ? { worktree: state.worktree } : {}) } : undefined)
     if (!isDeepStrictEqual(receipt.binding, state.root.binding) || receipt.executionId !== input.attempt.executionId
       || receipt.attemptId !== input.attempt.attemptId || receipt.placementHash !== input.attempt.placementHash
       || receipt.keyRevision !== input.attempt.keyRevision || receipt.authorizationRevision !== input.attempt.authorizationRevision
@@ -437,4 +439,19 @@ export class PostgresSourceService implements SourceAdmissionPort {
       }
     })
   }
+}
+
+const slug = (value: string) => value.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 40) || 'agent'
+/** A workflow agent in a GitHub workspace works on its own branch: foreman/<workflow>/<agent>-<run>. */
+async function agentWorktree(sql: Sql, executionId: string): Promise<SourceWorktreeRequest | undefined> {
+  const row = (await sql.query<{ workspace: unknown; workflow_name: string | null; agent_name: string | null; run_id: string }>(
+    `select ws.record as workspace, v.record#>>'{definition,name}' as workflow_name, a.record->>'name' as agent_name, e.run_id
+     from harness_executions e join runs r on r.id=e.run_id join workspaces ws on ws.id=r.workspace_id
+     left join workflow_versions v on v.id=r.workflow_version_id left join agents a on a.id=e.record->>'agentId'
+     where e.id=$1`, [executionId])).rows[0]
+  const repository = row && WorkspaceSchema.parse(row.workspace).repository
+  if (!row || !repository) return undefined
+  const run = row.run_id.replace(/^run-/u, '').replace(/[^A-Za-z0-9]/gu, '').slice(0, 8)
+  return { repository: `${repository.owner}/${repository.name}`,
+    branch: `foreman/${slug(row.workflow_name ?? 'workflow')}/${slug(row.agent_name ?? 'agent')}-${run}` }
 }

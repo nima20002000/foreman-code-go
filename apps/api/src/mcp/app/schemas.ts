@@ -31,6 +31,8 @@ export const AppContextSchema = z.object({
     interactionGet: z.boolean(),
     interactionRespond: z.boolean(),
   }).strict(),
+  /** This Agent's own git worktree and branch of the workspace repository, when the workspace has one. */
+  worktree: z.object({ repository: z.string(), branch: z.string(), baseCommit: z.string(), path: z.string() }).strict().optional(),
 }).strict()
 
 export const InteractionGetInputSchema = AppInteractionGetInputSchema

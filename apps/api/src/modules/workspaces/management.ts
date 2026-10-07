@@ -8,7 +8,7 @@ import {
   type ManagedWorkspace,
   type WorkspaceCreateInput,
 } from '@foreman-code/contracts/management'
-import { WorkspaceSchema } from '@foreman-code/contracts'
+import { WorkspaceSchema, type WorkspaceRepository } from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
@@ -176,6 +176,7 @@ export class WorkspaceManagementService {
 
   async update(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
     workspaceId: string; commandId: string; expectedRevision: number; name?: string | undefined; description?: string | null | undefined
+    repository?: WorkspaceRepository | null | undefined
   }) {
     requireAuthorization(principal, 'workspaces:update', { workspaceId: input.workspaceId })
     let canReadLocation = false
@@ -213,6 +214,8 @@ export class WorkspaceManagementService {
           ...(input.name !== undefined ? { name: input.name } : {}),
           ...(input.description === null ? { description: undefined }
             : input.description !== undefined ? { description: input.description } : {}),
+          ...(input.repository === null ? { repository: undefined }
+            : input.repository !== undefined ? { repository: input.repository } : {}),
           updatedAt: new Date().toISOString(),
         })
         const result = await client.query<WorkspaceRow>(
