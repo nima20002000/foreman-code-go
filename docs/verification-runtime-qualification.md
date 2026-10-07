@@ -2,8 +2,10 @@
 
 Verification profiles retain an approved source commit, immutable image and
 toolchain, offline dependency receipt, independent project quotas and a reviewed
-resource envelope. Qualification requires a signed-in human's approval of that
-profile revision. Approval lasts 24 hours; a changed commit needs another approval.
+resource envelope. A paired computer captures its installed runtime and qualifies
+it directly; there is no approval step. Qualification lasts 24 hours. A Job may run
+any commit whose dependency files match the qualification commit; changed
+dependency files wait for a qualification with a matching offline seed.
 
 The installed host runs install, typecheck, lint, unit and build inside rootless
 containers with private network namespaces and no network. Dependencies must be
@@ -26,10 +28,11 @@ only after the original qualification owner has closed and reclaimed its quota.
 
 Operator MCP can save/request/run/read qualification using the existing tools.
 Verification qualification requires `job_definitions:write`, `jobs:start` and
-`job_artifacts:read`. Approval remains human-only. Measured qualification records
+`job_artifacts:read`. Measured qualification records
 include diagnostic execution IDs and canonical artifact references. Operators
 read them through `job_get`, `job_artifacts_list` and `job_artifact_read`; ordinary
-verification Jobs use `job_choices_get`, `job_definition_save` and `job_start`.
+verification Jobs use `job_choices_get`, `job_definition_save` and `job_start`, or
+`ci_run` and `ci_get`, which workflow Agents also use for their Run's workspace.
 Generated qualification definitions retain historical diagnostic commands and
 reports; create ordinary verification Jobs from the authoring templates.
 
