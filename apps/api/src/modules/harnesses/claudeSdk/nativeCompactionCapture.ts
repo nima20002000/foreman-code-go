@@ -34,7 +34,7 @@ function claudeCompactionCapture(scope, onTerminal) {
     if(typeof frame.user_message_uuid==='string')uuids.push(frame.user_message_uuid)
     if(uuids.some(uuid=>uuid!==pending.uuid))return
     const session={...scope,nativeSessionId:sessionId}
-    const hash=createHash('sha256').update(JSON.stringify(session)).digest('hex')
+    const hash=createHash('sha256').update(JSON.stringify([session.deviceId,session.profilePath,session.configRevision,session.cwd,session.nativeSessionId])).digest('hex')
     const root=join(scope.profilePath,'foreman-session-controls',hash)
     fs.mkdirSync(root,{recursive:true,mode:0o700})
     const value={scope:hash,promptUuid:pending.uuid,nativeSessionId:sessionId,
