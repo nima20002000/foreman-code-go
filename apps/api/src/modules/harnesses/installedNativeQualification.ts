@@ -125,6 +125,7 @@ export function createInstalledNativeQualifier(input: {
             if (passed) {
               if (!scope.processRecovery || !scope.assertInstallation) return denied()
               await scope.assertInstallation(signal)
+              let profileFailure: string | null = null
               try {
                 profileResult = await runWithQualificationProfile({ harness, version: version!,
                   binarySha256: target.binarySha256, target: target.target,
@@ -136,12 +137,13 @@ export function createInstalledNativeQualifier(input: {
                 const code = error instanceof DomainError ? error.code
                   : error instanceof HarnessExecutionError && error.result.outcome === 'failed' ? error.result.error?.code : undefined
                 if (!code || !/^(?:CODEX_(?:SETTING|MODEL|MCP|REQUIRED_MCP|APP_SERVER_AUTH|AUTH_REQUIRED|CONFIGURATION)|OPENCODE_(?:SETTING|MODEL|PROVIDER|AGENT|VARIANT|MCP|REQUIRED_MCP|SERVER_VERSION|AUTH_REQUIRED|CONFIGURATION))/.test(code)) throw error
+                profileFailure = code
                 failureReason = 'The selected host profile did not pass its native configuration checks.'
               }
               await scope.assertInstallation(signal)
               const selected = Boolean(profileResult && profileResult.harness === harness && normalizeHarnessVersion(harness, profileResult.version) === version
                 && profileResult.ready && profileResult.authenticated && profileResult.structuredEvents)
-              result.checks.push({ id: 'selected-profile', passed: selected, detail: null })
+              result.checks.push({ id: 'selected-profile', passed: selected, detail: profileFailure })
             }
             return result
           } }
