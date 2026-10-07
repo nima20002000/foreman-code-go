@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
@@ -64,7 +65,7 @@ import { adaptDeviceSocket } from '../../devices/deviceWire.js'
 
 const roots:string[]=[],journals:RemoteOperationJournal[]=[]
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
-async function directory() {const root=await mkdtemp('/tmp/installed-workflow-');roots.push(root);return root}
+async function directory() {const root=await mkdtemp(join(tmpdir(), 'installed-workflow-'));roots.push(root);return root}
 function nativeFixture() {
   const connection=DeviceConnectionIdentitySchema.parse({mainId:randomUUID(),deviceId:randomUUID(),workerInstallationId:randomUUID(),
     bootId:bootIdentity(),keyRevision:1,authorizationRevision:1,connectionGeneration:4})

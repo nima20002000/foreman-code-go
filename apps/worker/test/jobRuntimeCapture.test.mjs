@@ -317,7 +317,7 @@ async function fixture(t) {
   const inputPath = join(directory, 'input.json'); await writeFile(inputPath, JSON.stringify(input), { mode: 0o600 });
   const originalFiles = Object.fromEntries(await Promise.all((await readdir(state)).map(async name => [name, hash(await readFile(join(state, name)))])));
   const run = (args = []) => spawnSync(process.execPath,
-    [join(artifact, 'src/cli.mjs'), 'capture-job-runtime', '--state', state, '--input', inputPath, ...args],
+    ['--disable-warning=ExperimentalWarning', join(artifact, 'src/cli.mjs'), 'capture-job-runtime', '--state', state, '--input', inputPath, ...args],
     { encoding: 'utf8', timeout: 15000, env: { PATH: '/usr/bin:/bin', HOME: directory, LANG: 'C.UTF-8' } });
   const unchanged = async () => {
     for (const [name, digest] of Object.entries(originalFiles)) assert.equal(hash(await readFile(join(state, name))), digest, name);
@@ -381,7 +381,7 @@ test('reviewed refresh preserves the previous configuration and rejects stale di
     const unlock = kind === 'active-worker' ? await acquireWorkerLock(f.state) : undefined;
     let result;
     try {
-      result = spawnSync(process.execPath, [join(artifact, 'src/cli.mjs'), 'refresh-job-runtime',
+      result = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', join(artifact, 'src/cli.mjs'), 'refresh-job-runtime',
         '--state', f.state, '--input', f.inputPath],
       { encoding: 'utf8', timeout: 15000, env: { PATH: '/usr/bin:/bin', HOME: f.directory, LANG: 'C.UTF-8' } });
     } finally { await unlock?.(); }

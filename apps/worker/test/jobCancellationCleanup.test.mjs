@@ -270,7 +270,7 @@ test('a real live source-namespace process blocks release after the durable stop
 
 test('CLI returns only the signed closure and keeps failures and secrets off stdout', async t => {
   const f = await fixture(t);
-  const run = args => spawnSync(process.execPath, [join(bundleDirectory, 'cli.mjs'),
+  const run = args => spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', join(bundleDirectory, 'cli.mjs'),
     'cleanup-job-before-entry', '--state', f.state, '--grant', f.grantPath, ...args],
   { encoding: 'utf8', timeout: 15000 });
   const result = run([]);
@@ -293,7 +293,7 @@ test('CLI returns only the signed closure and keeps failures and secrets off std
   const uncompleted = await fixture(t);
   uncompleted.grant.expiresAt = '2000-01-01T00:00:00.000Z';
   await uncompleted.saveGrant();
-  const uncompletedResult = spawnSync(process.execPath, [join(bundleDirectory, 'cli.mjs'),
+  const uncompletedResult = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', join(bundleDirectory, 'cli.mjs'),
     'cleanup-job-before-entry', '--state', uncompleted.state, '--grant', uncompleted.grantPath],
   { encoding: 'utf8', timeout: 15000 });
   assert.equal(uncompletedResult.status, 1);

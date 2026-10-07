@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { buildApp } from '../src/app.js'
 import { loadConfig } from '../src/config.js'
+import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
+import { resolveProductEnvironment } from '@foreman-code/contracts/product-environment'
 
 const apps: ReturnType<typeof buildApp>[] = []
 const healthy = () => ({
@@ -112,9 +114,11 @@ it('loads configurable deadlines for both PostgreSQL pools and readiness', () =>
   expect(config.database.connectionTimeoutMs).toBe(123)
   expect(config.database.queryTimeoutMs).toBe(456)
   expect(config.readinessTimeoutMs).toBe(789)
-  expect(config.harnesses.codexBinary).toMatch(/codex\/bin\/codex\.js$/)
+  expect(config.harnesses.codexBinary).toBe(harnessBinaries(resolveProductEnvironment({
+    DATABASE_URL: config.database.connectionString,
+  })).codexBinary)
   expect(loadConfig({ DATABASE_URL: config.database.connectionString, CODEX_BINARY: 'codex' }).harnesses.codexBinary)
-    .toBe(config.harnesses.codexBinary)
+    .toBe(harnessBinaries({ CODEX_BINARY: 'codex' }).codexBinary)
   expect(loadConfig({ DATABASE_URL: config.database.connectionString, CODEX_BINARY: '/opt/codex' }).harnesses.codexBinary)
     .toBe('/opt/codex')
   expect(() => loadConfig({ DATABASE_URL: config.database.connectionString, READINESS_TIMEOUT_MS: '0' }))

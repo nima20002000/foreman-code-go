@@ -98,7 +98,7 @@ test('packaged bytes match manifest and doctor import creates no worker authorit
   await assert.rejects(readFile(join(state, 'identity.json')), { code: 'ENOENT' });
   // This verified tmpfs state is intentionally unqualified.
   assert.equal(result.persistentState, false);
-  const run = spawnSync(process.execPath, [join(artifact, 'src/cli.mjs'), 'run', '--state', state], { encoding: 'utf8', timeout: 5000 });
+  const run = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', join(artifact, 'src/cli.mjs'), 'run', '--state', state], { encoding: 'utf8', timeout: 5000 });
   assert.equal(run.status, 1);
   assert.equal(run.stderr.trim(), 'nonpersistent_storage');
   await assert.rejects(readFile(join(state, 'identity.json')), { code: 'ENOENT' });

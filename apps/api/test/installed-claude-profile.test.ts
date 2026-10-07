@@ -1,3 +1,4 @@
+import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -53,7 +54,7 @@ async function fixture() {
 describe('installed worker Claude metadata and saved profile admission', () => {
   it('keeps an unchanged admitted policy after a current proof is refreshed, and refuses changed native pins or policy', async () => {
     const f = await fixture()
-    const root = await mkdtemp('/var/tmp/worker-claude-policy-')
+    const root = await mkdtemp(join(persistentFixtureRoot, 'worker-claude-policy-'))
     directories.push(root)
     const project = join(root, 'project')
     const runtime = join(root, 'runtime')

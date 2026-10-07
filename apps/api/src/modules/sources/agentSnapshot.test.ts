@@ -1,3 +1,4 @@
+import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -9,7 +10,7 @@ import { systemGitWorktreePorts } from './gitWorktree.js'
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8',
-  env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' } }).trim()
+  env: gitFixtureEnvironment() }).trim()
 
 it('sends an Agent\'s current files, including uncommitted ones, to another clone without moving its branch', async () => {
   const root = await mkdtemp(join(tmpdir(), 'agent-snapshot-')); roots.push(root)
@@ -26,7 +27,7 @@ it('sends an Agent\'s current files, including uncommitted ones, to another clon
   await writeFile(join(laptop, 'app.ts'), 'uncommitted change\n')
   await writeFile(join(laptop, 'new.ts'), 'untracked file\n')
   await mkdir(join(laptop, 'node_modules')); await writeFile(join(laptop, 'node_modules/x.js'), 'ignored\n')
-  const ports = systemGitWorktreePorts()
+  const ports = systemGitWorktreePorts(gitFixtureEnvironment())
   const snapshot = await snapshotAgentWorktree(ports, { path: laptop, baseCommit: base }, AbortSignal.timeout(30_000))
   expect(git(laptop, 'rev-parse', 'HEAD')).toBe(branchHead)
   expect(git(laptop, 'status', '--porcelain')).toContain('new.ts')

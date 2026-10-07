@@ -2,7 +2,7 @@ import { readProductEnvironment } from '../../../packages/contracts/src/productE
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, rename, rm, realpath } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { generateKeyPairSync, randomUUID, createHash } from 'node:crypto';
@@ -11,7 +11,7 @@ const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY'
 async function fixture(t) {
   const { approvedRootExtensions, qualifyApprovedRootAllowlist } = await import(pathToFileURL(join(artifact, 'src/worker.mjs')).href);
   // Synthetic unit configuration, never an installed host/approved application profile.
-  const directory = await mkdtemp(join(await realpath(homedir()), '.graphql-w07-root-unit-'));
+  const directory = await mkdtemp(join(await realpath(persistentFixtureRoot), '.graphql-w07-root-unit-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const state = join(directory, 'state'), base = join(directory, 'base'), runtime = join(directory, 'runtime');
   for (const path of [state, base, runtime, join(base, 'project')]) await mkdir(path, { mode: 0o700 });

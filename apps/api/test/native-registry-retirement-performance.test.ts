@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os'
 import { createHash,randomUUID } from 'node:crypto'
 import { existsSync,mkdirSync,mkdtempSync,readdirSync,rmSync,writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -9,7 +10,7 @@ import { bootIdentity,processIdentity } from '../src/modules/harnesses/recovery/
 import { privateDirectory,writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 
 function fixture() {
-  const root=mkdtempSync('/tmp/native-retirement-'),owner='original-retirement-test-owner'
+  const root=mkdtempSync(join(tmpdir(), 'native-retirement-')),owner='original-retirement-test-owner'
   const ownerDirectory=privateDirectory(join(root,createHash('sha256').update(owner).digest('hex')))
   const registry=new NativeProcessRegistry(root)
   function seedClosed(id=randomUUID(),oldBoot=false) {
@@ -151,7 +152,7 @@ describe.skipIf(process.platform!=='linux')('bounded original native retirement 
           writeRecord(join(path,'provider.json'),{format:1,id:row.id,owner:f.owner,boot:row.intent.boot,guardian:{...guardian,startTicks:'0'},provider:guardian,capture:'captured'})
         }
         if(defect==='missing')path=join(f.ownerDirectory,randomUUID())
-        if(defect==='foreign-root')path=join('/tmp',createHash('sha256').update(f.owner).digest('hex'),row.id)
+        if(defect==='foreign-root')path=join(tmpdir(),createHash('sha256').update(f.owner).digest('hex'),row.id)
         expect(()=>projection.observeRetirement(path)).toThrow()
         expect(projection.revision()).toBe(before.revision)
         expect(existsSync(row.path)).toBe(true)

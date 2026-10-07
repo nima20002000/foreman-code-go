@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 import { CODEX_INTERACTION_SUPPORT,
   type CodexHarnessConfiguration, type NativeSessionReference, type PendingNativeInteraction,
@@ -197,7 +198,7 @@ describe('Codex fixture user-message contract', () => {
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
   beforeEach(async () => {
     // This file exercises a 500 ms wire deadline; fixture persistence uses owned temporary storage.
-    scratch = createTestRoot('/tmp', 'foreman-code-codex-wire-')
+    scratch = createTestRoot(tmpdir(), 'foreman-code-codex-wire-')
     scratchCleanupId = registerTestResourceCleanup(invocation, {
       kind: 'codex-wire-fixture', directory: scratch.directory, owner: scratch.token,
     })

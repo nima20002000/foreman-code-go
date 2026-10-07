@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, open, writeFile, readFile, rm, symlink, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import type { TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { NodeRsyncExecutor, RsyncStagingTransport, rsyncCommand, validateRsyncEndpoint, verifyRsyncBinaries,
   type RsyncEndpoint, type RsyncExecutor, type RsyncStagingPorts } from './rsync.js'
@@ -23,7 +24,7 @@ const context = (i: TransferIntent) => ({ mainId: i.mainId, deviceId: i.deviceId
   keyRevision: i.keyRevision, authorizationRevision: i.authorizationRevision, bootId: i.bootId, connectionEpoch: i.connectionEpoch })
 const signal = () => new AbortController().signal
 async function fixture() {
-  const root = await mkdtemp('/tmp/graphql-rsync-'), input = join(root, 'source')
+  const root = await mkdtemp(join(tmpdir(), 'graphql-rsync-')), input = join(root, 'source')
   await writeFile(input, bytes, { mode: 0o600 })
   const source = await open(input, 'r'), release = vi.fn(async () => {})
   const stagingRoot = join(root, 'private'), peerRoot = join(root, 'peer')
@@ -79,7 +80,11 @@ describe('rsync argument and security boundary', () => {
   })
   it('checks installed binary hashes even with a current version', async () => {
     const executor = { run: async () => 'rsync  version 3.5.1  protocol version 32\n' }
-    await expect(verifyRsyncBinaries(endpoint, executor, signal())).rejects.toThrow('binary changed')
+    const f = await fixture()
+    try {
+      await expect(verifyRsyncBinaries({ ...endpoint, localBinary: f.input }, executor, signal()))
+        .rejects.toThrow('binary changed')
+    } finally { await f.dispose() }
   })
   it('denies revoked authority before any subprocess', async () => {
     const i = intent(), executor = { run: vi.fn() }

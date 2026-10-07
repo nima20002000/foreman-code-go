@@ -1,14 +1,15 @@
+import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { addGitWorktree, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8',
-  env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' } }).trim()
+  env: gitFixtureEnvironment() }).trim()
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'git-worktree-')); roots.push(root)
@@ -17,7 +18,7 @@ async function fixture() {
   await writeFile(join(origin, 'README.md'), 'approved\n')
   git(origin, 'add', '.'); git(origin, 'commit', '-qm', 'approved')
   const commit = git(origin, 'rev-parse', 'HEAD')
-  const system = systemGitWorktreePorts()
+  const system = systemGitWorktreePorts(gitFixtureEnvironment())
   // The clone reads from a local origin instead of github.com; everything else is the real git flow.
   const ports: GitWorktreePorts = { cloneDirectory: repository => join(root, 'clones', ...repository.split('/')),
     git: (args, options) => system.git(args[0] === 'clone' ? ['clone', '--no-checkout', origin, args.at(-1)!] : args, options) }
@@ -58,4 +59,19 @@ it('refuses unsafe repository and branch names before running git', async () => 
     .rejects.toMatchObject({ code: 'SOURCE_WORKTREE_INVALID' })
   await expect(addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/a..b' }, f.commit, join(f.root, 'x'), signal))
     .rejects.toMatchObject({ code: 'SOURCE_WORKTREE_INVALID' })
+})
+
+it('keeps fixture repositories independent of inherited CI Git routing and identity', async () => {
+  vi.stubEnv('GIT_DIR', '/uncreated-ci-repository')
+  vi.stubEnv('GIT_WORK_TREE', '/uncreated-ci-worktree')
+  vi.stubEnv('GIT_AUTHOR_NAME', '')
+  vi.stubEnv('GIT_COMMITTER_NAME', '')
+  try {
+    const f = await fixture()
+    const path = join(f.root, 'agent')
+    await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/review/coder-ci' },
+      f.commit, path, AbortSignal.timeout(30_000))
+    expect(git(path, 'rev-parse', 'HEAD')).toBe(f.commit)
+    expect(await readFile(join(path, 'README.md'), 'utf8')).toBe('approved\n')
+  } finally { vi.unstubAllEnvs() }
 })

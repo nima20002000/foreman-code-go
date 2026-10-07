@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os'
+import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -14,10 +16,10 @@ import type { MaterializationAttempt } from './ports.js'
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8',
-  env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' } }).trim()
+  env: gitFixtureEnvironment() }).trim()
 
 async function fixture() {
-  const base = await mkdtemp('/tmp/agent-worktree-'); roots.push(base)
+  const base = await mkdtemp(join(tmpdir(), 'agent-worktree-')); roots.push(base)
   const origin = join(base, 'origin'); await mkdir(join(origin, 'src'), { recursive: true })
   const bytes = Buffer.from('accepted source\n')
   git(origin, 'init', '-q', '-b', 'main')
@@ -33,7 +35,7 @@ async function fixture() {
   const binding: RootBinding = { version: 1, mainId: randomUUID(), deviceId: null, workerInstallationId: null,
     workspaceId: randomUUID(), rootId: randomUUID(), bindingRevision: 1, locationRevision: 1, canonicalPath: root,
     filesystem, accessMode: 'exclusive-write', snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
-  const system = systemGitWorktreePorts()
+  const system = systemGitWorktreePorts(gitFixtureEnvironment())
   const ports: GitWorktreePorts = { cloneDirectory: repository => join(base, 'clones', ...repository.split('/')),
     git: (args, options) => system.git(args[0] === 'clone' ? ['clone', '--no-checkout', origin, args.at(-1)!] : args, options) }
   const materializer = () => new PrivateSourceMaterializer({ async read() { return bytes } }, async () => {}, undefined, ports)
