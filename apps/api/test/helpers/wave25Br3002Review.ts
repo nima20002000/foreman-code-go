@@ -1,6 +1,7 @@
 import { readCurrentExecutions } from './wave25Agent3.js'
 import { vi } from 'vitest'
 import type { NativeGraphObservation } from '@foreman-code/contracts/wave25'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { nativeMessageId, object, type OpenCodeMessage } from '../../src/modules/harnesses/opencodeProtocol.js'
 import { OPENCODE_RECONCILIATION_EVENT } from '../../src/modules/harnesses/opencodeReconciliation.js'
 import type { FixtureServer } from '../opencode-fixtures.js'
@@ -59,7 +60,17 @@ export function br3002Cuts(f: Br1002Runtime, deferAssistant = false) {
   const started = deferred<Br3002ReviewArgs>(), assistant = deferred<Br3002ReviewArgs>()
   const beforeMarker = deferred<Br3002ReviewArgs>(), afterMarker = deferred<Br3002ReviewArgs>()
   const continueStart = deferred(), continueAssistant = deferred(), enterMarker = deferred(), finishMarker = deferred()
-  const original = f.repository.coordination.appendReviewNativeEvent.bind(f.repository.coordination)
+  const appendEvent = f.repository.coordination.appendReviewNativeEvent.bind(f.repository.coordination)
+  const appendHistory = f.repository.coordination.appendReviewNativeHistory.bind(f.repository.coordination)
+  let historyEvents: readonly NativeHarnessEvent[] | undefined
+  const original = (...args: Br3002ReviewArgs) => {
+    const [job, event, projection] = args
+    if (projection?.live === false && historyEvents) {
+      return appendHistory(job, historyEvents.map(value =>
+        value.type === OPENCODE_RECONCILIATION_EVENT ? event : value), projection)
+    }
+    return appendEvent(...args)
+  }
   let sawStart = false, sawAssistant = false, sawMarker = false
   const spy = vi.spyOn(f.repository.coordination, 'appendReviewNativeEvent').mockImplementation(async (...args) => {
     const [job, event, projection] = args
@@ -68,12 +79,6 @@ export function br3002Cuts(f: Br1002Runtime, deferAssistant = false) {
       && event.type === 'message.updated' && info.role === 'assistant' && info.parentID === job.providerTurnOrMessageId) {
       // Reorder the actual adapter frame, not a synthesized NativeHarnessEvent.
       sawAssistant = true; assistant.resolve(args); await continueAssistant.promise
-      return
-    }
-    if (!sawMarker && event.type === OPENCODE_RECONCILIATION_EVENT && projection?.live === false && projection.nativeCapture) {
-      sawMarker = true; beforeMarker.resolve(args); await enterMarker.promise
-      await original(...args)
-      afterMarker.resolve(args); await finishMarker.promise
       return
     }
     await original(...args)
@@ -85,9 +90,24 @@ export function br3002Cuts(f: Br1002Runtime, deferAssistant = false) {
       sawAssistant = true; assistant.resolve(args); await continueAssistant.promise
     }
   })
+  const historySpy = vi.spyOn(f.repository.coordination, 'appendReviewNativeHistory')
+    .mockImplementation(async (job, events, projection) => {
+      const marker = events.find(event => event.type === OPENCODE_RECONCILIATION_EVENT)
+      if (sawMarker || !marker || projection?.live !== false || !projection.nativeCapture) {
+        return appendHistory(job, events, projection)
+      }
+      sawMarker = true
+      historyEvents = events
+      const args: Br3002ReviewArgs = [job, marker, projection]
+      beforeMarker.resolve(args)
+      await enterMarker.promise
+      await original(...args)
+      afterMarker.resolve(args)
+      await finishMarker.promise
+    })
   return { started, assistant, beforeMarker, afterMarker, continueStart, continueAssistant, enterMarker, finishMarker, original,
     release() { continueStart.resolve(); continueAssistant.resolve(); enterMarker.resolve(); finishMarker.resolve() },
-    restore() { spy.mockRestore() } }
+    restore() { spy.mockRestore(); historySpy.mockRestore() } }
 }
 export async function br3002Evidence(f: Br1002Runtime, jobId: string) {
   return (await f.db.pool.query<{ state: string; revision: string; generation: string;

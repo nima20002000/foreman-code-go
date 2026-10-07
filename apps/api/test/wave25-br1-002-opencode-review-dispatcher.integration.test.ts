@@ -4,13 +4,13 @@ import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeGraphObservation } from '@foreman-code/contracts/wave25'
 import { acknowledgementId } from '../src/modules/interactions/wave25/nativeEvidence.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
-import { object } from '../src/modules/harnesses/opencodeProtocol.js'
-import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation } from '../src/modules/harnesses/opencodeReconciliation.js'
+import { readOpenCodeReconciliation } from '../src/modules/harnesses/opencodeReconciliation.js'
 import { deliverApproval } from '../src/modules/interactions/wave25/service.js'
-import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { graphParity } from './helpers/wave25R1GraphParity.js'
 import { br1002OpenCodeRuntime, br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
 import { br1002At, br1002Ack, type Br1002Runtime } from './helpers/wave25Br1002Cuts.js'
+import { br3002Cuts } from './helpers/wave25Br3002Review.js'
 
 type ReviewArgs = Parameters<Br1002Runtime['repository']['coordination']['appendReviewNativeEvent']>
 
@@ -55,26 +55,12 @@ async function startReview(f: Br1002Runtime) {
   } finally { authority.mockRestore() }
 }
 function reviewCuts(f: Br1002Runtime, holdLive = false) {
-  const live = deferred<ReviewArgs>(), before = deferred<ReviewArgs>(), after = deferred<ReviewArgs>()
-  const enter = deferred(), finish = deferred(), continueLive = deferred()
-  let selected = false, selectedLive = false
-  const original = f.repository.coordination.appendReviewNativeEvent.bind(f.repository.coordination)
-  const spy = vi.spyOn(f.repository.coordination, 'appendReviewNativeEvent').mockImplementation(async (...args) => {
-    const [, event, projection] = args
-    if (!selected && event.type === OPENCODE_RECONCILIATION_EVENT && projection?.live === false) {
-      selected = true; before.resolve(args); await enter.promise
-      await original(...args)
-      after.resolve(args); await finish.promise
-      return
-    }
-    await original(...args)
-    if (!selectedLive && projection?.live && event.type === 'message.updated' && object(event.payload.info).role === 'user') {
-      selectedLive = true; live.resolve(args)
-      if (holdLive) await continueLive.promise
-    }
-  })
-  return { live, before, after, enter, finish, continueLive, original,
-    release() { continueLive.resolve(); enter.resolve(); finish.resolve() }, restore() { spy.mockRestore() } }
+  const cuts = br3002Cuts(f)
+  if (!holdLive) cuts.continueStart.resolve()
+  cuts.continueAssistant.resolve()
+  return { live: cuts.started, before: cuts.beforeMarker, after: cuts.afterMarker,
+    enter: cuts.enterMarker, finish: cuts.finishMarker, continueLive: cuts.continueStart,
+    original: cuts.original, release: cuts.release, restore: cuts.restore }
 }
 async function evidence(f: Br1002Runtime, jobId: string) {
   return (await f.db.pool.query<{ state: string; revision: string; generation: string;
