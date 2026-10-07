@@ -218,7 +218,13 @@ export async function remoteReviewProduction(options: {
       }, value => value, 'production Main startup')
     }
     await startMain()
-    if (options.modelCatalog) await provider.showModels()
+    if (options.modelCatalog) {
+      await waitForRemoteReview(async () => (await db.pool.query<{ record: unknown }>(
+        "select record from application_settings where key='harness-default-model-unavailable'",
+      )).rows[0]?.record, value => Array.isArray(value) && value.includes('codex'),
+      'persisted unavailable startup model defaults')
+      await provider.showModels()
+    }
     async function call(name: string, args: Record<string, unknown>, token = writer.token) {
       const client = new Client({ name: 'Production remote review integration', version: '1' })
       try {
