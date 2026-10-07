@@ -192,9 +192,14 @@ export class AgentChatService {
   private readonly sessionControls: SessionControlStore
   private async nativeTurnSettings(id: string, mode?: import('@foreman-code/contracts').SessionMode) {
     const settings = await this.sessionControls.turnSettings(id, mode)
-    return { ...settings, onSettingsApplied: async () => {
-      if (settings.sessionMode) await this.control(id, () => this.sessionControls.appliedMode(id, settings.sessionMode!))
-    } }
+    return {
+      ...settings,
+      onSettingsApplied: async () => {
+        // Reconciliation can own the control queue while awaiting the native manager.
+        // The settings store revision-checks this callback's write.
+        if (settings.sessionMode) await this.sessionControls.appliedMode(id, settings.sessionMode)
+      },
+    }
   }
 
   private readonly commands: AgentChatCommands

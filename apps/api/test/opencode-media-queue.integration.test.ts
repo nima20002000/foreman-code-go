@@ -16,7 +16,7 @@ import { nativeMessageId } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { configuration, FixtureServer } from './opencode-fixtures.js'
 import { eventually } from './helpers/agentChatF5.js'
-import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
+import { agent3Database, deferred, seedAgent3 } from './helpers/wave25Agent3.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 for (const size of ['multi-image prompt', 'large page'] as const) {
@@ -27,6 +27,9 @@ for (const size of ['multi-image prompt', 'large page'] as const) {
     const managers: OpenCodeNativeSessionManager[] = []
     const provider = new FixtureServer()
     provider.config = { mcp: { 'foreman-code': { enabled: false } } }
+    const settingsEntered = deferred()
+    const settingsReleased = deferred()
+    const recoveryEntered = deferred()
     let service: AgentChatService | undefined
     let app: ReturnType<typeof buildApp> | undefined
     try {
@@ -47,6 +50,26 @@ for (const size of ['multi-image prompt', 'large page'] as const) {
         { getForWorkspace: async () => { throw new Error('No Run is used') }, async *executionPages() { yield [] } },
         id => {
           const manager = new OpenCodeNativeSessionManager({ server: provider, ownerAgentId: id, appMcpAccess: 'none' })
+          const startTurn = manager.startTurn.bind(manager)
+          const reconcile = manager.reconcile.bind(manager)
+          let firstSubmission = true
+          let applyingSettings = false
+          manager.startTurn = async function* (session, input, signal) {
+            yield* startTurn(session, { ...input, onSettingsApplied: async () => {
+              if (firstSubmission) {
+                firstSubmission = false
+                applyingSettings = true
+                settingsEntered.resolve()
+                await settingsReleased.promise
+              }
+              await input.onSettingsApplied?.()
+              applyingSettings = false
+            } }, signal)
+          }
+          manager.reconcile = (...args) => {
+            if (applyingSettings) recoveryEntered.resolve()
+            return reconcile(...args)
+          }
           managers.push(manager)
           return manager
         }, directory)
@@ -91,6 +114,11 @@ for (const size of ['multi-image prompt', 'large page'] as const) {
         return result.structuredContent as { state: { conversation: { id: string } } }
       }
       conversationId = (await send('first', null)).state.conversation.id
+      await settingsEntered.promise
+      const recovering = service.recover()
+      await recoveryEntered.promise
+      settingsReleased.resolve()
+      await recovering
       await eventually(async () => (await repository.get(conversationId))?.active_native_turn_id === firstMessageId)
       await send('next', conversationId)
       const held = await repository.state(conversationId)
@@ -139,6 +167,7 @@ for (const size of ['multi-image prompt', 'large page'] as const) {
       assert.equal(provider.restartEnvironments.length, 0)
       assert.equal(provider.generation, 0)
     } finally {
+      settingsReleased.resolve()
       await service?.shutdown()
       await Promise.allSettled(clients.map(client => client.close()))
       await app?.close()
