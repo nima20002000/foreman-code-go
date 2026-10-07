@@ -100,7 +100,7 @@ describe('Claude provider settings', () => {
     expect(await screen.findByRole('heading', { name: 'Claude settings' })).toBeVisible()
     expect(screen.getByRole('textbox', { name: 'Local Claude profile directory' })).toHaveValue(savedClaudeConfiguration.configDirectory)
     expect(screen.getByRole('combobox', { name: 'Authentication' })).toHaveValue('subscription')
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue('read-only')
+    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue(savedClaudeConfiguration.sandbox)
     expect(screen.queryByRole('combobox', { name: 'Provider variant' })).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: 'Native Agent' })).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: 'Fast mode' })).not.toBeInTheDocument()
@@ -130,11 +130,11 @@ describe('Claude provider settings', () => {
     await user.type(screen.getByRole('textbox', { name: 'Model' }), 'claude-explicit-model')
     await user.type(screen.getByRole('textbox', { name: 'Local Claude profile directory' }), '/chosen/profile')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Authentication' }), 'subscription')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'read-only')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'danger-full-access')
     await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
     await waitFor(() => expect(saveDefaults).toHaveBeenCalledOnce())
     expect(saveDefaults.mock.calls[0]![0].defaults.claude).toEqual({ harness: 'claude', model: 'claude-explicit-model',
-      configDirectory: '/chosen/profile', authMode: 'subscription', sandbox: 'read-only', permissionMode: 'default',
+      configDirectory: '/chosen/profile', authMode: 'subscription', sandbox: 'danger-full-access', permissionMode: 'default',
       tools: [], permissionRules: [], instructions: '', mcpServers: {} })
   })
 })

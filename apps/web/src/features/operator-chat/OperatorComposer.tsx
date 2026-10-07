@@ -32,9 +32,9 @@ export function OperatorComposer({ conversationId, context, attachmentControl, f
   }, [value])
   useLayoutEffect(() => { input.current?.focus() }, [conversationId])
   async function send(content = value.trim()) {
-    if (cannotSend) return
-    setCommandError(undefined)
     const parsed = parseSessionCommand(content)
+    if (parsed.kind !== 'new' && cannotSend) return
+    setCommandError(undefined)
     try {
       if (parsed.kind === 'invalid') throw new Error(parsed.message)
       if (parsed.kind === 'new') onNewChat()

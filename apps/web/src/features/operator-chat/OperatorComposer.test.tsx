@@ -24,3 +24,14 @@ it('keeps the explicit /new command available after removing the toolbar button'
   fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
   expect(start).toHaveBeenCalledOnce()
 })
+
+it('starts the suggested new chat while message sending is unavailable', () => {
+  const start = vi.fn()
+  const send = vi.fn()
+  render(<OperatorComposer conversationId="command-chat" sendDisabled onSubmit={send} onNewChat={start} />)
+  const input = screen.getByRole('textbox', { name: 'Message' })
+  fireEvent.change(input, { target: { value: '/n' } })
+  fireEvent.keyDown(input, { key: 'Enter' })
+  expect(start).toHaveBeenCalledOnce()
+  expect(send).not.toHaveBeenCalled()
+})
