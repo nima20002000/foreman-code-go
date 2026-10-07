@@ -15,14 +15,16 @@ function computer(options: { checksum?: string } = {}) {
       commands.push([file, ...args].join(' '))
       if (args[0] === 'version') return { code: files.has(file) ? 0 : 1, stdout: '', stderr: '' }
       if (file === 'unzip') { files.set('/home/u/.cache/foreman-code/rclone-v1.75.1-linux-amd64/rclone', 'binary'); return { code: 0, stdout: '', stderr: '' } }
-      if (args[0] === 'config' && args[1] === 'userinfo') return { code: 0, stdout: '{"Email":"owner@gmail.com"}', stderr: '' }
+      if (args[0] === 'config' && args[1] === 'userinfo') return { code: 1, stdout: '', stderr: "Google drive root '' doesn't support UserInfo" }
       if (args[0] === 'lsjson') return { code: 0, stdout: folders.length ? JSON.stringify([{ Name: 'Foreman Code', ID: folders[0] }, { Name: 'Other', ID: 'other-folder-1234' }]) : '[]', stderr: '' }
       if (args[0] === 'mkdir') { folders.push('appfolder-1234567'); return { code: 0, stdout: '', stderr: '' } }
       if (file === 'systemctl' && args.includes('restart')) mounts.add('/home/u/Foreman Code Drive')
       if (file === 'systemctl' && args.includes('disable')) mounts.clear()
       return { code: 0, stdout: '', stderr: '' }
     },
-    fetch: async url => url.endsWith('version.txt') ? Buffer.from('rclone v1.75.1\n')
+    fetch: async (url, headers) => url.startsWith('https://www.googleapis.com/drive/v3/about')
+      ? Buffer.from(headers?.authorization === 'Bearer a' || headers?.authorization === 'Bearer b' ? '{"user":{"emailAddress":"owner@gmail.com"}}' : '{}')
+      : url.endsWith('version.txt') ? Buffer.from('rclone v1.75.1\n')
       : url.endsWith('SHA256SUMS') ? Buffer.from(`${options.checksum ?? createHash('sha256').update(zip).digest('hex')}  rclone-v1.75.1-linux-amd64.zip\n`)
         : zip,
     readText: async path => { const value = files.get(path); return value === undefined ? null : value.toString() },
@@ -46,7 +48,7 @@ describe('Google Drive on one computer', () => {
     const config = files.get('/home/u/.config/rclone/rclone.conf')!.toString()
     expect(config).toContain('[work]\ntype = s3')
     // Only files the app creates, rooted at the one app folder it made on first connect.
-    expect(config).toContain('[foreman-drive]\ntype = drive\nscope = drive.file\nroot_folder_id = appfolder-1234567\ntoken = {"access_token":"a","refresh_token":"r","expiry":"2026-10-07T00:00:00Z"}')
+    expect(config).toContain('[foreman-drive]\ndescription = owner@gmail.com\ntype = drive\nscope = drive.file\nroot_folder_id = appfolder-1234567\ntoken = {"access_token":"a","refresh_token":"r","expiry":"2026-10-07T00:00:00Z"}')
     expect(commands.filter(command => command.includes(' mkdir '))).toEqual(['/home/u/.local/bin/rclone mkdir foreman-drive:Foreman Code'])
     // A second computer finds the same folder instead of creating another.
     await drive.handle({ operation: 'connect', token: '{"access_token":"b","refresh_token":"s"}' })

@@ -3,6 +3,7 @@ import { access, readFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
+import { driveRemoteSetting } from './driveComputer.js'
 import { ComputerAccountsSchema, DRIVE_MOUNT_DIRECTORY, DRIVE_REMOTE, type ComputerAccount, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 
 export interface AccountProbePorts {
@@ -98,11 +99,16 @@ async function drive(ports: AccountProbePorts, signal: AbortSignal): Promise<Com
   let email: string | null = null
   try { const parsed = JSON.parse(info.stdout) as { Email?: unknown }; if (typeof parsed.Email === 'string') email = parsed.Email.slice(0, 320) }
   catch { email = null }
+  // Drive cannot report its account through rclone; the app keeps it as the remote's description.
+  if (!email && remote === DRIVE_REMOTE) {
+    email = driveRemoteSetting(await ports.readText(join(ports.environment.HOME ?? homedir(), '.config', 'rclone', 'rclone.conf')) ?? '',
+      'description')?.slice(0, 320) ?? null
+  }
   // The app's own remote is mounted at ~/Foreman Code Drive; Agents on this computer share files there.
   const mountPath = join(ports.environment.HOME ?? homedir(), DRIVE_MOUNT_DIRECTORY)
   const mounted = (await ports.readText('/proc/self/mountinfo') ?? '').split('\n')
     .some(line => line.split(' ')[4]?.replaceAll('\\040', ' ') === mountPath)
-  return { tool: 'drive', installed: true, signedIn: info.code === 0 ? true : null, account: email,
+  return { tool: 'drive', installed: true, signedIn: info.code === 0 || email ? true : null, account: email,
     details: [`${remote}:`, ...(mounted ? [`mount:${mountPath}`] : [])] }
 }
 

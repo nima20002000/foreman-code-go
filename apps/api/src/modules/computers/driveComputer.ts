@@ -14,7 +14,7 @@ export interface DriveComputerPorts {
   home: string
   arch: string
   run(file: string, args: string[], options?: { input?: string; timeoutMs?: number }): Promise<{ code: number; stdout: string; stderr: string }>
-  fetch(url: string): Promise<Buffer>
+  fetch(url: string, headers?: Record<string, string>): Promise<Buffer>
   readText(path: string): Promise<string | null>
   writePrivate(path: string, data: string | Buffer): Promise<void>
   /** Moves an unpacked executable into place atomically. */
@@ -45,15 +45,27 @@ export class DriveComputer {
   async status(message: string | null = null): Promise<DriveComputerState> {
     const binary = await this.binary()
     const connected = binary !== null && sections(await this.ports.readText(this.config) ?? '').has(DRIVE_REMOTE)
-    let account: string | null = null
-    if (connected) {
-      const info = await this.ports.run(binary, ['config', 'userinfo', `${DRIVE_REMOTE}:`, '--json'], { timeoutMs: 20_000 })
-      try { const email = (JSON.parse(info.stdout) as { Email?: unknown }).Email; if (typeof email === 'string') account = email.slice(0, 320) }
-      catch { account = null }
-    }
+    const account = connected ? await this.account() : null
     const mounted = connected && await this.ports.mounted(this.mountPath)
     return DriveComputerStateSchema.parse({ installed: binary !== null, connected, account,
       mountPath: connected ? this.mountPath : null, mounted, message })
+  }
+
+  /** rclone cannot report the Drive account, so the app asks Google once and keeps it as the remote's description. */
+  private async account(): Promise<string | null> {
+    const config = await this.ports.readText(this.config) ?? ''
+    const known = driveRemoteSetting(config, 'description')
+    if (known) return known.slice(0, 320)
+    let token: { access_token?: unknown }
+    try { token = JSON.parse(driveRemoteSetting(config, 'token') ?? '') as typeof token } catch { return null }
+    if (typeof token.access_token !== 'string') return null
+    const about = await this.ports.fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)',
+      { authorization: `Bearer ${token.access_token}` }).catch(() => null)
+    let email: unknown
+    try { email = (JSON.parse(about?.toString('utf8') ?? '') as { user?: { emailAddress?: unknown } }).user?.emailAddress } catch { email = undefined }
+    if (typeof email !== 'string' || !/^[^\s@]{1,200}@[^\s@]{1,100}$/u.test(email)) return null
+    await this.ports.writePrivate(this.config, config.replace(`[${DRIVE_REMOTE}]\n`, `[${DRIVE_REMOTE}]\ndescription = ${email}\n`))
+    return email
   }
 
   /** rclone already on PATH is used as is; otherwise the current release is installed for this user, checksum-verified. */
@@ -148,6 +160,18 @@ export class DriveComputer {
   }
 }
 
+/** One setting of the app's remote in an rclone config. */
+export function driveRemoteSetting(config: string, key: string): string | undefined {
+  let inside = false
+  for (const line of config.split('\n')) {
+    const header = /^\[([^\]]+)\]\s*$/u.exec(line)
+    if (header) { inside = header[1] === DRIVE_REMOTE; continue }
+    const match = inside ? /^([a-z_]+)\s*=\s*(.*)$/u.exec(line) : null
+    if (match?.[1] === key) return match[2]!.trim()
+  }
+  return undefined
+}
+
 /** INI section names in an rclone config. */
 function sections(config: string) {
   return new Set([...config.matchAll(/^\[([^\]\n]+)\]\s*$/gmu)].map(match => match[1]!))
@@ -175,8 +199,8 @@ export function systemDrivePorts(environment: NodeJS.ProcessEnv = process.env): 
       })
       if (options.input !== undefined) child.stdin?.end(options.input)
     }),
-    fetch: async url => {
-      const response = await fetch(url, { signal: AbortSignal.timeout(300_000) })
+    fetch: async (url, headers) => {
+      const response = await fetch(url, { signal: AbortSignal.timeout(300_000), ...(headers ? { headers } : {}) })
       if (!response.ok) throw new DomainError('DRIVE_INSTALL_FAILED', `Downloading rclone failed (${response.status}).`, 502)
       return Buffer.from(await response.arrayBuffer())
     },
