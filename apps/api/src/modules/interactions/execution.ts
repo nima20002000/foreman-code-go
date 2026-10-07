@@ -59,6 +59,7 @@ import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.j
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
 import { readRetainedRemoteReviewer } from './retainedRemoteReviewer.js'
+import { reviewPreflightIdentity } from './reviewPolicy.js'
 import type { RepeatReviewerBindings } from './repeatReviewer.js'
 import { assertSameRepeatExecution, assertSameReviewJob, repeatPhysicalSettlementPending,
   reviewPhysicallySettled, type RepeatNativeObservationStore } from './repeatObservation.js'
@@ -116,6 +117,7 @@ export class ApprovalExecutionCoordinator {
   private readonly stoppingRuns = new Set<string>()
   private readonly pendingCleanupRuns = new Set<string>()
   private readonly cancellations = new Map<string, Promise<void>>()
+  private readonly reviewerRecoveries = new Map<string, Promise<boolean>>()
   private closing = false
   private restartClosure: Promise<void> | undefined
 
@@ -978,7 +980,19 @@ export class ApprovalExecutionCoordinator {
     })
   }
 
-  private async recoverRetainedReviewer(execution: HarnessExecution, owner: RunOwnership,
+  private recoverRetainedReviewer(execution: HarnessExecution, owner: RunOwnership,
+    parentSignal?: AbortSignal, job?: ReviewJob): Promise<boolean> {
+    const existing = this.reviewerRecoveries.get(execution.id)
+    if (existing) return existing
+    const recovery = this.recoverRetainedReviewerOwned(execution, owner, parentSignal, job)
+      .finally(() => {
+        if (this.reviewerRecoveries.get(execution.id) === recovery) this.reviewerRecoveries.delete(execution.id)
+      })
+    this.reviewerRecoveries.set(execution.id, recovery)
+    return recovery
+  }
+
+  private async recoverRetainedReviewerOwned(execution: HarnessExecution, owner: RunOwnership,
     parentSignal?: AbortSignal, job?: ReviewJob): Promise<boolean> {
     const existing = this.ownedSessions.get(execution.id)
     if (existing) return existing.manager.retainsReviewerSession
@@ -996,6 +1010,19 @@ export class ApprovalExecutionCoordinator {
       || !this.credentials?.recoverRemote) return false
     const retained = await owner.oneShotConnection().transaction(sql => readRetainedRemoteReviewer(sql, execution))
     if (!retained) return false
+    let lane = await this.interactions.coordination.getLane(native.session.harness, native.session.nativeSessionId)
+    while (lane?.leaseExpiresAt && Date.parse(lane.leaseExpiresAt) > Date.now()) {
+      owner.assertOwned()
+      parentSignal?.throwIfAborted()
+      await delay(Math.min(100, Date.parse(lane.leaseExpiresAt) - Date.now()), undefined, { signal: parentSignal })
+      lane = await this.interactions.coordination.getLane(native.session.harness, native.session.nativeSessionId)
+    }
+    owner.assertOwned()
+    parentSignal?.throwIfAborted()
+    const current = await owner.oneShotConnection().transaction(sql => readRetainedRemoteReviewer(sql, execution))
+    if (!isDeepStrictEqual(current, retained)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
+      'The retained reviewer changed while its original writer lease expired.', 409)
+    const identity = reviewPreflightIdentity(lane, `execution:${execution.id}`)
     const resolved = this.resolveManager(context, owner)
     resolved.beginStart?.()
     const owned = this.ownSession(execution, { ...context, purpose: 'reviewer' }, resolved.manager)
@@ -1008,7 +1035,7 @@ export class ApprovalExecutionCoordinator {
         workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
         runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input })
       const session = await this.openingSession(owned, resolved.manager.attachSession(native.session,
-        { request, correlationId: `execution:${execution.id}` }, signal))
+        { request, ...identity }, signal))
       this.assertSessionIdentity(native.session, session)
       if (!resolved.manager.retainsReviewerSession) throw new DomainError('REVIEWER_AUTHORITY_LOST',
         'The original remote reviewer lifetime has already closed.', 409)
@@ -1423,7 +1450,7 @@ export class ApprovalExecutionCoordinator {
           if (await this.restorePendingWorkflowApprovals(owner, execution, pending, signal)) continue
         }
         if (execution.state === 'completed') {
-          if (await this.recoverRetainedReviewer(execution, owner)) continue
+          if (await this.recoverRetainedReviewer(execution, owner, signal)) continue
           if (execution.nativeSessionId && !await this.workflowClosures?.read(execution)) {
             // A finalized workflow has already closed its original lifetime and
             // may have handed this session to a reviewer. Missing closure now
