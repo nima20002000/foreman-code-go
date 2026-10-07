@@ -174,7 +174,7 @@ describe('persisted native Run activity', () => {
   it('projects persisted Claude normalized tool and task facts through HTTP, MCP and snapshots', async () => {
     const harness: AgentConfigurationVersion['harness'] = {
       harness: 'claude', model: 'activity-fixture', authMode: 'subscription', configDirectory: '/fixture/profile',
-      permissionMode: 'default', sandbox: 'read-only', tools: ['Read', 'Bash', 'Agent'],
+      permissionMode: 'default', sandbox: 'danger-full-access', tools: ['Read', 'Bash', 'Agent'],
       permissionRules: [], instructions: '', mcpServers: {},
     }
     await activityFixture(async (pool, fixture, app) => {

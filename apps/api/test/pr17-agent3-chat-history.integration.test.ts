@@ -80,7 +80,18 @@ describe.skipIf(!connectionString)('PR17 Agent3 SQL history, terminal receipts, 
     expect(canceling.conversation).toMatchObject({ cancel_requested: true, turn_state: 'canceling' })
     expect(await repository.submitted(conversation.id, requestId, nativeTurnId, capturedOwner)).toBe(true)
     expect(await snapshot()).toEqual(canceling)
-    expect(await repository.finish(conversation.id, requestId, { outcome: 'canceled' })).toBe(true)
+    const result = { outcome: 'canceled' as const }
+    await expect(repository.finish(conversation.id, requestId, result))
+      .rejects.toMatchObject({ code: 'OPERATOR_CLOSURE_PENDING' })
+    expect(await snapshot()).toEqual(canceling)
+    expect(await repository.journalTerminal(conversation.id, requestId, result, {
+      retryable: false, requiresRuntimeClosure: true,
+    })).toBe(true)
+    expect(await repository.closurePending(conversation.id, requestId)).toBe(true)
+    await expect(repository.finish(conversation.id, requestId, result))
+      .rejects.toMatchObject({ code: 'OPERATOR_CLOSURE_PENDING' })
+    expect(await repository.closureProven(conversation.id, requestId)).toBe(true)
+    expect(await repository.finish(conversation.id, requestId, result)).toBe(true)
     const settled = await snapshot()
     expect(await repository.submitted(conversation.id, requestId, nativeTurnId, capturedOwner)).toBe(false)
     expect(await snapshot()).toEqual(settled)

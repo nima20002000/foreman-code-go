@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { CODEX_INTERACTION_SUPPORT } from '@foreman-code/contracts'
 import { HarnessCatalogEntrySchema, HarnessCatalogResultSchema } from '@foreman-code/contracts/management'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.skipIf(!postgresEnabled)('Codex interaction capability readback', () => {
@@ -32,7 +33,7 @@ describe.skipIf(!postgresEnabled)('Codex interaction capability readback', () =>
       expect(denied.statusCode).toBe(403)
       const reader = await f.connect(restricted.token)
       expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain('harness_get')
-      await expect(reader.callTool({ name: 'harness_get', arguments: { harness: 'codex' } })).rejects.toThrow('not found')
+      await expectMcpAccessDenied(reader.callTool({ name: 'harness_get', arguments: { harness: 'codex' } }))
     } finally { await f.close() }
   }, 60_000)
 })

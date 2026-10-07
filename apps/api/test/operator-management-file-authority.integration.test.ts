@@ -118,7 +118,7 @@ vi.doMock('../src/modules/harnesses/opencodeServer.js', async () => {
         this.emit('message.updated', { info: partial.info })
         for (const part of partial.parts) this.emit('message.part.updated', { part })
       }
-      servers.push(this)
+      if (options.appMcpAccess === 'scoped') servers.push(this)
     }
   } }
 })
@@ -292,15 +292,23 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     operators = new PostgresOperatorRepository(pool)
     repository = new PostgresOperatorConversationRepository(pool)
     const responseJournal = new NativeResponseJournal(join(f.directory, 'responses'))
+    const processRegistry = new NativeProcessRegistry(join(f.directory, 'processes'))
     nativeFactories = new NativeHarnessFactories({ ...config.harnesses,
       openCodeFileStorageRoot: config.fileStorageRoot!,
-      appMcpEndpoint: managementEndpoint, responseJournal })
+      appMcpEndpoint: managementEndpoint, responseJournal,
+      auxiliaryRecovery: role => processRegistry.scope(`${role}:${randomUUID()}`),
+      admitRecovery: recovery => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
+      abandonRecovery: async recovery => { await processRegistry.abandonReservedLaunch(recovery) },
+      closeRecovery: async recovery => {
+        if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')
+      },
+    })
     authority = new PostgresOperatorChatAuthority(pool, access, new NativeRollout({ NODE_ENV: 'test', HOST: '127.0.0.1' }), cwd,
       managementEndpoint, (manager) => nativeFactories.inspector(manager))
     prepare = vi.spyOn(authority, 'prepare')
     resolve = productionOperatorManagers({ app: () => app, pool, config, workingDirectory: cwd,
       endpointHost: '127.0.0.1', appMcpEndpoint: managementEndpoint, managers,
-      processRegistry: new NativeProcessRegistry(join(f.directory, 'processes')),
+      processRegistry,
       responseJournal, nativeFactories })
     chat = new OperatorChatService(repository, operators, resolve, cwd, authority)
     const commands = new PostgresCommandCoordinator(pool)
@@ -380,14 +388,22 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
         assert(profile && selectedRuntime)
         const registry = selectedRuntime.registry
         const profiles = selectedRuntime.profiles
+        const processRegistry = new NativeProcessRegistry(join(f.directory, 'processes'))
         nativeFactories = new NativeHarnessFactories({ ...config.harnesses, appMcpEndpoint: managementEndpoint,
           openCodeFileStorageRoot: config.fileStorageRoot!,
           responseJournal: new NativeResponseJournal(join(f.directory, 'responses')),
-          instances: registry.instances, installations: registry.installations, installationDiscovery: profile.launcher })
+          instances: registry.instances, installations: registry.installations, installationDiscovery: profile.launcher,
+          auxiliaryRecovery: role => processRegistry.scope(`${role}:${randomUUID()}`),
+          admitRecovery: recovery => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
+          abandonRecovery: async recovery => { await processRegistry.abandonReservedLaunch(recovery) },
+          closeRecovery: async recovery => {
+            if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')
+          },
+        })
         resolve = productionOperatorManagers({ app: () => app, pool, config,
           workingDirectory: join(config.harnesses.workspaceRoot, 'operator'), endpointHost: '127.0.0.1',
           appMcpEndpoint: managementEndpoint, managers, nativeFactories,
-          processRegistry: new NativeProcessRegistry(join(f.directory, 'processes')),
+          processRegistry,
           responseJournal: new NativeResponseJournal(join(f.directory, 'responses')),
           createSelected: (configuration, conversationId, fileInputs, recovery) => {
             assert(configuration.harness.harness === 'opencode' && configuration.harnessProfileSelection)

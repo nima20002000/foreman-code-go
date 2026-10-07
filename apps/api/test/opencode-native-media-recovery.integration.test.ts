@@ -23,6 +23,7 @@ import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtoc
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { eventually } from './helpers/agentChatF5.js'
 import { waitForDelivery } from './helpers/agentChatDelivery.js'
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { agent3Database, deferred, seedAgent3 } from './helpers/wave25Agent3.js'
 import { nativeConfigurationFixture } from './support/opencodeNativeConfiguration.js'
 
@@ -129,7 +130,10 @@ it('recovers accepted media from native disk in a fresh API and manager, then de
     await send(original.mcp, 'next', id)
     assert.equal((await repository.turn(id, 'next'))?.delivery, 'queued')
     assert.equal((await original.denied.listTools()).tools.some(tool => tool.name === 'agent_chat_send'), false)
-    await assert.rejects(send(original.denied, 'denied', id), /not found/i)
+    await expectMcpAccessDenied(original.denied.callTool({ name: 'agent_chat_send', arguments: {
+      workspaceId, request: { requestId: 'denied', context: query, content: 'denied',
+        intent: 'next_turn', expectedConversationId: id, attachments: [] },
+    } }))
     assert.equal(await repository.turn(id, 'denied'), undefined)
     const row = (await repository.get(id))!
     const server = allocations[0]!.server

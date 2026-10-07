@@ -25,6 +25,7 @@ import { agentMessage, calls, emit, state, until } from './fixtures/codex-test-h
 import { prepareCodexFileTurn } from '../src/modules/harnesses/codexFiles/index.js'
 import { filePorts, fileScope, sourceRef } from './fixtures/codex-file-runtime-helpers.js'
 import { nativeNonSubmission } from '../src/modules/conversations/nativeNonSubmission.js'
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
@@ -169,7 +170,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     return result.structuredContent as AgentChatState
   }
   async function createOperator() {
-    const result = await writer.callTool({ name: 'operator_chat_create', arguments: {} })
+    const result = await writer.callTool({ name: 'operator_chat_create', arguments: { commandId: randomUUID() } })
     assert.notEqual(result.isError, true, JSON.stringify(result))
     return (result.structuredContent as { conversation: { id: string } }).conversation.id
   }
@@ -629,9 +630,9 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       [id, 'unsent'])).rows[0]
     assert.equal(receipt.result.outcome, 'failed')
     assert.equal(receipt.retryable, true)
-    await assert.rejects(reader.callTool({ name: 'operator_chat_send', arguments: {
+    await expectMcpAccessDenied(reader.callTool({ name: 'operator_chat_send', arguments: {
       conversationId: id, request: { requestId: 'denied', content: 'Denied', settings },
-    } }), /not found/i)
+    } }))
     operatorFiles = undefined
     await sendOperator(id, 'retry')
     await until(async () => (await readOperator(id)).turnState === 'idle' || undefined)

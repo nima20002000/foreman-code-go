@@ -116,6 +116,7 @@ export function graphHeaders(token?: string) {
   return { host: 'localhost', accept: 'application/json, text/event-stream', ...(token ? { authorization: `Bearer ${token}` } : {}) }
 }
 export interface RpcResult {
+  nextCursor?: string
   tools?: { name: string }[]; isError?: boolean; structuredContent?: unknown; content?: { type: string; text?: string }[]
 }
 interface RpcEnvelope { result?: RpcResult; error?: unknown }

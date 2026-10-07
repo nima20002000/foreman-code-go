@@ -202,9 +202,17 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     operators = new PostgresOperatorRepository(pool)
     repository = new PostgresOperatorConversationRepository(pool)
     const responseJournal = new NativeResponseJournal(join(f.directory, 'responses'))
+    const processRegistry = new NativeProcessRegistry(join(f.directory, 'processes'))
     const nativeFactories = new NativeHarnessFactories({ ...config.harnesses,
       openCodeFileStorageRoot: config.fileStorageRoot!,
-      appMcpEndpoint: managementEndpoint, responseJournal }, {
+      appMcpEndpoint: managementEndpoint, responseJournal,
+      auxiliaryRecovery: role => processRegistry.scope(`${role}:${randomUUID()}`),
+      admitRecovery: recovery => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
+      abandonRecovery: async recovery => { await processRegistry.abandonReservedLaunch(recovery) },
+      closeRecovery: async recovery => {
+        if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')
+      },
+    }, {
       mode: 'native', openCodeServer: options => {
         serverOptions.push(options)
         const server = new RecordedOpenCodeServer({ ...options,
@@ -220,7 +228,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     prepare = vi.spyOn(authority, 'prepare')
     const resolve = productionOperatorManagers({ app: () => app, pool, config, workingDirectory: cwd,
       endpointHost: '127.0.0.1', appMcpEndpoint: managementEndpoint, managers,
-      processRegistry: new NativeProcessRegistry(join(f.directory, 'processes')),
+      processRegistry,
       responseJournal, nativeFactories })
     chat = new OperatorChatService(repository, operators, resolve, cwd, authority)
     app = buildApp({ logger: false, readiness: {

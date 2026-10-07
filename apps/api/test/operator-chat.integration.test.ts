@@ -1,5 +1,6 @@
 import { SessionControlStore } from '../src/modules/conversations/sessionControls/store.js'
 import { SessionPreferencesSchema } from '@foreman-code/contracts'
+import { CLAUDE_FULL_ACCESS_REQUIRED } from '@foreman-code/contracts/claude'
 import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
@@ -635,8 +636,8 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const selection = { instanceId: randomUUID(), instanceRevision: '1', target: { hostRef: { kind: 'main' as const, mainId },
       applicationInstallationId: mainId, harnessInstallationId: 'synthetic-haiku-installation', installationFingerprint: 'synthetic-payload' } }
     const base = { harness: 'claude' as const, model: 'claude-sonnet-5-5', effort: 'medium' as const, authMode: 'subscription' as const,
-      configDirectory: '/synthetic/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
-      tools: ['Read'], permissionRules: [], instructions: 'Keep the saved read-only policy.', mcpServers: {} }
+      configDirectory: '/synthetic/profile', permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
+      tools: ['Read'], permissionRules: [], instructions: 'Keep the saved tool policy.', mcpServers: {} }
     const configuration = applyOperatorChatSettings(base, { harness: 'claude', model: 'claude-haiku-4-5-20251001', showThinking: false })
     const validated: unknown[] = []
     const prepared: unknown[] = []
@@ -660,10 +661,21 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const before = await read()
       const input = { commandId: randomUUID(), expectedRevision: before.revision, value: { ...before.value,
         operator: { ...before.value.operator, harness: configuration } } }
-      const accepted = AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent)
+      const unsupported = await client.callTool({ name: 'agent_defaults_update', arguments: {
+        ...input, commandId: randomUUID(), value: { ...input.value,
+          operator: { ...input.value.operator, harness: { ...configuration, sandbox: 'read-only' } } },
+      } })
+      expect(unsupported.isError, JSON.stringify(unsupported)).toBe(true)
+      expect(unsupported.content).toEqual([{ type: 'text', text: expect.stringContaining(CLAUDE_FULL_ACCESS_REQUIRED) }])
+      expect(await read()).toEqual(before)
+      expect(validated).toHaveLength(0)
+      expect(prepared).toHaveLength(0)
+      const result = await client.callTool({ name: 'agent_defaults_update', arguments: input })
+      expect(result.isError, JSON.stringify(result)).not.toBe(true)
+      const accepted = AgentDefaultsUpdateResultSchema.parse(result.structuredContent)
       expect((await read()).value.operator.harness).toEqual(configuration)
       expect((await read()).value.operator.harness).not.toHaveProperty('effort')
-      expect((await read()).value.operator.harness).toMatchObject({ sandbox: 'read-only', tools: ['Read'] })
+      expect((await read()).value.operator.harness).toMatchObject({ sandbox: 'danger-full-access', tools: ['Read'] })
       expect(validated).toEqual([configuration])
       expect(prepared).toEqual([configuration])
       expect((await read()).value.operator.harnessProfileSelection).toEqual(selection)

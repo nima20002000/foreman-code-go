@@ -37,6 +37,7 @@ import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js
 import { agent3Database, deferred, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 import { configuration, FixtureServer, json } from './opencode-fixtures.js'
 import { waitForDelivery } from './helpers/agentChatDelivery.js'
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 it('retains current delivery listeners when an older subscription is released twice', () => {
   const events = new AgentChatEvents()
@@ -226,8 +227,8 @@ describe.skipIf(!postgresEnabled)('OpenCode file cleanup and persisted chat queu
           await mkdir(moved.original)
           await writeFile(join(moved.original, 'foreign.md'), 'keep foreign replacement')
         }
-        await assert.rejects(readerMcp.callTool({ name: 'agent_chat_send',
-          arguments: { workspaceId, request: request('denied', id) } }), /not found/)
+        await expectMcpAccessDenied(readerMcp.callTool({ name: 'agent_chat_send',
+          arguments: { workspaceId, request: request('denied', id) } }))
         assert.equal(await conversations.turn(id, 'denied'), undefined)
         const queued = await writerMcp.callTool({ name: 'agent_chat_send',
           arguments: { workspaceId, request: request('B', id) } })
