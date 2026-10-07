@@ -32,7 +32,8 @@ const verificationSaveResult = z.object({ profile: JobVerificationProfileSchema 
 async function fixture() {
   const db = await currentDatabase(), access = new PostgresAccessService(db.pool), workspaceId = randomUUID()
   const owner = await access.issue({ name: 'Runtime fixture owner', audience: 'operator',
-    grants: [{ actions: ['job_definitions:read', 'job_definitions:write', 'sources:read', 'source_roots:read'], scope: { workspaceIds: [workspaceId] } }], expiresAt: new Date(Date.now() + 3_600_000) })
+    grants: [{ actions: ['job_definitions:read', 'job_definitions:write', 'sources:read', 'source_roots:read',
+      'jobs:start', 'job_artifacts:read'], scope: { workspaceIds: [workspaceId] } }], expiresAt: new Date(Date.now() + 3_600_000) })
   const mainId = (await db.pool.query('select id from application_installation')).rows[0].id
   const sourceId = randomUUID(), snapshotId = randomUUID(), rootId = randomUUID()
   const sourceBytes = Buffer.from('{}')
