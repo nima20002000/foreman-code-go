@@ -17,6 +17,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { configuration, FixtureServer } from './opencode-fixtures.js'
 import { eventually } from './helpers/agentChatF5.js'
 import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 for (const size of ['multi-image prompt', 'large page'] as const) {
   it(`settles a ${size} and delivers queued input through authenticated MCP and persisted chat recovery`, async () => {
@@ -97,7 +98,7 @@ for (const size of ['multi-image prompt', 'large page'] as const) {
       const rejected = { workspaceId, request: { requestId: 'denied', context: query, content: 'denied',
         intent: 'next_turn', expectedConversationId: conversationId } }
       assert.equal((await denied.listTools()).tools.some(tool => tool.name === 'agent_chat_send'), false)
-      await assert.rejects(denied.callTool({ name: 'agent_chat_send', arguments: rejected }), /not found/)
+      await expectMcpAccessDenied(denied.callTool({ name: 'agent_chat_send', arguments: rejected }))
       assert.equal((await repository.state(conversationId))?.turns.some(turn => turn.requestId === 'denied'), false)
       if (size === 'large page') {
         for (let index = 0; index < 64; index += 1) {
