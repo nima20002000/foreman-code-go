@@ -114,6 +114,11 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
       values($1,$2,$3,1)`, [root.binding.rootId, workspaceId, randomUUID()])
     await pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
       values($1,1,$2,$3,$4::jsonb)`, [root.binding.rootId, workspaceId, source.snapshotId, JSON.stringify(root)])
+    await pool.query(`insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record)
+      values($1,$2,1,$3,1,$4::jsonb)`, [computer.candidate.profile.id, workspaceId,
+      root.binding.rootId, JSON.stringify(computer.candidate.profile)])
+    await pool.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,1,$2::jsonb)',
+      [computer.candidate.profile.id, JSON.stringify(computer.candidate.profile)])
     await settings.update(options.settingsPrincipal ?? principal, 'http', { target: computer.target, commandId: randomUUID(),
       expectedRevision: 0, buildEnabled: true, buildPriority: 100 })
   }
