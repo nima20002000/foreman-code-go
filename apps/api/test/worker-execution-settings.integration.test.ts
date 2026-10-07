@@ -175,7 +175,10 @@ it.each(['0', '1'])(
       const client = await connect(denied.token)
       const tools = (await client.listTools()).tools.map(tool => tool.name)
       expect(tools).not.toContain('worker_execution_settings_get')
-      await expect(client.callTool({ name: 'worker_execution_settings_get', arguments: {} })).rejects.toThrow()
+      const refused = await client.callTool({ name: 'worker_execution_settings_get', arguments: {} })
+      expect(refused.isError).toBe(true)
+      const body = refused.content.find((item) => item.type === 'text')
+      expect(JSON.parse(body!.text as string)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
       const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {} })
       expect(capabilities.structuredContent).toMatchObject({
         grants,
