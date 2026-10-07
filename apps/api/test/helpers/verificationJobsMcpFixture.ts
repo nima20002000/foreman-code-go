@@ -62,6 +62,8 @@ async function seedQualifiedMetadata(database: Awaited<ReturnType<typeof current
   metadata: Map<string, JobRuntimeFingerprintRecord>, profile: JobVerificationProfile,
   seed: ReturnType<typeof verificationRuntimeFixture>, principalId: string) {
   const original = seed.measurement
+  const approvalExpiresAt = new Date(Date.parse(original.approvedAt)
+    + profile.approvalConfig.approvalLifetimeMs).toISOString()
   const fingerprint = { ...original.fingerprint, profileId: profile.id, profileRevision: profile.revision,
     specDigest: profile.specDigest, root: profile.root, hostRef: profile.root.selection.hostRef,
     registration: profile.root.registration, mainInstallationId: profile.root.binding.mainId,
@@ -72,7 +74,7 @@ async function seedQualifiedMetadata(database: Awaited<ReturnType<typeof current
   const measurement = JobVerificationRuntimeMeasurementSchema.parse({ ...original, fingerprint,
     identity: { ...original.identity, profileId: profile.id, profileRevision: profile.revision,
       rootId: profile.root.binding.rootId, bindingRevision: profile.root.binding.bindingRevision,
-      fingerprintDigest: jobDigest(fingerprint) },
+      fingerprintDigest: jobDigest(fingerprint), approvalExpiresAt },
     suites: original.suites.map(suite => ({ ...suite, maxUnitWorkers: 16 })),
   })
   const qualified = JobVerificationProfileSchema.parse({ ...profile, status: 'qualified', measurement })
@@ -84,7 +86,7 @@ async function seedQualifiedMetadata(database: Awaited<ReturnType<typeof current
     workspaceId: profile.workspaceId, profileId: profile.id, profileRevision: profile.revision,
     fingerprint, fingerprintDigest: measurement.identity.fingerprintDigest,
     requestedByPrincipalId: principalId, status: 'complete', approvedByPrincipalId: principalId,
-    approvedAt: measurement.approvedAt, requestedAt: measurement.approvedAt, expiresAt: measurement.expiresAt })
+    approvedAt: measurement.approvedAt, requestedAt: measurement.approvedAt, expiresAt: approvalExpiresAt })
   await database.pool.query(`insert into job_runtime_qualification_approvals
     (id,qualification_id,profile_id,profile_revision,workspace_id,record,measurement,requested_by,approved_by)
     values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$8)`, [approval.id, approval.qualificationId,
