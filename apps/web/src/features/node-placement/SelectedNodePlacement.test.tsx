@@ -6,7 +6,7 @@ import { beginSessionChange, finishSessionChange } from '../../shared/api/sessio
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { SelectedNodePlacement } from './SelectedNodePlacement'
 import * as client from './client'
-import { acceptedPlacementFixture as placement } from './fixtures'
+import { acceptedPlacementFixture as placement, workerObservationFixture as observation } from './fixtures'
 
 const scope = { workspaceId: 'workspace-a', workflowId: 'workflow-a', runId: 'run-a', nodeId: 'node-a' }
 function selection(id: number, current: () => boolean): SelectedRunState {
@@ -57,4 +57,49 @@ it('a response from a prior Operator session cannot reveal placement', async () 
   view.rerender(<SelectedNodePlacement selection={selection(1, () => true)} nodeId="node-a" />)
   expect(screen.queryByText('Laptop at acceptance')).not.toBeInTheDocument()
   finishSessionChange()
+})
+
+it('refreshes open computer evidence as execution starts, finishes and reconnects', async () => {
+  const read = vi.spyOn(client, 'readNodePlacement').mockResolvedValue(result())
+  render(<SelectedNodePlacement selection={selection(1, () => true)} nodeId="node-a" />, { wrapper: wrap() })
+  await screen.findByText(/Awaiting worker acknowledgment/)
+  const running = { ...observation, phase: 'running' as const, sequence: '2' }
+  read.mockResolvedValue({ ...scope, readback: { evidence: 'accepted', placement, observations: [running] } })
+  await screen.findByText('Execution observed on Laptop at acceptance · running', {}, { timeout: 5000 })
+  read.mockResolvedValue({ ...scope, readback: { evidence: 'accepted', placement,
+    observations: [running, { ...observation, phase: 'terminal', sequence: '3' }] } })
+  await screen.findByText('Execution observed on Laptop at acceptance · terminal', {}, { timeout: 5000 })
+  read.mockResolvedValue({ ...scope, readback: { evidence: 'accepted', placement,
+    observations: [running, { ...observation, phase: 'terminal', sequence: '4',
+      connection: { ...observation.connection, connectionGeneration: 2,
+        bootId: '70000000-0000-4000-8000-000000000001' },
+      native: { processId: 123, exitCode: 0 } }] } })
+  await screen.findByText('123', {}, { timeout: 5000 })
+  expect(screen.getByText('Execution observed on Laptop at acceptance · terminal')).toBeInTheDocument()
+}, 16000)
+
+it('withdraws loaded facts after a delayed permission-loss refresh', async () => {
+  let reject!: (error: Error) => void
+  const denied = new Promise<ReturnType<typeof result>>((_resolve, fail) => { reject = fail })
+  const read = vi.spyOn(client, 'readNodePlacement').mockResolvedValueOnce(result()).mockImplementation(() => denied)
+  render(<SelectedNodePlacement selection={selection(1, () => true)} nodeId="node-a" />, { wrapper: wrap() })
+  await screen.findByText('Laptop at acceptance')
+  await waitFor(() => expect(read).toHaveBeenCalledTimes(2), { timeout: 5000 })
+  await act(async () => { reject(new ApiError({ code: 'DENIED', message: 'No access' }, 403)) })
+  await screen.findByText(/No access/)
+  expect(screen.queryByText('Laptop at acceptance')).toBeNull()
+}, 8000)
+
+it('does not attribute a delayed replacement Worker observation to the accepted installation', async () => {
+  let release!: (value: ReturnType<typeof result>) => void
+  const delayed = new Promise<ReturnType<typeof result>>(resolve => { release = resolve })
+  vi.spyOn(client, 'readNodePlacement').mockImplementation(() => delayed)
+  render(<SelectedNodePlacement selection={selection(1, () => true)} nodeId="node-a" />, { wrapper: wrap() })
+  await act(async () => { release({ ...scope, readback: { evidence: 'accepted', placement, observations: [{
+    ...observation, phase: 'running', sequence: '2',
+    connection: { ...observation.connection, workerInstallationId: '60000000-0000-4000-8000-000000000001' },
+  }] } } as ReturnType<typeof result>) })
+  await screen.findByText('Laptop at acceptance')
+  expect(screen.queryByText(/Execution observed on/)).toBeNull()
+  expect(screen.getByText(/Awaiting worker acknowledgment/)).toBeInTheDocument()
 })

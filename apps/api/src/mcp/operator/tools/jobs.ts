@@ -37,7 +37,8 @@ const actions:Record<JobToolName,ManagementAction> = {
 export const JOB_QUEUE_CAPABILITY_DETAIL = 'Standalone build Jobs require owner-reviewed Main queue configuration and support saved Auto or fixed placement. '
   + 'Requests wait for capacity before source preparation. '
   + 'Auto selects an authorized eligible computer with available capacity by build priority; fixed placement waits for its saved computer. '
-  + 'Start placement overrides select Auto or an explicit computer/root against the saved security and resource requirements, without editing the definition. '
+  + 'Start placement overrides select Auto, a preferred computer with build-order fallback, or an explicit computer/root against the saved security and resource requirements, without editing the definition. '
+  + 'Agent-triggered CI records initiatingAgent separately from workflow-node membership; reads retain this provenance. '
   + 'Workflow-node queuing and start estimates are not implemented. '
   + 'Queue reads require jobs:read and have no side effects; enqueue requires jobs:start and cancellation requires jobs:cancel. '
   + 'Live grants, saved revisions, command retries and original execution identities remain enforced.'
@@ -117,6 +118,7 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   if (jobToolAvailable(context, 'job_queue_list')) server.registerTool('job_queue_list', {
     description: 'Read every active workspace-scoped build request plus a page of completed request history. '
       + 'Use nextHistoryCursor as historyBeforeSequence to read older history; active requests appear on every page. '
+      + 'Optionally filter by initiatingExecutionId to inspect an Agent execution’s CI requests. '
       + 'historyLimit bounds history only. Queue positions describe this workspace. Reading never starts work.',
     inputSchema: scope.extend(JobQueueListInputSchema.shape), outputSchema: JobQueuePageSchema, annotations: read,
   }, input => invoke(context, 'job_queue_list', () => {

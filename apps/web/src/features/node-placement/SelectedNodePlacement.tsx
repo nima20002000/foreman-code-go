@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
+import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'
-import { runReadErrorLabel } from '../runs-selector/query'
+import { isRunAccessError, runReadErrorLabel } from '../runs-selector/query'
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { NodePlacementFacts } from './NodePlacementFacts'
 import { readNodePlacement } from './client'
@@ -9,7 +10,7 @@ import { readNodePlacement } from './client'
  * settings can fill missing accepted placement. No stale/private placeholders. */
 export function SelectedNodePlacement({ selection, nodeId }: { selection: SelectedRunState; nodeId: string }) {
   const { identity, generation } = selection
-  const session = sessionGeneration()
+  const session = useHarnessSessionEpoch()
   const query = useQuery({
     queryKey: ['node-placement', session, identity.workspaceId, identity.workflowId, identity.runId, generation.id, nodeId],
     queryFn: async ({ signal }) => {
@@ -21,10 +22,13 @@ export function SelectedNodePlacement({ selection, nodeId }: { selection: Select
     },
     enabled: selection.active && !selection.invalid && identity.runId !== null && !sessionIsSwitching(),
     retry: false, staleTime: 0, gcTime: 0, placeholderData: () => undefined,
+    refetchInterval: query => isRunAccessError(query.state.error) ? false : 3000,
   })
   const current = selection.active && !selection.invalid && selection.isCurrent(generation) && session === sessionGeneration() && !sessionIsSwitching()
   if (!current || identity.runId === null) return null
-  if (query.isError) return <p role="status">{runReadErrorLabel(query.error)}. Computer evidence is unavailable.</p>
+  if (query.isError) return <p role="status">{runReadErrorLabel(query.error)}. Computer evidence is unavailable.
+    <button type="button" onClick={() => { if (selection.isCurrent(generation)) void query.refetch() }}>Refresh computer evidence</button>
+  </p>
   if (!query.data) return <p role="status">{query.isPaused ? 'Offline. Computer evidence is unavailable.' : 'Reading accepted computer evidence…'}</p>
   return <NodePlacementFacts runId={identity.runId} nodeId={nodeId} readback={query.data.readback} />
 }

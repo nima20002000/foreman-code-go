@@ -86,7 +86,8 @@ export function ciFixture() {
     }
     const principal = caller.audience === 'worker' ? accepted : caller
     for (const action of actions) requireAuthorization(principal, action, { workspaceId: resolved })
-    return { principal, workspaceId: resolved, ...(caller.audience === 'worker' && agentExecution.id ? { executionId: agentExecution.id } : {}) }
+    return { principal, workspaceId: resolved, ...(caller.audience === 'worker' && agentExecution.id ? { executionId: agentExecution.id, initiatingAgent: { workflowId: 'workflow', runId: 'run',
+      agentId: worker.agentId!, executionId: agentExecution.id } } : {}) }
   } }
   const sources = {
     approveProject: async (principal: ManagementPrincipal, input: { workspaceId: string; commandId: string; commit?: string
@@ -125,7 +126,8 @@ export function ciFixture() {
         name: input.name, spec: input.spec, createdAt: now, updatedAt: now })
       return structuredClone(definition)
     },
-    enqueue: async (principal: ManagementPrincipal, _source: string, scope: string, input: { commandId: string }) => {
+    enqueue: async (principal: ManagementPrincipal, _source: string, scope: string, input: { commandId: string; placementOverride?: unknown },
+      origin: { initiatingAgent?: unknown } = {}) => {
       enqueues++
       enqueued.push(input)
       expectDefinition()
@@ -133,8 +135,8 @@ export function ciFixture() {
       const at = Date.now(), now = new Date(at).toISOString()
       ticket = JobQueueTicketSchema.parse({ schemaVersion: 1, id: randomUUID(), workspaceId: scope, revision: 1,
         commandId: input.commandId, commandDigest: jobDigest(input), principalId: principal.id, definition,
-        executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(), workflow: null, gateId: null,
-        placement: { kind: 'auto' }, placementOverride: null, resources: runtime.spec.verification.resources,
+        executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(), workflow: null, initiatingAgent: origin.initiatingAgent, gateId: null,
+        placement: input.placementOverride ?? { kind: 'auto' }, placementOverride: input.placementOverride ?? null, resources: runtime.spec.verification.resources,
         enqueueSequence: '1', enqueuedAt: now, deadlineAt: new Date(at + 60_000).toISOString(),
         state: 'waiting', waitingReasons: ['busy'], compatibleTargetCount: 1, queuePosition: 1, estimatedStartAt: null,
         reservationId: null, cancelRequestedAt: null, terminalReason: null, finishedAt: null })
@@ -173,7 +175,7 @@ export function ciFixture() {
     complete: (options: { publication?: 'collecting' | 'failed' | 'expired'; failed?: true } = {}) => {
       if (!ticket) throw new Error('Missing queued ticket')
       execution = VerificationJobExecutionSchema.parse({ ...jobExecution(), schemaVersion: 2,
-        id: ticket.executionId, attemptId: ticket.attemptId, operationId: ticket.operationId, workspaceId,
+        id: ticket.executionId, initiatingAgent: ticket.initiatingAgent, attemptId: ticket.attemptId, operationId: ticket.operationId, workspaceId,
         acceptedSpec: { ...runtime.spec, definitionVersionId: ticket.definition.versionId,
           source: { ...runtime.spec.source, ...ticket.definition.spec.source } },
         publication: options.publication ?? 'complete',
