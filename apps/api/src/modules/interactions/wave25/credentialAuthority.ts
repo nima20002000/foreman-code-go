@@ -4,7 +4,7 @@ import type { GraphSqlClient } from '../../run-graph/connection.js'
 import { resolveImmutableApprovalRoute, usesNativeSelfReview } from '../../workflows/approvalRoutes.js'
 import { validateReviewerBootstrap } from '../../workflows/reviewerBootstrap.js'
 import { fail } from './context.js'
-import { readRetainedRemoteReviewer } from '../retainedRemoteReviewer.js'
+import { readRecoverableRemoteReviewer } from '../retainedRemoteReviewer.js'
 
 type Purpose = 'workflow' | 'reviewer'
 export async function credentialAuthority(sql: GraphSqlClient, executionId: string, purpose: Purpose) {
@@ -83,7 +83,8 @@ export async function assertWave25WorkerBinding(sql: GraphSqlClient, principalId
     if (epoch.rowCount !== 1) {
       const execution = (await sql.query<{ record: unknown }>('select record from harness_executions where id=$1',
         [row.execution_id])).rows[0]
-      const retained = execution && await readRetainedRemoteReviewer(sql, HarnessExecutionSchema.parse(execution.record))
+      const retained = execution && await readRecoverableRemoteReviewer(sql, HarnessExecutionSchema.parse(execution.record))
+      // Recovery preserves the principal; its stale App binding remains denied until rebinding.
       if (retained?.principalId === principalId) return fail('REVIEWER_BINDING_REBIND_REQUIRED')
       return fail('AUTH_REVOKED')
     }
@@ -92,7 +93,7 @@ export async function assertWave25WorkerBinding(sql: GraphSqlClient, principalId
   if (authority.run.id !== row.run_id || authority.run.workspaceId !== row.workspace_id || authority.run.workflowId !== row.workflow_id
     || authority.execution.agentId !== row.agent_id || authority.nativeSessionId !== row.approval_native_session_id
     || authority.generation !== row.approval_connection_generation) {
-    const retained = row.purpose === 'reviewer' && await readRetainedRemoteReviewer(sql, authority.execution)
+    const retained = row.purpose === 'reviewer' && await readRecoverableRemoteReviewer(sql, authority.execution)
     if (retained && retained.principalId === principalId) return fail('REVIEWER_BINDING_REBIND_REQUIRED')
     return fail('AUTH_REVOKED')
   }

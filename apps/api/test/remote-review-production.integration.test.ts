@@ -228,6 +228,13 @@ describe('production remote review and native recovery through authenticated MCP
       const ownerLaunchIds = fixture.registry.snapshot().launches.filter(owner => originalLaunches.some(
         original => original.owner === owner.owner)).map(owner => owner.launchId).sort()
       const originalReceipts = await receipts(fixture, active.run.id)
+      const processCredentials = async () => (await fixture.db.pool.query<{
+        principal_id: string; execution_id: string
+      }>(`select principal_id,execution_id from worker_credential_bindings
+        where run_id=$1 and revoked_at is null order by execution_id,principal_id`, [active.run.id])).rows
+      const originalCredentials = await processCredentials()
+      expect(originalCredentials.map(row => row.execution_id).sort())
+        .toEqual([active.reviewer.id, active.requester.id].sort())
       await fixture.restartMain({ mode: recovery === 'graceful' ? 'graceful' : 'crash', afterShutdown: async () => {
         if (recovery === 'graceful') {
           const lifetime = (await fixture.db.pool.query<{ detached: boolean; closed: boolean }>(`select
@@ -274,17 +281,19 @@ describe('production remote review and native recovery through authenticated MCP
       await waitForRemoteReview(async () => {
         await fixture.reconcile()
         const row = (await fixture.db.pool.query<{ record: unknown; credential_bound: boolean; reviewer_live: boolean }>(`select
-          j.record,b.approval_review_lease_fence=j.lease_fence as credential_bound,
-          (r.receipt#>>'{retainedReviewer,expiresAt}')::timestamptz>clock_timestamp() as reviewer_live
-          from review_jobs j join worker_credential_bindings b on b.execution_id=j.execution_id
-          join execution_dispatch_intents i on i.execution_id=j.execution_id
-          join remote_execution_receipts r using(operation_id)
-          where j.id=$1 and b.revoked_at is null`, [active.job.id])).rows[0]!
+          j.record,exists(select 1 from worker_credential_bindings b where b.execution_id=j.execution_id
+            and b.approval_review_lease_fence=j.lease_fence and b.revoked_at is null) as credential_bound,
+          exists(select 1 from execution_dispatch_intents i join remote_execution_receipts r using(operation_id)
+            where i.execution_id=j.execution_id
+              and (r.receipt#>>'{retainedReviewer,expiresAt}')::timestamptz>clock_timestamp()) as reviewer_live
+          from review_jobs j where j.id=$1`, [active.job.id])).rows[0]
+        if (!row) return undefined
         return { job: ReviewJobSchema.parse(row.record),
           credentialBound: row.credential_bound, reviewerLive: row.reviewer_live }
-      }, value => value.job.attempt > active.job.attempt && value.job.state === 'acknowledged'
+      }, value => !!value && value.job.attempt > active.job.attempt && value.job.state === 'acknowledged'
         && value.credentialBound && value.reviewerLive,
       'replacement Main review lease and original process credential rebinding')
+      expect(await processCredentials()).toEqual(originalCredentials)
       if (recovery === 'graceful') {
         const generations = (await fixture.db.pool.query<{ generation: string; detached: boolean; closed: boolean }>(`select
           generation::text,detached_at is not null as detached,closed_at is not null as closed

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, ReviewJobSchema, type ReviewJob } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { ExclusiveGraphConnection } from '../run-graph/connection.js'
@@ -113,7 +113,9 @@ async function recoveryFixture() {
   const worker = { receipt: structuredClone(f.receipt), authenticated: true, session: f.session,
     principalId: f.principal.id }
   const requests: string[] = []
-  const credentials = { recoverRemote: vi.fn(async () => ({ principalId: worker.principalId,
+  const credentials = { bindReviewerJob: vi.fn(async () => {
+    if (!f.state.live || f.state.detached) throw new Error('Worker recovery must refresh its receipt before binding a review job')
+  }), recoverRemote: vi.fn(async () => ({ principalId: worker.principalId,
     expiresAt: f.principal.expires_at.toISOString(),
     environment: { agentId: f.execution.agentId, variables: { GRAPHQL_MCP_TOKEN: 'original-token' } } })) }
   const closures = {
@@ -160,9 +162,10 @@ async function recoveryFixture() {
     undefined, undefined, undefined, undefined, undefined,
     async context => ({ ...context, acceptedPlacement: f.placement }))
   }
-  const attach = (main: ApprovalExecutionCoordinator) => main.attachOwnedSession({
+  const attach = (main: ApprovalExecutionCoordinator, job?: ReviewJob) => main.attachOwnedSession({
     executionId: f.execution.id, agentId: f.execution.agentId, harness: 'codex',
     workingDirectory: f.execution.workingDirectory!, purpose: 'reviewer',
+    ...(job ? { reviewJob: job } : {}),
   }, f.session)
   return { ...f, worker, requests, credentials, closures, resident, coordinator, attach }
 }
@@ -244,6 +247,27 @@ describe('retained remote reviewer recovery', () => {
       expect(f.receipt.retainedReviewer!.expiresAt).toBe(f.worker.receipt.retainedReviewer!.expiresAt)
       expect(f.credentials.recoverRemote).toHaveBeenCalledTimes(1)
       expect(f.closures.begin).not.toHaveBeenCalled()
+      expect(f.requests).toEqual(['reattach', 'get-application-access'])
+      await main.closeForRestart()
+    } finally { await f.connection.close() }
+  })
+
+  it('refreshes authenticated Worker evidence before rebinding the original reviewer to a recovered job', async () => {
+    const f = await recoveryFixture()
+    try {
+      f.receipt.retainedReviewer!.expiresAt = new Date(Date.now() - 60_000).toISOString()
+      f.state.live = false
+      f.worker.receipt.sequence++
+      const now = new Date().toISOString()
+      const job = ReviewJobSchema.parse({ id: 'recovered-review', interactionId: 'pending-interaction',
+        reviewerAgentId: f.execution.agentId, attempt: 2, state: 'acknowledged', provider: f.session.harness,
+        nativeSessionId: f.session.nativeSessionId, correlationId: 'original-review-turn',
+        createdAt: now, updatedAt: now, leaseOwner: 'main', leaseToken: 'review-lease',
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString() })
+      const main = f.coordinator()
+      expect((await f.attach(main, job)).session).toEqual(f.session)
+      expect(f.credentials.bindReviewerJob).toHaveBeenCalledTimes(2)
+      expect(f.receipt.retainedReviewer!.expiresAt).toBe(f.worker.receipt.retainedReviewer!.expiresAt)
       expect(f.requests).toEqual(['reattach', 'get-application-access'])
       await main.closeForRestart()
     } finally { await f.connection.close() }
