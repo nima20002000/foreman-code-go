@@ -49,6 +49,8 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
   if (operatorToolAvailable(context, 'harness_list')) server.registerTool('harness_list', {
     description: 'List observed local harness versions, dynamic model catalogs, contract compatibility, '
       + 'saved defaults and application interactionSupport limits. Discovery errors identify unmet contracts. '
+      + 'Only configured presets are listed; unavailable presets keep their harness identity and include a reason. '
+      + 'An absent preset does not change existing saved Agents. Use agent_get to read their saved configuration. '
       + 'Codex supports generic questions, MCP approvals, and schema-validated data-entry forms. '
       + 'When native discovery cannot select a default model, capability is null with HARNESS_MODEL_DEFAULT_UNAVAILABLE; '
       + 'choose an explicit native model before using that preset. Claude access choices that need configuration return CLAUDE_FULL_ACCESS_REQUIRED; choose Full access explicitly.',
@@ -60,6 +62,8 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
     description: 'Read the selected harness observed version, dynamic capabilities, saved defaults '
       + 'and application interactionSupport limits. Compatible versions are accepted by contract behavior; '
       + 'authentication and host policy still apply. '
+      + 'A missing Claude preset returns HARNESS_PROFILE_REQUIRED with setup instructions; '
+      + 'existing Agents retain their saved harness. '
       + 'Read supported and unsupported descriptions before requesting native input; '
       + 'Codex supports generic questions and schema-validated data-entry forms. '
       + 'An unavailable native default returns capability null and HARNESS_MODEL_DEFAULT_UNAVAILABLE; template values do not qualify execution. Claude presets with unsupported access return capability null and CLAUDE_FULL_ACCESS_REQUIRED until the user explicitly chooses Full access.',

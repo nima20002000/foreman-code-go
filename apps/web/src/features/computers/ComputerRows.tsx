@@ -8,6 +8,7 @@ import { useBuildComputers } from '../../shared/api/buildComputers'
 import { computerKey, useComputerActivity } from '../../shared/api/computerActivity'
 import { useComputerAccounts } from '../../shared/api/computerAccounts'
 import { MainRuntimeSetup } from '../runtime-qualification/MainRuntimeSetup'
+import { ComputerSyncControls } from './ComputerSync'
 import { ComputerAccountControls } from './ComputerAccounts'
 import { useComputerActivityFreshness } from './useComputerActivityFreshness'
 import { Alert, Button, IconButton, LoadingState, Switch, Select, TextField } from '../../shared/ui/nocturne'
@@ -113,6 +114,7 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
               accounts={accounts.isError ? undefined : accounts.data?.computers
                 .find(computer => sameDeviceProvisioningTarget(computer.target, target))?.accounts}
               onRetry={() => void accounts.refetch()} retrying={accounts.isFetching} />
+            <ComputerSyncControls key={`sync:${JSON.stringify(target)}`} target={target} name={computerName(target)} />
             <ComputerUtilization target={target} online={activityFresh && (observed?.online ?? false)} />
             {target.hostRef.kind === 'device' && onSelectComputer && <IconButton label={`Open ${computerName(target)}`}
               variant="ghost" size="sm" onClick={() => {

@@ -12,7 +12,7 @@ it('allows unavailable account feedback and its full retry action to wrap in a n
   render(<>
     <style>{computerStyles}</style>
     <div style={{ width: 274 }}>
-      <ComputerAccountChips accounts={null} onRetry={retry} onGitHub={() => {}} onDrive={() => {}} />
+      <ComputerAccountChips accounts={null} onRetry={retry} onGitHub={() => {}} />
     </div>
   </>)
   const group = screen.getByRole('group', { name: 'Accounts' })

@@ -1,0 +1,94 @@
+import { afterEach, expect, it } from 'vitest'
+import { SyncComputerStateSchema, SyncIdentitySchema } from '@foreman-code/contracts/computer-accounts'
+import { SyncthingComputer, sharedFolderId } from './syncthingComputer.js'
+import { fakeSyncthing, workerSyncId } from '../../../test/helpers/syncthing.js'
+
+const fixtures: Awaited<ReturnType<typeof fakeSyncthing>>[] = []
+afterEach(async () => { await Promise.all(fixtures.splice(0).map(fixture => fixture.close())) })
+async function fixture() {
+  const rest = await fakeSyncthing()
+  fixtures.push(rest)
+  return { ...rest, computer: new SyncthingComputer(rest.ports) }
+}
+const peer = { deviceId: workerSyncId, address: '100.76.219.118' }
+
+it('installs automatically and configures only explicit Tailscale peers with local folders and versioning', async () => {
+  const f = await fixture()
+  expect(await f.computer.handle({ operation: 'status' })).toMatchObject({ installed: false, running: false })
+  expect(SyncIdentitySchema.parse(await f.computer.handle({ operation: 'identity' }))).toEqual(f.identity)
+  await f.computer.handle({ operation: 'configure', workspaceId: 'workspace-a', enabled: true, peers: [peer] })
+  expect(await f.rest('GET', '/rest/config/options')).toMatchObject({ globalAnnounceEnabled: false,
+    relaysEnabled: false, localAnnounceEnabled: false, listenAddresses: ['tcp://100.64.0.1:22001'] })
+  expect(await f.rest('GET', '/rest/config/devices')).toEqual([expect.objectContaining({ deviceID: workerSyncId,
+    addresses: ['tcp://100.76.219.118:22001'], introducer: false, autoAcceptFolders: false })])
+  const path = `/main/shared/${sharedFolderId('workspace-a')}`
+  expect(await f.rest('GET', '/rest/config/folders')).toEqual([expect.objectContaining({ id: sharedFolderId('workspace-a'),
+    path, type: 'sendreceive', devices: [{ deviceID: f.identity.deviceId }, { deviceID: workerSyncId }],
+    versioning: { type: 'simple', params: { keep: '5' }, cleanupIntervalS: 3600 } })])
+  expect(f.directories.has(path)).toBe(true)
+})
+
+it('keeps workspace identities separate, replaces membership and disconnects without deleting local files', async () => {
+  const f = await fixture()
+  for (const workspaceId of ['workspace-a', 'workspace-b']) {
+    await f.computer.handle({ operation: 'configure', workspaceId, enabled: true, peers: [peer] })
+  }
+  await f.computer.handle({ operation: 'configure', workspaceId: 'workspace-a', enabled: true, peers: [] })
+  const folders = await f.rest('GET', '/rest/config/folders') as { id: string; devices: unknown[] }[]
+  expect(folders.find(folder => folder.id === sharedFolderId('workspace-a'))?.devices).toEqual([{ deviceID: f.identity.deviceId }])
+  expect(folders.find(folder => folder.id === sharedFolderId('workspace-b'))?.devices).toHaveLength(2)
+  await f.computer.handle({ operation: 'configure', workspaceId: 'workspace-a', enabled: false, peers: [] })
+  expect(await f.rest('GET', '/rest/config/folders')).toHaveLength(1)
+  expect(f.directories.has(`/main/shared/${sharedFolderId('workspace-a')}`)).toBe(true)
+})
+
+it('shares a workspace with more than 100 participating computers', async () => {
+  const f = await fixture()
+  const peers = Array.from({ length: 101 }, (_, index) => {
+    const suffix = index.toString(2).padStart(7, '0').replaceAll('0', 'D').replaceAll('1', 'E')
+    return { deviceId: [...Array<string>(7).fill('DDDDDDD'), suffix].join('-'), address: `100.64.1.${index + 1}` }
+  })
+  await f.computer.handle({ operation: 'configure', workspaceId: 'large-workspace', enabled: true, peers })
+  const folders = await f.rest('GET', '/rest/config/folders') as { devices: { deviceID: string }[] }[]
+  expect(folders[0]!.devices).toEqual([
+    { deviceID: f.identity.deviceId }, ...peers.map(value => ({ deviceID: value.deviceId })),
+  ])
+})
+
+it('reports connectivity, syncing, errors and conflicts and retains prior configuration after failed updates', async () => {
+  const f = await fixture()
+  await f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: true, peers: [peer] })
+  f.connections[workerSyncId] = { connected: true }
+  f.states.set(sharedFolderId('workspace'), { state: 'syncing' })
+  f.conflicts.set(`/main/shared/${sharedFolderId('workspace')}`, ['nested/file.sync-conflict-20261008.txt'])
+  expect(SyncComputerStateSchema.parse(await f.computer.handle({ operation: 'status' })).folders[0])
+    .toMatchObject({ connected: true, state: 'syncing', conflicts: ['nested/file.sync-conflict-20261008.txt'] })
+  f.states.set(sharedFolderId('workspace'), { state: 'error', pullErrors: 2 })
+  expect(SyncComputerStateSchema.parse(await f.computer.handle({ operation: 'status' })).folders[0])
+    .toMatchObject({ state: 'error', message: '2 files failed to sync.' })
+  f.failConfiguration(true)
+  await expect(f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: false, peers: [] })).rejects.toThrow()
+  f.failConfiguration(false)
+  expect(await f.rest('GET', '/rest/config/folders')).toHaveLength(1)
+  await f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: false, peers: [] })
+  expect(await f.rest('GET', '/rest/config/folders')).toHaveLength(0)
+})
+
+it('serializes enable and disable so a delayed enable cannot undo the later disable', async () => {
+  const f = await fixture()
+  const enabled = f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: true, peers: [peer] })
+  const disabled = f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: false, peers: [] })
+  await Promise.all([enabled, disabled])
+  expect(await f.rest('GET', '/rest/config/folders')).toEqual([])
+  f.stop()
+  expect(await f.computer.handle({ operation: 'status' })).toMatchObject({ installed: true, running: false, folders: [] })
+})
+
+it('refuses arbitrary network addresses and path traversal workspace ids at the public boundary', async () => {
+  const f = await fixture()
+  await expect(async () => f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: true,
+    peers: [{ ...peer, address: '8.8.8.8' }] })).rejects.toThrow()
+  // IDs are hashed before they form paths, even when punctuation is allowed by the domain ID contract.
+  await f.computer.handle({ operation: 'configure', workspaceId: '../same/name', enabled: true, peers: [] })
+  expect([...f.directories]).toEqual([`/main/shared/${sharedFolderId('../same/name')}`])
+})

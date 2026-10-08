@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto'
-import { join } from 'node:path'
 import {
   IdSchema,
   ListInteractionsRequestSchema,
@@ -69,11 +67,6 @@ export interface AppInteractionService {
   respond(principal: ManagementPrincipal, input: unknown, options?: InteractionResponseOptions): Promise<unknown>
 }
 
-/** Workspace identity keeps the shared directory independent of names and computer-local mount paths. */
-export function driveFolderName(workspaceId: string) {
-  return `workspace-${createHash('sha256').update(workspaceId).digest('hex')}`
-}
-
 export class PostgresAppInteractionService implements AppInteractionService {
   constructor(
     private readonly pool: pg.Pool,
@@ -81,8 +74,8 @@ export class PostgresAppInteractionService implements AppInteractionService {
     private readonly commands: PostgresCommandCoordinator,
     private readonly orchestration?: Pick<InteractionService, 'respond'> & Partial<Pick<InteractionService, 'readActivity'>>,
   ) {}
-  /** Where Google Drive is mounted on a computer; Agents there share the workspace's Drive folder. */
-  driveMount?: (hostRef: { kind: 'main' } | { kind: 'device'; deviceId: string }) => Promise<string | null>
+  /** Local shared directory; the harness still controls whether the Agent may write there. */
+  syncedFolder?: (workspaceId: string, hostRef: { kind: 'main' } | { kind: 'device'; deviceId: string }) => Promise<string | null>
 
   async context(principal: ManagementPrincipal) {
     const scope = workerScope(principal)
@@ -113,18 +106,19 @@ export class PostgresAppInteractionService implements AppInteractionService {
     }
   }
 
-  /** The workspace's Google Drive folder as mounted on this Agent's computer; absent when Drive is not mounted there. */
+  /** The workspace folder on the computer running this bound Agent. */
   private async sharedFiles(principal: ManagementPrincipal) {
-    if (!this.driveMount) return undefined
+    if (!this.syncedFolder) return undefined
     const row = (await this.pool.query<{ device_id: string | null; workspace_id: string }>(
       `select p.record#>>'{materialization,receipt,binding,deviceId}' as device_id, w.id as workspace_id
        from worker_credential_bindings b join execution_native_placements p on p.execution_id=b.execution_id
        join runs r on r.id=b.run_id join workspaces w on w.id=r.workspace_id
        where b.principal_id=$1 and b.agent_id=$2 and b.revoked_at is null limit 1`, [principal.id, principal.agentId])).rows[0]
     if (!row?.workspace_id) return undefined
-    const mount = await this.driveMount(row.device_id ? { kind: 'device', deviceId: row.device_id } : { kind: 'main' })
-    if (!mount) return undefined
-    return { provider: 'google-drive' as const, path: join(mount, driveFolderName(row.workspace_id)) }
+    const path = await this.syncedFolder(row.workspace_id,
+      row.device_id ? { kind: 'device', deviceId: row.device_id } : { kind: 'main' })
+    if (!path) return undefined
+    return { provider: 'syncthing' as const, path }
   }
 
   /** The branch this credential's execution works on; null for workspaces without a repository. */

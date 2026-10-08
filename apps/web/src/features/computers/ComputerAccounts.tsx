@@ -1,11 +1,10 @@
 import { useEffect } from 'react'
-import { Bot, Cloud, CodeXml, GitBranch, Sparkles } from 'lucide-react'
+import { Bot, CodeXml, GitBranch, Sparkles } from 'lucide-react'
 import type { ComputerAccount, ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { computerKey } from '../../shared/api/computerActivity'
 import { Button } from '../../shared/ui/nocturne'
 import { GitHubSignInDialog } from './GitHubSignIn'
-import { DriveConnectDialog } from './DriveConnect'
 import { useComputerUi } from './computerUiStore'
 
 const TOOLS: Record<ComputerAccount['tool'], { label: string; icon: React.ReactNode }> = {
@@ -13,7 +12,6 @@ const TOOLS: Record<ComputerAccount['tool'], { label: string; icon: React.ReactN
   claude: { label: 'Claude', icon: <Sparkles size={13} /> },
   opencode: { label: 'OpenCode', icon: <Bot size={13} /> },
   github: { label: 'GitHub', icon: <GitBranch size={13} /> },
-  drive: { label: 'Google Drive', icon: <Cloud size={13} /> },
 }
 
 function accountSummary(account: ComputerAccount) {
@@ -32,16 +30,15 @@ function accountState(account: ComputerAccount) {
   return 'unknown'
 }
 
-export function ComputerAccountChips({ accounts, onGitHub, onDrive, onRetry, retrying }: {
+export function ComputerAccountChips({ accounts, onGitHub, onRetry, retrying }: {
   accounts: ComputerAccounts | null | undefined
   onGitHub?: (() => void) | undefined
-  onDrive?: (() => void) | undefined
   onRetry?: (() => void) | undefined
   retrying?: boolean | undefined
 }) {
-  const managed = { github: onGitHub, drive: onDrive }
+  const managed = { github: onGitHub }
   return <div className="computer-accounts" role="group" aria-label="Accounts">
-    {accounts?.accounts.filter(account => account.tool !== 'github' && account.tool !== 'drive').map(account => {
+    {accounts?.accounts.filter(account => account.tool !== 'github').map(account => {
       const summary = accountSummary(account)
       return <details key={account.tool} className="computer-account-details">
         <summary className="computer-account" data-state={accountState(account)} title={summary} aria-label={summary}>
@@ -50,7 +47,7 @@ export function ComputerAccountChips({ accounts, onGitHub, onDrive, onRetry, ret
         <div className="computer-account-description">{summary}</div>
       </details>
     })}
-    {(['github', 'drive'] as const).map(tool => {
+    {(['github'] as const).map(tool => {
       const account = accounts?.accounts.find(value => value.tool === tool)
       const summary = account ? accountSummary(account) : `${TOOLS[tool].label}: account state unavailable`
       return <button key={tool} type="button" className="computer-account"
@@ -75,16 +72,13 @@ export function ComputerAccountControls({ target, name, accounts, onRetry, retry
 }) {
   const key = computerKey(target)
   const openGitHub = useComputerUi(state => state.openGitHub)
-  const openDrive = useComputerUi(state => state.openDrive)
   useEffect(() => () => {
     const ui = useComputerUi.getState()
     if (ui.github?.key === key) ui.closeGitHub()
-    if (ui.drive?.key === key) ui.closeDrive()
   }, [key])
   return <>
-    <ComputerAccountChips accounts={accounts} onGitHub={() => openGitHub(key)} onDrive={() => openDrive(key)}
+    <ComputerAccountChips accounts={accounts} onGitHub={() => openGitHub(key)}
       onRetry={onRetry} retrying={retrying} />
     <GitHubSignInDialog target={target} name={name} account={accounts?.accounts.find(value => value.tool === 'github')} />
-    <DriveConnectDialog target={target} name={name} account={accounts?.accounts.find(value => value.tool === 'drive')} />
   </>
 }
