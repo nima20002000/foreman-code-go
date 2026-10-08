@@ -30,6 +30,7 @@ export function useComputerPreparation(workspaceId: string, profileId: string) {
     queryFn: ({ signal }) => apiClient.request(url, BuildComputerPrepareStatusSchema, { signal }) })
   const start = useMutation({ retry: false,
     mutationFn: () => apiClient.request(url, BuildComputerPrepareStatusSchema, { method: 'POST', body: { commandId: crypto.randomUUID() } }),
+    onMutate: () => cache.cancelQueries({ queryKey: key, exact: true }),
     onSuccess: value => { cache.setQueryData(key, value) } })
   return { status, start }
 }

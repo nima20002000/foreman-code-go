@@ -111,19 +111,25 @@ async function fixture(options: { prepareFails?: boolean } = {}) {
     data.services.commands, { pollMs: 0, wait: () => new Promise(resolve => setImmediate(resolve)), now: () => new Date('2026-10-07T00:00:00.000Z') })
   const services = { ...data.services, jobRuntimeProfiles: profileService, ciRuntime } as unknown as OperatorServices
   const app = Fastify()
+  const reader = { ...data.readonly, id: 'runtime-reader', grants: [{
+    actions: ['job_definitions:read' as const], scope: { workspaceIds: [workspaceId] },
+  }] }
   const access = { authenticate: async (token: string) => {
-    const principal = { operator: data.operator, readonly: data.readonly }[token]
+    const principal = { operator: data.operator, readonly: data.readonly, reader }[token]
     if (!principal) throw new DomainError('AUTH_INVALID', 'Invalid bearer token.', 401)
     return principal
   } } as unknown as PostgresAccessService
   const interactions = { toolAccess: async () => ({ role: 'coder', tools: [] }), canRead: async () => false,
     canRespond: async () => false } as unknown as AppInteractionService
   registerGraphqlMcp(app, { access, operator: services, interactions })
+  const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const call = async (name: string, input: unknown, token = 'operator') => {
-    const response = await app.inject({ method: 'POST', url: '/mcp',
-      headers: { host: 'localhost', authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
-      payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } } })
-    const body = response.body.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? response.body
+    const response = await fetch(`${address}/mcp`, { method: 'POST',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream',
+        'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) })
+    const payload = await response.text()
+    const body = payload.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? payload
     return JSON.parse(body).result as { isError?: boolean; structuredContent?: unknown; content?: { text: string }[] }
   }
   const settle = async (profileId: string) => {
@@ -185,4 +191,30 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.audits).toContainEqual({ principalId: f.readonly.id, action: 'build_computer_prepare', outcome: 'denied' })
     } finally { await f.app.close() }
   })
+
+  it('lets a reader follow preparation and retained profiles while denying a repeat start', async () => {
+    const f = await fixture()
+    try {
+      await f.call('build_computer_prepare', { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'prepare-readback' })
+      await f.settle('p-unit')
+      const retained = structuredClone(f.profiles.get('p-unit'))
+      const read = await f.call('build_computer_prepare_get', {
+        workspaceId: f.workspaceId, profileId: 'p-unit',
+      }, 'reader')
+      expect(read.isError).not.toBe(true)
+      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toMatchObject({
+        state: 'qualified', commit, profiles: expect.arrayContaining([
+          { profileId: 'p-unit', revision: 4, status: 'qualified' },
+        ]),
+      })
+      const preparedCount = f.calls.prepare.length
+      const denied = await f.call('build_computer_prepare', {
+        workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'reader-repeat',
+      }, 'reader')
+      expect(denied.isError).toBe(true)
+      expect(f.calls.prepare).toHaveLength(preparedCount)
+      expect(f.profiles.get('p-unit')).toEqual(retained)
+    } finally { await f.app.close() }
+  })
+
 })
