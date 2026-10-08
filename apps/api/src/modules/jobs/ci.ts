@@ -143,7 +143,7 @@ export class CiService {
     const execution = await this.jobs.getExecution(principal, workspaceId, queue.executionId, 'mcp')
     const logTail = await this.jobs.readLogTail(principal, workspaceId, execution.id)
     let summaryReport = null
-    if (execution.schemaVersion === 2 && execution.publication === 'complete') {
+    if (execution.schemaVersion === 2) {
       const artifacts = await this.jobs.listArtifacts(principal, workspaceId, execution.id, 'mcp')
       const declaration = execution.acceptedSpec.outputs.find(output => output.kind === 'suite-summary')!
       const artifact = artifacts.find(value => value.path === declaration.path && value.state === 'available')

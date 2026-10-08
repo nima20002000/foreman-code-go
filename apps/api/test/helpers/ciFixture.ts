@@ -170,13 +170,16 @@ export function ciFixture() {
   return { workspaceId, worker, operator, readonly, services, commands, authority, sources, jobs,
     audits, createCi, roots, snapshotCalls, approvals, enqueued, agent, agentExecution,
     counts: () => ({ sourceCaptures, enqueues }), advanceHead: () => { head = 'd'.repeat(40) },
-    complete: () => {
+    complete: (options: { publication?: 'collecting' | 'failed' | 'expired'; failed?: true } = {}) => {
       if (!ticket) throw new Error('Missing queued ticket')
       execution = VerificationJobExecutionSchema.parse({ ...jobExecution(), schemaVersion: 2,
         id: ticket.executionId, attemptId: ticket.attemptId, operationId: ticket.operationId, workspaceId,
         acceptedSpec: { ...runtime.spec, definitionVersionId: ticket.definition.versionId,
-          source: { ...runtime.spec.source, ...ticket.definition.spec.source } }, publication: 'complete',
-        process: { phase: 'terminal', outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true } })
+          source: { ...runtime.spec.source, ...ticket.definition.spec.source } },
+        publication: options.publication ?? 'complete',
+        resultIssue: options.publication === 'failed' ? 'publication_failed' : null,
+        process: { phase: 'terminal', outcome: options.failed ? 'build_failed' : 'succeeded',
+          exitCode: options.failed ? 1 : 0, signal: null, processStopped: true } })
       ticket = JobQueueTicketSchema.parse({ ...ticket, state: 'accepted', reservationId: ticket.id,
         waitingReasons: [], selectedComputer: { target: runtime.spec.target,
           rootId: runtime.spec.profile.rootId, bindingRevision: 1, profileId: 'profile', profileRevision: 1 } })
@@ -186,8 +189,9 @@ export function ciFixture() {
         suite: 'unit', executionId: execution!.id, attemptId: execution!.attemptId, target: spec.target,
         profile: spec.profile, resources: spec.verification.resources, parameters: spec.verification.parameters,
         startedAt: ticket.enqueuedAt, finishedAt: new Date().toISOString(),
-        totals: { total: 3, passed: 3, failed: 0, skipped: 0 }, firstPassFailed: 0, expectedPortions: 1,
-        completedPortions: 1, disallowedSkipped: 0, completeness: 'complete', outcome: 'passed' })
+        totals: { total: 3, passed: options.failed ? 2 : 3, failed: options.failed ? 1 : 0, skipped: 0 },
+        firstPassFailed: options.failed ? 1 : 0, expectedPortions: 1,
+        completedPortions: 1, disallowedSkipped: 0, completeness: 'complete', outcome: options.failed ? 'failed' : 'passed' })
     },
   }
 }
