@@ -22,6 +22,7 @@ import type {
 
 import {
   apiClient,
+  ApiError,
   getConversation,
   getRun,
   getAgent,
@@ -157,7 +158,8 @@ export function useManagedWorkspaceQuery(workspaceId: string, enabled = true) {
     queryKey: queryKeys.managedWorkspace(workspaceId),
     queryFn: ({ signal }) => getManagedWorkspace(workspaceId, { signal }),
     structuralSharing: shareManagedWorkspace,
-    refetchInterval: enabled ? 3_000 : false,
+    // A missing workspace stays missing; creation and navigation invalidate this key.
+    refetchInterval: (query) => enabled && !(ApiError.is(query.state.error) && query.state.error.status === 404) ? 3_000 : false,
   })
 }
 

@@ -20,15 +20,24 @@ export class HarnessCatalogService {
   private readonly checks = new QualificationCache<{
     qualification: ReturnType<typeof HarnessQualificationSchema.parse>; checkedAt: string
   }>(0)
-  invalidateChecks(): void { this.checks.clear() }
-  async shutdownChecks(): Promise<void> { await this.checks.close() }
+  // Catalog, readiness and draft-check reads are polled; they reuse a settled check (failures for 15s)
+  // and serve an expired success while it refreshes. Writers stay fresh through `checks`.
+  private readonly statuses = new QualificationCache<{
+    qualification: ReturnType<typeof HarnessQualificationSchema.parse>; checkedAt: string
+  }>(300_000, 128, Date.now, true)
+  invalidateChecks(): void { this.checks.clear(); this.statuses.clear() }
+  async shutdownChecks(): Promise<void> { await Promise.all([this.checks.close(), this.statuses.close()]) }
 
   /** Run once after native runtime ownership is acquired. No model turn is created. */
   async warmup(): Promise<void> {
     const managed = await this.settings.getManagedHarnessDefaults()
     const unavailable = new Set(managed.unavailable ?? [])
     await Promise.allSettled((['codex', 'opencode', 'claude'] as const).flatMap((harness) =>
-      managed.defaults[harness] && !unavailable.has(harness) ? [this.qualifyConfiguration(managed.defaults[harness]!)] : []))
+      managed.defaults[harness] && !unavailable.has(harness) ? [this.currentStatus(managed.defaults[harness]!)] : []))
+  }
+
+  private currentStatus(value: HarnessConfiguration) {
+    return this.statuses.get(canonical(withAdvancedDefaults(value)), () => this.inspectConfiguration(value))
   }
 
   private async inspectConfiguration(value: HarnessConfiguration) {
@@ -80,7 +89,7 @@ export class HarnessCatalogService {
 
   async checkConfiguration(principal: ManagementPrincipal, configuration: HarnessConfiguration) {
     requireAuthorization(principal, 'harnesses:read')
-    return { configuration, ...await this.inspectConfiguration(configuration) }
+    return { configuration, ...await this.currentStatus(configuration) }
   }
 
   private async describe(principal: ManagementPrincipal, harness: AgentHarness, defaults: HarnessDefaults, revision: number,
@@ -102,7 +111,7 @@ export class HarnessCatalogService {
           message: 'No default model is configured. Choose a native model in Settings.' } }
     }
     try {
-      const capability = await this.qualifyConfiguration(configuration)
+      const capability = (await this.currentStatus(configuration)).qualification
       return { harness, defaults: configuration, defaultsRevision: revision, capability, discoveryError: null, ...support }
     } catch (error) {
       return {

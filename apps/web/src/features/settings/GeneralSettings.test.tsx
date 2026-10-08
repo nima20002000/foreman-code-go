@@ -19,6 +19,9 @@ it('shows each computer’s workspace files and saves its own sync preference on
           state: 'idle', connected: true, conflicts: [], message: null } : null }] }
   }
   computersFixture(<GeneralSettings />, [
+    http.get('*/api/management/file-retention', () => HttpResponse.json({
+      preference: { ownerPrincipalId: 'retention-owner', durationSeconds: 604_800, revision: 0 },
+    })),
     http.get('*/api/management/settings/general', () => HttpResponse.json({
       value: { theme: 'light' }, revision: 1, versionId: 'general-1',
     })),

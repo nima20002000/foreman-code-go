@@ -3,6 +3,8 @@ import { Alert, Button, LoadingState, Select } from '../../shared/ui/nocturne'
 import { ComputerSyncPanel } from '../computers/ComputerSync'
 import { useSyncedTheme } from '../theme/useSyncedTheme'
 import { ThemeSchema } from '@foreman-code/contracts/management'
+import { ChatRetentionSettings } from '../retention-settings'
+import './settingsExperience.css'
 
 export function GeneralSettings() {
   const { settings, update, changeTheme, denied, uncertain, refresh, retry } = useSyncedTheme()
@@ -25,6 +27,7 @@ export function GeneralSettings() {
     <Button size="sm" disabled={settings.isFetching || update.isPending} onClick={() => void refresh()}>
       Refresh general settings
     </Button>
+    <div className="settings-editor-content"><ChatRetentionSettings /></div>
     <h2>Settings from Main</h2>
     <p>App defaults, harness presets, skills, prompts and workflows are saved on Main.
       Computers receive their saved configuration through the paired connection.

@@ -14,7 +14,7 @@ import { claudeSettingSupport, type ClaudeNativeConfigurationPort } from './clau
 import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productionCredentials.js'
 
 export class NativeConfigurationService {
-  private readonly catalogCache = new QualificationCache<ReturnType<typeof HarnessOptionsResultSchema.parse>>()
+  private readonly catalogCache = new QualificationCache<ReturnType<typeof HarnessOptionsResultSchema.parse>>(300_000, 128, Date.now, true)
   private readonly configurationChecks = new QualificationCache<Awaited<ReturnType<NativeConfigurationService['inspectConfiguration']>>>()
   invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear() }
   async shutdownChecks(): Promise<void> { await Promise.all([this.catalogCache.close(), this.configurationChecks.close()]) }

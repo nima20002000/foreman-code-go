@@ -95,20 +95,19 @@ describe('WorkspaceShell', () => {
     }
     expect(screen.queryByRole('link', { name: 'Terminal' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
-    const account = screen.getByRole('link', { name: 'Account' })
-    expect(account).toHaveAttribute('href', '/account')
-    expect(account.parentElement).toContainElement(screen.getByRole('button', { name: /Switch to .* theme/ }))
-    expect(account.parentElement).toContainElement(screen.getByRole('link', { name: 'Settings' }))
+    const settings = screen.getByRole('link', { name: 'Settings' })
+    expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument()
+    expect(settings.parentElement).toContainElement(screen.getByRole('button', { name: /Switch to .* theme/ }))
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveTextContent('')
     expect(screen.queryByRole('link', { name: 'Browsers' })).not.toBeInTheDocument()
     expect(screen.queryByText('Unavailable')).not.toBeInTheDocument()
   })
 
-  it('marks Account as the selected footer destination', async () => {
-    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" activeGlobalSection="account" />)
+  it('marks Settings as the selected footer destination', async () => {
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" activeGlobalSection="settings" />)
     await screen.findByTestId('workspace-shell')
-    expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
+    expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
   })
 
   it('expands and collapses the nested submenu from the parent control', async () => {

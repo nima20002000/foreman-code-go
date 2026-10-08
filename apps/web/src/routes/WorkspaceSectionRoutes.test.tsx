@@ -5,6 +5,10 @@ import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { FileRetentionSaveInputSchema, type FileRetentionPreference } from '@foreman-code/contracts/files'
+import { clearRevisionedFormPersistence } from '../features/settings/revisionedForm'
+import { clearRetentionCommandMemory } from '../features/retention-settings/retentionCommand'
+
 import { routeTree } from '../app/router'
 import { server } from '../mocks/server'
 import { setMockScenario } from '../shared/mocks/scenarios'
@@ -16,6 +20,7 @@ function renderRoute(path: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return {
     router,
+    queryClient,
     ...render(
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
@@ -27,6 +32,8 @@ function renderRoute(path: string) {
 afterEach(() => {
   setMockScenario('normal')
   sessionStorage.clear()
+  clearRevisionedFormPersistence()
+  clearRetentionCommandMemory()
 })
 
 describe('workspace section routes', () => {
@@ -162,21 +169,59 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
   })
 
-  it('opens local preferences without login or credential controls', async () => {
-    const account = renderRoute('/account')
-    expect(await screen.findByRole('heading', { name: 'Local preferences', level: 1 })).toBeVisible()
-    expect(screen.getByText(/one local human/)).toBeVisible()
-    expect(screen.queryByText('preview@example.test')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /sign in|sign out|connect browser/i })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute('aria-current', 'page')
-    expect(account.router.state.location.pathname).toBe('/account')
-  })
+  it.each(['/account', '/account/', '/account?tab=sessions'])(
+    'redirects the old Account URL %s to General without account controls', async (path) => {
+      const { router } = renderRoute(path)
+      expect(await screen.findByRole('heading', { name: 'General', level: 1 })).toBeVisible()
+      expect(router.state.location.pathname).toBe('/settings/general')
+      expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument()
+      expect(screen.queryByText('preview@example.test')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /sign in|sign out|connect browser/i })).not.toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+    },
+  )
 
-  it('mounts chat retention on the local preferences page', async () => {
-    renderRoute('/account')
-    expect(await screen.findByRole('heading', { name: 'Local preferences', level: 1 })).toBeVisible()
+  it('opens General from Settings and persists edited chat retention after a cold reload', async () => {
+    let preference: FileRetentionPreference = {
+      ownerPrincipalId: 'retention-owner', durationSeconds: 604_800, revision: 0,
+    }
+    server.use(
+      http.get('*/api/management/file-retention', () => HttpResponse.json({ preference })),
+      http.post('*/api/management/file-retention', async ({ request }) => {
+        const input = FileRetentionSaveInputSchema.parse(await request.json())
+        expect(input).toMatchObject({ durationSeconds: 43_200, expectedRevision: 0, applyToExisting: false })
+        preference = { ...preference, durationSeconds: input.durationSeconds, revision: preference.revision + 1 }
+        return HttpResponse.json({
+          value: { preference, updatedFileCount: 0, expiredNowCount: 0 }, replayed: false,
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    const view = renderRoute('/settings')
+    await user.click(await screen.findByRole('link', { name: /General/ }))
+    expect(await screen.findByRole('heading', { name: 'General', level: 1 })).toBeVisible()
+    expect(view.router.state.location.pathname).toBe('/settings/general')
     const retention = await screen.findByRole('region', { name: 'Chat retention' })
-    expect(within(retention).getByRole('spinbutton', { name: 'Duration' })).toHaveValue(7)
+    const duration = await within(retention).findByRole('spinbutton', { name: 'Duration' })
+    expect(duration).toHaveValue(7)
+    await user.clear(duration)
+    await user.type(duration, '12')
+    await user.selectOptions(within(retention).getByRole('combobox', { name: 'Unit' }), 'hours')
+    const save = within(retention).getByRole('button', { name: 'Save' })
+    await waitFor(() => expect(save).toBeEnabled())
+    await user.click(save)
+    expect(await within(retention).findByText('Saved.')).toBeVisible()
+    expect(preference).toMatchObject({ durationSeconds: 43_200, revision: 1 })
+
+    view.unmount()
+    view.queryClient.clear()
+    clearRevisionedFormPersistence()
+    clearRetentionCommandMemory()
+    sessionStorage.clear()
+    renderRoute('/settings/general')
+    expect(await screen.findByRole('spinbutton', { name: 'Duration' })).toHaveValue(12)
+    expect(screen.getByRole('combobox', { name: 'Unit' })).toHaveValue('hours')
+    expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument()
   })
 
   it('asks for workspace choice at the old global approval URL instead of opening a wider queue', async () => {

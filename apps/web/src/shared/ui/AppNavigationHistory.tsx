@@ -3,7 +3,7 @@ import { useRouter } from '@tanstack/react-router'
 import { AppNavigationHistoryContext } from './appNavigationHistoryContext'
 
 function isAppDestination(pathname: string) {
-  return /^\/(workspaces|settings|account|terminal|approvals)(\/|$)/.test(pathname)
+  return /^\/(workspaces|settings|terminal|approvals)(\/|$)/.test(pathname)
 }
 
 /** Only observed app entries are safe to revisit; a deep link cannot establish its predecessor. */

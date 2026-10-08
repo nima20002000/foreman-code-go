@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { stat } from 'node:fs/promises'
 import type pg from 'pg'
 import { HarnessMcpManagedInputSchema, HarnessMcpPlanInputSchema, HarnessMcpPlanSchema, HarnessMcpReconcileInputSchema,
   type HarnessMcpManagedInput, type HarnessMcpManagedPreset, type HarnessMcpPlan, type HarnessMcpPlanInput,
@@ -13,6 +14,11 @@ import { qualificationError } from './qualificationErrors.js'
 import { assertNoUnresolvedPluginWrites, lockNativeConfigurationFile } from './nativeSettingsWrites.js'
 
 type Harness = 'codex' | 'opencode'
+type McpList = ReturnType<typeof publicMcpList> & { presets?: { graphql: ReturnType<typeof managedStatus>; linear: Exclude<ReturnType<typeof managedStatus>, 'legacy'> } | undefined }
+async function fileStamp(file: string): Promise<string | null> {
+  try { const info = await stat(file); return info.isFile() ? `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}` : null }
+  catch { return null }
+}
 type Row = { id: string; harness: Harness; revision: string; change: unknown; managed_preset: HarnessMcpManagedPreset | null;
   requested_by: string; status: string; created_at: Date; expires_at: Date; error: string | null;
   native_user_after_hash: string | null; native_file: string | null }
@@ -40,7 +46,11 @@ function acceptedPlanMessage(error: unknown): string {
 export class HarnessMcpSettingsService {
   private readonly stopping = new AbortController()
   private readonly pending = new Set<Promise<unknown>>()
-  private readonly reads = new Map<Harness, Promise<ReturnType<typeof publicMcpList>>>()
+  // Opening Connections spawns the native CLI. Reuse the last read while its user config file is
+  // unchanged (5 min at most); this service's own writes clear it, so changes are visible at once.
+  private readonly lists = new Map<Harness, { list: McpList; file: string; stamp: string; readAt: number }>()
+  private readonly reads = new Map<Harness, Promise<McpList>>()
+  private notifyChanged(): void { this.lists.clear(); this.changed() }
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly adapters: Record<Harness, NativeMcpAdapter>, private readonly changed: () => void,
     private readonly closeProcesses: () => Promise<unknown> = async () => undefined,
@@ -66,23 +76,40 @@ export class HarnessMcpSettingsService {
   }
   async list(principal: ManagementPrincipal, harness: Harness) {
     requireAuthorization(principal, 'harnesses:read')
+    return this.cachedList(harness)
+  }
+  /** Fill Connections before Settings opens. */
+  async warmup(harnesses: readonly Harness[]): Promise<void> {
+    await Promise.allSettled(harnesses.map((harness) => this.cachedList(harness)))
+  }
+  private async cachedList(harness: Harness): Promise<McpList> {
+    const known = this.lists.get(harness)
+    if (known && Date.now() - known.readAt < 300_000 && await fileStamp(known.file) === known.stamp) return structuredClone(known.list)
     const active = this.reads.get(harness)
     if (active) return active
-    const reading = this.work(async (signal) => {
-      try {
-        const snapshot = await this.adapters[harness].read(signal)
-        const list = publicMcpList(snapshot)
-        return { ...list, ...(this.operatorEndpoint ? { presets: {
-          graphql: managedStatus(snapshot, 'graphql', this.operatorEndpoint),
-          linear: managedStatus(snapshot, 'linear', this.operatorEndpoint) as Exclude<ReturnType<typeof managedStatus>, 'legacy'>,
-        } } : {}) }
-      }
-      catch (error) { throw qualificationError(error) }
-    })
+    const reading = this.readList(harness)
     this.reads.set(harness, reading)
     const clear = () => { if (this.reads.get(harness) === reading) this.reads.delete(harness) }
     void reading.then(clear, clear)
     return reading
+  }
+  private readList(harness: Harness) {
+    return this.work(async (signal) => {
+      try {
+        const snapshot = await this.adapters[harness].read(signal)
+        const list = publicMcpList(snapshot)
+        const result = { ...list, ...(this.operatorEndpoint ? { presets: {
+          graphql: managedStatus(snapshot, 'graphql', this.operatorEndpoint),
+          linear: managedStatus(snapshot, 'linear', this.operatorEndpoint) as Exclude<ReturnType<typeof managedStatus>, 'legacy'>,
+        } } : {}) }
+        // Without a readable config file there is no change signal, so the read is not reused.
+        const stamp = await fileStamp(snapshot.file)
+        if (stamp) this.lists.set(harness, { list: structuredClone(result), file: snapshot.file, stamp, readAt: Date.now() })
+        else this.lists.delete(harness)
+        return result
+      }
+      catch (error) { throw qualificationError(error) }
+    })
   }
   async plans(principal: ManagementPrincipal, harness: Harness) {
     requireAuthorization(principal, 'harnesses:read')
@@ -214,7 +241,7 @@ export class HarnessMcpSettingsService {
             values($1,'http','harness.mcp.apply',$2,'succeeded',$3::jsonb)`, [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id })])
           await client.query('commit')
         } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
-        this.changed()
+        this.notifyChanged()
         return this.get(principal, id)
       } catch (error) {
         if (marked && selected) {
@@ -231,7 +258,7 @@ export class HarnessMcpSettingsService {
               [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, delivery: notSubmitted ? 'not_submitted' : 'uncertain' })])
             await client.query('commit')
           } catch (persistenceError) { await client.query('rollback').catch(() => undefined); throw persistenceError }
-          this.changed()
+          this.notifyChanged()
           return this.get(principal, id)
         }
         throw qualificationError(error)
@@ -290,7 +317,7 @@ export class HarnessMcpSettingsService {
         return projection(updated.rows[0])
       }),
     })
-    this.changed()
+    this.notifyChanged()
     return result
   }
 }

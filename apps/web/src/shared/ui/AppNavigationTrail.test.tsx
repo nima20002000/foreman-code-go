@@ -24,7 +24,7 @@ function mount(path: string, editor?: { pending?: boolean; uncertain?: boolean }
   const root = createRootRoute({ component: () => <AppNavigationHistoryProvider><UnsavedChangesProvider>
     <AppNavigationTrail /><Outlet />
   </UnsavedChangesProvider></AppNavigationHistoryProvider> })
-  const paths = ['/workspaces', '/account', '/settings', '/settings/harnesses', '/workspaces/$workspaceId',
+  const paths = ['/workspaces', '/settings/general', '/settings', '/settings/harnesses', '/workspaces/$workspaceId',
     '/workspaces/$workspaceId/files', '/workspaces/$workspaceId/browsers', '/workspaces/$workspaceId/settings',
     '/workspaces/$workspaceId/workflows', '/workspaces/$workspaceId/workflows/$workflowId/draft',
     '/workspaces/$workspaceId/workflows/$workflowId/runs/$runId/graph/$workflowVersionId/$executionSemanticsVersion']
@@ -34,7 +34,7 @@ function mount(path: string, editor?: { pending?: boolean; uncertain?: boolean }
   if (browserHistory) histories.push(history)
   const router = createRouter({ routeTree: root.addChildren(paths.map(path => createRoute({ getParentRoute: () => root,
     path, validateSearch: (search: Record<string, unknown>) => search, component: () => <>
-      <Link to="/account">Open account</Link><Link to="/settings">Open settings</Link>{editor ? <Editor {...editor} /> : null}
+      <Link to="/settings/general">Open general</Link><Link to="/settings">Open settings</Link>{editor ? <Editor {...editor} /> : null}
     </> }))), history, defaultPendingMinMs: 0 })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
@@ -42,14 +42,14 @@ function mount(path: string, editor?: { pending?: boolean; uncertain?: boolean }
 }
 
 it('goes back to the actual previous app page across unrelated destinations', async () => {
-  const { router } = mount('/account')
+  const { router } = mount('/settings/general')
   const user = userEvent.setup()
   await user.click(await screen.findByRole('link', { name: 'Open settings' }))
   await act(() => router.navigate({ to: '/workspaces/$workspaceId/files', params: { workspaceId: 'workspace-1' } }))
   await user.click(screen.getByRole('button', { name: 'Back' }))
   await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
   await user.click(screen.getByRole('button', { name: 'Back' }))
-  await waitFor(() => expect(router.state.location.pathname).toBe('/account'))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings/general'))
 })
 
 it.each(['?harness=codex', '?harness=codex&section=model', '?harness=claude&section=model&computer=main'])('uses the Harnesses ancestor for a direct model deep link %s', async search => {
@@ -63,6 +63,16 @@ it.each(['?harness=codex', '?harness=codex&section=model', '?harness=claude&sect
   expect(router.state.location.pathname).toBe('/settings/harnesses')
 })
 
+it('shows General in the breadcrumb and returns to Settings from a direct link', async () => {
+  const { router } = mount('/settings/general')
+  const user = userEvent.setup()
+  const breadcrumbs = await screen.findByRole('navigation', { name: 'Breadcrumbs' })
+  expect(breadcrumbs.querySelector('[aria-current="page"]')).toHaveTextContent('General')
+  expect(within(breadcrumbs).getByRole('link', { name: 'Go to Settings' })).toHaveAttribute('href', '/settings')
+  await user.click(screen.getByRole('button', { name: 'Back' }))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+})
+
 it('uses settings as the real Browsers parent for a direct deep link', async () => {
   const { router } = mount('/workspaces/workspace-1/browsers')
   const user = userEvent.setup()
@@ -70,7 +80,7 @@ it('uses settings as the real Browsers parent for a direct deep link', async () 
   await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings'))
 })
 
-it.each(['/sign-in', '/outside-app', '/account'])('does not revisit an unobserved predecessor %s', async predecessor => {
+it.each(['/sign-in', '/outside-app', '/settings/general'])('does not revisit an unobserved predecessor %s', async predecessor => {
   const { router } = mount('/settings/harnesses?harness=codex&section=model', undefined, predecessor)
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Back' }))
@@ -110,7 +120,7 @@ it('hides a previously read private name through authorization and subsequent ne
 })
 
 it('keeps the original destination when a dirty editor cancels previous-page navigation', async () => {
-  const { router } = mount('/account', {}, undefined, true)
+  const { router } = mount('/settings/general', {}, undefined, true)
   const user = userEvent.setup()
   await user.click(await screen.findByRole('link', { name: 'Open settings' }))
   await user.click(screen.getByRole('button', { name: 'Edit settings' }))
@@ -123,7 +133,7 @@ it('keeps the original destination when a dirty editor cancels previous-page nav
   expect(router.state.location.pathname).toBe('/settings')
   await user.click(screen.getByRole('button', { name: 'Back' }))
   await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard' }))
-  await waitFor(() => expect(router.state.location.pathname).toBe('/account'))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings/general'))
 })
 
 it.each([{ pending: true }, { uncertain: true }])('locks discard for pending or unconfirmed saves during Back: %j', async editor => {

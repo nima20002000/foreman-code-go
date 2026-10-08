@@ -1,4 +1,7 @@
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.js'
@@ -81,6 +84,27 @@ describe('native MCP settings reads', () => {
     expect(one.servers).toEqual([])
     expect(read).toHaveBeenCalledTimes(1)
     await service.shutdown()
+  })
+
+  it('reuses a native read until the user config file changes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'mcp-list-cache-'))
+    try {
+      const file = join(directory, 'config.toml')
+      await writeFile(file, '')
+      const snapshot: NativeMcpSnapshot = { harness: 'codex', revision: 'revision', effective: {}, user: {},
+        userConfig: {}, file, version: 'version' }
+      const read = vi.fn().mockResolvedValue(snapshot)
+      const adapter = { read, apply: vi.fn() }
+      const service = new HarnessMcpSettingsService({} as never, {} as never,
+        { codex: adapter, opencode: adapter }, () => undefined)
+      const first = await service.list(principal, 'codex')
+      expect(await service.list(principal, 'codex')).toEqual(first)
+      expect(read).toHaveBeenCalledTimes(1)
+      await writeFile(file, '[mcp_servers.edited]\ncommand = "edited"\n')
+      await service.list(principal, 'codex')
+      expect(read).toHaveBeenCalledTimes(2)
+      await service.shutdown()
+    } finally { await rm(directory, { recursive: true, force: true }) }
   })
 
   it('allows a fresh read after a failed check', async () => {
