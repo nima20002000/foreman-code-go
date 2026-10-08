@@ -249,6 +249,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
       operator: { access, services: { operatorChat: chat,
         commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    registerOperatorChatRoutes(app, chat)
     const client = new Client({ name: 'concurrent-session-settings', version: '1' })
     const query = pool.query.bind(pool)
     const start = manager.startTurn.bind(manager)
@@ -280,9 +281,11 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const requestId = randomUUID()
       await chat.send(conversation.id, { requestId, content: 'Planned task', sessionMode: 'plan' }, issued.principal)
       await writing
-      const path = `/api/operator-chat/conversations/${conversation.id}/controls`
+      const path = `/api/operator/conversations/${conversation.id}/session-controls`
       const headers = { authorization: `Bearer ${issued.token}` }
-      const before = SessionControlStateSchema.parse((await app.inject({ method: 'GET', url: path, headers })).json())
+      const read = await app.inject({ method: 'GET', url: path, headers })
+      expect(read.statusCode, read.body).toBe(200)
+      const before = SessionControlStateSchema.parse(read.json())
       const off = await app.inject({ method: 'POST', url: path, headers,
         payload: { kind: 'mode', mode: 'regular', expectedRevision: before.revision, requestId: randomUUID() } })
       expect(off.statusCode, off.body).toBe(200)
@@ -331,6 +334,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
       operator: { access, services: { operatorChat: chat,
         commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    registerOperatorChatRoutes(app, chat)
     const client = new Client({ name: 'future-default-owner', version: '1' })
     const limited = new Client({ name: 'future-default-denied', version: '1' })
     try {
@@ -363,10 +367,10 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         name: 'operator_chat_controls_get', arguments: target })).structuredContent)
       expect(persisted.defaults).toEqual(preferences)
       const headers = { authorization: `Bearer ${writer.token}` }
-      const url = `/api/operator-chat/conversations/${conversation.id}/controls`
+      const url = `/api/operator/conversations/${conversation.id}/session-controls`
       const lowering = await app.inject({ method: 'POST', url, headers,
         payload: { ...request, kind: 'preferences', expectedRevision: persisted.revision, requestId: randomUUID() } })
-      expect(lowering.statusCode).toBe(422)
+      expect(lowering.statusCode, lowering.body).toBe(422)
       expect(lowering.json().error.code).toBe('SESSION_BUDGET_TOO_SMALL')
       const oversized = await client.callTool({ name: 'operator_chat_controls_update', arguments: { ...target,
         request: { ...request, expectedRevision: persisted.revision, requestId: randomUUID(),
