@@ -3,8 +3,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { interrupt, isGraphInterrupt } from '@langchain/langgraph'
-import { HarnessExecutionSchema, HarnessExecutionRequestSchema, type HarnessExecution } from '@foreman-code/contracts'
-import { AcceptedWorkflowRunV3Schema, CurrentRunVersionSnapshotSchema, WorkActivationInputSchema,
+import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { AcceptedWorkflowRunV3Schema, CurrentRunVersionSnapshotSchema,
   type AcceptedWorkflowRunV3, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { REPEAT_NATIVE_PENDING_MESSAGE } from '../interactions/repeatNativeEvidence.js'
@@ -15,7 +15,7 @@ import { withFilesystemDeadline } from '../workspaces/filesystem.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import type { RunnerAdmission } from './runnerAdmission.js'
-import { currentInitialPrompt } from './currentRouting.js'
+import { workflowExecutionRequest } from './workflowExecutionRequest.js'
 import { readUnconsumedWorkflowApprovals } from './workflowLifecycle.js'
 
 import type { RunOwnership } from './ownership.js'
@@ -24,7 +24,6 @@ import { assertRepeatExecution, repeatConflict, type RepeatNodeRef, type RepeatS
 import type { RepeatRunRepository } from './repeatPostgres.js'
 import { buildWorkHandoffGraph } from './workHandoffGraph.js'
 import { workHandoffNodeAction } from './workHandoffNode.js'
-import { trustedWorkNoticePrompt } from './workHandoffNotice.js'
 import { ExecutionLimiter } from './limiter.js'
 
 /** Adapt the existing exact-session native driver, not a second native runtime.
@@ -257,25 +256,11 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         },
         consumeLaunch: (id) => { check(); return id === execution.id && store.consumeLaunch(id) },
       }
-      const initialPrompt = currentInitialPrompt(node,
-        context.version.definition.repeat?.blocks.some((block) => block.exitNodeId === node.id) ?? false,
-        context.version.definition.handoffs !== undefined)
-      const workInput = context.version.definition.handoffs
-        ? WorkActivationInputSchema.parse(execution.input) : undefined
-      const noticePrompt = workInput ? trustedWorkNoticePrompt(workInput) : undefined
-      const returnPrompt = workInput?.work.kind === 'work_request' ? [
-        'If you choose routing.kind "return", copy this routing object and add outcome "accepted" or "needs_changes":',
-        JSON.stringify({ kind: 'return', requestId: workInput.work.request.requestId }),
-        'Copy requestId verbatim, including every character. Check it against the accepted input before responding.',
-      ].join('\n') : undefined
-      const prompts = [initialPrompt, noticePrompt, returnPrompt].filter(Boolean)
       const executionContext = context.version.definition.handoffs
         ? await store.readWorkExecutionContext(execution.id) : undefined
       check()
-      const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: run.id,
-        workspaceId: run.workspaceId, workflowNodeId: node.id, ...paths,
-        ...(prompts.length ? { initialPrompt: prompts.join('\n\n') } : {}),
-        configuration, input: execution.input, ...(executionContext ? { executionContext } : {}) })
+      const request = workflowExecutionRequest({ execution: { ...execution, ...paths },
+        version: context.version, configuration, workspaceId: run.workspaceId, executionContext })
       for (;;) {
         const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal })
         execution = observation.execution

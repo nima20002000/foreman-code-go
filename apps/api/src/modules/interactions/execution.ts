@@ -59,6 +59,7 @@ import { readDetachedWorkflowSession, readOpenRemoteWorkflowSession, recoverWork
 import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.js'
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
+import { workflowExecutionRequest } from '../runs/workflowExecutionRequest.js'
 import { readRetainedRemoteReviewer } from './retainedRemoteReviewer.js'
 import { reviewPreflightIdentity } from './reviewPolicy.js'
 import type { RepeatReviewerBindings } from './repeatReviewer.js'
@@ -1290,11 +1291,18 @@ export class ApprovalExecutionCoordinator {
       throw new DomainError('WORKER_EXECUTION_TERMINAL', 'A completed workflow execution cannot resume native work.', 409)
     }
     await this.validateContinuation?.(execution.id, signal)
-    const request = HarnessExecutionRequestSchema.parse({
-      executionId: execution.id, runId: execution.runId, workspaceId: run.workspaceId,
-      workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
-      runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input,
-    })
+    let request = this.ownedSessions.get(execution.id)?.context.workflowRequest
+    if (!request) {
+      const version = await this.runs.getRepeatVersion(run.id, run.workflowVersionId, options.restartOwner)
+      let executionContext
+      if (version.definition.handoffs) {
+        if (!options.restartOwner) throw new DomainError('NATIVE_SESSION_RECOVERY_REQUIRED',
+          'Reconstructing a work handoff request requires its Run owner.', 409)
+        executionContext = await (await this.runs.repeat(options.restartOwner)).readWorkExecutionContext(execution.id)
+      }
+      request = workflowExecutionRequest({ execution, version, configuration,
+        workspaceId: run.workspaceId, executionContext })
+    }
     const resolutionContext = {
       ...await this.managerContext(execution, configuration, context.purpose), workflowRequest: request,
     }
