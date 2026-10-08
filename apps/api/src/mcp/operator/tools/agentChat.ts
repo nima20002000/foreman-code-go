@@ -60,7 +60,10 @@ export function registerAgentChatTools(server: McpServer, context: OperatorReque
     description: 'Answer the pending native approval or input request in an Agent chat with an offered option. '
       + 'Standalone Codex forms are bound to their native session and request, without a turn ID. '
       + 'For questions and forms, supply response matching the option input schema. Reuse requestId with the same '
-      + 'choice and response after a lost response; uncertain delivery is never resent. Requires agent_chat:respond and agent_chat:read.',
+      + 'choice and response after a lost response; uncertain delivery is never resent. '
+      + 'Read agent_chat_read activitySnapshot for the saved decision and providerAcknowledged: '
+      + 'a recorded answer alone is not delivery confirmation; native consumption may confirm it later. '
+      + 'Requires agent_chat:respond and agent_chat:read.',
     inputSchema: RespondAgentChatInteractionRequestSchema.extend({ workspaceId: workspace, conversationId: conversation }),
     outputSchema: AgentChatStateResponseSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

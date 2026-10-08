@@ -21,7 +21,7 @@ import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.
 import type { CodexChatFiles } from '../src/modules/harnesses/codexFiles/runtime.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 import { deliveryFixture } from './fixtures/codex-delivery.js'
-import { agentMessage, calls, emit, state, until } from './fixtures/codex-test-helpers.js'
+import { agentMessage, calls, emit, finish, state, until } from './fixtures/codex-test-helpers.js'
 import { prepareCodexFileTurn } from '../src/modules/harnesses/codexFiles/index.js'
 import { filePorts, fileScope, sourceRef } from './fixtures/codex-file-runtime-helpers.js'
 import { nativeNonSubmission } from '../src/modules/conversations/nativeNonSubmission.js'
@@ -192,6 +192,85 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       executionPages: () => { throw new Error('No Run source in this fixture.') },
     }, factory, database.directory)
     services.agentChat = agentChat
+  }
+
+  for (const surface of ['agent', 'operator'] as const) {
+    for (const scenario of [
+      { answer: 'Pear', completed: true },
+      { answer: 'Native forms custom label', completed: true },
+      { answer: 'Pear', completed: false },
+    ]) {
+      it(`${surface} native answer ${scenario.answer} reads back ${scenario.completed ? 'confirmed' : 'unconfirmed'}`, async () => {
+        const id = surface === 'agent'
+          ? (await sendAgent({ ...request('question-turn', null), content: 'wait' })).state.conversation!.id
+          : await createOperator()
+        if (surface === 'operator') await sendOperator(id, 'question-turn', 'wait')
+        const read = () => surface === 'agent' ? readAgent() : readOperator(id)
+        const active = await until(async () => {
+          const current = await read()
+          const native = current.activitySnapshot?.active.find(item => item.ref.kind === 'chat_request')?.native
+          return native?.turnId ? native : undefined
+        })
+        await emit(native.directory, { id: 5200, method: 'item/tool/requestUserInput', params: {
+          threadId: active.sessionId, turnId: active.turnId!, itemId: 'fruit-question',
+          isBlocking: true, autoResolutionMs: null, questions: [{ id: 'fruit', header: 'Fruit',
+            question: 'Choose a fruit', isOther: true, isSecret: false,
+            options: [{ label: 'Apple', description: 'Apple' }, { label: 'Pear', description: 'Pear' }] }],
+        } })
+        const pending = await until(async () => (await read()).pendingInteraction)
+        const response = { fruit: { answers: [scenario.answer] } }
+        const choice = { nativeRequestId: pending.turn.nativeRequestId!, optionId: pending.responseOptions[0]!.optionId,
+          response }
+        const tool = surface === 'agent' ? 'agent_chat_respond' : 'operator_chat_respond'
+        const args = surface === 'agent'
+          ? { workspaceId, conversationId: id, requestId: 'answer-control', ...choice }
+          : { conversationId: id, request: { commandId: 'answer-control', requestId: 'question-turn', ...choice } }
+        const refused = await (surface === 'agent' ? denied : reader).callTool({ name: tool, arguments: args })
+          .catch(() => ({ isError: true }))
+        assert.equal(refused.isError, true)
+        const accepted = await writer.callTool({ name: tool, arguments: args })
+        assert.notEqual(accepted.isError, true, JSON.stringify(accepted))
+        const summary = (current: AgentChatState | OperatorConversationState) => {
+          const activity = current.activitySnapshot
+          return [...(activity?.pendingInteractions ?? []), ...(activity?.activities.flatMap(item =>
+            item.kind === 'interaction' ? [item.interaction] : []) ?? [])]
+            .find(item => item.native?.requestId === choice.nativeRequestId && item.answerRecorded)
+        }
+        assert.equal(summary(await read())?.providerAcknowledged, false)
+        if (scenario.completed) {
+          await finish(native.directory, active.sessionId, `RECEIVED ${scenario.answer}`)
+          await until(async () => {
+            const current = await read()
+            const idle = surface === 'agent' ? (current as AgentChatState).sessionState === 'idle'
+              : (current as OperatorConversationState).turnState === 'idle'
+            return idle && summary(current)?.providerAcknowledged ? current : undefined
+          })
+        }
+        const operation = surface === 'agent' ? 'agent_chat_control' : 'operator_chat_control'
+        const stored = (await database.pool.query(`select result from management_command_receipts
+          where operation=$1 and command_id='answer-control'`, [operation])).rows[0]!.result
+        assert.equal(Boolean(stored.providerAcknowledgment), scenario.completed)
+        assert.deepEqual(stored.acceptedControl.choice.response, response)
+        const url = surface === 'agent' ? `/api/workspaces/${workspaceId}/agent-chat?workflowId=${context.workflowId}`
+          + `&workflowNodeId=${context.workflowNodeId}&agentId=${context.agentId}` : `/api/operator/conversations/${id}`
+        const http = await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${writerToken}` } })
+        assert.equal(http.statusCode, 200, http.body)
+        assert.equal(summary(http.json())?.providerAcknowledged, scenario.completed)
+        assert.equal(summary(await read())?.providerAcknowledged, scenario.completed)
+        if (scenario.completed && surface === 'agent') {
+          await agentChat.shutdown()
+          restartAgentService()
+          assert.equal(summary(await readAgent())?.providerAcknowledged, true)
+        }
+        const replay = await writer.callTool({ name: tool, arguments: args })
+        assert.notEqual(replay.isError, true, JSON.stringify(replay))
+        const responses = (await calls(native.directory)).filter(entry => {
+          const wire = entry.wire as { id?: number; result?: unknown } | undefined
+          return wire?.id === 5200 && wire.result
+        })
+        assert.equal(responses.length, 1)
+      })
+    }
   }
 
   for (const kind of ['agent', 'operator'] as const) {
