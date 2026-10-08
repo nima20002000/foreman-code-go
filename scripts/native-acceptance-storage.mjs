@@ -1,11 +1,11 @@
-import { chmod, cp, lstat, mkdir, mkdtemp, readlink, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, cp, lstat, mkdir, mkdtemp, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
 async function copyOptional(source, destination) {
   try {
-    await stat(source)
+    await lstat(source)
   } catch (error) {
     if (error.code === 'ENOENT') return
     throw error
