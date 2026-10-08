@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Cloud } from 'lucide-react'
 import type { ComputerAccount } from '@foreman-code/contracts/computer-accounts'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -25,6 +25,7 @@ function DriveConnectBody({ target, account, onCancel }: {
 }) {
   const { start, complete, disconnect, cancel, status, terminalStatus, current } = useDriveConnection(target)
   const [token, setToken] = useState('')
+  const unavailableId = useId()
   let connected = account?.signedIn ? account.account ?? 'Google Drive' : null
   if (current?.state === 'connected') connected = current.account ?? 'Google Drive'
   if (current?.state === 'waiting') connected = current.account
@@ -36,6 +37,15 @@ function DriveConnectBody({ target, account, onCancel }: {
   const restart = () => {
     setToken('')
     start.mutate()
+  }
+  if (!current && !busy && (!account || (account.installed && account.signedIn === null))) {
+    return <div className="github-sign-in">
+      <Alert tone="warning" title="Account state unavailable">
+        <p id={unavailableId}>This computer must be reachable to read its existing Google Drive login.
+          Close this dialog and retry accounts when the computer is online.</p>
+      </Alert>
+      <Button size="sm" variant="primary" disabled aria-describedby={unavailableId}>Connect Google Drive</Button>
+    </div>
   }
   return <div className="github-sign-in">
     {error && <Alert tone="danger" title={error.message} />}
