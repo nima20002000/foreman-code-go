@@ -17,6 +17,9 @@ import { queryKeys } from '../shared/api/query'
 import { getMockFixture, setMockScenario } from '../shared/mocks/scenarios'
 import { server } from '../mocks/server'
 import { bindMockInstallation } from '../shared/mocks/handlers'
+import { savedClaudeConfiguration } from '../features/settings/claudeSettings.fixtures'
+import { savedPlacementFixture } from '../features/node-placement/fixtures'
+import { createCurrentBoardMock } from '../shared/mocks/currentBoard'
 
 function readyWorkspace() {
   const fixture = getMockFixture('workspace-1')
@@ -137,9 +140,10 @@ describe('WorkspaceRouteEntry integration', () => {
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
   })
 
-  it('opens, closes and reopens settings for an Agent selected by a reloaded URL', async () => {
+  it.each([undefined, 'agent-researcher'])('opens, closes and reopens settings after reload with selection %s', async (agentId) => {
     const user = userEvent.setup()
-    const { router } = await renderWorkspace('/workspaces/workspace-1?agentId=agent-researcher')
+    const entry = '/workspaces/workspace-1?workflowId=workflow-content-pipeline'
+    const { router } = await renderWorkspace(agentId ? `${entry}&agentId=${agentId}` : entry)
     const node = await researcherButton()
     const title = node.getAttribute('aria-label')!.split(',')[0]
     const canvas = screen.getByLabelText('Editable workflow graph')
@@ -155,6 +159,48 @@ describe('WorkspaceRouteEntry integration', () => {
     await user.click(open)
     expect(await screen.findByRole('dialog', { name: `${title} settings` })).toBeVisible()
   })
+
+  it('opens a reloaded Claude Agent settings panel while cross-computer choices are unavailable', async () => {
+    vi.stubGlobal('navigator', { ...navigator, locks: {
+      request: async (_name: string, work: () => Promise<unknown>) => work(),
+    } })
+    const fixture = getMockFixture('workspace-1')!
+    const agent = fixture.agents.find((item) => item.id === 'agent-researcher')!
+    agent.harness = 'claude'
+    agent.harnessConfiguration = savedClaudeConfiguration
+    agent.model = savedClaudeConfiguration.model
+    const graph = fixture.workflows.find((item) => item.id === 'workflow-content-pipeline')!
+    graph.nodes = graph.nodes.map((node) => nativeNode(node).agentId === agent.id
+      ? { ...node, name: 'Main coordinator' } : { ...node, placement: savedPlacementFixture })
+    const service = createCurrentBoardMock({ workspaceId: 'workspace-1', agents: fixture.agents,
+      initialWorkflow: graph })
+    server.use(...service.handlers)
+    server.use(http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/nodes/:nodeId/placement-choices',
+      () => new HttpResponse(null, { status: 503 })))
+    const entry = '/workspaces/workspace-1?workflowId=workflow-content-pipeline'
+    const first = await renderWorkspace(entry)
+    const user = userEvent.setup()
+    const before = await workflowBoard('Research to review')
+    await user.click(within(before).getByRole('button', { name: 'Research to review' }))
+    const name = screen.getByRole('textbox', { name: 'Workflow name' })
+    await user.clear(name)
+    await user.type(name, 'Activities persisted workflow{Enter}')
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    expect(await screen.findByText('Saved.')).toBeVisible()
+    first.unmount()
+    first.queryClient.clear()
+    act(() => useGraphDraftStore.setState({ nextDrafts: {} }))
+    await renderWorkspace(entry)
+    const board = await workflowBoard('Activities persisted workflow')
+    const node = await within(board).findByRole('button', { name: /^Main coordinator,/ })
+    const title = 'Main coordinator'
+    expect(node).toHaveAccessibleName(/Claude/)
+    await userEvent.click(screen.getByRole('button', { name: `Open ${title} settings` }))
+    const dialog = await screen.findByRole('dialog', { name: `${title} settings` })
+    expect(dialog).toBeVisible()
+    expect(within(dialog).getByRole('textbox', { name: 'Name' })).toHaveValue(agent.name)
+    expect(await within(dialog).findByText('Computer choices are unavailable.')).toBeVisible()
+  }, 15_000)
 
   it('opens the accepted new workflow while workspace details still serve the old list', async () => {
     const user = userEvent.setup()
