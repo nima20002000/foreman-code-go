@@ -233,3 +233,23 @@ it('resets an unsaved budget when switching nodes before either conversation exi
   fireEvent.click(screen.getByRole('button', { name: 'Save as default for future chats' }))
   expect(controls.change).toHaveBeenCalledExactlyOnceWith({ kind: 'save-default', preferences: state.desired })
 })
+
+it('keeps the Operator composer to one toolbar in reading order with notes on their own line', () => {
+  const controls = controller()
+  controls.state = { ...state, desiredMode: 'plan', appliedMode: 'regular',
+    context: { nativeSessionId: 'native-chat', model: 'model', generation: 'runtime', sequence: 3,
+      observedAt: '2026-10-06T00:00:00.000Z', source: 'codex', accuracy: 'native',
+      usedTokens: 25000, capacityTokens: 100000, lifetimeTokens: null, cost: null, stale: false } }
+  render(<OperatorComposer conversationId="chat" sessionControls={controls} onNewChat={vi.fn()} onSubmit={vi.fn()}
+    attachmentControl={<button type="button">Attach files</button>} context={<button type="button">Agent settings: model</button>} />)
+  const toolbar = screen.getByRole('button', { name: 'Send message' }).parentElement!
+  const order = Array.from(toolbar.querySelectorAll('button, select')).map(element =>
+    element.getAttribute('aria-label') ?? element.textContent?.trim() ?? '')
+  expect(order).toEqual(['Attach files', 'Agent settings: model', 'RegularPlan', '25% context', 'Send message'])
+  expect(screen.getByRole('combobox', { name: 'Conversation mode' })).toHaveValue('plan')
+  const meter = screen.getByRole('button', { name: '25% context' })
+  expect(meter).toHaveTextContent('25%')
+  expect(meter).not.toHaveTextContent('context')
+  const note = screen.getByText('Plan mode starts on the next turn.')
+  expect(note.closest('.session-controls-status')).not.toBeNull()
+})

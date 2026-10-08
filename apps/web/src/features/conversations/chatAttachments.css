@@ -1,20 +1,8 @@
-/* File chips wrap above the action row, never beside Send/Stop in a fixed-width strip. */
-.operator-composer > .attachment-control,
+/* File chips wrap above the action row, never beside Send/Stop in a fixed-width strip.
+   The Operator composer's own layout lives in operatorChat.css. */
 .agent-chat-composer-controls .attachment-control {
   min-width: 0;
   width: 100%;
-}
-.operator-composer .operator-composer-toolbar {
-  flex-wrap: wrap;
-  min-width: 0;
-}
-.operator-composer .operator-composer-model {
-  min-width: 0;
-  flex: 1 1 80px;
-}
-.operator-composer .operator-composer-send {
-  flex: 0 0 auto;
-  margin-inline-start: auto;
 }
 .agent-chat-composer-controls .n-composer,
 .agent-chat-composer-controls .n-composer-context {

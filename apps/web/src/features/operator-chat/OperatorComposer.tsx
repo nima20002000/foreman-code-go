@@ -68,9 +68,12 @@ export function OperatorComposer({ conversationId, context, attachmentControl, f
           event.preventDefault(); void send()
         }
       }} />
+    {/* One row in reading order: attach, agent settings, session mode and context, then send at the end.
+        Attachment chips and session notes wrap onto their own full-width lines. */}
     <div className="operator-composer-toolbar">
       {attachmentControl}
-      <div className="operator-composer-model">{context}{sessionControls ? <SessionControls controls={sessionControls} /> : null}</div>
+      <div className="operator-composer-model">{context}</div>
+      {sessionControls ? <SessionControls controls={sessionControls} /> : null}
       {onCancel && !commandOnly ? <IconButton label="Stop response" onClick={onCancel} className="operator-composer-send"><Icon name="stop" size={15} /></IconButton>
         : <IconButton label="Send message" type="submit" disabled={cannotSend} className="operator-composer-send" loading={pending}><Icon name="arrow" className="operator-send-arrow" size={17} /></IconButton>}
     </div>
