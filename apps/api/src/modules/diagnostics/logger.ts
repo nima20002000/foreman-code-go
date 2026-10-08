@@ -1,3 +1,4 @@
+/// <reference path="../../types/pino-roll.d.ts" />
 import { readdir, stat, unlink } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { runtimeTimingChannel, type RuntimeTimingRecord } from './runtimeTiming.js'
