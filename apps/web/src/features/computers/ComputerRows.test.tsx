@@ -154,7 +154,8 @@ it('connects GitHub on a computer with a one-time code and shows the signed-in a
   const user = userEvent.setup()
   const state = { polls: 0 }
   const waiting = { loginId: '66666666-6666-4666-8666-666666666666', state: 'waiting', code: 'AB12-CD34',
-    verificationUrl: 'https://github.com/login/device', expiresAt: '2026-10-07T00:15:00.000Z', account: null, message: null }
+    verificationUrl: 'https://github.com/login/device', expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+    account: null, message: null }
   const bodies: unknown[] = []
   server.use(
     http.post('*/api/management/computers/github/login', async ({ request }) => { bodies.push(await request.json()); return HttpResponse.json(waiting) }),
