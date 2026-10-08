@@ -42,6 +42,7 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'computer_drive_disconnect', action: 'settings:update' },
   { name: 'build_computer_get', action: 'settings:read' },
   { name: 'build_computer_update', action: 'settings:update' },
+  { name: 'build_computers_update', action: 'settings:update' },
   { name: 'devices_list', action: 'settings:read' },
   { name: 'device_connection_host_discover', action: 'settings:read' },
   { name: 'device_connection_read', action: 'settings:read' },

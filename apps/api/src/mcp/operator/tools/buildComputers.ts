@@ -3,7 +3,8 @@ import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-act
 import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerDriveInputSchema, ComputerDriveStatusInputSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
   DriveLoginStateSchema, GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
 import type { McpServer } from '@modelcontextprotocol/server'
-import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
+import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema,
+  BuildComputerBatchUpdateSchema, BuildComputerBatchResultSchema } from '@foreman-code/contracts/build-computers'
 import type { OperatorRequestContext } from '../types.js'
 import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
@@ -99,4 +100,12 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
     inputSchema: BuildComputerUpdateSchema, outputSchema: BuildComputerStatusSchema,
     annotations: { ...annotations, readOnlyHint: false },
   }, input => invokeOperatorTool(context, 'build_computer_update', () => service.update(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'build_computers_update')) server.registerTool('build_computers_update', {
+    description: 'Atomically update build participation, priority, role and allowance for one or more computers on Main. '
+      + 'Checks every expectedRevision before changing any computer. Requires global settings:update. '
+      + 'Reuse the same commandId and updates to resolve an uncertain save; replay returns the original result. '
+      + 'Read build_computer_get afterwards for current settings. Changes affect future placement; running Jobs keep their computer.',
+    inputSchema: BuildComputerBatchUpdateSchema, outputSchema: BuildComputerBatchResultSchema,
+    annotations: { ...annotations, readOnlyHint: false },
+  }, input => invokeOperatorTool(context, 'build_computers_update', () => service.updateBatch(context.principal, 'mcp', input)))
 }

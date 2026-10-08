@@ -171,10 +171,6 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
     const auto = await f.save()
     expect(await queue.resources(database.pool, auto)).toEqual(config.envelopes[0])
     const profile = f.computers[0]!.candidate.profile
-    await database.pool.query(`insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record)
-      values($1,$2,1,$3,1,$4::jsonb)`, [profile.id, f.workspaceId, profile.root.binding.rootId, JSON.stringify(profile)])
-    await database.pool.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,1,$2::jsonb)',
-      [profile.id, JSON.stringify(profile)])
     const fixed = await f.save(f.computers[0]!.candidate.spec)
     const fixedSpec = ResolvedJobDefinitionSpecSchema.parse(fixed.spec)
     await database.pool.query('update job_runtime_profiles set revision=2,record=$2::jsonb where id=$1',
@@ -255,10 +251,7 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
       bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
     const retained = jobRuntimeMetadataFixture(computer.candidate.profile, binding.bootId)
     const profile = retained.profile
-    await database.pool.query(`insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record)
-      values($1,$2,1,$3,1,$4::jsonb)`, [profile.id, f.workspaceId,
-      profile.root.binding.rootId, JSON.stringify(profile)])
-    await database.pool.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,1,$2::jsonb)',
+    await database.pool.query('update job_runtime_profiles set record=$2::jsonb where id=$1',
       [profile.id, JSON.stringify(profile)])
     const measurement = profile.measurement!
     const approval = { schemaVersion: 1, id: measurement.approvalId, qualificationId: measurement.qualificationId,
