@@ -17,13 +17,17 @@ type Selection = Pick<SourceRequest, 'transferId' | 'repository' | 'source' | 'b
 export class CiRuntimeSourceReceiver {
   private receiving = false
   private upload: { selection: Selection; directory: string; file: FileHandle; offset: number;
-    hash: ReturnType<typeof createHash>; timer: ReturnType<typeof setTimeout> } | undefined
+    completed: boolean; hash: ReturnType<typeof createHash>; timer: ReturnType<typeof setTimeout> } | undefined
 
   constructor(private readonly git: GitWorktreePorts, private readonly signal: AbortSignal) {
     signal.addEventListener('abort', () => { void this.close().catch(error => console.error(error)) }, { once: true })
   }
 
-  get active(): boolean { return !!this.upload || this.receiving }
+  get active(): boolean { return this.receiving || !!this.upload && !this.upload.completed }
+
+  async releaseCompleted(): Promise<void> {
+    if (this.upload?.completed) await this.close()
+  }
 
   async receive(request: SourceRequest): Promise<void> {
     if (this.receiving) throw new SourceError('SOURCE_CAPACITY', 'A CI source chunk is already being processed.')
@@ -43,19 +47,33 @@ export class CiRuntimeSourceReceiver {
     if (bytes.toString('base64') !== request.dataBase64 || !bytes.length || bytes.length > 512 * 1024) {
       throw new SourceError('SOURCE_PACKAGE_INVALID', 'Invalid CI source chunk.')
     }
+    if (request.complete !== (request.offset + bytes.length === byteSize)) {
+      throw new SourceError('SOURCE_PACKAGE_INVALID', 'CI source completion must match the package extent.')
+    }
+    if (this.upload?.completed && !isDeepStrictEqual(this.upload.selection, selection)) await this.close()
     if (!this.upload) {
       if (request.offset !== 0) throw new SourceError('SOURCE_PACKAGE_INVALID', 'Start the CI source package at offset zero.')
       const directory = await mkdtemp(join(tmpdir(), 'foreman-ci-source-'))
-      const file = await open(join(directory, 'source'), 'wx', 0o600)
+      const file = await open(join(directory, 'source'), 'wx+', 0o600)
       const timer = setTimeout(() => { void this.close().catch(error => console.error(error)) }, 5 * 60_000)
       timer.unref()
-      this.upload = { selection, directory, file, offset: 0, hash: createHash('sha256'), timer }
+      this.upload = { selection, directory, file, offset: 0, completed: false, hash: createHash('sha256'), timer }
     }
     const upload = this.upload
     if (!isDeepStrictEqual(upload.selection, selection)) {
       throw new SourceError('SOURCE_PACKAGE_INVALID', 'Another CI source transfer owns this receiver.')
     }
     try {
+      if (request.offset < upload.offset) {
+        const original = Buffer.alloc(bytes.length)
+        const read = await upload.file.read(original, 0, original.length, request.offset)
+        if (request.offset + bytes.length > upload.offset || read.bytesRead !== bytes.length
+          || !original.equals(bytes)) {
+          throw new SourceError('SOURCE_BYTES_INVALID', 'A retried CI source chunk differs from its original bytes.')
+        }
+        upload.timer.refresh()
+        return
+      }
       if (request.offset !== upload.offset || upload.offset + bytes.length > byteSize) {
         throw new SourceError('SOURCE_PACKAGE_INVALID', 'CI source chunks must cover the approved package in order.')
       }
@@ -67,9 +85,10 @@ export class CiRuntimeSourceReceiver {
       if (upload.offset !== byteSize || upload.hash.digest('hex') !== sha256) {
         throw new SourceError('SOURCE_BYTES_INVALID', 'The CI source package differs from its approved transfer.')
       }
-      await upload.file.close()
+      await upload.file.sync()
       await this.importSource(upload.directory, upload.selection)
-      await this.close()
+      // Keep the verified extent briefly so lost acknowledgments can replay identical chunks.
+      upload.completed = true
     } catch (error) {
       await this.close()
       throw error

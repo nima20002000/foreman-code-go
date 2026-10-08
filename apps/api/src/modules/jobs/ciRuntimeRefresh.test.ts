@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -131,7 +131,8 @@ describe('CI runtime refresh', () => {
       if (args.includes('cp')) await writeFile(args.at(-1)!, 'new-binary')
       return 'new-version'
     })
-    const refreshing = scheduleCiRuntimeRefresh({ stateDirectory, prepared: { ...f.prepared, seedReceiptPath },
+    const refreshing = scheduleCiRuntimeRefresh({ operationId: randomUUID(), stateDirectory,
+      prepared: { ...f.prepared, seedReceiptPath },
       root: f.current.root, manifest: f.current.qualificationSource.manifest, resources: f.current.machine.resources,
       drain: async () => { beganDrain(); await Promise.all([job, agent]) } })
     try {

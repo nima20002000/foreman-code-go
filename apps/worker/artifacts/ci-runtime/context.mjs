@@ -97,4 +97,3 @@ export async function buildCiRuntimeContext({ repository, commit = 'HEAD', outpu
   await writeFile(join(output, 'context-receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
   return receipt;
 }
-

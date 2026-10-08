@@ -19,7 +19,7 @@ import { verificationRuntimeFixture } from './verificationRuntimeFixture.js'
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 
 /** Retained domain data for transport tests. No PostgreSQL or physical host is used. */
-export function ciFixture() {
+export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependencies_changed')[] } = {}) {
   const workspaceId = 'workspace-fixture'
   const operator: ManagementPrincipal = { id: 'ci-operator', name: 'CI operator', audience: 'operator',
     expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
@@ -35,7 +35,8 @@ export function ciFixture() {
   const audits: Array<{ principalId: string; action: string; outcome: string }> = []
   const commands = {
     execute: async (input: { principal: ManagementPrincipal; operation: string; commandId: string;
-      targetKey: string; payload: unknown; authorize?(sql: unknown): Promise<void>; perform(sql: unknown): Promise<unknown> }) => {
+      targetKey: string; payload: unknown; authorize?(sql: unknown): Promise<void>;
+      prepare?(): Promise<void>; perform(sql: unknown): Promise<unknown> }) => {
       const sql = { query: async () => ({ rows: [] }) }
       await input.authorize?.(sql)
       const key = `${input.principal.id}:${input.operation}:${input.commandId}`
@@ -46,6 +47,10 @@ export function ciFixture() {
           throw new DomainError('COMMAND_ID_CONFLICT', 'Command input changed.', 409)
         }
         return { value: structuredClone(existing.result), replayed: true }
+      }
+      if (input.prepare) {
+        await input.prepare()
+        await input.authorize?.(sql)
       }
       const value = await input.perform(sql)
       receipts.set(key, { digest, target: input.targetKey, result: JSON.parse(JSON.stringify(value)) })
@@ -69,6 +74,9 @@ export function ciFixture() {
   let execution: ReturnType<typeof VerificationJobExecutionSchema.parse> | undefined
   let summary: ReturnType<typeof JobVerificationReportSchema.parse> | undefined
   const runtime = verificationRuntimeFixture()
+  const templates = [jobVerificationTemplate({ profileId: 'profile', profileRevision: 1,
+    suite: 'unit', ready: true, resources: runtime.spec.verification.resources, maxUnitWorkers: 1,
+    policy: jobPolicyRequirementsRecord(runtime.spec.policy) })]
   const roots: { offline: boolean; source: unknown; selection: { rootPolicyId: string }
     binding: { rootId: string; bindingRevision: number; accessMode: 'exclusive-write' } }[] = [
     { offline: false, source: null, selection: { rootPolicyId: 'online-root' },
@@ -121,9 +129,7 @@ export function ciFixture() {
   const scopeCheck = (principal: ManagementPrincipal, scope: string) =>
     requireAuthorization(principal, 'jobs:read', { workspaceId: scope })
   const jobs = {
-    choices: async () => ({ verificationTemplates: [jobVerificationTemplate({ profileId: 'profile', profileRevision: 1,
-      suite: 'unit', ready: true, resources: runtime.spec.verification.resources, maxUnitWorkers: 1,
-      policy: jobPolicyRequirementsRecord(runtime.spec.policy) })] }),
+    choices: async () => ({ verificationTemplates: structuredClone(templates) }),
     listDefinitions: async () => [...definitions.values()].map(value => structuredClone(value)),
     saveDefinition: async (_principal: ManagementPrincipal, _source: string, scope: string,
       input: { name: string; spec: unknown }) => {
@@ -137,7 +143,7 @@ export function ciFixture() {
     },
     enqueue: async (principal: ManagementPrincipal, _source: string, scope: string, input: {
       commandId: string; definitionId: string; placementOverride?: unknown
-    }, origin: { initiatingAgent?: unknown } = {}) => {
+    }, enqueueOptions: { runtimePreparation?: ManagementPrincipal; initiatingAgent?: unknown } = {}) => {
       enqueues++
       enqueued.push(input)
       const queuedDefinition = [...definitions.values()].find(value => value.id === input.definitionId)
@@ -146,10 +152,13 @@ export function ciFixture() {
       const at = Date.now(), now = new Date(at).toISOString()
       ticket = JobQueueTicketSchema.parse({ schemaVersion: 1, id: randomUUID(), workspaceId: scope, revision: 1,
         commandId: input.commandId, commandDigest: jobDigest(input), principalId: principal.id, definition: queuedDefinition,
-        executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(), workflow: null, initiatingAgent: origin.initiatingAgent, gateId: null,
-        placement: input.placementOverride ?? { kind: 'auto' }, placementOverride: input.placementOverride ?? null, resources: runtime.spec.verification.resources,
+        ...enqueueOptions,
+        executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(), workflow: null, gateId: null,
+        placement: input.placementOverride ?? { kind: 'auto' }, placementOverride: input.placementOverride ?? null,
+        resources: 'verification' in queuedDefinition.spec ? queuedDefinition.spec.verification.resources : runtime.spec.verification.resources,
         enqueueSequence: '1', enqueuedAt: now, deadlineAt: new Date(at + 60_000).toISOString(),
-        state: 'waiting', waitingReasons: ['busy'], compatibleTargetCount: 1, queuePosition: 1, estimatedStartAt: null,
+        state: 'waiting', waitingReasons: options.initialWaitingReasons ?? ['busy'], compatibleTargetCount: 1,
+        queuePosition: 1, estimatedStartAt: null,
         reservationId: null, cancelRequestedAt: null, terminalReason: null, finishedAt: null })
       tickets.set(ticket.id, ticket)
       return { kind: 'pending-admission', ticket: structuredClone(ticket) }
@@ -181,8 +190,9 @@ export function ciFixture() {
       return { commit: 'c'.repeat(40), bundle: Buffer.from('bundle') }
     } })
   const services = { commands, ci: createCi() } as unknown as OperatorServices
-  return { workspaceId, worker, operator, readonly, services, audits, createCi, roots, snapshotCalls, approvals,
-    enqueued, agent, agentExecution, sources, jobs, commands, pool, authority,
+  return { workspaceId, worker, operator, readonly, services, audits, createCi, roots, snapshotCalls, approvals, enqueued, agent, agentExecution,
+    templates, jobs, sources, commands, ticket: () => structuredClone(ticket!), definition: () => structuredClone(definition!),
+    pool, authority,
     counts: () => ({ sourceCaptures, enqueues }), advanceHead: () => { head = 'd'.repeat(40) },
     complete: (options: { publication?: 'collecting' | 'failed' | 'expired'; failed?: true } = {}) => {
       if (!ticket) throw new Error('Missing queued ticket')
