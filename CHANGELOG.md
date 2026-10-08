@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.51] - 2026-10-08
+
+### Changed
+
+- Integration runs start the slowest recorded files first, using per-file durations kept in the Git common directory (`graphql-integration-durations.json`); unmeasured files run first.
+- Integration files launch the workspace Vitest binary directly instead of through `corepack pnpm exec`, removing about 2.4 s of startup per file.
+
+### Verification
+
+- Runner unit tests (30) and lint passed; a focused two-file integration run passed and recorded durations.
+- not verified: full `test:integration` timing comparison.
+
 ## [0.0.50] - 2026-10-06
 
 ### Added
