@@ -23,7 +23,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { agentChatCorrelation, agentChatKey, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
-import { NativeTurnNotActiveError } from '../src/modules/harnesses/errors.js'
+import { HarnessExecutionError, NativeTurnNotActiveError } from '../src/modules/harnesses/errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -45,7 +45,7 @@ class FakeNative implements NativeHarnessSessionManager {
   private turn = 0
   private readonly histories = new Map<string, NativeHistory>()
   private active: { id: string; correlation: string; release: () => void } | undefined
-  constructor(readonly harness: 'codex' | 'opencode', private readonly steering: boolean) { FakeNative.all.push(this) }
+  constructor(readonly harness: 'codex' | 'opencode' | 'claude', private readonly steering: boolean) { FakeNative.all.push(this) }
   async capabilities() {
     return { provider: this.harness, providerVersion: 'fixture-1', persistentSessions: true, reconnect: true, sameRequestResponses: true,
       cancellation: true, history: true, configurationInspection: false, mcpDetection: false, supportedInteractionKinds: [] }
@@ -128,8 +128,9 @@ const runReads: string[] = []
 
 function makeService() {
   const managers = new Map<string, FakeNative>()
-  const factory = Object.assign((id: string, configuration: { harness: { harness: 'codex' | 'opencode' } }) => {
-    const manager = managers.get(id) ?? (configuration.harness.harness === 'codex' ? new FakeNative('codex', true) : new FakeOpenCode())
+  const factory = Object.assign((id: string, configuration: { harness: { harness: 'codex' | 'opencode' | 'claude' } }) => {
+    const harness = configuration.harness.harness
+    const manager = managers.get(id) ?? (harness === 'opencode' ? new FakeOpenCode() : new FakeNative(harness, true))
     managers.set(id, manager); return manager
   }, { release: (id: string) => { managers.delete(id) } })
   const runs = {
@@ -194,6 +195,105 @@ beforeEach(async () => {
 })
 
 describe('selected-Agent chat service', { timeout: 60_000 }, () => {
+  it.each(['codex', 'opencode', 'claude'] as const)('reads saved %s Agent controls through HTTP and MCP after unload and restart', async harness => {
+    const configuration = harness === 'claude' ? {
+      harness: 'claude' as const, model: 'fixture-model', authMode: 'subscription' as const,
+      configDirectory: '/fixture/profile', permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
+      tools: [], permissionRules: [], instructions: '', mcpServers: {},
+    } : fixture.configurations.find(value => value.harness.harness === harness)!.harness
+    const controlFixture = makeCurrentWorkflowFixture(randomUUID(), 'single')
+    controlFixture.configurations = controlFixture.configurations.map(value =>
+      AgentConfigurationVersionSchema.parse({ ...value, harness: configuration }))
+    const seeded = await seedAgent3(pool, root, controlFixture, { run: false })
+    let { service } = makeService()
+    const node = seeded.version.definition.nodes[0]!
+    const workspaceId = seeded.scope.workspaceId
+    const selector = { workflowId: seeded.scope.workflowId, workflowNodeId: node.id, agentId: node.agentId }
+    await service.send(writer, workspaceId, { requestId: randomUUID(), content: 'Complete a native turn',
+      intent: 'next_turn', expectedConversationId: null, context: selector })
+    const done = await settled(service, () => service.read(writer, workspaceId, selector))
+    const conversationId = done.conversation!.id
+    const native = FakeNative.all[0]!
+    let unloaded = false
+    const capabilities = { ...unavailableSessionControls('fixture'), model: 'fixture-model',
+      plan: { supported: true, reason: null }, compact: { supported: true, reason: null } }
+    const nativeCapabilities = vi.fn(async () => {
+      const code = { codex: 'CODEX_SESSION_UNAVAILABLE', claude: 'CLAUDE_SESSION_UNAVAILABLE',
+        opencode: 'OPENCODE_SESSION_CONTEXT_MISSING' }[harness]
+      if (unloaded) throw new HarnessExecutionError(code, 'Native runtime unloaded')
+      return capabilities
+    })
+    Object.assign(native, { sessionControlCapabilities: nativeCapabilities,
+      contextSnapshot: (session: NativeSessionReference) => ({
+        nativeSessionId: session.nativeSessionId, model: 'fixture-model', generation: 'connection', sequence: 1,
+        source: harness, accuracy: 'native', usedTokens: 100, capacityTokens: 200000, lifetimeTokens: 100,
+        cost: null, observedAt: new Date().toISOString(), stale: false,
+      }) })
+    const discovered = await service.readSessionControls(writer, workspaceId, conversationId)
+    const saved = await service.changeSessionControls(writer, workspaceId, conversationId, {
+      kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: discovered.revision,
+    })
+    const denied = await access.issue({ name: 'denied Agent control reader', audience: 'operator', grants: [],
+      expiresAt: new Date(Date.now() + 600000) })
+    unloaded = true
+
+    async function checkReads() {
+      const services = {
+        agentChat: service, commands: new PostgresCommandCoordinator(pool),
+      } as unknown as OperatorServices
+      const app = buildApp({ logger: false,
+        readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+        operator: { access, services } })
+      const client = new Client({ name: 'saved-Agent-controls-reader', version: '1' })
+      const deniedClient = new Client({ name: 'denied-saved-Agent-controls-reader', version: '1' })
+      try {
+        const address = await app.listen({ host: '127.0.0.1', port: 0 })
+        const url = `/api/workspaces/${workspaceId}/agent-chat/conversations/${conversationId}/session-controls`
+        const http = await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${writerToken}` } })
+        expect(http.statusCode).toBe(200)
+        expect(SessionControlStateSchema.parse(http.json())).toMatchObject({ desiredMode: 'plan',
+          revision: saved.revision, capabilities, nativeStatus: 'resume-required',
+          nativeSessionId: saved.nativeSessionId, context: { usedTokens: 100, stale: true } })
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+          { authProvider: { token: async () => writerToken } }))
+        const target = { workspaceId, conversationId }
+        const mcp = await client.callTool({ name: 'agent_chat_controls_get', arguments: target })
+        expect(mcp.isError).not.toBe(true)
+        expect(SessionControlStateSchema.parse(mcp.structuredContent)).toEqual(SessionControlStateSchema.parse(http.json()))
+        const context = await client.callTool({ name: 'agent_chat_controls_get',
+          arguments: { workspaceId, context: selector } })
+        expect(context.isError).not.toBe(true)
+        expect(SessionControlStateSchema.parse(context.structuredContent).desiredMode).toBe('plan')
+        expect((await app.inject({ method: 'GET', url,
+          headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
+        await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+          { authProvider: { token: async () => denied.token } }))
+        await expectMcpAccessDenied(deniedClient.callTool({ name: 'agent_chat_controls_get', arguments: target }))
+        expect((await service.read(writer, workspaceId, selector)).messages).toEqual(done.messages)
+        const persisted = await pool.query<{ record: unknown }>(
+          'select record from conversation_session_controls where conversation_id=$1', [conversationId])
+        expect(SessionControlStateSchema.parse(persisted.rows[0]!.record)).toMatchObject({ desiredMode: 'plan', capabilities })
+      } finally {
+        await client.close()
+        await deniedClient.close()
+        await app.close()
+      }
+    }
+
+    try {
+      await checkReads()
+      await service.shutdown()
+      service = makeService().service
+      const nativeReads = nativeCapabilities.mock.calls.length
+      await checkReads()
+      expect(nativeCapabilities).toHaveBeenCalledTimes(nativeReads)
+      expect(native.prompts).toHaveLength(1)
+      expect(FakeNative.all).toHaveLength(1)
+    } finally {
+      await service.shutdown()
+    }
+  })
+
   it('keeps later accepted-turn reconciliation idempotent while preserving the initial startup receipt', async () => {
     const { service } = makeService()
     const first = request(codexNode, 'first', null)

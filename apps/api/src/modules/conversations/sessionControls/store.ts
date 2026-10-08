@@ -1,6 +1,7 @@
 import { recoverPersistedClaudeCompaction } from '../../harnesses/claudeSdk/recoverCompaction.js'
 import { randomUUID } from 'node:crypto'
 import { mergeContextSnapshot } from './context.js'
+import { readNativeCapabilities, readNativeSnapshot } from './nativeSnapshot.js'
 import type pg from 'pg'
 import {
   CompactionStateSchema, SessionControlRequestSchema, SessionControlStateSchema, SessionPreferencesSchema,
@@ -65,9 +66,10 @@ export class SessionControlStore {
         }
       }
     }
-    const manager = binding.manager
-    const capabilities = manager?.sessionControlCapabilities && session
-      ? await manager.sessionControlCapabilities(session) : binding.pendingCapabilities ?? unavailableSessionControls(binding.profileKey)
+    const loaded = await readNativeCapabilities(binding)
+    const manager = loaded ? binding.manager : undefined
+    const capabilities = loaded?.capabilities
+      ?? binding.pendingCapabilities ?? unavailableSessionControls(binding.profileKey)
     const defaultsRow = await this.pool.query<{ record: unknown }>(`select record from conversation_session_defaults
       where principal_id=$1 and role=$2 and subject=$3 and profile_key=$4`,
     [binding.principalId, this.role, binding.defaultSubject, binding.profileKey])
@@ -80,10 +82,12 @@ export class SessionControlStore {
     await this.pool.query(`insert into conversation_session_controls(conversation_id,record)
       values($1,$2::jsonb) on conflict do nothing`, [conversationId, JSON.stringify(initial)])
     const state = await this.saved(conversationId)
+    const capabilitiesChanged = loaded?.capabilities
+      && JSON.stringify(state.capabilities) !== JSON.stringify(loaded.capabilities)
     state.nativeSessionId = session?.nativeSessionId ?? null
     state.nativeProviderVersion = session?.providerVersion ?? null
     state.defaults = defaults
-    if (manager || !session || state.profileKey !== binding.profileKey) state.capabilities = capabilities
+    if (loaded?.capabilities || !session || state.profileKey !== binding.profileKey) state.capabilities = capabilities
     state.busyReason = binding.busyReason
     if (state.profileKey !== binding.profileKey) {
       if (compactionBlocksSend(state.compaction)) {
@@ -99,6 +103,7 @@ export class SessionControlStore {
       state.compaction = null
       await this.save(state)
     }
+    if (capabilitiesChanged) await this.saveCapabilities(state)
     if (state.compaction && compactionBlocksSend(state.compaction)
       && state.compaction.dispatchPhase && state.compaction.dispatchPhase !== 'dispatched'
       && (state.compaction.reservationOwner !== reservationOwner || !this.compacting.has(state.compaction.requestId))) {
@@ -106,7 +111,7 @@ export class SessionControlStore {
         message: 'Compaction stopped before native dispatch. You can try again.', observedAt: new Date().toISOString() }
       await this.save(state)
     }
-    const reconciliationManager = binding.manager
+    const reconciliationManager = manager
     if (state.compaction && compactionBlocksSend(state.compaction) && session && reconciliationManager?.reconcileCompaction) {
       if (state.compaction.nativeSessionId !== session.nativeSessionId) {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The compaction belongs to a different native session.', 409)
@@ -120,7 +125,7 @@ export class SessionControlStore {
         await this.save(state)
       }
     }
-    if (state.compaction && compactionBlocksSend(state.compaction) && !binding.manager && binding.recoverCompaction) {
+    if (state.compaction && compactionBlocksSend(state.compaction) && !manager && binding.recoverCompaction) {
       const recovered = CompactionStateSchema.parse(await binding.recoverCompaction(state.compaction))
       if (recovered.requestId !== state.compaction.requestId || recovered.nativeSessionId !== state.compaction.nativeSessionId) {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The recovered compaction belongs to another session.', 409)
@@ -130,7 +135,7 @@ export class SessionControlStore {
         await this.save(state)
       }
     }
-    if (state.compaction && compactionBlocksSend(state.compaction) && !binding.manager
+    if (state.compaction && compactionBlocksSend(state.compaction) && !manager
       && session?.harness === 'claude' && state.compaction.nativeSessionId === session.nativeSessionId) {
       const recovered = await recoverPersistedClaudeCompaction(state.compaction)
       if (JSON.stringify(recovered) !== JSON.stringify(state.compaction)) {
@@ -138,7 +143,8 @@ export class SessionControlStore {
         await this.save(state)
       }
     }
-    const applied = session ? binding.manager?.appliedSessionPreferences?.(session) : null
+    const native = loaded ? readNativeSnapshot(binding) : null
+    const applied = native?.applied
     if (applied && JSON.stringify(applied) !== JSON.stringify(state.applied)) {
       state.applied = applied
       if (state.appliedMode === state.desiredMode && JSON.stringify(applied) === JSON.stringify(state.desired)) {
@@ -153,7 +159,7 @@ export class SessionControlStore {
     [conversationId, this.role === 'operator' ? 'operator_chat_control' : 'agent_chat_control'])
     state.compactions = rows.rows.map(row => SessionControlStateSchema.shape.compaction.parse(row.compaction))
       .filter((entry): entry is NonNullable<SessionControlState['compaction']> => entry !== null).reverse()
-    const context = session ? binding.manager?.contextSnapshot?.(session) : null
+    const context = native?.context
     if (!context && state.context && !state.context.stale) {
       state.context = { ...state.context, stale: true }
       await this.saveContext(state)
@@ -168,6 +174,8 @@ export class SessionControlStore {
     if (state.context && (!session || state.context.nativeSessionId !== session.nativeSessionId)) {
       state.context = { ...state.context, stale: true }
     }
+    state.nativeStatus = 'not-started'
+    if (session) state.nativeStatus = native ? 'loaded' : 'resume-required'
     return state
   }
 
@@ -445,5 +453,17 @@ export class SessionControlStore {
       'The native profile changed. Refresh the conversation.', 409)
     const { capabilities, busyReason, defaults } = state
     Object.assign(state, SessionControlStateSchema.parse(result.rows[0]!.record), { capabilities, busyReason, defaults })
+  }
+
+  private async saveCapabilities(state: SessionControlState): Promise<void> {
+    const patch = { capabilities: state.capabilities, nativeSessionId: state.nativeSessionId,
+      nativeProviderVersion: state.nativeProviderVersion }
+    const result = await this.pool.query<{ record: unknown }>(`update conversation_session_controls
+      set record=record || $2::jsonb where conversation_id=$1 and record->>'profileKey'=$3 returning record`,
+    [state.conversationId, JSON.stringify(patch), state.profileKey])
+    if (result.rowCount !== 1) throw new DomainError('SESSION_CONTROL_PROFILE_CHANGED',
+      'The native profile changed. Refresh the conversation.', 409)
+    const { defaults, busyReason } = state
+    Object.assign(state, SessionControlStateSchema.parse(result.rows[0]!.record), { defaults, busyReason })
   }
 }

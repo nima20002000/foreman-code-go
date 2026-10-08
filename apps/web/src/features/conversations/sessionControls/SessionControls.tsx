@@ -45,6 +45,9 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
   const compactReason = state.busyReason ?? (compactionBlocksSend(state.compaction) ? 'Compaction is still unconfirmed. Refresh its status.'
     : state.capabilities.compact.reason)
   const pending = controls.mutation.isPending
+  const recoveryMessage = state.capabilities.plan.supported
+    ? 'Saved session controls. Your next message or control will resume the session.'
+    : 'Send a message to resume this session and refresh its controls.'
   const update = (preferences: SessionPreferences) => { void controls.change({ kind: 'preferences', preferences }).catch(() => undefined) }
   return <div className="session-controls" aria-label="Native session controls">
     <Select label="Conversation mode" value={state.desiredMode} disabled={pending || !state.capabilities.plan.supported}
@@ -52,6 +55,7 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
       title={state.capabilities.plan.reason ?? undefined}
       onChange={event => { void controls.change({ kind: 'mode', mode: event.target.value === 'plan' ? 'plan' : 'regular' }).catch(() => undefined) }} />
     {state.desiredMode !== state.appliedMode ? <small>Next turn</small> : null}
+    {state.nativeStatus === 'resume-required' ? <small role="status">{recoveryMessage}</small> : null}
     <div className="session-context">
       <Button ref={anchor} size="sm" variant="secondary" aria-expanded={open} aria-controls={`${id}-context`}
         onClick={() => setOpen(true)} onFocus={() => { if (!restoringFocus.current) setOpen(true) }} onMouseEnter={() => setOpen(true)}>

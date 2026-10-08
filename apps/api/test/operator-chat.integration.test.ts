@@ -42,12 +42,13 @@ import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
 import type { ClaudeSdkClient } from '../src/modules/harnesses/claudeSdk/port.js'
 import { CodexRpcError } from '../src/modules/harnesses/codexStdioTransport.js'
 import { OpenCodeNativeDeliveryError } from '../src/modules/harnesses/opencodeTransport.js'
+import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 
 const connectionString = process.env.TEST_DATABASE_URL
 
 /** Only provider I/O is fake: these tests exercise real migrations, SQL, grants and service transitions. */
 class ChatManager implements NativeHarnessSessionManager {
-  constructor(readonly harness: 'codex' | 'opencode' = 'codex') {}
+  constructor(readonly harness: 'codex' | 'opencode' | 'claude' = 'codex') {}
   sessions = 0; turns = 0; attachments = 0; closes = 0; disposals = 0
   modes: Array<string | undefined> = []
   prompts: string[] = []
@@ -175,6 +176,94 @@ afterEach(async () => {
 })
 
 describe.skipIf(!connectionString)('Operator chat persistence and native binding with stubbed authority', () => {
+  it.each(['codex', 'opencode', 'claude'] as const)('reads saved %s controls through HTTP and MCP after unload and restart', async harness => {
+    const configuration = harness === 'claude' ? {
+      harness: 'claude' as const, model: 'fixture-model', authMode: 'subscription' as const,
+      configDirectory: '/fixture/profile', permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
+      tools: [], permissionRules: [], instructions: '', mcpServers: {},
+    } : DEFAULT_HARNESS_DEFAULTS[harness]
+    await operators.update(configuration, (await operators.ensure()).configuration.id)
+    manager = new ChatManager(harness)
+    chat = new OperatorChatService(repository, operators, () => manager, runtimeDirectory, authority)
+    let unloaded = false
+    const capabilities = { ...unavailableSessionControls('fixture'), model: 'fixture-model',
+      plan: { supported: true, reason: null }, compact: { supported: true, reason: null } }
+    const nativeCapabilities = vi.fn(async () => {
+      const code = { codex: 'CODEX_SESSION_UNAVAILABLE', claude: 'CLAUDE_SESSION_UNAVAILABLE',
+        opencode: 'OPENCODE_SESSION_CONTEXT_MISSING' }[harness]
+      if (unloaded) throw new HarnessExecutionError(code, 'Native runtime unloaded')
+      return capabilities
+    })
+    Object.assign(manager, { sessionControlCapabilities: nativeCapabilities,
+      contextSnapshot: (session: NativeSessionReference): ContextSnapshot => ({
+        nativeSessionId: session.nativeSessionId, model: 'fixture-model', generation: 'connection', sequence: 1,
+        source: harness, accuracy: 'native', usedTokens: 100, capacityTokens: 200000, lifetimeTokens: 100,
+        cost: null, observedAt: new Date().toISOString(), stale: false,
+      }) })
+    const writer = await access.issue({ name: 'control read owner', audience: 'operator',
+      grants: [{ actions: ['operator_chat:read', 'operator_chat:write'], scope: {} }],
+      expiresAt: new Date(Date.now() + 600000) })
+    const denied = await access.issue({ name: 'denied control reader', audience: 'operator', grants: [],
+      expiresAt: new Date(Date.now() + 600000) })
+    const conversation = await chat.create(writer.principal)
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Complete a native turn' }, writer.principal)
+    await waitFor(async () => (await chat.get(conversation.id, writer.principal)).turnState === 'idle')
+    const discovered = await chat.readSessionControls(conversation.id, writer.principal)
+    const saved = await chat.changeSessionControls(conversation.id, { kind: 'mode', mode: 'plan',
+      requestId: randomUUID(), expectedRevision: discovered.revision }, writer.principal)
+    const history = (await chat.get(conversation.id, writer.principal)).messages
+    unloaded = true
+
+    async function checkReads(service: OperatorChatService) {
+      const services = {
+        operatorChat: service, commands: new PostgresCommandCoordinator(pool),
+      } as unknown as OperatorServices
+      const app = buildApp({ logger: false,
+        readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+        operator: { access, services } })
+      registerOperatorChatRoutes(app, service)
+      const client = new Client({ name: 'saved-controls-reader', version: '1' })
+      const deniedClient = new Client({ name: 'denied-saved-controls-reader', version: '1' })
+      try {
+        const address = await app.listen({ host: '127.0.0.1', port: 0 })
+        const url = `/api/operator/conversations/${conversation.id}/session-controls`
+        const http = await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${writer.token}` } })
+        expect(http.statusCode).toBe(200)
+        expect(SessionControlStateSchema.parse(http.json())).toMatchObject({ desiredMode: 'plan',
+          revision: saved.revision, capabilities, nativeStatus: 'resume-required',
+          nativeSessionId: saved.nativeSessionId, context: { usedTokens: 100, stale: true } })
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+          { authProvider: { token: async () => writer.token } }))
+        const mcp = await client.callTool({ name: 'operator_chat_controls_get', arguments: { conversationId: conversation.id } })
+        expect(mcp.isError).not.toBe(true)
+        expect(SessionControlStateSchema.parse(mcp.structuredContent)).toEqual(SessionControlStateSchema.parse(http.json()))
+        expect((await app.inject({ method: 'GET', url,
+          headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
+        await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+          { authProvider: { token: async () => denied.token } }))
+        await expectMcpAccessDenied(deniedClient.callTool({ name: 'operator_chat_controls_get',
+          arguments: { conversationId: conversation.id } }))
+        expect((await service.get(conversation.id, writer.principal)).messages).toEqual(history)
+        const persisted = await pool.query<{ record: unknown }>(
+          'select record from conversation_session_controls where conversation_id=$1', [conversation.id])
+        expect(SessionControlStateSchema.parse(persisted.rows[0]!.record)).toMatchObject({ desiredMode: 'plan', capabilities })
+      } finally {
+        await client.close()
+        await deniedClient.close()
+        await app.close()
+      }
+    }
+
+    await checkReads(chat)
+    await chat.shutdown()
+    chat = new OperatorChatService(repository, operators, () => manager, runtimeDirectory, authority)
+    const nativeReads = nativeCapabilities.mock.calls.length
+    await checkReads(chat)
+    expect(nativeCapabilities).toHaveBeenCalledTimes(nativeReads)
+    expect(manager.turns).toBe(1)
+    expect(manager.attachments).toBe(0)
+  })
+
   it('reads stored controls while terminal cleanup still owns the native manager', async () => {
     const conversation = await chat.create(owner)
     const requestId = randomUUID()

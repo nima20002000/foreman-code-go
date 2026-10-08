@@ -40,6 +40,13 @@ export function memorySessionControlPool(options: {
         records.set(id, next)
         return result([], 1)
       }
+      if (sql.startsWith('update conversation_session_controls set record=record ||')) {
+        if (!previous || previous.profileKey !== String(values[2])) return result()
+        const patch = JSON.parse(String(values[1])) as Partial<SessionControlState>
+        const next = SessionControlStateSchema.parse({ ...previous, ...patch })
+        records.set(id, next)
+        return result([{ record: next }])
+      }
       throw new Error(`Unhandled session controls fixture query: ${sql}`)
     },
   } as unknown as Pick<pg.Pool, 'query'>

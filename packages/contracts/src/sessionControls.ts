@@ -75,6 +75,7 @@ export const SessionControlStateSchema = z.object({
   context: ContextSnapshotSchema.nullable(),
   nativeSessionId: z.string().nullable(),
   nativeProviderVersion: z.string().nullable(),
+  nativeStatus: z.enum(['loaded', 'resume-required', 'not-started']).optional(),
   compaction: CompactionStateSchema.nullable(),
   compactions: z.array(CompactionStateSchema),
   busyReason: z.string().nullable(),
