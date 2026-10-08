@@ -71,6 +71,7 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
       expect(started.isError).not.toBe(true)
       const admission = z.object({ admission: JobPendingAdmissionSchema }).parse(started.structuredContent).admission
       const scope = { workspaceId, ticketId: admission.ticket.id }
+      await jobs.wakeQueue()
       const waiting = CiGetOutputSchema.parse((await client.callTool({ name: 'ci_get', arguments: scope })).structuredContent)
       expect(waiting.queue.state).toBe('waiting')
       const cancel = { ...scope, expectedRevision: waiting.queue.revision, commandId: randomUUID() }
@@ -79,7 +80,7 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
       expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
       expect((await jobs.getQueueTicket(writer.principal, workspaceId, scope.ticketId)).cancelRequestedAt).toBeNull()
       const result = await client.callTool({ name: 'ci_cancel', arguments: cancel })
-      expect(result.isError).not.toBe(true)
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
       const stopped = CiCancelOutputSchema.parse(result.structuredContent).ticket
       expect(stopped).toMatchObject({ state: 'terminal', terminalReason: 'cancelled' })
       await jobs.closeQueue()
