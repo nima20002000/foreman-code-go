@@ -8,16 +8,14 @@ import { ApprovalInboxSearchSchema, UrlSearchSelectionSchema } from '@foreman-co
 import { RunsSelectorSearchSchema } from '../features/runs-selector'
 import { RootShell } from './RootShell'
 import { AgentSettingsSearchSchema, SkillSettingsSearchSchema } from '@foreman-code/contracts/management'
-import { AccountRouteEntry, NewSkillRouteEntry, SkillDetailRouteEntry, SkillsSettingsRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
+import { GeneralSettingsRouteEntry, NewSkillRouteEntry, SkillDetailRouteEntry, SkillsSettingsRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
-import { HarnessComputerSearchSchema } from '../features/settings/harnessComputerSearch'
+import { HarnessSettingsSearchSchema } from '@foreman-code/contracts/management'
 import { ComputersSettingsRouteEntry, ComputerDetailsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
-import { JobsRouteEntry, JobExecutionRouteEntry } from '../routes/JobsRoutes'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
 import {
   AgentsRouteEntry,
-  BrowsersSettingsRouteEntry,
   ComingSoonRouteEntry,
   GlobalComingSoonRouteEntry,
   GlobalSettingsRouteEntry,
@@ -73,15 +71,19 @@ const workflowsRoute = createRoute({
   component: WorkflowsRouteEntry,
 })
 
-const jobsRoute = createRoute({
+const jobsRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workspaces/$workspaceId/jobs',
-  component: JobsRouteEntry,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: '/workspaces/$workspaceId', params, replace: true })
+  },
 })
-const jobExecutionRoute = createRoute({
+const jobDetailsRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/workspaces/$workspaceId/jobs/$jobExecutionId',
-  component: JobExecutionRouteEntry,
+  path: '/workspaces/$workspaceId/jobs/$',
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: '/workspaces/$workspaceId', params: { workspaceId: params.workspaceId }, replace: true })
+  },
 })
 const computersSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -121,11 +123,6 @@ const tasksRoute = comingSoonRoute('/workspaces/$workspaceId/tasks', 'tasks', 'T
 const runsRoute = comingSoonRoute('/workspaces/$workspaceId/runs', 'runs', 'Runs')
 const terminalRoute = comingSoonRoute('/workspaces/$workspaceId/terminal', 'terminal', 'Terminal')
 const filesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspaces/$workspaceId/files', component: ProjectFilesRouteEntry })
-const browsersRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/workspaces/$workspaceId/browsers',
-  component: BrowsersSettingsRouteEntry,
-})
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workspaces/$workspaceId/settings',
@@ -146,15 +143,22 @@ const globalSettingsRoute = createRoute({
   path: '/settings',
   component: GlobalSettingsRouteEntry,
 })
-const accountRoute = createRoute({
+const accountRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/account',
-  component: AccountRouteEntry,
+  beforeLoad: () => {
+    throw redirect({ to: '/settings/general', replace: true })
+  },
+})
+const generalSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/general',
+  component: GeneralSettingsRouteEntry,
 })
 const harnessSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/harnesses',
-  validateSearch: HarnessComputerSearchSchema,
+  validateSearch: HarnessSettingsSearchSchema,
   component: HarnessSettingsRouteEntry,
 })
 const agentSettingsRoute = createRoute({
@@ -208,10 +212,9 @@ export const routeTree = rootRoute.addChildren([
   workspacesRoute,
   workspaceRoute.addChildren([nextDraftRoute, runGraphRoute]),
   workflowsRoute,
-  jobsRoute,
-  jobExecutionRoute,
+  jobsRedirectRoute,
+  jobDetailsRedirectRoute,
   agentsRoute,
-  browsersRoute,
   tasksRoute,
   runsRoute,
   terminalRoute,
@@ -220,7 +223,8 @@ export const routeTree = rootRoute.addChildren([
   workspaceLocationSettingsRoute,
   globalTerminalRoute,
   globalSettingsRoute,
-  accountRoute,
+  accountRedirectRoute,
+  generalSettingsRoute,
   harnessSettingsRoute,
   computersSettingsRoute,
   computerDetailsSettingsRoute,

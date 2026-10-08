@@ -64,14 +64,14 @@ it.each(['queued', 'preparing', 'running'] as const)(
     expect(await screen.findByText(`Process: ${phase}`)).toBeInTheDocument()
     expect(screen.getByText(/The process may still be running/)).toBeInTheDocument()
     expect(screen.queryByText(/The recorded process outcome is shown above/)).toBeNull()
-    expect(screen.getByRole('button', { name: 'Request cancellation' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Request cancellation' })).toBeNull()
   },
 )
 it.each(['queued', 'preparing', 'running'] as const)('shows %s with offline cancellation remaining unconfirmed', async phase => {
   responses({ ...execution, transport: 'offline', cancelRequestedAt: execution.createdAt, process: { ...execution.process, phase, outcome: null, exitCode:null,signal:null, processStopped: false } }); mount()
   expect(await screen.findByText('Process: Cancellation requested · stop unconfirmed')).toBeInTheDocument()
   expect(screen.getByText('Transport: offline')).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Request cancellation' })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: 'Request cancellation' })).toBeNull()
 })
 it('hides all accepted data after forbidden readback', async () => {
   server.use(http.get(root, () => HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'Denied' } }, { status: 403 }))); mount()

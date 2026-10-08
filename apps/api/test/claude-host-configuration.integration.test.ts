@@ -151,19 +151,13 @@ it('discovers a saved Claude preset and configures and checks its host profile t
     const checked = HostHarnessInstanceCheckResultSchema.parse((await writer.client.callTool({
       name: 'harness_instance_check', arguments: checkInput })).structuredContent)
     expect(checked.value).toMatchObject({ configuration: saveInput.configuration, qualification: 'qualified' })
-    const replay = await app.inject({ method: 'POST', url: '/api/management/harness-instances/check',
-      headers: { authorization: `Bearer ${writer.token}` }, payload: checkInput })
-    expect(replay.statusCode).toBe(200)
-    expect(HostHarnessInstanceCheckResultSchema.parse(replay.json()).replayed).toBe(true)
+    const replay = await writer.client.callTool({ name: 'harness_instance_check', arguments: checkInput })
+    expect(HostHarnessInstanceCheckResultSchema.parse(replay.structuredContent).replayed).toBe(true)
     expect(qualify).toHaveBeenCalledOnce()
     const readInput = { hostRef, applicationInstallationId: mainId }
     const persisted = HostHarnessOverrideListSchema.parse((await reader.client.callTool({
       name: 'harness_instances_list', arguments: readInput })).structuredContent)
     expect(persisted.overrides).toEqual([checked.value])
-    const httpRead = await app.inject({ method: 'POST', url: '/api/management/harness-instances/read',
-      headers: { authorization: `Bearer ${reader.token}` }, payload: readInput })
-    expect(httpRead.statusCode).toBe(200)
-    expect(HostHarnessOverrideListSchema.parse(httpRead.json())).toEqual(persisted)
     expect((await settings.getManagedHarnessDefaults()).defaults.claude).toEqual(configuration)
     const audit = await pool.query('select action,outcome from management_audit where source=$1', ['mcp'])
     expect(audit.rows).toEqual(expect.arrayContaining([

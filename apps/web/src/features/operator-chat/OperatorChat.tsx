@@ -360,6 +360,26 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const archived = conversation?.conversation.status === 'archived'
   const attachmentsDisabled = Boolean(archived || active || pending.command) || preparingId === selectedId
   const fileDrop = useFileDrop({ disabled: attachmentsDisabled || !attachments.canAdd, onFiles: attachments.addFiles })
+  // A request from elsewhere in the app (askOperator) starts its own conversation and is sent once the chat can send.
+  const request = useOperatorChatStore((state) => state.request)
+  const [askSend, setAskSend] = useState<{ id: string; content: string }>()
+  const submitRef = useRef<((content: string) => Promise<void>) | undefined>(undefined)
+  const askReady = useRef(false)
+  useEffect(() => {
+    if (!enabled || !open || !request || accessDenied || creating.current) return
+    useOperatorChatStore.getState().takeRequest(request.id)
+    creating.current = true
+    void create.mutateAsync({ generation: sessionGeneration(), navigationGeneration: useOperatorChatStore.getState().beginNavigation() })
+      .then(({ conversation: created }) => {
+        useConversationDraftStore.getState().setDraft(created.id, request.content)
+        if (request.send) setAskSend({ id: created.id, content: request.content })
+      }).catch(() => undefined).finally(() => { creating.current = false })
+  }, [accessDenied, create, enabled, open, request])
+  useEffect(() => {
+    if (!askSend || askSend.id !== selectedId || !askReady.current) return
+    setAskSend(undefined)
+    void submitRef.current?.(askSend.content)
+  })
   if (!enabled || sessionIsSwitching()) return null
   const settings = preferencesDenied ? undefined : preferences.settings
   const retired = conversation?.settings?.harness === 'opencode'
@@ -455,6 +475,9 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     historyLimit.current += 10
     void list.refetch()
   }
+  submitRef.current = submit
+  askReady.current = setupReady && settingsReady && conversation?.conversation.id === selectedId && !active && !archived
+    && !pending.command && !pending.error && !attachmentReceiptPending
   return <div className="operator-chat-root">
     {open || closing ? <section ref={panelRef} style={size} id={panelId} className="operator-chat" data-state={open ? 'open' : 'closing'} role="dialog" aria-modal={false} aria-label="Operator chat" aria-hidden={closing} inert={closing}
       onKeyDown={(event) => {

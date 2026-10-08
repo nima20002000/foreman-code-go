@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
+import { ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema, ComputerMaintenanceStartResultSchema } from '@foreman-code/contracts/computer-maintenance'
 import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerSyncReadInputSchema, ComputerSyncUpdateInputSchema, ComputerSyncStatusSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
   GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
 import type { McpServer } from '@modelcontextprotocol/server'
@@ -32,6 +33,24 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
     }, input => invokeOperatorTool(context, 'computer_accounts_list',
       () => context.services.computerAccounts!.list(context.principal, 'mcp', input.refresh === true, input.cursor)))
   }
+  const maintenance = context.services.computerMaintenance
+  if (maintenance && operatorToolAvailable(context, 'computers_maintenance_status')) server.registerTool('computers_maintenance_status', {
+    description: 'Read maintenance status for Main and every paired computer: installed and latest Codex/Claude versions, pending OS '
+      + 'package updates, whether a restart is needed, passwordless sudo, free disk, and recent maintenance tasks with their outcome. '
+      + 'Requires global settings:read. Cached for 20 seconds unless refresh is true; an offline computer reports null status.',
+    inputSchema: z.object({ refresh: z.boolean().optional() }).strict(), outputSchema: ComputerMaintenanceListSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
+  }, input => invokeOperatorTool(context, 'computers_maintenance_status', () => maintenance.list(context.principal, 'mcp', input.refresh === true)))
+  if (maintenance && operatorToolAvailable(context, 'computers_maintenance_start')) server.registerTool('computers_maintenance_start', {
+    description: 'Start one maintenance task on the given computers, or on Main and every paired computer when targets is omitted: '
+      + 'update-harnesses (install or update Codex/Claude to the latest version), update-system (sudo apt-get update and a '
+      + 'non-interactive upgrade), restart (sudo reboot; targets are required), sync-mcp (add Main\'s user-level Codex and Claude MCP '
+      + 'servers that other computers lack; secret values are not copied, those servers need a login on each computer), or '
+      + 'sync-plugins (install Main\'s Codex plugins that other computers lack). Tasks run in the background; read their outcome with '
+      + 'computers_maintenance_status. Requires global settings:update. Reuse commandId to retry without starting work twice.',
+    inputSchema: ComputerMaintenanceStartInputSchema, outputSchema: ComputerMaintenanceStartResultSchema,
+    annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: true },
+  }, input => invokeOperatorTool(context, 'computers_maintenance_start', () => maintenance.start(context.principal, 'mcp', input)))
   const github = context.services.computerGitHub
   const writeAnnotations = { readOnlyHint: false, idempotentHint: false, destructiveHint: false, openWorldHint: true }
   if (github && operatorToolAvailable(context, 'computer_github_login_start')) server.registerTool('computer_github_login_start', {
@@ -84,16 +103,16 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   if (!service) return
   const annotations = { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false }
   if (operatorToolAvailable(context, 'build_computer_get')) server.registerTool('build_computer_get', {
-    description: 'Read persisted build participation, priority, role, build allowance, revision and derived readiness for this Main/computer installation. Readiness uses Job admission capacity, saved build allowance and fresh remote available memory; reasons distinguish reserved capacity, unavailable memory, insufficient memory and an allowance too small for the runtime. Requires global settings:read. Pairing, workspace/root approval, qualified runtime and the Main startup execution gate remain separate.',
+    description: 'Read persisted build participation, priority, build allowance, revision and derived readiness for this Main/computer installation. Readiness uses Job admission capacity, saved build allowance and fresh remote available memory; reasons distinguish reserved capacity, unavailable memory, insufficient memory and an allowance too small for the runtime. Requires global settings:read. Pairing, workspace/root approval, qualified runtime and the Main startup execution gate remain separate.',
     inputSchema: BuildComputerReadSchema, outputSchema: BuildComputerStatusSchema, annotations,
   }, input => invokeOperatorTool(context, 'build_computer_get', () => service.read(context.principal, input, 'mcp')))
   if (operatorToolAvailable(context, 'build_computer_update')) server.registerTool('build_computer_update', {
-    description: 'Revision-check build participation, priority (0–100, higher preferred), role (after the preferred computer, primaries are tried before backups) and build allowance (10–100 percent of the computer CPU and memory that builds may use; omitted role/allowance keep their saved values). Requires global settings:update. Edits affect future launches; running Jobs retain cancellation/recovery and artifacts. Reuse commandId for an uncertain save. Does not install, pair, approve a runtime or enable the Main startup execution gate.',
+    description: 'Revision-check build participation, priority (0–100; after a preferred computer, builds try computers from the highest priority down) and build allowance (10–100 percent of the computer CPU and memory that builds may use; an omitted allowance keeps its saved value). Requires global settings:update. Edits affect future launches; running Jobs retain cancellation/recovery and artifacts. Reuse commandId for an uncertain save. Does not install, pair, approve a runtime or enable the Main startup execution gate.',
     inputSchema: BuildComputerUpdateSchema, outputSchema: BuildComputerStatusSchema,
     annotations: { ...annotations, readOnlyHint: false },
   }, input => invokeOperatorTool(context, 'build_computer_update', () => service.update(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'build_computers_update')) server.registerTool('build_computers_update', {
-    description: 'Atomically update build participation, priority, role and allowance for one or more computers on Main. '
+    description: 'Atomically update build participation, priority and allowance for one or more computers on Main. '
       + 'Checks every expectedRevision before changing any computer. Requires global settings:update. '
       + 'Reuse the same commandId and updates to resolve an uncertain save; replay returns the original result. '
       + 'Read build_computer_get afterwards for current settings. Changes affect future placement; running Jobs keep their computer.',

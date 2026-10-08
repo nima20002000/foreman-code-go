@@ -1,14 +1,17 @@
 import Fastify from 'fastify'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { CiGetOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
+import { CiGetOutputSchema, CiRunOutputSchema, CiCancelOutputSchema, CiLogsOutputSchema,
+  CiArtifactsOutputSchema, CiArtifactOutputSchema } from '@foreman-code/contracts'
 import { jobVerificationTemplate } from '@foreman-code/contracts/job-verification'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'
 import type { AppInteractionService } from '../src/modules/interactions/app.js'
 import { DomainError } from '../src/modules/errors.js'
 import { registerGraphqlMcp } from '../src/mcp/unified/transport.js'
+import { CI_TOOLS } from '../src/mcp/shared/ciTools.js'
 import { ciFixture } from './helpers/ciFixture.js'
 import { gitFixtureEnvironment } from './helpers/gitFixture.js'
 import { snapshotAgentWorktree } from '../src/modules/sources/agentSnapshot.js'
@@ -26,7 +29,7 @@ async function fixture() {
     return principal
   } } as unknown as PostgresAccessService
   const interactions = { toolAccess: async (principal: { id: string }) => ({ role: 'coder',
-    tools: principal.id === 'disabled-agent' ? ['context_get'] : ['ci_run', 'ci_get'] }),
+    tools: principal.id === 'disabled-agent' ? ['context_get'] : CI_TOOLS }),
   canRead: async () => false, canRespond: async () => false } as unknown as AppInteractionService
   registerGraphqlMcp(app, { access, operator: data.services, interactions })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -50,7 +53,7 @@ describe('CI over the authenticated unified MCP transport', () => {
     const f = await fixture()
     try {
       const result = await f.call('ci_run', { workspaceId: f.workspaceId, suite: 'unit', commandId: 'queue-preparation' }, 'operator')
-      expect(result.result.isError).not.toBe(true)
+      expect(result.result.isError, JSON.stringify(result.result)).not.toBe(true)
       const ticket = f.ticket()
       expect(ticket.runtimePreparation?.id).toBe(f.operator.id)
       expect(ticket.runtimePreparation?.grants).toEqual(f.operator.grants)
@@ -61,7 +64,7 @@ describe('CI over the authenticated unified MCP transport', () => {
     const f = await fixture()
     try {
       const workerTools = (await f.request('tools/list', {})).result.tools
-      expect(workerTools.map((tool: { name: string }) => tool.name)).toEqual(['ci_run', 'ci_get'])
+      expect(workerTools.map((tool: { name: string }) => tool.name)).toEqual(CI_TOOLS)
       expect(workerTools[0].inputSchema.properties).not.toHaveProperty('workspaceId')
       const operatorTools = (await f.request('tools/list', {}, 'operator')).result.tools
       expect(operatorTools.find((tool: { name: string }) => tool.name === 'ci_run').inputSchema.required)
@@ -271,6 +274,121 @@ describe('CI over the authenticated unified MCP transport', () => {
       expect(bind).toHaveBeenCalledTimes(kind === 'same source' ? 2 : 3)
       expect(f.roots[0]!.binding.bindingRevision).toBe(kind === 'same source' ? 2 : 3)
       expect(f.counts().enqueues).toBe(2)
+    } finally { await f.app.close() }
+  })
+
+  it.each(['auto', 'prefer', 'explicit'] as const)('chooses %s placement for current Agent files and preserves the request on retry', async kind => {
+    const f = await fixture()
+    try {
+      f.agentExecution.id = 'execution-agent'
+      let placementOverride: unknown = { kind: 'auto' }
+      if (kind === 'prefer') placementOverride = { kind, hostRef: f.buildTarget.hostRef }
+      if (kind === 'explicit') placementOverride = { kind, target: f.buildTarget }
+      const input = { suite: 'unit', commandId: 'remote-files', placementOverride }
+      const result = await f.call('ci_run', input)
+      expect(result.result.isError, JSON.stringify(result.result)).not.toBe(true)
+      const started = CiRunOutputSchema.parse(result.result.structuredContent)
+      expect(f.enqueued.at(-1)).toMatchObject({ placementOverride: input.placementOverride })
+      expect(f.snapshotCalls[0]!.hostRef).toEqual({ kind: 'device', ...f.agent })
+      expect(CiRunOutputSchema.parse((await f.call('ci_run', input)).result.structuredContent)).toEqual(started)
+      expect(f.counts()).toEqual({ sourceCaptures: 1, enqueues: 1 })
+      const changed = kind === 'auto' ? { kind: 'prefer', hostRef: f.buildTarget.hostRef } : { kind: 'auto' }
+      expect((await f.call('ci_run', { ...input, placementOverride: changed })).result.isError).toBe(true)
+      f.services.ci = f.createCi()
+      const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId: started.ticketId })).result.structuredContent)
+      expect(read.queue.placement).toEqual(input.placementOverride)
+      expect(read.queue.definition.spec.source.commit).toBe('c'.repeat(40))
+      expect((await f.call('ci_computers_list', {})).result.structuredContent.verificationTemplates).toEqual(f.templates)
+    } finally { await f.app.close() }
+  })
+
+  it('reads complete sequenced logs and immutable artifacts through Agent and Operator MCP', async () => {
+    const f = await fixture()
+    try {
+      const { ticketId } = CiRunOutputSchema.parse((await f.call('ci_run', {
+        suite: 'unit', commandId: 'read-ci-files',
+      })).result.structuredContent)
+      expect(JSON.stringify((await f.call('ci_logs_read', { ticketId })).result)).toContain('CI_NOT_ACCEPTED')
+      f.complete()
+      f.services.ci = f.createCi()
+      for (const token of ['worker', 'operator']) {
+        const scope = token === 'operator' ? { workspaceId: f.workspaceId, ticketId } : { ticketId }
+        const logs = CiLogsOutputSchema.parse((await f.call('ci_logs_read', scope, token)).result.structuredContent)
+        expect(logs.chunks.map(chunk => chunk.text)).toEqual(['tests passed\n'])
+        const next = await f.call('ci_logs_read', { ...scope, afterSequence: logs.nextCursor }, token)
+        expect(CiLogsOutputSchema.parse(next.result.structuredContent).chunks).toEqual([])
+        const listed = await f.call('ci_artifacts_list', scope, token)
+        const artifact = CiArtifactsOutputSchema.parse(listed.result.structuredContent).artifacts[0]!
+        const bytes = await f.call('ci_artifact_read', { ...scope,
+          fileId: artifact.fileId, revisionId: artifact.revisionId }, token)
+        const content = CiArtifactOutputSchema.parse(bytes.result.structuredContent)
+        expect(content.artifact).toEqual(artifact)
+        expect(JSON.parse(Buffer.from(content.content, 'base64').toString('utf8')))
+          .toMatchObject({ executionId: artifact.executionId, outcome: 'passed' })
+        expect(JSON.stringify((await f.call('ci_artifact_read', { ...scope,
+          fileId: artifact.fileId, revisionId: 'other-revision' }, token)).result)).toContain('JOB_ARTIFACT_NOT_FOUND')
+      }
+      for (const name of ['ci_logs_read', 'ci_artifacts_list', 'ci_artifact_read']) {
+        const input = { ticketId, ...(name === 'ci_artifact_read'
+          ? { fileId: 'summary-file', revisionId: 'summary-revision' } : {}) }
+        expect(JSON.stringify((await f.call(name, input, 'foreign')).result)).toContain('ACCESS_DENIED')
+        expect(JSON.stringify((await f.call(name, input, 'disabled')).result)).toContain('TOOL_NOT_ENABLED')
+      }
+      f.accepted.grants = [{ actions: ['jobs:read'], scope: { workspaceIds: [f.workspaceId] } }]
+      expect(JSON.stringify((await f.call('ci_logs_read', { ticketId })).result)).toContain('ACCESS_DENIED')
+      expect(JSON.stringify((await f.call('ci_artifacts_list', { ticketId })).result)).toContain('ACCESS_DENIED')
+    } finally { await f.app.close() }
+  })
+
+  it('reads artifacts larger than 1 MiB in bounded pages without an HTTP escape', async () => {
+    const f = await fixture()
+    try {
+      const { ticketId } = CiRunOutputSchema.parse((await f.call('ci_run', {
+        suite: 'unit', commandId: 'large-artifact',
+      })).result.structuredContent)
+      f.complete()
+      const listed = await f.call('ci_artifacts_list', { ticketId })
+      const artifact = CiArtifactsOutputSchema.parse(listed.result.structuredContent).artifacts[0]!
+      const bytes = Buffer.alloc(1024 * 1024 + 37, 42)
+      vi.spyOn(f.jobs, 'readArtifact').mockResolvedValue({ artifact: { ...artifact, byteSize: bytes.length }, bytes })
+      const input = { ticketId, fileId: artifact.fileId, revisionId: artifact.revisionId }
+      const first = CiArtifactOutputSchema.parse((await f.call('ci_artifact_read', input)).result.structuredContent)
+      expect(Buffer.from(first.content, 'base64').byteLength).toBe(1024 * 1024)
+      expect(first.nextOffset).toBe(1024 * 1024)
+      const last = CiArtifactOutputSchema.parse((await f.call('ci_artifact_read', {
+        ...input, offset: first.nextOffset,
+      })).result.structuredContent)
+      expect(last.nextOffset).toBeNull()
+      const restored = Buffer.concat([Buffer.from(first.content, 'base64'), Buffer.from(last.content, 'base64')])
+      expect(createHash('sha256').update(restored).digest('hex')).toBe(createHash('sha256').update(bytes).digest('hex'))
+      expect(JSON.stringify((await f.call('ci_artifact_read', { ...input, offset: bytes.length + 1 })).result))
+        .toContain('INVALID_REQUEST')
+    } finally { await f.app.close() }
+  })
+
+  it('cancels CI with revision checks, idempotent retries and denied-caller audit', async () => {
+    const f = await fixture()
+    try {
+      const { ticketId } = CiRunOutputSchema.parse((await f.call('ci_run', {
+        suite: 'unit', commandId: 'cancel-ci',
+      })).result.structuredContent)
+      const input = { ticketId, expectedRevision: 1, commandId: 'cancel-ticket' }
+      const first = await f.call('ci_cancel', input)
+      expect(first.result.isError).not.toBe(true)
+      const cancelled = CiCancelOutputSchema.parse(first.result.structuredContent)
+      expect(cancelled.ticket).toMatchObject({ state: 'terminal', terminalReason: 'cancelled', revision: 2 })
+      f.services.ci = f.createCi()
+      expect(CiCancelOutputSchema.parse((await f.call('ci_cancel', input)).result.structuredContent)).toEqual(cancelled)
+      const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId })).result.structuredContent)
+      expect(read.queue).toEqual(cancelled.ticket)
+      const stale = await f.call('ci_cancel', { ...input, commandId: 'stale-cancel' })
+      expect(JSON.stringify(stale.result)).toContain('JOB_QUEUE_REVISION_CONFLICT')
+      expect(JSON.stringify((await f.call('ci_cancel', input, 'foreign')).result)).toContain('ACCESS_DENIED')
+      expect(JSON.stringify((await f.call('ci_cancel', input, 'disabled')).result)).toContain('TOOL_NOT_ENABLED')
+      const denied = await f.call('ci_cancel', { ...input, workspaceId: f.workspaceId }, 'readonly')
+      expect(JSON.stringify(denied.result)).toContain('ACCESS_DENIED')
+      expect(f.audits).toContainEqual({ principalId: f.readonly.id, action: 'ci_cancel', outcome: 'denied' })
+      expect(f.audits).toContainEqual({ principalId: f.accepted.id, action: 'job.queue.cancel', outcome: 'succeeded' })
     } finally { await f.app.close() }
   })
 

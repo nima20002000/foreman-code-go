@@ -1,6 +1,4 @@
 import {
-  AgentSchema,
-  GetAgentResponseSchema,
   GetHarnessDefaultsResponseSchema,
   GetAgentDefaultsResponseSchema,
   UpdateAgentDefaultsResponseSchema,
@@ -45,7 +43,6 @@ export interface ProductServices {
 }
 
 interface WorkspaceParams { workspaceId: string }
-interface AgentParams extends WorkspaceParams { agentId: string }
 interface WorkflowParams extends WorkspaceParams { workflowId: string }
 interface RunParams extends WorkspaceParams { runId: string }
 
@@ -92,17 +89,6 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
 
   app.get<{ Params: WorkspaceParams }>('/api/workspaces/:workspaceId/agents', async (request) =>
     ListAgentsResponseSchema.parse({ agents: await services.workspaces.listAgents(request.params.workspaceId) }))
-
-  app.get<{ Params: AgentParams }>('/api/workspaces/:workspaceId/agents/:agentId', async (request) => {
-    const agent = await services.workspaces.getAgent(request.params.workspaceId, request.params.agentId)
-    return agent ? GetAgentResponseSchema.parse({ agent }) : notFound('agent', request.params.agentId)
-  })
-
-  app.put<{ Params: AgentParams; Body: unknown }>('/api/workspaces/:workspaceId/agents/:agentId', async (request) => {
-    if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the authorized current Agent management commands.', 409)
-    const agent = await services.workspaces.saveAgent(request.params.workspaceId, request.params.agentId, AgentSchema.parse(request.body))
-    return GetAgentResponseSchema.parse({ agent })
-  })
 
   app.get<{ Params: WorkflowParams }>('/api/workspaces/:workspaceId/workflows/:workflowId', async (request) => {
     const principal = requirePrincipal(request)

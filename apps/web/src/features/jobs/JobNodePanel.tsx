@@ -24,6 +24,6 @@ export function JobNodePicker({ workspaceId, onChoose }: { workspaceId: string; 
   return <section className="job-node-picker" aria-label="Choose a saved job for this node"><h3>Saved job</h3>{Boolean(definitions.error) && <Alert title="Jobs unavailable" tone="danger">{jobError(definitions.error)}</Alert>}
     {definitions.isPending && <p role="status">Loading saved jobs…</p>}
     {definitions.data?.map(definition => <Button className="job-wrap" key={definition.id} onClick={() => onChoose(definition)}>{definition.name} · revision {definition.revision}</Button>)}
-    {definitions.data?.length === 0 && <p>No saved jobs yet. Create one in Jobs, then add it here.</p>}
+    {definitions.data?.length === 0 && <p>No saved jobs yet. Ask an agent to create a job, then add it here.</p>}
   </section>
 }

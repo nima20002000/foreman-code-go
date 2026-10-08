@@ -4,13 +4,13 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, expect, it, vi } from 'vitest'
 import { server } from '../../mocks/server'
-import { SettingsChoice } from './SettingsEditorLayout'
+import { SettingsChoice } from './SettingsCards'
 import { WorkflowDefaultsSettings } from './WorkflowDefaultsSettings'
 import { clearRevisionedFormPersistence } from './revisionedForm'
 
 afterEach(() => { cleanup(); clearRevisionedFormPersistence() })
 
-it('keeps the entire settings choice keyboard-accessible with a meaningful draft badge', async () => {
+it('keeps the settings choice keyboard-accessible with footer actions outside its button', async () => {
   const onSelect = vi.fn()
   const props = { title: 'Codex', description: 'Coding defaults', summary: [{ label: 'Model', value: 'saved-model' }], onSelect }
   const view = render(<SettingsChoice {...props} />)
@@ -19,9 +19,10 @@ it('keeps the entire settings choice keyboard-accessible with a meaningful draft
   choice.focus()
   await userEvent.keyboard('{Enter}')
   expect(onSelect).toHaveBeenCalledOnce()
-  view.rerender(<SettingsChoice {...props} draftStatus="Unsaved changes" />)
-  expect(screen.getByText('Unsaved changes')).toBeVisible()
+  view.rerender(<SettingsChoice {...props} footer={<button type="button">Install</button>} />)
+  expect(screen.getByRole('button', { name: 'Install' })).toBeVisible()
   expect(screen.getByRole('button', { name: 'Edit Codex defaults' })).toBe(choice)
+  expect(choice).not.toContainElement(screen.getByRole('button', { name: 'Install' }))
 })
 
 it.each(['user', 'native'])('retains %s approval selection, revision checks, and saved readback in workflow defaults', async (selection) => {

@@ -16,7 +16,7 @@ it('inspects an explicit launch override without reserving and permits an offlin
   candidate.ready = false
   candidate.reasons = ['offline']
   const preference = { target: buildComputerTarget(candidate.spec.target), revision: 1, buildEnabled: true,
-    buildPriority: 100, buildRole: 'primary' as const, buildAllowancePercent: 100 }
+    buildPriority: 100, buildAllowancePercent: 100 }
   const candidates = vi.fn(async () => ({ candidates: [candidate], diagnosticCodes: [] }))
   const settings = { preference: async () => preference } as unknown as BuildComputerSettings
   const selection = new JobComputerSelection(settings, { candidates },
@@ -63,7 +63,7 @@ describe('reviewed verification admission capacity', () => {
     const ready = { spec, profile, ready: true, reasons: [], sourceReservation }
     const unqualified = { ...ready, ready: false, reasons: ['runtime_setup_required'] }
     const preference = { target: buildComputerTarget(spec.target), revision: 1, buildEnabled: true,
-      buildPriority: 100, buildRole: 'primary' as const, buildAllowancePercent: 100 }
+      buildPriority: 100, buildAllowancePercent: 100 }
     const settings = { preference: async () => preference, requireEnabled: async () => preference } as unknown as BuildComputerSettings
     const selection = new JobComputerSelection(settings, {
       candidates: async () => ({ candidates: [unqualified, ready], diagnosticCodes: [] }),
@@ -86,7 +86,7 @@ describe('reviewed verification admission capacity', () => {
         limits: profile.spec.resources.limits } })
     const candidate = { spec, profile, ready: false, reasons: ['runtime_setup_required'],
       sourceReservation: { scopeId: 'approved-source', reservedBytes: 1024 * 1024 } }
-    const preference = { target: buildComputerTarget(spec.target), revision: 1, buildEnabled: true, buildPriority: 100, buildRole: 'primary' as const, buildAllowancePercent: 100 }
+    const preference = { target: buildComputerTarget(spec.target), revision: 1, buildEnabled: true, buildPriority: 100, buildAllowancePercent: 100 }
     const settings = { preference: async () => preference } as unknown as BuildComputerSettings
     const workerExecution = { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy
     const selection = new JobComputerSelection(settings,
@@ -159,10 +159,10 @@ describe('reviewed verification admission capacity', () => {
       .toEqual({ fits: false, reason: 'busy' })
   })
 })
-function enrolled(priority: number, enabled = true, deviceId?: string, buildRole: 'primary' | 'backup' = 'primary') {
+function enrolled(priority: number, enabled = true, deviceId?: string) {
   const fixture = buildComputerFixture(mainId, 'workspace', deviceId)
   return { ...fixture.candidate, preference: { target: fixture.target, revision: 1,
-    buildEnabled: enabled, buildPriority: priority, buildRole, buildAllowancePercent: 100 } }
+    buildEnabled: enabled, buildPriority: priority, buildAllowancePercent: 100 } }
 }
 describe('build computer ordering', () => {
   it.each([
@@ -176,8 +176,8 @@ describe('build computer ordering', () => {
   })
   it('tries the calling Agent\'s own computer first, then the rest in build order', () => {
     const primary = enrolled(100, true, '11111111-1111-4111-8111-111111111112')
-    const backup = enrolled(90, true, '11111111-1111-4111-8111-111111111113', 'backup')
-    const agentHost = enrolled(10, true, '11111111-1111-4111-8111-111111111114', 'backup')
+    const backup = enrolled(90, true, '11111111-1111-4111-8111-111111111113')
+    const agentHost = enrolled(10, true, '11111111-1111-4111-8111-111111111114')
     const prefer = { kind: 'prefer' as const, hostRef: agentHost.spec.target.hostRef }
     expect(orderForPlacement([primary, backup, agentHost], prefer)).toEqual([agentHost, primary, backup])
     expect(orderForPlacement([primary, backup, agentHost], { kind: 'auto' })).toEqual([primary, backup, agentHost])
@@ -202,11 +202,11 @@ describe('build computer ordering', () => {
     expect(orderBuildComputers([b, a])).toEqual([a, b])
     expect(orderBuildComputers([a, b])).toEqual([a, b])
   })
-  it('tries every primary before any backup, whatever their priorities', () => {
-    const backup = enrolled(100, true, '11111111-1111-4111-8111-111111111114', 'backup')
-    const primaryLow = enrolled(10, true, '11111111-1111-4111-8111-111111111115')
-    const primaryHigh = enrolled(60, true, '11111111-1111-4111-8111-111111111116')
-    expect(orderBuildComputers([backup, primaryLow, primaryHigh])).toEqual([primaryHigh, primaryLow, backup])
+  it('orders every computer by one priority, highest first', () => {
+    const low = enrolled(10, true, '11111111-1111-4111-8111-111111111115')
+    const high = enrolled(100, true, '11111111-1111-4111-8111-111111111114')
+    const middle = enrolled(60, true, '11111111-1111-4111-8111-111111111116')
+    expect(orderBuildComputers([low, middle, high])).toEqual([high, middle, low])
   })
   it('lends only the owner build allowance of CPU and memory', () => {
     const candidate = enrolled(50), full = jobComputerCapacity(candidate.profile)

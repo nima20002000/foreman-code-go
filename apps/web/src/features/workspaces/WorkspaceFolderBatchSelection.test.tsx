@@ -85,7 +85,7 @@ it('keeps unknown and unattempted folder selections, retries the original comman
   expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
   expect(screen.getByRole('button', { name: 'Selection options' })).toBeDisabled()
   expect(screen.getByRole('button', { name: 'Delete selected (2)' })).toBeDisabled()
-  expect(screen.getByRole('button', { name: 'Delete folder Gamma' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Open actions for folder Gamma' })).toBeDisabled()
   expect(commands.map(({ path }) => path)).toEqual([items[0]!.path, items[1]!.path])
   await user.click(retry)
   await screen.findByText('3 folders deleted.')
@@ -110,7 +110,7 @@ it('keeps definitive failures selected and uses the same selection mode for regi
     http.post('/api/management/workspace-storage/folders/delete', () => HttpResponse.json({ error: { code: 'DIRECTORY_CHANGED', message: 'Alpha was replaced. Reload before deleting.' } }, { status: 409 })),
   )
   renderWithRouter(<WorkspaceDirectory />)
-  await screen.findByRole('button', { name: 'Delete folder Beta' })
+  await screen.findByRole('button', { name: 'Open actions for folder Beta' })
   await user.click(screen.getByRole('checkbox', { name: 'Select Registered' }))
   await user.click(screen.getByRole('button', { name: 'Selection options' }))
   await user.click(screen.getByRole('menuitem', { name: 'Select all shown' }))
@@ -125,7 +125,7 @@ it('keeps definitive failures selected and uses the same selection mode for regi
   expect(screen.queryByRole('checkbox', { name: 'Select Registered' })).not.toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Selection options' }))
   await user.click(screen.getByRole('menuitem', { name: 'Cancel selection' }))
-  expect(screen.getByRole('button', { name: 'Delete folder Alpha' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Open actions for folder Alpha' })).toBeEnabled()
 })
 
 it('limits mixed select-all to 100 available rows and allows clearing without deletion', async () => {
@@ -151,5 +151,5 @@ it('limits mixed select-all to 100 available rows and allows clearing without de
   fireEvent.click(within(screen.getByRole('menu', { name: 'Selection options' }))
     .getByRole('menuitem', { name: 'Clear selection' }))
   expect(screen.queryByText(/Delete selected/)).not.toBeInTheDocument()
-  expect(screen.getAllByRole('button', { name: /^Delete folder Folder / })).toHaveLength(101)
+  expect(screen.getAllByRole('button', { name: /^Open actions for folder Folder / })).toHaveLength(101)
 }, 30_000)

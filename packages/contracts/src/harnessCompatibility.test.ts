@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessCompatibilityListSchema, HarnessReleaseProvenanceSchema, HarnessCompatibilityRetryBodySchema } from './harnessCompatibility.js'
+import { HarnessCompatibilityListSchema, HarnessReleaseProvenanceSchema, HarnessCompatibilityRetryParamsSchema } from './harnessCompatibility.js'
 
 describe('compatibility diagnostic contracts', () => {
   it('does not accept caller-selected commands or binary paths on retries', () => {
-    expect(HarnessCompatibilityRetryBodySchema.safeParse({}).success).toBe(true)
-    expect(HarnessCompatibilityRetryBodySchema.safeParse({ binary: '/arbitrary', forceQualification: true }).success).toBe(false)
+    expect(HarnessCompatibilityRetryParamsSchema.safeParse({ harness: 'codex' }).success).toBe(true)
+    const selectedBinary = { harness: 'codex', binary: '/arbitrary', forceQualification: true }
+    expect(HarnessCompatibilityRetryParamsSchema.safeParse(selectedBinary).success).toBe(false)
   })
   it('only links to the official Codex release repository', () => {
     const release = { version: '0.154.0', repository: 'openai/codex', tag: 'rust-v0.154.0',

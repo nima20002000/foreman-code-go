@@ -113,7 +113,7 @@ export async function ciPreparationFixture(options: {
       const target = buildComputerTarget({ hostRef: profile.root.selection.hostRef,
         registration: profile.root.registration, mainInstallationId: mainId })
       return { rows: [{ target, revision: '1', build_enabled: !disabled, build_priority: 100,
-        build_role: 'primary', build_allowance_percent: 100 }] }
+        build_allowance_percent: 100 }] }
     }
     if (text.includes('from workspaces')) return { rows: [{ record: { id: workspaceId, name: 'CI',
       repository: { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' } } }] }

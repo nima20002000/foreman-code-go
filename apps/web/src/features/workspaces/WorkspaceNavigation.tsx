@@ -22,7 +22,7 @@ import type { WorkspaceCreateInput } from '@foreman-code/contracts/management'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
-import { queryKeys, useCreateManagedWorkspaceMutation, useManagedWorkspaceQuery } from '../../shared/api/query'
+import { queryKeys, useCreateManagedWorkspaceMutation, useManagedWorkspaceQuery, usePrefetchBoard } from '../../shared/api/query'
 import { Button, Dialog, Icon, IconButton, TextField } from '../../shared/ui/nocturne'
 import { useWorkspaceCreationDefaultsQuery } from '../../shared/api/settingsExperience'
 import { usePresence } from '../../shared/ui/usePresence'
@@ -43,14 +43,13 @@ import './workspaces.css'
 export type WorkspaceSection =
   | 'agents'
   | 'workflows'
-  | 'jobs'
   | 'files'
   | 'tasks'
   | 'runs'
   | 'terminal'
   | 'settings'
 
-export type GlobalNavigationSection = 'terminal' | 'settings' | 'account'
+export type GlobalNavigationSection = 'terminal' | 'settings'
 
 export type WorkspaceNavigationEntry = Pick<Workspace, 'id' | 'name'>
 
@@ -76,13 +75,12 @@ export interface WorkspaceNavigationProps {
 
 const workspaceSections: readonly WorkspaceSection[] = [
   'workflows',
-  'jobs',
   'files',
   'tasks',
   'runs',
 ]
 
-const workspaceSectionItems = [{ id: 'workflows', label: 'Workflows' }, { id: 'jobs', label: 'Jobs' }]
+const workspaceSectionItems = [{ id: 'workflows', label: 'Workflows' }]
 
 /** The always-visible, server-backed create entry point for the workspace list. */
 function NewWorkspaceControl() {
@@ -250,6 +248,7 @@ function WorkspaceTreeItem({
   reorderItemProps,
   reorderKeyboardProps,
 }: WorkspaceTreeItemProps) {
+  const prefetch = usePrefetchBoard()
   const workflowsExpanded = useNavigationUiStore(
     (state) => state.expandedSections[entry.id]?.workflows ?? true,
   )
@@ -276,6 +275,8 @@ function WorkspaceTreeItem({
               to="/workspaces/$workspaceId/workflows"
               params={{ workspaceId: entry.id }}
               activeOptions={{ exact: true }}
+              onMouseEnter={() => prefetch.workflows(entry.id)}
+              onFocus={() => prefetch.workflows(entry.id)}
               activeProps={{ className: 'nav-item-active', 'aria-current': 'page' }}
               className="nav-item"
               {...sections.getKeyboardProps(section)}
@@ -317,20 +318,6 @@ function WorkspaceTreeItem({
       )
     }
 
-    if (section === 'jobs') {
-      return <div className="nav-item-row" {...reorderProps}>
-        <Link to="/workspaces/$workspaceId/jobs" params={{ workspaceId: entry.id }}
-          activeOptions={{ exact: false }} activeProps={{ className: 'nav-item-active', 'aria-current': 'page' }}
-          className="nav-item" {...sections.getKeyboardProps(section)}
-          aria-label={navigationCollapsed ? 'Jobs' : undefined} title="Jobs">
-          <span className="nav-item-primary">
-            <Icon name="code" aria-hidden="true" className="nav-item-icon" />
-            <span className="nav-item-label">Jobs</span>
-          </span>
-        </Link>
-      </div>
-    }
-
     return null
   }
 
@@ -348,6 +335,8 @@ function WorkspaceTreeItem({
           title={entry.name}
           data-testid={`workspace-entry-${entry.id}`}
           onClick={onActivate}
+          onMouseEnter={() => prefetch.workspace(entry.id)}
+          onFocus={() => prefetch.workspace(entry.id)}
           {...reorderKeyboardProps}
         >
           <span className="nav-item-primary">

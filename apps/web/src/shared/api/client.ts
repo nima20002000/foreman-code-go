@@ -4,10 +4,6 @@ import {
 } from '@foreman-code/contracts/wave25'
 import {
   ApiErrorResponseSchema,
-  CreateMessageRequestSchema,
-  CreateMessageResponseSchema,
-  GetAgentRequestSchema,
-  GetAgentResponseSchema,
   GetHarnessDefaultsResponseSchema,
   GetInteractionResponseSchema,
   ListInteractionsRequestSchema,
@@ -15,16 +11,10 @@ import {
   RespondToInteractionRequestSchema,
   RespondToInteractionResponseSchema,
   ScopedMcpDetectionSchema,
-  GetConversationRequestSchema,
-  GetConversationResponseSchema,
   GetRunRequestSchema,
   GetWorkflowRequestSchema,
   ListAgentsRequestSchema,
   ListAgentsResponseSchema,
-  ListConversationsRequestSchema,
-  ListConversationsResponseSchema,
-  ListMessagesRequestSchema,
-  ListMessagesResponseSchema,
   ListVisibleResourcesRequestSchema,
   ListVisibleResourcesResponseSchema,
   CreateOperatorConversationRequestSchema,
@@ -39,21 +29,11 @@ import {
   SaveHarnessDefaultsRequestSchema,
   SaveHarnessDefaultsResponseSchema,
   WorkspaceDetailsRequestSchema,
-  type CreateMessageRequest,
-  type CreateMessageResponse,
-  type GetAgentRequest,
-  type GetAgentResponse,
   type GetHarnessDefaultsResponse,
-  type GetConversationRequest,
-  type GetConversationResponse,
   type GetRunRequest,
   type GetWorkflowRequest,
   type ListAgentsRequest,
   type ListAgentsResponse,
-  type ListConversationsRequest,
-  type ListConversationsResponse,
-  type ListMessagesRequest,
-  type ListMessagesResponse,
   type ListVisibleResourcesRequest,
   type ListVisibleResourcesResponse,
   type OperatorConversationState,
@@ -494,15 +474,6 @@ export class ApiClient {
     )
   }
 
-  getAgent(input: GetAgentRequest, options?: RequestOptions) {
-    const request = parseRequest(GetAgentRequestSchema, input)
-    return this.request<GetAgentResponse>(
-      `/api/workspaces/${toPath(request.workspaceId)}/agents/${toPath(request.agentId)}`,
-      GetAgentResponseSchema,
-      options,
-    )
-  }
-
   getWorkflow(input: GetWorkflowRequest, options?: RequestOptions) {
     const request = parseRequest(GetWorkflowRequestSchema, input)
     return this.request<CurrentGetWorkflowResponse>(
@@ -549,57 +520,6 @@ export class ApiClient {
     return this.request(`/api/operator/conversations/${toPath(conversationId)}/responses`, CancelOperatorTurnResponseSchema, { ...options, method: 'POST', body: request })
   }
 
-  listConversations(input: ListConversationsRequest, options?: RequestOptions) {
-    const request = parseRequest(ListConversationsRequestSchema, input)
-    return this.request<ListConversationsResponse>(
-      `/api/workspaces/${toPath(request.workspaceId)}/conversations`,
-      ListConversationsResponseSchema,
-      options,
-    )
-  }
-
-  getConversation(input: GetConversationRequest, options?: RequestOptions) {
-    const request = parseRequest(GetConversationRequestSchema, input)
-    return this.request<GetConversationResponse>(
-      `/api/workspaces/${toPath(request.workspaceId)}/conversations/${toPath(request.conversationId)}`,
-      GetConversationResponseSchema,
-      options,
-    )
-  }
-
-  listMessages(input: ListMessagesRequest, options?: RequestOptions) {
-    const request = parseRequest(ListMessagesRequestSchema, input)
-    return this.request<ListMessagesResponse>(
-      `/api/workspaces/${toPath(request.workspaceId)}/conversations/${toPath(request.conversationId)}/messages`,
-      ListMessagesResponseSchema,
-      options,
-    )
-  }
-
-  createMessage(input: CreateMessageRequest, options?: RequestOptions) {
-    const request = parseRequest(CreateMessageRequestSchema, input)
-    return this.request<CreateMessageResponse>(
-      `/api/workspaces/${toPath(request.workspaceId)}/conversations/${toPath(request.conversationId)}/messages`,
-      CreateMessageResponseSchema,
-      { ...options, method: 'POST', body: request },
-    )
-  }
-
-  /** User-message convenience method; it never fabricates an assistant reply. */
-  sendUserMessage(
-    input: Omit<CreateMessageRequest, 'role'>,
-    options?: RequestOptions,
-  ) {
-    return this.createMessage({ ...input, role: 'user' }, options)
-  }
-
-  createUserMessage(
-    input: Omit<CreateMessageRequest, 'role'>,
-    options?: RequestOptions,
-  ) {
-    return this.sendUserMessage(input, options)
-  }
-
   listVisibleResources(input: ListVisibleResourcesRequest, options?: RequestOptions) {
     const request = parseRequest(ListVisibleResourcesRequestSchema, input)
     return this.request<ListVisibleResourcesResponse>(
@@ -617,7 +537,6 @@ export const getWorkspace = apiClient.getWorkspace.bind(apiClient)
 export const getHarnessDefaults = apiClient.getHarnessDefaults.bind(apiClient)
 export const saveHarnessDefaults = apiClient.saveHarnessDefaults.bind(apiClient)
 export const listAgents = apiClient.listAgents.bind(apiClient)
-export const getAgent = apiClient.getAgent.bind(apiClient)
 export const getWorkflow = apiClient.getWorkflow.bind(apiClient)
 export const getRun = apiClient.getRun.bind(apiClient)
 export const listOperatorConversations = apiClient.listOperatorConversations.bind(apiClient)
@@ -626,12 +545,6 @@ export const getOperatorConversation = apiClient.getOperatorConversation.bind(ap
 export const sendOperatorMessage = apiClient.sendOperatorMessage.bind(apiClient)
 export const cancelOperatorTurn = apiClient.cancelOperatorTurn.bind(apiClient)
 export const respondOperatorInteraction = apiClient.respondOperatorInteraction.bind(apiClient)
-export const listConversations = apiClient.listConversations.bind(apiClient)
-export const getConversation = apiClient.getConversation.bind(apiClient)
-export const listMessages = apiClient.listMessages.bind(apiClient)
-export const createMessage = apiClient.createMessage.bind(apiClient)
-export const sendUserMessage = apiClient.sendUserMessage.bind(apiClient)
-export const createUserMessage = apiClient.createUserMessage.bind(apiClient)
 export const listVisibleResources = apiClient.listVisibleResources.bind(apiClient)
 export const listManagedWorkspaces = apiClient.listManagedWorkspaces.bind(apiClient)
 export const getManagedWorkspace = apiClient.getManagedWorkspace.bind(apiClient)

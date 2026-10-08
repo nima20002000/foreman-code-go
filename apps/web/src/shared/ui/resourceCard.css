@@ -96,3 +96,5 @@
 @media (prefers-reduced-motion: reduce) {
   .resource-card.n-card { transition: none; }
 }
+.resource-actions-menu { display: inline-flex; }
+.resource-card-menu .resource-card-menu-note { margin: 0; color: var(--n-muted); font-size: 13px; }

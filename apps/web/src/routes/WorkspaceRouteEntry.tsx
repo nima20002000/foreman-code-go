@@ -22,14 +22,24 @@ function cacheWorkspaceProjection(client: ReturnType<typeof useQueryClient>, wor
 }
 
 /** Parent route remains mounted for both historical deep links and canonical Run selection. */
+/** Paths this route owns: the board, a workflow draft and a pinned Run graph. */
+const BOARD_PATH = /^\/workspaces\/[^/]+(?:\/workflows\/[^/]+\/(?:draft|runs\/.+))?\/?$/u
+
 export function WorkspaceRouteEntry() {
   const location = useLocation()
+  const last = useRef<WorkflowBoardLocation | undefined>(undefined)
   let selection: WorkflowBoardLocation
   try {
     selection = resolveWorkflowBoardLocation(location.pathname, location.search)
     assertHistoryPin(selection, location.search.selectedRunId)
   }
-  catch { return <ErrorState title="Invalid board selection" description="Open a valid workflow or Run link." /> }
+  catch {
+    // While navigating away, this route renders once with the next page's URL before it unmounts.
+    // Keep the board that was shown instead of flashing an error for a URL that is not a board link.
+    if (last.current && !BOARD_PATH.test(location.pathname)) return <WorkspaceBoardRoute selection={last.current} />
+    return <ErrorState title="Invalid board selection" description="Open a valid workflow or Run link." />
+  }
+  last.current = selection
   return <WorkspaceBoardRoute selection={selection} />
 }
 

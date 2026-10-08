@@ -115,15 +115,16 @@ it('requires explicit acceptance for a divergent inspected state and never calls
   const settled = await service.reconcile(owner, { ...input, commandId: randomUUID(), acceptObservedState: true })
   expect(settled.value.status).toBe('reconciled'); expect(writes).toBe(1)
 })
-it('refuses stale inspection, failed process cleanup and delegated reconciliation', async () => {
+it('refuses stale inspection, failed process cleanup and revoked reconciliation', async () => {
   loseAcknowledgement = true
   const plan = await service.applyManaged(owner, managed())
   const input = { planId: plan.id, commandId: randomUUID(), expectedRevision: fingerprint('stale'), acceptObservedState: false }
   await expect(service.reconcile(owner, input)).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
   cleanup.mockRejectedValueOnce(new Error('native process termination unconfirmed'))
   await expect(service.reconcile(owner, { ...input, expectedRevision: snapshots.codex.revision })).rejects.toThrow('termination unconfirmed')
-  await pool.query('update management_principals set delegated_from=$1 where id=$1', [owner.id])
+  await pool.query('update management_principals set revoked_at=now() where id=$1', [owner.id])
   await expect(service.reconcile(owner, { ...input, expectedRevision: snapshots.codex.revision })).rejects.toMatchObject({ code: 'PRINCIPAL_REVOKED' })
+  await pool.query('update management_principals set revoked_at=null where id=$1', [owner.id])
   expect((await pool.query('select status from harness_mcp_change_plans where id=$1', [plan.id])).rows[0]?.status).toBe('uncertain')
   expect(writes).toBe(1)
 })

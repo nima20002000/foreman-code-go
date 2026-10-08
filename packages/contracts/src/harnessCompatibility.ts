@@ -48,4 +48,3 @@ export const HarnessCompatibilityListSchema = z.object({
 }).strict()
 export type HarnessCompatibilityList = z.infer<typeof HarnessCompatibilityListSchema>
 export const HarnessCompatibilityRetryParamsSchema = z.object({ harness: CompatibilityHarnessSchema }).strict()
-export const HarnessCompatibilityRetryBodySchema = z.object({}).strict()

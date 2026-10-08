@@ -26,7 +26,7 @@ it('shows unregistered workspace folders, confirms the exact path, retries safel
     }),
   )
   renderWithRouter(<WorkspaceDirectory />)
-  await screen.findByRole('button', { name: 'Delete folder Missing project' })
+  await screen.findByRole('button', { name: 'Open actions for folder Missing project' })
   const folders = screen.getByTestId('workspace-card-list')
   expect(within(folders).getByText('Missing project', { selector: '.resource-card-name' })).toBeVisible()
   expect(within(folders).getByRole('link', { name: 'Website' })).toBeVisible()
@@ -35,13 +35,15 @@ it('shows unregistered workspace folders, confirms the exact path, retries safel
   expect(screen.getAllByRole('list')).toEqual([folders])
   expect(within(folders).queryByText(folder.path)).not.toBeInTheDocument()
   expect(within(folders).queryByText(/Folder on disk/)).not.toBeInTheDocument()
-  await user.click(within(folders).getByRole('button', { name: 'Delete folder Missing project' }))
+  await user.click(within(folders).getByRole('button', { name: 'Open actions for folder Missing project' }))
+  await user.click(within(screen.getByRole('dialog', { name: 'folder Missing project actions' })).getByRole('button', { name: 'Delete folder' }))
   const confirmation = screen.getByRole('dialog', { name: 'Delete Missing project?' })
   expect(within(confirmation).getByText(folder.path)).toBeVisible()
   expect(confirmation).toHaveTextContent('all its files and subfolders')
   await user.click(within(confirmation).getByRole('button', { name: 'Cancel' }))
   expect(commands).toHaveLength(0)
-  await user.click(within(folders).getByRole('button', { name: 'Delete folder Missing project' }))
+  await user.click(within(folders).getByRole('button', { name: 'Open actions for folder Missing project' }))
+  await user.click(within(screen.getByRole('dialog', { name: 'folder Missing project actions' })).getByRole('button', { name: 'Delete folder' }))
   await user.click(screen.getByRole('button', { name: 'Delete folder and contents' }))
   await user.click(await screen.findByRole('button', { name: 'Retry deletion' }))
   await waitFor(() => expect(screen.queryByText('Missing project')).not.toBeInTheDocument())
@@ -57,12 +59,16 @@ it('keeps protected folders visible with a reason and unavailable deletion', asy
     rootPath: '/workspaces', items: [{ ...folder, deletion: { status: 'protected', reason: 'archived_workspace', message } }],
     pageInfo: { nextCursor: null },
   })))
+  const user = userEvent.setup()
   renderWithRouter(<WorkspaceDirectory />)
-  await screen.findByRole('button', { name: 'Delete folder Missing project' })
+  await screen.findByRole('button', { name: 'Open actions for folder Missing project' })
   const folders = screen.getByTestId('workspace-card-list')
   expect(within(folders).getByText(folder.name, { selector: '.resource-card-name' })).toBeVisible()
   expect(within(folders).getByRole('img', { name: `Protected folder. ${message}` })).toHaveAttribute('title', message)
-  expect(within(folders).getByRole('button', { name: 'Delete folder Missing project' })).toBeDisabled()
+  await user.click(within(folders).getByRole('button', { name: 'Open actions for folder Missing project' }))
+  const menu = screen.getByRole('dialog', { name: 'folder Missing project actions' })
+  expect(menu).toHaveTextContent(message)
+  expect(within(menu).getByRole('button', { name: 'Delete folder' })).toBeDisabled()
 })
 
 it('keeps registered workspaces available when the caller cannot browse runner folders', async () => {
@@ -74,7 +80,7 @@ it('keeps registered workspaces available when the caller cannot browse runner f
   await waitFor(() => expect(screen.queryByText('Checking workspace folders…')).not.toBeInTheDocument())
   expect(within(screen.getByTestId('workspace-card-list')).getAllByRole('listitem')).toHaveLength(1)
   expect(screen.queryByText('Workspace folders unavailable')).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /Delete folder/ })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /Open actions for folder/ })).not.toBeInTheDocument()
 })
 
 it('loads more disk folders on request and shows a recoverable discovery error', async () => {

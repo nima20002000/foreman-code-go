@@ -4,13 +4,11 @@ import {
   useInfiniteQuery,
   useQuery,
   useQueryClient,
+  type InfiniteData,
   type UseMutationOptions,
   type UseQueryOptions,
 } from '@tanstack/react-query'
 import type {
-  CreateMessageRequest,
-  CreateMessageResponse,
-  GetConversationResponse,
   GetHarnessDefaultsResponse,
   SaveHarnessDefaultsRequest,
   SaveHarnessDefaultsResponse,
@@ -22,17 +20,13 @@ import type {
 
 import {
   apiClient,
-  getConversation,
+  ApiError,
   getRun,
-  getAgent,
   getWorkflow,
   getWorkspaceDetails,
   listAgents,
-  listConversations,
-  listMessages,
   listVisibleResources,
   saveHarnessDefaults,
-  sendUserMessage,
   listManagedWorkspaces, createManagedWorkspace, updateManagedWorkspace, archiveManagedWorkspace,
   getManagedWorkspace, validateWorkspaceLocation, setWorkspaceLocation,
   createManagedWorkflow, updateManagedWorkflow, archiveManagedWorkflow,
@@ -57,17 +51,10 @@ export const queryKeys = {
   workspace: (workspaceId: string) => ['workbench', 'workspace', workspaceId] as const,
   workspaceDetails: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'details'] as const,
   agents: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'agents'] as const,
-  agent: (workspaceId: string, agentId: string) =>
-    ['workbench', 'workspace', workspaceId, 'agent', agentId] as const,
   workflow: (workspaceId: string, workflowId: string) =>
     ['workbench', 'workspace', workspaceId, 'workflow', workflowId] as const,
   run: (workspaceId: string, runId: string) =>
     ['workbench', 'workspace', workspaceId, 'run', runId] as const,
-  conversations: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'conversations'] as const,
-  conversation: (workspaceId: string, conversationId: string) =>
-    ['workbench', 'workspace', workspaceId, 'conversation', conversationId] as const,
-  messages: (workspaceId: string, conversationId: string) =>
-    ['workbench', 'workspace', workspaceId, 'conversation', conversationId, 'messages'] as const,
   resources: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'resources'] as const,
   managedWorkspaces: ['workbench', 'management', 'workspaces'] as const,
   workspaceStorageFolders: ['workbench', 'management', 'workspace-storage-folders'] as const,
@@ -106,9 +93,13 @@ export function useWorkspaceDetailsQuery(
 type CatalogView = 'navigation' | 'directory'
 
 export function useWorkspacePages(enabled = true, view: CatalogView = 'navigation') {
+  const client = useQueryClient()
+  type Pages = InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkspacePage>>, string | undefined>
   return useInfiniteQuery({
     enabled, queryKey: [...queryKeys.managedWorkspaces, 'pages', ...(view === 'directory' ? ['directory'] : [])],
-    ...(view === 'directory' ? { maxPages: 0 } : {}), initialPageParam: undefined as string | undefined,
+    // The directory shows the sidebar's already-loaded page while it reads the full list.
+    ...(view === 'directory' ? { maxPages: 0, placeholderData: () => client.getQueryData<Pages>([...queryKeys.managedWorkspaces, 'pages']) } : {}),
+    initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkspacePage(pageParam, { signal }),
     getNextPageParam: (last, _pages, _lastParam, params) => {
       const next = last.pageInfo.nextCursor
@@ -135,10 +126,72 @@ export function useManagedWorkflowQuery(workspaceId: string, workflowId: string,
   })
 }
 
+type Named = { id?: unknown; name?: unknown }
+function namedIn(value: unknown, id: string): string | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const entry = value as Named
+  return entry.id === id && typeof entry.name === 'string' ? entry.name : undefined
+}
+/** A workspace's name from any cached list or detail, so labels do not wait for a dedicated read. */
+export function cachedWorkspaceName(client: ReturnType<typeof useQueryClient>, workspaceId: string): string | undefined {
+  for (const [, data] of client.getQueriesData<unknown>({ queryKey: ['workbench'] })) {
+    if (!data || typeof data !== 'object') continue
+    const record = data as { workspace?: unknown; pages?: { items?: { workspace?: unknown }[] }[] }
+    const direct = namedIn(record.workspace, workspaceId)
+    if (direct) return direct
+    for (const page of record.pages ?? []) for (const item of page.items ?? []) {
+      const name = namedIn(item.workspace, workspaceId)
+      if (name) return name
+    }
+  }
+  return undefined
+}
+/** A workflow's name from any cached workspace detail or workflow list. */
+export function cachedWorkflowName(client: ReturnType<typeof useQueryClient>, workflowId: string): string | undefined {
+  for (const [, data] of client.getQueriesData<unknown>({ queryKey: ['workbench'] })) {
+    if (!data || typeof data !== 'object') continue
+    const record = data as { workflow?: unknown; workflows?: unknown[]; pages?: { items?: { workflow?: unknown }[] }[] }
+    const direct = namedIn(record.workflow, workflowId) ?? record.workflows?.map(item => namedIn(item, workflowId)).find(Boolean)
+    if (direct) return direct
+    for (const page of record.pages ?? []) for (const item of page.items ?? []) {
+      const name = namedIn(item.workflow, workflowId)
+      if (name) return name
+    }
+  }
+  return undefined
+}
+
+/** Hover/focus prefetch so opening a workspace or workflow shows data instead of a loader. Fresh data is not refetched. */
+export function usePrefetchBoard() {
+  const client = useQueryClient()
+  return {
+    board: (workspaceId: string, workflowId?: string) => {
+      void client.prefetchQuery({ queryKey: queryKeys.workspaceDetails(workspaceId), staleTime: 10_000,
+        queryFn: ({ signal }) => getWorkspaceDetails({ workspaceId }, { signal }) }).catch(() => undefined)
+      if (workflowId) void client.prefetchQuery({ queryKey: queryKeys.managedWorkflow(workspaceId, workflowId), staleTime: 10_000,
+        queryFn: ({ signal }) => apiClient.getManagedWorkflow(workspaceId, workflowId, { signal }) }).catch(() => undefined)
+    },
+    workspace: (workspaceId: string) => {
+      void client.prefetchQuery({ queryKey: queryKeys.managedWorkspace(workspaceId), staleTime: 10_000,
+        queryFn: ({ signal }) => getManagedWorkspace(workspaceId, { signal }) }).catch(() => undefined)
+    },
+    /** The Workflows directory's first page, under the same key the directory reads. */
+    workflows: (workspaceId: string) => {
+      void client.prefetchInfiniteQuery({ queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages', 'directory'], staleTime: 10_000,
+        initialPageParam: undefined as string | undefined,
+        queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkflowPage(workspaceId, pageParam, { signal }) }).catch(() => undefined)
+    },
+  }
+}
+
 export function useWorkflowPages(workspaceId: string, enabled = true, view: CatalogView = 'navigation') {
+  const client = useQueryClient()
+  type Pages = InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkflowPage>>, string | undefined>
   return useInfiniteQuery({
     enabled, queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages', ...(view === 'directory' ? ['directory'] : [])],
-    ...(view === 'directory' ? { maxPages: 0 } : {}), initialPageParam: undefined as string | undefined,
+    // The directory shows the sidebar's already-loaded page while it reads the full list.
+    ...(view === 'directory' ? { maxPages: 0, placeholderData: () => client.getQueryData<Pages>([...queryKeys.managedWorkflows(workspaceId), 'pages']) } : {}),
+    initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkflowPage(workspaceId, pageParam, { signal }),
     getNextPageParam: (last, _pages, _lastParam, params) => {
       const next = last.pageInfo.nextCursor
@@ -157,7 +210,8 @@ export function useManagedWorkspaceQuery(workspaceId: string, enabled = true) {
     queryKey: queryKeys.managedWorkspace(workspaceId),
     queryFn: ({ signal }) => getManagedWorkspace(workspaceId, { signal }),
     structuralSharing: shareManagedWorkspace,
-    refetchInterval: enabled ? 3_000 : false,
+    // A missing workspace stays missing; creation and navigation invalidate this key.
+    refetchInterval: (query) => enabled && !(ApiError.is(query.state.error) && query.state.error.status === 404) ? 3_000 : false,
   })
 }
 
@@ -412,18 +466,6 @@ export function useAgentsQuery(workspaceId: string, options?: QueryOptions<Await
   })
 }
 
-export function useAgentQuery(
-  workspaceId: string,
-  agentId: string,
-  options?: QueryOptions<Awaited<ReturnType<typeof getAgent>>>,
-) {
-  return useQuery({
-    ...options,
-    queryKey: queryKeys.agent(workspaceId, agentId),
-    queryFn: ({ signal }) => getAgent({ workspaceId, agentId }, { signal }),
-  })
-}
-
 export function useWorkflowQuery(
   workspaceId: string,
   workflowId: string,
@@ -458,41 +500,6 @@ export function useRunQuery(
   })
 }
 
-export function useConversationsQuery(
-  workspaceId: string,
-  options?: QueryOptions<Awaited<ReturnType<typeof listConversations>>>,
-) {
-  return useQuery({
-    ...options,
-    queryKey: queryKeys.conversations(workspaceId),
-    queryFn: ({ signal }) => listConversations({ workspaceId }, { signal }),
-  })
-}
-
-export function useConversationQuery(
-  workspaceId: string,
-  conversationId: string,
-  options?: QueryOptions<GetConversationResponse>,
-) {
-  return useQuery({
-    ...options,
-    queryKey: queryKeys.conversation(workspaceId, conversationId),
-    queryFn: ({ signal }) => getConversation({ workspaceId, conversationId }, { signal }),
-  })
-}
-
-export function useMessagesQuery(
-  workspaceId: string,
-  conversationId: string,
-  options?: QueryOptions<Awaited<ReturnType<typeof listMessages>>>,
-) {
-  return useQuery({
-    ...options,
-    queryKey: queryKeys.messages(workspaceId, conversationId),
-    queryFn: ({ signal }) => listMessages({ workspaceId, conversationId }, { signal }),
-  })
-}
-
 export function useVisibleResourcesQuery(
   workspaceId: string,
   options?: QueryOptions<Awaited<ReturnType<typeof listVisibleResources>>>,
@@ -501,19 +508,6 @@ export function useVisibleResourcesQuery(
     ...options,
     queryKey: queryKeys.resources(workspaceId),
     queryFn: ({ signal }) => listVisibleResources({ workspaceId }, { signal }),
-  })
-}
-
-type UserMessageInput = Omit<CreateMessageRequest, 'role'>
-type UserMessageMutationOptions = Omit<
-  UseMutationOptions<CreateMessageResponse, Error, UserMessageInput>,
-  'mutationFn'
->
-
-export function useUserMessageMutation(options?: UserMessageMutationOptions) {
-  return useMutation({
-    ...options,
-    mutationFn: (input) => sendUserMessage(input),
   })
 }
 

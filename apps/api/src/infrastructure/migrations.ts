@@ -39,6 +39,7 @@ import { remoteOwnerControlAdmissionMigration } from './remoteOwnerControlAdmiss
 import { sourceCleanupLeaseMigration } from './sourceCleanupLeaseMigration.js'
 import { jobRuntimeCaptureWithoutApprovalMigration } from './jobRuntimeCaptureWithoutApprovalMigration.js'
 import { buildComputerRoleMigration } from './buildComputerRoleMigration.js'
+import { buildComputerPriorityMigration } from './buildComputerPriorityMigration.js'
 import { hostHarnessMeasurementsMigration } from './hostHarnessMeasurementsMigration.js'
 import { remoteControlGenerationMigration } from './remoteControlGenerationMigration.js'
 import { jobPreparationDeadlineMigration } from './jobPreparationDeadlineMigration.js'
@@ -871,6 +872,7 @@ export const migrations = [
   buildComputerRoleMigration,
   computerSyncMigration,
   ciRuntimePreparationMigration,
+  buildComputerPriorityMigration,
   retiredHarnessCredentialsMigration,
 ] as const
 

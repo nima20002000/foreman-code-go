@@ -30,7 +30,7 @@ const targets = [{ hostRef: { kind: 'main' as const, mainId }, applicationInstal
   applicationInstallationId: registration.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
 }))]
 type PreferenceRow = { target: unknown; revision: string; build_enabled: boolean; build_priority: number;
-  build_role: string; build_allowance_percent: number }
+  build_allowance_percent: number }
 type ReceiptRow = { input_hash: unknown; target_key: unknown; result: unknown }
 
 async function fixture() {
@@ -67,8 +67,8 @@ async function fixture() {
       }
       if (text.includes('insert into build_computer_preferences')) {
         transactionPreferences.set(String(values[0]), { target: JSON.parse(String(values[1])), revision: String(values[2]),
-          build_enabled: Boolean(values[3]), build_priority: Number(values[4]), build_role: String(values[5]),
-          build_allowance_percent: Number(values[6]) })
+          build_enabled: Boolean(values[3]), build_priority: Number(values[4]),
+          build_allowance_percent: Number(values[5]) })
       }
       if (text.includes('from management_command_receipts')) {
         const row = transactionReceipts.get(values.slice(0, 3).join(':'))
@@ -105,7 +105,7 @@ async function fixture() {
     return client
   }
   const updates: BuildComputerChange[] = targets.map((target, index) => ({ target, expectedRevision: 0,
-    buildEnabled: true, buildPriority: 100 - index * 20, buildRole: index ? 'backup' : 'primary', buildAllowancePercent: 60 }))
+    buildEnabled: true, buildPriority: 100 - index * 20, buildAllowancePercent: 60 }))
   return { app, settings, connect, changed, readiness, audits, updates,
     close: async () => { await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end() } }
 }
@@ -141,10 +141,6 @@ it('saves one order through authenticated MCP, replays it and reads persisted se
       expect((await readOnly.callTool({ name: 'build_computer_get', arguments: { target: status.preference.target } }))
         .structuredContent).toEqual(status)
     }
-    const http = await f.app.inject({ method: 'POST', url: '/api/management/settings/build-computers/batch-update',
-      headers: { authorization: 'Bearer owner' }, payload: command })
-    expect(http.statusCode).toBe(200)
-    expect(http.json()).toEqual(saved)
     expect(f.audits).toContainEqual({ principal: 'owner', source: 'mcp', action: 'build.computers.update', outcome: 'succeeded' })
     expect(f.audits).toContainEqual({ principal: 'reader', source: 'mcp', action: 'build_computers_update', outcome: 'denied' })
   } finally { await f.close() }

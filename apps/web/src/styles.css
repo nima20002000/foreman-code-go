@@ -401,16 +401,11 @@ h1 {
   gap: var(--space-3);
 }
 
-.sidebar-account-row { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
-.sidebar-account-link { display: flex; flex: 0 0 2.75rem; width: 2.75rem; height: 2.75rem; align-items: center; justify-content: center;
-  padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-muted); font: var(--type-control);
-  font-weight: 400; text-decoration: none; }
-.sidebar-account-link:hover, .sidebar-account-link:focus-visible { background: var(--surface-raised); color: var(--text); }
-.sidebar-account-link-active { border-color: var(--border-strong); background: var(--surface-selected); color: var(--text); font-weight: 500; }
+.sidebar-preferences-row { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
 .sidebar-settings-link { display: inline-flex; flex: 0 0 2.75rem; width: 2.75rem; height: 2.75rem; align-items: center; justify-content: center;
   border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-muted); text-decoration: none; }
 .sidebar-settings-link:hover, .sidebar-settings-link:focus-visible { background: var(--surface-raised); color: var(--text); }
-.sidebar-settings-link.sidebar-account-link-active { border-color: var(--border-strong); color: var(--text); }
+.sidebar-settings-link-active { border-color: var(--border-strong); background: var(--surface-selected); color: var(--text); font-weight: 500; }
 
 .sidebar-footer .theme-toggle {
   width: 2.75rem;
@@ -491,8 +486,7 @@ h1 {
   justify-self: center;
 }
 
-.workspace-shell-navigation-collapsed .sidebar-account-row { flex-direction: column; }
-.workspace-shell-navigation-collapsed .sidebar-account-link { flex: 0 0 2.75rem; width: 2.75rem; justify-content: center; padding: 0; }
+.workspace-shell-navigation-collapsed .sidebar-preferences-row { flex-direction: column; }
 
 .shell-header {
   display: flex;

@@ -20,12 +20,13 @@ function Editor({ pending = false, uncertain = false }: { pending?: boolean; unc
     save: () => setDirty(false), discard: () => setDirty(false) })
   return <button onClick={() => setDirty(true)}>Edit settings</button>
 }
-function mount(path: string, editor?: { pending?: boolean; uncertain?: boolean }, unknownPredecessor?: string, browserHistory = false) {
+function mount(path: string, editor?: { pending?: boolean; uncertain?: boolean }, unknownPredecessor?: string, browserHistory = false,
+  seed?: (client: QueryClient) => void) {
   const root = createRootRoute({ component: () => <AppNavigationHistoryProvider><UnsavedChangesProvider>
     <AppNavigationTrail /><Outlet />
   </UnsavedChangesProvider></AppNavigationHistoryProvider> })
-  const paths = ['/workspaces', '/account', '/settings', '/settings/harnesses', '/workspaces/$workspaceId',
-    '/workspaces/$workspaceId/files', '/workspaces/$workspaceId/browsers', '/workspaces/$workspaceId/settings',
+  const paths = ['/workspaces', '/settings/general', '/settings', '/settings/harnesses', '/workspaces/$workspaceId',
+    '/workspaces/$workspaceId/files', '/workspaces/$workspaceId/settings',
     '/workspaces/$workspaceId/workflows', '/workspaces/$workspaceId/workflows/$workflowId/draft',
     '/workspaces/$workspaceId/workflows/$workflowId/runs/$runId/graph/$workflowVersionId/$executionSemanticsVersion']
   // Browser POP owns blocker handling; memory history only blocks push/replace.
@@ -34,22 +35,23 @@ function mount(path: string, editor?: { pending?: boolean; uncertain?: boolean }
   if (browserHistory) histories.push(history)
   const router = createRouter({ routeTree: root.addChildren(paths.map(path => createRoute({ getParentRoute: () => root,
     path, validateSearch: (search: Record<string, unknown>) => search, component: () => <>
-      <Link to="/account">Open account</Link><Link to="/settings">Open settings</Link>{editor ? <Editor {...editor} /> : null}
+      <Link to="/settings/general">Open general</Link><Link to="/settings">Open settings</Link>{editor ? <Editor {...editor} /> : null}
     </> }))), history, defaultPendingMinMs: 0 })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
+  seed?.(client)
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
   return { router, client }
 }
 
 it('goes back to the actual previous app page across unrelated destinations', async () => {
-  const { router } = mount('/account')
+  const { router } = mount('/settings/general')
   const user = userEvent.setup()
   await user.click(await screen.findByRole('link', { name: 'Open settings' }))
   await act(() => router.navigate({ to: '/workspaces/$workspaceId/files', params: { workspaceId: 'workspace-1' } }))
   await user.click(screen.getByRole('button', { name: 'Back' }))
   await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
   await user.click(screen.getByRole('button', { name: 'Back' }))
-  await waitFor(() => expect(router.state.location.pathname).toBe('/account'))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings/general'))
 })
 
 it.each(['?harness=codex', '?harness=codex&section=model', '?harness=claude&section=model&computer=main'])('uses the Harnesses ancestor for a direct model deep link %s', async search => {
@@ -63,14 +65,17 @@ it.each(['?harness=codex', '?harness=codex&section=model', '?harness=claude&sect
   expect(router.state.location.pathname).toBe('/settings/harnesses')
 })
 
-it('uses settings as the real Browsers parent for a direct deep link', async () => {
-  const { router } = mount('/workspaces/workspace-1/browsers')
+it('shows General in the breadcrumb and returns to Settings from a direct link', async () => {
+  const { router } = mount('/settings/general')
   const user = userEvent.setup()
-  await user.click(await screen.findByRole('button', { name: 'Back' }))
-  await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings'))
+  const breadcrumbs = await screen.findByRole('navigation', { name: 'Breadcrumbs' })
+  expect(breadcrumbs.querySelector('[aria-current="page"]')).toHaveTextContent('General')
+  expect(within(breadcrumbs).getByRole('link', { name: 'Go to Settings' })).toHaveAttribute('href', '/settings')
+  await user.click(screen.getByRole('button', { name: 'Back' }))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
 })
 
-it.each(['/sign-in', '/outside-app', '/account'])('does not revisit an unobserved predecessor %s', async predecessor => {
+it.each(['/sign-in', '/outside-app', '/settings/general'])('does not revisit an unobserved predecessor %s', async predecessor => {
   const { router } = mount('/settings/harnesses?harness=codex&section=model', undefined, predecessor)
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Back' }))
@@ -110,7 +115,7 @@ it('hides a previously read private name through authorization and subsequent ne
 })
 
 it('keeps the original destination when a dirty editor cancels previous-page navigation', async () => {
-  const { router } = mount('/account', {}, undefined, true)
+  const { router } = mount('/settings/general', {}, undefined, true)
   const user = userEvent.setup()
   await user.click(await screen.findByRole('link', { name: 'Open settings' }))
   await user.click(screen.getByRole('button', { name: 'Edit settings' }))
@@ -123,7 +128,7 @@ it('keeps the original destination when a dirty editor cancels previous-page nav
   expect(router.state.location.pathname).toBe('/settings')
   await user.click(screen.getByRole('button', { name: 'Back' }))
   await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard' }))
-  await waitFor(() => expect(router.state.location.pathname).toBe('/account'))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings/general'))
 })
 
 it.each([{ pending: true }, { uncertain: true }])('locks discard for pending or unconfirmed saves during Back: %j', async editor => {
@@ -134,4 +139,25 @@ it.each([{ pending: true }, { uncertain: true }])('locks discard for pending or 
   const dialog = await screen.findByRole('alertdialog', { name: 'Save changes before leaving?' })
   expect(within(dialog).getByRole('button', { name: 'Discard' })).toBeDisabled()
   expect(router.state.location.search.harness).toBe('codex')
+})
+
+it('names a workspace and workflow from cached data before their own reads return, without swapping placeholder words', async () => {
+  server.use(
+    http.get('/api/management/workspaces/workspace-1', () => new Promise<never>(() => {})),
+    http.get('/api/management/workspaces/workspace-1/workflows/workflow-1', () => new Promise<never>(() => {})),
+  )
+  mount('/workspaces/workspace-1/workflows/workflow-1/draft', undefined, undefined, false, client => {
+    client.setQueryData(['workbench', 'workspace', 'workspace-1', 'details'], { workspace: { id: 'workspace-1', name: 'Website' },
+      workflows: [{ id: 'workflow-1', name: 'Release notes' }], agents: [], runs: [] })
+  })
+  const breadcrumbs = await screen.findByRole('navigation', { name: 'Breadcrumbs' })
+  expect(within(breadcrumbs).getByRole('link', { name: 'Go to Website' })).toBeVisible()
+  expect(within(breadcrumbs).getByRole('link', { name: 'Go to Release notes' })).not.toHaveClass('is-pending')
+})
+
+it('keeps a stable placeholder while an uncached workspace name loads', async () => {
+  server.use(http.get('/api/management/workspaces/workspace-2', () => new Promise<never>(() => {})))
+  mount('/workspaces/workspace-2/files')
+  const breadcrumbs = await screen.findByRole('navigation', { name: 'Breadcrumbs' })
+  expect(within(breadcrumbs).getByRole('link', { name: 'Go to Workspace' })).toHaveClass('is-pending')
 })

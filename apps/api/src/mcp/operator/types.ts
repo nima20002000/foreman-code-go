@@ -37,6 +37,7 @@ export interface OperatorServices {
   trustedConnections?: import('../../modules/devices/trustedConnectionManagement.js').TrustedConnectionManagementService
   computerActivity?: import('../../modules/computers/activity.js').ComputerActivityService
   computerAccounts?: import('../../modules/computers/accounts.js').ComputerAccountsService
+  computerMaintenance?: import('../../modules/computers/fleet.js').FleetMaintenanceService
   computerGitHub?: import('../../modules/computers/github.js').ComputerGitHubService
   computerSync?: import('../../modules/computers/sync.js').ComputerSyncService
   buildComputers?: import('../../modules/settings/buildComputers.js').BuildComputerSettings

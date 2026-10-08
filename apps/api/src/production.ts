@@ -8,8 +8,11 @@ import { CiRuntimeProvisioner } from './modules/jobs/ciRuntimeProvisioner.js'
 import { CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
 import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
+import { registerComputerMaintenanceRoutes } from './routes/computerMaintenance.js'
+import { FleetMaintenanceService } from './modules/computers/fleet.js'
+import { ComputerMaintenance, claudeUserMcpServers, installedPlugins, systemMaintenancePorts } from './modules/computers/maintenance.js'
 import { ComputerGitHubService } from './modules/computers/github.js'
-import { registerComputerGitHubRoutes } from './routes/computerGitHub.js'
+import { COMPUTER_MAINTENANCE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
 import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_SYNC_NAMESPACE, COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
 import { ComputerSyncService } from './modules/computers/sync.js'
 import { registerComputerSyncRoutes } from './routes/computerSync.js'
@@ -384,6 +387,7 @@ export function buildProductionApp(
         infrastructure?.deviceDomains?.extensions.find(value => value.namespace === BYTE_TRANSFER_NAMESPACE),()=>jobRuntime?.outputs),
       { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 65_536, maxBinaryBytes: 0 },
+      { namespace: COMPUTER_MAINTENANCE_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16_384, maxBinaryBytes: 0 },
       { namespace: COMPUTER_SYNC_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
@@ -1376,7 +1380,6 @@ export function buildProductionApp(
     ...(config.browserOrigin ? { browserOrigin: config.browserOrigin } : {}),
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
-    harnessCompatibility,
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
     operator: { access, services: runtimeServices },
     appMcp: { access, interactions: Object.assign(new PostgresAppInteractionService(database.pool, repository, commands, interactions), {
@@ -1661,11 +1664,26 @@ export function buildProductionApp(
       runtimeServices.computerAccounts = new ComputerAccountsService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands)
       registerComputerAccountsRoutes(app, runtimeServices.computerAccounts)
+      const maintenancePorts = systemMaintenancePorts(process.env, { codex: config.harnesses.codexBinary })
+      runtimeServices.computerMaintenance = new FleetMaintenanceService(database.pool, machine.installationId,
+        () => deviceRuntime.endpointForDomains(), commands, new ComputerMaintenance(maintenancePorts), {
+          codexUserMcpServers: () => harnessSettings.mcp.userServers('codex'),
+          claudeUserMcpServers: () => claudeUserMcpServers(maintenancePorts),
+          codexPlugins: () => installedPlugins(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(120_000)),
+        })
+      registerComputerMaintenanceRoutes(app, runtimeServices.computerMaintenance)
+      // Keep harnesses current and Main's MCP servers and plugins on every computer. Never under the test runners.
+      if (!process.env.VITEST && process.env.NODE_ENV !== 'test' && process.env.FOREMAN_CODE_COMPUTER_UPKEEP !== '0') {
+        const upkeep = () => { void runtimeServices.computerMaintenance!.keepCurrent().catch(error => app.log.warn({ err: error }, 'Computer upkeep failed')) }
+        const firstUpkeep = setTimeout(upkeep, 120_000)
+        const upkeepTimer = setInterval(upkeep, 6 * 60 * 60_000)
+        firstUpkeep.unref(); upkeepTimer.unref()
+        app.addHook('onClose', async () => { clearTimeout(firstUpkeep); clearInterval(upkeepTimer) })
+      }
       runtimeServices.computerGitHub = new ComputerGitHubService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands, {
           accountChanged: target => runtimeServices.computerAccounts!.invalidate(target),
         })
-      registerComputerGitHubRoutes(app, runtimeServices.computerGitHub)
       runtimeServices.computerSync = new ComputerSyncService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands)
       registerComputerSyncRoutes(app, runtimeServices.computerSync)
@@ -1744,6 +1762,9 @@ export function buildProductionApp(
       initialized = true
       // Reconcile chat turns interrupted by the previous process; never blocks startup.
       void agentChat.recover().catch((error: unknown) => app.log.error({ err: error }, 'agent chat recovery failed'))
+      // Fill the settings status and model caches in the background so first reads do not wait on native checks.
+      void Promise.allSettled([harnessCatalog.warmup(), nativeConfigurations.options('codex'),
+        harnessSettings.mcp.warmup(['codex']), harnessSettings.plugins.warmup()])
     })
     // On failure the startup caller closes the app. Only the shared shutdown
     // barrier may release the owner, after any already-admitted work drains.

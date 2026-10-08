@@ -1,8 +1,10 @@
 import { AgentDefaultsSchema, withAdvancedDefaults, CodexSessionCompatibilitySchema, validateHarnessWorkflowCompatibility, type AgentDefaults, type WorkflowDefaults } from '@foreman-code/contracts'
 import { WorkspaceDefaultsUpdateInputSchema, type WorkspaceDefaultsUpdateInput, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import { GeneralSettingsUpdateInputSchema, type GeneralSettingsUpdateInput } from '@foreman-code/contracts/management'
 import { isDeepStrictEqual } from 'node:util'
 
 import { requireAuthorization } from '../access/policy.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'
 import { assertClaudeFullAccess } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { HostHarnessOverrideService } from '../harnesses/instanceSettings/service.js'
@@ -19,6 +21,24 @@ export class FoundationSettingsManagementService {
     private readonly operators?: PostgresOperatorRepository,
     private readonly profiles?: Pick<HostHarnessOverrideService, 'validateSelection'> & Partial<Pick<HostHarnessOverrideService, 'selectionForConfiguration' | 'prepareOperatorConfiguration'>>,
   ) {}
+
+  getGeneralSettings(principal: ManagementPrincipal) {
+    requireAuthorization(principal, 'settings:read')
+    return this.settings.getGeneralSettings()
+  }
+
+  updateGeneralSettings(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: GeneralSettingsUpdateInput) {
+    requireAuthorization(principal, 'settings:update')
+    const input = GeneralSettingsUpdateInputSchema.parse(raw)
+    return this.commands.execute({
+      principal, source, operation: 'general.settings.update', commandId: input.commandId,
+      targetKey: 'general-settings', payload: input,
+      authorize: async client => {
+        requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'settings:update')
+      },
+      perform: client => this.settings.updateGeneralSettings(input.value, input.expectedRevision, client),
+    })
+  }
 
   getWorkspaceDefaults(principal: ManagementPrincipal) {
     requireAuthorization(principal, 'settings:read')

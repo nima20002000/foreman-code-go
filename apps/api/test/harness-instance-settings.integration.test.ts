@@ -98,7 +98,7 @@ it('refuses non-full Claude host profiles and persists explicit Full access thro
   }
 }, 60_000)
 
-it('persists host overrides through actual buildApp authenticated MCP and HTTP with denial, CAS, replay, cold readback and canonical revocation', async () => {
+it('persists host overrides through authenticated MCP with denial, CAS, replay, cold readback and canonical revocation', async () => {
   let app: ReturnType<typeof buildApp> | undefined
   const clients: Client[] = []
   try {
@@ -171,20 +171,18 @@ it('persists host overrides through actual buildApp authenticated MCP and HTTP w
     service = createService()
     const listed = HostHarnessOverrideListSchema.parse((await denied.callTool({ name: 'harness_instances_list', arguments: listInput })).structuredContent)
     expect(listed.overrides[0]).toMatchObject({ revision: 2, configuration: { model: 'changed' }, qualification: 'unqualified' })
-    const http = await app.inject({ method: 'POST', url: '/api/management/harness-instances/read', headers: { authorization: `Bearer ${reader.token}` }, payload: listInput })
-    expect(http.statusCode).toBe(200); expect(HostHarnessOverrideListSchema.parse(http.json())).toEqual(listed)
     const checkInput = { commandId: randomUUID(), instanceId: args.instanceId, expectedRevision: 2, target: args.target }
     const checked = HostHarnessInstanceCheckResultSchema.parse((await writer.callTool({ name: 'harness_instance_check', arguments: checkInput })).structuredContent)
     expect(checked).toMatchObject({ replayed: false, value: { revision: 2, qualification: 'qualified' }, proof: { instanceRevision: '2', qualified: true } })
     expect(HostHarnessInstanceCheckResultSchema.parse((await writer.callTool({ name: 'harness_instance_check', arguments: checkInput })).structuredContent).replayed).toBe(true)
     expect(nativeReplay).toHaveBeenCalledTimes(1)
     expect((await pool.query('select count(*)::int as count from harness_instance_profile_evidence')).rows[0].count).toBe(1)
-    expect((await app.inject({ method: 'POST', url: '/api/management/harness-instances/check', headers: { authorization: `Bearer ${reader.token}` }, payload: checkInput })).statusCode).toBe(403)
+    expect((await denied.callTool({ name: 'harness_instance_check', arguments: checkInput })).isError).toBe(true)
     currentEnvironment = 'fixture-env-2'
     expect(HostHarnessOverrideListSchema.parse((await denied.callTool({ name: 'harness_instances_list', arguments: listInput })).structuredContent).overrides[0]?.qualification).toBe('unqualified')
     expect(nativeReplay).toHaveBeenCalledTimes(1) // Reading stale evidence never starts a replacement native check.
-    expect((await app.inject({ method: 'POST', url: '/api/management/harness-instances/save', headers: { authorization: `Bearer ${reader.token}` }, payload: args })).statusCode).toBe(403)
-    expect((await pool.query("select count(*)::int as count from management_audit where outcome='denied' and source='http' and action='harness_instance_save'")).rows[0].count).toBe(1)
+    expect((await denied.callTool({ name: 'harness_instance_save', arguments: args })).isError).toBe(true)
+    expect((await pool.query("select count(*)::int as count from management_audit where outcome='denied' and source='mcp' and action='harness_instance_save'")).rows[0].count).toBe(2)
     expect((await writer.callTool({ name: 'harness_instance_save', arguments: { ...args, commandId: randomUUID(), instanceId: randomUUID(), target: { ...args.target, applicationInstallationId: randomUUID() } } })).isError).toBe(true)
     const claudeArgs = { ...args, commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0,
       presetId: 'claude', target: { ...args.target, harnessInstallationId: 'claude-sdk' },

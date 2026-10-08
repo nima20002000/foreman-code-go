@@ -1,5 +1,5 @@
 export const retiredHarnessCredentialsMigration = {
-  version: 2026100860,
+  version: 2026100861,
   sql: `
     insert into application_settings (key, record, revision, updated_at)
     select 'retired-harness-defaults', jsonb_build_object('opencode', record->'opencode'), revision, now()

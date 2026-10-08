@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
-import { CodexPluginDetailResultSchema, CodexPluginListResultSchema, type CodexPluginSummary } from '@foreman-code/contracts/management'
+import { CodexPluginChangeResultSchema, CodexPluginDetailResultSchema, CodexPluginListResultSchema, type CodexPluginSummary } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -31,7 +31,7 @@ afterAll(async () => {
 const clients: Client[] = []
 afterEach(async () => { for (const client of clients.splice(0)) await client.close() })
 
-it('lists and reads Codex plugins through authenticated MCP while browser-only changes retain native readback', async () => {
+it('lists, reads, installs and removes Codex plugins through authenticated MCP with native readback', async () => {
   const item: CodexPluginSummary = { pluginId: 'notes@trusted', name: 'notes', marketplaceName: 'trusted', version: '1.0.0',
     installed: false, enabled: false, sourceType: 'remote', installPolicy: 'AVAILABLE', authPolicy: 'ON_INSTALL' }
   let installed = false
@@ -74,7 +74,9 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
     const disallowed = await connect(denied.token)
     expect((await disallowed.listTools()).tools.map((tool) => tool.name)).not.toContain('codex_plugins_list')
     expect((await allowed.listTools()).tools.map((tool) => tool.name)).toContain('codex_plugins_list')
-    expect((await allowed.listTools()).tools.map((tool) => tool.name)).not.toContain('codex_plugin_install')
+    expect((await allowed.listTools()).tools.map((tool) => tool.name)).not.toContain('codex_plugin_change')
+    const operator = await connect(delegated.token)
+    expect((await operator.listTools()).tools.map((tool) => tool.name)).toContain('codex_plugin_change')
     const list = async (view: 'installed' | 'available') => CodexPluginListResultSchema.parse(
       (await allowed.callTool({ name: 'codex_plugins_list', arguments: { view } })).structuredContent)
     expect((await list('available')).items.map((plugin) => plugin.pluginId)).toEqual(['notes@trusted'])
@@ -82,12 +84,17 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
       arguments: { pluginId: item.pluginId } })).structuredContent).contents).toEqual({ status: 'unknown' })
     const before = await list('available')
     const input = { pluginId: item.pluginId, action: 'install' as const, expectedRevision: before.revision, artifactIdentity: (await plugins.get(owner.principal, item.pluginId)).artifactIdentity, commandId: randomUUID() }
-    expect((await app.inject({ method: 'POST', url: '/api/management/harnesses/codex/plugins/change',
-      headers: { authorization: `Bearer ${owner.token}` }, payload: input })).statusCode).toBe(403)
-    await expect(plugins.change(delegated.principal, input)).rejects.toMatchObject({ code: 'CODEX_PLUGIN_BROWSER_REQUIRED', status: 403 })
-    expect((await plugins.change(owner.principal, input)).status).toBe('applied')
-    expect((await plugins.change(owner.principal, input)).status).toBe('applied')
+    const readerChange = await allowed.callTool({ name: 'codex_plugin_change', arguments: input })
+    expect(readerChange.isError).toBe(true)
+    expect(JSON.stringify(readerChange.content)).toContain('ACCESS_DENIED')
+    // The delegated Operator installs the plugin itself: no human browser step. The same command never repeats.
+    const change = async () => CodexPluginChangeResultSchema.parse((await operator.callTool({ name: 'codex_plugin_change', arguments: input })).structuredContent)
+    expect((await change()).status).toBe('applied')
+    expect((await change()).status).toBe('applied')
     expect(changes).toBe(1)
+    const audit = await pool.query<{ source: string }>("select source from management_audit where principal_id=$1 and action like 'codex.plugin.%'", [delegated.principal.id])
+    expect(audit.rows.length).toBeGreaterThan(0)
+    expect(new Set(audit.rows.map((row) => row.source))).toEqual(new Set(['mcp']))
     expect((await list('installed')).items).toMatchObject([{ pluginId: item.pluginId, installed: true }])
     expect(CodexPluginDetailResultSchema.parse((await allowed.callTool({ name: 'codex_plugin_get',
       arguments: { pluginId: item.pluginId } })).structuredContent).contents).toEqual({ status: 'known', skills: ['summarize'], hooks: [], mcpServers: ['notes'], apps: [] })

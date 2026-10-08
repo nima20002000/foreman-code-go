@@ -1,8 +1,9 @@
 import type pg from 'pg'
-import { CiGetOutputSchema, CiRunOutputSchema, type CiRunInput, type CiGetInput } from '@foreman-code/contracts'
+import { CiGetOutputSchema, CiRunOutputSchema, type CiRunInput, type CiGetInput,
+  type CiCancelInput, type CiLogsInput, type CiArtifactInput } from '@foreman-code/contracts'
 import { AutoVerificationJobSpecSchema, JobVerificationReportReadSchema, type JobDefinitionRecord }
   from '@foreman-code/contracts/job-verification'
-import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresSourceService } from '../sources/service.js'
 import type { JobService } from './service.js'
@@ -39,6 +40,10 @@ export class CiService {
       perform: async commandConnection => {
         // An Agent's CI tests its current files and runs on its own computer first, then spills over in build order.
         const agent = scope.executionId ? await this.agentWorkspace(scope.executionId) : undefined
+        let preferredHost = agent?.hostRef
+        if (input.placementOverride?.kind === 'explicit') preferredHost = input.placementOverride.target.hostRef
+        if (input.placementOverride?.kind === 'prefer') preferredHost = input.placementOverride.hostRef
+        const placementOverride = input.placementOverride ?? (agent ? { kind: 'prefer' as const, hostRef: agent.hostRef } : undefined)
         const captured = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.snapshot',
           commandId: input.commandId, targetKey: scope.workspaceId, payload: input, dedicatedConnection: true,
           authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
@@ -62,12 +67,12 @@ export class CiService {
           const prepared = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.prepare',
             commandId: input.commandId, targetKey: scope.workspaceId, payload: input, dedicatedConnection: true,
             authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
-            perform: async () => this.prepare(scope.principal, scope.workspaceId, input.suite, commandKey, source, agent?.hostRef),
+            perform: async () => this.prepare(scope.principal, scope.workspaceId, input.suite, commandKey, source, preferredHost),
           })
           const admitted = await this.jobs.enqueue(scope.principal, 'mcp', scope.workspaceId, {
             commandId: `${commandKey}:enqueue`, definitionId: prepared.value.id,
             expectedRevision: prepared.value.revision,
-            ...(agent ? { placementOverride: { kind: 'prefer', hostRef: agent.hostRef } } : {}),
+            ...(placementOverride ? { placementOverride } : {}),
           }, { runtimePreparation: scope.principal, initiatingAgent: scope.initiatingAgent })
           if (admitted.kind === 'retained-execution') {
             throw new DomainError('CI_QUEUE_CONFLICT', 'The CI command belongs to an earlier nonqueued execution.', 409)
@@ -160,6 +165,45 @@ export class CiService {
         current = updated
       }
     }
+  }
+
+  async computers(caller: ManagementPrincipal, input: { workspaceId?: string }) {
+    const { principal, workspaceId } = await this.authority.resolve(caller, input.workspaceId,
+      ['job_definitions:read', 'sources:read', 'source_roots:read'])
+    return this.jobs.choices(principal, workspaceId, 'mcp')
+  }
+
+  async cancel(caller: ManagementPrincipal, input: CiCancelInput & { workspaceId?: string }) {
+    const { principal, workspaceId } = await this.authority.resolve(caller, input.workspaceId, ['jobs:cancel'])
+    return { ticket: await this.jobs.cancelQueued(principal, 'mcp', workspaceId, {
+      ticketId: input.ticketId, expectedRevision: input.expectedRevision, commandId: input.commandId,
+    }) }
+  }
+
+  private async acceptedExecution(caller: ManagementPrincipal, input: CiGetInput & { workspaceId?: string },
+    actions: ManagementAction[]) {
+    const scope = await this.authority.resolve(caller, input.workspaceId, ['jobs:read', ...actions])
+    const ticket = await this.jobs.getQueueTicket(scope.principal, scope.workspaceId, input.ticketId, 'mcp')
+    if (ticket.state !== 'accepted') {
+      throw new DomainError('CI_NOT_ACCEPTED', 'This CI request has no accepted execution yet. Poll ci_get.', 409)
+    }
+    return { ...scope, executionId: ticket.executionId }
+  }
+
+  async logs(caller: ManagementPrincipal, input: CiLogsInput & { workspaceId?: string }) {
+    const scope = await this.acceptedExecution(caller, input, ['job_logs:read'])
+    return this.jobs.readLogs(scope.principal, scope.workspaceId, scope.executionId,
+      input.afterSequence, input.limit, 'mcp')
+  }
+
+  async artifacts(caller: ManagementPrincipal, input: CiGetInput & { workspaceId?: string }) {
+    const scope = await this.acceptedExecution(caller, input, ['job_artifacts:read'])
+    return { artifacts: await this.jobs.listArtifacts(scope.principal, scope.workspaceId, scope.executionId, 'mcp') }
+  }
+
+  async artifact(caller: ManagementPrincipal, input: CiArtifactInput & { workspaceId?: string }) {
+    const scope = await this.acceptedExecution(caller, input, ['job_artifacts:read'])
+    return this.jobs.readArtifactPage(scope.principal, scope.workspaceId, scope.executionId, input)
   }
 
   async get(caller: ManagementPrincipal, input: CiGetInput & { workspaceId?: string }) {

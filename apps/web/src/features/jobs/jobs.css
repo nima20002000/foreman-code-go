@@ -8,7 +8,6 @@
 .job-log-chunk { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; }
 .job-log-chunk pre { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 .job-log-stream { color: var(--text-muted); font-size: 11px; }
-.jobs-list { display: grid; gap: 12px; }
 .job-toolbar .n-field { flex: 1 1 220px; min-width: 0; }
 .job-wrap { min-width: 0; max-width: 100%; overflow-wrap: anywhere; white-space: normal; text-align: start; height: auto; }
 .job-node-picker { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; max-width: 100%; }
@@ -16,7 +15,5 @@
 .job-dialog .n-dialog-header h2, .job-dialog .n-dialog-header p { overflow-wrap: anywhere; }
 .job-dialog .n-dialog-header > button { flex-shrink: 0; }
 .job-command { display: block; max-width: 100%; max-height: 8em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-.job-id { margin: 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
-.job-needs { margin: 0; font-size: 13px; color: var(--text-muted); }
 .job-log-window:focus-visible { outline: 2px solid var(--focus, currentColor); outline-offset: 2px; }
 @media (max-width: 640px) { .jobs-page { padding: 12px; } .job-facts { grid-template-columns: minmax(0, 1fr); gap: 4px; } .job-facts dd { margin-bottom: 8px; } .job-log-chunk { grid-template-columns: minmax(0, 1fr); gap: 2px; } }

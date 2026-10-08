@@ -1,85 +1,46 @@
-import { savedClaudeConfiguration } from './claudeSettings.fixtures'
-import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
-import { queryKeys } from '../../shared/api/query'
+import { http, HttpResponse } from 'msw'
+import { afterEach, expect, it } from 'vitest'
+import { DEFAULT_AGENT_DEFAULTS } from '@foreman-code/contracts'
+import { server } from '../../mocks/server'
+import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 import { AgentDefaultsSettings } from './AgentDefaultsSettings'
-import { clearRevisionedFormPersistence } from './revisionedForm'
-import { nativeOptionsFixture } from './settingsExperience.fixtures'
-const { updateDefaults } = vi.hoisted(() => ({ updateDefaults: vi.fn() }))
-vi.mock('../../shared/api/query', async () => {
-  const actual = await vi.importActual<typeof import('../../shared/api/query')>('../../shared/api/query')
-  return { ...actual, useUpdateAgentDefaultsMutation: () => useMutation({ mutationFn: updateDefaults }) }
-})
-
-vi.mock('../../shared/api/harnessSettings', () => ({
-  useNativeHarnessOptions: (harness: 'codex' | 'claude') => nativeOptionsFixture(harness),
-  useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
-  useAutomaticHarnessCheck: () => ({ current: true, result: { isFetching: false, isSuccess: true, isError: false } }),
-  useHarnessSessionEpoch: () => 0,
-}))
-vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>Folder picker</div> }))
 
 const clients: QueryClient[] = []
-function client(value = DEFAULT_AGENT_DEFAULTS, revision = 3) {
-  const result = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
-  result.setQueryData(queryKeys.agentDefaults, { value, revision, versionId: `agents-v${revision}` })
-  result.setQueryData(queryKeys.managedHarnessCatalog, Object.entries(DEFAULT_HARNESS_DEFAULTS).map(([harness, defaults]) =>
-    ({ harness, defaults, defaultsRevision: 1, capability: null, discoveryError: null })))
-  clients.push(result); return result
+afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); useOperatorChatStore.getState().reset() })
+function mount() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
+  render(<QueryClientProvider client={client}><AgentDefaultsSettings /></QueryClientProvider>)
 }
-beforeEach(() => { updateDefaults.mockReset(); updateDefaults.mockImplementation(async (input) => ({ value: { value: input.value, revision: input.expectedRevision + 1, versionId: 'agents-next' }, replayed: false })) })
-afterEach(() => { cleanup(); clearRevisionedFormPersistence(); for (const item of clients.splice(0)) item.clear() })
-describe('Agent defaults page', () => {
-  it('uses full access only for a new Operator provider selection', async () => {
-    const value = structuredClone(DEFAULT_AGENT_DEFAULTS)
-    value.operator.harness = savedClaudeConfiguration
-    const user = userEvent.setup()
-    render(<QueryClientProvider client={client(value)}><AgentDefaultsSettings /></QueryClientProvider>)
-    await user.click(await screen.findByRole('button', { name: 'Edit Operator defaults' }))
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Harness' }), 'codex')
-    await user.click(screen.getByRole('button', { name: 'Save Operator' }))
-    await waitFor(() => expect(updateDefaults).toHaveBeenCalledOnce())
-    expect(updateDefaults.mock.calls[0]![0].value.operator.harness).toMatchObject({ sandbox: 'danger-full-access' })
-    expect(updateDefaults.mock.calls[0]![0].value.coder).toEqual(value.coder)
-    expect(updateDefaults.mock.calls[0]![0].value.orchestrator).toEqual(value.orchestrator)
-  })
+function card(name: string) { return screen.getByRole('button', { name: `Edit ${name} defaults` }).closest('.settings-choice') as HTMLElement }
 
-  it('preserves explicitly saved Operator read-only access on unrelated edits', async () => {
-    const value = structuredClone(DEFAULT_AGENT_DEFAULTS)
-    value.operator.harness = DEFAULT_HARNESS_DEFAULTS.codex
-    const user = userEvent.setup()
-    render(<QueryClientProvider client={client(value)}><AgentDefaultsSettings /></QueryClientProvider>)
-    await user.click(await screen.findByRole('button', { name: 'Edit Operator defaults' }))
-    await user.click(screen.getByRole('checkbox', { name: 'Show Operator chat' }))
-    await user.click(screen.getByRole('button', { name: 'Save Operator' }))
-    await waitFor(() => expect(updateDefaults).toHaveBeenCalledOnce())
-    expect(updateDefaults.mock.calls[0]![0].value.operator.harness).toMatchObject({ sandbox: 'read-only' })
-  })
+it('shows each role as a summary card and drafts changes for the Operator', async () => {
+  server.use(http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 3, versionId: null, value: DEFAULT_AGENT_DEFAULTS })))
+  mount()
+  await screen.findByRole('button', { name: 'Edit Coder defaults' })
+  for (const role of ['Operator', 'Orchestrator', 'Coder']) expect(within(card(role)).getByText('Model')).toBeVisible()
+  expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Edit Coder defaults' }))
+  expect(useOperatorChatStore.getState().request).toMatchObject({ content: 'Change the Coder defaults: ', send: false })
+})
 
-  it('starts with three summary cards, then saves only an explicit Operator draft', async () => {
-    const queryClient = client(); const user = userEvent.setup()
-    render(<QueryClientProvider client={queryClient}><AgentDefaultsSettings /></QueryClientProvider>)
-    for (const name of ['Operator','Orchestrator','Coder']) expect(await screen.findByRole('button', { name: `Edit ${name} defaults` })).toBeVisible()
-    expect(screen.queryByRole('checkbox', { name: 'Show Operator chat' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Edit Operator defaults' }))
-    await user.click(screen.getByRole('checkbox', { name: 'Show Operator chat' }))
-    await user.click(screen.getByRole('button', { name: 'Save Operator' }))
-    await waitFor(() => expect(updateDefaults).toHaveBeenCalledOnce())
-    expect(updateDefaults.mock.calls[0]![0].expectedRevision).toBe(3)
-    expect(updateDefaults.mock.calls[0]![0].value.operator.uiEnabled).toBe(false)
-    expect(updateDefaults.mock.calls[0]![0].value.coder).toEqual(DEFAULT_AGENT_DEFAULTS.coder)
-  })
-
-  it('keeps an unsent role draft through overview navigation and unmount', async () => {
-    const queryClient=client();const user=userEvent.setup();const first=render(<QueryClientProvider client={queryClient}><AgentDefaultsSettings /></QueryClientProvider>)
-    await user.click(await screen.findByRole('button',{name:'Edit Operator defaults'}));await user.click(screen.getByRole('checkbox',{name:'Show Operator chat'}))
-    await user.click(screen.getByRole('button',{name:'All agents'}));expect(screen.getByText('Unsaved changes')).toBeVisible()
-    await user.click(screen.getByRole('button',{name:'Edit Coder defaults'}));expect(screen.getByRole('button',{name:'Save Coder'})).toBeDisabled()
-    first.unmount();render(<QueryClientProvider client={queryClient}><AgentDefaultsSettings /></QueryClientProvider>)
-    await user.click(await screen.findByRole('button',{name:'Edit Operator defaults'}));expect(screen.getByRole('checkbox',{name:'Show Operator chat'})).not.toBeChecked()
-    expect(screen.getByRole('button',{name:'Save Operator'})).toBeEnabled()
-  })
+it('saves Operator chat visibility directly with the read revision', async () => {
+  const saved: Array<{ expectedRevision: number; value: typeof DEFAULT_AGENT_DEFAULTS }> = []
+  let value = DEFAULT_AGENT_DEFAULTS
+  server.use(
+    http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 3 + saved.length, versionId: null, value })),
+    http.put('/api/management/settings/agents', async ({ request }) => {
+      const body = await request.json() as typeof saved[number]; saved.push(body); value = body.value
+      return HttpResponse.json({ value: { revision: 3 + saved.length, versionId: null, value }, replayed: false })
+    }),
+  )
+  mount()
+  const toggle = await within(await waitFor(() => card('Operator'))).findByRole('switch', { name: 'Show Operator chat' })
+  expect(toggle).toBeChecked()
+  await userEvent.click(toggle)
+  await waitFor(() => expect(saved).toHaveLength(1))
+  expect(saved[0]).toMatchObject({ expectedRevision: 3, value: { operator: { uiEnabled: false } } })
+  await waitFor(() => expect(toggle).not.toBeChecked())
 })

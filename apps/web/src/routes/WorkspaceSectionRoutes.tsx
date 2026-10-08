@@ -10,7 +10,7 @@ import { WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '..
 import { useApprovalInboxStore } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
 import { WorkspaceDetailPage } from '../features/workspaces/WorkspaceDetailPage'
-import { Badge, Card, EmptyState, Icon, PageHeader, SettingsSection, type IconName } from '../shared/ui/nocturne'
+import { Badge, Card, EmptyState, Icon, PageHeader, type IconName } from '../shared/ui/nocturne'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 import {
   WorkspaceDirectory,
@@ -195,6 +195,16 @@ export function GlobalSettingsRouteEntry() {
               title="Settings"
               description="Configure application preferences and connected capabilities."
             />
+            <h2 className="settings-group-heading" id="settings-preferences-heading">Preferences</h2>
+            <ul className="settings-card-list" aria-labelledby="settings-preferences-heading">
+              <li>
+                <Card className="settings-card">
+                  <Link to="/settings/general" className="settings-card-open">
+                    <SettingsCardBody icon="settings" title="General" description="Appearance, sync across computers and chat retention" />
+                  </Link>
+                </Card>
+              </li>
+            </ul>
             <h2 className="settings-group-heading" id="settings-defaults-heading">Defaults</h2>
             <ul className="settings-card-list" aria-labelledby="settings-defaults-heading">
               <li>
@@ -286,17 +296,6 @@ export function WorkspaceApprovalsRouteEntry() {
     void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, search: workflowId ? { workflowId } : {}, replace: true })
   }, [navigate, workflowId, workspaceId])
   return null
-}
-
-export function BrowsersSettingsRouteEntry() {
-  const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/browsers' })
-  return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
-    <SettingsDetailPage eyebrow={`Workspace · ${workspaceId}`} title="Browsers"
-      description="Browser profiles this workspace's agents are allowed to drive.">
-      <SettingsSection title="Browsers" description="Coming soon">
-        <p>Browser profile management is planned but is not implemented yet.</p>
-      </SettingsSection>
-    </SettingsDetailPage> }} />
 }
 
 export function WorkspaceLocationSettingsRouteEntry() {

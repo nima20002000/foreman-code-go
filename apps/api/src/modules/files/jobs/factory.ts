@@ -21,7 +21,10 @@ export class PostgresJobArtifactScopeAuthorization implements FileScopeAuthoriza
   async resolve(principal: ManagementPrincipal, target: JobExecutionFileScope, access: FileAccess, query: FileQuery = this.pool) {
     const execution = await this.jobs.execution(query,target.workspaceId,target.jobExecutionId)
     const current = await readLiveManagementPrincipal(query,principal.id)
-    if (access === 'read') requireAuthorization(current,'job_artifacts:read',{workspaceId:execution.workspaceId})
+    if (access === 'read') {
+      const scope = await this.jobs.executionScope(query, execution.workspaceId, execution.id)
+      requireAuthorization(current, 'job_artifacts:read', { ...scope, workspaceId: execution.workspaceId })
+    }
     else {
       const accepted = (await query.query<{accepted_by:string}>('select accepted_by from job_executions where id=$1 and workspace_id=$2',[execution.id,execution.workspaceId])).rows[0]
       if (accepted?.accepted_by !== current.id) throw new DomainError('JOB_ARTIFACT_OWNER_DENIED','Only the accepted main authority can publish this output.',403)

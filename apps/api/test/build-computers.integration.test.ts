@@ -17,7 +17,7 @@ import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { buildComputerFixture, buildQueueConfigurationFixture } from './helpers/buildComputerFixture.js'
 import { JobAdmissionResultSchema } from '@foreman-code/contracts/job-admission'
-import { BuildComputerBatchResultSchema } from '@foreman-code/contracts/build-computers'
+import { BuildComputerBatchResultSchema, BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
 import { JobDefinitionSchema, JobExecutionSchema, type JobDefinition, type ResolvedJobDefinitionSpec } from '@foreman-code/contracts/jobs'
 
 // Real settings/command/admission SQL and authenticated transports; runtime/source I/O is a bounded fixture.
@@ -121,18 +121,19 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     }
     return { workspaceId, computers, settings, inventory, placement, jobs, accept, app, connect, enroll, save }
   }
-  it('persists settings through HTTP/MCP, replays one command, conflicts stale writes and denies read-only/scoped callers', async () => {
+  it('persists settings through authenticated MCP, replays one command, conflicts stale writes and denies read-only/scoped callers', async () => {
     const f = await fixture()
     const target = f.computers[0]!.target
     const input = { target, commandId: randomUUID(), expectedRevision: 0, buildEnabled: true, buildPriority: 100 }
-    const response = await f.app.inject({ method: 'POST', url: '/api/management/settings/build-computers/update',
-      headers: { authorization: `Bearer ${writer.token}` }, payload: input })
-    expect(response.statusCode).toBe(200)
     const client = await f.connect(writer.token)
-    expect((await client.callTool({ name: 'build_computer_update', arguments: input })).structuredContent).toEqual(response.json())
-    expect((await client.callTool({ name: 'build_computer_get', arguments: { target } })).structuredContent).toEqual(response.json())
+    const response = await client.callTool({ name: 'build_computer_update', arguments: input })
+    expect(response.isError).not.toBe(true)
+    const replay = await client.callTool({ name: 'build_computer_update', arguments: input })
+    expect(replay.structuredContent).toEqual(response.structuredContent)
+    const readback = await client.callTool({ name: 'build_computer_get', arguments: { target } })
+    expect(readback.structuredContent).toEqual(response.structuredContent)
     const restarted = new BuildComputerSettings(database.pool, commands, async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
-    expect(await restarted.read(writer.principal, { target })).toEqual(response.json())
+    expect(await restarted.read(writer.principal, { target })).toEqual(response.structuredContent)
     const stale = await client.callTool({ name: 'build_computer_update', arguments: { ...input, commandId: randomUUID() } })
     expect(stale.isError).toBe(true)
     expect(JSON.stringify(stale.content)).toContain('REVISION_CONFLICT')
@@ -142,18 +143,21 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     const scoped = await access.issue({ name: 'Scoped settings', audience: 'operator',
       expiresAt: new Date(Date.now() + 300000), grants: [{ actions: ['settings:update'], scope: { workspaceIds: [f.workspaceId] } }] })
-    await expect(f.settings.update(scoped.principal, 'mcp', { ...input, commandId: randomUUID(), expectedRevision: 1 }))
-      .rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+    const scopedClient = await f.connect(scoped.token)
+    const scopedWrite = await scopedClient.callTool({ name: 'build_computer_update',
+      arguments: { ...input, commandId: randomUUID(), expectedRevision: 1 } })
+    expect(scopedWrite.isError).toBe(true)
+    expect(JSON.stringify(scopedWrite.content)).toContain('ACCESS_DENIED')
     const audit = await database.pool.query("select outcome from management_audit where action='build.computer.update' and principal_id=$1", [writer.principal.id])
     expect(audit.rows.map(row => row.outcome)).toContain('succeeded')
   })
-  it('atomically saves all build roles and priorities over authenticated MCP with denied writes and persisted readback', async () => {
+  it('atomically saves all build priorities over authenticated MCP with denied writes and persisted readback', async () => {
     const f = await fixture()
     const client = await f.connect(writer.token)
     const readOnly = await f.connect(reader.token)
     const command = { commandId: randomUUID(), updates: f.computers.map((computer, index) => ({
       target: computer.target, expectedRevision: 0, buildEnabled: true, buildPriority: index * 50,
-      buildRole: index === 0 ? 'backup' : 'primary', buildAllowancePercent: 60,
+      buildAllowancePercent: 60,
     })) }
     const saved = BuildComputerBatchResultSchema.parse((await client.callTool({
       name: 'build_computers_update', arguments: command,
@@ -206,7 +210,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     const client = await f.connect(writer.token)
     const rejected = await client.callTool({ name: 'build_computers_update', arguments: {
       commandId: randomUUID(), updates: f.computers.map(computer => ({ target: computer.target,
-        expectedRevision: 0, buildEnabled: true, buildPriority: 100, buildRole: 'backup' })),
+        expectedRevision: 0, buildEnabled: true, buildPriority: 100 })),
     } })
     expect(rejected.isError).toBe(true)
     expect(JSON.stringify(rejected.content)).toContain('REVISION_CONFLICT')
@@ -245,7 +249,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
       await saving
     }
   })
-  it('edits build participation without login while preserving read-only MCP permissions', async () => {
+  it('edits build participation through MCP while retaining local HTTP reads', async () => {
     const f = await fixture()
     const target = f.computers[0]!.target
     const read = await f.app.inject({ method: 'POST', url: '/api/management/settings/build-computers/read',
@@ -253,21 +257,22 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(read.statusCode, read.body).toBe(200)
     const input = { target, commandId: randomUUID(), expectedRevision: read.json().preference.revision,
       buildEnabled: true, buildPriority: 45 }
-    const saved = await f.app.inject({ method: 'POST', url: '/api/management/settings/build-computers/update',
-      payload: input })
-    expect(saved.statusCode, saved.body).toBe(200)
-    expect(saved.json().preference).toMatchObject({ target, buildEnabled: true, buildPriority: 45 })
+    const writerClient = await f.connect(writer.token)
+    const saved = await writerClient.callTool({ name: 'build_computer_update', arguments: input })
+    expect(saved.isError).not.toBe(true)
+    const status = BuildComputerStatusSchema.parse(saved.structuredContent)
+    expect(status.preference).toMatchObject({ target, buildEnabled: true, buildPriority: 45 })
     const client = await f.connect(reader.token)
     expect((await client.callTool({ name: 'build_computer_get', arguments: { target } })).structuredContent)
-      .toEqual(saved.json())
+      .toEqual(status)
     const denied = await client.callTool({ name: 'build_computer_update',
-      arguments: { ...input, commandId: randomUUID(), expectedRevision: saved.json().preference.revision } })
+      arguments: { ...input, commandId: randomUUID(), expectedRevision: status.preference.revision } })
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     const persisted = await f.app.inject({ method: 'POST', url: '/api/management/settings/build-computers/read',
       payload: { target } })
     expect(persisted.statusCode, persisted.body).toBe(200)
-    expect(persisted.json()).toEqual(saved.json())
+    expect(persisted.json()).toEqual(status)
   })
   it('saves Auto offline, chooses by enrollment and priority at Start and preserves accepted facts across edits and retries', async () => {
     const f = await fixture()

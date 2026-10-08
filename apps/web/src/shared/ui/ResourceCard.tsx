@@ -1,5 +1,6 @@
-import { cloneElement, useId, type ComponentProps, type HTMLAttributes, type ReactElement, type ReactNode } from 'react'
+import { cloneElement, useId, useRef, type ComponentProps, type HTMLAttributes, type ReactElement, type ReactNode } from 'react'
 import { Card, Checkbox, Icon, IconButton, cx, type ButtonProps, type IconName } from './nocturne'
+import { useDismissableSurface } from './useDismissableSurface'
 import './resourceCard.css'
 
 interface ResourceCardProps extends HTMLAttributes<HTMLDivElement> {
@@ -28,6 +29,31 @@ export function ResourceCard({ name, icon, open, actions, selection, protection,
       title={protection.reason ?? protection.label}><Icon name="lock" size={14} /></span> : null}
     {children}
   </Card>
+}
+
+/**
+ * The one actions affordance for directory cards: a three-dots trigger and its dismissable surface.
+ * Callers own the surface content, commands, locks and when closing is allowed.
+ */
+export function ResourceActionsMenu({ name, open, onOpenChange, disabled, className, children }: {
+  name: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  disabled?: boolean
+  className?: string
+  children: ReactNode
+}) {
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  useDismissableSurface({ open, onDismiss: () => onOpenChange(false), surfaceRef, triggerRef })
+  // Card shells may be draggable or clickable; presses inside the menu belong to the menu.
+  return <div className={cx('resource-actions-menu', className)} onPointerDown={(event) => event.stopPropagation()}>
+    <IconButton ref={triggerRef} label={`Open actions for ${name}`} variant="ghost" size="sm" disabled={disabled}
+      aria-haspopup="dialog" aria-expanded={open} onClick={() => onOpenChange(!open)}>
+      <Icon name="more" size={16} />
+    </IconButton>
+    {open ? <div ref={surfaceRef} className="resource-card-menu" role="dialog" aria-label={`${name} actions`}>{children}</div> : null}
+  </div>
 }
 
 export function TrashIconButton({ target, action = 'Delete', disabledReason, className, ...props }:

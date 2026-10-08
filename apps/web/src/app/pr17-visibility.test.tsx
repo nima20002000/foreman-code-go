@@ -12,6 +12,8 @@ vi.mock('@tanstack/react-router', () => ({ Outlet: () => null, useLocation: () =
 vi.mock('./AppConnectionBoundary', () => ({ AppConnectionBoundary: ({ children }: { children: ReactNode }) => children }))
 vi.mock('../shared/ui/AppNavigationHistory', () => ({ AppNavigationHistoryProvider: ({ children }: { children: ReactNode }) => children }))
 vi.mock('../shared/api/query', () => ({ useAgentDefaultsQuery: () => defaults }))
+// Theme sync reads shared settings; it is unrelated to Operator visibility.
+vi.mock('../features/theme/useSyncedTheme', () => ({ useSyncedTheme: () => undefined }))
 vi.mock('../features/operator-chat', () => ({
   OperatorChatVisibilityProvider: ({ enabled, children }: { enabled: boolean; children: ReactNode }) => enabled ? children : null,
   OperatorChat: ({ settingsWarning }: { settingsWarning?: string }) => <div><button>Operator available</button>{settingsWarning ? <p role="status">{settingsWarning}</p> : null}</div>,

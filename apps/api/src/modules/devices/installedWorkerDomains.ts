@@ -46,6 +46,8 @@ import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '
 import { InstalledWorkflowRecovery } from '../runs/remote/installedWorkflowRecovery.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
+import { COMPUTER_MAINTENANCE_NAMESPACE, MaintenanceReplySchema, MaintenanceRequestSchema } from '@foreman-code/contracts/computer-maintenance'
+import { ComputerMaintenance, systemMaintenancePorts } from '../computers/maintenance.js'
 import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccountsRequestSchema, GitHubLoginRequestSchema } from '@foreman-code/contracts/computer-accounts'
 import { createComputerSyncExtension } from '../computers/syncExtension.js'
 import { SyncthingComputer } from '../computers/syncthingComputer.js'
@@ -349,6 +351,23 @@ export async function createInstalledWorkerDomains(input: {
         ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
       return { payload: await probeComputerAccounts(systemPorts(process.env, binaries),
         AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(20_000)])) }
+    },
+  })
+  // One maintenance owner per worker process keeps task history across requests.
+  let maintenance: Promise<ComputerMaintenance> | undefined
+  extensions.push({ namespace: COMPUTER_MAINTENANCE_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+    async handle(payload, context) {
+      const request = MaintenanceRequestSchema.parse(payload)
+      if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
+        throw new DomainError('COMPUTER_MAINTENANCE_STALE', 'Computer maintenance requires the actual authenticated worker channel.', 409)
+      }
+      maintenance ??= readInstalledWorkflowConfiguration(input.configuration).catch(() => null).then(selected => new ComputerMaintenance(
+        systemMaintenancePorts(process.env, { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
+          ...(selected?.claude ? { claude: selected.claude.binary } : {}) })))
+      const owner = await maintenance
+      return { payload: MaintenanceReplySchema.parse(request.operation === 'status'
+        ? { operation: 'status', status: await owner.status(AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(90_000)])) }
+        : { operation: 'start', task: owner.start(request.task) }) }
     },
   })
   extensions.push({ namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,

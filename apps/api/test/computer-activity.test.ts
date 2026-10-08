@@ -50,7 +50,7 @@ async function fixture(options: { githubSetupFails?: boolean; githubLocal?: Pick
   phase: 'ready', dispatch: true, transfer: true, appVersion: '1', protocolVersion: 1,
   lastSeenAt: '2026-10-06T00:00:00Z' }
   let preference = { target, revision: '0', build_enabled: false, build_priority: 50,
-    build_role: 'primary', build_allowance_percent: 100 }
+    build_allowance_percent: 100 }
   const receipts = new Map<string, { input_hash: unknown; target_key: unknown; result: unknown }>()
   const principals = new Map([owner, denied, scoped, settingsReader].map(principal => [principal.id, principal]))
   const query = vi.fn(async (text: string, values: unknown[] = []) => {
@@ -63,7 +63,7 @@ async function fixture(options: { githubSetupFails?: boolean; githubLocal?: Pick
     if (text.includes('from build_computer_preferences')) return { rows: [preference] }
     if (text.includes('insert into build_computer_preferences')) {
       preference = { target: JSON.parse(String(values[1])), revision: String(values[2]), build_enabled: Boolean(values[3]),
-        build_priority: Number(values[4]), build_role: String(values[5]), build_allowance_percent: Number(values[6]) }
+        build_priority: Number(values[4]), build_allowance_percent: Number(values[5]) }
     }
     if (text.includes('from management_command_receipts')) {
       const receipt = receipts.get(values.slice(0, 3).join(':'))
@@ -201,16 +201,17 @@ it('bounds activity and separates missing presence from retained execution facts
   } finally { await f.close() }
 })
 
-it('supports revisioned build role, allowance and priority edits through authenticated MCP with denied writes', async () => {
+it('supports revisioned build allowance and priority edits through authenticated MCP with denied writes', async () => {
   const f = await fixture()
   try {
     const client = await f.connect('owner')
     const input = { target, commandId: 'build-preferences', expectedRevision: 0, buildEnabled: true,
-      buildPriority: 100, buildRole: 'backup', buildAllowancePercent: 60 }
+      buildPriority: 100, buildAllowancePercent: 60 }
     const save = await client.callTool({ name: 'build_computer_update', arguments: input })
     expect(save.isError).not.toBe(true)
     const saved = BuildComputerStatusSchema.parse(save.structuredContent)
-    expect(saved.preference).toMatchObject({ revision: 1, buildRole: 'backup', buildPriority: 100, buildAllowancePercent: 60 })
+    expect(saved.preference).toMatchObject({ revision: 1, buildPriority: 100, buildAllowancePercent: 60 })
+    expect(saved.preference).not.toHaveProperty('buildRole')
     const replay = await client.callTool({ name: 'build_computer_update', arguments: input })
     expect(BuildComputerStatusSchema.parse(replay.structuredContent)).toEqual(saved)
     const read = await client.callTool({ name: 'build_computer_get', arguments: { target } })
@@ -262,9 +263,8 @@ it('starts, follows and ends GitHub sign-in on Main and a paired computer, denyi
     const done = GitHubLoginStateSchema.parse((await client.callTool({ name: 'computer_github_login_status',
       arguments: { target, loginId: started.loginId } })).structuredContent)
     expect(done).toMatchObject({ state: 'signed-in', account: 'octo-owner' })
-    const http = await f.app.inject({ method: 'POST', url: '/api/management/computers/github/logout',
-      headers: { authorization: 'Bearer owner' }, payload: { target } })
-    expect(GitHubLoginStateSchema.parse(http.json()).state).toBe('signed-out')
+    const logout = await client.callTool({ name: 'computer_github_logout', arguments: { target } })
+    expect(GitHubLoginStateSchema.parse(logout.structuredContent).state).toBe('signed-out')
     expect(f.githubCalls.map(call => [call.where, call.request.operation])).toEqual([
       ['main', 'login-start'], ['device', 'login-status'], ['device', 'logout']])
     const stale = await client.callTool({ name: 'computer_github_login_start',
@@ -273,12 +273,11 @@ it('starts, follows and ends GitHub sign-in on Main and a paired computer, denyi
     const reader = await f.connect('settings-reader')
     expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_github_login_start')
     expect((await reader.callTool({ name: 'computer_github_login_start', arguments: { target } })).isError).toBe(true)
-    expect((await f.app.inject({ method: 'POST', url: '/api/management/computers/github/login',
-      headers: { authorization: 'Bearer settings-reader' }, payload: { target } })).statusCode).toBe(403)
     expect(f.githubCalls).toHaveLength(3)
     expect(f.audited.mock.calls.map(call => [call[2], call[4]])).toEqual([
       ['computer_github_login_start', 'succeeded'], ['computer_github_logout', 'succeeded']])
-    expect(f.audit).toHaveBeenCalledWith('settings-reader', 'http', 'computer_github_login_start', `device:${deviceId}`)
+    expect(f.audit).toHaveBeenCalledWith('settings-reader', 'mcp', 'computer_github_login_start',
+      'mcp:computer_github_login_start')
   } finally { await f.close() }
 })
 

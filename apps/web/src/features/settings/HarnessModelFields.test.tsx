@@ -4,11 +4,9 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type HarnessConfiguration } from '@foreman-code/contracts'
 import { HarnessBasicFields } from './HarnessBasicFields'
-import { HostHarnessConfigurationFields } from './HostHarnessConfigurationFields'
-import { createHarnessEditor } from './harnessEditor'
 
 vi.mock('../../shared/api/harnessSettings', () => ({
-  useNativeHarnessOptions: (harness: 'codex') => ({ data: { models: [
+  useNativeHarnessOptions: (harness: 'codex' | 'claude') => ({ data: { models: [
     { id: DEFAULT_HARNESS_DEFAULTS[harness].model, name: 'Current native model', reasoningEfforts: ['medium', 'high'], variants: [''], serviceTiers: ['standard', 'priority'] },
     { id: 'long-model', name: 'A long native model label that remains searchable and selectable', reasoningEfforts: ['medium'], variants: ['balanced'], serviceTiers: ['standard'] },
   ], nativeAgents: ['build', 'plan'] }, isSuccess: true, isPending: false, isError: false, error: null }),
@@ -57,21 +55,4 @@ it('allows an unavailable saved priority setting to be corrected through the com
   expect(fast).not.toBeChecked()
   expect(fast).toBeDisabled()
   expect(screen.queryByText('Not offered by this model. Turn Fast mode off.')).not.toBeInTheDocument()
-})
-
-it('updates the existing Codex host configuration from its compact switch', async () => {
-  const onChange = vi.fn()
-  const user = userEvent.setup()
-  const configuration = { ...DEFAULT_HARNESS_DEFAULTS.codex, serviceTier: 'standard' as const }
-  render(<HostHarnessConfigurationFields editor={createHarnessEditor(configuration)} onChange={onChange} />)
-  await user.click(screen.getByRole('switch', { name: 'Fast mode' }))
-  expect(onChange.mock.calls[0]![0].configuration).toEqual({ ...configuration, serviceTier: 'priority' })
-})
-
-it('associates host service tier validation with the Fast mode switch', () => {
-  render(<HostHarnessConfigurationFields editor={createHarnessEditor(DEFAULT_HARNESS_DEFAULTS.codex)} onChange={vi.fn()}
-    issues={[{ path: ['serviceTier'], message: 'Choose a supported service tier.' }]} />)
-  const fast = screen.getByRole('switch', { name: 'Fast mode' })
-  expect(fast).toHaveAttribute('aria-invalid', 'true')
-  expect(fast).toHaveAccessibleDescription('Choose a supported service tier.')
 })

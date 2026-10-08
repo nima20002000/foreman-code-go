@@ -1,8 +1,9 @@
 import { useSyncExternalStore } from 'react'
+import type { Theme } from '@foreman-code/contracts/management'
 
 export const THEME_STORAGE_KEY = 'graphql-theme'
 
-export type Theme = 'dark' | 'light'
+export type { Theme } from '@foreman-code/contracts/management'
 
 const DEFAULT_THEME: Theme = 'dark'
 const THEME_CLASSES: readonly string[] = ['theme-dark', 'theme-light']
@@ -85,10 +86,6 @@ export function setTheme(theme: Theme) {
   currentTheme = theme
   applyTheme(theme, true)
   listeners.forEach((listener) => listener())
-}
-
-export function toggleTheme() {
-  setTheme(currentTheme === 'dark' ? 'light' : 'dark')
 }
 
 function subscribe(listener: ThemeListener) {

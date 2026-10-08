@@ -13,6 +13,7 @@ import {
 } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { WorkspaceDefaultsSchema, DEFAULT_WORKSPACE_DEFAULTS, type WorkspaceDefaults } from '@foreman-code/contracts/management'
+import { GeneralSettingsSchema, DEFAULT_GENERAL_SETTINGS, type GeneralSettings } from '@foreman-code/contracts/management'
 
 import { inTransaction } from '../../infrastructure/transaction.js'
 
@@ -29,6 +30,14 @@ export interface VersionedSetting<T> { value: T; versionId: string | null; revis
 /** Versioned application defaults. Callers copy values; stored versions never mutate consumers. */
 export class PostgresFoundationSettingsRepository {
   constructor(private readonly pool: pg.Pool, private readonly projectRoot?: string) {}
+
+  getGeneralSettings(client?: pg.ClientBase): Promise<VersionedSetting<GeneralSettings>> {
+    return this.read('general-settings', GeneralSettingsSchema, DEFAULT_GENERAL_SETTINGS, client)
+  }
+
+  updateGeneralSettings(value: GeneralSettings, expectedRevision: number, client: pg.ClientBase) {
+    return this.write('general-settings', GeneralSettingsSchema.parse(value), expectedRevision, client)
+  }
 
   getAgentDefaults(client?: pg.ClientBase): Promise<VersionedSetting<AgentDefaults>> {
     return this.read(KEYS.agents, AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, client).then((snapshot) => ({

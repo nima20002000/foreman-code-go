@@ -28,8 +28,6 @@ import { registerMcpDetectionRoute } from './routes/mcpDetection.js'
 import { registerProductRoutes, type ProductServices } from './routes/product.js'
 import { registerAgentChatRoutes } from './routes/agentChat.js'
 import { registerWorkflowScheduleRoutes } from './routes/workflowSchedules.js'
-import { registerHarnessCompatibilityRoutes } from './routes/harnessCompatibility.js'
-import type { HarnessCompatibilityService } from './modules/harnesses/compatibility/service.js'
 
 export interface ReadinessDependencies {
   database: { ping(signal?: AbortSignal): Promise<void> }
@@ -40,7 +38,6 @@ export interface BuildAppOptions {
   runtimeIdentity?: () => Promise<RuntimeIdentity>
   localHuman?: LocalHumanAccess
   browserOrigin?: string
-  harnessCompatibility?: HarnessCompatibilityService
   readiness: ReadinessDependencies
   readinessTimeoutMs?: number
   product?: ProductServices
@@ -173,7 +170,6 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator?.services.workflows?.schedules) registerWorkflowScheduleRoutes(app, options.operator.services.workflows.schedules)
   if (options.operator?.services.runGraph) registerRunGraphRoutes(app, options.operator.services.runGraph,
     (principalId, code, route) => options.operator!.services.commands.recordDenied(principalId, 'http', code, route))
-  if (options.operator && options.harnessCompatibility) registerHarnessCompatibilityRoutes(app, options.harnessCompatibility)
   if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
   if (options.operator?.services.agentChat) registerAgentChatRoutes(app, options.operator.services.agentChat)
   if (options.operator && options.product?.interactions) registerUserInteractions(app, options.product.interactions)

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useStore } from 'zustand'
 import { createResourceSelection } from '../../shared/ui/resourceSelection'
@@ -15,9 +15,8 @@ import {
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { ApiError, apiClient } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
-import { ActionMenu, Alert, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
-import { ResourceCard } from '../../shared/ui/ResourceCard'
-import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
+import { ActionMenu, Alert, Button, Dialog, EmptyState, ErrorState, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
+import { ResourceActionsMenu, ResourceCard } from '../../shared/ui/ResourceCard'
 import '../../shared/ui/resourceDirectory.css'
 import { WorkspaceStorageFolderCard } from './WorkspaceStorageFolderCards'
 import { folderSelectionId, type WorkspaceSelectionTarget } from './workspaceSelection'
@@ -39,16 +38,13 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, disabled, onCom
   const inFlight = useRef(false)
   const attempt = useRef(new CommandAttempt<CardCommand>())
   const lastCommand = useRef<CardCommand | undefined>(undefined)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const surfaceRef = useRef<HTMLDivElement>(null)
-  const close = useCallback(() => {
+  const close = () => {
     if (!inFlight.current && !attempt.current.unresolved) setOpen(false)
-  }, [])
+  }
   useEffect(() => {
     // A refetch while the menu is open cannot attach a new revision to an old form.
     if (!open) { setNextName(name); setBaseRevision(revision) }
   }, [name, open, revision])
-  useDismissableSurface({ open, onDismiss: close, surfaceRef, triggerRef })
 
   const submit = async (type: CardCommand['type']) => {
     if (inFlight.current) return
@@ -73,29 +69,25 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, disabled, onCom
   }
   const uncertain = attempt.current.unresolved && !pending
   return (
-    <div>
-      <IconButton ref={triggerRef} label={`Open actions for ${name}`} variant="ghost" disabled={disabled}
-        aria-haspopup="dialog" aria-expanded={open}
-        onClick={() => { if (open) close(); else { setNextName(name); setBaseRevision(revision); setError(undefined); setConfirmingRemove(false); setOpen(true) } }}>
-        <Icon name="more" size={16} />
-      </IconButton>
-      {open ? <div ref={surfaceRef} className="resource-card-menu" role="dialog" aria-label={`${name} actions`}>
-        <TextField label="Name" disabled={pending || uncertain} value={nextName} onChange={(event) => setNextName(event.target.value)} />
-        {error ? <Alert live tone="danger" title={error} /> : null}
-        {uncertain ? <>
-          <Alert live tone="warning" title="The previous request may have succeeded.">Retry it before making another change.</Alert>
-          <Button onClick={() => void submit(lastCommand.current?.type ?? 'rename')}>Retry previous request</Button>
-        </> : confirmingRemove ? <>
-          <Alert tone="warning" title="Remove this workspace?">App-created project folders and their contents will be deleted. Existing folders you selected are kept. Workflow and run history is retained.</Alert>
-          <Button variant="danger" disabled={pending} onClick={() => void submit('archive')}>Confirm removal</Button>
-          <Button disabled={pending} onClick={() => setConfirmingRemove(false)}>Cancel</Button>
-        </> : <>
-          <Button disabled={pending} onClick={() => void submit('rename')}>Rename</Button>
-          <Button variant="danger" disabled={pending} onClick={() => setConfirmingRemove(true)}>Remove workspace</Button>
-          <Button variant="ghost" disabled={pending} onClick={close}>Close</Button>
-        </>}
-      </div> : null}
-    </div>
+    <ResourceActionsMenu name={name} disabled={disabled} open={open} onOpenChange={(next) => {
+      if (!next) close()
+      else { setNextName(name); setBaseRevision(revision); setError(undefined); setConfirmingRemove(false); setOpen(true) }
+    }}>
+      <TextField label="Name" disabled={pending || uncertain} value={nextName} onChange={(event) => setNextName(event.target.value)} />
+      {error ? <Alert live tone="danger" title={error} /> : null}
+      {uncertain ? <>
+        <Alert live tone="warning" title="The previous request may have succeeded.">Retry it before making another change.</Alert>
+        <Button onClick={() => void submit(lastCommand.current?.type ?? 'rename')}>Retry previous request</Button>
+      </> : confirmingRemove ? <>
+        <Alert tone="warning" title="Remove this workspace?">App-created project folders and their contents will be deleted. Existing folders you selected are kept. Workflow and run history is retained.</Alert>
+        <Button variant="danger" disabled={pending} onClick={() => void submit('archive')}>Confirm removal</Button>
+        <Button disabled={pending} onClick={() => setConfirmingRemove(false)}>Cancel</Button>
+      </> : <>
+        <Button disabled={pending} onClick={() => void submit('rename')}>Rename</Button>
+        <Button variant="danger" disabled={pending} onClick={() => setConfirmingRemove(true)}>Remove workspace</Button>
+        <Button variant="ghost" disabled={pending} onClick={close}>Close</Button>
+      </>}
+    </ResourceActionsMenu>
   )
 }
 

@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Added
 
 - Syncthing shared folders per workspace and computer, synchronized over Tailscale with Main as hub, automatic pairing, simple file versioning, Computers status and Operator MCP controls.
+- General settings shows per-computer workspace file sync; the theme preference is saved on Main and shared by connected browsers, with Operator MCP read and update support.
 
 ### Removed
 

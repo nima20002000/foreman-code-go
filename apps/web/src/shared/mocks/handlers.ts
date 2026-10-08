@@ -3,12 +3,13 @@ import { createCurrentBoardMock } from './currentBoard'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures, getMockWorkspaceCreationDefaults } from './settingsExperienceHandlers'
 import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
-import { ApiErrorResponseSchema, SessionControlStateSchema, unavailableSessionControls, CreateMessageRequestSchema,
-  SaveHarnessDefaultsRequestSchema, type HarnessQualificationListSchema } from '@foreman-code/contracts'
-import type { z } from 'zod'
+import { ApiErrorResponseSchema, SessionControlStateSchema, unavailableSessionControls,
+  SaveHarnessDefaultsRequestSchema } from '@foreman-code/contracts'
 import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@foreman-code/contracts/wave25'
 import {
   AgentDefaultsUpdateInputSchema,
+  GeneralSettingsUpdateInputSchema,
+  type ManagedGeneralSettings,
   HarnessConfigurationCheckInputSchema,
   HarnessDefaultsUpdateInputSchema,
   WorkflowDefaultsUpdateInputSchema,
@@ -22,21 +23,17 @@ import {
   getMockAgentDefaults,
   getMockHarnessCatalog,
   getMockHarnessDefaults,
-  getMockMessages,
   getMockScenarioRevision,
   getMockScenarioState,
   getMockWorkflowDefaults,
   resetMockFixtures as resetExistingMockFixtures,
   serializeAgent,
-  serializeConversation,
   shouldFailMutation,
   updateMockWorkflow,
   updateMockAgentDefaults,
   updateMockHarnessDefaults,
   updateMockManagedHarnessDefaults,
   updateMockWorkflowDefaults,
-  appendMockMessage,
-  type MockFailureMode,
 } from './scenarios'
 
 const currentAuthoringMocks = new Map<string, ReturnType<typeof createCurrentBoardMock>>()
@@ -45,6 +42,7 @@ const managedWorkspaceDescriptions = new Map<string, string | undefined>()
 const managedWorkspaceArchives = new Set<string>()
 const managedWorkspaces = new Map<string, ManagedWorkspace>()
 let managedScenarioRevision = getMockScenarioRevision()
+let generalSettings: ManagedGeneralSettings = { value: { theme: 'dark' }, revision: 0, versionId: null }
 
 function syncManagedFixtures() {
   const revision = getMockScenarioRevision()
@@ -58,6 +56,7 @@ function syncManagedFixtures() {
 }
 
 export function resetTestFixtures() {
+  generalSettings = { value: { theme: 'dark' }, revision: 0, versionId: null }
   resetAgentChatFixtures()
   resetExistingMockFixtures()
   resetSettingsExperienceFixtures()
@@ -100,20 +99,7 @@ function fixtureNotFound(kind: string, id: string) {
 }
 
 const operatorConversations: Array<Record<string, unknown>> = []
-const mockQualification = (harness: 'codex'): z.infer<typeof HarnessQualificationListSchema>['qualifications'][number] => ({
-  harness, version: 'mock', binarySha256: null, status: 'unqualified', profile: null,
-  suiteRevision: 'mock', checks: [], failureReason: null, startedAt: null, checkedAt: null,
-})
 const operatorMessages = new Map<string, Array<Record<string, unknown>>>()
-
-function isFailureMode(value: string | null): value is MockFailureMode {
-  return value === 'none' || value === 'graph-save' || value === 'user-message' || value === 'all'
-}
-
-function explicitFailureMode(request: Request): string | null {
-  const value = request.headers.get('x-mock-fail-mode') ?? new URL(request.url).searchParams.get('fail')
-  return isFailureMode(value) ? value : null
-}
 
 async function readJson(request: Request): Promise<unknown> {
   try {
@@ -237,6 +223,8 @@ export const handlers: RequestHandler[] = [
     sessionControlsResponse(String(params.conversationId))),
   http.get('/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/session-controls', ({ params }) =>
     sessionControlsResponse(String(params.conversationId))),
+  http.get('*/api/management/computers/maintenance', () => HttpResponse.json({ computers: [] })),
+  http.post('*/api/management/computers/maintenance/start', () => HttpResponse.json({ computers: [] })),
   http.get('*/api/management/computers/activity', () => HttpResponse.json({
     mainId: '11111111-1111-4111-8111-111111111111', computers: [], truncated: false, activityComplete: true,
   })),
@@ -287,14 +275,6 @@ export const handlers: RequestHandler[] = [
   http.get('/api/management/interactions', () => HttpResponse.json({
     items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
   })),
-  http.get('/api/management/harnesses/qualifications', () => HttpResponse.json({
-    qualifications: [mockQualification('codex')],
-  })),
-  http.post('/api/management/harnesses/:harness/qualification', ({ params }) => {
-    const harness = String(params.harness)
-    if (harness !== 'codex') return fixtureNotFound('harness', harness)
-    return HttpResponse.json({ ...mockQualification(harness), status: 'qualifying', startedAt: new Date().toISOString() }, { status: 202 })
-  }),
   http.get('/api/management/harnesses/:harness/execution-readiness', ({ params, request }) => HttpResponse.json({
     harness: params.harness, scope: new URL(request.url).searchParams.get('scope') ?? 'saved-harness-defaults',
     ...(new URL(request.url).searchParams.has('configurationVersionId') ? { configurationVersionId: new URL(request.url).searchParams.get('configurationVersionId') } : {}),
@@ -314,7 +294,7 @@ export const handlers: RequestHandler[] = [
         { id: 'gpt-5.6-terra', name: 'gpt-5.6-terra', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], variants: [], serviceTiers: ['standard', 'priority'] },
         { id: 'gpt-5.6-sol', name: 'gpt-5.6-sol', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], variants: [], serviceTiers: ['standard', 'priority'] },
         { id: 'gpt-6-astra', name: 'gpt-6-astra', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], variants: [], serviceTiers: ['standard', 'priority'] },
-      ] : [{ id: 'claude-sonnet', name: 'Claude Sonnet', reasoningEfforts: ['low', 'medium', 'high', 'max'], variants: [], serviceTiers: [] }],
+      ] : [{ id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', reasoningEfforts: [], variants: [], serviceTiers: [] }],
       nativeAgents: [], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
     })
   }),
@@ -356,6 +336,15 @@ export const handlers: RequestHandler[] = [
       : apiError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409, { currentRevision: getMockHarnessCatalog()[0]?.defaultsRevision ?? 0 })
   }),
   http.get('/api/management/settings/agents', () => HttpResponse.json(getMockAgentDefaults())),
+  http.get('/api/management/settings/general', () => HttpResponse.json(generalSettings)),
+  http.put('/api/management/settings/general', async ({ request }) => {
+    const input = GeneralSettingsUpdateInputSchema.parse(await request.json())
+    if (input.expectedRevision !== generalSettings.revision) {
+      return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'General settings changed.' } }, { status: 409 })
+    }
+    generalSettings = { value: input.value, revision: generalSettings.revision + 1, versionId: crypto.randomUUID() }
+    return HttpResponse.json({ value: generalSettings, replayed: false })
+  }),
   http.put('/api/management/settings/agents', async ({ request }) => {
     const parsed = AgentDefaultsUpdateInputSchema.safeParse(await readJson(request))
     if (!parsed.success) return apiError('INVALID_AGENT_DEFAULTS', 'Review the Agent defaults.', 400)
@@ -570,17 +559,6 @@ export const handlers: RequestHandler[] = [
     if (!fixture) return fixtureNotFound('workspace', workspaceId)
     return HttpResponse.json({ agents: (currentAuthoringMocks.get(workspaceId)?.agents ?? fixture.agents).map(serializeAgent) })
   }),
-  http.get('/api/workspaces/:workspaceId/agents/:agentId', ({ params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const workspaceId = String(params.workspaceId)
-    const fixture = getMockFixture(workspaceId)
-    if (!fixture) return fixtureNotFound('workspace', workspaceId)
-    const agent = (currentAuthoringMocks.get(workspaceId)?.agents ?? fixture.agents).find((item) => item.id === String(params.agentId))
-    return agent
-      ? HttpResponse.json({ agent: serializeAgent(agent) })
-      : fixtureNotFound('agent', String(params.agentId))
-  }),
   http.get('/api/workspaces/:workspaceId/workflows/:workflowId', ({ params }) => {
     const failure = readFailure()
     if (failure) return failure
@@ -594,63 +572,6 @@ export const handlers: RequestHandler[] = [
     apiError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Use the current V3 draft/save service.', 409)),
   http.put('/api/workspaces/:workspaceId/graph', () =>
     apiError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Use the current V3 draft/save service.', 409)),
-  http.get('/api/workspaces/:workspaceId/conversations', ({ params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const workspaceId = String(params.workspaceId)
-    const fixture = getMockFixture(workspaceId)
-    if (!fixture) return fixtureNotFound('workspace', workspaceId)
-    return HttpResponse.json({
-      conversations: fixture.conversations.map(serializeConversation),
-    })
-  }),
-  http.get('/api/workspaces/:workspaceId/conversations/:conversationId', ({ params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const workspaceId = String(params.workspaceId)
-    const fixture = getMockFixture(workspaceId)
-    if (!fixture) return fixtureNotFound('workspace', workspaceId)
-    const conversationId = String(params.conversationId)
-    const conversation = fixture.conversations.find((item) => item.id === conversationId)
-    return conversation
-      ? HttpResponse.json({ conversation: serializeConversation(conversation), messages: getMockMessages(conversationId) })
-      : fixtureNotFound('conversation', conversationId)
-  }),
-  http.get('/api/workspaces/:workspaceId/conversations/:conversationId/messages', ({ params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const workspaceId = String(params.workspaceId)
-    const fixture = getMockFixture(workspaceId)
-    if (!fixture) return fixtureNotFound('workspace', workspaceId)
-    const conversationId = String(params.conversationId)
-    if (!fixture.conversations.some((item) => item.id === conversationId)) return fixtureNotFound('conversation', conversationId)
-    return HttpResponse.json({ messages: getMockMessages(conversationId) })
-  }),
-  http.post('/api/workspaces/:workspaceId/conversations/:conversationId/messages', async ({ request, params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const body = await readJson(request)
-    const parsed = CreateMessageRequestSchema.safeParse(body)
-    const workspaceId = String(params.workspaceId)
-    const conversationId = String(params.conversationId)
-    const fixture = getMockFixture(workspaceId)
-    if (!fixture) return fixtureNotFound('workspace', workspaceId)
-    if (!parsed.success || parsed.data.workspaceId !== workspaceId || parsed.data.conversationId !== conversationId || parsed.data.role !== 'user') {
-      return apiError('INVALID_MESSAGE', 'Only a user message for the requested conversation can be sent.', 400)
-    }
-    if (!fixture.conversations.some((item) => item.id === conversationId)) return fixtureNotFound('conversation', conversationId)
-    if (shouldFailMutation('user-message', explicitFailureMode(request))) {
-      return apiError('MOCK_USER_MESSAGE_FAILED', 'The selected mock mode rejects user messages.', 503)
-    }
-    const message = appendMockMessage(workspaceId, {
-      conversationId,
-      role: 'user',
-      content: parsed.data.content,
-      createdAt: '2026-01-01T00:00:01.000Z',
-      updatedAt: '2026-01-01T00:00:01.000Z',
-    })
-    return HttpResponse.json({ message }, { status: 201 })
-  }),
   http.get('/api/workspaces/:workspaceId/resources', ({ params }) => {
     const failure = readFailure()
     if (failure) return failure

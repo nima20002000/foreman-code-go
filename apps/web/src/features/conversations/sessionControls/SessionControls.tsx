@@ -49,27 +49,34 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
     ? 'Saved session controls. Your next message or control will resume the session.'
     : 'Send a message to resume this session and refresh its controls.'
   const update = (preferences: SessionPreferences) => { void controls.change({ kind: 'preferences', preferences }).catch(() => undefined) }
+  const meterLabel = `${percentage === null ? 'Context unknown' : `${percentagePrefix}${percentage}% context`}${context?.stale ? ' · stale' : ''}`
+  const notes = [
+    state.desiredMode !== state.appliedMode ? <small key="mode">{state.desiredMode === 'plan' ? 'Plan mode' : 'Regular mode'} starts on the next turn.</small> : null,
+    state.nativeStatus === 'resume-required' ? <small key="resume" role="status">{recoveryMessage}</small> : null,
+    controls.mutation.isError ? <p key="error" role="alert">{controls.mutation.error?.message}</p> : null,
+  ].filter(Boolean)
   return <div className="session-controls" aria-label="Native session controls">
-    <Select label="Conversation mode" value={state.desiredMode} disabled={pending || !state.capabilities.plan.supported}
+    <Select label="Conversation mode" className="session-mode" value={state.desiredMode} disabled={pending || !state.capabilities.plan.supported}
       options={[{ value: 'regular', label: 'Regular' }, { value: 'plan', label: 'Plan' }]}
       title={state.capabilities.plan.reason ?? undefined}
       onChange={event => { void controls.change({ kind: 'mode', mode: event.target.value === 'plan' ? 'plan' : 'regular' }).catch(() => undefined) }} />
-    {state.desiredMode !== state.appliedMode ? <small>Next turn</small> : null}
-    {state.nativeStatus === 'resume-required' ? <small role="status">{recoveryMessage}</small> : null}
     <div className="session-context">
-      <Button ref={anchor} size="sm" variant="secondary" aria-expanded={open} aria-controls={`${id}-context`}
+      <Button ref={anchor} size="sm" variant="ghost" className="session-context-meter" aria-label={meterLabel} title={meterLabel}
+        aria-expanded={open} aria-controls={`${id}-context`} data-stale={context?.stale ? 'true' : undefined}
         onClick={() => setOpen(true)} onFocus={() => { if (!restoringFocus.current) setOpen(true) }} onMouseEnter={() => setOpen(true)}>
-        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" opacity=".2" strokeWidth="2" />
-          {percentage !== null ? <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2"
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" opacity=".2" strokeWidth="2.5" />
+          {percentage !== null ? <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2.5"
             strokeDasharray={`${Math.min(100, percentage) * .5655} 56.55`} transform="rotate(-90 12 12)" /> : null}
         </svg>
-        {percentage === null ? 'Context unknown' : `${percentagePrefix}${percentage}% context`}
-        {context?.stale ? ' · stale' : ''}
+        <span aria-hidden="true">{percentage === null ? '—' : `${percentage}%`}</span>
       </Button>
       {open ? <div ref={surface} popover="manual" id={`${id}-context`} className="session-context-popover" onKeyDown={event => {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() }
       }}>
+        <h3 className="session-context-title">Context</h3>
+        {percentage !== null ? <div className="session-context-bar" aria-hidden="true"><span style={{ width: `${Math.min(100, percentage)}%` }} /></div> : null}
+        <div className="session-context-facts">
         <p>{context?.usedTokens == null ? 'Current usage unknown'
           : `${usagePrefix}${context.usedTokens.toLocaleString()} tokens in context`}
           {context?.capacityTokens != null ? ` / ${context.capacityTokens.toLocaleString()} native context window` : ''}</p>
@@ -83,6 +90,7 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
         {context?.cost != null ? <p>Total cost: {context.cost}</p> : null}
         <p>Automatic compaction: {state.applied?.autoCompact ?? 'Native default'}</p>
         {state.applied?.autoCompactTokens ? <p>Automatic budget: {state.applied.autoCompactTokens.toLocaleString()}</p> : null}
+        </div>
         <details><summary>Context options for this chat</summary>
           {state.capabilities.contextBudgets.length ? <Select label="Context budget" value={String(state.desired.contextBudget ?? '')}
             options={[{ value: '', label: 'Native default' }, ...state.capabilities.contextBudgets.map(value => ({ value: String(value), label: value.toLocaleString() }))]}
@@ -112,14 +120,16 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
               }).catch(() => undefined)
           }}>Save as default for future chats</Button>
         </details>
-        <Button size="sm" disabled={pending || !!compactReason} title={compactReason ?? undefined}
-          onClick={() => { void controls.change({ kind: 'compact' }).catch(() => undefined) }}>Compact context</Button>
-        {compactReason ? <p>{compactReason}</p> : null}
-        {state.compaction ? <p role="status">{state.compaction.message}</p> : null}
-        <Button size="sm" variant="secondary" onClick={() => { void controls.query.refetch() }}>Refresh status</Button>
-        <Button size="sm" variant="secondary" onClick={close}>Close context details</Button>
+        {compactReason ? <p className="session-context-note">{compactReason}</p> : null}
+        {state.compaction ? <p className="session-context-note" role="status">{state.compaction.message}</p> : null}
+        <div className="session-context-actions">
+          <Button size="sm" disabled={pending || !!compactReason} title={compactReason ?? undefined}
+            onClick={() => { void controls.change({ kind: 'compact' }).catch(() => undefined) }}>Compact context</Button>
+          <Button size="sm" variant="ghost" onClick={() => { void controls.query.refetch() }}>Refresh status</Button>
+          <Button size="sm" variant="ghost" onClick={close}>Close context details</Button>
+        </div>
       </div> : null}
     </div>
-    {controls.mutation.isError ? <p role="alert">{controls.mutation.error?.message}</p> : null}
+    {notes.length ? <div className="session-controls-status">{notes}</div> : null}
   </div>
 }

@@ -127,11 +127,12 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
   let scope: ScopeKind = extended?.scope ?? 'resource'
+  if (name.startsWith('general_settings_')) scope = 'global'
   if (['harness_list','harness_get','harness_defaults_update','harness_qualifications_list','harness_qualification_run','harness_compatibility_list','harness_compatibility_retry','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create','operator_chat_create','operator_chat_get','operator_chat_send','operator_chat_cancel','operator_chat_respond','operator_handoff_history_get'].includes(name)) scope = 'global'
   if (['operator_chat_list', 'operator_chat_history_get', 'operator_chat_activity_get'].includes(name)) scope = 'global'
   if (['workflow_create','workspace_get','workspace_update','workspace_archive','workspace_location_validate','workspace_location_set','agent_get'].includes(name)) scope = 'workspace'
   if (name === 'execution_readiness_get' || name === 'harness_registry_get') scope = 'global'
-  if (name === 'computer_activity_list' || name === 'computer_accounts_list' || name.startsWith('computer_github_') || name === 'worker_execution_settings_get' || name.startsWith('build_computer')) scope = 'global'
+  if (name === 'computer_activity_list' || name === 'computer_accounts_list' || name.startsWith('computers_maintenance_') || name.startsWith('computer_github_') || name === 'worker_execution_settings_get' || name.startsWith('build_computer')) scope = 'global'
   if (name.startsWith('workspace_root_')) scope = 'workspace'
   if (name.startsWith('source_')) scope = 'workspace'
   if (name.startsWith('device_connection_')) scope = 'global'
@@ -141,7 +142,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name.startsWith('agent_chat_')) scope = 'resource'
   if (name.startsWith('operator_chat_controls_')) scope = 'global'
   if (name === 'operator_get_capabilities') scope = 'caller'
-  if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'codex_plugins_list', 'codex_plugin_get'].includes(name)) scope = 'global'
+  if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'harness_mcp_change_reconcile', 'codex_plugins_list', 'codex_plugin_get', 'codex_plugin_change', 'codex_plugin_reconcile'].includes(name)) scope = 'global'
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
   const result: Requirement[] = [{action:entry.action,scope}]
   if (name === 'interaction_respond') result.push({ action: 'interactions:read', scope: 'resource' })
@@ -168,7 +169,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name === 'skill_users_update') result.push({action:'skills:read',scope:'workspace'})
   if (name === 'workspace_folders_list') result.push({action:'harnesses:read',scope:'global'})
   if (['workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) result.push({action:'workspace_locations:read',scope:'global'})
-  if (['harness_mcp_change_request', 'harness_mcp_managed_request'].includes(name)) result.push({action:'harnesses:read',scope:'global'})
+  if (['harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_reconcile', 'codex_plugin_change', 'codex_plugin_reconcile'].includes(name)) result.push({action:'harnesses:read',scope:'global'})
   if (['run_start','harness_mcp_detection_get','workspace_location_provision','run_resume','run_retry'].includes(name)) result.push({action:'workspace_locations:read',scope:'workspace'})
   if (name === 'run_node_placement_get') result.push({action:'workspace_locations:read',scope:'workspace'})
   if (name === 'workspace_location_provision') result.push({action:'workspace_locations:update',scope:'workspace'})
@@ -212,6 +213,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (retiredExecutionTool(name)) return false
   if (!OPERATOR_TOOL_ACTIONS.some((entry)=>entry.name===name)) return false
   const service = context.services
+  if (name.startsWith('general_settings_') && !service.settings) return false
   if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') {
     if (!service.resourceTelemetry) return false
     return TELEMETRY_READ_ACTIONS.some(action => action === 'devices:metrics:read'
@@ -236,11 +238,12 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
     && !service.operatorChat) return false
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name) && !service.harnessSettings) return false
   if (['workspace_storage_folders_list', 'workspace_storage_folder_delete'].includes(name) && !service.workspaces?.storageFolders) return false
-  if (['harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get'].includes(name) && !service.harnessSettings) return false
-  if (['codex_plugins_list', 'codex_plugin_get'].includes(name) && !service.harnessSettings?.plugins) return false
+  if (['harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'harness_mcp_change_reconcile'].includes(name) && !service.harnessSettings) return false
+  if (['codex_plugins_list', 'codex_plugin_get', 'codex_plugin_change', 'codex_plugin_reconcile'].includes(name) && !service.harnessSettings?.plugins) return false
   if (name.startsWith('interaction_') && !service.interactions) return false
   if (name === 'computer_activity_list' && !service.computerActivity) return false
   if (name === 'computer_accounts_list' && !service.computerAccounts) return false
+  if (name.startsWith('computers_maintenance_') && !service.computerMaintenance) return false
   if (name.startsWith('computer_github_') && !service.computerGitHub) return false
   if (name.startsWith('build_computer') && !service.buildComputers) return false
   if (name === 'worker_execution_settings_get' && !service.workerExecution) return false

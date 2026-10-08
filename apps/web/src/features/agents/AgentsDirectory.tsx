@@ -1,13 +1,13 @@
 import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
-import { useCallback, useRef, useState } from 'react'
+import { useState } from 'react'
 import type { Agent } from '@foreman-code/contracts'
 import { Link } from '@tanstack/react-router'
 
 import { useWorkspaceDetailsQuery } from '../../shared/api/query'
 import {
-  Button, Card, CardHeader, EmptyState, Icon, IconButton, LoadingState, PageHeader,
+  Button, Card, CardHeader, EmptyState, Icon, LoadingState, PageHeader,
 } from '../../shared/ui/nocturne'
-import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
+import { ResourceActionsMenu } from '../../shared/ui/ResourceCard'
 import { useGraphDraftStore } from '../graph/store'
 import { nextDraftKey } from '../graph/nextDraft/state'
 import { useAgentDirectoryStore } from './agentDirectoryStore'
@@ -32,12 +32,6 @@ function AgentCard({
   blockers: readonly Pick<WorkflowDefinitionV3, 'id' | 'name'>[]
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const closeMenu = useCallback(() => {
-    setMenuOpen(false)
-  }, [])
-  useDismissableSurface({ open: menuOpen, onDismiss: closeMenu, surfaceRef: menuRef, triggerRef })
   const role = agent.role ?? 'Agent'
   const status = executionLabel(agent)
   const { ref: reorderRef, ...reorderAttributes } = reorderProps ?? {}
@@ -51,32 +45,14 @@ function AgentCard({
       <Card className="agent-directory-card">
         <CardHeader title={agent.name} description={`${role} · ${status}`} />
       </Card>
-    <IconButton
-      ref={triggerRef}
-      className="agent-directory-card-more"
-      label={`Open actions for ${agent.name}`}
-      variant="ghost"
-      size="sm"
-      aria-haspopup="dialog"
-      aria-expanded={menuOpen}
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={() => {
-        if (menuOpen) closeMenu()
-        else setMenuOpen(true)
-      }}
-    >
-      <Icon name="more" size={17} />
-    </IconButton>
-    {menuOpen ? (
-      <div ref={menuRef} className="agent-directory-card-actions" role="dialog" aria-label={`${agent.name} actions`} onPointerDown={(event) => event.stopPropagation()}>
-        <div role="note">
-          <p>Standalone agent editing is read-only in Operator mode. Open a workflow board to change this agent and Save graph.</p>
-          {blockers.map((workflow) => <Link key={workflow.id} to="/workspaces/$workspaceId"
-            params={{ workspaceId }} search={{ workflowId: workflow.id }}>{workflow.name}</Link>)}
-          <Button onClick={closeMenu}>Close</Button>
-        </div>
+    <ResourceActionsMenu name={agent.name} className="agent-directory-card-more" open={menuOpen} onOpenChange={setMenuOpen}>
+      <div role="note">
+        <p>Standalone agent editing is read-only in Operator mode. Open a workflow board to change this agent and Save graph.</p>
+        {blockers.map((workflow) => <Link key={workflow.id} to="/workspaces/$workspaceId"
+          params={{ workspaceId }} search={{ workflowId: workflow.id }}>{workflow.name}</Link>)}
       </div>
-    ) : null}
+      <Button variant="ghost" onClick={() => setMenuOpen(false)}>Close</Button>
+    </ResourceActionsMenu>
   </div>
 }
 

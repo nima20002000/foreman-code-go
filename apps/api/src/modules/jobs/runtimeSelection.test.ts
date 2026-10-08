@@ -22,7 +22,7 @@ function candidate(imageDigest: string, deviceId = dexter) {
     target: { ...fixed.target, hostRef: profile.root.selection.hostRef, registration: profile.root.registration },
     policy: jobRuntimeProfilePolicy(profile), verification: { ...fixed.verification, resources: profile.spec.resources } })
   const preference = { target: buildComputerTarget(spec.target), revision: 1, buildEnabled: true, buildPriority: 100,
-    buildRole: 'primary' as const, buildAllowancePercent: 100 }
+    buildAllowancePercent: 100 }
   return { profile, spec, preference, ready: true, reasons: [], template,
     sourceReservation: { scopeId: 'fixture', reservedBytes: 1024 } }
 }

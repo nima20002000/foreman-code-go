@@ -90,28 +90,29 @@
 .operator-chat-feedback { min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
 .operator-chat-feedback:empty { display: none; }
 .operator-chat-undo { padding: .25rem .75rem; font-size: 12px; display: flex; align-items: center; gap: var(--space-2); }
-.operator-composer { position: relative; border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-surface-raised); padding: .55rem .65rem .4rem; }
-.operator-composer:focus-within { border-color: var(--color-border-strong); box-shadow: none; }
-.operator-composer textarea { display: block; width: 100%; min-height: 36px; max-height: 144px; resize: none; border: 0; outline: 0; box-shadow: none; padding: .4rem .3rem; background: transparent; color: var(--color-text); font: inherit; font-size: 13px; line-height: 1.35rem; }
-.operator-composer-toolbar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-1); min-height: 2.25rem; }
-.operator-composer-toolbar > .attachment-control { display: contents; }
-.operator-composer-toolbar .attachment-control > button { grid-column: 1; grid-row: 2; }
-.operator-composer-toolbar .attachment-content { grid-column: 1 / -1; grid-row: 1; }
+/* Composer: text on top, then one toolbar row. Attachment chips and session notes take full-width lines. */
+.operator-composer { position: relative; display: grid; gap: .15rem; border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-surface-raised); padding: .5rem .5rem .4rem; transition: border-color var(--n-fast, .12s); }
+.operator-composer:focus-within { border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border-strong)); box-shadow: none; }
+.operator-composer-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; min-width: 0; min-height: 2rem; }
+.operator-composer-toolbar > .attachment-control, .operator-composer-toolbar > .session-controls { display: contents; }
+.operator-composer-toolbar .attachment-content { order: -1; flex: 1 0 100%; min-width: 0; }
 .operator-composer-toolbar .attachment-content:empty { display: none; }
 .operator-composer-toolbar .attachment-list { align-items: center; }
-.operator-composer-toolbar .operator-composer-model { grid-column: 2; grid-row: 2; }
-.operator-composer-toolbar .operator-composer-send { grid-column: 3; grid-row: 2; }
-.operator-composer-toolbar > button { width: 2rem; height: 2rem; min-height: 2rem; padding: .35rem; border-radius: var(--radius-full); }
+.operator-composer-toolbar .attachment-control > .n-icon-button { width: 28px; height: 28px; min-width: 28px; min-height: 28px; border-radius: var(--radius-full); color: var(--color-text-muted); }
+.operator-composer-toolbar .session-controls-status { order: 10; flex: 1 0 100%; padding: .1rem .3rem 0; }
+.operator-composer-model { display: flex; align-items: center; min-width: 0; }
+.operator-composer-model:empty { display: none; }
+.operator-composer-send.n-icon-button { flex: 0 0 auto; margin-inline-start: auto; width: 2rem; height: 2rem; min-width: 2rem; min-height: 2rem; padding: .35rem; border: 0; border-radius: var(--radius-full); background: var(--color-text); color: var(--color-surface); }
+.operator-composer-send.n-icon-button:disabled { opacity: .35; }
+.operator-composer textarea { display: block; width: 100%; min-height: 36px; max-height: 144px; resize: none; border: 0; outline: 0; box-shadow: none; padding: .4rem .3rem; background: transparent; color: var(--color-text); font: inherit; font-size: 13px; line-height: 1.35rem; }
 .operator-access-rules { display: grid; gap: var(--space-2); }
 .operator-access-rule { display: grid; grid-template-columns: 1fr; gap: var(--space-1); padding: .5rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
 .operator-access-rule-actions { grid-column: 1 / -1; display: flex; gap: var(--space-1); }
 .operator-access-rule-actions button { min-height: 1.8rem; padding: .25rem .45rem; }
 .operator-access-footer { display: flex; justify-content: flex-end; gap: var(--space-2); }
-.operator-composer-model { min-width: 0; margin-left: auto; }
-.operator-composer-send { flex: 0 0 auto; background: var(--color-text); color: var(--color-surface); border: 0; }
 .operator-send-arrow { transform: rotate(-90deg); }
 .operator-agent-picker { position: relative; min-width: 0; }
-.operator-agent-trigger { display: flex; align-items: center; gap: var(--space-2); max-width: 100%; border: 0; border-radius: var(--radius-lg); padding: .45rem .5rem; background: transparent; color: var(--color-text-muted); font-size: 12px; cursor: pointer; }
+.operator-agent-trigger { display: flex; align-items: center; gap: .35rem; max-width: 100%; height: 28px; border: 0; border-radius: var(--radius-full); padding: 0 .55rem; background: transparent; color: var(--color-text-muted); font-size: 12px; white-space: nowrap; cursor: pointer; }
 .operator-agent-trigger:hover, .operator-agent-trigger[aria-expanded='true'] { background: var(--color-surface-subtle); color: var(--color-text); }
 .operator-agent-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 13rem; }
 .operator-agent-trigger small { text-transform: capitalize; color: var(--color-accent); }

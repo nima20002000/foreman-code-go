@@ -13,6 +13,7 @@ import { DomainError } from '../errors.js'
 import type { CodexPluginAdapter, CodexPluginCatalog, CodexPluginMutation } from './codexPlugins.js'
 import { pluginConfigurationHas, unrelatedPluginConfiguration } from './codexPluginCatalog.js'
 import { PluginReadQueue } from './pluginReadQueue.js'
+import { QualificationCache } from './qualificationCache.js'
 import { assertNoUnresolvedMcpWrites, assertNoUnresolvedPluginWrites, lockNativeConfigurationFile, NATIVE_SETTINGS_LOCK } from './nativeSettingsWrites.js'
 
 const operation = 'codex.plugin.change'
@@ -36,23 +37,29 @@ const safeCode = (error: unknown) => error instanceof DomainError ? error.code :
 export class CodexPluginSettingsService {
   private readonly stopping = new AbortController()
   private readonly queue = new PluginReadQueue()
+  private readonly catalogs = new QualificationCache<CodexPluginCatalog>(30_000, 2, Date.now, true)
   constructor(private readonly pool: pg.Pool, private readonly adapter: CodexPluginAdapter,
     private readonly closeProcesses: () => Promise<unknown> = async () => undefined) {}
   private signal(request?: AbortSignal) {
     return AbortSignal.any([this.stopping.signal, AbortSignal.timeout(60_000), ...(request ? [request] : [])])
   }
+  /** The writer still holds a live credential with plugin update rights. Delegated Operator credentials install and
+   * remove plugins too: the owner chose no human gate for plugin installs. */
   private async liveOwner(principal: ManagementPrincipal, client: pg.Pool | pg.PoolClient = this.pool): Promise<void> {
-    if (principal.audience !== 'operator') throw new DomainError('CODEX_PLUGIN_BROWSER_REQUIRED', 'A local human must change Codex plugins.', 403)
     const result = await client.query<{ grants: ManagementPrincipal['grants']; expires_at: Date }>(
-      "select grants,expires_at from management_principals where id=$1 and audience='operator' and delegated_from is null and revoked_at is null and expires_at>now()", [principal.id])
-    if (!result.rows[0]) throw new DomainError('CODEX_PLUGIN_BROWSER_REQUIRED', 'A local human must change Codex plugins.', 403)
+      'select grants,expires_at from management_principals where id=$1 and revoked_at is null and expires_at>now()', [principal.id])
+    if (!result.rows[0]) throw new DomainError('PRINCIPAL_REVOKED', 'Access is unavailable. Check the local API connection before changing plugins.', 401)
     const current = { ...principal, grants: result.rows[0].grants, expiresAt: result.rows[0].expires_at.toISOString() }
     requireAuthorization(current, 'harnesses:update')
     requireAuthorization(current, 'harnesses:read')
   }
   private catalog(signal: AbortSignal) {
-    return this.queue.run('catalog', (active) => this.adapter.list(active), signal)
+    // Reads reuse a recent catalog and refresh it in the background; writes read natively and clear it.
+    return this.catalogs.get('catalog', () => this.queue.run('catalog', (active) => this.adapter.list(active), signal))
+      .catch((error: unknown) => { this.catalogs.forget('catalog'); throw error })
   }
+  /** Fill the catalog before Settings opens. */
+  async warmup(): Promise<void> { await this.catalog(this.signal()) }
   async list(principal: ManagementPrincipal, raw: CodexPluginListInput, request?: AbortSignal) {
     requireAuthorization(principal, 'harnesses:read')
     const input = CodexPluginListInputSchema.parse(raw)
@@ -114,7 +121,7 @@ export class CodexPluginSettingsService {
       client.release(destroyed)
     }
   }
-  private async save(client: pg.PoolClient, principal: ManagementPrincipal, row: Pick<ReceiptRow, 'principal_id' | 'command_id'>,
+  private async save(source: 'http' | 'mcp', client: pg.PoolClient, principal: ManagementPrincipal, row: Pick<ReceiptRow, 'principal_id' | 'command_id'>,
     result: CodexPluginChangeResult, recovery: Recovery, action: string, insert = false): Promise<void> {
     await client.query('begin')
     try {
@@ -125,14 +132,21 @@ export class CodexPluginSettingsService {
       else await client.query(`update management_command_receipts set result=$4::jsonb where principal_id=$1 and operation=$2 and command_id=$3`,
         [row.principal_id, operation, row.command_id, value])
       await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-        values($1,'http',$2,$3,$4,$5::jsonb)`, [principal.id, action, `codex-plugin:${result.pluginId}`,
+        values($1,$6,$2,$3,$4,$5::jsonb)`, [principal.id, action, `codex-plugin:${result.pluginId}`,
         result.status === 'uncertain' ? 'uncertain' : result.status === 'not_applied' ? 'failed' : 'succeeded',
         JSON.stringify({ commandId: row.command_id, requestedBy: row.principal_id, status: result.status,
-          nativeFailure: result.nativeFailure ?? null, nativeWriteRepeated: false })])
+          nativeFailure: result.nativeFailure ?? null, nativeWriteRepeated: false }), source])
       await client.query('commit')
     } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
   }
-  change(principal: ManagementPrincipal, raw: CodexPluginChangeInput) {
+  change(principal: ManagementPrincipal, raw: CodexPluginChangeInput, source: 'http' | 'mcp' = 'http') {
+    return this.afterWrite(this.changeNative(principal, raw, source))
+  }
+  private afterWrite<T>(write: Promise<T>): Promise<T> {
+    // Settled, failed or uncertain, a write may have changed native state.
+    return write.finally(() => this.catalogs.clear())
+  }
+  private changeNative(principal: ManagementPrincipal, raw: CodexPluginChangeInput, source: 'http' | 'mcp') {
     requireAuthorization(principal, 'harnesses:update')
     requireAuthorization(principal, 'harnesses:read')
     const input = CodexPluginChangeInputSchema.parse(raw)
@@ -169,7 +183,7 @@ export class CodexPluginSettingsService {
           sourceIdentity: before.evidence[input.pluginId]!.sourceIdentity, version: plugin.version, sourceType: plugin.sourceType,
           acknowledged: false, mutationVersion: null }
         const owner = { principal_id: principal.id, command_id: input.commandId }
-        await this.save(client, principal, owner, result, recovery, operation, true)
+        await this.save(source, client, principal, owner, result, recovery, operation, true)
         let mutation: CodexPluginMutation | undefined
         try {
           await this.liveOwner(principal, client)
@@ -179,7 +193,7 @@ export class CodexPluginSettingsService {
           recovery.mutationVersion = mutation.version
         } catch (error) { result.nativeFailure = safeCode(error) }
         // Persist native failure/acknowledgement before attempting another potentially failing read.
-        await this.save(client, principal, owner, result, recovery, 'codex.plugin.native_result')
+        await this.save(source, client, principal, owner, result, recovery, 'codex.plugin.native_result')
         try {
           await this.closeProcesses()
           const after = await this.adapter.list(active)
@@ -189,13 +203,13 @@ export class CodexPluginSettingsService {
               : 'Removed from Codex. Separately configured MCP connections were preserved.'
           }
         } catch (error) { result.nativeFailure ??= safeCode(error) }
-        await this.save(client, principal, owner, result, recovery, 'codex.plugin.readback')
+        await this.save(source, client, principal, owner, result, recovery, 'codex.plugin.readback')
         return CodexPluginChangeResultSchema.parse(result)
       } finally { await unlockFile() }
     }, signal), this.signal()).catch(async (error: unknown) => {
       await this.pool.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-        values($1,'http','codex.plugin.change',$2,'failed',$3::jsonb)`, [principal.id, `codex-plugin:${input.pluginId}`,
-        JSON.stringify({ commandId: input.commandId, code: safeCode(error) })]).catch(() => undefined)
+        values($1,$4,'codex.plugin.change',$2,'failed',$3::jsonb)`, [principal.id, `codex-plugin:${input.pluginId}`,
+        JSON.stringify({ commandId: input.commandId, code: safeCode(error) }), source]).catch(() => undefined)
       throw error
     })
   }
@@ -213,7 +227,10 @@ export class CodexPluginSettingsService {
       && (recovery.version === null || installed.version === recovery.version)
       && (recovery.mutationVersion === null || installed.version === recovery.mutationVersion))
   }
-  reconcile(principal: ManagementPrincipal, raw: CodexPluginReconcileInput) {
+  reconcile(principal: ManagementPrincipal, raw: CodexPluginReconcileInput, source: 'http' | 'mcp' = 'http') {
+    return this.afterWrite(this.reconcileNative(principal, raw, source))
+  }
+  private reconcileNative(principal: ManagementPrincipal, raw: CodexPluginReconcileInput, source: 'http' | 'mcp') {
     requireAuthorization(principal, 'harnesses:update')
     requireAuthorization(principal, 'harnesses:read')
     const input = CodexPluginReconcileInputSchema.parse(raw)
@@ -242,7 +259,7 @@ export class CodexPluginSettingsService {
         result.message = 'Process cleanup completed, but the intended result is not proven. Inspect current state, then explicitly keep it or reconcile again.'
         result.observedRevision = catalog.revision
       }
-      await this.save(client, principal, row, result, recovery, 'codex.plugin.reconcile')
+      await this.save(source, client, principal, row, result, recovery, 'codex.plugin.reconcile')
       return CodexPluginChangeResultSchema.parse(result)
     }, signal), this.signal())
   }

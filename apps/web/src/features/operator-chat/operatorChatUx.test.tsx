@@ -12,7 +12,7 @@ import { OperatorComposerSettings } from './OperatorComposerSettings'
 import { OperatorChat } from './OperatorChat'
 import { configuredOperatorSetup } from './operatorSetupTestFixture'
 import { OperatorChatVisibilityProvider } from './visibility'
-import { useOperatorChatStore } from './operatorChatStore'
+import { askOperator, useOperatorChatStore } from './operatorChatStore'
 import { operatorState } from './pr17-test-fixtures'
 import { summarizeOperatorConversation } from './operatorChatStatus'
 import { parseChatPreferences } from '../../shared/api/protectedChatStorage'
@@ -53,6 +53,29 @@ beforeEach(() => {
 afterEach(() => { cleanup(); client.clear(); vi.restoreAllMocks() })
 function chat() { render(<QueryClientProvider client={client}><OperatorChatVisibilityProvider enabled><OperatorChat /></OperatorChatVisibilityProvider></QueryClientProvider>) }
 describe('Operator chat UX', () => {
+  it('opens the chat and sends an app request in a new conversation once', async () => {
+    useOperatorChatStore.setState({ open: false, historyOpen: false })
+    server.use(http.get('/api/operator/setup', () => HttpResponse.json(configuredOperatorSetup('codex'))))
+    api.send.mockImplementation(async (id, command) => ({ replayed: false, state: operatorState({ conversation: { ...operatorState().conversation, id },
+      turnState: 'idle', activeRequestId: null,
+      messages: [{ id: 'asked', conversationId: id, requestId: command.requestId, role: 'user', content: command.content }] }) }))
+    const originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks')
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: {
+      request: async (_name: string, _options: LockOptions, work: (lock: Lock) => unknown) => work({ name: 'outbox', mode: 'exclusive' } as Lock),
+    } })
+    try {
+      chat()
+      act(() => askOperator('Install Codex on Computer 1234abcd.'))
+      await waitFor(() => expect(api.send).toHaveBeenCalledWith('new-chat', expect.objectContaining({ content: 'Install Codex on Computer 1234abcd.' })))
+      expect(useOperatorChatStore.getState()).toMatchObject({ open: true, selectedConversationId: 'new-chat' })
+      expect(api.create).toHaveBeenCalledTimes(1)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(api.send).toHaveBeenCalledTimes(1)
+    } finally {
+      if (originalLocks) Object.defineProperty(navigator, 'locks', originalLocks)
+      else Reflect.deleteProperty(navigator, 'locks')
+    }
+  })
   it('reuses its verified MCP installation when starting another chat', async () => {
     let checks = 0
     server.use(http.get('/api/operator/setup', ({ request }) => {

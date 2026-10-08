@@ -1,10 +1,11 @@
+import { Button } from '../../shared/ui/nocturne'
+import { askOperator } from '../operator-chat/operatorChatStore'
+
+/** Human-only step: the protected CI runtime on Main is installed locally; the Operator captures and qualifies it after. */
 export function MainRuntimeSetup() {
-  return <section aria-label="Main runtime setup">
-    <h2 className="computers-title">Main PC runtime setup</h2>
-    <p className="computer-hint">Automatic runtime preparation is unavailable on Main.
-      It supports reviewed verification profiles on paired computers.</p>
-    <p className="computer-hint">A person must install or repair the protected CI runtime locally on Main.
-      After installation, ask Operator to capture the installed runtime for the workspace's saved profile
-      and run qualification. If qualification needs recovery, ask Operator to reconcile its original command first.</p>
+  return <section className="computer-action-card" aria-label="Main runtime setup">
+    <h2>Main PC build runtime</h2>
+    <p>Installed by a person on Main. Afterwards the Operator captures and qualifies it.</p>
+    <Button size="sm" onClick={() => askOperator('Check the Main PC build runtime. If it is installed, capture it for the saved profile and run qualification; reconcile any qualification that needs recovery first.')}>Ask Operator to check it</Button>
   </section>
 }

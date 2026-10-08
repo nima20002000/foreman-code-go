@@ -12,6 +12,7 @@ export * from "./harnessSettings.js";
 export * from './workerExecution.js'
 export * from "./codexPlugins.js";
 export * from "./settingsExperience.js";
+export * from './generalSettings.js';
 
 import {
   AgentSchema,
@@ -594,13 +595,13 @@ export const DEVICE_PROVISIONING_HUMAN_LIMITS = [
 ] as const;
 
 export const OperatorToolNameSchema = z.enum([
-  "ci_run", "ci_get",
+  "ci_run", "ci_get", "ci_computers_list", "ci_cancel", "ci_logs_read", "ci_artifacts_list", "ci_artifact_read",
   ...Object.keys(GRAPHQL_OPERATOR_TOOLS) as (keyof typeof GRAPHQL_OPERATOR_TOOLS)[],
   ...DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES,
   "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list", "source_preparation_get", "source_preparation_reconcile",
   "job_runtime_profile_list","job_runtime_profile_save","job_runtime_qualification_request","job_runtime_qualification_run","job_runtime_qualification_get","build_computer_prepare","build_computer_prepare_get",
   "job_choices_get","job_workflow_execution_get","job_definition_list","job_definition_get","job_definition_version_get","job_definition_save","job_validate","job_launch_validate","job_start","job_queue_get","job_queue_list","job_queue_cancel","job_get","job_list","job_cancel","job_cancellation_recovery_propose","job_cancellation_recovery_get","job_logs_read","job_artifacts_list","job_artifact_read",
-  "build_computer_get", "build_computer_update", "build_computers_update", "computer_activity_list", "computer_accounts_list", "computer_github_login_start", "computer_github_login_status", "computer_github_logout", "computer_github_setup_git", "computer_sync_status", "computer_sync_update",
+  "build_computer_get", "build_computer_update", "build_computers_update", "computer_activity_list", "computer_accounts_list", "computers_maintenance_status", "computers_maintenance_start", "computer_github_login_start", "computer_github_login_status", "computer_github_logout", "computer_github_setup_git", "computer_sync_status", "computer_sync_update",
   "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
   "device_setup_code_create",
   "device_setup_options_get",
@@ -614,9 +615,10 @@ export const OperatorToolNameSchema = z.enum([
   "operator_chat_send", "operator_chat_cancel", "operator_chat_respond", "operator_handoff_history_get",
   "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",
   "workspace_defaults_get",
+  'general_settings_get', 'general_settings_update',
   'worker_execution_settings_get',
   "workspace_defaults_update",
-  "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_managed_request", "harness_mcp_change_get",
+  "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_managed_request", "harness_mcp_change_get", "harness_mcp_change_reconcile", "codex_plugin_change", "codex_plugin_reconcile",
   "codex_plugins_list", "codex_plugin_get",
   "harness_configuration_check",
   "execution_readiness_get",

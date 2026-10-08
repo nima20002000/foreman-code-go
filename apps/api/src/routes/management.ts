@@ -1,13 +1,12 @@
 import { registerComputerActivityRoutes } from './computerActivity.js'
 import { registerComputerAccountsRoutes } from './computerAccounts.js'
-import { registerComputerGitHubRoutes } from './computerGitHub.js'
+import { registerComputerMaintenanceRoutes } from './computerMaintenance.js'
 import { registerComputerSyncRoutes } from './computerSync.js'
 import { registerBuildComputerRoutes } from './buildComputers.js'
 import { registerRunSubagentRoutes } from './runSubagents.js'
 import { registerHarnessRegistryRoutes } from '../modules/harnesses/registryManagement.js'
 import { registerDeviceManagementRoutes } from '../modules/devices/management.js'
 import { registerWorkspaceRootRoutes } from '../modules/workspace-roots/transports.js'
-import { registerHostHarnessOverrideRoutes } from '../modules/harnesses/instanceSettings/management.js'
 import { registerSourceRoutes } from '../modules/sources/routes.js'
 import { registerJobRoutes } from './jobs.js'
 import { CurrentWorkflowCreateInputSchema, RunActivitiesInputSchema,
@@ -23,6 +22,7 @@ import { registerSkillRoutes } from './skills.js'
 
 import {
   AgentGetInputSchema,
+  GeneralSettingsUpdateInputSchema,
   AgentDefaultsUpdateInputSchema,
   AgentListInputSchema,
   HarnessDefaultsUpdateInputSchema,
@@ -49,7 +49,6 @@ import {
   WorkspaceLocationValidateInputSchema,
   WorkflowDefaultsUpdateInputSchema,
 } from '@foreman-code/contracts/management'
-import { HarnessQualificationRunParamsSchema } from '@foreman-code/contracts/harness-qualification'
 import { ManualRunStartInputSchema } from '@foreman-code/contracts/wave25'
 import { requireLocalHuman, requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
@@ -80,19 +79,14 @@ function page(query: Query) {
 }
 
 export function registerManagementRoutes(app: FastifyInstance, services: OperatorServices): void {
-  if (services.workerExecution) {
-    app.get('/api/management/settings/worker-execution', request =>
-      services.workerExecution!.read(requirePrincipal(request)))
-  }
   if (services.harnessRegistry) registerHarnessRegistryRoutes(app, services.harnessRegistry, async request => requirePrincipal(request))
   if (services.computerActivity) registerComputerActivityRoutes(app, services.computerActivity)
   if (services.computerAccounts) registerComputerAccountsRoutes(app, services.computerAccounts)
-  if (services.computerGitHub) registerComputerGitHubRoutes(app, services.computerGitHub)
+  if (services.computerMaintenance) registerComputerMaintenanceRoutes(app, services.computerMaintenance)
   if (services.computerSync) registerComputerSyncRoutes(app, services.computerSync)
   if (services.buildComputers) registerBuildComputerRoutes(app, services.buildComputers)
   if (services.devices) registerDeviceManagementRoutes(app, services.devices, async request => requirePrincipal(request))
   if (services.workspaceRoots) registerWorkspaceRootRoutes(app, services.workspaceRoots)
-  if (services.harnessInstances) registerHostHarnessOverrideRoutes(app, services.harnessInstances, async request => requirePrincipal(request))
   if (services.sources) registerSourceRoutes(app, services.sources)
   if (services.jobs) registerJobRoutes(app, services.jobs)
   registerCurrentWorkflowRoutes(app, services.workflows, services.runs)
@@ -172,13 +166,6 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     return HarnessConfigurationCheckResultSchema.parse(await services.harnesses.checkConfiguration(requirePrincipal(request), input.configuration))
   })
 
-  if (services.harnessQualifications) {
-    app.get('/api/management/harnesses/qualifications', async (request) => services.harnessQualifications!.list(requirePrincipal(request)))
-    app.post<{ Params: Params }>('/api/management/harnesses/:harness/qualification', async (request) => {
-      const { harness } = HarnessQualificationRunParamsSchema.parse(request.params)
-      return services.harnessQualifications!.run(requirePrincipal(request), 'http', harness)
-    })
-  }
   app.get('/api/management/harnesses', async (request) => services.harnesses.list(requirePrincipal(request)))
   app.get<{ Params: Params }>('/api/management/harnesses/:harness', async (request) => {
     const input = HarnessGetInputSchema.parse(request.params)
@@ -188,6 +175,11 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     services.harnesses.updateDefaults(requirePrincipal(request), 'http', HarnessDefaultsUpdateInputSchema.parse(request.body)))
 
   if (services.settings) {
+    app.get('/api/management/settings/general', async request =>
+      services.settings!.getGeneralSettings(requirePrincipal(request)))
+    app.put<{ Body: unknown }>('/api/management/settings/general', async request =>
+      services.settings!.updateGeneralSettings(requirePrincipal(request), 'http',
+        GeneralSettingsUpdateInputSchema.parse(request.body)))
     app.get('/api/management/settings/agents', async (request) =>
       services.settings!.getAgentDefaults(requirePrincipal(request)))
     app.put<{ Body: unknown }>('/api/management/settings/agents', async (request) =>

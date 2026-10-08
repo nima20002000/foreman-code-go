@@ -4,6 +4,8 @@ import { JobLogChunkSchema, type JobLogChunk } from '@foreman-code/contracts/job
 import {
   JobDefinitionRecordSchema,
   JobExecutionRecordSchema,
+  WorkflowJobPageSchema,
+  type WorkflowJobListInput,
   ResolvedJobDefinitionSpecRecordSchema,
   type JobDefinitionRecord,
   type JobExecutionRecord,
@@ -119,6 +121,46 @@ export class JobRepository {
     const execution = JobExecutionRecordSchema.parse(row.record)
     if (execution.id !== id || execution.workspaceId !== workspaceId || canonical(execution.acceptedSpec) !== canonical(row.accepted_spec)) throw new DomainError('JOB_SCOPE_CONFLICT','Job acceptance conflicts with persistence.',409)
     return execution
+  }
+  async workflowExecutions(sql: JobSql, workspaceId: string, workflowId: string,
+    input: WorkflowJobListInput) {
+    const limit = input.limit ?? 50
+    const rows = await sql.query<{ record: unknown; name: string }>(`
+      select e.record, v.record->>'name' as name
+      from job_executions e
+      join job_definition_versions v on v.id=e.definition_version_id and v.workspace_id=e.workspace_id
+      where e.workspace_id=$1 and exists (
+        select 1 from runs r where r.workspace_id=e.workspace_id and r.workflow_id=$2
+          and ((r.id=e.record #>> '{workflow,runId}' and e.record #>> '{workflow,workflowId}'=$2)
+            or (r.id=e.record #>> '{initiatingAgent,runId}'
+              and e.record #>> '{initiatingAgent,workflowId}'=$2))
+      ) and ($3::timestamptz is null
+        or ((e.record->>'createdAt')::timestamptz, e.id)<($3::timestamptz, $4::text))
+      order by (e.record->>'createdAt')::timestamptz desc, e.id desc limit $5`,
+    [workspaceId, workflowId, input.cursor?.createdAt ?? null, input.cursor?.id ?? null, limit + 1])
+    const items = rows.rows.slice(0, limit).map(row => ({
+      name: row.name,
+      execution: JobExecutionRecordSchema.parse(row.record),
+    }))
+    const last = items.at(-1)?.execution
+    const nextCursor = rows.rows.length > limit && last ? { createdAt: last.createdAt, id: last.id } : null
+    return WorkflowJobPageSchema.parse({ workspaceId, workflowId, items, nextCursor })
+  }
+  async executionScope(sql: JobSql, workspaceId: string, executionId: string) {
+    const row = (await sql.query<{ record: unknown }>(
+      'select record from job_executions where workspace_id=$1 and id=$2', [workspaceId, executionId])).rows[0]
+    if (!row) return {}
+    const execution = JobExecutionRecordSchema.parse(row.record)
+    if (execution.id !== executionId || execution.workspaceId !== workspaceId) {
+      throw new DomainError('JOB_SCOPE_CONFLICT', 'The job scope conflicts with persistence.', 409)
+    }
+    for (const origin of [execution.workflow, execution.initiatingAgent]) {
+      if (!origin) continue
+      const run = await sql.query('select id from runs where workspace_id=$1 and workflow_id=$2 and id=$3',
+        [workspaceId, origin.workflowId, origin.runId])
+      if (run.rows.length) return { workflowId: origin.workflowId, runId: origin.runId }
+    }
+    return {}
   }
   async putExecution(sql: JobSql, value: JobExecutionRecord): Promise<void> {
     const execution = JobExecutionRecordSchema.parse(value)

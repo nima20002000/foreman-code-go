@@ -8,7 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import { Settings, UserRound } from 'lucide-react'
+import { Settings } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 
 import { ComputerActivityIcons } from '../../features/computers/ComputerActivity'
@@ -259,15 +259,10 @@ export function WorkspaceShell({
         <div className="sidebar-footer">
           <ComputerActivityIcons />
           <HarnessStatusMenu />
-          <div className="sidebar-account-row">
-            <Link to="/account" className={`sidebar-account-link${activeGlobalSection === 'account' ? ' sidebar-account-link-active' : ''}`}
-              aria-current={activeGlobalSection === 'account' ? 'page' : undefined} aria-label="Account"
-              title="Account">
-              <UserRound aria-hidden="true" size={17} />
-            </Link>
+          <div className="sidebar-preferences-row">
             <Link
               to="/settings"
-              className={`sidebar-settings-link${activeGlobalSection === 'settings' ? ' sidebar-account-link-active' : ''}`}
+              className={`sidebar-settings-link${activeGlobalSection === 'settings' ? ' sidebar-settings-link-active' : ''}`}
               aria-current={activeGlobalSection === 'settings' ? 'page' : undefined}
               aria-label="Settings"
               title="Settings"

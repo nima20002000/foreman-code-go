@@ -1,11 +1,38 @@
-.session-controls { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; font-size: .75rem; min-width: 0; }
-.session-controls .n-field { margin: 0; max-width: 12rem; }
-.session-controls small { opacity: .7; }
-.session-context { position: relative; }
-.session-context-popover { position: absolute; bottom: calc(100% + .5rem); right: 0; z-index: 30; width: min(20rem, 80vw); padding: .8rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--surface); color: var(--text); overflow-y: auto; box-shadow: 0 .5rem 2rem rgb(0 0 0 / .2); }
-.session-context-popover p { margin: .4rem 0; }
-.session-context-popover details { margin: .6rem 0; }
+.session-controls { display: flex; align-items: center; gap: .25rem; flex-wrap: wrap; min-width: 0; font-size: 12px; }
+
+/* Mode is a compact pill; its label stays available to assistive technology only. */
+.session-controls .session-mode { margin: 0; min-width: 0; }
+.session-controls .session-mode > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; margin: -1px; padding: 0; border: 0; }
+.session-controls .session-mode .n-select-wrap { position: relative; display: inline-flex; align-items: center; }
+.session-controls .session-mode select.n-input { min-height: 28px; height: 28px; padding: 0 1.6rem 0 .6rem; border: 1px solid transparent; border-radius: var(--radius-full); background: transparent; color: var(--color-text-muted); font-size: 12px; cursor: pointer; }
+.session-controls .session-mode select.n-input:hover:not(:disabled) { background: var(--color-surface-subtle); color: var(--color-text); }
+.session-controls .session-mode select.n-input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.session-controls .session-mode .n-select-wrap > svg { position: absolute; right: .45rem; pointer-events: none; color: var(--color-text-muted); }
+
+/* Context is an icon meter; details live in its popover. */
+.session-context { position: relative; display: inline-flex; }
+.session-controls .session-context-meter { display: inline-flex; align-items: center; gap: .3rem; min-height: 28px; height: 28px; padding: 0 .45rem; border-radius: var(--radius-full); color: var(--color-text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.session-controls .session-context-meter:hover, .session-controls .session-context-meter[aria-expanded='true'] { background: var(--color-surface-subtle); color: var(--color-text); }
+.session-controls .session-context-meter[data-stale='true'] { opacity: .7; }
+
+.session-controls-status { display: flex; flex-wrap: wrap; gap: .15rem .6rem; min-width: 0; color: var(--color-text-muted); font-size: 11px; line-height: 1.4; }
+.session-controls-status > * { margin: 0; }
+.session-controls-status [role='alert'] { color: var(--color-danger, var(--color-text)); }
+
+.session-context-popover { position: absolute; bottom: calc(100% + .5rem); right: 0; z-index: 30; display: grid; gap: .6rem; width: min(20rem, 80vw); max-height: min(28rem, 70dvh); overflow-y: auto; margin: 0; padding: .85rem; border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-surface-raised); color: var(--color-text); box-shadow: var(--shadow-popover); font-size: 12px; line-height: 1.45; }
+.session-context-popover p { margin: 0; }
+.session-context-popover .session-context-title { margin: 0; font-size: 13px; font-weight: 600; }
+.session-context-bar { height: 4px; overflow: hidden; border-radius: var(--radius-full); background: var(--color-surface-subtle); }
+.session-context-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--color-accent); }
+.session-context-facts { display: grid; gap: .2rem; color: var(--color-text-muted); }
+.session-context-popover details { display: grid; gap: .5rem; padding-top: .5rem; border-top: 1px solid var(--color-border); }
+.session-context-popover details > summary { cursor: pointer; font-weight: 500; }
+.session-context-popover details[open] > summary { margin-bottom: .5rem; }
+.session-context-popover details > :not(summary) + * { margin-top: .5rem; }
 .session-context-popover input { max-width: 100%; }
+.session-context-note { color: var(--color-text-muted); }
+.session-context-actions { display: flex; flex-wrap: wrap; gap: .35rem; padding-top: .5rem; border-top: 1px solid var(--color-border); }
+
 .session-command-menu { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: .4rem; background: var(--surface); }
 .session-command-menu button { text-align: left; padding: .4rem .6rem; }
 .session-command-menu [aria-selected="true"] { background: var(--surface-hover); }

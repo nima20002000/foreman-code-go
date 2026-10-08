@@ -64,15 +64,6 @@ function acknowledged<T>(current: Form<T> | undefined, submitted: T, value: T, r
   }
 }
 
-/** Overview cards expose pending edits without taking ownership of a second draft. */
-export function useSettingsDraftStatus(persistenceKey: string): string | undefined {
-  const key = `${sessionGeneration()}:${persistenceKey}`
-  const form = useForms((state) => state.forms[key])
-  if (form?.pending?.state === 'sending') return 'Saving'
-  if (form?.pending?.state === 'uncertain') return 'Save needs attention'
-  return form && !same(form.value, form.base.value) ? 'Unsaved changes' : undefined
-}
-
 /** A command and its exact payload outlive the initiating component, but never its access session. */
 export async function saveRevisionedForm<T>(
   key: string,

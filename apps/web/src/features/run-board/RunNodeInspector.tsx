@@ -86,7 +86,7 @@ function NodeExecutionResult({ selection, scope, node, executionId }: {
   const occurrence = execution.occurrence
   return <article aria-label={`Execution ${executionId}`}>
     <ExecutionBranch execution={execution} />
-    {execution.kind === 'job' ? <JobRunResult readOnly definitionVersionId={execution.jobDefinitionVersionId}
+    {execution.kind === 'job' ? <JobRunResult definitionVersionId={execution.jobDefinitionVersionId}
       reference={{ kind: 'job', workspaceId: scope.workspaceId, workflowId: scope.workflowId,
         runId: scope.runId, workflowVersionId: scope.workflowVersionId, nodeId: node.id,
         nodeExecutionId: execution.executionId, occurrenceId: occurrence?.occurrenceId ?? null,

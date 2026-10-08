@@ -1,6 +1,8 @@
 import type { ManagementAction, OperatorToolName } from '@foreman-code/contracts/management'
 
 export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; action: ManagementAction }> = [
+  { name: 'general_settings_get', action: 'settings:read' },
+  { name: 'general_settings_update', action: 'settings:update' },
   { name: 'worker_execution_settings_get', action: 'settings:read' },
   { name: 'harness_registry_get', action: 'harnesses:read' },
   { name: 'workspace_root_choices_list', action: 'source_roots:read' },
@@ -33,6 +35,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'device_main_identity_get', action: 'settings:read' },
   { name: 'computer_activity_list', action: 'settings:read' },
   { name: 'computer_accounts_list', action: 'settings:read' },
+  { name: 'computers_maintenance_status', action: 'settings:read' },
+  { name: 'computers_maintenance_start', action: 'settings:update' },
   { name: 'computer_sync_status', action: 'settings:read' },
   { name: 'computer_sync_update', action: 'settings:update' },
   { name: 'computer_github_login_start', action: 'settings:update' },
@@ -71,6 +75,9 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'harness_mcp_change_request', action: 'harnesses:update' },
   { name: 'harness_mcp_managed_request', action: 'harnesses:update' },
   { name: 'harness_mcp_change_get', action: 'harnesses:read' },
+  { name: 'harness_mcp_change_reconcile', action: 'harnesses:update' },
+  { name: 'codex_plugin_change', action: 'harnesses:update' },
+  { name: 'codex_plugin_reconcile', action: 'harnesses:update' },
   { name: 'harness_configuration_check', action: 'harnesses:read' },
   { name: 'execution_readiness_get', action: 'harnesses:read' },
   { name: 'claude_setup_options_get', action: 'harnesses:read' },

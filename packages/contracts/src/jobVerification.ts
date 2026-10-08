@@ -297,3 +297,20 @@ export function jobPolicyRequirementsRecord(policy: JobAcceptedSpecRecord['polic
   void isolationPolicyRevision
   return requirements
 }
+
+export const WorkflowJobCursorSchema = z.object({
+  createdAt: z.iso.datetime({ offset: true }),
+  id: z.string().min(1),
+}).strict()
+export const WorkflowJobListInputSchema = z.object({
+  limit: z.number().int().min(1).max(50).default(50),
+  cursor: WorkflowJobCursorSchema.optional(),
+}).strict()
+export const WorkflowJobPageSchema = z.object({
+  workspaceId: z.string().min(1),
+  workflowId: z.string().min(1),
+  items: z.array(z.object({ name: z.string().min(1), execution: JobExecutionRecordSchema }).strict()).max(50),
+  nextCursor: WorkflowJobCursorSchema.nullable(),
+}).strict()
+export type WorkflowJobListInput = z.input<typeof WorkflowJobListInputSchema>
+export type WorkflowJobPage = z.infer<typeof WorkflowJobPageSchema>
