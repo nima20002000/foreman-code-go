@@ -7,9 +7,9 @@ interface ComputerUiState {
   github?: { session: number; key: string } | undefined
   openGitHub(key: string): void
   closeGitHub(): void
-  drive?: { session: number; key: string } | undefined
-  openDrive(key: string): void
-  closeDrive(): void
+  sync?: { session: number; key: string } | undefined
+  openSync(key: string): void
+  closeSync(): void
   openActivity(key: string): void
   closeActivity(): void
   drag(key?: string): void
@@ -20,6 +20,6 @@ export const useComputerUi = create<ComputerUiState>(set => ({
   drag: key => set({ draggedKey: key }),
   openGitHub: key => set({ github: { session: sessionGeneration(), key } }),
   closeGitHub: () => set({ github: undefined }),
-  openDrive: key => set({ drive: { session: sessionGeneration(), key } }),
-  closeDrive: () => set({ drive: undefined }),
+  openSync: key => set({ sync: { session: sessionGeneration(), key } }),
+  closeSync: () => set({ sync: undefined }),
 }))
