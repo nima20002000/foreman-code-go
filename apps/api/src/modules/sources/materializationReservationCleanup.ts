@@ -31,11 +31,20 @@ async function admissionInactive(sql: GraphSqlClient, operationId: string): Prom
         [`command:${reconciliation.principal_id}:source.preparation.reconcile:${reconciliation.command_id}`])
     if (!lock.rows[0]?.locked) return false
   }
-  const preparations = await sql.query<{ workspace_id: string }>(`select workspace_id from job_preparations
-    where operation_id=$1 union select r.workspace_id from workflow_job_preparations w join runs r on r.id=w.run_id
+  const preparations = await sql.query<{ workspace_id: string; run_id: string | null }>(
+    `select workspace_id,null::text as run_id from job_preparations
+    where operation_id=$1 union select r.workspace_id,r.id from workflow_job_preparations w join runs r on r.id=w.run_id
     where w.preparation->>'operationId'=$1
-    union select r.workspace_id from execution_dispatch_intents i join runs r on r.id=i.run_id
+    union select r.workspace_id,r.id from execution_dispatch_intents i join runs r on r.id=i.run_id
     where i.operation_id=$1`, [operationId])
+  for (const preparation of preparations.rows) {
+    if (preparation.run_id) {
+      // A live Run can hold its row while waiting for this cleanup's storage lock.
+      const ownership = await sql.query<{ locked: boolean }>(
+        'select pg_try_advisory_xact_lock($1,hashtext($2)) as locked', [810_002, preparation.run_id])
+      if (!ownership.rows[0]?.locked) return false
+    }
+  }
   for (const preparation of preparations.rows) {
     try {
       await admissionClosed(sql, await loadSourcePreparation(sql, preparation.workspace_id, operationId))
