@@ -1296,9 +1296,13 @@ export class ApprovalExecutionCoordinator {
       const version = await this.runs.getRepeatVersion(run.id, run.workflowVersionId, options.restartOwner)
       let executionContext
       if (version.definition.handoffs) {
-        if (!options.restartOwner) throw new DomainError('NATIVE_SESSION_RECOVERY_REQUIRED',
-          'Reconstructing a work handoff request requires its Run owner.', 409)
-        executionContext = await (await this.runs.repeat(options.restartOwner)).readWorkExecutionContext(execution.id)
+        const retained = options.restartOwner ? undefined : await this.retainRunOwner(execution, () => {})
+        const owner = options.restartOwner ?? retained!.owner
+        try {
+          executionContext = await (await this.runs.repeat(owner)).readWorkExecutionContext(execution.id)
+        } finally {
+          await retained?.release()
+        }
       }
       request = workflowExecutionRequest({ execution, version, configuration,
         workspaceId: run.workspaceId, executionContext })
