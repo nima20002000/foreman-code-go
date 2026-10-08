@@ -18,11 +18,13 @@ it('uses the selected Worker qualification when the general harness cache has a 
       throw new Error('Expected a completed Worker qualification version and binary fingerprint')
     }
     const qualifications = new HarnessQualificationRepository(fixture.db.pool)
+    const retained = await qualifications.findInstalled(profile.target, native.binarySha256, native.suiteRevision)
+    expect(retained).toHaveLength(1)
     await qualifications.save({ ...native, status: 'failed', failureReason: 'Another host failed its native check.' })
     expect((await qualifications.find(native.harness, native.version, native.binarySha256,
       native.suiteRevision))?.status).toBe('failed')
     expect(await qualifications.findInstalled(profile.target, native.binarySha256, native.suiteRevision))
-      .toEqual([native])
+      .toEqual(retained)
 
     const node = fixture.version.definition.nodes[0]!
     if (!('agentId' in node)) throw new Error('Agent chat requires an Agent fixture node')
