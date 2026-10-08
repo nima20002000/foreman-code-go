@@ -19,6 +19,7 @@
   "apps/api/src/modules/computers/syncthingComputer.ts",
   "apps/api/src/modules/computers/syncthingSystem.ts",
   "apps/api/src/modules/computers/githubLogin.ts",
+  "apps/api/src/modules/computers/installedCodexSelection.ts",
   "apps/api/src/modules/computers/maintenance.ts",
   "apps/api/src/modules/computers/claudePlugins.ts",
   "apps/api/src/modules/conversations/conversationAppAccess.ts",
