@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { describe, expect, it, vi } from 'vitest'
-import type { NativeSessionReference, HarnessExecution } from '@foreman-code/contracts'
+import { NativeHarnessEventSchema, type NativeHarnessEvent,
+  type NativeSessionReference, type HarnessExecution } from '@foreman-code/contracts'
 import { AgentChatHistoryPageSchema, AgentChatStateSchema, AgentChatTurnPageSchema, SendAgentChatMessageResponseSchema } from '@foreman-code/contracts/agent-chat'
 import { ReadSelectedRunChatResponseSchema, type SelectedRunChatTarget } from '@foreman-code/contracts/selected-run-chat'
 import { makeCurrentWorkflowFixture, RunStartV3ResultSchema } from '@foreman-code/contracts/wave25'
@@ -47,6 +48,7 @@ class RunChatNative extends AgentChatF5Native {
   readonly cancellations: Array<{ session?: string; turn?: string }> = []
   wrongReceipt = false
   returnSource = false
+  private reply: NativeHarnessEvent | undefined
   constructor(id: string) { super(); this.session = { harness: 'codex', providerVersion: 'sch06-fixture', nativeSessionId: `child-${id}` } }
   async forkSession(source: NativeSessionReference, input: NativeSessionStart) {
     this.forks.push({ source: structuredClone(source), input: structuredClone(input) })
@@ -60,6 +62,18 @@ class RunChatNative extends AgentChatF5Native {
   }
   override async cancel(session?: NativeSessionReference, _signal?: AbortSignal, turn?: string) {
     this.cancellations.push({ ...(session ? { session: session.nativeSessionId } : {}), ...(turn ? { turn } : {}) }); return super.cancel()
+  }
+  completeReply(text: string) {
+    this.reply = NativeHarnessEventSchema.parse({
+      sequence: 1, type: 'item.completed', occurredAt: new Date().toISOString(),
+      payload: { turnId: this.nativeTurnId,
+        item: { id: randomUUID(), type: 'agentMessage', text, phase: 'final_answer' } },
+    })
+    this.finish({ outcome: 'succeeded', output: { text } })
+  }
+  override async history() {
+    const history = await super.history()
+    return this.reply ? { ...history, events: [...history.events, this.reply] } : history
   }
   override async reconcile() {
     const history = await super.reconcile()
@@ -137,6 +151,10 @@ async function oldRunRows(f: Fixture['f'], runIds: string[]) {
 
 async function dispatchScheduledRun(f: Fixture['f']) {
   const { workspaceId, workflowId } = f.f.scope
+  await f.locations.set(f.writer.principal, 'http', {
+    workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
+    runnerId: f.locations.runnerId, rootPath: f.db.directory,
+  })
   const due = new Date()
   due.setUTCSeconds(0, 0)
   due.setUTCMinutes(due.getUTCMinutes() + 1)
@@ -198,7 +216,7 @@ describe.skipIf(!postgresEnabled)('SCH-06 selected historical Run chat PostgreSQ
       await eventually(() => (test.native.get(conversationId)?.prompts.length ?? 0) > 0)
       const native = test.native.get(conversationId)!
       expect(native.forks[0]?.source.nativeSessionId).toBe(source.nativeSessionId)
-      native.finish({ outcome: 'succeeded', output: { text: 'Run reply.' } })
+      native.completeReply('Run reply.')
       await eventually(async () => (await test.repository.turn(conversationId, sent.turn.requestId))?.delivery === 'completed')
       const persisted = await read(test, target, source.id)
       expect(persisted.kind).toBe('selected')
