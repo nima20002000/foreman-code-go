@@ -106,7 +106,7 @@ describe('installed Worker preparation host boundary', () => {
       try {
         const handler = mounted.extensions.find(extension => extension.namespace === CI_RUNTIME_NAMESPACE)!
         const context = { binding, signal: AbortSignal.timeout(15_000) }
-        const request = { operation: 'prepare', repository: 'fixture/site', commit: fixture.commit,
+        const request = { operation: 'prepare', operationId: randomUUID(), repository: 'fixture/site', commit: fixture.commit,
           keepImages: [], review: { reviewedByPrincipalId: 'owner', decisionDigest: 'c'.repeat(64) } }
         await expect(handler.handle!(request, { ...context,
           binding: { ...binding, connectionEpoch: randomUUID() } })).rejects.toThrow('authenticated worker channel')

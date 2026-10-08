@@ -36,6 +36,7 @@ import { verifiedSourceWorkingTree } from '../sources/nativeStamp.js'
 import { authorizeSource } from '../sources/authority.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
+import { matchesRuntimePolicy } from './runtimeSelection.js'
 import { DeviceAccessError } from '../devices/access.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import { JobPreparationService, type JobPreparationSources } from './preparation.js'
@@ -86,6 +87,7 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
         const ready = profile.status === 'qualified' && Boolean(measurement
           && Date.parse(measurement.expiresAt) > Date.now())
         return [jobVerificationTemplate({ profileId: profile.id, profileRevision: profile.revision,
+          hostRef: profile.root.selection.hostRef,
           suite: suite.data, ready, policy: profile.spec.policy, resources: profile.spec.resources,
           maxUnitWorkers: Math.min(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers,
             measuredSuite?.maxUnitWorkers ?? 1) })]
@@ -144,7 +146,7 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
         canonical(profile.root.selection.hostRef) === canonical(root.selection.hostRef)
         && profile.root.selection.rootPolicyId === root.selection.rootPolicyId
         && (isAutoJobSpecRecord(spec)
-          ? canonical(jobPolicyRequirementsRecord(jobRuntimeProfilePolicy(profile))) === canonical(spec.policy)
+          ? matchesRuntimePolicy(spec, profile)
             && canonical(jobRuntimeProfileLimits(profile)) === canonical(spec.limits)
           : canonical(jobRuntimeProfilePolicy(profile)) === canonical(spec.policy)))
       if (!matchingProfiles.length) continue

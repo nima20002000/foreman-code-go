@@ -11,6 +11,17 @@ import { AutoJobDefinitionSpecSchema, jobPolicyRequirements, AcceptedJobSpecSche
 import { verificationFixture, verificationId, verificationTime, verificationDigest } from '../tests/helpers/jobVerification.js'
 
 describe('pending Job admission', () => {
+  it('retains the author’s grant ceiling for preparation and rejects another principal', () => {
+    const { ticket } = verificationFixture()
+    const runtimePreparation = { id: ticket.principalId, name: 'Ticket author', audience: 'operator',
+      grants: [{ actions: ['job_artifacts:read'], scope: { workspaceIds: [ticket.workspaceId] } }],
+      expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
+    expect(JobQueueTicketSchema.parse({ ...ticket, runtimePreparation }).runtimePreparation).toEqual(runtimePreparation)
+    expect(JobQueueTicketSchema.safeParse({ ...ticket, runtimePreparation: { ...runtimePreparation, id: 'another-author' } })
+      .success).toBe(false)
+    expect(JobQueuedStartSchema.safeParse({ commandId: 'start', definitionId: 'definition', expectedRevision: 1,
+      runtimePreparation }).success).toBe(false)
+  })
   it('validates the launch revision and placement separately from current readiness', () => {
     const { build } = verificationFixture()
     const input = { definitionId: 'build', expectedRevision: 1,
