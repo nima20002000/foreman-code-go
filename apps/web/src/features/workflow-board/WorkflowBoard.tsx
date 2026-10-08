@@ -129,8 +129,10 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
           </header>
           <div className="board-historical-chat-content">
             <section aria-label="Run-wide Activities"><Activities selection={selectedRun} /></section>
-            <h2>Agent chat</h2>
-            <AgentChatPanel name="Agent chat" selectedRun={selectedRun} />
+            <section className="board-historical-chat-agent" aria-label="Agent chat">
+              <h2>Agent chat</h2>
+              <AgentChatPanel name="Agent chat" selectedRun={selectedRun} />
+            </section>
           </div>
         </aside> : null}
     </div>

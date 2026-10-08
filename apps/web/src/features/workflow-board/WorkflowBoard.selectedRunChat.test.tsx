@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
@@ -23,6 +25,9 @@ import { useWorkflowBoard } from './context'
 import boardStyles from './workflowBoard.css?inline'
 import chatStyles from '../conversations/agentChat/agentChat.css?inline'
 import historyStyles from '../conversations/conversationHistory.css?inline'
+import toolkitStyles from '../../shared/ui/nocturne/nocturne.css?inline'
+import activityStyles from './activities.css?inline'
+import selectedChatStyles from '../conversations/agentChat/selectedRunChat.css?inline'
 
 function CurrentNavigation() { return useWorkflowBoard()?.navigationControls }
 
@@ -155,6 +160,41 @@ function renderedNodeBounds(node: HTMLElement) {
   return { left, top, right: left + bounds.width * zoom, bottom: top + bounds.height * zoom }
 }
 
+// Replay the real rendered panel in the built-in browser; jsdom has no layout engine.
+async function exportPanelLayoutTest(panel: HTMLElement, width: number, height: number) {
+  const directory = process.env.FOREMAN_CODE_LAYOUT_EVIDENCE_DIR
+  if (!directory) return
+  const styles = toolkitStyles + boardStyles + chatStyles + historyStyles + activityStyles + selectedChatStyles
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Selected Run layout regression</title>
+    <style>${styles}
+      body { margin: 0; }
+      .unified-workflow-board { width: ${width}px; height: ${height - 48}px; margin-top: 48px; }
+    </style></head><body class="n-theme"><div class="unified-workflow-board">${panel.outerHTML}</div>
+    <output id="layout-result" style="position: fixed; top: 0; left: 0"></output>
+    <script>
+      const panel = document.querySelector('.board-historical-chat');
+      const body = panel.querySelector('.board-historical-chat-content');
+      const transcript = panel.querySelector('[aria-label="Agent conversation transcript"]');
+      const chat = transcript.closest('section[aria-label="Agent chat"]');
+      const bounds = body.getBoundingClientRect();
+      const transcriptBounds = transcript.getBoundingClientRect();
+      const chatBounds = chat?.getBoundingClientRect();
+      const visibleBottom = Math.min(bounds.bottom, chatBounds?.bottom ?? bounds.bottom, transcriptBounds.bottom);
+      const visibleHeight = visibleBottom - transcriptBounds.top;
+      const result = document.querySelector('#layout-result');
+      const passed = innerWidth === ${width} && innerHeight === ${height} && bounds.height > 0
+        && body.scrollTop === 0 && chat?.scrollTop === 0
+        && transcriptBounds.top >= bounds.top && transcriptBounds.top < bounds.bottom
+        && visibleHeight >= 192 && chatBounds?.height >= bounds.height * .45;
+      result.textContent = JSON.stringify({ passed, panelTop: bounds.top, panelBottom: bounds.bottom,
+        transcriptTop: transcriptBounds.top, visibleHeight, chatHeight: chatBounds?.height });
+      result.dataset.passed = String(passed);
+      if (!passed) throw new Error('Transcript must be readable inside the initial Selected Run panel');
+    </script></body></html>`
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, `selected-run-${width}x${height}.html`), html)
+}
+
 it.each([{ width: 1431, height: 1061 }, { width: 320, height: 480 }])(
   'reserves readable transcript space beside long Activities at $width × $height', async ({ width, height }) => {
     installSelectedHandlers()
@@ -173,6 +213,7 @@ it.each([{ width: 1431, height: 1061 }, { width: 320, height: 480 }])(
     await within(activities).findByText('Run event 40')
     await within(panel).findByText('Question execution-run-a')
     const transcript = within(panel).getByRole('region', { name: 'Agent conversation transcript' })
+    if (width === 1431) await exportPanelLayoutTest(panel, width, height)
     expect(within(transcript).getByText('Reply execution-run-a')).toBeVisible()
     const viewportStyle = getComputedStyle(transcript.parentElement!)
     // jsdom resolves the rendered CSS but does not measure browser geometry.
@@ -181,7 +222,12 @@ it.each([{ width: 1431, height: 1061 }, { width: 320, height: 480 }])(
     expect(minimumHeight).toBeGreaterThanOrEqual(192)
     expect(viewportStyle.flexShrink).toBe('0')
     expect(getComputedStyle(transcript).overflowY).toBe('auto')
-    expect(getComputedStyle(activities.parentElement!).overflow).toBe('auto')
+    const panelBody = activities.parentElement!
+    expect(getComputedStyle(panelBody).display).toBe('grid')
+    expect(getComputedStyle(panelBody).gridTemplateRows).toBe('minmax(0, 2fr) minmax(0, 3fr)')
+    expect(getComputedStyle(panelBody).overflow).toBe('hidden')
+    expect(getComputedStyle(activities).overflowY).toBe('auto')
+    expect(getComputedStyle(transcript.closest('section[aria-label="Agent chat"]')!).overflowY).toBe('auto')
     expect(getComputedStyle(within(panel).getByRole('button', { name: 'Close Selected Run panel' }).parentElement!)
       .flexShrink).toBe('0')
     expect(within(panel).getByRole('textbox', { name: 'Message' })).toBeVisible()
