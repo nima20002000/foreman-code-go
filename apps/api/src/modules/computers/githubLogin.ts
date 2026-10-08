@@ -23,13 +23,30 @@ interface Session {
 /** One GitHub CLI sign-in at a time on this computer: start returns the device code, status follows the CLI to completion. */
 export class GitHubLoginRunner {
   private session: Session | undefined
+  private pendingLogout: Promise<GitHubLoginState> | undefined
   constructor(private readonly ports: GitHubLoginPorts = systemGitHubPorts()) {}
 
   async handle(request: GitHubLoginRequest): Promise<GitHubLoginState> {
-    if (request.operation === 'login-start') return this.start()
-    if (request.operation === 'logout') return this.logout()
+    if (request.operation === 'login-start') {
+      // The logout caller receives any failure; a later sign-in still replaces that account.
+      if (this.pendingLogout) await Promise.allSettled([this.pendingLogout])
+      return this.start()
+    }
+    if (request.operation === 'logout') return this.orderedLogout()
     if (request.operation === 'setup-git') return this.setupGit(request.loginId)
     return this.status(request.loginId)
+  }
+
+  private async orderedLogout(): Promise<GitHubLoginState> {
+    const previous = this.pendingLogout
+    const pending = (async () => {
+      if (previous) await Promise.allSettled([previous])
+      return this.logout()
+    })()
+    this.pendingLogout = pending
+    try { return await pending } finally {
+      if (this.pendingLogout === pending) this.pendingLogout = undefined
+    }
   }
 
   private async start(): Promise<GitHubLoginState> {

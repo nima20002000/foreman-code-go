@@ -3,7 +3,7 @@ import { PassThrough } from 'node:stream'
 import { expect, it, vi } from 'vitest'
 import { GitHubLoginRunner, type GitHubLoginPorts } from './githubLogin.js'
 
-function fixture(installed = true, options: { unreadable?: boolean; setupFails?: boolean; logoutKeepsAccount?: boolean; logoutFails?: boolean; nextAccount?: string; unreadableAfterLogout?: boolean } = {}) {
+function fixture(installed = true, options: { unreadable?: boolean; setupFails?: boolean; logoutKeepsAccount?: boolean; logoutFails?: boolean; nextAccount?: string; unreadableAfterLogout?: boolean; logoutWait?: Promise<void> } = {}) {
   let user: string | null = null
   const children: { stdout: PassThrough; stderr: PassThrough; stdin: PassThrough; emitter: EventEmitter; kill: ReturnType<typeof vi.fn>; args: string[] }[] = []
   const runs: string[] = []
@@ -30,6 +30,7 @@ function fixture(installed = true, options: { unreadable?: boolean; setupFails?:
           : { code: 1, stdout: '', stderr: 'You are not logged into any GitHub hosts.' }
         if (args[1] === 'status') return user ? { code: 0, stderr: '', stdout: JSON.stringify({ hosts: { 'github.com': [{ login: user, active: true, state: 'success' }] } }) }
           : { code: 1, stdout: '', stderr: 'You are not logged into any GitHub hosts.' }
+        if (args[1] === 'logout' && options.logoutWait) await options.logoutWait
         if (args[1] === 'logout' && options.logoutFails) return { code: 1, stdout: '', stderr: 'logout failed' }
         if (args[1] === 'logout' && !options.logoutKeepsAccount) {
           user = options.nextAccount ?? null
@@ -136,4 +137,33 @@ it('does not claim signed-out after logout fails or the verification probe fails
   const unknown = fixture(true, { unreadableAfterLogout: true })
   unknown.signIn('owner')
   await expect(unknown.runner.handle({ operation: 'logout' })).rejects.toMatchObject({ code: 'GITHUB_STATUS_UNKNOWN' })
+})
+
+
+it('starts a requested account switch only after pending logout has checked the removed credentials', async () => {
+  let finishLogout!: () => void
+  const logoutWait = new Promise<void>(resolve => { finishLogout = resolve })
+  const f = fixture(true, { logoutWait })
+  f.signIn('owner')
+  const logout = f.runner.handle({ operation: 'logout' })
+  await vi.waitFor(() => expect(f.runs).toContain('auth logout --hostname github.com --user owner'))
+  const start = f.runner.handle({ operation: 'login-start' })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  try {
+    expect(f.children).toHaveLength(0)
+  } finally {
+    finishLogout()
+    if (f.children[0]) {
+      f.children[0].stdout.write('one-time code: BBBB-2222\n')
+      f.runner.close()
+    }
+  }
+  expect(await logout).toMatchObject({ state: 'signed-out' })
+  await vi.waitFor(() => expect(f.children).toHaveLength(1))
+  f.children[0]!.stdout.write('one-time code: BBBB-2222\n')
+  const waiting = await start
+  f.signIn('switched-owner')
+  f.children[0]!.emitter.emit('exit', 0)
+  await vi.waitFor(async () => expect(await f.runner.handle({ operation: 'login-status', loginId: waiting.loginId! }))
+    .toMatchObject({ state: 'signed-in', account: 'switched-owner' }))
 })

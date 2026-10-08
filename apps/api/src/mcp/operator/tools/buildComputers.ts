@@ -35,8 +35,8 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   if (github && operatorToolAvailable(context, 'computer_github_login_start')) server.registerTool('computer_github_login_start', {
     description: 'Start GitHub CLI sign-in (github.com) on Main or a paired computer. Returns a one-time device code and '
       + 'https://github.com/login/device; the owner enters the code in a browser. Requires global settings:update. The token stays '
-      + 'on that computer. Follow with computer_github_login_status; git-setup-failed means sign-in succeeded '
-      + 'but Git setup needs retry.',
+      + 'on that computer. A pending sign-out finishes before this sign-in starts. '
+      + 'Follow with computer_github_login_status; git-setup-failed means sign-in succeeded but Git setup needs retry.',
     inputSchema: ComputerGitHubInputSchema, outputSchema: GitHubLoginStateSchema, annotations: writeAnnotations,
   }, input => invokeOperatorTool(context, 'computer_github_login_start',
     () => github.handle(context.principal, 'mcp', input.target, { operation: 'login-start' })))

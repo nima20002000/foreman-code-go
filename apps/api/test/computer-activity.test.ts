@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -10,6 +12,7 @@ import { DomainError } from '../src/modules/errors.js'
 import { BuildComputerSettings } from '../src/modules/settings/buildComputers.js'
 import { ComputerActivityService } from '../src/modules/computers/activity.js'
 import { ComputerAccountsService } from '../src/modules/computers/accounts.js'
+import { GitHubLoginRunner } from '../src/modules/computers/githubLogin.js'
 import { ComputerGitHubService } from '../src/modules/computers/github.js'
 import { ComputerDriveService } from '../src/modules/computers/drive.js'
 import type { DriveComputer } from '../src/modules/computers/driveComputer.js'
@@ -39,7 +42,7 @@ const job = (id: string, workspaceId: string) => ({ target, activity: { id, name
 const agent = (id: string, workspaceId: string) => ({ target, activity: { id, workspaceId, workflowId: 'workflow',
   workflowName: 'Website', runId: 'run', nodeId: 'review', agentName: 'Reviewer', state: 'waiting' } })
 
-async function fixture(options: { githubSetupFails?: boolean } = {}) {
+async function fixture(options: { githubSetupFails?: boolean; githubLocal?: Pick<GitHubLoginRunner, 'handle'> } = {}) {
   const pool = new pg.Pool()
   const jobs = [job('visible', 'allowed'), job('secret', 'private')]
   const agents = [agent('visible', 'allowed'), agent('secret', 'private')]
@@ -120,6 +123,7 @@ async function fixture(options: { githubSetupFails?: boolean } = {}) {
   }), commands, {
     local: { handle: async request => {
       githubCalls.push({ where: 'main', request })
+      if (options.githubLocal) return options.githubLocal.handle(request)
       mainProbes.githubAccount = request.operation === 'logout' ? null : 'signed-in-owner'
       return githubState(request)
     } },
@@ -368,4 +372,62 @@ it('discovers Git setup retry through MCP and preserves write permission checks'
     expect(GitHubLoginStateSchema.parse(retry.structuredContent)).toMatchObject({ state: 'signed-in', account: 'octo-owner' })
     expect(f.audited).toHaveBeenCalledWith('owner', 'mcp', 'computer_github_setup_git', `main:${mainId}`, 'succeeded', { state: 'signed-in' })
   } finally { await f.close() }
+})
+
+
+it('orders an authenticated MCP account switch after pending credential removal', async () => {
+  let account: string | null = 'owner'
+  let release!: () => void
+  const removing = new Promise<void>(resolve => { release = resolve })
+  const events: string[] = []
+  const child = new EventEmitter()
+  const stderr = new PassThrough()
+  const runner = new GitHubLoginRunner({ now: Date.now, probe: {
+    environment: {}, find: async name => name === 'gh' ? '/fixture/gh' : null, readText: async () => null,
+    run: async (_binary, args) => {
+      if (args[1] === 'logout') {
+        events.push('logout')
+        await removing
+        account = null
+      }
+      if (args[1] === 'status') {
+        if (!account) events.push('verified signed-out')
+        return { code: 0, stderr: '', stdout: JSON.stringify({ hosts: { 'github.com': account
+          ? [{ active: true, login: account, state: 'success' }] : [] } }) }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+  }, spawn: () => {
+    events.push('login')
+    queueMicrotask(() => stderr.write('one-time code: AB12-CD34\n'))
+    return { stdout: new PassThrough(), stderr, stdin: new PassThrough(),
+      kill: () => { child.emit('exit', null); return true },
+      once: (event: string, listener: (...values: unknown[]) => void) => child.once(event, listener) } as never
+  } })
+  const f = await fixture({ githubLocal: runner })
+  const mainTarget = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+    keyRevision: null, authorizationRevision: null }
+  try {
+    const client = await f.connect('owner')
+    const logout = client.callTool({ name: 'computer_github_logout', arguments: { target: mainTarget } })
+    await vi.waitFor(() => expect(events).toContain('logout'))
+    const start = client.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })
+    await vi.waitFor(() => expect(f.githubCalls.map(call => call.request.operation)).toEqual(['logout', 'login-start']))
+    expect(events).not.toContain('login')
+    const reader = await f.connect('settings-reader')
+    expect((await reader.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })).isError).toBe(true)
+    release()
+    expect(GitHubLoginStateSchema.parse((await logout).structuredContent).state).toBe('signed-out')
+    const waiting = GitHubLoginStateSchema.parse((await start).structuredContent)
+    expect(events).toEqual(['logout', 'verified signed-out', 'login'])
+    account = 'switched-owner'
+    child.emit('exit', 0)
+    await vi.waitFor(async () => expect(GitHubLoginStateSchema.parse((await client.callTool({
+      name: 'computer_github_login_status', arguments: { target: mainTarget, loginId: waiting.loginId },
+    })).structuredContent)).toMatchObject({ state: 'signed-in', account: 'switched-owner' }))
+  } finally {
+    release()
+    runner.close()
+    await f.close()
+  }
 })
