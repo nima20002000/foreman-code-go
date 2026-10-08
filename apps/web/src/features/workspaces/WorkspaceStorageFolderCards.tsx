@@ -6,7 +6,7 @@ import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { queryKeys } from '../../shared/api/query'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { Alert, Button, Dialog } from '../../shared/ui/nocturne'
-import { ResourceCard, TrashIconButton } from '../../shared/ui/ResourceCard'
+import { ResourceActionsMenu, ResourceCard } from '../../shared/ui/ResourceCard'
 import { folderSelectionId, type WorkspaceSelectionTarget } from './workspaceSelection'
 
 interface FolderSelection {
@@ -19,6 +19,7 @@ interface FolderSelection {
 
 export function WorkspaceStorageFolderCard({ folder, selection }: { folder: WorkspaceStorageFolder; selection: FolderSelection }) {
   const [confirming, setConfirming] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   const queryClient = useQueryClient()
   const cancelRef = useRef<HTMLButtonElement>(null)
   const inFlight = useRef(false)
@@ -54,9 +55,13 @@ export function WorkspaceStorageFolderCard({ folder, selection }: { folder: Work
       disabled: selection.locked || (!selected && (folder.deletion.status === 'protected' || selection.count >= 100)),
       onChange: () => selection.toggle(folderSelectionId(folder.path), { kind: 'folder', name: folder.name, path: folder.path, identity: folder.identity }),
     }}
-    actions={<TrashIconButton target={`folder ${folder.name}`} disabled={selection.locked || folder.deletion.status === 'protected'}
-      disabledReason={folder.deletion.status === 'protected' ? folder.deletion.message : undefined}
-      onClick={() => { target.current = folder; setConfirming(true) }} />}
+    actions={<ResourceActionsMenu name={`folder ${folder.name}`} disabled={selection.locked} open={menuOpen} onOpenChange={setMenuOpen}>
+      <p className="resource-card-menu-note">Folder on disk without a workspace.</p>
+      {folder.deletion.status === 'protected' ? <Alert tone="warning" title="This folder is protected.">{folder.deletion.message}</Alert> : null}
+      <Button variant="danger" disabled={folder.deletion.status === 'protected'}
+        onClick={() => { target.current = folder; setMenuOpen(false); setConfirming(true) }}>Delete folder</Button>
+      <Button variant="ghost" onClick={() => setMenuOpen(false)}>Close</Button>
+    </ResourceActionsMenu>}
     protection={folder.deletion.status === 'protected' ? { label: `Protected folder. ${folder.deletion.message}`, reason: folder.deletion.message } : undefined}>
     <Dialog open={confirming} onOpenChange={(open) => { if (!open) close() }}
       title={`Delete ${target.current.name}?`} busy={locked} initialFocusRef={cancelRef} size="sm"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useStore } from 'zustand'
 import { createResourceSelection } from '../../shared/ui/resourceSelection'
@@ -14,10 +14,9 @@ import {
   useUpdateManagedWorkflowMutation,
 } from '../../shared/api/query'
 import {
-  ActionMenu, Alert, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
+  ActionMenu, Alert, Button, Dialog, EmptyState, ErrorState, LoadingState, PageHeader, TextField,
 } from '../../shared/ui/nocturne'
-import { ResourceCard } from '../../shared/ui/ResourceCard'
-import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
+import { ResourceActionsMenu, ResourceCard } from '../../shared/ui/ResourceCard'
 import { NewWorkflowAction } from './NewWorkflowAction'
 import './workflows.css'
 import '../../shared/ui/resourceDirectory.css'
@@ -31,52 +30,34 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
   const [nextName, setNextName] = useState(name)
   const [nameError, setNameError] = useState<string>()
   const nameInputRef = useRef<HTMLInputElement>(null)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const surfaceRef = useRef<HTMLDivElement>(null)
-  const close = useCallback(() => setOpen(false), [])
 
   useEffect(() => setNextName(name), [name])
-  useDismissableSurface({ open, onDismiss: close, surfaceRef, triggerRef })
 
   return (
-    <div>
-      <IconButton
-        ref={triggerRef}
-        label={`Open actions for ${name}`}
-        variant="ghost"
-        size="sm"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <Icon name="more" size={16} />
-      </IconButton>
-      {open ? (
-        <div ref={surfaceRef} className="resource-card-menu" role="dialog" aria-label={`${name} actions`}>
-          <TextField
-            ref={nameInputRef}
-            label="Name"
-            value={nextName}
-            error={nameError}
-            onChange={(event) => {
-              setNextName(event.target.value)
-              if (nameError) setNameError(undefined)
-            }}
-          />
-          <Button onClick={() => {
-            const value = nextName.trim()
-            if (!value) {
-              setNameError('Enter a workflow name.')
-              nameInputRef.current?.focus()
-              return
-            }
-            onRename(value)
-            close()
-          }}>Rename</Button>
-          <Button variant="danger" onClick={onRemove}>Remove workflow</Button>
-        </div>
-      ) : null}
-    </div>
+    <ResourceActionsMenu name={name} open={open} onOpenChange={setOpen}>
+      <TextField
+        ref={nameInputRef}
+        label="Name"
+        value={nextName}
+        error={nameError}
+        onChange={(event) => {
+          setNextName(event.target.value)
+          if (nameError) setNameError(undefined)
+        }}
+      />
+      <Button onClick={() => {
+        const value = nextName.trim()
+        if (!value) {
+          setNameError('Enter a workflow name.')
+          nameInputRef.current?.focus()
+          return
+        }
+        onRename(value)
+        setOpen(false)
+      }}>Rename</Button>
+      <Button variant="danger" onClick={onRemove}>Remove workflow</Button>
+      <Button variant="ghost" onClick={() => setOpen(false)}>Close</Button>
+    </ResourceActionsMenu>
   )
 }
 
