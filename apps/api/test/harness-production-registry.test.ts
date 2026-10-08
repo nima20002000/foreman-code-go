@@ -48,9 +48,9 @@ it('distinguishes unavailable and stale remote snapshots from a current empty in
 it('pins actual main installation payloads and invalidates selections after passive refresh', async () => {
   const pool = new pg.Pool({ connectionString: 'postgresql://unused@127.0.0.1:1/unused' })
   let payload = 'payload-A'
-  let reads = 0
+  const reads: string[] = []
   const launcher: typeof discoverLauncher = async (requested, environment, paths = []) => {
-    reads++
+    reads.push(requested)
     return { requested, resolvedLauncher: `/recorded/${requested}`, fingerprint: payload,
       payloadFingerprints: paths.map((path) => ({ path, fingerprint: payload })), status: 'installed',
       interpreter: null, diagnostics: [], environment, checkedAt: '2026-10-01T00:00:00.000Z' }
@@ -64,7 +64,7 @@ it('pins actual main installation payloads and invalidates selections after pass
     expect(selection.selection.hostRef).toEqual({ kind: 'main', mainId: 'd46e2a2b-130f-46de-a93b-78a2352b9c9d' })
     expect(selection.installation.installationFingerprint).toBe('payload-A')
     expect(selection.installation.qualified).toBeNull()
-    expect(reads).toBe(4)
+    expect(reads).toEqual(['codex', 'codex'])
     expect(registry.installations.list().find(value => value.driverId === 'claude')).toMatchObject({
       installed: false, installationFingerprint: null, authenticated: null, qualified: null,
     })

@@ -38,17 +38,18 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
   it('records official provenance for the bundled native qualification versions', async () => {
     const options = fixture(QUALIFIED_RELEASES.codex.version)
     const result = await create(options).checkAll()
-    expect(result.map((row) => row.status)).toEqual(['probe-passed', 'probe-passed'])
+    expect(result.map((row) => ({ harness: row.harness, status: row.status })))
+      .toEqual([{ harness: 'codex', status: 'probe-passed' }])
     expect(result[0]?.knownRelease?.releaseUrl).toBe('https://github.com/openai/codex/releases/tag/rust-v0.154.0')
-    expect(options.probe.probe).toHaveBeenCalledTimes(2)
-    expect(options.probe.inspect).toHaveBeenCalledTimes(2)
+    expect(options.probe.probe).toHaveBeenCalledExactlyOnceWith('codex', expect.any(Object), expect.any(AbortSignal))
+    expect(options.probe.inspect).toHaveBeenCalledTimes(1)
   })
   it('recognizes the separately qualified Codex 0.156.1 release', async () => {
     const options = fixture('0.156.1')
     const result = await create(options).checkAll()
     expect(result[0]).toMatchObject({ status: 'probe-passed', matchesQualifiedVersion: true,
       qualifiedRelease: { version: '0.156.1' }, knownRelease: { tag: 'rust-v0.156.1' } })
-    expect(options.probe.probe).toHaveBeenCalledTimes(2)
+    expect(options.probe.probe).toHaveBeenCalledExactlyOnceWith('codex', expect.any(Object), expect.any(AbortSignal))
   })
   it('caches an unknown version without qualifying it or changing the release manifest', async () => {
     const options = fixture()
@@ -151,7 +152,7 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     const options = fixture()
     let finish: (value: string) => void = () => undefined
     vi.mocked(options.probe.probe).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
-      .mockResolvedValueOnce(sha).mockResolvedValueOnce('b'.repeat(64))
+      .mockResolvedValueOnce('b'.repeat(64))
     const service = create(options)
     service.start()
     await vi.waitFor(() => expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(1))

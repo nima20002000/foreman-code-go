@@ -48,7 +48,7 @@ describe('compatibility route authorization and request boundaries', () => {
     const response = await app.inject({ method: 'GET', url: readUrl, headers: authorized })
     expect(response.statusCode).toBe(200)
     expect(response.headers['cache-control']).toBe('no-store')
-    expect(response.json().harnesses).toHaveLength(2)
+    expect(response.json().harnesses.map((row: { harness: string }) => row.harness)).toEqual(['codex'])
     expect(inspect).not.toHaveBeenCalled()
   })
   it('shows read-only status without granting retry permission', async () => {

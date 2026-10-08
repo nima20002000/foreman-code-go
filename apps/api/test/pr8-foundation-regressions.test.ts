@@ -47,10 +47,6 @@ describe('PR8 current executable approval acceptance', () => {
 
 })
 
-describe('PR8 native settings and exact variants', () => {
-
-})
-
 describe('PR8 durable schema and transaction boundaries', () => {
   it('rejects undecided deliveries, incomplete decisions and terminal-state contradictions', () => {
     const base = structuredClone(NATIVE_INTERACTION_FIXTURES.codex)

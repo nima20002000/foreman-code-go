@@ -9,6 +9,7 @@ import { codexSchema } from './fixtures/harness-schemas.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { nativeCompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
 import { CompatibilityCheckError } from '../src/modules/harnesses/compatibility/errors.js'
+import { runCommand } from '../src/modules/harnesses/process.js'
 
 let f: Fixture
 const newer = 'codex-cli 0.160.0'
@@ -117,9 +118,12 @@ describe.skipIf(process.platform === 'win32')('Codex installed contract verifica
     const owner = 'codex-qualification-owner'
     const scope = registry.scope(owner)
     assert.equal(await registry.closeOwner(owner), false)
-    await qualifyCodex(f.binary, f.directory, { ...process.env,
-      NODE_OPTIONS: '--import=data:text/javascript,throw%20new%20Error(%22controller%20bootstrap%22)' },
-      true, undefined, scope)
+    const environment = { ...process.env,
+      NODE_OPTIONS: '--import=data:text/javascript,throw%20new%20Error(%22controller%20bootstrap%22)' }
+    const version = await runCommand(f.binary, ['--version'], f.directory, undefined, environment, { recovery: scope })
+    assert.equal(version.exitCode, 0, `Owned version probe failed: ${version.stderr}`)
+    assert.equal(version.stdout.trim(), newer)
+    await qualifyCodex(f.binary, f.directory, environment, true, undefined, scope)
     assert.equal(await registry.closeOwner(owner), true)
   })
   it('F27: executable replacement invalidates previously measured identity before spawn', async () => {
