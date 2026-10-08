@@ -4,7 +4,8 @@ import { syncableServers } from '../src/modules/computers/fleet.js'
 
 type Run = { binary: string; args: string[] }
 function ports(overrides: { versions?: Record<string, string | null>; sudo?: boolean; apt?: string; afterUpgrade?: string; files?: Record<string, string>;
-  codexMcp?: string[]; oauthMcp?: string[]; plugins?: string[]; marketplaces?: string[]; fail?: (run: Run) => boolean } = {}) {
+  codexMcp?: string[]; oauthMcp?: string[]; plugins?: string[]; marketplaces?: string[]; fail?: (run: Run) => boolean;
+  /** The computer runs an installer-pinned Codex, so npm installs the update elsewhere. */ pinnedCodex?: boolean } = {}) {
   const marketplaces = [...overrides.marketplaces ?? ['openai']], plugins = [...overrides.plugins ?? []]
   const codexMcp = [...overrides.codexMcp ?? []]
   let aptOutput = overrides.apt ?? '2 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.'
@@ -20,7 +21,7 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
       const name = binary.split('/').at(-1)!
       if (args[0] === '--version') return { code: 0, stdout: versions[name] ?? '', stderr: '' }
       if (name === 'npm' && args[0] === 'view') return { code: 0, stdout: args[1] === '@openai/codex' ? '0.161.0\n' : '2.1.294\n', stderr: '' }
-      if (name === 'npm' && args[0] === 'install') { versions.codex = 'codex-cli 0.161.0'; return { code: 0, stdout: 'added 1 package', stderr: '' } }
+      if (name === 'npm' && args[0] === 'install') { if (!overrides.pinnedCodex) versions.codex = 'codex-cli 0.161.0'; return { code: 0, stdout: 'added 1 package', stderr: '' } }
       if (name === 'claude' && args[0] === 'update') { versions.claude = '2.1.294 (Claude Code)'; return { code: 0, stdout: 'updated', stderr: '' } }
       if (name === 'apt-get') return { code: 0, stdout: aptOutput, stderr: '' }
       if (binary === 'sudo' && args[1] === 'true') return { code: overrides.sudo === false ? 1 : 0, stdout: '', stderr: '' }
@@ -52,7 +53,7 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
     later: fn => { later.push(fn) },
     now: () => new Date('2026-10-08T12:00:00.000Z'),
   }
-  return { value, runs, later }
+  return { value, runs, later, versions }
 }
 async function settle(maintenance: ComputerMaintenance) {
   for (let attempt = 0; attempt < 50; attempt++) {
@@ -131,6 +132,35 @@ describe('computer maintenance', () => {
     maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
       summary: 'Codex is still 0.160.0; latest published version is 0.161.0.' })
+  })
+
+  it('moves the Worker pinned Codex selection to the installed update before verifying it', async () => {
+    const pinned = ports({ pinnedCodex: true })
+    const unmoved = new ComputerMaintenance(pinned.value)
+    unmoved.start({ kind: 'update-harnesses', harnesses: ['codex'] })
+    expect((await settle(unmoved)).tasks[0]).toMatchObject({ state: 'failed',
+      summary: 'Codex is still 0.160.0; latest published version is 0.161.0.' })
+    const fake = ports({ pinnedCodex: true })
+    const selections: string[] = []
+    const maintenance = new ComputerMaintenance({ ...fake.value, async selectInstalledCodex() {
+      selections.push('/home/owner/.local/lib/node_modules/@openai/codex/native/codex')
+      fake.versions.codex = 'codex-cli 0.161.0'
+      return selections.at(-1)!
+    } })
+    maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
+    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex 0.160.0 → 0.161.0' })
+    expect(selections).toHaveLength(1)
+  })
+
+  it('updates Claude even when the Codex update fails, and reports both results', async () => {
+    const fake = ports({ fail: run => run.binary.endsWith('npm') && run.args[0] === 'install' })
+    const maintenance = new ComputerMaintenance(fake.value)
+    maintenance.start({ kind: 'update-harnesses', harnesses: ['codex', 'claude'] })
+    const task = (await settle(maintenance)).tasks[0]!
+    expect(task.state).toBe('failed')
+    expect(task.summary).toContain('Claude 2.1.19 → 2.1.294')
+    expect(task.summary).toContain('npm install @openai/codex@latest failed')
+    expect(fake.runs.some(run => run.binary.endsWith('claude') && run.args[0] === 'update')).toBe(true)
   })
 
   it('answers before restarting and never starts the same kind twice at once', async () => {

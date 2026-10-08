@@ -21,6 +21,9 @@ export interface MaintenancePorts {
   /** Runs fn after ms; restart uses it so the reply reaches Main before the computer goes down. */
   later(fn: () => void, ms: number): void
   now(): Date
+  /** A Worker with an installer-selected Codex moves that selection to the freshly installed Codex, so the computer
+   * actually uses the update. Returns the selected binary, or null when this computer has no Codex selection. */
+  selectInstalledCodex?(signal: AbortSignal): Promise<string | null>
 }
 
 const PACKAGES: Record<MaintainedHarness, string> = { codex: '@openai/codex', claude: '@anthropic-ai/claude-code' }
@@ -94,19 +97,30 @@ export class ComputerMaintenance {
     switch (request.kind) {
       case 'update-harnesses': {
         const changes: string[] = []
+        const failures: string[] = []
         this.latest = undefined
         const latest = await this.latestVersions(signal)
+        // Each harness is updated and verified on its own, so one failure does not hide the other's result.
         for (const harness of request.harnesses) {
-          const before = await this.installedVersion(harness, signal)
-          await this.installLatest(harness, step)
-          const after = await this.installedVersion(harness, signal)
-          if (!after || !latest[harness]) throw new Error(`${LABELS[harness]} update could not be verified.`)
-          if (after !== latest[harness]) {
-            throw new Error(`${LABELS[harness]} is still ${after}; latest published version is ${latest[harness]}.`)
+          try {
+            const before = await this.installedVersion(harness, signal)
+            await this.installLatest(harness, step)
+            if (harness === 'codex' && this.ports.selectInstalledCodex) {
+              const selected = await this.ports.selectInstalledCodex(signal)
+              if (selected) task.outputTail = tail(`${task.outputTail}\nSelected ${selected} for this computer's Codex.`)
+            }
+            const after = await this.installedVersion(harness, signal)
+            if (!after || !latest[harness]) throw new Error(`${LABELS[harness]} update could not be verified.`)
+            if (after !== latest[harness]) {
+              throw new Error(`${LABELS[harness]} is still ${after}; latest published version is ${latest[harness]}.`)
+            }
+            changes.push(`${LABELS[harness]} ${before ?? 'not installed'} → ${after}`)
+          } catch (error) {
+            failures.push(error instanceof Error ? error.message : `${LABELS[harness]} update failed.`)
           }
-          changes.push(`${LABELS[harness]} ${before ?? 'not installed'} → ${after ?? 'unknown'}`)
         }
         this.latest = undefined
+        if (failures.length) throw new Error([...changes, ...failures].join(' · '))
         return changes.join(' · ')
       }
       case 'update-system': {
