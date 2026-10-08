@@ -158,23 +158,31 @@ export class HarnessMcpSettingsService {
       }),
     }) } catch (error) { throw qualificationError(error) }
   }
-  async applyManaged(principal: ManagementPrincipal, input: HarnessMcpManagedInput): Promise<HarnessMcpPlan> {
-    const plan = await this.planManaged(principal, 'http', input)
-    try { return await this.decide(principal, plan.value.id, true) }
+  /** Plan and apply one managed preset change in a single command. */
+  async applyManaged(principal: ManagementPrincipal, input: HarnessMcpManagedInput, source: 'http' | 'mcp' = 'http'): Promise<HarnessMcpPlan> {
+    return this.applyPlanned(principal, source, await this.planManaged(principal, source, input))
+  }
+  /** Plan and apply one native connection change in a single command. */
+  async applyChange(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: HarnessMcpPlanInput): Promise<HarnessMcpPlan> {
+    return this.applyPlanned(principal, source, await this.plan(principal, source, raw))
+  }
+  private async applyPlanned(principal: ManagementPrincipal, source: 'http' | 'mcp', plan: { value: HarnessMcpPlan }): Promise<HarnessMcpPlan> {
+    try { return await this.decide(principal, plan.value.id, true, source) }
     catch (error) {
       // Planning committed. A busy/expired/pre-apply 4xx is not rejection of the
-      // original one-click command. Return its accepted identity and current state.
+      // original command. Return its accepted identity and current state.
       let accepted: HarnessMcpPlan
       try { accepted = await this.get(principal, plan.value.id) }
       catch { throw new DomainError('MCP_MANAGED_ACCEPTED', 'The MCP plan was accepted, but its current result could not be read. Retain and retry the original command.', 503) }
       return accepted.status === 'pending' ? { ...accepted, error: acceptedPlanMessage(error) } : accepted
     }
   }
-  private async liveUser(client: pg.PoolClient, principal: ManagementPrincipal): Promise<void> {
-    if (principal.audience !== 'operator') throw new DomainError('MCP_HUMAN_REVIEW_REQUIRED', 'A local human must review this change.', 403)
+  /** The writer still holds a live credential with harnesses:update. Delegated Operator credentials apply changes too:
+   * the owner chose no human gate for native MCP installs. */
+  private async liveWriter(client: pg.PoolClient, principal: ManagementPrincipal): Promise<void> {
     const active = await client.query<{ grants: ManagementPrincipal['grants']; expires_at: Date }>(
-      "select grants,expires_at from management_principals where id=$1 and audience='operator' and delegated_from is null and revoked_at is null and expires_at>now() for share", [principal.id])
-    if (!active.rows[0]) throw new DomainError('PRINCIPAL_REVOKED', 'Access is unavailable. Check the local API connection before reviewing this change.', 401)
+      'select grants,expires_at from management_principals where id=$1 and revoked_at is null and expires_at>now() for share', [principal.id])
+    if (!active.rows[0]) throw new DomainError('PRINCIPAL_REVOKED', 'Access is unavailable. Check the local API connection before changing MCP connections.', 401)
     requireAuthorization({ ...principal, grants: active.rows[0].grants, expiresAt: active.rows[0].expires_at.toISOString() }, 'harnesses:update')
   }
   private managed(plan: HarnessMcpPlan): { preset: HarnessMcpManagedPreset; endpoint: string } | undefined {
@@ -185,9 +193,8 @@ export class HarnessMcpSettingsService {
     if (!this.operatorEndpoint) throw new DomainError('MCP_PRESET_UNAVAILABLE', 'Managed MCP presets are unavailable.', 503)
     return { preset: plan.managedPreset, endpoint: this.operatorEndpoint }
   }
-  async decide(principal: ManagementPrincipal, id: string, approve: boolean): Promise<HarnessMcpPlan> {
+  async decide(principal: ManagementPrincipal, id: string, approve: boolean, source: 'http' | 'mcp' = 'http'): Promise<HarnessMcpPlan> {
     requireAuthorization(principal, 'harnesses:update')
-    // Browser transport is checked by the HTTP route; delegated credentials are denied below.
     return this.work(async (signal) => {
       const client = await this.pool.connect()
       let locked = false
@@ -197,7 +204,7 @@ export class HarnessMcpSettingsService {
       let unlockFile: (() => Promise<void>) | undefined
       let selected: HarnessMcpPlan | undefined
       try {
-        await this.liveUser(client, principal)
+        await this.liveWriter(client, principal)
         const lock = await client.query<{ locked: boolean }>("select pg_try_advisory_lock(hashtext('graphql:harness-mcp-settings')) as locked")
         locked = lock.rows[0]?.locked === true
         if (!locked) throw new DomainError('MCP_SETTINGS_BUSY', 'Another MCP change is being applied.', 409)
@@ -218,7 +225,7 @@ export class HarnessMcpSettingsService {
         const expected = snapshot ? expectedMcpUserFingerprint(snapshot, selected.change, managed) : null
         await client.query('begin')
         try {
-          await this.liveUser(client, principal)
+          await this.liveWriter(client, principal)
           const updated = await client.query<Row>(`update harness_mcp_change_plans set status=$2,decided_by=$3,error=null,
               native_user_after_hash=$4,native_file=$5
             where id=$1 and status='pending' and ($2='rejected' or expires_at>now()) returning *`,
@@ -226,8 +233,8 @@ export class HarnessMcpSettingsService {
           if (!updated.rows[0]) throw new DomainError('MCP_PLAN_CHANGED', 'This change is no longer awaiting review.', 409)
           marked = approve
           await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-            values($1,'http','harness.mcp.review',$2,'succeeded',$3::jsonb)`,
-            [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, decision: approve ? 'approve' : 'reject' })])
+            values($1,$4,'harness.mcp.review',$2,'succeeded',$3::jsonb)`,
+            [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, decision: approve ? 'approve' : 'reject' }), source])
           await client.query('commit')
         } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
         if (!approve) return this.get(principal, id)
@@ -238,7 +245,7 @@ export class HarnessMcpSettingsService {
         try {
           await client.query("update harness_mcp_change_plans set status='applied',error=null where id=$1 and status='submitting'", [id])
           await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-            values($1,'http','harness.mcp.apply',$2,'succeeded',$3::jsonb)`, [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id })])
+            values($1,$4,'harness.mcp.apply',$2,'succeeded',$3::jsonb)`, [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id }), source])
           await client.query('commit')
         } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
         this.notifyChanged()
@@ -254,8 +261,8 @@ export class HarnessMcpSettingsService {
           try {
             const updated = await client.query("update harness_mcp_change_plans set status=$2,error=$3 where id=$1 and status='submitting'", [id, status, message])
             if (updated.rowCount) await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-              values($1,'http','harness.mcp.delivery_recorded',$2,'succeeded',$3::jsonb)`,
-              [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, delivery: notSubmitted ? 'not_submitted' : 'uncertain' })])
+              values($1,$4,'harness.mcp.delivery_recorded',$2,'succeeded',$3::jsonb)`,
+              [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, delivery: notSubmitted ? 'not_submitted' : 'uncertain' }), source])
             await client.query('commit')
           } catch (persistenceError) { await client.query('rollback').catch(() => undefined); throw persistenceError }
           this.notifyChanged()
@@ -274,15 +281,15 @@ export class HarnessMcpSettingsService {
   }
 
   /** Owner-reviewed settlement. Inspection and process cleanup only: never calls apply(). */
-  async reconcile(principal: ManagementPrincipal, raw: HarnessMcpReconcileInput) {
+  async reconcile(principal: ManagementPrincipal, raw: HarnessMcpReconcileInput, source: 'http' | 'mcp' = 'http') {
     requireAuthorization(principal, 'harnesses:update')
     requireAuthorization(principal, 'harnesses:read')
     const input = HarnessMcpReconcileInputSchema.parse(raw)
     const plan = await this.get(principal, input.planId)
-    const result = await this.commands.execute({ principal, source: 'http', operation: 'harness.mcp.reconcile',
+    const result = await this.commands.execute({ principal, source, operation: 'harness.mcp.reconcile',
       commandId: input.commandId, targetKey: `harness-mcp:${plan.harness}`, payload: input,
       perform: (client) => this.work(async (signal) => {
-        await this.liveUser(client, principal)
+        await this.liveWriter(client, principal)
         // Same lock key as decide(). A live native writer must finish cleanup first.
         const lock = await client.query<{ locked: boolean }>("select pg_try_advisory_xact_lock(hashtext('graphql:harness-mcp-settings')) as locked")
         if (lock.rows[0]?.locked !== true) throw new DomainError('MCP_SETTINGS_BUSY', 'A native change is still running. Reconcile after it finishes.', 409)
@@ -302,7 +309,7 @@ export class HarnessMcpSettingsService {
           throw new DomainError('MCP_RECONCILIATION_MISMATCH',
             'The inspected configuration does not prove the intended result. Review it, then explicitly choose to keep the current configuration and close this request without replaying it.', 409)
         }
-        await this.liveUser(client, principal)
+        await this.liveWriter(client, principal)
         const status = matchesExpected ? 'applied' : 'reconciled'
         const updated = await client.query<Row>(`update harness_mcp_change_plans set status=$2,error=$3,decided_by=$4,
           reconciled_revision=$5 where id=$1 and status in ('submitting','uncertain') returning *`,
@@ -310,10 +317,10 @@ export class HarnessMcpSettingsService {
             principal.id, snapshot.revision])
         if (!updated.rows[0]) throw new DomainError('MCP_PLAN_CHANGED', 'The request changed during reconciliation.', 409)
         await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-          values($1,'http','harness.mcp.reconciliation_recorded',$2,'succeeded',$3::jsonb)`,
+          values($1,$4,'harness.mcp.reconciliation_recorded',$2,'succeeded',$3::jsonb)`,
           [principal.id, `harness-mcp:${row.harness}`, JSON.stringify({ planId: row.id, commandId: input.commandId,
             previousStatus: row.status, status, inspectedRevision: snapshot.revision, matchesExpected,
-            acceptedObservedState: input.acceptObservedState, nativeWriteRepeated: false })])
+            acceptedObservedState: input.acceptObservedState, nativeWriteRepeated: false }), source])
         return projection(updated.rows[0])
       }),
     })

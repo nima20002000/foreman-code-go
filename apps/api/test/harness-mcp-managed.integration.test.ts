@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, expect, it } from 'vitest'
-import { HarnessMcpListResultSchema, HarnessMcpPlanResultSchema, HarnessMcpPlanSchema } from '@foreman-code/contracts/management'
+import { HarnessMcpListResultSchema, HarnessMcpPlanSchema } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -67,16 +67,15 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
         const before = await listed(harness)
         expect(before.presets?.[preset]).toBe('missing')
         const args = { harness, preset, installed: true, expectedRevision: before.revision, commandId: randomUUID() }
-        const request = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: args })).structuredContent)
-        expect(request.value).toMatchObject({ status: 'pending', managedPreset: preset })
-        expect(HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: args })).structuredContent).replayed).toBe(true)
+        // The delegated Operator applies the preset itself: no human review step.
+        const applied = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: args })).structuredContent)
+        expect(applied).toMatchObject({ status: 'applied', managedPreset: preset })
+        expect(HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: args })).structuredContent)).toEqual(applied)
         await expect(client.callTool({ name: 'harness_mcp_change_request', arguments: { harness, expectedRevision: before.revision,
           commandId: randomUUID(), change: { kind: 'add', name: 'graphql', connection: { transport: 'remote', url: endpoint } } } })).resolves.toMatchObject({ isError: true })
         const bearerDenied = await app.inject({ method: 'POST', url: '/api/management/harnesses/mcp/managed',
           headers: { authorization: `Bearer ${owner.token}` }, payload: args })
         expect(bearerDenied.statusCode).toBe(403)
-        const applied = await mcp.decide(owner.principal, request.value.id, true)
-        expect(applied.status).toBe('applied')
         expect(HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_change_get', arguments: { planId: applied.id } })).structuredContent).status).toBe('applied')
         const installedList = await listed(harness)
         expect(installedList.presets?.[preset]).toBe('installed')
@@ -88,23 +87,17 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
         const original = structuredClone(snapshots[harness].user[name])
         for (const enabled of [false, true]) {
           const toggle = { harness, preset, enabled, expectedRevision: (await listed(harness)).revision, commandId: randomUUID() }
-          const togglePlan = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: toggle })).structuredContent)
-          expect(togglePlan.value.change).toEqual({ kind: 'enable', name, enabled })
-          expect((await mcp.decide(owner.principal, togglePlan.value.id, true)).status).toBe('applied')
+          const togglePlan = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: toggle })).structuredContent)
+          expect(togglePlan.change).toEqual({ kind: 'enable', name, enabled })
+          expect(togglePlan.status).toBe('applied')
           const toggled = await listed(harness)
           expect(toggled.presets?.[preset]).toBe(enabled ? 'installed' : 'disabled')
           expect(toggled.servers.find((server) => server.name === name)?.enabled).toBe(enabled)
           expect(snapshots[harness].user[name]).toEqual({ ...original as object, enabled })
-          if (!enabled) {
-            const disabledRemoval = { harness, preset, installed: false, expectedRevision: toggled.revision, commandId: randomUUID() }
-            const disabledPlan = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: disabledRemoval })).structuredContent)
-            expect(disabledPlan.value.change.kind).toBe('remove')
-            expect((await mcp.decide(owner.principal, disabledPlan.value.id, false)).status).toBe('rejected')
-          }
         }
         const removal = { harness, preset, installed: false, expectedRevision: (await listed(harness)).revision, commandId: randomUUID() }
-        const removePlan = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: removal })).structuredContent)
-        expect((await mcp.decide(owner.principal, removePlan.value.id, true)).status).toBe('applied')
+        const removePlan = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: removal })).structuredContent)
+        expect(removePlan).toMatchObject({ status: 'applied', change: { kind: 'remove' } })
         expect((await listed(harness)).presets?.[preset]).toBe('missing')
       }
       // Retired per-role entries are replaced by the one graphql entry in the same reviewed write.
@@ -113,9 +106,9 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       const before = await listed(harness)
       expect(before.presets?.graphql).toBe('legacy')
       expect(before.servers.find((server) => server.name === 'graphql-app')?.label).toBe('Legacy app connection · replaced by foreman-code')
-      const upgrade = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
+      const upgrade = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
         harness, preset: 'graphql', installed: true, expectedRevision: before.revision, commandId: randomUUID() } })).structuredContent)
-      expect((await mcp.decide(owner.principal, upgrade.value.id, true)).status).toBe('applied')
+      expect(upgrade.status).toBe('applied')
       expect(Object.keys(snapshots[harness].user)).toEqual(['foreman-code'])
       expect((await listed(harness)).presets?.graphql).toBe('installed')
       const installed = snapshots[harness].user['foreman-code']
@@ -124,16 +117,18 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       snapshots[harness] = { ...snapshots[harness], user: oldUser, effective: structuredClone(oldUser),
         revision: fingerprint(oldUser), credentialReferences: { graphql: 'FOREMAN_CODE_MCP_TOKEN' } }
       expect((await listed(harness)).presets?.graphql).toBe('disabled')
-      const rename = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
+      const rename = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
         harness, preset: 'graphql', installed: true, expectedRevision: (await listed(harness)).revision, commandId: randomUUID(),
       } })).structuredContent)
-      expect(rename.value.change.name).toBe('foreman-code')
-      expect((await mcp.decide(owner.principal, rename.value.id, true)).status).toBe('applied')
+      expect(rename).toMatchObject({ status: 'applied', change: { name: 'foreman-code' } })
       const renamed = await listed(harness)
       expect(renamed.presets?.graphql).toBe('disabled')
       expect(renamed.servers.map(server => server.name)).toEqual(['foreman-code'])
       expect(snapshots[harness].user['foreman-code']).toMatchObject({ enabled: false, disabled_tools: ['interaction_respond'] })
     }
+    const audits = await pool.query<{ principal_id: string; source: string }>("select principal_id,source from management_audit where action='harness.mcp.apply'")
+    expect(audits.rows.length).toBeGreaterThan(0)
+    expect(new Set(audits.rows.map((row) => `${row.principal_id}:${row.source}`))).toEqual(new Set([`${delegated.principal.id}:mcp`]))
   } finally {
     await mcp.shutdown(); await app.close(); await pool.end()
     await dropFixtureSchema(admin, schema); await admin.end()
