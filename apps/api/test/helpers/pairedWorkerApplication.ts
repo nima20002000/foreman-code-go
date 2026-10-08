@@ -5,7 +5,7 @@ import { chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promise
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { createServer } from 'node:net'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
@@ -175,6 +175,7 @@ async function installerCommand(file: string, args: string[], environment: NodeJ
     { env: environment, stdio: ['pipe', 'pipe', 'pipe'] })
   let output = ''
   let bytes = 0
+  let deadlineExpired = false
   child.stdout.on('data', (chunk: Buffer) => {
     bytes += chunk.length
     if (bytes > 1024 * 1024) child.kill('SIGTERM')
@@ -182,11 +183,19 @@ async function installerCommand(file: string, args: string[], environment: NodeJ
   })
   child.stderr.resume()
   child.stdin.end(options.input)
-  const timer = setTimeout(() => child.kill('SIGTERM'), 90_000)
+  const timer = setTimeout(() => {
+    deadlineExpired = true
+    child.kill('SIGTERM')
+  }, 90_000)
   try {
     await new Promise<void>((done, fail) => {
       child.once('error', fail)
-      child.once('close', code => code === 0 ? done() : fail(new Error('The owned Worker installer command failed.')))
+      child.once('close', (code, signal) => {
+        if (code === 0) return done()
+        const operation = /^[a-z][a-z-]*$/.test(args[0] ?? '') ? args[0] : 'fixture setup'
+        fail(new Error(`Worker fixture command ${basename(file)} (${operation}) failed: exit=${code ?? 'none'}, `
+          + `signal=${signal ?? 'none'}, deadlineExpired=${deadlineExpired}, outputLimitExceeded=${bytes > 1024 * 1024}.`))
+      })
     })
     assert.ok(bytes <= 1024 * 1024)
     return output.trim()
