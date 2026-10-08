@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, readdir, realpath } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PACKAGE_MANAGER = 'pnpm@11.27.0';
@@ -131,7 +131,9 @@ export async function verifySeedFiles(root, receipt) {
   return { bytes: receipt.files.reduce((total, file) => total + file.bytes, 0), inodes };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Bundled into the worker CLI, import.meta.url names that CLI; only run as this script.
+const self = fileURLToPath(import.meta.url);
+if (process.argv[1] && basename(self) === 'seed-policy.mjs' && resolve(process.argv[1]) === self) {
   const [root, receiptPath] = process.argv.slice(2);
   if (!root || !receiptPath) throw new Error('Usage: seed-policy.mjs /seed /receipt.json');
   const file = await open(receiptPath, constants.O_RDONLY | constants.O_NOFOLLOW);
