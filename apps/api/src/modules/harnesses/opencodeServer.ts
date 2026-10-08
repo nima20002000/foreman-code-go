@@ -16,6 +16,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import {
   SessionPreferencesSchema,
+  compactionBlocksSend,
   type SessionPreferences,
   NativeHarnessCapabilitiesSchema,
   NativeHarnessEventSchema,
@@ -582,6 +583,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   async reconcileCompaction(session: NativeSessionReference, control: CompactionState, signal?: AbortSignal): Promise<CompactionState> {
     const state = this.requireSession(session)
+    if (state.compaction?.requestId === control.requestId && !compactionBlocksSend(state.compaction)) {
+      control = state.compaction
+    }
     const result = await this.compactionFromHistory(session, state.directory, control, this.signal(signal))
     state.compaction = result
     return result
@@ -589,6 +593,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async compactionFromHistory(session: NativeSessionReference, directory: string,
     control: CompactionState, signal: AbortSignal): Promise<CompactionState> {
+    if (!compactionBlocksSend(control)) return control
     const messages: OpenCodeMessage[] = []
     let cursor: string | undefined
     for (let pageNumber = 0; pageNumber < 20; pageNumber++) {

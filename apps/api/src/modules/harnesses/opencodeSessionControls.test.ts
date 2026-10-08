@@ -38,3 +38,15 @@ it('recovers a correlated provider rejection without a successful finish reason'
   expect(openCodeCompactionResult(state, messages.map(message => ({ ...message,
     info: { ...message.info, parentID: 'foreign' } }))).status).toBe('uncertain')
 })
+
+it.each(['failed', 'completed', 'no-op'] as const)('preserves a known %s outcome over later history', status => {
+  const state = { requestId: 'command', nativeSessionId: 'session', nativeOperationId: 'before',
+    status, message: 'Known outcome', beforeTokens: null, observedAt: '2026-10-04T00:00:00.000Z' }
+  const messages = [
+    { info: { id: 'before', sessionID: 'session' }, parts: [] },
+    { info: { id: 'manual', sessionID: 'session' }, parts: [{ type: 'compaction', auto: false }] },
+    { info: { id: 'summary', sessionID: 'session', parentID: 'manual', role: 'assistant',
+      summary: true, finish: 'stop' }, parts: [] },
+  ]
+  expect(openCodeCompactionResult(state, messages)).toEqual(state)
+})
