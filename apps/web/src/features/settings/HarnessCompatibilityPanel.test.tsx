@@ -11,16 +11,15 @@ import { harnessQualificationKey } from '../../shared/api/harnessQualification'
 import { HarnessCompatibilityPanel } from './HarnessCompatibilityPanel'
 
 function report(harness: CompatibilityHarness, status: HarnessCompatibility['status'] = 'probe-failed'): HarnessCompatibility {
-  const codex = harness === 'codex'
   const release = {
-    version: codex ? '0.154.0' : '1.18.31',
-    repository: codex ? 'openai/codex' as const : 'anomalyco/opencode' as const,
-    tag: codex ? 'rust-v0.154.0' : 'v1.18.31',
-    releaseUrl: codex ? 'https://github.com/openai/codex/releases/tag/rust-v0.154.0' : 'https://github.com/anomalyco/opencode/releases/tag/v1.18.31',
+    version: '0.154.0',
+    repository: 'openai/codex' as const,
+    tag: 'rust-v0.154.0',
+    releaseUrl: 'https://github.com/openai/codex/releases/tag/rust-v0.154.0',
     commit: 'a'.repeat(40), recordedAt: '2026-09-19T00:00:00.000Z',
   }
   return {
-    harness, checkId: codex ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222',
+    harness, checkId: '11111111-1111-4111-8111-111111111111',
     installedVersion: status === 'known-compatible' ? release.version : '99.0.0', status,
     checkedAt: '2026-09-19T10:00:00.000Z', source: status === 'known-compatible' ? 'release-record' : 'local-probe',
     checkerRevision: 'protocol-settings-v1', qualifiedRelease: release,
@@ -39,7 +38,7 @@ function mount(value: HarnessCompatibilityList, harness: CompatibilityHarness = 
   render(<QueryClientProvider client={client}><ToastProvider><HarnessCompatibilityPanel harness={harness} /></ToastProvider></QueryClientProvider>)
   return client
 }
-const both = (): HarnessCompatibilityList => ({ canRetry: true, harnesses: [report('codex'), report('opencode', 'known-compatible')] })
+const both = (): HarnessCompatibilityList => ({ canRetry: true, harnesses: [report('codex')] })
 type Qualification = z.infer<typeof HarnessQualificationListSchema>['qualifications'][number]
 const qualification = (status: Qualification['status'], failureReason: string | null = null): Qualification => ({
   harness: 'codex', version: '0.158.0', binarySha256: 'a'.repeat(64), status,
@@ -148,14 +147,14 @@ describe('Harness Settings compatibility feedback', () => {
       http.post('*/api/management/harnesses/codex/compatibility/retry', async ({ request }) => {
         expect(await request.json()).toEqual({})
         attempts++
-        value = { ...value, harnesses: [checking, report('opencode', 'known-compatible')] }
+        value = { ...value, harnesses: [checking] }
         return HttpResponse.json(checking, { status: 202 })
       }),
     )
     fireEvent.click(await screen.findByRole('button', { name: 'Retry Codex check' }))
     expect(await screen.findByText('Checking Codex compatibility')).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: 'Checking Codex…' })).toBeDisabled()
-    value = { ...value, harnesses: [{ ...report('codex', 'probe-passed'), checkId: checking.checkId }, report('opencode', 'known-compatible')] }
+    value = { ...value, harnesses: [{ ...report('codex', 'probe-passed'), checkId: checking.checkId }] }
     await act(async () => { await client.invalidateQueries({ queryKey: harnessCompatibilityKey }) })
     expect(await screen.findByText('Codex local check passed')).toBeInTheDocument()
     await act(async () => { await client.invalidateQueries({ queryKey: harnessCompatibilityKey }) })

@@ -10,7 +10,7 @@ const checkedAt = '2026-09-20T00:00:00.000Z'
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()) })
 
-it.each(['codex', 'opencode'] as const)('adds, toggles, and removes Foreman Code and Linear MCP in %s', async (harness) => {
+it.each(['codex'] as const)('adds, toggles, and removes Foreman Code and Linear MCP in %s', async (harness) => {
   const installed = new Map<string, boolean>()
   const calls: Array<{ preset: string; installed?: boolean; enabled?: boolean }> = []
   server.use(
@@ -115,20 +115,20 @@ it('keeps protected and inherited servers inspectable while explaining why remov
 it('upgrades retired graphql-app and graphql-operator entries to the one Foreman Code MCP', async () => {
   const inputs: Array<{ preset: string; installed?: boolean }> = []
   server.use(
-    http.get('/api/management/harnesses/opencode/mcp', () => HttpResponse.json({ harness: 'opencode', revision, checkedAt, scope: 'native-user',
+    http.get('/api/management/harnesses/codex/mcp', () => HttpResponse.json({ harness: 'codex', revision, checkedAt, scope: 'native-user',
       servers: ['graphql-app', 'graphql-operator'].map((name) => ({ name, transport: 'stdio', label: 'Legacy app connection · replaced by graphql',
         enabled: true, origin: 'user', protected: true, editable: false })),
       presets: { graphql: 'legacy', linear: 'missing' } })),
-    http.get('/api/management/harnesses/opencode/mcp/plans', () => HttpResponse.json({ items: [] })),
+    http.get('/api/management/harnesses/codex/mcp/plans', () => HttpResponse.json({ items: [] })),
     http.post('/api/management/harnesses/mcp/managed', async ({ request }) => {
       const input = await request.json() as { preset: string; installed?: boolean }; inputs.push(input)
-      return HttpResponse.json({ id: crypto.randomUUID(), harness: 'opencode', revision,
+      return HttpResponse.json({ id: crypto.randomUUID(), harness: 'codex', revision,
         change: { kind: 'add', name: 'graphql', connection: { transport: 'stdio', executable: '/usr/bin/node', arguments: ['/launcher.mjs'], environmentVariables: [] } },
         managedPreset: 'graphql', requestedBy: 'owner', status: 'applied', createdAt: checkedAt, expiresAt: checkedAt, error: null })
     }),
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
-  render(<QueryClientProvider client={client}><HarnessMcpManager harness="opencode" /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}><HarnessMcpManager harness="codex" /></QueryClientProvider>)
   expect(await screen.findByText('Replaces the separate graphql-app and graphql-operator connections with one connection for every role.')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'View details for graphql-operator, Needs attention' }))
   expect(screen.getByRole('dialog', { name: 'graphql-operator MCP details' })).toHaveTextContent('This retired connection is replaced by foreman-code')

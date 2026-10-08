@@ -33,7 +33,7 @@ describe('HarnessStatusMenu', () => {
       defaultsRevision: 1, checkedAt: new Date().toISOString(), reason: null, limitation: 'Saved defaults only.',
     })))
     renderWithRouter(<HarnessStatusMenu />)
-    for (const name of ['Codex', 'OpenCode', 'Claude']) {
+    for (const name of ['Codex', 'Claude']) {
       const link = await screen.findByRole('link', { name: `${name}: ${label}` })
       expect(link).toHaveAttribute('href', expect.stringContaining(`/settings/harnesses?harness=${name.toLowerCase()}`))
       expect(link.querySelector('.harness-status-light')).toHaveClass(`harness-status-light--${status}`)
@@ -89,16 +89,16 @@ describe('HarnessStatusMenu', () => {
     await screen.findByRole('navigation', { name: 'Harness availability' })
     expect(animate).not.toHaveBeenCalled()
     act(() => useNavigationUiStore.getState().setCollapsed(true, 'manual'))
-    expect(animate).toHaveBeenCalledTimes(3)
+    expect(animate).toHaveBeenCalledTimes(2)
     expect(animate).toHaveBeenCalledWith([
       { transform: expect.stringContaining('translate('), opacity: 0.75 },
       { transform: 'translate(0, 0)', opacity: 1 },
     ], { duration: 160, easing: 'cubic-bezier(0.22, 0, 0, 1)' })
     act(() => useNavigationUiStore.getState().setCollapsed(false))
-    expect(cancel).toHaveBeenCalledTimes(3)
-    expect(animate).toHaveBeenCalledTimes(3)
+    expect(cancel).toHaveBeenCalledTimes(2)
+    expect(animate).toHaveBeenCalledTimes(2)
     act(() => useNavigationUiStore.getState().setWidth(300))
-    expect(animate).toHaveBeenCalledTimes(3)
+    expect(animate).toHaveBeenCalledTimes(2)
   })
 
   it('keeps manual relocation instant when reduced motion is requested', async () => {

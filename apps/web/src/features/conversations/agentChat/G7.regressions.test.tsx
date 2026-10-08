@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { agentChatFixtures, type AgentChatState } from '@foreman-code/contracts/agent-chat'
@@ -19,21 +19,6 @@ const mount = async (state: AgentChatState) => {
 }
 
 describe('G7 contextual notices and first-message availability (React + MSW, not native execution)', () => {
-  it('T-05 shows the OpenCode running-turn limitation only while a turn is active', async () => {
-    const initial = providerFixture('opencode', agentChatFixtures.idleAfterCompletion)
-    const mounted = await mount(initial), note = initial.capabilities.unavailable.steer!
-    expect(screen.queryByText(note)).not.toBeInTheDocument()
-    const active = providerFixture('opencode', agentChatFixtures.active)
-    active.revision = initial.revision + 1
-    mounted.mock.setState(active); await act(() => mounted.refresh())
-    expect(await screen.findByText(note)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Steer' })).toBeDisabled()
-    const idle = { ...initial, revision: active.revision + 1 }
-    mounted.mock.setState(idle); await act(() => mounted.refresh())
-    await waitFor(() => expect(screen.queryByText(note)).not.toBeInTheDocument())
-    expect(screen.queryByRole('button', { name: 'Steer' })).not.toBeInTheDocument()
-    expect(mounted.mock.calls.filter((call) => call.method === 'POST')).toEqual([])
-  })
 
   it('T-07 does not offer a composer or pretend a conversation existed for a Run with no stored session', async () => {
     const state = providerFixture('codex')
@@ -82,7 +67,7 @@ describe('G7 contextual notices and first-message availability (React + MSW, not
   })
 
   it('T-03/T-08 keeps long notices inside the single transcript and actions in a sibling footer', async () => {
-    const state = providerFixture('opencode', agentChatFixtures.active)
+    const state = providerFixture('claude', agentChatFixtures.active)
     state.messages = state.messages.filter((message) => message.role !== 'assistant')
     state.capabilities.unavailable.steer = 'A long provider-specific explanation. '.repeat(100)
     await mount(state)
@@ -99,4 +84,17 @@ describe('G7 contextual notices and first-message availability (React + MSW, not
       expect(within(transcript).queryByRole('button', { name })).not.toBeInTheDocument()
     }
   })
+})
+
+it('shows saved OpenCode messages as read-only even when old capabilities advertise writes', async () => {
+  const state = structuredClone(agentChatFixtures.idleAfterCompletion)
+  state.conversation!.harness = 'opencode'
+  state.capabilities.harness = 'opencode'
+  state.availability.canSend = true
+  await mount(state)
+  expect(screen.getAllByText('Retired harness (OpenCode): read-only').length).toBeGreaterThan(0)
+  expect(screen.getByRole('region', { name: 'Agent conversation transcript' })).toBeVisible()
+  expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('group', { name: 'Chat actions' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Send again as new message' })).not.toBeInTheDocument()
 })

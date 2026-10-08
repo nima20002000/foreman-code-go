@@ -19,7 +19,7 @@ vi.mock('../../shared/api/query', async () => {
 })
 
 vi.mock('../../shared/api/harnessSettings', () => ({
-  useNativeHarnessOptions: (harness: 'codex' | 'opencode' | 'claude') => nativeOptionsFixture(harness === 'claude' ? 'opencode' : harness),
+  useNativeHarnessOptions: (harness: 'codex' | 'claude') => nativeOptionsFixture(harness),
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useAutomaticHarnessCheck: () => ({ current: true, result: { isFetching: false, isSuccess: true, isError: false } }),
   useHarnessSessionEpoch: () => 0,
@@ -28,9 +28,9 @@ vi.mock('../../shared/api/harnessSettings', () => ({
 vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>Folder picker</div> }))
 
 const clients: QueryClient[]=[]
-function renderSettings(defaults: HarnessDefaults=DEFAULT_HARNESS_DEFAULTS, selectedHarness?: 'codex' | 'opencode' | 'claude') {
+function renderSettings(defaults: HarnessDefaults=DEFAULT_HARNESS_DEFAULTS, selectedHarness?: 'codex' | 'claude') {
   const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity}}})
-  client.setQueryData(queryKeys.managedHarnessCatalog,(['codex','opencode','claude'] as const).filter((harness)=>defaults[harness]).map((harness)=>({harness,defaults:defaults[harness],defaultsRevision:0,capability:null,discoveryError:null})));clients.push(client)
+  client.setQueryData(queryKeys.managedHarnessCatalog,(['codex','claude'] as const).filter((harness)=>defaults[harness]).map((harness)=>({harness,defaults:defaults[harness],defaultsRevision:0,capability:null,discoveryError:null})));clients.push(client)
   render(<QueryClientProvider client={client}><ToastProvider><HarnessDefaultsSettings selectedHarness={selectedHarness} onSelectHarness={selectedHarness ? () => {} : undefined} /></ToastProvider></QueryClientProvider>);return client
 }
 beforeEach(()=>{saveDefaults.mockReset();saveDefaults.mockImplementation(async(input)=>({value:{defaults:input.defaults,revision:1},replayed:false}))})
@@ -41,8 +41,6 @@ describe('Harness overview and draft regressions',()=>{
     act(() => client.setQueryData(queryKeys.managedHarnessCatalog, [
       { harness: 'codex', defaults: DEFAULT_HARNESS_DEFAULTS.codex, defaultsRevision: 0,
         capability: null, discoveryError: null, interactionSupport: CODEX_INTERACTION_SUPPORT },
-      { harness: 'opencode', defaults: DEFAULT_HARNESS_DEFAULTS.opencode, defaultsRevision: 0,
-        capability: null, discoveryError: null, interactionSupport: [] },
     ]))
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Access & approvals' }))
     const support = screen.getByRole('region', { name: 'Supported Codex requests' })
@@ -52,14 +50,14 @@ describe('Harness overview and draft regressions',()=>{
       expect(within(support).getByText(item.unsupported)).toBeVisible()
     }
   })
-  it.each(['codex', 'opencode'] as const)('shows %s model settings without routine preset or catalog prose', async (harness) => {
+  it.each(['codex'] as const)('shows %s model settings without routine preset or catalog prose', async (harness) => {
     renderSettings(DEFAULT_HARNESS_DEFAULTS, harness)
     expect(await screen.findByRole('combobox', { name: 'Model' })).toBeVisible()
     expect(screen.queryByText('Provider preset for new configurations. Existing agents and sessions keep their settings.')).not.toBeInTheDocument()
     expect(screen.queryByText(/API host model catalog/)).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 1 }).parentElement?.querySelector('p')).toBeNull()
   })
-  it.each(['Codex','OpenCode'] as const)('shows %s installation diagnostics only in App connection',async(name)=>{
+  it.each(['Codex'] as const)('shows %s installation diagnostics only in App connection',async(name)=>{
     renderSettings();const user=userEvent.setup()
     expect(screen.queryByRole('region',{name:`${name} installation`})).not.toBeInTheDocument()
     await user.click(await screen.findByRole('button',{name:`Edit ${name} defaults`}))
@@ -80,18 +78,11 @@ describe('Harness overview and draft regressions',()=>{
   it('does not replace a local provider draft after a server refresh',async()=>{
     const client=renderSettings();const user=userEvent.setup();await user.click(await screen.findByRole('button',{name:'Edit Codex defaults'}));await user.click(screen.getByRole('button',{name:'Access & approvals'}))
     const sandbox=screen.getByRole('combobox',{name:'Sandbox'});await user.selectOptions(sandbox,'workspace-write')
-    act(()=>client.setQueryData(queryKeys.managedHarnessCatalog,(['codex','opencode'] as const).map((harness)=>({harness,defaults:harness==='codex'?{...DEFAULT_HARNESS_DEFAULTS.codex,model:'different-model'}:DEFAULT_HARNESS_DEFAULTS.opencode,defaultsRevision:1,capability:null,discoveryError:null}))))
+    act(()=>client.setQueryData(queryKeys.managedHarnessCatalog,(['codex'] as const).map((harness)=>({harness,defaults:{...DEFAULT_HARNESS_DEFAULTS.codex,model:'different-model'},defaultsRevision:1,capability:null,discoveryError:null}))))
     expect(sandbox).toHaveValue('workspace-write');await user.click(screen.getByRole('button',{name:'Model & speed'}))
     expect(screen.getByRole('combobox',{name:'Model'})).toHaveValue(DEFAULT_HARNESS_DEFAULTS.codex.model)
   })
-  it('shows a saved unsupported native-auto value without silently replacing it',async()=>{
-    renderSettings({...DEFAULT_HARNESS_DEFAULTS,opencode:{...DEFAULT_HARNESS_DEFAULTS.opencode,autoApprove:true,advanced:{...DEFAULT_HARNESS_DEFAULTS.opencode.advanced!,permissionHandling:'native_auto'}}})
-    const user=userEvent.setup();await user.click(await screen.findByRole('button',{name:'Edit OpenCode defaults'}));await user.click(screen.getByRole('button',{name:'Access & approvals'}))
-    const field=screen.getByRole('combobox',{name:'Permission handling'});expect(field).toHaveValue('native_auto')
-    expect(within(field).getByRole('option',{name:'Native automatic handling (unavailable)'})).toBeDisabled()
-    await user.selectOptions(field,'graphql_routed');await user.click(screen.getByRole('button',{name:'Save OpenCode preset'}));await waitFor(()=>expect(saveDefaults).toHaveBeenCalledOnce())
-    expect(saveDefaults.mock.calls[0]![0].defaults.opencode.autoApprove).toBe(false)
-  })
+
 })
 
 describe('Claude provider settings', () => {
@@ -105,14 +96,13 @@ describe('Claude provider settings', () => {
     expect(screen.queryByRole('combobox', { name: 'Native Agent' })).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: 'Fast mode' })).not.toBeInTheDocument()
   })
-  it.each(['Codex', 'OpenCode'] as const)('preserves the exact optional Claude preset when saving %s', async (name) => {
+  it.each(['Codex'] as const)('preserves the exact optional Claude preset when saving %s', async (name) => {
     renderSettings({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration })
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: `Edit ${name} defaults` }))
     await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
     if (name === 'Codex') await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
     else await user.click(screen.getByRole('button', { name: 'Session' }))
-    if (name === 'OpenCode') await user.click(screen.getByRole('checkbox', { name: 'Automatic compaction' }))
     await user.click(screen.getByRole('button', { name: `Save ${name} preset` }))
     await waitFor(() => expect(saveDefaults).toHaveBeenCalledOnce())
     expect(saveDefaults.mock.calls[0]![0].defaults.claude).toEqual(savedClaudeConfiguration)

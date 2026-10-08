@@ -69,7 +69,7 @@ export function createAgentChatMock(initial: AgentChatState = agentChatFixtures.
       if (input.intent === 'interrupt_and_send' && !before.conversation) return failure('AGENT_CHAT_TURN_NOT_ACTIVE', 'There is no active turn to interrupt.')
       const { runId, ...identity } = context
       // Admission is not native acceptance. Tests explicitly publish later state; no timer pretends
-      // to start a harness. In particular a first OpenCode send must not acquire a Codex session.
+      // to start a harness. In particular a first Claude send must not acquire a Codex session.
       const conversation = before.conversation ?? { ...identity, id: `conversation-created-${++serial}`,
         agentConfigurationVersionId: `configuration-${context.agentId}`, harness: before.capabilities.harness,
         origin: runId ? { kind: 'run_execution' as const, runId, executionId: `execution-${runId}`, sourceNativeSessionId: `source-${runId}` } : { kind: 'fresh' as const },

@@ -14,7 +14,7 @@ import { nativeOptionsFixture } from './settingsExperience.fixtures'
 import { savedClaudeConfiguration } from './claudeSettings.fixtures'
 
 vi.mock('../../shared/api/harnessSettings', () => ({
-  useNativeHarnessOptions: (harness: 'codex' | 'opencode' | 'claude') => nativeOptionsFixture(harness === 'claude' ? 'opencode' : harness),
+  useNativeHarnessOptions: (harness: 'codex' | 'claude') => nativeOptionsFixture(harness),
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useAutomaticHarnessCheck: () => ({ current: false, result: { isFetching: false, isSuccess: false, isError: false } }),
   useHarnessSessionEpoch: () => 0,
@@ -29,7 +29,7 @@ function setup(defaults: HarnessDefaults, options: { conflicted?: boolean; claud
   let revision = 4
   let submitted: ReturnType<typeof HarnessDefaultsUpdateInputSchema.parse> | undefined
   server.use(
-    http.get('/api/management/harnesses', () => HttpResponse.json((['codex', 'opencode', 'claude'] as const)
+    http.get('/api/management/harnesses', () => HttpResponse.json((['codex', 'claude'] as const)
       .filter((harness) => persisted[harness]).map((harness) => ({ harness, defaults: persisted[harness], defaultsRevision: revision,
         capability: harness === 'claude' && options.claudeQualified ? {
           harness, version: 'checked-profile', authenticated: true, ready: true,
@@ -56,7 +56,7 @@ function setup(defaults: HarnessDefaults, options: { conflicted?: boolean; claud
     } }
 }
 describe('Claude defaults through the HTTP boundary', () => {
-  it.each(['Codex', 'OpenCode'] as const)('saves %s while retaining an incomplete Claude preset', async (name) => {
+  it.each(['Codex'] as const)('saves %s while retaining an incomplete Claude preset', async (name) => {
     const configuration = { ...savedClaudeConfiguration, sandbox: 'read-only' as const }
     const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: configuration }, {
       claudeError: { code: 'CLAUDE_FULL_ACCESS_REQUIRED', message: CLAUDE_FULL_ACCESS_REQUIRED },
@@ -66,13 +66,10 @@ describe('Claude defaults through the HTTP boundary', () => {
     if (name === 'Codex') {
       await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
       await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
-    } else {
-      await user.click(screen.getByRole('button', { name: 'Session' }))
-      await user.click(screen.getByRole('checkbox', { name: 'Automatic compaction' }))
     }
     await user.click(screen.getByRole('button', { name: `Save ${name} preset` }))
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
-    expect(state.submitted()?.configure).toEqual([name === 'Codex' ? 'codex' : 'opencode'])
+    expect(state.submitted()?.configure).toEqual([name === 'Codex' ? 'codex' : 'claude'])
     expect(state.submitted()?.defaults.claude).toEqual(configuration)
     expect((await getManagedHarnessCatalog()).find(entry => entry.harness === 'claude')).toMatchObject({
       defaults: configuration, defaultsRevision: 5, discoveryError: { code: 'CLAUDE_FULL_ACCESS_REQUIRED' },
@@ -135,22 +132,19 @@ describe('Claude defaults through the HTTP boundary', () => {
     expect(state.submitted()?.defaults.claude?.permissionRules).toContainEqual({ tool: 'mcp__graphql__harness_get', effect: 'ask' })
     expect(state.submitted()?.defaults.claude?.tools).toEqual([...savedClaudeConfiguration.tools, 'mcp__graphql__harness_get'])
   })
-  it.each(['Codex', 'OpenCode'] as const)('keeps exact Claude settings in persisted readback after saving %s', async (name) => {
+  it.each(['Codex'] as const)('keeps exact Claude settings in persisted readback after saving %s', async (name) => {
     setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration })
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: `Edit ${name} defaults` }))
     if (name === 'Codex') {
       await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
       await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
-    } else {
-      await user.click(screen.getByRole('button', { name: 'Session' }))
-      await user.click(screen.getByRole('checkbox', { name: 'Automatic compaction' }))
     }
     await user.click(screen.getByRole('button', { name: `Save ${name} preset` }))
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
     const readback = await getManagedHarnessCatalog()
     expect(readback.find((entry) => entry.harness === 'claude')?.defaults).toEqual(savedClaudeConfiguration)
-    expect(readback.map((entry) => entry.defaultsRevision)).toEqual([5, 5, 5])
+    expect(readback.map((entry) => entry.defaultsRevision)).toEqual([5, 5])
   })
   it('preserves optional absence when another provider is saved', async () => {
     const state = setup(DEFAULT_HARNESS_DEFAULTS)
@@ -161,7 +155,7 @@ describe('Claude defaults through the HTTP boundary', () => {
     await user.click(screen.getByRole('button', { name: 'Save Codex preset' }))
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
     expect(state.submitted()?.defaults).not.toHaveProperty('claude')
-    expect((await getManagedHarnessCatalog()).map((entry) => entry.harness)).toEqual(['codex', 'opencode'])
+    expect((await getManagedHarnessCatalog()).map((entry) => entry.harness)).toEqual(['codex'])
   })
   it('preserves the Claude draft and exact permissions after a revision conflict', async () => {
     const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration }, { conflicted: true })
@@ -205,5 +199,5 @@ it('reapplies local empty-setup fields onto an externally created Claude preset 
   expect(state.submitted()?.expectedRevision).toBe(5)
   const readback = await getManagedHarnessCatalog()
   expect(readback.find((entry) => entry.harness === 'claude')?.defaults).toEqual(expected)
-  expect(readback.map((entry) => entry.defaultsRevision)).toEqual([6, 6, 6])
+  expect(readback.map((entry) => entry.defaultsRevision)).toEqual([6, 6])
 })

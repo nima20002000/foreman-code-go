@@ -9,15 +9,13 @@ const defaults: HarnessDefaults = {
     ...DEFAULT_HARNESS_DEFAULTS.codex,
     model: 'gpt-5.6-terra', reasoningEffort: 'high', sandbox: 'workspace-write', serviceTier: 'priority',
   },
-  opencode: {
-    ...DEFAULT_HARNESS_DEFAULTS.opencode,
-    nativeAgent: 'plan', variant: 'low', thinking: true,
-  },
+  claude: savedClaudeConfiguration,
+
 }
 
 describe('PR #3 harness defaults and names', () => {
-  it.each(['codex', 'opencode'] as const)('uses the same saved %s template for direct creation and harness switching', (target) => {
-    const source = target === 'codex' ? 'opencode' : 'codex'
+  it.each(['codex', 'claude'] as const)('uses the same saved %s template for direct creation and harness switching', (target) => {
+    const source = target === 'codex' ? 'claude' : 'codex'
     const original = defaultAgentForHarness(source, 'agent-new', 'New agent', defaults[source])
     const direct = defaultAgentForHarness(target, 'agent-new', 'New agent', defaults[target])
     expect(direct.harnessConfiguration).toEqual(defaults[target])
@@ -27,7 +25,7 @@ describe('PR #3 harness defaults and names', () => {
       direct.model!,
       direct.effort!,
       direct.fastMode ?? false,
-      direct.harnessConfiguration?.harness === 'codex' ? direct.harnessConfiguration.sandbox : 'read-only',
+      direct.harnessConfiguration?.harness === 'codex' ? direct.harnessConfiguration.sandbox : 'danger-full-access',
       defaults,
     )).toEqual(direct.harnessConfiguration)
   })
@@ -38,7 +36,7 @@ describe('PR #3 harness defaults and names', () => {
       .toEqual(DEFAULT_HARNESS_DEFAULTS.codex)
   })
 
-  it.each(['codex', 'opencode'] as const)('continues %s names through 998, 999, 1000, and 1001', (harness) => {
+  it.each(['codex', 'claude'] as const)('continues %s names through 998, 999, 1000, and 1001', (harness) => {
     const agents = [{ id: 'agent-998', name: `${harness}-998` }]
     for (const expected of [999, 1000, 1001]) {
       const name = nextHarnessAgentName(harness, agents)

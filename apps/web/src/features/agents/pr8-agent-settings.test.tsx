@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { AgentSchema, DEFAULT_HARNESS_DEFAULTS, HarnessConfigurationSchema, type Agent } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, HarnessConfigurationSchema, type Agent } from '@foreman-code/contracts'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -17,34 +17,7 @@ function renderWithQueryClient(ui: ReactElement) {
 }
 
 describe('PR8 exact native settings in the actual form', () => {
-  it.each([false, true])('preserves a custom variant on a name-only save; creation=%s', (creating) => {
-    const defaults = structuredClone(DEFAULT_HARNESS_DEFAULTS)
-    defaults.opencode.variant = 'provider-custom-effort'
-    defaults.opencode.model = 'provider/custom-model'
-    const agent = defaultAgentForHarness('opencode', 'agent', 'Before', defaults.opencode)
-    expect(agent.effort).toBeUndefined()
-    const onSave = vi.fn()
-    renderWithQueryClient(<AgentSettingsForm agent={agent} {...(creating ? { creationDefaults: defaults } : {})} onClose={() => undefined} onSave={onSave} />)
-    expect((screen.getByLabelText('Provider variant') as HTMLInputElement).value).toBe('provider-custom-effort')
-    expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('provider/custom-model')
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'After' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
-    const saved = AgentSchema.parse(onSave.mock.calls[0]![0])
-    expect(saved.name).toBe('After')
-    expect(saved.effort).toBeUndefined()
-    expect(saved.harnessConfiguration).toEqual(defaults.opencode)
-  })
 
-  it('changes a native variant only after an explicit selection', async () => {
-    const configuration = { ...DEFAULT_HARNESS_DEFAULTS.opencode, variant: 'provider-custom-effort' }
-    const agent = defaultAgentForHarness('opencode', 'agent', 'Agent', configuration)
-    const onSave = vi.fn()
-    renderWithQueryClient(<AgentSettingsForm agent={agent} onClose={() => undefined} onSave={onSave} />)
-    await waitFor(() => expect(screen.getByRole('option', { name: 'high' })).toBeInTheDocument())
-    await userEvent.setup().selectOptions(screen.getByLabelText('Provider variant'), 'high')
-    fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
-    expect(onSave.mock.calls[0]![0]).toMatchObject({ effort: 'high', harnessConfiguration: { variant: 'high' } })
-  })
 
   it.each(['read-only', 'danger-full-access'] as const)('explains and removes incompatible controls when changing to %s', async (sandbox) => {
     const configuration = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
@@ -71,11 +44,11 @@ describe('PR8 exact native settings in the actual form', () => {
   })
 
   it('does not inherit later template edits into existing agent settings', () => {
-    const template = structuredClone(DEFAULT_HARNESS_DEFAULTS.opencode)
-    template.variant = 'copied-variant'
-    const agent = defaultAgentForHarness('opencode', 'agent', 'Agent', template)
-    template.variant = 'later-template-variant'
-    expect(configuredHarness(agent, 'opencode', agent.model!, 'copied-variant', false, 'read-only'))
-      .toMatchObject({ variant: 'copied-variant' })
+    const template = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
+    template.model = 'copied-variant'
+    const agent = defaultAgentForHarness('codex', 'agent', 'Agent', template)
+    template.model = 'later-template-variant'
+    expect(configuredHarness(agent, 'codex', agent.model!, 'medium', false, 'read-only'))
+      .toMatchObject({ model: 'copied-variant' })
   })
 })

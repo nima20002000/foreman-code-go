@@ -8,7 +8,7 @@ import { HostHarnessConfigurationFields } from './HostHarnessConfigurationFields
 import { createHarnessEditor } from './harnessEditor'
 
 vi.mock('../../shared/api/harnessSettings', () => ({
-  useNativeHarnessOptions: (harness: 'codex' | 'opencode') => ({ data: { models: [
+  useNativeHarnessOptions: (harness: 'codex') => ({ data: { models: [
     { id: DEFAULT_HARNESS_DEFAULTS[harness].model, name: 'Current native model', reasoningEfforts: ['medium', 'high'], variants: [''], serviceTiers: ['standard', 'priority'] },
     { id: 'long-model', name: 'A long native model label that remains searchable and selectable', reasoningEfforts: ['medium'], variants: ['balanced'], serviceTiers: ['standard'] },
   ], nativeAgents: ['build', 'plan'] }, isSuccess: true, isPending: false, isError: false, error: null }),
@@ -59,14 +59,13 @@ it('allows an unavailable saved priority setting to be corrected through the com
   expect(screen.queryByText('Not offered by this model. Turn Fast mode off.')).not.toBeInTheDocument()
 })
 
-it.each(['codex', 'opencode'] as const)('updates the existing %s host configuration from its compact switch', async harness => {
+it('updates the existing Codex host configuration from its compact switch', async () => {
   const onChange = vi.fn()
   const user = userEvent.setup()
-  const configuration = harness === 'codex' ? { ...DEFAULT_HARNESS_DEFAULTS.codex, serviceTier: 'standard' as const }
-    : { ...DEFAULT_HARNESS_DEFAULTS.opencode, thinking: false }
+  const configuration = { ...DEFAULT_HARNESS_DEFAULTS.codex, serviceTier: 'standard' as const }
   render(<HostHarnessConfigurationFields editor={createHarnessEditor(configuration)} onChange={onChange} />)
-  await user.click(screen.getByRole('switch', { name: harness === 'codex' ? 'Fast mode' : 'Show thinking' }))
-  expect(onChange.mock.calls[0]![0].configuration).toEqual({ ...configuration, ...(harness === 'codex' ? { serviceTier: 'priority' } : { thinking: true }) })
+  await user.click(screen.getByRole('switch', { name: 'Fast mode' }))
+  expect(onChange.mock.calls[0]![0].configuration).toEqual({ ...configuration, serviceTier: 'priority' })
 })
 
 it('associates host service tier validation with the Fast mode switch', () => {

@@ -34,7 +34,6 @@ export function computersFixture(children: React.ReactNode, handlers: HttpHandle
     { target: mainTarget, accounts: { observedAt: new Date().toISOString(), accounts: [
       { tool: 'codex', installed: true, signedIn: true, account: 'coder@example.com', details: ['ChatGPT'] },
       { tool: 'claude', installed: true, signedIn: false, account: null, details: [] },
-      { tool: 'opencode', installed: true, signedIn: true, account: null, details: ['OpenCode Go'] },
       { tool: 'github', installed: true, signedIn: true, account: 'octo-owner', details: [] },
     ] } },
     { target: deviceTarget, accounts: null },

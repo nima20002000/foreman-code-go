@@ -100,7 +100,7 @@ function fixtureNotFound(kind: string, id: string) {
 }
 
 const operatorConversations: Array<Record<string, unknown>> = []
-const mockQualification = (harness: 'codex' | 'opencode'): z.infer<typeof HarnessQualificationListSchema>['qualifications'][number] => ({
+const mockQualification = (harness: 'codex'): z.infer<typeof HarnessQualificationListSchema>['qualifications'][number] => ({
   harness, version: 'mock', binarySha256: null, status: 'unqualified', profile: null,
   suiteRevision: 'mock', checks: [], failureReason: null, startedAt: null, checkedAt: null,
 })
@@ -288,11 +288,11 @@ export const handlers: RequestHandler[] = [
     items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
   })),
   http.get('/api/management/harnesses/qualifications', () => HttpResponse.json({
-    qualifications: [mockQualification('codex'), mockQualification('opencode')],
+    qualifications: [mockQualification('codex')],
   })),
   http.post('/api/management/harnesses/:harness/qualification', ({ params }) => {
     const harness = String(params.harness)
-    if (harness !== 'codex' && harness !== 'opencode') return fixtureNotFound('harness', harness)
+    if (harness !== 'codex') return fixtureNotFound('harness', harness)
     return HttpResponse.json({ ...mockQualification(harness), status: 'qualifying', startedAt: new Date().toISOString() }, { status: 202 })
   }),
   http.get('/api/management/harnesses/:harness/execution-readiness', ({ params, request }) => HttpResponse.json({
@@ -306,7 +306,7 @@ export const handlers: RequestHandler[] = [
   http.get('/api/management/harnesses', () => HttpResponse.json(getMockHarnessCatalog())),
   http.get('/api/management/harnesses/:harness/options', ({ params }) => {
     const harness = String(params.harness)
-    if (harness !== 'codex' && harness !== 'opencode') return fixtureNotFound('harness', harness)
+    if (harness !== 'codex' && harness !== 'claude') return fixtureNotFound('harness', harness)
     return HttpResponse.json({
       harness, providerVersion: 'mock', authenticated: true,
       models: harness === 'codex' ? [
@@ -314,8 +314,8 @@ export const handlers: RequestHandler[] = [
         { id: 'gpt-5.6-terra', name: 'gpt-5.6-terra', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], variants: [], serviceTiers: ['standard', 'priority'] },
         { id: 'gpt-5.6-sol', name: 'gpt-5.6-sol', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], variants: [], serviceTiers: ['standard', 'priority'] },
         { id: 'gpt-6-astra', name: 'gpt-6-astra', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], variants: [], serviceTiers: ['standard', 'priority'] },
-      ] : [{ id: 'opencode-go/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', reasoningEfforts: [], variants: ['', 'low', 'high', 'max', 'provider-custom-effort', 'budget-4096'], serviceTiers: [] }],
-      nativeAgents: harness === 'opencode' ? ['', 'custom-worker'] : [], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
+      ] : [{ id: 'claude-sonnet', name: 'Claude Sonnet', reasoningEfforts: ['low', 'medium', 'high', 'max'], variants: [], serviceTiers: [] }],
+      nativeAgents: [], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
     })
   }),
   http.post('/api/management/harnesses/:harness/refresh', ({ params }) => HttpResponse.json({
@@ -375,7 +375,7 @@ export const handlers: RequestHandler[] = [
   }),
   http.get('/api/management/workspaces/:workspaceId/harnesses/:harness/mcp-detection', ({ params }) => {
     const harness = String(params.harness)
-    if (harness !== 'codex' && harness !== 'opencode') return fixtureNotFound('harness', harness)
+    if (harness !== 'codex' && harness !== 'claude') return fixtureNotFound('harness', harness)
     return HttpResponse.json({
       runnerId: 'runner-local',
       workingDirectory: '/workspace',

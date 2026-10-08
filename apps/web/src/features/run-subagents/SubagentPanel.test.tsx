@@ -25,10 +25,10 @@ function mount() {
   return { client, close, ...rendered }
 }
 function qualified() {
-  const capabilities = subagentCapabilities('opencode-task')
+  const capabilities = subagentCapabilities('codex-collab')
   capabilities.sendInput = { support: 'supported', qualification: 'passed' }
   capabilities.interrupt = { support: 'supported', qualification: 'passed' }
-  return { subagent: child({ provider: 'opencode', nativeMode: 'opencode-task', status: 'waiting', capabilities }),
+  return { subagent: child({ provider: 'codex', nativeMode: 'codex-collab', status: 'waiting', capabilities }),
     availableActions: { sendInput: true, interrupt: true, blockedReason: null } }
 }
 describe('Subagent panel', () => {
@@ -260,4 +260,15 @@ describe('Subagent panel', () => {
     fireEvent.pointerDown(dialog); fireEvent.click(dialog)
     await waitFor(() => expect(close).toHaveBeenCalledOnce())
   })
+})
+
+it('shows a recorded OpenCode child without controls even when the saved projection advertises them', async () => {
+  const historical = { ...qualified(), subagent: child({ ...qualified().subagent,
+    provider: 'opencode', nativeMode: 'opencode-task' }) }
+  server.use(http.get(`${base}/:subagentId`, () => HttpResponse.json(historical)))
+  mount()
+  expect(await screen.findByText(/Retired harness \(OpenCode\): read-only/)).toBeVisible()
+  expect(screen.queryByRole('textbox', { name: 'Message to subagent' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Interrupt' })).not.toBeInTheDocument()
 })

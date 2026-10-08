@@ -44,12 +44,8 @@ it('requires an explicit Full access choice before saving an unsupported stored 
 
 it.each([
   ['codex', 'Model', 'model'],
-  ['opencode', 'Model', 'model'],
-  ['opencode', 'Provider variant', 'variant'],
-  ['opencode', 'Native Agent', 'nativeAgent'],
   ['codex', 'Shell environment policy · JSON', 'advanced.shellEnvironment'],
   ['codex', 'Pinned MCP policy · JSON', 'advanced.mcpServers'],
-  ['opencode', 'Pinned MCP policy · JSON', 'advanced.mcp'],
 ] as const)('associates %s %s errors with their control and clears them with corrected readback', (harness, label, path) => {
   const editor = createHarnessEditor(DEFAULT_HARNESS_DEFAULTS[harness])
   const onChange = vi.fn()

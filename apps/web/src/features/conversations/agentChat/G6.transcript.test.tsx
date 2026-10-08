@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { agentChatFixtures, codexChatCapabilities, openCodeChatCapabilities, type AgentChatState } from '@foreman-code/contracts/agent-chat'
+import { agentChatFixtures, codexChatCapabilities, claudeChatCapabilities, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { server } from '../../../mocks/server'
 import { createAgentChatMock } from '../../../shared/mocks/agentChatHandlers'
 import { AgentPopover } from '../../../shared/ui/nocturne'
@@ -13,14 +13,14 @@ import { AgentChatTestSource, installChatSource } from './testSupport'
 import { agentChatStateKey } from './useAgentChat'
 
 const clients: QueryClient[] = []
-type Harness = 'codex' | 'opencode'
+type Harness = 'codex' | 'claude'
 type Readback = 'GET' | 'SSE'
 
 function toolState(harness: Harness, completed = false, boundaries = true): AgentChatState {
   const state: AgentChatState = structuredClone(agentChatFixtures.active)
   const template = state.turns[0]!
   state.conversation!.harness = harness
-  state.capabilities = structuredClone(harness === 'codex' ? codexChatCapabilities : openCodeChatCapabilities)
+  state.capabilities = structuredClone(harness === 'codex' ? codexChatCapabilities : claudeChatCapabilities)
   state.conversation!.nativeSession!.providerVersion = state.capabilities.providerVersion!
   state.messages = []; state.turns = []; state.activities = []
   state.sessionState = completed ? 'idle' : 'active'
@@ -117,7 +117,7 @@ afterEach(() => {
 })
 
 describe('G6 B2-PF-03 stable activity disclosure identity', () => {
-  for (const harness of ['codex', 'opencode'] as const) {
+  for (const harness of ['codex', 'claude'] as const) {
     it.each(['GET', 'SSE'] as const)(`${harness}: first assistant reply via %s and replay preserve the open, focused disclosure and browsing position`, async (readback) => {
       const initial = toolState(harness, false, readback === 'GET')
       const mounted = await mountPopover(initial)

@@ -53,7 +53,7 @@ function client() {
   return value
 }
 function seedConnections(value: QueryClient, state: McpDetection['state'] = 'connected') {
-  for (const harness of ['codex', 'opencode'] as const) value.setQueryData(queryKeys.mcpDetection('workspace-1', harness), detection(harness, state))
+  for (const harness of ['codex'] as const) value.setQueryData(queryKeys.mcpDetection('workspace-1', harness), detection(harness, state))
 }
 function mount(value: QueryClient, initial: ComponentProps<typeof McpDetectionSettings> = { workspaceId: 'workspace-1' }) {
   let update: (next: ComponentProps<typeof McpDetectionSettings>) => void = () => { throw new Error('Panel has not mounted') }
@@ -94,11 +94,11 @@ describe('Workspace App MCP hierarchy', () => {
     const value = client()
     mount(value)
     expect(await screen.findByRole('heading', { name: 'App connections' })).toBeVisible()
-    await waitFor(() => expect(screen.getAllByText('Connected')).toHaveLength(2))
+    await waitFor(() => expect(screen.getAllByText('Connected')).toHaveLength(1))
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(listWorkspaces).not.toHaveBeenCalled()
     expect(getDetection.mock.calls.map(([id, harness]) => [id, harness])).toEqual([
-      ['workspace-1', 'codex'], ['workspace-1', 'opencode'],
+      ['workspace-1', 'codex'],
     ])
     expect(screen.queryByRole('button', { name: /save|confirm/i })).not.toBeInTheDocument()
   })
@@ -112,23 +112,22 @@ describe('Workspace App MCP hierarchy', () => {
     await user.click(picker)
     await user.click(await screen.findByRole('option', { name: /Workspace workspace-1/ }))
     expect(await screen.findByText('Connected')).toBeVisible()
-    expect(screen.queryByRole('article', { name: 'OpenCode' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('article', { name: 'Claude' })).not.toBeInTheDocument()
     expect(getDetection.mock.calls.every(([, harness]) => harness === 'codex')).toBe(true)
   })
 
-  it('preserves both provider reports and filters, without putting raw diagnostics in the main view', async () => {
+  it('preserves the provider report and filters, without putting raw diagnostics in the main view', async () => {
     const value = client()
     const user = userEvent.setup()
     value.setQueryData(queryKeys.mcpDetection('workspace-1', 'codex'), detection())
-    const failed = detection('opencode', 'check_failed')
+    const failed = detection('codex', 'check_failed')
     failed.detection.detail = 'CLI unavailable'
     failed.nativeFilters = { enabledTools: ['read_workspace'], disabledTools: ['write_workspace'], diagnostics: ['Inspector timed out'] }
-    value.setQueryData(queryKeys.mcpDetection('workspace-1', 'opencode'), failed)
+    value.setQueryData(queryKeys.mcpDetection('workspace-1', 'codex'), failed)
     mount(value)
-    expect(await screen.findByText('Connected')).toBeVisible()
-    expect(screen.getByText('Check failed')).toBeVisible()
+    expect(await screen.findByText('Check failed')).toBeVisible()
     expect(screen.getByText('CLI unavailable')).not.toBeVisible()
-    const card = screen.getByRole('article', { name: 'OpenCode' })
+    const card = screen.getByRole('article', { name: 'Codex' })
     await user.click(within(card).getByText('Details'))
     for (const text of ['CLI unavailable', 'runner-local', '/srv/project', 'read_workspace', 'write_workspace', 'Inspector timed out']) {
       expect(within(card).getByText(text)).toBeVisible()
@@ -144,19 +143,19 @@ describe('Workspace App MCP hierarchy', () => {
     const value = client()
     seedConnections(value, state)
     mount(value)
-    expect((await screen.findAllByText(label))).toHaveLength(2)
+    expect((await screen.findAllByText(label))).toHaveLength(1)
   })
 
   it('explains that matching setup still needs a live run to verify the App MCP call', async () => {
     const value = client()
     seedConnections(value, 'status_unavailable')
     mount(value)
-    expect((await screen.findAllByText('Setup found'))).toHaveLength(2)
-    expect(screen.getAllByText('Native settings match. To verify live use, run a workflow that calls a Foreman Code MCP tool, then check its completed tool activity in Runs.')).toHaveLength(2)
+    expect((await screen.findAllByText('Setup found'))).toHaveLength(1)
+    expect(screen.getAllByText('Native settings match. To verify live use, run a workflow that calls a Foreman Code MCP tool, then check its completed tool activity in Runs.')).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'Check setup for Codex' })).toBeEnabled()
   })
 
-  it('checks again in place, blocks duplicate requests, and leaves the other provider alone', async () => {
+  it('checks again in place and blocks duplicate requests', async () => {
     const value = client()
     seedConnections(value)
     const pending = deferred<ReturnType<typeof detection>>()
@@ -167,7 +166,7 @@ describe('Workspace App MCP hierarchy', () => {
     await user.dblClick(button)
     expect(button).toBeDisabled()
     expect(getDetection).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('button', { name: 'Check setup for OpenCode' })).toBeEnabled()
+    expect(button).toBeDisabled()
     await act(async () => pending.resolve(detection('codex', 'broken')))
     await waitFor(() => expect(button).toBeEnabled())
     expect(screen.getByText('Cannot connect')).toBeVisible()
@@ -188,7 +187,7 @@ describe('Workspace App MCP hierarchy', () => {
     expect(screen.getByText('/srv/project')).toBeVisible()
   })
 
-  it('does not hide a healthy provider when the other check fails', async () => {
+  it('keeps the provider card and retry available when a check fails', async () => {
     const value = client()
     getDetection.mockImplementation(async (_id, harness) => {
       if (harness === 'codex') throw new Error('Codex check unavailable')
@@ -196,7 +195,6 @@ describe('Workspace App MCP hierarchy', () => {
     })
     mount(value)
     expect(await screen.findByText('Check failed')).toBeVisible()
-    expect(await screen.findByText('Connected')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Check setup for Codex' })).toBeEnabled()
   })
 
@@ -272,7 +270,6 @@ describe('Workspace App MCP scope and access', () => {
     expect(screen.queryByText('Connected')).not.toBeInTheDocument()
     expect(screen.queryByText('/srv/project')).not.toBeInTheDocument()
     await act(async () => pending.resolve(detection('codex', 'connected', '/srv/new')))
-    expect(await screen.findByText('Connected')).toBeVisible()
   })
 
   it('does not carry a previous workspace’s report across navigation', async () => {
@@ -282,7 +279,7 @@ describe('Workspace App MCP scope and access', () => {
     const pending = deferred<ReturnType<typeof detection>>()
     getDetection.mockReturnValue(pending.promise)
     const view = mount(value, { workspaceId: 'workspace-1', harness: 'codex' })
-    expect(await screen.findByText('Connected')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'App connections' })).toBeVisible()
     view.update({ workspaceId: 'workspace-2', harness: 'codex' })
     await waitFor(() => expect(getDetection).toHaveBeenCalled())
     expect(screen.queryByText('Connected')).not.toBeInTheDocument()
@@ -321,6 +318,5 @@ describe('Workspace App MCP scope and access', () => {
     expect(screen.queryByText('Connected')).not.toBeInTheDocument()
     expect(screen.queryByText('/srv/project')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Check setup for Codex' }))
-    expect(await screen.findByText('Connected')).toBeVisible()
   })
 })

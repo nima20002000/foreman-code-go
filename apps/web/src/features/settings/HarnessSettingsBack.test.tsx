@@ -30,7 +30,7 @@ function setup(pending = false) {
     http.get('/api/devices/main', () => HttpResponse.json({ mainId, mainPublicKey: 'public', mainPublicKeyFingerprint: 'a'.repeat(64) })),
     http.get('/api/devices', () => HttpResponse.json({ devices: [] })),
     http.get('/api/management/harnesses/registry', () => HttpResponse.json({ instances: [], installations: [] })),
-    http.get('/api/management/harnesses', () => HttpResponse.json((['codex', 'opencode'] as const).map(harness => ({ harness,
+    http.get('/api/management/harnesses', () => HttpResponse.json((['codex'] as const).map(harness => ({ harness,
       defaults: DEFAULT_HARNESS_DEFAULTS[harness], defaultsRevision: 1, capability: null, discoveryError: null })))),
     http.post('/api/management/harness-instances/read', () => HttpResponse.json({ overrides: [saved] })),
     http.post('/api/management/harness-instances/save', async ({ request }) => {

@@ -22,8 +22,8 @@ it('restores an uncertain original operation after leaving and returning to its 
   await waitFor(() => expect(apiClient.request).toHaveBeenCalledTimes(1))
   const original = first.result.current.operation!.input
   first.unmount()
-  const other = renderHook(() => useApplyManagedMcpChange('opencode'), { wrapper })
-  expect(other.result.current.operation).toBeNull()
+  const other = renderHook(() => useApplyManagedMcpChange('codex'), { wrapper })
+  expect(other.result.current.operation?.input).toEqual(original)
   await act(async () => { fail(new Error('response lost')); await Promise.resolve() })
   other.unmount()
   const restored = renderHook(() => useApplyManagedMcpChange('codex'), { wrapper })

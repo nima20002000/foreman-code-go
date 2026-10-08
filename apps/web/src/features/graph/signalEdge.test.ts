@@ -40,10 +40,17 @@ describe('relationship lines', () => {
   })
 })
 
-it('shows actual Claude facts without invented effort or OpenCode variant', () => {
+it('shows actual Claude facts without invented effort or Claude variant', () => {
   const agent = defaultAgentForHarness('claude', 'claude-1', 'Claude', savedClaudeConfiguration)
   expect(agentNodeFacts(agent)).toMatchObject({ harness: 'claude', harnessLabel: 'Claude', model: savedClaudeConfiguration.model })
   expect(agentNodeFacts(agent).meta).toEqual([{ label: 'Role', value: 'Agent' }])
   expect(agentSettingRows(agent)).toContainEqual({ label: 'Sandbox', value: 'Full access' })
   expect(agentSettingRows(agent)).not.toContainEqual(expect.objectContaining({ label: 'Variant' }))
+})
+
+it('labels recorded OpenCode agent facts as retired without presenting execution permissions', () => {
+  const agent = { id: 'retired-agent', name: 'Recorded agent', harness: 'opencode' as const,
+    model: 'provider/recorded-model' }
+  expect(agentNodeFacts(agent)).toMatchObject({ harness: 'opencode',
+    harnessLabel: 'Retired harness (OpenCode): read-only', model: 'provider/recorded-model' })
 })

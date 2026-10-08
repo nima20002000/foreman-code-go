@@ -3,7 +3,7 @@ import type { ExecutionConnection, ExecutionEvent, ExecutionNode, SettingDefinit
 export const settingsFields: readonly SettingDefinition[] = [
   { id: 'name', label: 'Agent name', section: 'Identity', type: 'text', required: true, maxLength: 80, description: 'A clear name makes handoffs easier to follow.' },
   { id: 'instructions', label: 'Instructions', section: 'Identity', type: 'textarea', required: true, maxLength: 12000, source: 'Website workflow', description: 'Task instructions for this agent. Keep security settings separate.' },
-  { id: 'harness', label: 'Harness', section: 'Model & runtime', type: 'select', options: [{ value: 'codex', label: 'Codex' }, { value: 'opencode', label: 'OpenCode' }], source: 'Workspace defaults', required: true },
+  { id: 'harness', label: 'Harness', section: 'Model & runtime', type: 'select', options: [{ value: 'codex', label: 'Codex' }, { value: 'claude', label: 'Claude' }], source: 'Workspace defaults', required: true },
   { id: 'model', label: 'Model selection', section: 'Model & runtime', type: 'select', options: [{ value: 'default', label: 'Harness default' }], description: 'The real feature supplies only models returned by the selected harness.', required: true },
   { id: 'effort', label: 'Reasoning effort', section: 'Model & runtime', type: 'select', advanced: true, options: [{ value: 'default', label: 'Harness default' }], readOnly: true, unavailableReason: 'Load supported reasoning settings from the harness before enabling this field.' },
   { id: 'timeout', label: 'Execution timeout (seconds)', section: 'Execution', type: 'number', min: 30, max: 3600, step: 1, advanced: true, source: 'Workflow limits', description: 'Sample UI limit. The API contract supplies the real allowed range.' },
@@ -23,7 +23,7 @@ export const initialSettings: Record<string, SettingValue> = {
 }
 export function settingsForAgent(id: string): Record<string, SettingValue> {
   const names: Record<string, string> = { planner: 'Planner', builder: 'Builder', tester: 'Tester', reviewer: 'Reviewer' }
-  return { ...initialSettings, name: names[id] ?? 'Builder', harness: ['tester', 'reviewer'].includes(id) ? 'opencode' : 'codex',
+  return { ...initialSettings, name: names[id] ?? 'Builder', harness: ['tester', 'reviewer'].includes(id) ? 'claude' : 'codex',
     sandbox: id === 'reviewer' ? 'readonly' : 'workspace', tools: id === 'reviewer' ? 'read_file · inspect_diff' : initialSettings.tools }
 }
 export const replayEvents: readonly ExecutionEvent[] = [
@@ -41,8 +41,8 @@ export function replayNodes(frame: number): ExecutionNode[] {
   return [
     { id: 'planner', title: 'Planner', subtitle: 'Codex · Planning', x: 26, y: 160, icon: 'workflow', statusLabel: frame === 0 ? 'Planning' : 'Complete', tone: frame === 0 ? 'accent' : 'success', working: frame === 0, detail: frame === 0 ? 'Structuring the request' : 'Six tasks, one clear brief', meta: '12s' },
     { id: 'builder', title: 'Builder', subtitle: 'Codex · Implementation', x: 294, y: 66, icon: 'code', statusLabel: frame < 1 ? 'Queued' : frame === 3 ? 'Approval needed' : frame === 6 ? 'Retrying' : frame < 4 ? 'Working' : 'Complete', tone: frame < 1 ? 'neutral' : frame === 3 ? 'warning' : [1,2,6].includes(frame) ? 'accent' : 'success', working: [1,2,6].includes(frame), detail: frame === 3 ? 'Waiting to run the test suite' : frame === 6 ? 'Fixing the reported failure' : 'Building the landing page', progress: frame < 1 ? 0 : frame === 6 ? 78 : frame < 4 ? 62 : 100, meta: 'Workspace-scoped' },
-    { id: 'tester', title: 'Tester', subtitle: 'OpenCode · Verification', x: 294, y: 264, icon: 'terminal', statusLabel: frame < 4 ? 'Queued' : frame === 5 ? 'Failed' : frame < 7 ? 'Verifying' : 'Complete', tone: frame < 4 ? 'neutral' : frame === 5 ? 'danger' : frame < 7 ? 'accent' : 'success', working: [4,6].includes(frame), detail: frame === 5 ? 'One assertion needs attention' : 'Checking the implementation', meta: frame > 5 ? 'Attempt 2' : 'Attempt 1' },
-    { id: 'reviewer', title: 'Reviewer', subtitle: 'OpenCode · Review', x: 562, y: 160, icon: 'eye', statusLabel: frame < 7 ? 'Waiting' : frame === 7 ? 'Reviewing' : 'Complete', tone: frame < 7 ? 'neutral' : frame === 7 ? 'accent' : 'success', working: frame === 7, detail: 'Reads the patch and test results', meta: 'Read only' },
+    { id: 'tester', title: 'Tester', subtitle: 'Claude · Verification', x: 294, y: 264, icon: 'terminal', statusLabel: frame < 4 ? 'Queued' : frame === 5 ? 'Failed' : frame < 7 ? 'Verifying' : 'Complete', tone: frame < 4 ? 'neutral' : frame === 5 ? 'danger' : frame < 7 ? 'accent' : 'success', working: [4,6].includes(frame), detail: frame === 5 ? 'One assertion needs attention' : 'Checking the implementation', meta: frame > 5 ? 'Attempt 2' : 'Attempt 1' },
+    { id: 'reviewer', title: 'Reviewer', subtitle: 'Claude · Review', x: 562, y: 160, icon: 'eye', statusLabel: frame < 7 ? 'Waiting' : frame === 7 ? 'Reviewing' : 'Complete', tone: frame < 7 ? 'neutral' : frame === 7 ? 'accent' : 'success', working: frame === 7, detail: 'Reads the patch and test results', meta: 'Read only' },
   ]
 }
 export function replayConnections(frame: number): ExecutionConnection[] {

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, HarnessConfigurationSchema } from '@foreman-code/contracts'
 import { HostHarnessOverrideSaveSchema, HostHarnessInstanceCheckInputSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -316,4 +316,17 @@ it('creates a Claude override from its saved preset, edits the profile directory
   await user.click(check)
   await waitFor(() => expect(screen.getByText('Qualification').nextElementSibling).toHaveTextContent('qualified'))
   expect(checks).toBe(1)
+})
+
+it('reads a saved retired host override without save, enable or qualification actions', async () => {
+  const retired = { ...pc, driverId: 'opencode', configuration: HarnessConfigurationSchema.parse({
+    harness: 'opencode', model: 'provider/saved-model', variant: '', nativeAgent: 'saved-agent', thinking: false, autoApprove: false,
+  }) }
+  server.use(http.post('/api/management/harness-instances/read', () => HttpResponse.json({ overrides: [retired] })))
+  renderHost(retired)
+  const section = await screen.findByRole('region', { name: 'Retired host settings' })
+  expect(within(section).getByRole('status')).toHaveTextContent('Retired harness (OpenCode): read-only')
+  expect(within(section).getByText('Model: provider/saved-model')).toBeVisible()
+  expect(within(section).queryByRole('button')).not.toBeInTheDocument()
+  expect(within(section).queryByRole('checkbox')).not.toBeInTheDocument()
 })

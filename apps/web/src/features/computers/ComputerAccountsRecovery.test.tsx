@@ -1,5 +1,5 @@
 import { QueryClientProvider, onlineManager } from '@tanstack/react-query'
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -144,9 +144,6 @@ it('opens harness account details by keyboard and touch without relying on hover
   expect(details).toHaveFocus()
   await userEvent.click(details)
   expect(screen.getByText('Codex: coder@example.com')).toBeVisible()
-  const openCode = screen.getByLabelText('OpenCode: OpenCode Go')
-  fireEvent.click(openCode)
-  expect(screen.getByText('OpenCode: OpenCode Go')).toBeVisible()
 })
 
 it('rejects a delayed account and activity response after Worker replacement and accepts the new binding', async () => {

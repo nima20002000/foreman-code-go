@@ -1,3 +1,4 @@
+import { savedClaudeConfiguration } from './claudeSettings.fixtures'
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -14,7 +15,7 @@ vi.mock('../../shared/api/query', async () => {
 })
 
 vi.mock('../../shared/api/harnessSettings', () => ({
-  useNativeHarnessOptions: (harness: 'codex' | 'opencode') => nativeOptionsFixture(harness),
+  useNativeHarnessOptions: (harness: 'codex' | 'claude') => nativeOptionsFixture(harness),
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useAutomaticHarnessCheck: () => ({ current: true, result: { isFetching: false, isSuccess: true, isError: false } }),
   useHarnessSessionEpoch: () => 0,
@@ -34,7 +35,7 @@ afterEach(() => { cleanup(); clearRevisionedFormPersistence(); for (const item o
 describe('Agent defaults page', () => {
   it('uses full access only for a new Operator provider selection', async () => {
     const value = structuredClone(DEFAULT_AGENT_DEFAULTS)
-    value.operator.harness = DEFAULT_HARNESS_DEFAULTS.opencode
+    value.operator.harness = savedClaudeConfiguration
     const user = userEvent.setup()
     render(<QueryClientProvider client={client(value)}><AgentDefaultsSettings /></QueryClientProvider>)
     await user.click(await screen.findByRole('button', { name: 'Edit Operator defaults' }))
@@ -71,16 +72,7 @@ describe('Agent defaults page', () => {
     expect(updateDefaults.mock.calls[0]![0].value.operator.uiEnabled).toBe(false)
     expect(updateDefaults.mock.calls[0]![0].value.coder).toEqual(DEFAULT_AGENT_DEFAULTS.coder)
   })
-  it('shows the selected Coder permission rules in their original order', async () => {
-    const value = structuredClone(DEFAULT_AGENT_DEFAULTS)
-    value.coder.harness = { ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: { ...DEFAULT_HARNESS_DEFAULTS.opencode.advanced!, permissionRules: [
-      { permission: 'shell', pattern: 'git *', effect: 'ask' }, { permission: 'shell', pattern: '*', effect: 'deny' },
-    ] } }
-    const user=userEvent.setup(); render(<QueryClientProvider client={client(value)}><AgentDefaultsSettings /></QueryClientProvider>)
-    await user.click(await screen.findByRole('button',{name:'Edit Coder defaults'})); await user.click(screen.getByRole('button',{name:'Access & approvals'}))
-    const patterns=screen.getAllByRole('textbox',{name:/^Pattern \d+$/})
-    expect(patterns[0]).toHaveValue('git *');expect(patterns[1]).toHaveValue('*');expect(screen.getByText('Last matching rule wins.')).toBeVisible()
-  })
+
   it('keeps an unsent role draft through overview navigation and unmount', async () => {
     const queryClient=client();const user=userEvent.setup();const first=render(<QueryClientProvider client={queryClient}><AgentDefaultsSettings /></QueryClientProvider>)
     await user.click(await screen.findByRole('button',{name:'Edit Operator defaults'}));await user.click(screen.getByRole('checkbox',{name:'Show Operator chat'}))

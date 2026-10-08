@@ -12,7 +12,7 @@ import {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers() })
 const nodes: ExecutionNode[] = [
   { id: 'builder', title: 'Builder', subtitle: 'Codex', statusLabel: 'Working', x: 0, y: 0 },
-  { id: 'reviewer', title: 'Reviewer', subtitle: 'OpenCode', statusLabel: 'Waiting', x: 300, y: 0 },
+  { id: 'reviewer', title: 'Reviewer', subtitle: 'Claude', statusLabel: 'Waiting', x: 300, y: 0 },
 ]
 describe('Execution visualization and replay', () => {
   it('provides a useful empty graph state', () => {
