@@ -169,11 +169,12 @@ it.skipIf(!postgresEnabled)('saves other provider defaults through HTTP and MCP 
     const http = await fetch(new URL('/api/management/harnesses/defaults', f.address), { method: 'PUT',
       headers: { authorization: `Bearer ${f.writer.token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ commandId: randomUUID(), expectedRevision: saved.value.revision, configure: ['opencode'],
-        defaults: { ...saved.value.defaults, opencode: { ...saved.value.defaults.opencode, instructions: 'Explicit provider instructions.' } } }),
+        defaults: { ...saved.value.defaults, opencode: { ...saved.value.defaults.opencode,
+          thinking: !saved.value.defaults.opencode.thinking } } }),
     })
     expect(http.status).toBe(200)
     const httpSaved = HarnessDefaultsUpdateResultSchema.parse(await http.json())
-    expect(httpSaved.value.defaults.opencode.instructions).toBe('Explicit provider instructions.')
+    expect(httpSaved.value.defaults.opencode.thinking).toBe(!saved.value.defaults.opencode.thinking)
     const persisted = await repository.getManagedHarnessDefaults()
     expect(persisted.defaults).toEqual(httpSaved.value.defaults)
     expect(persisted.defaults.claude).toEqual(original.defaults.claude)
