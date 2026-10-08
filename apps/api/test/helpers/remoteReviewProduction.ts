@@ -3,6 +3,7 @@ import { createHash, randomUUID, sign, X509Certificate } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { request } from 'node:https'
 import { createServer } from 'node:net'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -27,12 +28,14 @@ import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
+import { InstalledWorkflowRecovery } from '../../src/modules/runs/remote/installedWorkflowRecovery.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { agent3Database, seedAgent3 } from './wave25Agent3.js'
 import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemoteReviewTls } from './remoteReviewProvider.js'
 import { createRemoteReviewTransport } from './remoteReviewTransport.js'
 
 const execute = promisify(execFile)
+const tsxLoader = createRequire(import.meta.url).resolve('tsx')
 
 export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
   description: string): Promise<T> {
@@ -76,7 +79,9 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
 
 /** Fresh production instances share only persisted data; the Worker runs the
  * shipped installed domains in a separate process with its own native owners. */
-export async function remoteReviewProduction(options: { workflow?: 'approval' | 'sequential' } = {}) {
+export async function remoteReviewProduction(options: {
+  workflow?: 'approval' | 'sequential'; modelCatalog?: 'empty-at-startup'
+} = {}) {
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
     const errors: unknown[] = []
@@ -92,6 +97,7 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
     closes.push(() => rm(directory, { recursive: true, force: true }))
     const workerRelease = await buildRemoteReviewWorkerRelease(directory)
     const provider = await createRemoteReviewProvider(join(directory, 'provider'))
+    if (options.modelCatalog) await provider.hideModels()
     const tls = await createRemoteReviewTls(join(directory, 'tls'))
     const certificate = await readFile(tls.certificateFile)
     const project = join(directory, 'projects', 'project')
@@ -105,7 +111,7 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
     }
     // The Codex fixture never chooses an ambient Claude model during startup.
     const claude = ClaudeHarnessConfigurationSchema.parse({ harness: 'claude', model: 'claude-haiku-4-5-20251001',
-      configDirectory: claudeProfile, authMode: 'subscription', permissionMode: 'default', sandbox: 'read-only',
+      configDirectory: claudeProfile, authMode: 'subscription', permissionMode: 'default', sandbox: 'danger-full-access',
       tools: [], permissionRules: [], instructions: '', mcpServers: {} })
     await db.pool.query(`insert into application_settings(key,record,revision)
       values('harness-defaults',$1::jsonb,1)`, [JSON.stringify({ claude })])
@@ -164,7 +170,7 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
         stopped.kill(signal)
       })
     }
-    closes.push(() => stopMain())
+    closes.push(stopMain)
     // Vitest silences the product logger; Main and Worker warnings carry the failure codes read here.
     const logEnvironment = { ...process.env, LOG_LEVEL: process.env.LOG_LEVEL ?? 'warn' }
     const collectFailures = (child: ChildProcess) => {
@@ -177,11 +183,20 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
           let parsed: unknown
           try { parsed = JSON.parse(line) } catch { continue }
           if (!parsed || typeof parsed !== 'object') continue
-          const event = parsed as { level?: unknown; code?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown }; msg?: unknown; phase?: unknown; errorType?: unknown; errorLocation?: unknown }
-          const code = event.err?.code ?? event.code
+          const event = parsed as { level?: unknown; code?: unknown; errorCode?: unknown; stackFrames?: unknown;
+            runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown }; msg?: unknown;
+            phase?: unknown; errorType?: unknown; errorLocation?: unknown }
+          const code = event.err?.code ?? event.code ?? event.errorCode
             ?? (event.msg === 'Device extension request failed' ? 'DEVICE_EXTENSION_FAILED' : undefined)
+            ?? (event.msg === 'Operator tool failed' ? 'OPERATOR_TOOL_FAILED' : undefined)
           if (!['warn', 'error', 'fatal'].includes(String(event.level)) || typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(code)) continue
-          failures.push({ code, phase: event.phase, errorType: event.errorType, errorLocation: event.errorLocation ?? (typeof event.err?.stack === 'string' ? event.err.stack.split('\n')[1]?.trim() : undefined), runId: typeof event.runId === 'string' && /^run-[a-z0-9-]{1,100}$/.test(event.runId) ? event.runId : null })
+          const frames = Array.isArray(event.stackFrames)
+            ? event.stackFrames.filter((frame): frame is string => typeof frame === 'string').slice(0, 2) : []
+          failures.push({ code, phase: event.phase, errorType: event.errorType,
+            errorLocation: event.errorLocation ?? (frames.length ? frames.map(frame => frame.trim()).join(' ') : undefined)
+              ?? (typeof event.err?.stack === 'string'
+              ? event.err.stack.split('\n').slice(1, 3).map(line => line.trim()).join(' ') : undefined),
+            runId: typeof event.runId === 'string' && /^run-[a-z0-9-]{1,100}$/.test(event.runId) ? event.runId : null })
           if (failures.length > 32) failures.shift()
         }
       })
@@ -190,6 +205,7 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
       let ready = false
       mainFailure = ''
       const started = spawn(process.execPath, [
+        '--import', tsxLoader,
         fileURLToPath(new URL('../fixtures/remote-review-main.mjs', import.meta.url)), mainConfiguration], {
         cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
@@ -212,6 +228,13 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
       }, value => value, 'production Main startup')
     }
     await startMain()
+    if (options.modelCatalog) {
+      await waitForRemoteReview(async () => (await db.pool.query<{ record: unknown }>(
+        "select record from application_settings where key='harness-default-model-unavailable'",
+      )).rows[0]?.record, value => Array.isArray(value) && value.includes('codex'),
+      'persisted unavailable startup model defaults')
+      await provider.showModels()
+    }
     async function call(name: string, args: Record<string, unknown>, token = writer.token) {
       const client = new Client({ name: 'Production remote review integration', version: '1' })
       try {
@@ -276,7 +299,7 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
         [command.executionId, command.operationId, command.owner.grantId, command.owner.epoch])
         if (changed.rowCount !== 1) throw new Error('The original response grant was unavailable for the denial scenario.')
       } })
-    closes.push(transport.close)
+    closes.splice(closes.indexOf(stopMain), 0, transport.close)
     const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId,
       deviceId: paired.registration.deviceId, workerInstallationId: identity.workerInstallationId,
       keyRevision: paired.registration.keyRevision, authorizationRevision: paired.registration.authorizationRevision,
@@ -336,7 +359,8 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
         stopped.kill(signal)
       })
     }
-    closes.push(() => stopWorker())
+    // Main closes its native sessions while the Worker transport is still available.
+    closes.splice(closes.indexOf(stopMain), 0, () => stopWorker())
     await startWorker()
     const inventory = await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
       await value('harness_registry_get', hostRef)), value => value.installations.some(
@@ -450,6 +474,8 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
     return { db, directory, stateDirectory, provider, access, writer, hostRef, profiles, version,
       start, call, value, details, reconcile, registry, close, origin: () => origin,
       failures: () => structuredClone(failures),
+      entryCapture: (operationId: string) => new InstalledWorkflowRecovery(
+        join(stateDirectory, 'workflow-recovery'), registry).readEntry(operationId),
       workerPid: () => worker?.pid,
       inventory: () => value('harness_registry_get', hostRef).then(HarnessRegistryReadbackSchema.parse),
       denyNextReservedResponse: () => { denyReservedResponse = true },
@@ -472,8 +498,9 @@ export async function remoteReviewProduction(options: { workflow?: 'approval' | 
         await startMain()
         await waitForRemoteReview(async () => ready, value => value, 'Worker reconnect after Main restart')
       },
-      async restartWorker() {
+      async restartWorker(afterCrash?: () => void) {
         await stopWorker('SIGKILL')
+        afterCrash?.()
         await startWorker()
       },
       async pending(runId: string) {

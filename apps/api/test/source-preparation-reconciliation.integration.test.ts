@@ -68,6 +68,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
   let pause: { entered(): void; released: Promise<void> } | null = null
   let closureDispatch: PostgresJobDispatch | undefined
   let failSourceSettlement = false
+  let interruptSourceTransfer = false
   let allowPreparationClosure = true
   const queueServices: JobService[] = []
   const dispatches: PostgresJobDispatch[] = []
@@ -135,6 +136,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     const commands = new PostgresCommandCoordinator(database.pool)
     sources = new PostgresSourceService(database.pool,commands,{} as never,new PrivateSourceSnapshotStore(join(directory,'snapshots')),mainId,{} as never,
       {authorize:async()=>{},authorizeFinal:async()=>{},prepare: async (manifest, root, attempt) => {
+          if (interruptSourceTransfer) throw new DomainError('SOURCE_TRANSFER_PENDING', 'Fixture source transfer interrupted', 503)
           const row = (await database.pool.query<{ spec: unknown }>(
             'select spec from job_computer_selections where execution_id=$1', [attempt.executionId])).rows[0]
           const quota = row && 'verification' in ResolvedJobDefinitionSpecRecordSchema.parse(row.spec)
@@ -172,14 +174,16 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       payload:{commandId:randomUUID(),expectedRevision:null,name:'Failure before native admission',spec}})
     expect(save.statusCode).toBe(200);definitionId=save.json().definition.id
     for(let i=0;i<2;i++) {
+      interruptSourceTransfer = i === 1
       const commandId=randomUUID();commandsToReconcile.push(commandId)
       // Retained preparations use the original domain path; HTTP retries preserve that identity.
       await expect(jobs.start(writer.principal, 'http', workspaceId,
         { commandId, definitionId, expectedRevision: 1 })).rejects.toMatchObject({
-          code: i === 0 ? 'SOURCE_REPOSITORY_TIMEOUT' : 'SOURCE_ROOT_OWNED',
+          code: i === 0 ? 'SOURCE_REPOSITORY_TIMEOUT' : 'SOURCE_TRANSFER_PENDING',
         })
       const result=await start(commandId);expect(result.statusCode).toBeGreaterThanOrEqual(400)
     }
+    interruptSourceTransfer = false
   },60000)
   afterAll(async()=>{
     await Promise.allSettled(queueServices.map(service => service.closeQueue()))

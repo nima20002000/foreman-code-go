@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -49,6 +49,8 @@ int main(int argc, char **argv) {
     join(directory, 'stable', 'codex_app_server_protocol.schemas.json'),
     join(directory, 'experimental', 'codex_app_server_protocol.schemas.json')]
   return { directory, binary, payloadPaths,
+    hideModels: () => writeFile(join(directory, 'hide-models'), '', { mode: 0o600 }),
+    showModels: () => rm(join(directory, 'hide-models')),
     async calls(): Promise<Array<Record<string, unknown>>> {
       try {
         const contents = await readFile(join(directory, 'calls.jsonl'), 'utf8')

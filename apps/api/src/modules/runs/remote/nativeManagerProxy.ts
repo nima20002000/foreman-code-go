@@ -215,11 +215,15 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   async attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal) {
     if (!isWorkflowStart(input) || input.request.executionId !== this.intent.executionId
-      || input.correlationId !== `execution:${this.intent.executionId}` || session.harness !== this.harness) throw new Error('Remote session execution mismatch')
+      || session.harness !== this.harness) throw new Error('Remote session execution mismatch')
     this.prepareAttempted = true
     // Attachment is observation of this exact original session; worker recovery must already have proven/rebound it.
     const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('reattach', { request: input.request, session }, signal))
     const receipt = await this.status(value.status)
+    const review = receipt.reviewTurns?.find(turn => turn.assignment.correlationId === input.correlationId
+      && (input.nativeTurnId === undefined || turn.providerId === input.nativeTurnId))
+    if (input.correlationId !== `execution:${this.intent.executionId}` && !review)
+      throw new Error('Remote session execution mismatch')
     if (!isDeepStrictEqual(value.session, session) || receipt.native?.sessionId !== session.nativeSessionId || session.harness !== this.harness) throw new Error('Original remote session recovery required')
     await this.options.observeOriginalSource?.(receipt, { type: 'session_created', session })
     this.session = structuredClone(session)
@@ -381,6 +385,9 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   async close(session: NativeSessionReference) { this.assertSession(session); if (this.receipt?.phase !== 'confirmed_terminal') await this.cancel(session); if (this.receipt?.phase !== 'confirmed_terminal') throw new Error('Original remote native closure is unconfirmed') }
   async dispose() {
     if (!this.prepareAttempted) return
+    if (!this.detached && this.receipt?.phase !== 'confirmed_terminal') {
+      await this.status(await this.request('status', {}))
+    }
     if (!this.detached && this.receipt?.phase !== 'confirmed_terminal') throw new Error('Original remote native disposal is unconfirmed')
   }
   async closeForRestart(session: NativeSessionReference) {

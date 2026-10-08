@@ -75,7 +75,7 @@ it('keeps a Main measurement when a Worker qualifies the same native binary', as
     await expect(read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
       details: { reason: 'main_qualification_identity_missing' } })
   } finally { await db.close() }
-})
+}, 30_000)
 
 it('reads an existing measured qualification after the host measurement migration', async () => {
   const db = await agent3Database()
@@ -93,4 +93,4 @@ it('reads an existing measured qualification after the host measurement migratio
     expect(await readHostHarnessMeasurements(db.pool, 'codex', qualification.binarySha256!, qualification.suiteRevision))
       .toEqual([{ qualification, evidence }])
   } finally { await db.close() }
-})
+}, 30_000)

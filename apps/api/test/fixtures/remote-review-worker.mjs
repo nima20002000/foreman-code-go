@@ -7,7 +7,6 @@ const releaseDirectory = process.argv[3]
 const worker = await import(pathToFileURL(join(releaseDirectory, 'src', 'worker.mjs')).href)
 if (process.argv[4] === 'initialize') {
   await worker.initializeInstalledNativeRuntime(stateDirectory)
-  await worker.initializeInstalledNativeOutputs(stateDirectory)
   process.exit(0)
 }
 const runtime = await worker.startConfiguredWorker({ stateDirectory })

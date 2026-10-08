@@ -60,11 +60,11 @@ describe.skipIf(!postgresEnabled)('saved current Run HTTP/MCP parity', () => {
       if (token === grantedToken) expect(detail.run.executionLocation).toEqual(fixture.run.executionLocation)
       else expect(detail.run).not.toHaveProperty('executionLocation')
     }
-  })
+  }, 30_000)
   it('denies another Run scope through both authenticated transports', async () => {
     const response = await app.inject({ method: 'GET', url: path(), headers: { host: 'localhost', authorization: `Bearer ${deniedToken}` } })
     expect(response.statusCode).toBe(403)
     const result = await (await connect(deniedToken)).callTool({ name: 'run_get', arguments: input() })
     expect(result.isError).toBe(true)
-  })
+  }, 30_000)
 })

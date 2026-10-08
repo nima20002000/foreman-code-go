@@ -15,8 +15,9 @@ import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteRev
 
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
 
-async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>) {
-  const fixture = await remoteReviewProduction()
+async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>,
+  options: Parameters<typeof remoteReviewProduction>[0] = {}) {
+  const fixture = await remoteReviewProduction(options)
   try {
     await check(fixture)
   } catch (error) {
@@ -24,7 +25,14 @@ async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void
     console.error('Remote review production error codes', fixture.failures())
     console.error('Remote review jobs', (await fixture.db.pool.query(`select id,state,
       record->'error' as error,record->>'retryAfter' as retry_after,
-      record->>'providerTurnOrMessageId' as provider_turn from review_jobs order by created_at`)).rows)
+      record->>'providerTurnOrMessageId' as provider_turn,record->>'attempt' as attempt,
+      lease_expires_at>clock_timestamp() as lease_active from review_jobs order by created_at`)).rows)
+    console.error('Remote review writer leases', (await fixture.db.pool.query(`select native_session_id,
+      record->>'correlationId' as correlation,record->>'leaseToken' is not null as claimed,
+      record->>'leaseExpiresAt' as expires_at from native_session_lanes`)).rows)
+    console.error('Remote review credential fences', (await fixture.db.pool.query(`select b.execution_id,b.purpose,
+      b.approval_review_lease_fence=j.lease_fence as current_job_fence
+      from worker_credential_bindings b left join review_jobs j on j.id=b.approval_review_job_id`)).rows)
     console.error('Remote review interactions', (await fixture.db.pool.query(`select id,status,
       record->>'deliveryState' as delivery_state from durable_interactions`)).rows)
     console.error('Remote review delivery attempts', (await fixture.db.pool.query(`select interaction_id,attempt,state,error,
@@ -123,14 +131,17 @@ async function receipts(fixture: Fixture, runId: string) {
 }
 
 describe('production remote review and native recovery through authenticated MCP', () => {
-  it('keeps unranked native defaults unavailable through authenticated HTTP and MCP while Main starts', async () => {
+  it('keeps unavailable native defaults until an explicit choice through authenticated HTTP and MCP', async () => {
     await withRemoteReviewFixture(async fixture => {
       const catalog = HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'codex' }))
       expect(catalog.capability).toBeNull()
       expect(catalog.discoveryError?.code).toBe('HARNESS_MODEL_DEFAULT_UNAVAILABLE')
-      const options = HarnessOptionsResultSchema.parse(await fixture.value('harness_options_get', { harness: 'codex' }))
+      const initialOptions = HarnessOptionsResultSchema.parse(await fixture.value('harness_options_get', { harness: 'codex' }))
+      expect(initialOptions.models).toEqual([])
+      const options = HarnessOptionsResultSchema.parse(await fixture.value('harness_options_refresh', { harness: 'codex' }))
       expect(options.models.map(model => model.id)).toContain('test-model')
-      expect(options.models.every(model => model.defaultPriority === undefined && model.releasedAt === undefined)).toBe(true)
+      expect(options.models.find(model => model.id === 'test-model')).toMatchObject({ defaultPriority: 0 })
+      expect(HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'codex' }))).toEqual(catalog)
       const configuration = (await fixture.db.pool.query<{ record: { harness: { model: string } } }>(
         'select record from agent_configuration_versions where id=$1',
         [fixture.version.agentConfigurationVersionIds[fixture.version.approval.designatedOrchestratorAgentId!]])
@@ -170,7 +181,7 @@ describe('production remote review and native recovery through authenticated MCP
         .then(result => ({ result }), (error: unknown) => ({ error }))
       if ('error' in deniedSave) expect(deniedSave.error).toMatchObject({ code: -32602 })
       else expect(deniedSave.result.isError).toBe(true)
-    })
+    }, { modelCatalog: 'empty-at-startup' })
   }, 240_000)
 
   it('persists a delivered remote decision and denies a read-only caller on the same product endpoint', async () => {
@@ -186,7 +197,7 @@ describe('production remote review and native recovery through authenticated MCP
       const denied = await fixture.call('interaction_respond', { interactionId: active.interaction.id,
         optionId: option.optionId, expectedRevision: active.interaction.revision }, reader.token)
       expect(denied.isError).toBe(true)
-      expect(JSON.stringify(denied.content)).toContain('ROLE_NOT_ALLOWED')
+      expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
       expect(await new PostgresInteractionRepository(fixture.db.pool).get(active.interaction.id)).toEqual(before)
       expect((await fixture.provider.calls()).filter(call => 'approvalResponse' in call)).toHaveLength(0)
       await fixture.provider.releaseReview()
@@ -224,14 +235,10 @@ describe('production remote review and native recovery through authenticated MCP
       expect(inventory.installations[0]?.connectionGeneration)
         .not.toBe(beforeInventory.installations[0]?.connectionGeneration)
       expect(fixture.workerPid()).toBe(originalWorkerPid)
-      await waitForRemoteReview(async () => {
-        await fixture.reconcile()
-        return receipts(fixture, active.run.id)
-      }, value => value.some(receipt => originalReceipts.some(original =>
-        original.intent.operationId === receipt.intent.operationId
-        && (original.intent.owner.epoch !== receipt.intent.owner.epoch
-          || original.intent.owner.grantId !== receipt.intent.owner.grantId))),
-      'new Main owner for the original native process')
+      await fixture.reconcile()
+      const currentReceipts = await receipts(fixture, active.run.id)
+      expect(currentReceipts.map(receipt => ({ intent: receipt.intent, native: receipt.native })))
+        .toEqual(originalReceipts.map(receipt => ({ intent: receipt.intent, native: receipt.native })))
       const reconnected = fixture.registry.snapshot().launches.filter(owner => originalLaunches.some(
         original => original.launchId === owner.launchId))
       expect(reconnected.map(owner => ({ owner: owner.owner, launchId: owner.launchId,
@@ -367,14 +374,21 @@ describe('production remote review and native recovery through authenticated MCP
       expect(original.native).toBeUndefined()
       expect(original.terminal).toBeUndefined()
       const owners = fixture.registry.snapshot().launches.filter(launch => launch.owner === `execution:${requester.id}`)
+      let originalLaunches = owners
       const active = owners.find(owner => owner.provider?.pid === provider.pid)!
       expect(active.lifecycle).toBe('active')
       expect(active.boundary?.kind).toBe('cgroup-v2')
+      const entry = fixture.entryCapture(original.intent.operationId)
+      expect(entry).toMatchObject({ intent: original.intent, connection: original.connection, owner: active.owner })
+      if (!entry) throw new Error('The original requester entry capture is missing.')
       const preparation = SourcePreparationSchema.parse(await fixture.value('source_preparation_get', {
         workspaceId: started.run.workspaceId, operationId: original.intent.operationId,
       }))
       expect(preparation.materializationId).not.toBeNull()
-      await fixture.restartWorker()
+      // Startup can reserve another launch before the Worker exits.
+      await fixture.restartWorker(() => {
+        originalLaunches = fixture.registry.snapshot().launches.filter(launch => launch.owner === active.owner)
+      })
       await fixture.value('run_stop', { workspaceId: started.run.workspaceId,
         runId: started.run.id, commandId: randomUUID() })
       const closed = await waitForRemoteReview(async () => {
@@ -389,7 +403,10 @@ describe('production remote review and native recovery through authenticated MCP
       expect(closed!.terminal?.entryClosure).toMatchObject({ intent: original.intent,
         connection: original.connection, owner: `execution:${requester.id}` })
       const closedLaunches = closed!.terminal!.entryClosure!.launches
-      expect(closedLaunches.map(launch => launch.launchId).sort()).toEqual(owners.map(launch => launch.launchId).sort())
+      const originalLaunchIds = [...new Set([...originalLaunches.map(launch => launch.launchId), entry.initialLaunchId])]
+      expect(closed!.terminal!.entryClosure!.initialLaunchId).toBe(entry.initialLaunchId)
+      expect(closedLaunches.map(launch => launch.launchId).sort())
+        .toEqual(originalLaunchIds.sort())
       expect(closedLaunches.find(launch => launch.launchId === active.launchId)).toMatchObject({
         guardian: active.guardian, provider: active.provider, boundary: active.boundary,
         lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty',
@@ -414,8 +431,10 @@ describe('production remote review and native recovery through authenticated MCP
       expect((await fixture.db.pool.query<{ state: string }>(
         'select state from source_execution_materializations where operation_id=$1',
         [original.intent.operationId])).rows[0]?.state).toBe('closed')
+      expect(fixture.registry.closedRegistration(active.owner, entry.initialLaunchId))
+        .toEqual(closedLaunches.find(launch => launch.launchId === entry.initialLaunchId))
       expect(fixture.registry.snapshot().launches.filter(launch => launch.owner === active.owner)
-        .map(launch => launch.launchId).sort()).toEqual(owners.map(launch => launch.launchId).sort())
+        .map(launch => launch.launchId).sort()).toEqual(originalLaunches.map(launch => launch.launchId).sort())
       expect((await fixture.provider.calls()).filter(call => 'requesterSessionBlocked' in call)).toHaveLength(1)
       expect((await fixture.provider.calls()).filter(call => call.method === 'turn/start'
         && call.correlationId === `execution:${requester.id}`)).toHaveLength(0)

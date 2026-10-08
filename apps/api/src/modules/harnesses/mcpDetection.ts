@@ -307,7 +307,7 @@ export interface ExecutionCredentialProvider {
     job?: import('@foreman-code/contracts').ReviewJob):
     Promise<IssuedWorkerCredential>
   bindReviewerJob?(executionId: string, credential: Pick<IssuedWorkerCredential, 'principalId'>,
-    job: import('@foreman-code/contracts').ReviewJob, lane: import('../interactions/sessionWriter.js').SessionWriteLease): Promise<void>
+    job: import('@foreman-code/contracts').ReviewJob, lane?: import('../interactions/sessionWriter.js').SessionWriteLease): Promise<void>
   /** New process only; never inject a replacement environment into a resident process. */
   prepare(input: ExecutionCredentialPrepareInput): Promise<PreparedExecutionCredential>
   /** Verify the retained original environment without issuing another process credential. */

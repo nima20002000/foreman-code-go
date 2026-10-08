@@ -426,9 +426,11 @@ export class ReviewerDispatcher {
         || (error instanceof Error && /^ENOENT: no such file or directory, open '\/sys\/fs\/cgroup\/.*\/graphql-native-[0-9a-f-]{36}'$/.test(error.message))
       // Even an old uncertain record without submittedAt must never become fresh work on attach failure.
       const mayHaveSubmitted = recovering || Boolean(job.submittedAt || job.acknowledgedAt || job.providerTurnOrMessageId)
-      return this.coordination.transitionReviewJob(job.id, jobToken,
-        mayHaveSubmitted ? (job.acknowledgedAt || job.providerTurnOrMessageId ? 'acknowledged' : 'uncertain')
-          : nativeBoundaryMissing ? 'failed' : busy ? 'blocked_busy' : 'blocked_disconnected', {
+      let state: ReviewJob['state'] = 'blocked_disconnected'
+      if (mayHaveSubmitted) state = 'uncertain'
+      else if (nativeBoundaryMissing) state = 'failed'
+      else if (busy) state = 'blocked_busy'
+      return this.coordination.transitionReviewJob(job.id, jobToken, state, {
           releaseLease: true,
           error: nativeBoundaryMissing ? {
             code: 'REVIEW_NATIVE_CLOSURE_UNCONFIRMED',

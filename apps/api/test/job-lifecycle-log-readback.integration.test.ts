@@ -76,9 +76,11 @@ describe.skipIf(process.env.JOB_LIFECYCLE_POSTGRES !== '1' && !process.env.TEST_
         return { outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true, supervisorIdentity,
           containerId: 'c'.repeat(64), recoveryRequired: false, logError: false, logsTruncated: false, outputCollectionError: false }
       })
+      const removeExecution = vi.fn(async () => {})
       const host = new RemoteJobExecutionHost({ journal, incarnationId: randomUUID(),
         connection: { kind: 'main', mainId: intent.mainId, mainInstallationId: execution.acceptedSpec.target.mainInstallationId!, bootId: randomUUID() },
-        supervisor: {} as PodmanJobSupervisor, source: { verify: forbidden }, inputs: { prepare: forbidden },
+        supervisor: { removeExecution } as unknown as PodmanJobSupervisor,
+        source: { verify: forbidden }, inputs: { prepare: forbidden },
         authorize: async () => {}, appendLog, collectOutputs: async () => {},
         observeReceipt: async receipt => {
           const sql = await db.connect()
@@ -94,6 +96,7 @@ describe.skipIf(process.env.JOB_LIFECYCLE_POSTGRES !== '1' && !process.env.TEST_
       const persisted = await jobs.repository.execution(db, workspaceId, execution.id)
       expect(persisted.publication).toBe('complete'); expect(persisted.resultIssue).toBe('log_delivery_unknown')
       expect(await journal.jobPendingLogs(intent.operationId)).toHaveLength(1)
+      expect(removeExecution).toHaveBeenCalledWith(execution, 'c'.repeat(64))
       app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
         operator: { access, services: { jobs, commands } as OperatorServices } })
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
