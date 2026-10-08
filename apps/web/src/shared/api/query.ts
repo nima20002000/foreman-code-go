@@ -121,6 +121,23 @@ export function useManagedWorkflowQuery(workspaceId: string, workflowId: string,
   })
 }
 
+/** Hover/focus prefetch so opening a workspace or workflow shows data instead of a loader. Fresh data is not refetched. */
+export function usePrefetchBoard() {
+  const client = useQueryClient()
+  return {
+    board: (workspaceId: string, workflowId?: string) => {
+      void client.prefetchQuery({ queryKey: queryKeys.workspaceDetails(workspaceId), staleTime: 10_000,
+        queryFn: ({ signal }) => getWorkspaceDetails({ workspaceId }, { signal }) }).catch(() => undefined)
+      if (workflowId) void client.prefetchQuery({ queryKey: queryKeys.managedWorkflow(workspaceId, workflowId), staleTime: 10_000,
+        queryFn: ({ signal }) => apiClient.getManagedWorkflow(workspaceId, workflowId, { signal }) }).catch(() => undefined)
+    },
+    workspace: (workspaceId: string) => {
+      void client.prefetchQuery({ queryKey: queryKeys.managedWorkspace(workspaceId), staleTime: 10_000,
+        queryFn: ({ signal }) => getManagedWorkspace(workspaceId, { signal }) }).catch(() => undefined)
+    },
+  }
+}
+
 export function useWorkflowPages(workspaceId: string, enabled = true, view: CatalogView = 'navigation') {
   return useInfiniteQuery({
     enabled, queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages', ...(view === 'directory' ? ['directory'] : [])],

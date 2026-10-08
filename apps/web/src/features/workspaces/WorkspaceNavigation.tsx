@@ -22,7 +22,7 @@ import type { WorkspaceCreateInput } from '@foreman-code/contracts/management'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
-import { queryKeys, useCreateManagedWorkspaceMutation, useManagedWorkspaceQuery } from '../../shared/api/query'
+import { queryKeys, useCreateManagedWorkspaceMutation, useManagedWorkspaceQuery, usePrefetchBoard } from '../../shared/api/query'
 import { Button, Dialog, Icon, IconButton, TextField } from '../../shared/ui/nocturne'
 import { useWorkspaceCreationDefaultsQuery } from '../../shared/api/settingsExperience'
 import { usePresence } from '../../shared/ui/usePresence'
@@ -248,6 +248,7 @@ function WorkspaceTreeItem({
   reorderItemProps,
   reorderKeyboardProps,
 }: WorkspaceTreeItemProps) {
+  const prefetch = usePrefetchBoard()
   const workflowsExpanded = useNavigationUiStore(
     (state) => state.expandedSections[entry.id]?.workflows ?? true,
   )
@@ -332,6 +333,8 @@ function WorkspaceTreeItem({
           title={entry.name}
           data-testid={`workspace-entry-${entry.id}`}
           onClick={onActivate}
+          onMouseEnter={() => prefetch.workspace(entry.id)}
+          onFocus={() => prefetch.workspace(entry.id)}
           {...reorderKeyboardProps}
         >
           <span className="nav-item-primary">
