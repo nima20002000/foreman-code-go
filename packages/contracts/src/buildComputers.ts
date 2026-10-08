@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { DeviceProvisioningTargetSchema, DeviceCommandIdSchema, DeviceSafeIntegerSchema } from './deviceResources.js'
 
-/** Primary computers take builds first; a backup is used only when no primary has room. */
+/** After a preferred computer, primaries take builds before backups. */
 export const BuildComputerRoleSchema = z.enum(['primary', 'backup'])
 /** Share (percent) of the computer's CPU and memory that builds may use together. */
 export const BuildComputerAllowanceSchema = z.number().int().min(10).max(100)

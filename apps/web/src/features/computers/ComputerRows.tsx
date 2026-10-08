@@ -9,7 +9,8 @@ import { useComputerAccounts } from '../../shared/api/computerAccounts'
 import { ComputerAccountChips } from './ComputerAccounts'
 import { GitHubSignInDialog } from './GitHubSignIn'
 import { DriveConnectDialog } from './DriveConnect'
-import { Alert, Button, IconButton, LoadingState, Switch, Select } from '../../shared/ui/nocturne'
+import { Alert, Button, IconButton, LoadingState, Switch, Select, TextField } from '../../shared/ui/nocturne'
+import { BuildComputerDiagnostics } from '../settings/BuildComputerParticipation'
 import { computerState } from './computerState'
 import { ComputerUtilization } from './ComputerUtilization'
 import { useComputerUi } from './computerUiStore'
@@ -47,7 +48,9 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
     drag()
   }
   return <>
-    <p className="computer-list-caption">Auto placement · Top priority first · Primary before Backup</p>
+    <p className="computer-list-caption">Auto placement · Preferred computer first · Fallback: Primary before Backup, then top priority</p>
+    {rows.length > 101 && <p className="computer-list-caption">With more than 101 computers, set priorities directly (0–100).
+      Equal priorities use computer identity; drag ordering is unavailable.</p>}
     {save.isError && <Alert tone="danger" title={computerEditError(save.error)} />}
     {activity.isError && <div className="computer-list-feedback"><span>Activity unavailable</span>
       <Button size="sm" variant="ghost" onClick={() => void activity.refetch()}>Retry activity</Button></div>}
@@ -76,7 +79,8 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
           {read.isPending && <LoadingState label="Loading build settings…" />}
           {read.isError && <Button size="sm" onClick={() => void read.refetch()}>Retry build settings</Button>}
           {read.data && !read.isError && <ComputerControls status={read.data} name={computerName(target)}
-            disabled={save.isPending} onEdit={patch => save.mutate([preferenceEdit(read.data!, patch)])} />}
+            disabled={save.isPending} directPriority={rows.length > 101}
+            onEdit={patch => save.mutate([preferenceEdit(read.data!, patch)])} />}
           <ComputerAccountChips accounts={accounts.data?.computers.find(computer => computerKey(computer.target) === key)?.accounts}
             onGitHub={() => openGitHub(key)} onDrive={() => openDrive(key)} />
           <GitHubSignInDialog target={target} name={computerName(target)} account={accounts.data?.computers
@@ -117,8 +121,8 @@ function ComputerRowIdentity({ target, computer, complete }: {
     </span>
   </button>
 }
-function ComputerControls({ status, name, disabled, onEdit }: {
-  status: BuildComputerStatus; name: string; disabled: boolean;
+function ComputerControls({ status, name, disabled, directPriority, onEdit }: {
+  status: BuildComputerStatus; name: string; disabled: boolean; directPriority: boolean;
   onEdit: (patch: ComputerPreferencePatch) => void
 }) {
   const preference = status.preference
@@ -128,6 +132,16 @@ function ComputerControls({ status, name, disabled, onEdit }: {
       options={[{ value: 'primary', label: 'Primary' }, { value: 'backup', label: 'Backup' }]} />
     <Switch className="computer-build-switch" label="Builds" aria-label={`Builds on ${name}`}
       checked={preference.buildEnabled} disabled={disabled} onChange={event => onEdit({ buildEnabled: event.target.checked })} />
+    {directPriority && <TextField key={`${preference.revision}:${preference.buildPriority}`}
+      label={`Build priority for ${name}`} type="number" min={0} max={100} step={1} required
+      hint="Saved when you leave the field." defaultValue={preference.buildPriority} disabled={disabled}
+      onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
+      onBlur={event => {
+        if (disabled) return
+        if (event.currentTarget.reportValidity() && event.currentTarget.valueAsNumber !== preference.buildPriority) {
+          onEdit({ buildPriority: event.currentTarget.valueAsNumber })
+        }
+      }} />}
     <div className="computer-allowance" role="group" aria-label={`Build allowance for ${name}`} title="CPU and memory available to builds">
       <IconButton variant="ghost" size="sm" label={`Decrease allowance for ${name}`}
         disabled={disabled || preference.buildAllowancePercent <= 10}
@@ -138,5 +152,8 @@ function ComputerControls({ status, name, disabled, onEdit }: {
         onClick={() => onEdit({ buildAllowancePercent: Math.min(100, preference.buildAllowancePercent + 10) })}><Plus size={12} /></IconButton>
     </div>
     {status.state === 'setup-required' && <span className="computer-setup-note" title={status.reasons.join(' ')}>Setup needed</span>}
+    <details className="computer-build-diagnostics"><summary>Build status</summary>
+      <BuildComputerDiagnostics status={status} />
+    </details>
   </div>
 }
