@@ -51,12 +51,12 @@ it('gives each workflow agent its own verified worktree and branch instead of on
   const reviewer = { ...coder, attempt: f.attempt(), worktree: { repository: 'octo/site', branch: 'foreman/review/reviewer-run1' } }
   const one = await f.materializer().prepare(coder)
   const two = await f.materializer().prepare(reviewer)
-  expect(one.worktree).toEqual({ repository: 'octo/site', branch: 'foreman/review/coder-run1', commit: f.commit })
-  expect(two.worktree?.branch).toBe('foreman/review/reviewer-run1')
+  expect(one.worktree).toEqual({ repository: 'octo/site', branch: expect.stringMatching(/^foreman\/review\/coder-run1-/), commit: f.commit })
+  expect(two.worktree?.branch).toMatch(/^foreman\/review\/reviewer-run1-/)
   const coderTree = sourceWorkingTreePath(one), reviewerTree = sourceWorkingTreePath(two)
   expect(coderTree).not.toBe(reviewerTree)
   expect(await f.materializer().resolve(one, { binding: f.binding, attempt: coder.attempt })).toBe(coderTree)
-  expect(git(coderTree, 'branch', '--show-current')).toBe('foreman/review/coder-run1')
+  expect(git(coderTree, 'branch', '--show-current')).toBe(one.worktree?.branch)
   expect(await readFile(join(reviewerTree, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
   // The agent edits and commits on its branch; its receipt still verifies and recovers.
   await writeFile(join(coderTree, 'src/app.ts'), 'coder edit\n')
