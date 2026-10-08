@@ -657,8 +657,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             from execution_native_sessions s join harness_executions e on e.id=s.execution_id
             where e.run_id=$1 order by e.workflow_node_id`, [runId])).rows
         if (scenario.capLoop) {
+          const expectedSessions = 8 + Number(!finalAccepted) + Number(scenario.attemptFourth)
           expect(nativeVersions.map((item) => item.harness).sort())
-            .toEqual(['codex', 'codex', 'codex', 'codex', ...(!finalAccepted ? ['codex'] : []), ...(scenario.attemptFourth ? ['codex'] : [])])
+            .toEqual(Array(expectedSessions).fill('codex'))
         } else expect(nativeVersions.map((item) => item.harness).sort()).toEqual([...scenario.providers].sort())
         expect(nativeVersions.every((item) => /^(?:codex-cli )?\d+\.\d+\.\d+$/.test(item.provider_version))).toBe(true)
         if (configurations.length > 1) {
