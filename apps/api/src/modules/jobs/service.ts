@@ -16,6 +16,7 @@ import {
   JobDefinitionRecordSchema,
   JobDefinitionSpecRecordSchema,
   JobExecutionRecordSchema,
+  WorkflowJobListInputSchema,
   isAutoJobSpecRecord,
   type ResolvedJobDefinitionSpecRecord,
   type JobDefinitionRecord,
@@ -103,27 +104,38 @@ export class JobService {
         {retryable:true,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId})
     }
   }
-  private async authorize(sql: pg.PoolClient, principal: ManagementPrincipal, workspaceId: string, action: ManagementAction) {
-    const live = await readLiveManagementPrincipal(sql,principal.id)
-    requireAuthorization(live,action,{workspaceId})
+  private async authorize(sql: pg.PoolClient, principal: ManagementPrincipal, workspaceId: string,
+    action: ManagementAction, workflowId?: string) {
+    const live = await readLiveManagementPrincipal(sql, principal.id)
+    requireAuthorization(live, action, { workspaceId, ...(workflowId ? { workflowId } : {}) })
     return live
   }
-  private async read<T>(principal: ManagementPrincipal, workspaceId: string, action: ManagementAction, work:(sql: pg.PoolClient, live: ManagementPrincipal)=>Promise<T>,source:'http'|'mcp'='http'):Promise<T> {
-    try { requireAuthorization(principal,action,{workspaceId}) } catch(error) {
-      await this.commands.recordDenied(principal.id,source,action,workspaceId); throw error
+  private async read<T>(principal: ManagementPrincipal, workspaceId: string, action: ManagementAction,
+    work: (sql: pg.PoolClient, live: ManagementPrincipal) => Promise<T>,
+    source: 'http' | 'mcp' = 'http', workflowId?: string): Promise<T> {
+    try {
+      requireAuthorization(principal, action, { workspaceId, ...(workflowId ? { workflowId } : {}) })
+    } catch (error) {
+      await this.commands.recordDenied(principal.id, source, action, workspaceId)
+      throw error
     }
     const sql = await this.pool.connect()
     let releaseError: Error | undefined
     try {
       await sql.query('begin')
-      const live = await this.authorize(sql,principal,workspaceId,action)
-      const result = await work(sql,live)
-      await this.authorize(sql,principal,workspaceId,action)
-      await sql.query('commit'); return result
-    } catch(error) {
-      await sql.query('rollback').catch((failure:unknown) => { releaseError = failure instanceof Error ? failure : new Error('Job rollback failed.') })
+      const live = await this.authorize(sql, principal, workspaceId, action, workflowId)
+      const result = await work(sql, live)
+      await this.authorize(sql, principal, workspaceId, action, workflowId)
+      await sql.query('commit')
+      return result
+    } catch (error) {
+      await sql.query('rollback').catch((failure: unknown) => {
+        releaseError = failure instanceof Error ? failure : new Error('Job rollback failed.')
+      })
       throw error
-    } finally { sql.release(releaseError) }
+    } finally {
+      sql.release(releaseError)
+    }
   }
   private async command<T>(principal:ManagementPrincipal, source:'http'|'mcp', workspaceId:string, action:ManagementAction,
     commandId:string, operation:string, payload:unknown, perform:(sql:pg.PoolClient,live:ManagementPrincipal)=>Promise<T>):Promise<T> {
@@ -597,6 +609,16 @@ export class JobService {
   }
   listExecutions(principal:ManagementPrincipal,workspaceId:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'jobs:read',async sql=>(await sql.query<{record:unknown}>('select record from job_executions where workspace_id=$1 order by id desc limit 100',[workspaceId])).rows.map(row=>JobExecutionRecordSchema.parse(row.record)),source)
+  }
+  listWorkflowExecutions(principal: ManagementPrincipal, workspaceId: string, workflowId: string,
+    raw: unknown, source: 'http' | 'mcp' = 'http') {
+    const input = parse(WorkflowJobListInputSchema, raw)
+    return this.read(principal, workspaceId, 'jobs:read', async sql => {
+      const workflow = await sql.query('select id from workflows where workspace_id=$1 and id=$2',
+        [workspaceId, workflowId])
+      if (!workflow.rows.length) throw new DomainError('WORKFLOW_NOT_FOUND', 'Workflow not found.', 404)
+      return this.repository.workflowExecutions(sql, workspaceId, workflowId, input)
+    }, source, workflowId)
   }
   private recovery() {
     if (!this.ports.cancellationRecovery) throw new DomainError('JOB_RECOVERY_UNAVAILABLE', 'Job cleanup recovery is unavailable.', 503)

@@ -1,3 +1,4 @@
+import { WorkflowJobListInputSchema, WorkflowJobPageSchema } from '@foreman-code/contracts/job-verification'
 import { JobCancelInputSchema, JobCancellationProposalInputSchema, JobCancellationRecoveryGetSchema,
   JobCancellationRecoveryReadSchema } from '@foreman-code/contracts/job-cancellation-recovery'
 import { JobWorkflowExecutionReferenceSchema } from '@foreman-code/contracts/job-workflow'
@@ -25,13 +26,14 @@ const log = componentLogger('jobs')
 export const JOB_TOOLS = [
   'job_choices_get', 'job_workflow_execution_get', 'job_definition_list', 'job_definition_get',
   'job_definition_version_get', 'job_definition_save', 'job_validate', 'job_launch_validate', 'job_start',
-  'job_queue_get', 'job_queue_list', 'job_queue_cancel', 'job_get', 'job_list', 'job_cancel',
+  'job_queue_get', 'job_queue_list', 'job_queue_cancel', 'job_get', 'job_list', 'job_workflow_list', 'job_cancel',
   'job_cancellation_recovery_propose', 'job_cancellation_recovery_get', 'job_logs_read',
   'job_artifacts_list', 'job_artifact_read',
 ] as const
 export type JobToolName = typeof JOB_TOOLS[number]
 const actions:Record<JobToolName,ManagementAction> = {
   job_launch_validate: 'jobs:start',
+  job_workflow_list: 'jobs:read',
   job_choices_get:'job_definitions:read',job_workflow_execution_get:'jobs:read',job_definition_list:'job_definitions:read',job_definition_get:'job_definitions:read',job_definition_version_get:'job_definitions:read',job_definition_save:'job_definitions:write',job_validate:'job_definitions:read',
   job_start:'jobs:start',job_get:'jobs:read',job_list:'jobs:read',job_cancel:'jobs:cancel',job_cancellation_recovery_propose:'jobs:cancel',job_cancellation_recovery_get:'jobs:cancel',job_logs_read:'job_logs:read',job_artifacts_list:'job_artifacts:read',job_artifact_read:'job_artifacts:read',
   job_queue_get: 'jobs:read', job_queue_list: 'jobs:read', job_queue_cancel: 'jobs:cancel',
@@ -52,7 +54,9 @@ export function jobToolAvailable(context:JobMcpContext,name:JobToolName,resource
 export function jobCapabilities(context:JobMcpContext,resource:AuthorizedResource) {
   return JOB_TOOLS.filter(name => jobToolAvailable(context, name, resource)).map(name => ({
     name, actions: [actions[name]],
-    detail: name.startsWith('job_cancellation_recovery')
+    detail: name === 'job_workflow_list'
+      ? 'Read workflow-node and Agent-triggered CI executions for one workflow, newest first, with cursor paging. Requires jobs:read for that workspace and workflow.'
+      : name.startsWith('job_cancellation_recovery')
       ? 'Cleanup requires jobs:cancel and separate local-human approval. MCP cannot approve itself or authorize execution.'
       : JOB_QUEUE_CAPABILITY_DETAIL + ' Accepted specifications and file revisions are immutable. '
         + 'No Agent, provider login or Operator credential enters the build.',
@@ -151,6 +155,16 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   }))
   if(jobToolAvailable(context,'job_get')) server.registerTool('job_get',{description:'Read exact accepted job and separate process, transport and publication facts.',inputSchema:execution,outputSchema:z.object({execution:JobExecutionRecordSchema}),annotations:read},input=>invoke(context,'job_get',async()=>({execution:await service.getExecution(context.principal,input.workspaceId,input.executionId,'mcp')})))
   if(jobToolAvailable(context,'job_list')) server.registerTool('job_list',{description:'List workspace job executions.',inputSchema:scope,outputSchema:z.object({executions:z.array(JobExecutionRecordSchema)}),annotations:read},input=>invoke(context,'job_list',async()=>({executions:await service.listExecutions(context.principal,input.workspaceId,'mcp')})))
+  if (jobToolAvailable(context, 'job_workflow_list')) server.registerTool('job_workflow_list', {
+    description: 'Read accepted Job history for one workflow, including workflow job nodes and Agent-triggered CI. '
+      + 'Newest first, at most 50 rows per page. Pass nextCursor as cursor for older rows. '
+      + 'Names come from the accepted immutable Job version. Requires scoped jobs:read; no side effects.',
+    inputSchema: scope.extend({ workflowId: z.string().min(1), ...WorkflowJobListInputSchema.shape }),
+    outputSchema: WorkflowJobPageSchema, annotations: read,
+  }, input => invoke(context, 'job_workflow_list', () => {
+    const { workspaceId, workflowId, ...page } = input
+    return service.listWorkflowExecutions(context.principal, workspaceId, workflowId, page, 'mcp')
+  }))
   if (jobToolAvailable(context, 'job_cancel')) server.registerTool('job_cancel', {
     description: 'Request cancellation of the original Job. Pending journal state does not prove physical closure. For a revoked Worker, recovery requires a fresh browser-owner-approved grant and the original installation signed no-entry/source-claim closure. Recovery never authorizes execution or publication.',
     inputSchema: JobCancelInputSchema.extend({ workspaceId: z.string().min(1), executionId: z.string().min(1) }),
