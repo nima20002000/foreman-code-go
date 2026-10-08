@@ -96,7 +96,7 @@ it('restores the saved Auto policy and limits when keeping runtime requirements'
   const user = userEvent.setup()
   await screen.findByRole('option', { name: /Image/ })
   const choice = screen.getByRole('combobox', { name: 'Required isolation and toolchain policy' })
-  await user.selectOptions(choice, '0')
+  await user.selectOptions(choice, screen.getByRole('option', { name: /Image/ }))
   await user.selectOptions(choice, '')
   await user.click(screen.getByRole('button', { name: 'Save job definition' }))
   expect(saved).toEqual([expect.objectContaining({ spec: savedDefinition.spec })])
@@ -120,7 +120,8 @@ it('defaults to Auto and saves runtime requirements while every computer is offl
   await user.type(screen.getByRole('textbox', { name: 'Job name' }), 'Automatic build')
   await user.selectOptions(screen.getByRole('combobox', { name: 'Pinned source snapshot' }),
     `${definition.spec.source.snapshotId}:${definition.spec.source.manifestDigest}`)
-  await user.selectOptions(screen.getByRole('combobox', { name: 'Required isolation and toolchain policy' }), '0')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Required isolation and toolchain policy' }),
+    screen.getByRole('option', { name: /Image/ }))
   await user.click(screen.getByRole('button', { name: 'Save job definition' }))
   expect(saved).toHaveLength(1)
   expect(saved[0]).toMatchObject({ spec: { target: { kind: 'auto' }, policy: requirement.policy, limits,

@@ -78,8 +78,10 @@ Primary source references:
 Claude presets are explicit configuration templates. In Settings → Harnesses →
 Claude, choose the host-local profile directory, model, authentication and sandbox.
 The optional **Include Foreman Code MCP** action copies this API's HTTP endpoint into
-the preset. After saving, **MCP connections** can add/remove validated HTTP
-endpoints, and **Tool permissions** can enable exact tool names and approval rules.
+the preset. **MCP connections** can add/remove the app HTTP connection, and
+**Tool permissions** can enable exact tool names and approval rules. External
+MCP servers are rejected when saving because only the app connection has an
+accepted tool manifest. Stored configurations remain readable for correction.
 New tools default to app-routed `ask`. Adding a connection grants no tools.
 Native login files and ambient CLI MCP configuration are not modified or imported.
 Only future configurations copy preset edits; existing Agent/WorkflowVersion/Run
@@ -94,6 +96,12 @@ control query. Missing model selections initialize from the native recommended
 canonical model with advertised medium effort; explicit model, effort and access
 choices remain authoritative. Native discovery preference, installation,
 authentication, configuration and execution qualification remain separate facts.
+Automatically detected Claude presets retain read-only access and remain
+unavailable until the user explicitly selects Full access. Startup never converts
+a restricted preset or role default to Full access.
+An unchanged incomplete Claude preset can be retained when saving another
+provider's defaults. Editing or explicitly selecting Claude still requires
+supported access and MCP configuration.
 Claude's local rollout switch is
 `GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK`, independent of OpenCode.
 
@@ -101,7 +109,12 @@ The explicit `harness_instance_check` operation now has a real local Claude
 producer. A first Operator Claude default selection reuses an exact qualified
 local profile or prepares and checks one through the same revisioned, authenticated
 HTTP/MCP services. This requires both harness read and update authority and can
-consume subscription capacity. The producer records real SDK initialization,
+consume subscription capacity. Before any diagnostic input, the producer checks
+that the configured profile directory matches the API or Worker process's
+`CLAUDE_CONFIG_DIR` (or its default `~/.claude`). Native history and fork helpers
+cannot select a different process profile; a mismatch returns
+`CLAUDE_PROFILE_DIRECTORY_MISMATCH` with no paid turn.
+The producer records real SDK initialization,
 first/second turn receipts, two queued inputs and their positive UUID echoes,
 idle closure, exact resume/history/source-preserving fork, tool hook allow/deny
 on owned disposable Write fixtures, and a transparently injected transport fault
