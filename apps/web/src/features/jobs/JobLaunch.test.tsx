@@ -233,9 +233,11 @@ it('launches a saved ordinary-suite revision and reads its accepted verification
 
 it('sends a Start placement override and retains it across an uncertain retry without editing the definition', async () => {
   const bodies: Array<Parameters<typeof import('./client').jobsClient.start>[1]> = []
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  let target = definition.spec.target
   server.use(
     http.get(`${root}/choices`, () => HttpResponse.json({ sources: [], policies: [], targets: [
-      { id: 'selected-root', label: 'Build computer', target: definition.spec.target, ready: true, reasons: [] },
+      { id: 'selected-root', label: 'Build computer', target, ready: true, reasons: [] },
     ] })),
     http.post(`${root}/launch/validate`, () => HttpResponse.json({ valid: true, canQueue: true, reasons: [], sideEffects: false })),
     http.post(`${root}/executions`, async ({ request }) => {
@@ -244,7 +246,7 @@ it('sends a Start placement override and retains it across an uncertain retry wi
     }),
   )
   const original = structuredClone(definition)
-  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+  render(<QueryClientProvider client={cache}>
     <JobLaunch workspaceId={definition.workspaceId} definition={definition} onClose={vi.fn()} onAccepted={vi.fn()} />
   </QueryClientProvider>)
   await screen.findByRole('option', { name: 'Build computer' })
@@ -255,6 +257,15 @@ it('sends a Start placement override and retains it across an uncertain retry wi
   await userEvent.click(screen.getByRole('button', { name: 'Start job' }))
   await screen.findByText('Start not confirmed')
   expect(placement).toBeDisabled()
+  target = { ...target, labelAtAcceptance: 'Updated computer',
+    destination: { ...target.destination, canonicalProjectRoot: '/updated/root',
+      directoryIdentityHash: 'd'.repeat(64) } }
+  await act(async () => { await cache.refetchQueries({ queryKey: ['jobs', definition.workspaceId, 'choices'] }) })
+  const fact = (label: string) => screen.getByText(label, { selector: 'dt' }).nextElementSibling
+  expect(fact('Computer')).toHaveTextContent(definition.spec.target.labelAtAcceptance!)
+  expect(fact('Validated root')).toHaveTextContent(definition.spec.target.destination.canonicalProjectRoot)
+  await userEvent.click(screen.getByText('Identities, limits and digests'))
+  expect(fact('Root identity')).toHaveTextContent(definition.spec.target.destination.directoryIdentityHash)
   await userEvent.click(screen.getByRole('button', { name: 'Retry same start request' }))
   await waitFor(() => expect(bodies).toHaveLength(2))
   expect(bodies[0]).toMatchObject({ definitionId: definition.id, expectedRevision: definition.revision,
