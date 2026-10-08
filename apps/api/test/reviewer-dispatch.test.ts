@@ -14,6 +14,7 @@ import { RemoteExecutionHost, type RemoteExecutionHostPorts } from '../src/modul
 import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJournal.js'
 import { RemoteNativeSessionManager } from '../src/modules/runs/remote/nativeManagerProxy.js'
 
+import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { DomainError } from '../src/modules/errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } from '../src/modules/harnesses/port.js'
 import { PostgresInteractionCoordinationRepository, type WriterFence } from '../src/modules/interactions/coordination.js'
@@ -513,7 +514,6 @@ test('rechecks topology on recovery before claiming an older queued review', asy
   assert.equal(f.counts().attached, 0)
 })
 
-
 test('settles terminal review history before repeated publication expires its physical observation', async () => {
   let now = Date.now()
   const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
@@ -631,20 +631,18 @@ test('a terminal Run moves an unsettled post-delivery review into closure-only r
   await restarted.shutdown()
 })
 
-for (const harness of ['codex', 'opencode'] as const) {
+for (const harness of ['codex'] as const) {
   for (const attachMode of ['resident', 'reattach'] as const) {
     test(`${harness} ${attachMode} uses A's saved pair to settle preflight before starting B`, async () => {
       const f = fixture()
-      const reference: NativeSessionReference = { harness, providerVersion: harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: 'sequential-review' }
+      const reference: NativeSessionReference = { harness, providerVersion: '0.154.0', nativeSessionId: 'sequential-review' }
       const oldCorrelation = 'review-A'
-      const oldProvider = harness === 'codex' ? 'native-A' : `msg_${createHash('sha256').update(oldCorrelation).digest('hex').slice(0, 24)}`
-      const oldEvents = harness === 'codex'
-        ? [event('thread.reconciled', { thread: { id: reference.nativeSessionId, status: 'idle', turns: [
-            { id: oldProvider, clientUserMessageId: oldCorrelation, status: 'completed' },
-          ] } })]
-        : [event('message.updated', { info: { id: 'assistant-A', sessionID: reference.nativeSessionId,
-            role: 'assistant', parentID: oldProvider, finish: 'stop', time: { completed: 1 } } }),
-          event('session.status', { sessionID: reference.nativeSessionId, status: { type: 'idle' } })]
+      const oldProvider = 'native-A'
+      const oldEvents = [event('thread.reconciled', { thread: {
+        id: reference.nativeSessionId, status: 'idle', turns: [
+          { id: oldProvider, clientUserMessageId: oldCorrelation, status: 'completed' },
+        ],
+      } })]
       f.coordination.lane = { ...f.coordination.lane, harness, nativeSessionId: reference.nativeSessionId,
         observedStatus: 'uncertain', correlationId: oldCorrelation, currentTurnOrMessageId: oldProvider }
       const reconciled: string[] = []
@@ -664,15 +662,8 @@ for (const harness of ['codex', 'opencode'] as const) {
           submissions++
           assert.notEqual(input.clientCorrelationId, oldCorrelation)
           f.coordination.pending = false
-          if (harness === 'codex') {
-            yield event('turn.started', { threadId: reference.nativeSessionId, turnId: 'native-B', clientCorrelationId: input.clientCorrelationId })
-            yield event('turn/completed', { threadId: reference.nativeSessionId, turn: { id: 'native-B', status: 'completed' } })
-          } else {
-            const id = `msg_${createHash('sha256').update(input.clientCorrelationId).digest('hex').slice(0, 24)}`
-            await input.onSubmitted?.(id)
-            yield event('message.updated', { info: { id: 'assistant-B', sessionID: reference.nativeSessionId,
-              role: 'assistant', parentID: id, time: { completed: 2 }, finish: 'stop' } })
-          }
+          yield event('turn.started', { threadId: reference.nativeSessionId, turnId: 'native-B', clientCorrelationId: input.clientCorrelationId })
+          yield event('turn/completed', { threadId: reference.nativeSessionId, turn: { id: 'native-B', status: 'completed' } })
         },
       }
       f.runtime.attachOwnedSession = async (context) => {
@@ -825,7 +816,7 @@ test('iterator exhaustion and unrelated events are not acknowledgement or comple
 })
 
 test('generic submission errors stay uncertain, explicit pre-acceptance rejection fails', async () => {
-  for (const [error, expected] of [[new Error('socket lost'), 'uncertain'], [Object.assign(new Error('rejected'), { certainty: 'definite', result: { error: { code: 'OPENCODE_NATIVE_DELIVERY_REJECTED' } } }), 'failed']] as const) {
+  for (const [error, expected] of [[new Error('socket lost'), 'uncertain'], [new NativeDeliveryError('turn_submission', 'not_sent', new Error('rejected')), 'failed']] as const) {
     const f = fixture(); await enqueue(f)
     f.manager.startTurn = () => ({ [Symbol.asyncIterator]: () => ({ next: async () => { throw error } }) })
     assert.equal((await f.dispatcher.dispatchNext('reviewer', 'worker'))?.state, expected)
@@ -1059,16 +1050,6 @@ test('recovery correlates Codex persisted client message ID, not the query echo'
   assert.equal(result.providerId, 'exact')
 })
 
-test('OpenCode completion requires the exact parent message and terminal evidence', () => {
-  const reference: NativeSessionReference = { harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: 'oc-session' }
-  const messageId = `msg_${createHash('sha256').update('review').digest('hex').slice(0, 24)}`
-  const update = (parentID: string) => event('message.updated', { info: { id: 'assistant', sessionID: reference.nativeSessionId,
-    role: 'assistant', parentID, time: { completed: 1 }, finish: 'stop' } })
-  assert.equal(reviewTurnEvidence(reference, history([update('wrong'), event('session.idle')]), 'review').terminal, false)
-  assert.equal(reviewTurnEvidence(reference, history([update(messageId)]), 'review').terminal, true)
-})
-
-
 test('failed reattachment cannot turn timestamp-free uncertainty into fresh work', async () => {
   const f = fixture(); const job = await enqueue(f)
   f.coordination.job = { ...job, state: 'uncertain' }
@@ -1090,7 +1071,6 @@ test('a definite reconciliation read failure is not a definitely rejected submis
   assert.equal((await f.dispatcher.dispatchNext('reviewer', 'worker'))?.state, 'uncertain')
 })
 
-
 test('known native turn identity cannot be replaced by a second turn with the same correlation', () => {
   const result = reviewTurnEvidence(session, history([
     startEvent('review'), endEvent(),
@@ -1102,7 +1082,6 @@ test('known native turn identity cannot be replaced by a second turn with the sa
   assert.equal(result.providerId, 'original-turn')
   assert.equal(result.terminal, false)
 })
-
 
 function queueFixture() {
   const f = fixture()
@@ -1183,27 +1162,26 @@ test('durable session attach rejects an identity different from its saved execut
   assert.equal(f.counts().attached, 0)
 })
 
-
 test('fresh native idle status refreshes a lane without falsely completing the review', () => {
-  const reference: NativeSessionReference = { harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: 'oc-session' }
-  const result = reviewTurnEvidence(reference, history([event('session.idle', { sessionID: reference.nativeSessionId })]), 'review')
+  const result = reviewTurnEvidence(session, idleHistory(), 'review')
   assert.equal(result.nativeIdle, true)
   assert.equal(result.terminal, false)
   assert.equal(result.acknowledged, false)
-  const busy = reviewTurnEvidence(reference, history([event('session.idle'), event('session.status', { status: { type: 'busy' } })]), 'review')
+  const busyHistory = history([event('thread.reconciled', { thread: {
+    id: session.nativeSessionId, status: 'active', turns: [{ id: 'other-turn', status: 'inProgress' }],
+  } })])
+  const busy = reviewTurnEvidence(session, busyHistory, 'review')
   assert.equal(busy.nativeBusy, true)
   assert.equal(busy.nativeIdle, false)
 })
 
-
-test('a definite SSE failure after an unknown send is not a rejected prompt', async () => {
+test('a definite observation failure after an unknown send is not a rejected prompt', async () => {
   const f = fixture(); await enqueue(f)
   f.manager.startTurn = () => ({ [Symbol.asyncIterator]: () => ({ next: async () => {
-    throw Object.assign(new Error('SSE reconnect rejected'), { certainty: 'definite', result: { error: { code: 'OPENCODE_SSE_UNAVAILABLE' } } })
+    throw Object.assign(new Error('Native observation rejected'), { certainty: 'definite' })
   } }) })
   assert.equal((await f.dispatcher.dispatchNext('reviewer', 'worker'))?.state, 'uncertain')
 })
-
 
 test('does not admit a reviewer in the gap between native turn completion and durable workflow finalization', async () => {
   const f = queueFixture()
