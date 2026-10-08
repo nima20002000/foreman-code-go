@@ -7,11 +7,16 @@ import {
 } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
-import { CLAUDE_FULL_ACCESS_REQUIRED, ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
+import { CLAUDE_FULL_ACCESS_REQUIRED, CLAUDE_EXTERNAL_MCP_UNSUPPORTED,
+  ClaudeSupportedMcpServersSchema } from '@foreman-code/contracts/claude'
 
 export function assertClaudeFullAccess(configuration: HarnessConfiguration): void {
-  if (configuration.harness === 'claude' && !ClaudeFullAccessConfigurationSchema.safeParse(configuration).success) {
+  if (configuration.harness !== 'claude') return
+  if (configuration.sandbox !== 'danger-full-access') {
     throw new DomainError('CLAUDE_FULL_ACCESS_REQUIRED', CLAUDE_FULL_ACCESS_REQUIRED, 400)
+  }
+  if (!ClaudeSupportedMcpServersSchema.safeParse(configuration.mcpServers).success) {
+    throw new DomainError('CLAUDE_EXTERNAL_MCP_UNSUPPORTED', CLAUDE_EXTERNAL_MCP_UNSUPPORTED, 400)
   }
 }
 

@@ -1,3 +1,8 @@
+import { jobCleanupOptions, jobLifecycleSignal } from '../jobs/lifecycle.js'
+import { VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
+import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
+import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
+import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { sourceMaterializationClaimName } from './quotaClaims.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
@@ -223,6 +228,35 @@ describe('per-Job source quota ownership', () => {
     const successor = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
     expect(successor.quota).toEqual(receipt.quota)
     expect(await readFile(join(sourceMaterializationParent(successor), 'tree/src/index.ts'))).toEqual(f.bytes)
+  })
+
+  it('releases a closed execution quota after its cleanup deadline without renewing execution or publication', async () => {
+    const f = await fixture(1)
+    const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    const runtime = verificationRuntimeFixture()
+    const policy = { ...runtime.spec.policy, cleanupTimeoutMs: 60_000 }
+    const execution = VerificationJobExecutionSchema.parse({ ...jobExecution(), schemaVersion: 2,
+      acceptedSpec: { ...runtime.spec, policy,
+        lifecycle: verificationJobLifecycle(new Date(0).toISOString(), policy) },
+      process: { phase: 'terminal', outcome: 'build_failed', exitCode: 1, signal: null, processStopped: true },
+      publication: 'failed' })
+    const saved = structuredClone(execution)
+    expect(jobLifecycleSignal(execution, 'cleanup').aborted).toBe(true)
+    expect(jobLifecycleSignal(execution, 'publication').aborted).toBe(true)
+    await expect(f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() }))
+      .rejects.toMatchObject({ code: 'SOURCE_CAPACITY' })
+    const recovery = jobCleanupOptions(execution)
+    expect(recovery.signal.aborted).toBe(false)
+    expect(Date.parse(recovery.deadlineAt) - Date.now()).toBeGreaterThan(0)
+    expect(Date.parse(recovery.deadlineAt) - Date.now()).toBeLessThanOrEqual(policy.cleanupTimeoutMs)
+    await expect(releaseMaterializationClaim(receipt, async () => 'uncertain', f.quota, recovery.signal))
+      .rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
+    await releaseMaterializationClaim(receipt, async () => 'released', f.quota, recovery.signal)
+    const successor = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt() })
+    expect(successor.quota).toEqual(receipt.quota)
+    expect(successor.materializationId).not.toBe(receipt.materializationId)
+    expect(execution).toEqual(saved)
+    expect(jobLifecycleSignal(execution, 'publication').aborted).toBe(true)
   })
 
   it('retains the original quota when closure or deleted-file accounting remains uncertain', async () => {

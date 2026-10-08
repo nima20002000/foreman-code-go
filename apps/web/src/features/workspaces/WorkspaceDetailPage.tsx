@@ -22,16 +22,18 @@ export function WorkspaceDetailPage({ workspaceId, section, children }: {
         <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} aria-current={section === 'settings' ? 'page' : undefined}>Settings<span aria-hidden="true">›</span></Link>
       </nav>
       <div className={`settings-editor-content workspace-detail-content${section === 'settings' ? ' workspace-detail-content--settings' : ''}`}>
-        {children ?? (workspace.isError ? unavailable
-          : <>
+        {children ?? <>
+          {workspace.isError && unavailable}
+          <div hidden={workspace.isError}>
             <div className="workspace-settings-actions" role="group" aria-label="Workspace actions">
               <Button variant="ghost" onClick={actions.rename}>Rename workspace</Button>
               <Button variant="ghost" onClick={actions.chooseLocation}>Choose location</Button>
               <Button variant="danger" onClick={actions.remove}>Remove workspace</Button>
             </div>
-            {current && <WorkspaceRepositoryForm key={`${workspaceId}:${current.revision}`} workspaceId={workspaceId}
+            {current && <WorkspaceRepositoryForm key={workspaceId} workspaceId={workspaceId}
               revision={current.revision} repository={current.workspace.repository} />}
-          </>)}
+          </div>
+        </>}
       </div>
     </div>
   return <div className="settings-page settings-experience workspace-detail-page">

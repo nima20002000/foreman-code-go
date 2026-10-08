@@ -4,7 +4,7 @@ import { open, readdir, realpath } from 'node:fs/promises'
 import { join, relative, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { ClaudePersistedSession } from './port.js'
-import type { CompactionState } from '@foreman-code/contracts'
+import { compactionBlocksSend, type CompactionState } from '@foreman-code/contracts'
 
 export class ClaudeCompactionHistoryUnavailableError extends Error {}
 
@@ -85,6 +85,7 @@ export async function readClaudeCompactionHistory(session: ClaudePersistedSessio
 }
 
 export function recoveredClaudeCompaction(state: CompactionState, boundaries: readonly Record<string, unknown>[]): CompactionState {
+  if (!compactionBlocksSend(state)) return state
   const manual = boundaries.filter(frame => {
     const metadata = frame.compactMetadata as { trigger?: string } | undefined
     return frame.sessionId === state.nativeSessionId && metadata?.trigger === 'manual' && typeof frame.uuid === 'string'
@@ -92,7 +93,8 @@ export function recoveredClaudeCompaction(state: CompactionState, boundaries: re
   if (manual.length !== 1) return state
   const boundary = manual[0]!
   const metadata = boundary.compactMetadata as { preTokens?: number }
-  return { ...state, nativeOperationId: String(boundary.uuid), status: 'completed', message: 'Context compacted.',
+  return { ...state, nativeOperationId: String(boundary.uuid),
+    message: 'Compaction boundary observed. Waiting for the command result.',
     beforeTokens: metadata.preTokens ?? null,
     observedAt: typeof boundary.timestamp === 'string' ? boundary.timestamp : new Date().toISOString() }
 }
