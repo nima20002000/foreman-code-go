@@ -21,7 +21,9 @@ import { activitySourcesMigration } from './activitySourcesMigration.js'
 import { activityCommandSourcesMigration } from './activityCommandSourcesMigration.js'
 import { harnessInstanceSettingsMigration } from '../modules/harnesses/instanceSettings/migration.js'
 import { harnessInstanceProfileEvidenceMigration } from '../modules/harnesses/instanceSettings/profileMigration.js'
+import { computerSyncMigration } from './computerSyncMigration.js'
 import { buildComputersMigration } from './buildComputersMigration.js'
+import { ciRuntimePreparationMigration } from './ciRuntimePreparationMigration.js'
 import { jobAdmissionQueueMigration } from './jobAdmissionQueueMigration.js'
 import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
 import { jobSelectionTimeMigration } from './jobSelectionTimeMigration.js'
@@ -866,6 +868,8 @@ export const migrations = [
   jobArtifactXmlMigration,
   jobRuntimeCaptureWithoutApprovalMigration,
   buildComputerRoleMigration,
+  computerSyncMigration,
+  ciRuntimePreparationMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

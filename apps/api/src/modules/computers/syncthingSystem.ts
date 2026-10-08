@@ -1,0 +1,137 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { chmod, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { z } from 'zod'
+import { SyncIdentitySchema, TailscaleAddressSchema, type SyncIdentity } from '@foreman-code/contracts/computer-accounts'
+import { systemPorts } from './accountProbe.js'
+import { DomainError } from '../errors.js'
+
+export interface SyncthingPorts {
+  prepare(): Promise<SyncIdentity>
+  available(): Promise<{ installed: boolean; running: boolean }>
+  rest(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<unknown>
+  mkdir(path: string): Promise<void>
+  conflicts(path: string): Promise<string[]>
+}
+const UNIT = 'foreman-syncthing.service'
+const API = 'http://127.0.0.1:8385'
+const RELEASES = 'https://github.com/syncthing/syncthing/releases/download'
+const failure = (message: string) => new DomainError('SYNC_UNAVAILABLE', message, 502)
+
+export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.env): SyncthingPorts {
+  const home = environment.HOME ?? homedir()
+  const state = join(home, '.local', 'state', 'foreman-code', 'syncthing')
+  const rootPath = join(home, '.local', 'share', 'foreman-code', 'shared-files')
+  const processPorts = systemPorts(environment)
+  const run = async (file: string, args: string[]) => {
+    const result = await processPorts.run(file, args, AbortSignal.timeout(120_000))
+    if (result.code !== 0) throw failure(`${file.split('/').at(-1)} failed: ${result.stderr.trim().slice(-300)}`)
+    return result.stdout
+  }
+  const download = async (url: string) => {
+    const response = await fetch(url, { signal: AbortSignal.timeout(120_000), headers: { 'User-Agent': 'foreman-code' } })
+    if (!response.ok) throw failure(`Syncthing download failed (${response.status}).`)
+    return Buffer.from(await response.arrayBuffer())
+  }
+  const rest: SyncthingPorts['rest'] = async (method, path, body) => {
+    const config = await readFile(join(state, 'config.xml'), 'utf8')
+    const key = /<apikey>([A-Za-z0-9]+)<\/apikey>/u.exec(config)?.[1]
+    if (!key) throw failure('Syncthing API key is missing from its local configuration.')
+    const response = await fetch(`${API}${path}`, { method, signal: AbortSignal.timeout(15_000),
+      headers: { 'X-API-Key': key, 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+    if (!response.ok) throw failure(`Syncthing ${method} request failed (${response.status}).`)
+    const text = await response.text()
+    return text ? JSON.parse(text) as unknown : null
+  }
+  const available: SyncthingPorts['available'] = async () => {
+    const installed = Boolean(await processPorts.find('syncthing'))
+    const running = installed && (await processPorts.run('systemctl', ['--user', 'is-active', UNIT],
+      AbortSignal.timeout(10_000))).code === 0
+    return { installed, running }
+  }
+  const install = async () => {
+    const installed = await processPorts.find('syncthing')
+    if (installed) return installed
+    const arch = { x64: 'amd64', arm64: 'arm64' }[process.arch as 'x64' | 'arm64']
+    if (!arch) throw failure('Syncthing has no supported Linux build for this processor.')
+    const release = z.object({ tag_name: z.string().regex(/^v\d+\.\d+\.\d+$/u) }).parse(
+      JSON.parse((await download('https://api.github.com/repos/syncthing/syncthing/releases/latest')).toString('utf8')))
+    const name = `syncthing-linux-${arch}-${release.tag_name}`
+    const archiveName = `${name}.tar.gz`
+    const base = `${RELEASES}/${release.tag_name}`
+    const archive = await download(`${base}/${archiveName}`)
+    const sums = (await download(`${base}/sha256sum.txt`)).toString('utf8')
+    const expected = sums.split('\n').map(line => line.trim().split(/\s+/u))
+      .find(parts => parts[1]?.replace(/^\*/u, '') === archiveName)?.[0]
+    if (expected !== createHash('sha256').update(archive).digest('hex')) {
+      throw failure('The Syncthing download did not match its published checksum.')
+    }
+    const scratch = join(tmpdir(), `foreman-syncthing-${randomUUID()}`)
+    const target = join(home, '.local', 'bin', 'syncthing')
+    const temporary = `${target}.${randomUUID()}.tmp`
+    try {
+      await mkdir(scratch, { mode: 0o700 })
+      await mkdir(join(home, '.local', 'bin'), { recursive: true })
+      await writeFile(join(scratch, archiveName), archive, { mode: 0o600 })
+      await run('tar', ['-xzf', join(scratch, archiveName), '-C', scratch, `${name}/syncthing`])
+      await copyFile(join(scratch, name, 'syncthing'), temporary)
+      await chmod(temporary, 0o755)
+      await rename(temporary, target)
+    } finally {
+      await rm(temporary, { force: true })
+      await rm(scratch, { recursive: true, force: true })
+    }
+    return target
+  }
+  return {
+    rest, available,
+    mkdir: async path => { await mkdir(path, { recursive: true, mode: 0o700 }) },
+    conflicts: async path => {
+      const names: string[] = []
+      const walk = async (directory: string, relative: string) => {
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          if (names.length >= 100) return
+          if (entry.name === '.stversions' || entry.name === '.stfolder') continue
+          const name = relative ? `${relative}/${entry.name}` : entry.name
+          if (entry.isFile() && entry.name.includes('.sync-conflict-')) names.push(name)
+          if (entry.isDirectory()) await walk(join(directory, entry.name), name)
+        }
+      }
+      await walk(path, '')
+      return names
+    },
+    prepare: async () => {
+      const address = TailscaleAddressSchema.parse((await run('tailscale', ['ip', '-4'])).trim().split('\n')[0])
+      const binary = await install()
+      await mkdir(state, { recursive: true, mode: 0o700 })
+      try { await readFile(join(state, 'config.xml')) } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        await run(binary, ['generate', `--home=${state}`])
+      }
+      const units = join(home, '.config', 'systemd', 'user')
+      await mkdir(units, { recursive: true, mode: 0o700 })
+      const quote = (value: string) => `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$')}"`
+      const content = ['[Unit]', 'Description=Foreman Code shared files', 'After=network-online.target', '', '[Service]',
+        `ExecStart=${quote(binary)} serve ${quote(`--home=${state}`)} --gui-address=127.0.0.1:8385 --no-browser --no-upgrade`,
+        'Restart=on-failure', '', '[Install]', 'WantedBy=default.target', ''].join('\n')
+      await writeFile(join(units, UNIT), content, { mode: 0o600 })
+      await run('systemctl', ['--user', 'daemon-reload'])
+      await run('systemctl', ['--user', 'enable', '--now', UNIT])
+      let ready = false
+      for (let attempt = 0; attempt < 40; attempt++) {
+        try { await rest('GET', '/rest/system/status'); ready = true; break } catch (error) {
+          if (attempt === 39) throw error
+          await new Promise(resolve => { setTimeout(resolve, 250) })
+        }
+      }
+      if (!ready) throw failure('Syncthing did not start on this computer.')
+      await rest('PATCH', '/rest/config/options', { globalAnnounceEnabled: false, localAnnounceEnabled: false,
+        relaysEnabled: false, natEnabled: false, listenAddresses: [`tcp://${address}:22001`],
+        autoUpgradeIntervalH: 0, crashReportingEnabled: false, urAccepted: -1 })
+      const system = z.object({ myID: SyncIdentitySchema.shape.deviceId }).parse(await rest('GET', '/rest/system/status'))
+      return SyncIdentitySchema.parse({ deviceId: system.myID, address, rootPath })
+    },
+  }
+}

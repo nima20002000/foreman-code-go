@@ -86,7 +86,9 @@ export class NativeConversationControlCommands<State> {
       join lateral (select source from management_audit where principal_id=r.principal_id and action=r.operation
         and target_key=r.target_key and details->>'commandId'=r.command_id and details->>'phase'='reserved'
         order by sequence limit 1) a on true
-      where r.target_key=$1 and r.operation=$2 and r.result->>'status' in ('pending','uncertain')
+      where r.target_key=$1 and r.operation=$2
+        and (r.result->>'status' in ('pending','uncertain')
+          or (r.result->>'status'='completed' and not (r.result ? 'providerAcknowledgment')))
         and r.result#>>'{acceptedControl,modelRequestId}'=$3`, [conversationId, this.contract.operation, modelRequestId])).rows
     for (const row of rows) {
       const parsed = AcceptedChatResponseControlSchema.safeParse(row.result.acceptedControl)

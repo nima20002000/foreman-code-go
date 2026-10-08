@@ -48,6 +48,11 @@ export class ExistingByteTransferSourcePackageSender implements AcceptedSourcePa
       || intent.keyRevision !== attempt.keyRevision || intent.authorizationRevision !== attempt.authorizationRevision || intent.byteClass !== 'source'
       || intent.direction !== 'to-worker' || intent.manifestDigest !== manifest.manifestDigest || intent.sha256 !== sha256 || intent.byteSize !== byteSize)
       throw new SourceError('SOURCE_TRANSFER_CONFLICT', 'The actual allocated transfer does not match this immutable original source operation.')
+    const metadata = manifest.git?.metadata ? await this.bytes.readGitMetadata?.(manifest, signal) : undefined
+    if (manifest.git?.metadata && !metadata) throw new SourceError('SOURCE_GIT_OBJECT_UNAVAILABLE', 'Approved Git metadata is unavailable.')
+    if (metadata && manifest.git?.metadata) {
+      verifySourceBytes({ ...manifest.git.metadata, path: 'git-objects.json', kind: 'file', executable: false }, metadata)
+    }
     let cachedPath: string | undefined, cachedBytes: Uint8Array | undefined
     const bytes = this.bytes, admission = this.admission
     const source: ImmutableTransferSource = { async read(_intent, offset, length, bounded) {
@@ -64,6 +69,12 @@ export class ExistingByteTransferSourcePackageSender implements AcceptedSourcePa
         if (cachedPath !== entry.path) { cachedBytes = await bytes.read(manifest, entry, readSignal); verifySourceBytes(entry, cachedBytes); cachedPath = entry.path }
         const local = position - base, count = Math.min(length - copied, entry.byteSize - local)
         output.set(cachedBytes!.subarray(local, local + count), copied); copied += count; position += count; base += entry.byteSize
+      }
+      if (copied < length && metadata) {
+        const local = position - base
+        const count = Math.min(length - copied, metadata.byteLength - local)
+        output.set(metadata.subarray(local, local + count), copied)
+        copied += count
       }
       if (copied !== length) throw new SourceError('SOURCE_PACKAGE_INVALID', 'The immutable package extent changed.')
       return output

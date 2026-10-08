@@ -8,7 +8,10 @@ import { WorkflowExecutionLimits } from './WorkflowExecutionLimits'
 
 vi.mock('../settings/HarnessConfigurationFields', () => ({ HarnessConfigurationFields: () => null }))
 vi.mock('../settings/HarnessBasicFields', () => ({ HarnessBasicFields: () => null }))
-vi.mock('../../shared/api/query', () => ({ useHarnessDefaultsQuery: () => ({ data: { defaults: DEFAULT_HARNESS_DEFAULTS } }) }))
+vi.mock('../../shared/api/query', () => ({
+  useHarnessDefaultsQuery: () => ({ data: { defaults: DEFAULT_HARNESS_DEFAULTS } }),
+  useManagedHarnessCatalogQuery: () => ({ data: undefined }),
+}))
 afterEach(cleanup)
 describe('PR17 agent versus workflow scope', () => {
   it('keeps workflow limits out of the agent inspector and preserves the existing policy', async () => {

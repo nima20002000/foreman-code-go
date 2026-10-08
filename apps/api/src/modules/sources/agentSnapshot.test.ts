@@ -38,3 +38,55 @@ it('sends an Agent\'s current files, including uncommitted ones, to another clon
   await expect(snapshotAgentWorktree(ports, { path: laptop, baseCommit: 'f'.repeat(40) }, AbortSignal.timeout(30_000)))
     .rejects.toMatchObject({ code: 'SOURCE_SNAPSHOT_INVALID' })
 })
+
+it('keeps concurrent identical snapshots alive until each operation finishes bundling', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-snapshot-concurrent-'))
+  roots.push(root)
+  git(root, 'init', '-q', '-b', 'main')
+  await writeFile(join(root, 'app.ts'), 'base\n')
+  git(root, 'add', '.')
+  git(root, 'commit', '-qm', 'base')
+  const baseCommit = git(root, 'rev-parse', 'HEAD')
+  await writeFile(join(root, 'app.ts'), 'agent change\n')
+  const system = systemGitWorktreePorts({ ...gitFixtureEnvironment(),
+    GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z' })
+  let secondBundling!: () => void
+  const secondBundle = new Promise<void>(resolve => { secondBundling = resolve })
+  let firstDeleted!: () => void
+  const firstDeletion = new Promise<void>(resolve => { firstDeleted = resolve })
+  let firstRefCreated!: () => void
+  const firstRef = new Promise<void>(resolve => { firstRefCreated = resolve })
+  let refs = 0
+  let bundles = 0
+  const ports = { git: async (...args: Parameters<typeof system.git>) => {
+    const creatingRef = args[0][0] === 'update-ref' && args[0][1] !== '-d'
+    if (creatingRef && ++refs === 2) await firstRef
+    if (args[0][0] === 'bundle') {
+      bundles++
+      if (bundles === 1) await secondBundle
+      else {
+        secondBundling()
+        await firstDeletion
+      }
+    }
+    const result = await system.git(...args)
+    if (creatingRef) firstRefCreated()
+    if (args[0][0] === 'update-ref' && args[0][1] === '-d') firstDeleted()
+    return result
+  } }
+  const signal = AbortSignal.timeout(30_000)
+  const results = await Promise.allSettled([
+    snapshotAgentWorktree(ports, { path: root, baseCommit }, signal),
+    snapshotAgentWorktree(ports, { path: root, baseCommit }, signal),
+  ])
+  expect(results.map(result => result.status)).toEqual(['fulfilled', 'fulfilled'])
+  const snapshots = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+  expect(snapshots[0]!.commit).toBe(snapshots[1]!.commit)
+  const clone = join(root, 'receiver')
+  git(root, 'clone', '-q', '--no-checkout', root, clone)
+  for (const snapshot of snapshots) {
+    await importAgentSnapshot(system, clone, snapshot, signal)
+    expect(git(clone, 'show', `${snapshot.commit}:app.ts`)).toBe('agent change')
+  }
+  expect(git(root, 'for-each-ref', '--format=%(refname)', 'refs/foreman/ci/')).toBe('')
+})

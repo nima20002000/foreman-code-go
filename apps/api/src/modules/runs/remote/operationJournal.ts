@@ -690,6 +690,9 @@ export class RemoteOperationJournal {
       receipt.phase !== 'closed' || !receipt.result || receipt.quotaClaims.length))
   }
   async assertRuntimeQuiescent(): Promise<void> {
+    if (!await this.isRuntimeQuiescent()) throw new Error('Installed runtime still has unfinished work.')
+  }
+  async isRuntimeQuiescent(): Promise<boolean> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     const qualificationPending = this.data.qualificationReceipts.some(receipt =>
@@ -702,9 +705,8 @@ export class RemoteOperationJournal {
       || owner.container && owner.container.certificate?.lifecycle !== 'closed'
         && !(owner.nonEntryConfirmed && jobContainerNonEntryObserved(owner))
       || owner.verification && !owner.verification.finalizedAt && !owner.sourceReclamation)
-    if (qualificationPending || executionPending || nativePending) {
-      throw new Error('Installed runtime still has unfinished work.')
-    }
+    const conversationPending = this.data.conversations.some(receipt => !receipt.closed)
+    return !qualificationPending && !executionPending && !nativePending && !conversationPending
   }
   async qualificationStatus(operationId: string): Promise<QualificationReceipt | null> {
     await this.tail

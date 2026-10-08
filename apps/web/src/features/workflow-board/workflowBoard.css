@@ -76,6 +76,9 @@
 .board-side-panel > header { display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
 .board-side-panel > header h2 { margin: 0; color: var(--text-strong); font: var(--type-heading); }
 .board-historical-chat-content { min-height: 0; overflow: auto; padding: var(--space-4); }
+.board-historical-chat > header { flex-shrink: 0; }
+/* The scrolling panel body has no fixed chat height, so reserve space for the transcript. */
+.board-historical-chat .conversation-viewport { flex: 0 0 auto; height: 16rem; min-height: 16rem; }
 .board-side-panel > fieldset { display: grid; align-content: start; gap: var(--space-6); min-width: 0; margin: 0; padding: var(--space-4); overflow: auto; border: 0; }
 .board-keyboard-list { position: absolute; z-index: 8; bottom: var(--space-4); left: 64px; display: flex; flex-wrap: wrap; gap: var(--space-1);
   max-width: calc(100% - 8rem); padding: var(--space-2); border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-raised); }

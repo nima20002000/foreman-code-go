@@ -32,6 +32,7 @@ export function useSelectedRun({ workspaceId, workflowId }: RunsSelectorScope) {
     return router.navigate({ href: `/workspaces/${encodeURIComponent(workspaceId)}${query}${hash}`,
       resetScroll: false, replace: false })
   }, [router, source, workspaceId, workflowId])
-  return { ...snapshot, capture, isCurrent: source.isCurrent, selectRun }
+  return useMemo(() => ({ ...snapshot, capture, isCurrent: source.isCurrent, selectRun }),
+    [snapshot, capture, source, selectRun])
 }
 export type SelectedRunState = ReturnType<typeof useSelectedRun>

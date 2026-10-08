@@ -3,6 +3,7 @@ import type { SourceManifest, SourceEntry, RootBinding, MaterializationReceipt }
 /** Main persists this exact approved pin; neither worker nor resolver chooses latest. */
 export type SourceSnapshotPin = Pick<SourceManifest, 'snapshotId' | 'manifestDigest' | 'approvedSourceId'>
 export interface SourceByteReader {
+  readGitMetadata?(manifest: SourceManifest, signal: AbortSignal): Promise<Uint8Array>
   read(snapshot: SourceSnapshotPin, entry: SourceEntry, signal: AbortSignal): Promise<Uint8Array>
 }
 export type MaterializationAttempt = {

@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type HarnessConfiguration } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { HarnessCatalogService } from '../src/modules/harnesses/catalog.js'
 import type { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
@@ -15,8 +15,8 @@ it.each([
     const settings = { getManagedHarnessDefaults: vi.fn(async () => ({
       defaults: { ...DEFAULT_HARNESS_DEFAULTS, claude: configuration }, revision: 1, unavailable: [...unavailable],
     })) } as unknown as PostgresSettingsRepository
-    const qualify = vi.fn(async () => ({
-      harness: 'claude' as const, version: 'unit-catalog', authenticated: true, ready: true,
+    const qualify = vi.fn(async (value: HarnessConfiguration) => ({
+      harness: value.harness, version: 'unit-catalog', authenticated: true, ready: true,
       structuredEvents: true, supportsResume: true, supportsCancellation: true,
       supportsWorkingDirectory: true, supportsStartupPrompt: true,
       supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [],
@@ -30,5 +30,7 @@ it.each([
       discoveryError: { code: 'CLAUDE_FULL_ACCESS_REQUIRED', message: expect.stringContaining('Full access') } })
     expect(qualify).not.toHaveBeenCalled()
     expect(configuration.sandbox).toBe(sandbox)
+    const choices = await catalog.list(principal)
+    expect(choices.find(entry => entry.harness === 'claude')).toEqual(result)
   },
 )

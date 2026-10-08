@@ -83,3 +83,19 @@ Run without starting another session or claiming a successful result.
 Main-local workflow preparation cleanup requires a completed execution and a
 persisted no-submission or native-closure record. It uses the same guarded claim
 reconciliation and retains all source bytes.
+
+
+Git-worktree preparation uses the repository saved in the approved source, so
+workspace repository edits do not alter accepted Runs. The source package carries
+raw commit and tree objects alongside the approved file bytes. It does not carry
+ancestor commits or their files. Workers import those objects into their managed
+clone before worktree creation, including unpublished Agent snapshots used for CI
+runtime preparation. Runtime preparation sends the same bounded source package in
+chunks over its authenticated Worker channel.
+
+Agent worktrees are created without checkout, then populated from the verified
+source reference. This avoids running smudge filters and keeps raw approved blob
+bytes even when attributes request CRLF. File modes follow the manifest's
+executable policy; stripping execute bits can intentionally leave Git mode changes.
+Each occurrence uses a unique branch suffix. Fresh clones install atomically,
+so concurrent first-use preparations can share the installed cache.

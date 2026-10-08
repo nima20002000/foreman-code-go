@@ -1,4 +1,5 @@
 import { type ManagementAction, type ManagementScope, type OperatorToolName } from '@foreman-code/contracts/management'
+import { placementChoiceRequirements } from '../../modules/placement/choicesService.js'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/access/policy.js'
 import { OPERATOR_TOOL_ACTIONS } from './catalog.js'
 import { retiredExecutionTool } from './retiredExecutionTools.js'
@@ -125,6 +126,7 @@ export const TELEMETRY_READ_ACTIONS: readonly ManagementAction[] = ['devices:met
 
 export function operatorToolRequirements(name: OperatorToolName, resource?: AuthorizedResource): Requirement[] {
   void resource
+  if (name === 'workflow_node_placement_choices') return [...placementChoiceRequirements]
   if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') return TELEMETRY_READ_ACTIONS.map(action => ({ action, scope: action === 'devices:metrics:read' ? 'global' : 'resource' }))
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
@@ -228,6 +230,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'].includes(name) && !service.devices) return false
   if (name.startsWith('run_') && !service.runs) return false
   if (name === 'run_node_placement_get' && !service.runPlacements) return false
+  if (name === 'workflow_node_placement_choices' && !service.placementChoices) return false
   if (name.startsWith('run_subagent') && !service.runs?.subagents) return false
   if (name.startsWith('workflow_') && !service.workflows) return false
   if (name === 'execution_readiness_get' && !service.executionReadiness) return false

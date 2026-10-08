@@ -9,9 +9,9 @@ import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
 import { ComputerGitHubService } from './modules/computers/github.js'
 import { registerComputerGitHubRoutes } from './routes/computerGitHub.js'
-import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_DRIVE_NAMESPACE, COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
-import { ComputerDriveService } from './modules/computers/drive.js'
-import { registerComputerDriveRoutes } from './routes/computerDrive.js'
+import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_SYNC_NAMESPACE, COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
+import { ComputerSyncService } from './modules/computers/sync.js'
+import { registerComputerSyncRoutes } from './routes/computerSync.js'
 import { sessionStartDirectory } from './modules/harnesses/sessionStart.js'
 import { recoverPersistedClaudeCompaction } from './modules/harnesses/claudeSdk/recoverCompaction.js'
 import { registerBuildComputerRoutes } from './routes/buildComputers.js'
@@ -50,6 +50,8 @@ import { EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
 import { RunPlacementReadService } from './modules/placement/readService.js'
+import { NodePlacementChoicesService } from './modules/placement/choicesService.js'
+import { ProductionPlacementChoiceDiscovery } from './modules/placement/choiceDiscovery.js'
 import { readRemoteObservations } from './modules/runs/remote/persistence.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
@@ -384,7 +386,7 @@ export function buildProductionApp(
       { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 65_536, maxBinaryBytes: 0 },
       { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16_384, maxBinaryBytes: 0 },
-      { namespace: COMPUTER_DRIVE_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16_384, maxBinaryBytes: 0 },
+      { namespace: COMPUTER_SYNC_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
@@ -421,6 +423,13 @@ export function buildProductionApp(
       if (failures.length) throw new AggregateError(failures, 'Original device domain binding cleanup remains incomplete')
     },
     async bindingReady(binding, signal, endpoint) {
+      if (runtimeServices.computerSync) {
+        void runtimeServices.computerSync.paired({
+          hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
+          applicationInstallationId: binding.workerInstallationId,
+          keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision,
+        }).catch(error => app.log.warn({ err: error, deviceId: binding.deviceId }, 'Shared file pairing is pending'))
+      }
       void hostProfileChecks.recheckWorker(binding, signal,
         () => deviceRuntime.currentBinding(binding.deviceId)).catch(error => {
         if (!signal.aborted) app.log.error({ err: error, deviceId: binding.deviceId },
@@ -1379,6 +1388,12 @@ export function buildProductionApp(
     // Reads and lifecycle mutations share the same canonical V3 journal.
     runGraph: new RunGraphReadService(database.pool, { qualifiedReads: true }),
     runPlacements: new RunPlacementReadService(database.pool, readRemoteObservations),
+    placementChoices: new NodePlacementChoicesService(database.pool, new ProductionPlacementChoiceDiscovery(
+      database.pool, () => {
+        if (!jobRuntime) throw new DomainError('PLACEMENT_CHOICES_UNAVAILABLE', 'Computer choices are not initialized.', 503)
+        return { roots: jobRuntime.policies, sources: jobRuntime.sources, profiles: hostSettings, registry: harnessRegistry }
+      },
+    )),
   }
   const detection = new McpDetectionService({
     async inspect(input) {
@@ -1418,8 +1433,8 @@ export function buildProductionApp(
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
     operator: { access, services: runtimeServices },
     appMcp: { access, interactions: Object.assign(new PostgresAppInteractionService(database.pool, repository, commands, interactions), {
-      driveMount: (hostRef: { kind: 'main' } | { kind: 'device'; deviceId: string }) =>
-        runtimeServices.computerAccounts?.driveMount(hostRef) ?? Promise.resolve(null) }) },
+      syncedFolder: (workspaceId: string, hostRef: { kind: 'main' } | { kind: 'device'; deviceId: string }) =>
+        runtimeServices.computerSync?.sharedFolder(workspaceId, hostRef) ?? Promise.resolve(null) }) },
     workerArtifacts: () => {
       const local = localNativeOutputMcp, remote = workflowArtifacts?.extension
       if (!local) return remote
@@ -1713,10 +1728,16 @@ export function buildProductionApp(
           accountChanged: target => runtimeServices.computerAccounts!.invalidate(target),
         })
       registerComputerGitHubRoutes(app, runtimeServices.computerGitHub)
-      runtimeServices.computerDrive = new ComputerDriveService(database.pool, machine.installationId,
-        () => deviceRuntime.endpointForDomains(), commands,
-        { changed: target => runtimeServices.computerAccounts!.invalidate(target) })
-      registerComputerDriveRoutes(app, runtimeServices.computerDrive)
+      runtimeServices.computerSync = new ComputerSyncService(database.pool, machine.installationId,
+        () => deviceRuntime.endpointForDomains(), commands)
+      registerComputerSyncRoutes(app, runtimeServices.computerSync)
+      const syncTimer = setInterval(() => {
+        void runtimeServices.computerSync!.poll().catch(error => {
+          app.log.warn({ err: error }, 'Shared file sync setup is pending')
+        })
+      }, 30_000)
+      syncTimer.unref()
+      app.addHook('onClose', async () => { clearInterval(syncTimer) })
       runtimeServices.buildComputers = jobRuntime.buildComputers
       registerBuildComputerRoutes(app, jobRuntime.buildComputers)
       runtimeServices.jobs = jobRuntime.jobs
@@ -1734,8 +1755,10 @@ export function buildProductionApp(
       }
       runtimeServices.jobRuntimeProfiles = jobRuntime.profiles
       runtimeServices.ciRuntime = new CiRuntimeProvisioner(database.pool, jobRuntime.profiles, jobRuntime.sources,
-        () => deviceRuntime.endpointForDomains(), commands)
-      jobRuntime.ci.provisioner = runtimeServices.ciRuntime
+        () => deviceRuntime.endpointForDomains(), commands, { changed: () => jobRuntime?.jobs.requestQueueWake() })
+      jobRuntime.jobs.runtimePreparation = runtimeServices.ciRuntime
+      await runtimeServices.ciRuntime.recover()
+      jobRuntime.jobs.requestQueueWake()
       registerSourceRoutes(app, jobRuntime.sources)
       registerJobRoutes(app, jobRuntime.jobs)
       registerJobRuntimeProfileRoutes(app, jobRuntime.profiles, runtimeServices.ciRuntime)

@@ -38,7 +38,7 @@ export interface OperatorServices {
   computerActivity?: import('../../modules/computers/activity.js').ComputerActivityService
   computerAccounts?: import('../../modules/computers/accounts.js').ComputerAccountsService
   computerGitHub?: import('../../modules/computers/github.js').ComputerGitHubService
-  computerDrive?: import('../../modules/computers/drive.js').ComputerDriveService
+  computerSync?: import('../../modules/computers/sync.js').ComputerSyncService
   buildComputers?: import('../../modules/settings/buildComputers.js').BuildComputerSettings
   devices?: DeviceManagementService
   sources?: import('../../modules/sources/service.js').PostgresSourceService
@@ -46,6 +46,7 @@ export interface OperatorServices {
   executionReadiness?: import('../../modules/harnesses/executionReadiness.js').ExecutionReadinessService
   runGraph?: RunGraphReadApi
   runPlacements?: import('../../modules/placement/readService.js').RunPlacementReadService
+  placementChoices?: import('../../modules/placement/choicesService.js').NodePlacementChoicesService
   operatorChat?: Pick<OperatorChatService, 'readSessionControls' | 'changeSessionControls' | 'setup' | 'create' | 'list' | 'get' | 'history' | 'activityPage' | 'send' | 'handoffHistory' | 'cancel' | 'respond'>
   agentChat?: AgentChatService
   fileRetention?: FileRetentionService

@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react'
 import { Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider, type EdgeProps, type NodeProps } from '@xyflow/react'
 import { AgentNodeView } from '../../shared/ui/nocturne/Canvas'
 import { SignalEdgeShape } from '../graph/SignalEdgeShape'
+import { useResponsiveGraphViewport } from '../graph/useResponsiveGraphViewport'
 import { RunSubagentsOverlay } from '../run-subagents/RunSubagentsOverlay'
 import { savedEdgeCurve } from './curve'
 import { projectRunBoard, READ_ONLY_FLOW_PROPS, type AvailableRunBoardSnapshot, type SavedBoardEdge, type SavedBoardNode } from './model'
@@ -40,6 +41,9 @@ const proOptions = { hideAttribution: true }
 export function RunBoardCanvas({ snapshot, onInspectNode }: {
   snapshot: AvailableRunBoardSnapshot; onInspectNode?: (nodeId: string) => void
 }) {
+  const { containerRef, onInit, onMove, onManualMove } = useResponsiveGraphViewport<SavedBoardNode, SavedBoardEdge>({
+    fitViewOptions,
+  })
   const { nodes, edges } = useMemo(() => {
     const projected = projectRunBoard(snapshot)
     if (onInspectNode) for (const node of projected.nodes) {
@@ -47,7 +51,7 @@ export function RunBoardCanvas({ snapshot, onInspectNode }: {
     }
     return projected
   }, [snapshot, onInspectNode])
-  return <div className="run-board-canvas" data-testid="run-board-canvas" onKeyDown={(event) => {
+  return <div ref={containerRef} className="run-board-canvas" data-testid="run-board-canvas" onKeyDown={(event) => {
     // History keystrokes must not bubble into an ancestor's authoring shortcuts.
     event.stopPropagation()
     const editing = event.target instanceof HTMLElement && event.target.closest('input,textarea,[contenteditable="true"]')
@@ -57,11 +61,13 @@ export function RunBoardCanvas({ snapshot, onInspectNode }: {
     <ReactFlowProvider>
       <ReactFlow<SavedBoardNode, SavedBoardEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         {...READ_ONLY_FLOW_PROPS} fitView fitViewOptions={fitViewOptions} minZoom={0.02} maxZoom={2}
+        onInit={onInit} onMove={onMove}
         proOptions={proOptions} preventScrolling={false} aria-label="Saved Run graph"
         ariaLabelConfig={{ 'node.a11yDescription.default': 'Saved agent, read only.', 'edge.a11yDescription.default': 'Saved connection, read only.' }}>
         <RunSubagentsOverlay scope={snapshot} nodes={snapshot.nodes} />
         <Background color="var(--border)" gap={24} size={1} />
-        <Controls showInteractive={false} fitViewOptions={fitViewOptions} aria-label="Run view controls" />
+        <Controls showInteractive={false} fitViewOptions={fitViewOptions} aria-label="Run view controls"
+          onZoomIn={onManualMove} onZoomOut={onManualMove} />
       </ReactFlow>
     </ReactFlowProvider>
   </div>

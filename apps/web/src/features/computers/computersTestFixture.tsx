@@ -21,7 +21,7 @@ export const deviceTarget = { hostRef: { kind: 'device' as const, mainId, device
   applicationInstallationId: registration.workerInstallationId, keyRevision: 1, authorizationRevision: 1 }
 
 export function computersFixture(children: React.ReactNode, handlers: HttpHandler[] = []) {
-  useComputerUi.setState({ activity: undefined, draggedKey: undefined, github: undefined, drive: undefined })
+  useComputerUi.setState({ activity: undefined, draggedKey: undefined, github: undefined, sync: undefined })
   const statuses = new Map<string, BuildComputerStatus>([mainTarget, deviceTarget].map((target, index) => [
     computerKey(target), { preference: { target, revision: 1, buildEnabled: true, buildPriority: 100 - index * 50,
       buildRole: index ? 'backup' : 'primary', buildAllowancePercent: 60 },
@@ -36,7 +36,6 @@ export function computersFixture(children: React.ReactNode, handlers: HttpHandle
       { tool: 'claude', installed: true, signedIn: false, account: null, details: [] },
       { tool: 'opencode', installed: true, signedIn: true, account: null, details: ['OpenCode Go'] },
       { tool: 'github', installed: true, signedIn: true, account: 'octo-owner', details: [] },
-      { tool: 'drive', installed: false, signedIn: null, account: null, details: [] },
     ] } },
     { target: deviceTarget, accounts: null },
   ] }
@@ -74,6 +73,10 @@ export function computersFixture(children: React.ReactNode, handlers: HttpHandle
     }),
     http.get('*/api/management/computers/activity', () => HttpResponse.json(activity)),
     http.get('*/api/management/computers/accounts', () => HttpResponse.json(accounts)),
+    http.post('*/api/management/computers/sync/status', async ({ request }) => {
+      const { target } = await request.json() as { target: typeof mainTarget }
+      return HttpResponse.json({ target, installed: false, running: false, message: null, folders: [] })
+    }),
     http.post('*/api/management/resource-telemetry/selector', () => HttpResponse.json({ kind: 'unavailable' })),
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })

@@ -38,110 +38,8 @@ import {
   WorkflowDefaultsSchema,
 } from "../index.js";
 
-export const ManagementAudienceSchema = z.enum(["operator", "worker", "user"]);
-export type ManagementAudience = z.infer<typeof ManagementAudienceSchema>;
-
-export const ManagementActionSchema = z.enum([
-  "sources:read", "sources:approve", "sources:reconcile", "source_roots:read", "source_roots:bind",
-  "job_definitions:read", "job_definitions:write", "jobs:start", "jobs:read", "jobs:cancel", "job_logs:read", "job_artifacts:read",
-  "agents:create",
-  "agents:update",
-  "agents:archive",
-  "agents:restore",
-  "workspaces:restore",
-  "workflows:restore",
-  "workspace_locations:provision",
-  "skills:read",
-  "skills:publish",
-  "workflow_triggers:read",
-  "workflow_triggers:update",
-  "workflow_triggers:fire",
-  "runs:resume",
-
-  "capabilities:read",
-  "operator_chat:read",
-  "operator_chat:write",
-  "operator_chat:cancel",
-  "operator_chat:respond",
-  "operator_handoff:read",
-  "agent_chat:read",
-  "agent_chat:write",
-  "agent_chat:cancel",
-  "agent_chat:respond",
-  "harnesses:read",
-  "harnesses:update",
-  "devices:read",
-  "devices:provision",
-  "devices:metrics:read",
-  "settings:read",
-  "settings:update",
-  "workspaces:read",
-  "workspaces:create",
-  "workspaces:update",
-  "workspaces:archive",
-  "workspace_locations:read",
-  "workspace_locations:validate",
-  "workspace_locations:update",
-  "workflows:read",
-  "workflows:create",
-  "workflows:update",
-  "workflows:archive",
-  "agents:read",
-  "graph:read",
-  "graph:edit",
-  "graph:save",
-  "runs:read",
-  "runs:start",
-  "runs:stop",
-  "runs:subagents:input",
-  "interactions:read",
-  "interactions:respond",
-]);
-export type ManagementAction = z.infer<typeof ManagementActionSchema>;
-
-/** Host telemetry and provisioning require separately selected grants, including for broad presets. */
-export const DEFAULT_MANAGEMENT_ACTIONS = ManagementActionSchema.options.filter(
-  (action) => action !== "devices:metrics:read" && action !== "devices:provision",
-);
-
-export const ManagementScopeSchema = z
-  .object({
-    workspaceIds: z.array(IdSchema).max(500).optional(),
-    workflowIds: z.array(IdSchema).max(500).optional(),
-    runIds: z.array(IdSchema).max(500).optional(),
-  })
-  .strict();
-export type ManagementScope = z.infer<typeof ManagementScopeSchema>;
-
-export const ManagementGrantSchema = z
-  .object({
-    actions: z.array(ManagementActionSchema).min(1),
-    scope: ManagementScopeSchema,
-  })
-  .strict();
-export type ManagementGrant = z.infer<typeof ManagementGrantSchema>;
-
-export const ManagementPrincipalSchema = z
-  .object({
-    id: IdSchema,
-    name: z.string().trim().min(1),
-    audience: ManagementAudienceSchema,
-    /** Immutable backend-issued logical Agent subject for worker/App principals. */
-    agentId: IdSchema.optional(),
-    grants: z.array(ManagementGrantSchema),
-    expiresAt: TimestampSchema,
-    revokedAt: TimestampSchema.nullable(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.audience === "worker" && !value.agentId) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["agentId"], message: "worker principals require an immutable Agent subject" });
-    }
-    if (value.audience !== "worker" && value.agentId) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["agentId"], message: "Operator principals do not impersonate board Agents" });
-    }
-  });
-export type ManagementPrincipal = z.infer<typeof ManagementPrincipalSchema>;
+export * from './principals.js'
+import { ManagementActionSchema, ManagementGrantSchema, type ManagementAction } from './principals.js'
 
 /** The implicit local human's product permissions; contains no credentials. */
 export const LocalHumanAccessSchema = z.object({
@@ -708,7 +606,7 @@ export const OperatorToolNameSchema = z.enum([
   "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list", "source_preparation_get", "source_preparation_reconcile",
   "job_runtime_profile_list","job_runtime_profile_save","job_runtime_qualification_request","job_runtime_qualification_run","job_runtime_qualification_get","build_computer_prepare","build_computer_prepare_get",
   "job_choices_get","job_workflow_execution_get","job_definition_list","job_definition_get","job_definition_version_get","job_definition_save","job_validate","job_launch_validate","job_start","job_queue_get","job_queue_list","job_queue_cancel","job_get","job_list","job_cancel","job_cancellation_recovery_propose","job_cancellation_recovery_get","job_logs_read","job_artifacts_list","job_artifact_read",
-  "build_computer_get", "build_computer_update", "build_computers_update", "computer_activity_list", "computer_accounts_list", "computer_github_login_start", "computer_github_login_status", "computer_github_logout", "computer_github_setup_git", "computer_drive_connect_start", "computer_drive_connect_complete", "computer_drive_connect_status", "computer_drive_connect_cancel", "computer_drive_disconnect",
+  "build_computer_get", "build_computer_update", "build_computers_update", "computer_activity_list", "computer_accounts_list", "computer_github_login_start", "computer_github_login_status", "computer_github_logout", "computer_github_setup_git", "computer_sync_status", "computer_sync_update",
   "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
   "device_setup_code_create",
   "device_setup_options_get",
@@ -773,7 +671,7 @@ export const OperatorToolNameSchema = z.enum([
   "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive", "workflow_batch_archive",
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_draft_layout", "graph_draft_revert_applied", "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1", "run_history_get_v1",
-  "run_events_list", "run_handoffs_get_v1", "run_activities_get_v1", "run_node_placement_get", "run_start", "run_stop",
+  "run_events_list", "run_handoffs_get_v1", "run_activities_get_v1", "run_node_placement_get", "workflow_node_placement_choices", "run_start", "run_stop",
   "run_subagents_list_v1", "run_subagent_get_v1", "run_subagent_messages_list_v1", "run_subagent_tools_list_v1",
   "run_subagent_input_v1", "run_subagent_interrupt_v1", "run_subagent_respond_v1",
   "interaction_list", "interaction_get", "interaction_respond",

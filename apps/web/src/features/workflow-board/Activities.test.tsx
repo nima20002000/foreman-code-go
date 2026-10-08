@@ -122,6 +122,34 @@ describe('Activities shared Agent and Job actors', () => {
 })
 
 describe('Activities pagination and refresh', () => {
+  it('merges refreshed events while retaining all loaded older pages and their cursor', async () => {
+    const history = Array.from({ length: 150 }, (_, index) => event(String(index + 1), `Work ${index + 1}`, {}))
+    server.use(http.get(activitiesPath, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      if (cursor === 'older-101') return HttpResponse.json(page({ items: history.slice(50, 100),
+        mode: 'older', highWater: '150', nextCursor: 'cursor-150', olderCursor: 'older-51' }))
+      if (cursor === 'cursor-150') return HttpResponse.json(page({ items: [event('151', 'New work', {})],
+        mode: 'newer', highWater: '151', nextCursor: 'cursor-151', olderCursor: null }))
+      if (cursor === 'older-51') return HttpResponse.json(page({ items: history.slice(0, 50),
+        mode: 'older', highWater: '151', nextCursor: 'cursor-151', olderCursor: null }))
+      return HttpResponse.json(page({ items: history.slice(100), highWater: '150',
+        nextCursor: 'cursor-150', olderCursor: 'older-101' }))
+    }))
+    await mount({ expectedText: 'Work 101' })
+    const region = screen.getByRole('region', { name: 'Activities' })
+    const user = userEvent.setup()
+    expect(within(region).getAllByRole('listitem')).toHaveLength(50)
+    await user.click(screen.getByRole('button', { name: 'Load older Activities' }))
+    await waitFor(() => expect(within(region).getAllByRole('listitem')).toHaveLength(100))
+    await user.click(screen.getByRole('button', { name: 'Refresh Activities' }))
+    expect(await screen.findByText('New work')).toBeVisible()
+    expect(within(region).getAllByRole('listitem')).toHaveLength(101)
+    expect(screen.getByText('Work 51')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Load older Activities' }))
+    await waitFor(() => expect(within(region).getAllByRole('listitem')).toHaveLength(151))
+    expect(screen.getByText('Work 1')).toBeVisible()
+  })
+
   it('finishes a pending poll before accepting an older-page read', async () => {
     const poll = deferred<RunActivitiesPage>()
     const requests: Array<string | null> = []
@@ -251,6 +279,27 @@ describe('Activities pagination and refresh', () => {
     await eventually(() => expect(screen.getByText('Continued work')).toBeVisible())
     expect(screen.getByText('Agent worked')).toBeVisible()
     expect(cachedFeed()).toMatchObject({ nextCursor: 'cursor-6', olderCursor: null, retainedFrom: '2' })
+  })
+
+  it('refreshes from retained history after a cursor expires', async () => {
+    let initialReads = 0
+    server.use(http.get(activitiesPath, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      if (cursor) return new HttpResponse(null, { status: 410 })
+      initialReads++
+      return HttpResponse.json(initialReads === 1 ? page() : page({
+        items: [event('6', 'Retained work', {})], highWater: '6', retainedFrom: '6',
+        nextCursor: 'cursor-6', olderCursor: null,
+      }))
+    }))
+    await mount()
+    await userEvent.click(screen.getByRole('button', { name: 'Load older Activities' }))
+    expect(await screen.findByText('Activity history has a retention gap.')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh Activities' }))
+    expect(await screen.findByText('Retained work')).toBeVisible()
+    expect(screen.queryByText('Job ran')).not.toBeInTheDocument()
+    expect(screen.queryByText('Activity history has a retention gap.')).not.toBeInTheDocument()
+    expect(initialReads).toBe(2)
   })
 })
 

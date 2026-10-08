@@ -152,3 +152,25 @@ it('still rejects changed source bytes after the manifest has been cached', asyn
   await expect(f.store.read(f.manifest, entry, f.signal)).rejects.toMatchObject({ code: 'SOURCE_BYTES_INVALID' })
   expect(reads.manifest).toBe(1)
 })
+
+
+it('retains pinned Git metadata and rejects mismatched or altered object bytes', async () => {
+  const directory = await mkdtemp('/tmp/graphql-source-objects-')
+  directories.push(directory)
+  const store = new PrivateSourceSnapshotStore(directory)
+  const bytes = Buffer.from('approved commit and tree metadata')
+  const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
+    capturePolicy: 'git-tree-v1', executablePolicy: 'strip', entries: [], deletions: [],
+    git: { commit: 'a'.repeat(40), tree: 'b'.repeat(40), objectFormat: 'sha1', repository: 'octo/site',
+      metadata: { byteSize: bytes.length, sha256: sourceSha256(bytes) } } })
+  await store.writeGitMetadata(manifest.snapshotId, bytes)
+  await store.commit(manifest)
+  const signal = AbortSignal.timeout(5000)
+  expect(await store.readGitMetadata(manifest, signal)).toEqual(bytes)
+  await expect(store.readGitMetadata({ ...manifest, approvedSourceId: randomUUID() }, signal))
+    .rejects.toMatchObject({ code: 'SOURCE_PIN_CONFLICT' })
+  const path = join(directory, manifest.snapshotId, 'git-objects.json')
+  await chmod(path, 0o600)
+  await writeFile(path, Buffer.alloc(bytes.length, 120))
+  await expect(store.readGitMetadata(manifest, signal)).rejects.toMatchObject({ code: 'SOURCE_BYTES_INVALID' })
+})

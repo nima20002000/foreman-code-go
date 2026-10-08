@@ -4,7 +4,6 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { expect, it } from 'vitest'
 import type { BuildComputerBatchUpdate, BuildComputerBatchResult, BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
-import type { DriveLoginState } from '@foreman-code/contracts/computer-accounts'
 import { server } from '../../mocks/server'
 import { computerKey } from '../../shared/api/computerActivity'
 import { ComputerRows } from './ComputerRows'
@@ -195,13 +194,15 @@ it('sends one batch and no compensation writes when the reorder is rejected', as
 
 it('shows which accounts each computer is signed in to without listing offline computers as signed out', async () => {
   computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
-  const main = await screen.findByRole('group', { name: 'Accounts' })
+  await screen.findByLabelText('Codex: coder@example.com')
+  const main = within(rows()[0]!).getByRole('group', { name: 'Accounts' })
   expect(within(main).getByLabelText('Codex: coder@example.com')).toBeInTheDocument()
   expect(within(main).getByRole('button', { name: 'GitHub: octo-owner. Manage GitHub' })).toBeInTheDocument()
   expect(within(main).getByLabelText('OpenCode: OpenCode Go')).toBeInTheDocument()
   expect(within(main).getByLabelText('Claude: signed out')).toBeInTheDocument()
-  expect(within(main).getByRole('button', { name: 'Google Drive: not installed. Manage Google Drive' })).toBeInTheDocument()
-  expect(screen.getAllByRole('group', { name: 'Accounts' })).toHaveLength(1)
+  expect(await screen.findByRole('button', { name: 'Sync not installed. Manage shared files on Main PC' })).toBeInTheDocument()
+  expect(screen.getAllByRole('group', { name: 'Accounts' })).toHaveLength(2)
+  expect(screen.getByText('Account state unavailable')).toBeVisible()
 })
 
 it('connects GitHub on a computer with a one-time code and shows the signed-in account', async () => {
@@ -229,37 +230,34 @@ it('connects GitHub on a computer with a one-time code and shows the signed-in a
   await waitFor(() => expect(within(dialog).getByText('new-owner')).toBeInTheDocument(), { timeout: 8000 })
 }, 15_000)
 
-it('connects Google Drive on a computer through remote authorization and shows the mounted account', async () => {
-  const user = userEvent.setup()
-  const waiting: DriveLoginState = { loginId: '77777777-7777-4777-8777-777777777777', state: 'waiting',
-    authorizationUrl: null, authorizationCommand: 'rclone authorize drive e30',
-    expiresAt: '2099-01-01T00:00:00.000Z', account: null, mountPath: null, message: null }
-  let state = waiting
-  const bodies: unknown[] = []
-  const completions: unknown[] = []
-  server.use(
-    http.post('*/api/management/computers/drive/connect', async ({ request }) => { bodies.push(await request.json()); return HttpResponse.json(waiting) }),
-    http.post('*/api/management/computers/drive/connect/status', () => HttpResponse.json(state)),
-    http.post('*/api/management/computers/drive/connect/complete', async ({ request }) => {
-      completions.push(await request.json())
-      state = { ...waiting, state: 'connected', account: 'owner@gmail.com',
-        mountPath: '/home/owner/Foreman Code Drive' }
-      return HttpResponse.json(state)
+it('shows local synced folders and conflicts for the selected computer', async () => {
+  computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />, [
+    http.post('*/api/management/computers/sync/status', async ({ request }) => {
+      const { target } = await request.json() as { target: typeof mainTarget }
+      return HttpResponse.json({ target, installed: true, running: true, message: null, folders: [{
+        workspaceId: 'workspace', name: 'Website', participating: true, enabled: true, revision: 1,
+        status: { workspaceId: 'workspace', path: '/home/owner/shared/workspace-id', connected: true,
+          state: 'syncing', conflicts: ['draft.sync-conflict.txt'], message: null },
+      }] })
     }),
-  )
-  computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
-  await user.click(await screen.findByRole('button', { name: 'Google Drive: not installed. Manage Google Drive' }))
-  const dialog = await screen.findByRole('dialog', { name: 'Google Drive on Main PC' })
-  await user.click(within(dialog).getByRole('button', { name: 'Connect Google Drive' }))
-  expect(await within(dialog).findByText(waiting.authorizationCommand!)).toBeInTheDocument()
-  expect(bodies).toEqual([{ target: mainTarget }])
-  await user.type(within(dialog).getByLabelText('Authorization result'), 'authorization-result')
-  await user.click(within(dialog).getByRole('button', { name: 'Finish connecting' }))
-  expect(await within(dialog).findByText('owner@gmail.com')).toBeInTheDocument()
-  expect(completions).toEqual([{ target: mainTarget, loginId: waiting.loginId, token: 'authorization-result' }])
-  expect(within(dialog).getByText('/home/owner/Foreman Code Drive')).toBeInTheDocument()
-}, 15_000)
+  ])
+  await userEvent.click(await screen.findByRole('button', {
+    name: 'Sync connected · syncing · 1 conflicts. Manage shared files on Main PC',
+  }))
+  const dialog = within(screen.getByRole('dialog', { name: 'Shared files on Main PC' }))
+  expect(dialog.getByText('/home/owner/shared/workspace-id')).toBeVisible()
+  expect(dialog.getByText('draft.sync-conflict.txt')).toBeVisible()
+  expect(dialog.getByRole('switch', { name: 'Sync Website' })).toBeChecked()
+})
 
+it('explains Main runtime setup limits and the supported local installation and Operator path', async () => {
+  computersFixture(<ComputerRows mainId={mainId} devices={[]} />)
+  const setup = screen.getByRole('region', { name: 'Main runtime setup' })
+  expect(within(setup).getByText(/Automatic runtime preparation is unavailable on Main/)).toBeVisible()
+  expect(within(setup).getByText(/A person must install or repair the protected CI runtime locally/)).toBeVisible()
+  expect(within(setup).getByText(/ask Operator to capture the installed runtime/)).toBeVisible()
+  expect(within(setup).queryByRole('button', { name: 'Prepare automatically' })).not.toBeInTheDocument()
+})
 it('shows Main build readiness, failure reasons and the remote execution warning', async () => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
   f.statuses.set(computerKey(mainTarget), { ...f.statuses.get(computerKey(mainTarget))!,

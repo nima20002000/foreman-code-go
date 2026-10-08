@@ -140,7 +140,8 @@ export async function readDetachedWorkflowSession(owner: RunOwnership,
   return session
 }
 
-export async function readOpenRemoteWorkflowSession(owner: RunOwnership, execution: HarnessExecution) {
+/** A saved continuation still requires authenticated attachment and the original process credential. */
+export async function readRemoteWorkflowContinuation(owner: RunOwnership, execution: HarnessExecution) {
   owner.assertOwned()
   if (execution.runId !== owner.runId || execution.state !== 'waiting' || !execution.nativeSessionId) return undefined
   return owner.oneShotConnection().transaction(async sql => {
@@ -161,14 +162,16 @@ export async function readOpenRemoteWorkflowSession(owner: RunOwnership, executi
     const session = NativeSessionReferenceSchema.parse(row.reference)
     const receipt = RemoteOperationReceiptSchema.parse(row.receipt)
     const lifetime = await latest(sql, execution.id)
-    if (!lifetime || lifetime.closed || lifetime.detached || lifetime.prior_unclosed || receipt.terminal || receipt.stopFence)
+    if (!lifetime || lifetime.closed || lifetime.closed_without_session || lifetime.prior_unclosed
+      || receipt.terminal || receipt.stopFence)
       return undefined
     if (!isDeepStrictEqual(current, execution) || !isDeepStrictEqual(lifetime.execution_identity, executionIdentity(current))
       || session.nativeSessionId !== current.nativeSessionId || session.harness !== placement.payload.driverId
       || receipt.native?.sessionId !== session.nativeSessionId || receipt.intent.executionId !== current.id
       || receipt.intent.runId !== current.runId || receipt.intent.nodeId !== current.workflowNodeId
       || receipt.intent.bindingHash !== placement.bindingHash
-      || lifetime.expected_reference !== null && !isDeepStrictEqual(lifetime.expected_reference, session)) return conflict()
+      || lifetime.expected_reference !== null && !isDeepStrictEqual(lifetime.expected_reference, session)
+      || lifetime.detached && !isDeepStrictEqual(lifetime.detached_reference, session)) return conflict()
     const principals = (await sql.query<{ principal_id: string }>(`select b.principal_id
       from worker_credential_bindings b join management_principals p on p.id=b.principal_id
       where b.execution_id=$1 and b.run_id=$2 and b.agent_id=$3 and b.revoked_at is null
@@ -176,7 +179,7 @@ export async function readOpenRemoteWorkflowSession(owner: RunOwnership, executi
       limit 2`, [current.id, current.runId, current.agentId])).rows
     if (principals.length !== 1) return undefined
     owner.assertOwned()
-    return { session, generation: lifetime.generation, principalId: principals[0]!.principal_id }
+    return { session, generation: lifetime.generation, principalId: principals[0]!.principal_id, detached: lifetime.detached }
   })
 }
 

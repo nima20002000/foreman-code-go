@@ -20,7 +20,15 @@ export function withoutRunsSelectorSearch<T extends object>(search: T) {
 /** Route integration seam; never loosen or change the frozen Board schema. */
 export function resolveRunsSelectorBoardLocation(pathname: string, rawSearch: unknown) {
   const search = RunsSelectorSearchSchema.parse(rawSearch)
-  return resolveWorkflowBoardLocation(pathname, withoutRunsSelectorSearch(search))
+  const boardSearch = withoutRunsSelectorSearch(search)
+  if (search.selectedRunId === undefined) return resolveWorkflowBoardLocation(pathname, boardSearch)
+  // Selected Run inspection gets its version from the saved snapshot, not URL pins.
+  const baseSearch = { ...boardSearch }
+  delete baseSearch.runNodeId
+  delete baseSearch.runRelationshipId
+  delete baseSearch.runExchangeKey
+  const board = resolveWorkflowBoardLocation(pathname, baseSearch)
+  return { ...board, search: boardSearch }
 }
 
 export function readRunSelection(

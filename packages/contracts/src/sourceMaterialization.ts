@@ -7,12 +7,17 @@ export const SourceEntrySchema = z.object({
   byteSize: z.number().int().nonnegative().max(16 * 1024 * 1024),
   sha256: SourceHashSchema, executable: z.boolean(),
 }).strict()
+export const SourceGitMetadataSchema = z.object({
+  byteSize: z.number().int().positive().max(16 * 1024 * 1024), sha256: SourceHashSchema,
+}).strict()
 export const SourceManifestSchema = z.object({
   version: z.literal(1), snapshotId: z.uuid(), approvedSourceId: z.uuid(),
   capturePolicy: z.enum(['git-tree-v1', 'exclusive-explicit-bytes-v1']),
   executablePolicy: z.enum(['strip', 'preserve-approved']),
   git: z.object({ commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
-    tree: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), objectFormat: z.enum(['sha1', 'sha256']) }).strict().optional(),
+    tree: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), objectFormat: z.enum(['sha1', 'sha256']),
+    repository: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/).optional(),
+    metadata: SourceGitMetadataSchema.optional() }).strict().optional(),
   entries: z.array(SourceEntrySchema).max(4096),
   deletions: z.array(z.string().min(1).max(1024)).max(4096),
   overlayBaseDigest: SourceHashSchema.optional(),

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, rename, rm } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { SourceError } from './manifest.js'
@@ -26,7 +27,7 @@ export function assertWorktreeRequest(request: WorktreeRequest) {
 
 /** Fetches the approved commit into this computer's clone and adds a worktree on the agent's branch. */
 export async function addGitWorktree(ports: GitWorktreePorts, request: WorktreeRequest, commit: string, path: string,
-  signal: AbortSignal): Promise<{ branch: string; commit: string }> {
+  signal: AbortSignal, options?: { checkout: 'deferred' }): Promise<{ branch: string; commit: string }> {
   assertWorktreeRequest(request)
   if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(commit)) throw new SourceError('SOURCE_WORKTREE_INVALID', 'The approved commit is invalid.')
   const clone = await ensureCommit(ports, request.repository, commit, signal)
@@ -38,17 +39,20 @@ export async function addGitWorktree(ports: GitWorktreePorts, request: WorktreeR
   }
   // Worktrees whose Run directory was retired leave stale entries; their branches and commits stay in the clone.
   await run(['worktree', 'prune'], clone)
-  // A branch already used by an earlier attempt keeps that attempt's commits; this attempt gets the next free name.
-  for (let index = 1; index <= 20; index++) {
-    const branch = index === 1 ? request.branch : `${request.branch}-${index}`
+  // Occurrences keep their branches; random suffixes also avoid allocation races.
+  for (;;) {
+    const suffix = `-${randomUUID()}`
+    const branchLimit = 'foreman/'.length + 200
+    const branch = `${request.branch.slice(0, branchLimit - suffix.length)}${suffix}`
     const existing = await ports.git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: clone, signal })
     if (existing.code === 0) continue
-    await run(['worktree', 'add', '-b', branch, path, commit], clone)
+    await run(['worktree', 'add', ...(options?.checkout === 'deferred' ? ['--no-checkout'] : []),
+      '-b', branch, path, commit], clone)
+    if (options?.checkout === 'deferred') await run(['read-tree', commit], path)
     const head = (await run(['rev-parse', 'HEAD'], path)).trim()
     if (head !== commit) throw new SourceError('SOURCE_WORKTREE_CONFLICT', 'The worktree is not at the approved commit.')
     return { branch, commit }
   }
-  throw new SourceError('SOURCE_WORKTREE_CONFLICT', 'Too many branches already exist for this agent.')
 }
 
 /** This computer's clone of the repository, holding the commit (fetched from GitHub when missing). */
@@ -60,11 +64,22 @@ export async function ensureCommit(ports: GitWorktreePorts, repository: string, 
   return clone
 }
 export async function ensureClone(ports: GitWorktreePorts, repository: string, signal: AbortSignal): Promise<string> {
+  assertWorktreeRequest({ repository, branch: 'foreman/source' })
   const clone = ports.cloneDirectory(repository)
   const exists = await ports.git(['rev-parse', '--git-dir'], { cwd: clone, signal }).then(result => result.code === 0, () => false)
-  if (!exists) {
-    await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
-    await runGit(ports, ['clone', '--no-checkout', `https://github.com/${repository}.git`, clone], undefined, signal)
+  if (exists) return clone
+  await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
+  const staging = `${clone}-${randomUUID()}`
+  try {
+    await runGit(ports, ['clone', '--no-checkout', `https://github.com/${repository}.git`, staging], undefined, signal)
+    try {
+      await rename(staging, clone)
+    } catch (error) {
+      if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+      await runGit(ports, ['rev-parse', '--git-dir'], clone, signal)
+    }
+  } finally {
+    await rm(staging, { recursive: true, force: true })
   }
   return clone
 }

@@ -70,7 +70,7 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_create', () => context.services.workspaces.create(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_update')) server.registerTool('workspace_update', {
-    description: 'Revision-check and rename or describe a workspace, or set its GitHub repository (owner, name, defaultBranch; null removes it). With a repository, each Agent in a Run works in its own git worktree and branch on its computer.', inputSchema: WorkspaceUpdateInputSchema,
+    description: 'Revision-check and rename or describe a workspace, or set its GitHub repository (owner, name, defaultBranch; null removes it). Source approval saves the repository for the Run: later workspace edits do not change accepted executions. Each writable Agent gets its own git worktree and branch on its computer.', inputSchema: WorkspaceUpdateInputSchema,
     outputSchema: ManagedWorkspaceCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_update', () => context.services.workspaces.update(context.principal, 'mcp', input)))

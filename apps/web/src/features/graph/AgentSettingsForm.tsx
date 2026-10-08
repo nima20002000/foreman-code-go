@@ -5,14 +5,16 @@ import type { AgentForm } from './nextDraft/agentForm'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { useEffect, useRef, useState } from 'react'
 import {
-  CodexSessionCompatibilitySchema, DEFAULT_HARNESS_DEFAULTS, legacyEffortForHarness,
+  AgentHarnessSchema, CodexSessionCompatibilitySchema, DEFAULT_HARNESS_DEFAULTS, legacyEffortForHarness,
   validateHarnessWorkflowCompatibility, withAdvancedDefaults,
   type Agent, type ApprovalHandler, type AssignedSkill, type GraphqlToolOverride, type HarnessDefaults, type WorkflowExecutionPolicy,
 } from '@foreman-code/contracts'
 
 import { Alert, Button, Icon, IconButton, Select, Textarea, TextField } from '../../shared/ui/nocturne'
 import { configuredHarness, initialModel } from '../agents/agentSettings'
-import { useHarnessDefaultsQuery } from '../../shared/api/query'
+import { useHarnessDefaultsQuery, useManagedHarnessCatalogQuery } from '../../shared/api/query'
+import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
+import { harnessNames } from '../settings/settingsPresentation'
 import { HarnessConfigurationFields } from '../settings/HarnessConfigurationFields'
 import { HarnessBasicFields } from '../settings/HarnessBasicFields'
 import { createHarnessEditor, prepareHarnessEditor, switchHarnessEditor } from '../settings/harnessEditor'
@@ -87,8 +89,33 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
   if (!initialSnapshot.current) initialSnapshot.current = JSON.stringify({ name: agent.name, prompt: initialPrompt ?? '', editor: localEditor, graphqlTools: localGraphqlTools,
     instructions: agent.prompt?.system ?? '', skills: agent.assignedSkills ?? [], placement: nodePlacement })
   const defaultsQuery = useHarnessDefaultsQuery({ enabled: !creationDefaults })
+  const catalogQuery = useManagedHarnessCatalogQuery(!creationDefaults)
   const providerDefaults = creationDefaults ?? defaultsQuery.data?.defaults
   const configuration = withAdvancedDefaults(editor.configuration)
+  const harnessOptions = AgentHarnessSchema.options.map((harness) => {
+    const draft = editor.drafts?.[harness]
+    const preset = draft?.configuration ?? providerDefaults?.[harness]
+    let reason: string | undefined
+    if (!draft) {
+      if (!creationDefaults && defaultsQuery.isError) reason = defaultsQuery.error.message
+      else if (!creationDefaults && defaultsQuery.isPending) reason = 'Provider presets are loading.'
+      else if (!preset) reason = `Configure ${harnessNames[harness]} in Settings > Harnesses before selecting it.`
+      else if (!creationDefaults) {
+        const discoveryError = catalogQuery.data?.find((entry) => entry.harness === harness)?.discoveryError
+        if (discoveryError && ['HARNESS_MODEL_DEFAULT_UNAVAILABLE', 'CLAUDE_FULL_ACCESS_REQUIRED',
+          'CLAUDE_EXTERNAL_MCP_UNSUPPORTED'].includes(discoveryError.code)) {
+          reason = discoveryError.message
+        }
+      }
+    }
+    if (!reason && preset?.harness === 'claude') {
+      const supported = ClaudeFullAccessConfigurationSchema.safeParse(preset)
+      if (!supported.success) reason = supported.error.issues[0]?.message
+    }
+    return { value: harness, label: reason ? `${harnessNames[harness]} · ${reason}` : harnessNames[harness],
+      disabled: Boolean(reason), reason }
+  })
+  const harnessReason = harnessOptions.find((option) => option.value === configuration.harness)?.reason
   const currentSnapshot = JSON.stringify({ name, prompt, editor, graphqlTools, instructions, skills, placement })
   const isDirty = currentSnapshot !== initialSnapshot.current
   const nameError = fieldMessage(issues, 'name')
@@ -151,8 +178,11 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
     {view === 'general' ? <div className="agent-settings-general">
       <div className="agent-settings-row agent-settings-row-primary">
         <TextField label="Name" aria-label="Name" value={name} error={nameError} onChange={(event) => { setName(event.target.value); clearErrors() }} />
-        <Select label="Harness" aria-label="Harness" value={configuration.harness} options={[{ value: 'codex', label: 'Codex' }, { value: 'opencode', label: 'OpenCode' }]} onChange={(event) => {
-          const next = event.target.value as 'codex' | 'opencode'
+        <Select label="Harness" aria-label="Harness" value={configuration.harness} options={harnessOptions}
+          hint={harnessReason ? `Provider preset unavailable: ${harnessReason} Saved agent settings are kept.` : undefined}
+          onChange={(event) => {
+          const next = AgentHarnessSchema.parse(event.target.value)
+          if (harnessOptions.find((option) => option.value === next)?.disabled) return
           const fallback = providerDefaults?.[next] ?? DEFAULT_HARNESS_DEFAULTS[next]
           setEditor((current) => switchHarnessEditor(current, next, fallback))
           clearErrors()

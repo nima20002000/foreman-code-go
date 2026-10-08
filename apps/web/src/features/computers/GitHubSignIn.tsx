@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Copy, ExternalLink, GitBranch } from 'lucide-react'
 import type { ComputerAccount } from '@foreman-code/contracts/computer-accounts'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -24,6 +24,7 @@ function GitHubSignInBody({ target, account, close }: {
   target: DeviceProvisioningTarget; account: ComputerAccount | undefined; close(): void
 }) {
   const { start, logout, setup, status, current, terminalError, accessDenied } = useGitHubLogin(target)
+  const unavailableId = useId()
   let signedIn = account?.signedIn ? account.account : null
   if (current?.state === 'signed-out') signedIn = null
   if (current && ['signed-in', 'git-setup-failed'].includes(current.state)) signedIn = current.account
@@ -46,6 +47,13 @@ function GitHubSignInBody({ target, account, close }: {
     <LoadingState label="Waiting for GitHub…" />
   </div>
   if (current?.state === 'waiting') return <LoadingState label="Finishing GitHub sign-in…" />
+  if (!current && (!account || account.signedIn === null)) return <div className="github-sign-in">
+    <Alert tone="warning" title="Account state unavailable">
+      <p id={unavailableId}>This computer must be reachable to read its existing GitHub login.
+        Close this dialog and retry accounts when the computer is online.</p>
+    </Alert>
+    <Button variant="primary" disabled aria-describedby={unavailableId}>Connect GitHub</Button>
+  </div>
   return <div className="github-sign-in">
     {(start.isError || logout.isError || setup.isError) && <Alert tone="danger" title={start.error?.message ?? logout.error?.message ?? setup.error?.message ?? 'GitHub could not finish. Try again.'} />}
     {current && ['failed', 'expired'].includes(current.state) && <Alert tone="warning" title={current.message ?? 'Sign-in did not finish.'} />}

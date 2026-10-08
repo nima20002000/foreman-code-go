@@ -19,7 +19,7 @@ export function registerRunPlacementRoutes(app: FastifyInstance, reads: RunPlace
 
 export function registerRunPlacementTool(server: McpServer, reads: RunPlacementReadService, principal: ManagementPrincipal, commands: Pick<PostgresCommandCoordinator, 'recordDenied'>): void {
   server.registerTool('run_node_placement_get', {
-    description: 'Read exact admission-time host/configuration/root/source binding for one Run node. Requires live scoped runs:read and workspace_locations:read because the exact binding includes canonical destination paths. Never reads current Board placement or launches work. Acceptance is distinct from native execution evidence.',
+    description: 'Read admission-time host/configuration/root/source binding for one Run node. Inherited Main nodes without a per-node binding return legacy_missing evidence; the Run still exists. Requires live scoped runs:read and workspace_locations:read because the binding includes canonical destination paths. Never reads current Board placement or launches work. Acceptance is distinct from native execution evidence.',
     inputSchema: RunPlacementGetInputSchema, outputSchema: RunPlacementGetResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => {
@@ -43,7 +43,7 @@ export function registerNodePlacementChoicesRoutes(app: FastifyInstance, reads: 
 export function registerNodePlacementChoicesTool(server: McpServer, reads: import('./choicesService.js').NodePlacementChoicesService,
   principal: ManagementPrincipal, commands: Pick<PostgresCommandCoordinator, 'recordDenied'>): void {
   server.registerTool('workflow_node_placement_choices', {
-    description: 'List main-authorized destinations for one saved node/configuration. Requires live workflows:read and workspace_locations:read. Readiness is not permission to launch; save and Start retain revision/auth/root validation.',
+    description: 'List authorized computers, approved sources and roots, and matching harness profiles for one saved node/configuration. Requires scoped workflows:read, workspace_locations:read, source_roots:read and sources:read, plus global harnesses:read. Choosing Main (default) clears the node placement through workflow_save_v3. Discovery does not grant execution; Save and Start revalidate revisions and authority.',
     inputSchema: NodePlacementChoicesInputSchema, outputSchema: NodePlacementChoicesResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async input => {
@@ -55,11 +55,15 @@ export function registerNodePlacementChoicesTool(server: McpServer, reads: impor
   })
 }
 
-/** Existing frozen capabilities enums cannot silently invent names. tools/list
- * publishes both strict schemas; root can append this explicit capability limit. */
+/** Discovery and accepted Run readback have separate grants and do not authorize execution. */
 export function placementCapabilityLimit(composed: boolean) {
   return { feature: 'accepted_node_placement', state: composed ? 'limited' as const : 'unsupported' as const,
     detail: composed
-      ? 'run_node_placement_get requires runs:read and workspace_locations:read. workflow_node_placement_choices requires workflows:read and workspace_locations:read. Discover exact schemas through tools/list. Accepted binding is distinct from observed native work; remote execution requires the approved device dispatch bridge.'
+      ? 'run_node_placement_get requires runs:read and workspace_locations:read. '
+        + 'Inherited Main nodes without a per-node binding return legacy_missing evidence. '
+        + 'workflow_node_placement_choices requires scoped workflows:read, workspace_locations:read, '
+        + 'source_roots:read and sources:read, plus global harnesses:read. '
+        + 'Clear a saved node placement through workflow_save_v3 to inherit Main. '
+        + 'Accepted Run binding remains unchanged; remote execution requires the approved device dispatch bridge.'
       : 'Placement readback and authorized choices are not composed in this application.' }
 }

@@ -31,6 +31,7 @@ import type { SourceOperationOwner } from '@foreman-code/contracts/source-operat
 import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { QueuedSourcePreparationCleanup } from './queuedPreparationCleanup.js'
+import { sourcePackageStream } from './operationPackage.js'
 import { releaseUnusedSourceSnapshots } from './snapshotRetention.js'
 
 export interface SourceExecutionHostPort {
@@ -48,7 +49,7 @@ export interface SourceExecutionHostPort {
 type Transport = 'http' | 'mcp'
 type Sql = GraphSqlClient
 interface ApprovalRow { approved_source_id: string; snapshot_id: string; input_hash: string; state: string;
-  origin: { location: RunExecutionLocation; mainId: string; ownerId: string; reservation: SourceReservation }; request: unknown }
+  origin: { location: RunExecutionLocation; mainId: string; ownerId: string; reservation: SourceReservation; repository?: string }; request: unknown }
 interface SourceLifecycle {
   adopted?: ((record: SourceMaterializationRecord) => Promise<void>) | undefined
   preparationClosed?: ((closure: SourcePreparationClosure) => Promise<void>) | undefined
@@ -163,7 +164,10 @@ export class PostgresSourceService implements SourceAdmissionPort {
           const fs = await this.store.storageIdentity(), approvedSourceId = randomUUID(), snapshotId = randomUUID()
           const reservation = await this.reservations.reserve(sql, { scopeId: this.scope(null, null, fs), ownerKind: 'capture', ownerId: snapshotId,
             reservedBytes: SOURCE_LIMITS.bytes + SOURCE_LIMITS.entries * 8192 + 2 * 1024 * 1024 })
-          const origin = { location, mainId: this.mainId, ownerId: live.ownerId, reservation }
+          const configured = WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
+            'select record from workspaces where id=$1 for share', [input.workspaceId])).rows[0]!.record).repository
+          const origin = { location, mainId: this.mainId, ownerId: live.ownerId, reservation,
+            ...(configured ? { repository: `${configured.owner}/${configured.name}` } : {}) }
           await sql.query(`insert into source_approvals(approved_source_id,snapshot_id,workspace_id,owner_principal_id,requested_by,command_id,input_hash,state,origin,request)
             values($1,$2,$3,$4,$5,$6,$7,'capturing',$8::jsonb,$9::jsonb)`, [approvedSourceId, snapshotId, input.workspaceId, live.ownerId, principal.id,
             input.commandId, commandInputHash(input), JSON.stringify(origin), JSON.stringify(input)])
@@ -177,8 +181,11 @@ export class PostgresSourceService implements SourceAdmissionPort {
             throw error
           })
           manifest = committed ?? await captureGitSource({ root: origin.origin.location.rootPath, approvedSourceId: origin.approved_source_id,
-            snapshotId: origin.snapshot_id, commit: input.commit, approvedPaths: input.approvedPaths, executablePolicy: input.executablePolicy, sink: this.store })
-          if (manifest.approvedSourceId !== origin.approved_source_id || manifest.git?.commit !== input.commit || manifest.executablePolicy !== input.executablePolicy
+            snapshotId: origin.snapshot_id, commit: input.commit,
+            ...(origin.origin.repository ? { repository: origin.origin.repository } : {}),
+            approvedPaths: input.approvedPaths, executablePolicy: input.executablePolicy, sink: this.store })
+          if (manifest.approvedSourceId !== origin.approved_source_id || manifest.git?.commit !== input.commit
+            || manifest.git.repository !== origin.origin.repository || manifest.executablePolicy !== input.executablePolicy
             || !isDeepStrictEqual(manifest.entries.map(e => e.path).sort(), [...input.approvedPaths].sort())) throw new DomainError('SOURCE_FACT_CONFLICT', 'Recovered source bytes do not match the original approval.', 409)
           if (!repository) await this.locations.revalidateSnapshot(input.workspaceId, origin.origin.location, 'read-only')
         } catch (error) {
@@ -199,7 +206,9 @@ export class PostgresSourceService implements SourceAdmissionPort {
           await sql.query(`insert into source_snapshots(snapshot_id,approved_source_id,workspace_id,manifest_digest,record) values($1,$2,$3,$4,$5::jsonb)
             on conflict(snapshot_id) do nothing`, [manifest.snapshotId, manifest.approvedSourceId, input.workspaceId, manifest.manifestDigest, JSON.stringify(approved)])
           await sql.query(`update source_approvals set state='approved' where approved_source_id=$1`, [manifest.approvedSourceId])
-          await this.reservations.retain(sql, origin.origin.reservation, 'retained', manifest.totalBytes + manifest.totalEntries * 8192 + 2 * 1024 * 1024)
+          const retainedBytes = manifest.totalBytes + (manifest.git?.metadata?.byteSize ?? 0)
+            + manifest.totalEntries * 8192 + 2 * 1024 * 1024
+          await this.reservations.retain(sql, origin.origin.reservation, 'retained', retainedBytes)
           const row = await this.resolveApprovedSource(sql, principal, input.workspaceId, manifest)
           origin = { ...origin, state: 'approved' }; return row
         })
@@ -229,29 +238,12 @@ export class PostgresSourceService implements SourceAdmissionPort {
     await this.transaction(async sql => authorizeSource(sql, principal, 'sources:approve', input.workspaceId))
     const configured = await this.transaction(async sql => WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
       'select record from workspaces where id=$1', [input.workspaceId])).rows[0]?.record ?? { id: input.workspaceId, name: '-' }).repository)
-    const signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
-    let commit = input.snapshot?.commit ?? input.commit
-    let repository: { repository: string; clone: string } | undefined
-    if (configured) {
-      const name = `${configured.owner}/${configured.name}`
-      if (input.snapshot) {
-        const clone = await ensureCommit(this.git, name, input.snapshot.baseCommit, signal)
-        await importAgentSnapshot(this.git, clone, input.snapshot, signal)
-        repository = { repository: name, clone }
-      } else if (commit) repository = { repository: name, clone: await ensureCommit(this.git, name, commit, signal) }
-      else {
-        const clone = this.git.cloneDirectory(name)
-        await ensureClone(this.git, name, signal)
-        const fetched = await this.git.git(['fetch', '--no-tags', 'origin', configured.defaultBranch], { cwd: clone, signal })
-        const head = fetched.code === 0 ? await this.git.git(['rev-parse', 'FETCH_HEAD^{commit}'], { cwd: clone, signal }) : fetched
-        if (head.code !== 0) throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', `Main could not fetch ${name}@${configured.defaultBranch}. Sign GitHub in on Main.`, 409)
-        commit = head.stdout.trim()
-        repository = { repository: name, clone }
-      }
-    } else if (input.snapshot) {
-      throw new DomainError('SOURCE_REPOSITORY_REQUIRED', 'Set the workspace GitHub repository before running CI on an Agent\'s files.', 409)
-    }
-    const payload = { workspaceId: input.workspaceId, commandId: input.commandId, ...(commit ? { commit } : {}) }
+    let repository = configured ? { repository: `${configured.owner}/${configured.name}`,
+      clone: this.git.cloneDirectory(`${configured.owner}/${configured.name}`) } : undefined
+    const payload = { workspaceId: input.workspaceId, commandId: input.commandId,
+      ...(input.commit ? { commit: input.commit } : {}),
+      ...(input.snapshot ? { snapshot: { commit: input.snapshot.commit, baseCommit: input.snapshot.baseCommit,
+        bundleDigest: sourceSha256(input.snapshot.bundle) } } : {}) }
     const captured = await this.commands.execute({ principal, source: 'mcp',
       operation: 'source.project.capture', commandId: input.commandId, targetKey: input.workspaceId,
       payload, dedicatedConnection: true,
@@ -262,6 +254,24 @@ export class PostgresSourceService implements SourceAdmissionPort {
         await this.host(sql)
       },
       perform: async () => {
+        const signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
+        let commit = input.snapshot?.commit ?? input.commit
+        if (configured) {
+          const name = `${configured.owner}/${configured.name}`
+          if (input.snapshot) {
+            const clone = await ensureCommit(this.git, name, input.snapshot.baseCommit, signal)
+            await importAgentSnapshot(this.git, clone, input.snapshot, signal)
+            repository = { repository: name, clone }
+          } else if (commit) repository = { repository: name, clone: await ensureCommit(this.git, name, commit, signal) }
+          else {
+            const clone = this.git.cloneDirectory(name)
+            await ensureClone(this.git, name, signal)
+            commit = await this.fetchDefaultBranch(clone, name, configured.defaultBranch, signal)
+            repository = { repository: name, clone }
+          }
+        } else if (input.snapshot) {
+          throw new DomainError('SOURCE_REPOSITORY_REQUIRED', 'Set the workspace GitHub repository before running CI on an Agent\'s files.', 409)
+        }
         const location = await this.transaction(async sql => {
           await this.workspace(sql, input.workspaceId)
           const row = (await sql.query<{ location_revision: string }>(
@@ -284,6 +294,29 @@ export class PostgresSourceService implements SourceAdmissionPort {
       },
     })
     return (await this.approve(principal, 'mcp', captured.value, repository)).value
+  }
+  private async fetchDefaultBranch(clone: string, repository: string, branch: string, signal: AbortSignal) {
+    const ref = `refs/foreman/ci/fetch/${randomUUID()}`
+    let commit: string
+    let cleanupFailed: boolean
+    try {
+      const fetched = await this.git.git(['fetch', '--no-tags', 'origin', `refs/heads/${branch}:${ref}`],
+        { cwd: clone, signal })
+      const head = fetched.code === 0
+        ? await this.git.git(['rev-parse', '--verify', `${ref}^{commit}`], { cwd: clone, signal }) : fetched
+      if (head.code !== 0) {
+        throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE',
+          `Main could not fetch ${repository}@${branch}. Sign GitHub in on Main.`, 409)
+      }
+      commit = head.stdout.trim()
+    } finally {
+      const removed = await this.git.git(['update-ref', '-d', ref], { cwd: clone, signal })
+      cleanupFailed = removed.code !== 0
+    }
+    if (cleanupFailed) {
+      throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', 'Main could not remove its temporary fetch ref.', 409)
+    }
+    return commit
   }
   async resolveRootBinding(sql: Sql, principal: ManagementPrincipal,
     input: { workspaceId: string; rootId: string; bindingRevision: number; source: ApprovedSourcePin }): Promise<SourceRootRecord> {
@@ -367,6 +400,10 @@ export class PostgresSourceService implements SourceAdmissionPort {
         })
       } })
   }
+  async sourcePackage(principal: ManagementPrincipal, workspaceId: string, pin: ApprovedSourcePin) {
+    const approved = await this.transaction(sql => this.resolveApprovedSource(sql, principal, workspaceId, pin))
+    return sourcePackageStream(approved.manifest, this.store, AbortSignal.timeout(SOURCE_LIMITS.preparationMs))
+  }
   async prepareExecution(input: { principal: ManagementPrincipal; workspaceId: string; rootId: string; bindingRevision: number;
     source: ApprovedSourcePin; attempt: MaterializationAttempt; operationId: string }): Promise<SourceMaterializationRecord> {
     const state = await this.transaction(async sql => {
@@ -388,20 +425,22 @@ export class PostgresSourceService implements SourceAdmissionPort {
           || record.receipt.placementHash !== input.attempt.placementHash) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Source preparation belongs to another exact execution/attempt.', 409)
         return { root, source, record, reservation: null, sharedWritableTree: false }
       }
+      const reservedBytes = source.manifest.totalBytes * 3 + (source.manifest.git?.metadata?.byteSize ?? 0)
+        + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024
       const workflow = await sql.query('select 1 from execution_dispatch_intents where execution_id=$1 and attempt_id=$2 and operation_id=$3',
         [input.attempt.executionId, input.attempt.attemptId, input.operationId])
       // Worker I/O can outlive admission; keep its cleanup identity with the capacity it owns.
       const reservation = await this.reservations.reserve(sql, {
         scopeId: this.scope(root.binding.deviceId, root.binding.workerInstallationId, root.binding.filesystem),
         ownerKind: 'materialization', ownerId: input.operationId,
-        reservedBytes: source.manifest.totalBytes * 3 + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024,
+        reservedBytes,
         preparation: { identity: { operationId: input.operationId, ownerPrincipalId: input.principal.id,
           expiresAt: input.principal.expiresAt }, root, attempt: input.attempt, source: root.source, record: null,
         physicalClosureConfirmed: false, ...(workflow.rowCount === 1 ? { preparationKind: 'workflow' as const } : {}) },
       })
       const sharedWritableTree = root.binding.accessMode === 'exclusive-write' && workflow.rowCount === 1
       return { root, source, record: null, reservation, sharedWritableTree,
-        worktree: sharedWritableTree ? await agentWorktree(sql, input.attempt.executionId) : undefined }
+        worktree: sharedWritableTree ? await agentWorktree(sql, input.attempt.executionId, source.manifest) : undefined }
     })
     if (state.record) { await this.lifecycle.adopted?.(state.record); return state.record }
     // No main SQL transaction spans carrier/native filesystem I/O.
@@ -517,15 +556,16 @@ export class PostgresSourceService implements SourceAdmissionPort {
 
 const slug = (value: string) => value.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 40) || 'agent'
 /** A workflow agent in a GitHub workspace works on its own branch: foreman/<workflow>/<agent>-<run>. */
-async function agentWorktree(sql: Sql, executionId: string): Promise<SourceWorktreeRequest | undefined> {
-  const row = (await sql.query<{ workspace: unknown; workflow_name: string | null; agent_name: string | null; run_id: string }>(
-    `select ws.record as workspace, v.record#>>'{definition,name}' as workflow_name, a.record->>'name' as agent_name, e.run_id
-     from harness_executions e join runs r on r.id=e.run_id join workspaces ws on ws.id=r.workspace_id
+export async function agentWorktree(sql: Sql, executionId: string, manifest: SourceManifest): Promise<SourceWorktreeRequest | undefined> {
+  const repository = manifest.git?.repository
+  if (!repository) return undefined
+  const row = (await sql.query<{ workflow_name: string | null; agent_name: string | null; run_id: string }>(
+    `select v.record#>>'{definition,name}' as workflow_name, a.record->>'name' as agent_name, e.run_id
+     from harness_executions e join runs r on r.id=e.run_id
      left join workflow_versions v on v.id=r.workflow_version_id left join agents a on a.id=e.record->>'agentId'
      where e.id=$1`, [executionId])).rows[0]
-  const repository = row && WorkspaceSchema.parse(row.workspace).repository
-  if (!row || !repository) return undefined
+  if (!row) return undefined
   const run = row.run_id.replace(/^run-/u, '').replace(/[^A-Za-z0-9]/gu, '').slice(0, 8)
-  return { repository: `${repository.owner}/${repository.name}`,
+  return { repository,
     branch: `foreman/${slug(row.workflow_name ?? 'workflow')}/${slug(row.agent_name ?? 'agent')}-${run}` }
 }

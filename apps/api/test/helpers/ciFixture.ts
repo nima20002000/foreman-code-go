@@ -19,7 +19,7 @@ import { verificationRuntimeFixture } from './verificationRuntimeFixture.js'
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 
 /** Retained domain data for transport tests. No PostgreSQL or physical host is used. */
-export function ciFixture() {
+export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependencies_changed')[] } = {}) {
   const workspaceId = 'workspace-fixture'
   const operator: ManagementPrincipal = { id: 'ci-operator', name: 'CI operator', audience: 'operator',
     expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
@@ -35,7 +35,8 @@ export function ciFixture() {
   const audits: Array<{ principalId: string; action: string; outcome: string }> = []
   const commands = {
     execute: async (input: { principal: ManagementPrincipal; operation: string; commandId: string;
-      targetKey: string; payload: unknown; authorize?(sql: unknown): Promise<void>; perform(sql: unknown): Promise<unknown> }) => {
+      targetKey: string; payload: unknown; authorize?(sql: unknown): Promise<void>;
+      prepare?(): Promise<void>; perform(sql: unknown): Promise<unknown> }) => {
       const sql = { query: async () => ({ rows: [] }) }
       await input.authorize?.(sql)
       const key = `${input.principal.id}:${input.operation}:${input.commandId}`
@@ -47,8 +48,12 @@ export function ciFixture() {
         }
         return { value: structuredClone(existing.result), replayed: true }
       }
+      if (input.prepare) {
+        await input.prepare()
+        await input.authorize?.(sql)
+      }
       const value = await input.perform(sql)
-      receipts.set(key, { digest, target: input.targetKey, result: structuredClone(value) })
+      receipts.set(key, { digest, target: input.targetKey, result: JSON.parse(JSON.stringify(value)) })
       audits.push({ principalId: input.principal.id, action: input.operation, outcome: 'succeeded' })
       return { value, replayed: false }
     },
@@ -64,9 +69,14 @@ export function ciFixture() {
   let enqueues = 0
   let definition: ReturnType<typeof JobDefinitionRecordSchema.parse> | undefined
   let ticket: ReturnType<typeof JobQueueTicketSchema.parse> | undefined
+  const definitions = new Map<string, ReturnType<typeof JobDefinitionRecordSchema.parse>>()
+  const tickets = new Map<string, ReturnType<typeof JobQueueTicketSchema.parse>>()
   let execution: ReturnType<typeof VerificationJobExecutionSchema.parse> | undefined
   let summary: ReturnType<typeof JobVerificationReportSchema.parse> | undefined
   const runtime = verificationRuntimeFixture()
+  const templates = [jobVerificationTemplate({ profileId: 'profile', profileRevision: 1,
+    suite: 'unit', ready: true, resources: runtime.spec.verification.resources, maxUnitWorkers: 1,
+    policy: jobPolicyRequirementsRecord(runtime.spec.policy) })]
   const roots: { offline: boolean; source: unknown; selection: { rootPolicyId: string }
     binding: { rootId: string; bindingRevision: number; accessMode: 'exclusive-write' } }[] = [
     { offline: false, source: null, selection: { rootPolicyId: 'online-root' },
@@ -103,51 +113,63 @@ export function ciFixture() {
           return { manifest, workspaceId }
         } })).value,
     rootList: async () => ({ items: roots.map(root => structuredClone(root)) }),
-    bindRoot: async (_principal: ManagementPrincipal, _source: string, input: { source: unknown; selection: { rootPolicyId: string } }) => {
+    bindRoot: async (_principal: ManagementPrincipal, _source: string, input: {
+      source: unknown; selection: { rootPolicyId: string }; expectedBindingRevision: number
+    }) => {
       const root = roots.find(value => value.selection.rootPolicyId === input.selection.rootPolicyId)!
       if (root.offline) throw new DeviceAccessError('revoked')
+      if (root.binding.bindingRevision !== input.expectedBindingRevision) {
+        throw new DomainError('SOURCE_ROOT_REVISION_CONFLICT', 'Root binding changed.', 409)
+      }
       root.source = input.source
       root.binding.bindingRevision++
-      return structuredClone(root)
+      return { value: structuredClone(root), replayed: false }
     },
   } as unknown as PostgresSourceService
   const scopeCheck = (principal: ManagementPrincipal, scope: string) =>
     requireAuthorization(principal, 'jobs:read', { workspaceId: scope })
   const jobs = {
-    choices: async () => ({ verificationTemplates: [jobVerificationTemplate({ profileId: 'profile', profileRevision: 1,
-      suite: 'unit', ready: true, resources: runtime.spec.verification.resources, maxUnitWorkers: 1,
-      policy: jobPolicyRequirementsRecord(runtime.spec.policy) })] }),
-    listDefinitions: async () => definition ? [structuredClone(definition)] : [],
+    choices: async () => ({ verificationTemplates: structuredClone(templates) }),
+    listDefinitions: async () => [...definitions.values()].map(value => structuredClone(value)),
     saveDefinition: async (_principal: ManagementPrincipal, _source: string, scope: string,
       input: { name: string; spec: unknown }) => {
       const now = new Date().toISOString()
-      definition = JobDefinitionRecordSchema.parse({ schemaVersion: 2, id: definition?.id ?? randomUUID(),
-        workspaceId: scope, revision: (definition?.revision ?? 0) + 1, versionId: randomUUID(),
+      const prior = definitions.get(input.name)
+      definition = JobDefinitionRecordSchema.parse({ schemaVersion: 2, id: prior?.id ?? randomUUID(),
+        workspaceId: scope, revision: (prior?.revision ?? 0) + 1, versionId: randomUUID(),
         name: input.name, spec: input.spec, createdAt: now, updatedAt: now })
+      definitions.set(input.name, definition)
       return structuredClone(definition)
     },
-    enqueue: async (principal: ManagementPrincipal, _source: string, scope: string, input: { commandId: string; placementOverride?: unknown },
-      origin: { initiatingAgent?: unknown } = {}) => {
+    enqueue: async (principal: ManagementPrincipal, _source: string, scope: string, input: {
+      commandId: string; definitionId: string; placementOverride?: unknown
+    }, enqueueOptions: { runtimePreparation?: ManagementPrincipal; initiatingAgent?: unknown } = {}) => {
       enqueues++
       enqueued.push(input)
-      expectDefinition()
+      const queuedDefinition = [...definitions.values()].find(value => value.id === input.definitionId)
+      if (!queuedDefinition) throw new Error('Missing saved definition')
       // One instant: the deadline is exactly the queue timeout after enqueue, even on a loaded machine.
       const at = Date.now(), now = new Date(at).toISOString()
       ticket = JobQueueTicketSchema.parse({ schemaVersion: 1, id: randomUUID(), workspaceId: scope, revision: 1,
-        commandId: input.commandId, commandDigest: jobDigest(input), principalId: principal.id, definition,
-        executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(), workflow: null, initiatingAgent: origin.initiatingAgent, gateId: null,
-        placement: input.placementOverride ?? { kind: 'auto' }, placementOverride: input.placementOverride ?? null, resources: runtime.spec.verification.resources,
+        commandId: input.commandId, commandDigest: jobDigest(input), principalId: principal.id, definition: queuedDefinition,
+        ...enqueueOptions,
+        executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(), workflow: null, gateId: null,
+        placement: input.placementOverride ?? { kind: 'auto' }, placementOverride: input.placementOverride ?? null,
+        resources: 'verification' in queuedDefinition.spec ? queuedDefinition.spec.verification.resources : runtime.spec.verification.resources,
         enqueueSequence: '1', enqueuedAt: now, deadlineAt: new Date(at + 60_000).toISOString(),
-        state: 'waiting', waitingReasons: ['busy'], compatibleTargetCount: 1, queuePosition: 1, estimatedStartAt: null,
+        state: 'waiting', waitingReasons: options.initialWaitingReasons ?? ['busy'], compatibleTargetCount: 1,
+        queuePosition: 1, estimatedStartAt: null,
         reservationId: null, cancelRequestedAt: null, terminalReason: null, finishedAt: null })
+      tickets.set(ticket.id, ticket)
       return { kind: 'pending-admission', ticket: structuredClone(ticket) }
     },
     getQueueTicket: async (principal: ManagementPrincipal, scope: string, id: string) => {
       scopeCheck(principal, scope)
-      if (!ticket || scope !== ticket.workspaceId || id !== ticket.id) {
+      const retained = tickets.get(id)
+      if (!retained || scope !== retained.workspaceId) {
         throw new DomainError('JOB_QUEUE_NOT_FOUND', 'Ticket not found in this workspace.', 404)
       }
-      return structuredClone(ticket)
+      return structuredClone(retained)
     },
     getExecution: async () => structuredClone(execution),
     readLogTail: async () => ({ text: 'tests passed\n', truncated: false }),
@@ -155,7 +177,6 @@ export function ciFixture() {
       byteSize: Buffer.byteLength(JSON.stringify(summary)), fileId: 'summary-file', revisionId: 'summary-revision' }],
     readArtifact: async () => ({ bytes: Buffer.from(JSON.stringify(summary)) }),
   } as unknown as JobService
-  function expectDefinition() { if (!definition) throw new Error('Missing saved definition') }
   const agent = { mainId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222' }
   const pool = { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }),
     query: async (text: string) => text.includes('execution_native_placements') ? { rows: [{ record: {
@@ -169,8 +190,9 @@ export function ciFixture() {
       return { commit: 'c'.repeat(40), bundle: Buffer.from('bundle') }
     } })
   const services = { commands, ci: createCi() } as unknown as OperatorServices
-  return { workspaceId, worker, operator, readonly, services, commands, authority, sources, jobs,
-    audits, createCi, roots, snapshotCalls, approvals, enqueued, agent, agentExecution,
+  return { workspaceId, worker, operator, readonly, services, audits, createCi, roots, snapshotCalls, approvals, enqueued, agent, agentExecution,
+    templates, jobs, sources, commands, ticket: () => structuredClone(ticket!), definition: () => structuredClone(definition!),
+    pool, authority,
     counts: () => ({ sourceCaptures, enqueues }), advanceHead: () => { head = 'd'.repeat(40) },
     complete: (options: { publication?: 'collecting' | 'failed' | 'expired'; failed?: true } = {}) => {
       if (!ticket) throw new Error('Missing queued ticket')
@@ -185,6 +207,7 @@ export function ciFixture() {
       ticket = JobQueueTicketSchema.parse({ ...ticket, state: 'accepted', reservationId: ticket.id,
         waitingReasons: [], selectedComputer: { target: runtime.spec.target,
           rootId: runtime.spec.profile.rootId, bindingRevision: 1, profileId: 'profile', profileRevision: 1 } })
+      tickets.set(ticket.id, ticket)
       const spec = execution!.acceptedSpec
       summary = JobVerificationReportSchema.parse({ schemaVersion: 1, commit: spec.source.commit,
         manifestDigest: spec.source.manifestDigest, definitionVersionId: spec.definitionVersionId,

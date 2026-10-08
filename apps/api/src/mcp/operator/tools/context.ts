@@ -14,6 +14,7 @@ import { invokeOperatorTool } from '../invoke.js'
 import { OPERATOR_TOOL_ACTIONS } from '../catalog.js'
 import { operatorToolAvailable,operatorToolRequirements } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
+import { placementCapabilityLimit } from '../../../modules/placement/transports.js'
 
 export const OPERATOR_RUNTIME_LIMITS = [
   {feature:'current_workflow_semantics',state:'limited',detail:'One semantics-3 authoring/read/Start contract covers ordinary, parallel/all-required, conditional/approval and optional bounded repeat. Ordinary definitions omit repeat. Read workflow_authoring_capabilities_v3 for separately composed native Start/Stop readiness. Stage/Discard do not execute; Stop-and-save waits for exact settlement.'},
@@ -75,7 +76,9 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
         ...graph.map((name) => ({ name, actions: ['runs:read' as const], detail: 'Exact current Run/workflow/version scope. Metadata reads do not grant execution authority.' })),
         ...inspection.map((name) => ({ name, actions: runInspectionRequirements(name),
           detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' })), ...schedules, ...jobs, ...ci, ...jobRuntime],
-      runtimeLimits:[...runtimeLimits, runHistoryCapabilityLimit(context), ...(jobs.length ? [{ feature: 'ci_jobs', state: 'limited' as const,
+      runtimeLimits:[...runtimeLimits, runHistoryCapabilityLimit(context),
+        placementCapabilityLimit(Boolean(context.services.runPlacements && context.services.placementChoices)),
+        ...(jobs.length ? [{ feature: 'ci_jobs', state: 'limited' as const,
         detail: JOB_QUEUE_CAPABILITY_DETAIL + ' Only listed operations are available to this caller. '
           + 'Launch requires an approved source/root and current host-bound CI qualification. '
           + 'Connecting a computer or listing tools is not qualification. '

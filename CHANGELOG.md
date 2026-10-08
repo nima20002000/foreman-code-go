@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Syncthing shared folders per workspace and computer, synchronized over Tailscale with Main as hub, automatic pairing, simple file versioning, Computers status and Operator MCP controls.
+
+### Removed
+
+- Google Drive shared folders via rclone, including OAuth sign-in and mount services.
+
 ## [0.0.53] - 2026-10-08
 
 Claude and OpenCode workflows across two computers remain untested. The available laptop provider logins support Codex only. Installed OpenCode workers refuse declared artifact outputs. Claude Agents run on Main only; laptops run Codex.

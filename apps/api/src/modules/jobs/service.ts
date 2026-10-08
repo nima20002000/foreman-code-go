@@ -36,6 +36,7 @@ import { jobPlacementRequest } from './placementRequest.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import type { JobArtifactPort, JobDispatchPort, JobPreparationPort } from './ports.js'
 import type { JobQueueConfiguration } from './ports.js'
+import type { CiRuntimeProvisioner } from './ciRuntimeProvisioner.js'
 import { JobQueuePreparation } from './preparation.js'
 import { JobQueueTicketSchema, JobQueuedStartSchema, JobQueueCancelSchema, JobQueueLimitsSchema,
   JobAdmissionResultSchema, JobQueueListInputSchema, JobQueuePageSchema,
@@ -54,6 +55,7 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   return result.data
 }
 export class JobService {
+  runtimePreparation?: Pick<CiRuntimeProvisioner, 'prepareForTicket' | 'recover' | 'close'>
   readonly repository = new JobRepository()
   private readonly workerExecution: WorkerExecutionPolicy
   private readonly queuePreparation: JobQueuePreparation | undefined
@@ -88,6 +90,7 @@ export class JobService {
           return this.admitPrepared(sql, principal, definition, null, null, prepared, ticket)
         },
         wake: execution => this.wakeAccepted(execution),
+        prepareRuntime: ticket => this.runtimePreparation?.prepareForTicket(ticket) ?? Promise.resolve(),
         ...(ports.closePreparation ? { closePreparation: ports.closePreparation } : {}),
       }, clock)
     }
@@ -253,9 +256,9 @@ export class JobService {
     return configuration
   }
   async enqueue(principal: ManagementPrincipal, source: 'http' | 'mcp', workspaceId: string, raw: unknown,
-    origin: { initiatingAgent?: JobInitiatingAgent | undefined } = {}) {
+    options: { runtimePreparation?: ManagementPrincipal; initiatingAgent?: JobInitiatingAgent | undefined } = {}) {
     const input = parse(JobQueuedStartSchema, raw)
-    const initiatingAgent = origin.initiatingAgent ? JobInitiatingAgentSchema.parse(origin.initiatingAgent) : undefined
+    const initiatingAgent = options.initiatingAgent ? JobInitiatingAgentSchema.parse(options.initiatingAgent) : undefined
     const payload = initiatingAgent ? { ...input, initiatingAgent } : input
     const historical = await this.read(principal, workspaceId, 'jobs:start', async sql =>
       (await sql.query(`select 1 from job_preparations p
@@ -300,6 +303,7 @@ export class JobService {
           revision: 1, commandId: input.commandId, commandDigest: jobDigest(payload), principalId: live.id,
           definition, executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(),
           workflow: null,
+          ...(options.runtimePreparation ? { runtimePreparation: options.runtimePreparation } : {}),
           ...(initiatingAgent ? { initiatingAgent } : {}),
           gateId: null, placement, placementOverride, resources, enqueueSequence: sequence,
           enqueuedAt: now.toISOString(), deadlineAt: new Date(now.getTime() + definition.spec.policy.queueTimeoutMs).toISOString(),
@@ -419,6 +423,7 @@ export class JobService {
         const tasks = new Set<Promise<void>>()
         do {
           this.queueRescanRequested = false
+          await this.runtimePreparation?.recover()
           for (const task of await preparation.scan()) tasks.add(task)
         } while (this.queueRescanRequested && !this.queueClosing)
         return [...tasks]
@@ -446,6 +451,7 @@ export class JobService {
     this.queueClosing = true
     const tasks = await this.queueWake
     await this.queuePreparation?.waitForWork(tasks)
+    await this.runtimePreparation?.close()
   }
   async start(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:JobStart) {
     const input=parse(JobStartSchema,raw)

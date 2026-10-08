@@ -1,0 +1,108 @@
+import { createHash } from 'node:crypto'
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, expect, it, vi } from 'vitest'
+import { systemSyncthingPorts } from './syncthingSystem.js'
+import { mainSyncId } from '../../../test/helpers/syncthing.js'
+
+const mock = vi.hoisted(() => ({ ports: {} as Record<string, unknown> }))
+vi.mock('./accountProbe.js', () => ({ systemPorts: () => mock.ports }))
+const homes: string[] = []
+afterEach(async () => { vi.unstubAllGlobals(); await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true }))) })
+async function fixture(options: { installed?: boolean; checksum?: string; failStart?: boolean } = {}) {
+  const home = await mkdtemp(join(tmpdir(), 'foreman-sync-system-'))
+  homes.push(home)
+  const binary = join(home, '.local', 'bin', 'syncthing')
+  const config = join(home, '.local', 'state', 'foreman-code', 'syncthing', 'config.xml')
+  let running = false
+  let failStart = options.failStart ?? false
+  const calls: { file: string; args: string[] }[] = []
+  mock.ports = {
+    find: async () => {
+      if (options.installed) return '/usr/bin/syncthing'
+      try { await access(binary); return binary } catch { return null }
+    },
+    run: async (file: string, args: string[]) => {
+      calls.push({ file, args })
+      let code = 0
+      let stdout = ''
+      if (file === 'tailscale') stdout = '100.64.0.1\n'
+      if (args[0] === 'generate') await writeFile(config, '<configuration><gui><apikey>localkey</apikey></gui></configuration>')
+      if (file === 'tar') {
+        const scratch = args[args.indexOf('-C') + 1]!
+        const directory = join(scratch, 'syncthing-linux-amd64-v2.0.11')
+        await mkdir(directory)
+        await writeFile(join(directory, 'syncthing'), 'installed binary')
+      }
+      if (args.includes('is-active')) code = running ? 0 : 3
+      if (args.includes('enable')) {
+        code = failStart ? 1 : 0
+        running = !failStart
+      }
+      return { code, stdout, stderr: code ? 'user service failed' : '' }
+    },
+  }
+  const archive = Buffer.from('release archive')
+  const downloaded: string[] = []
+  const settings: unknown[] = []
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith('http://127.0.0.1:8385/')) {
+      expect(new Headers(init?.headers).get('X-API-Key')).toBe(/<apikey>([^<]+)<\/apikey>/u.exec(await readFile(config, 'utf8'))?.[1])
+      if (url.endsWith('/rest/config/options')) {
+        settings.push(JSON.parse(init?.body as string) as unknown)
+        return new Response('null')
+      }
+      return new Response(JSON.stringify({ myID: mainSyncId }))
+    }
+    downloaded.push(url)
+    if (url.endsWith('/latest')) return new Response(JSON.stringify({ tag_name: 'v2.0.11' }))
+    if (url.endsWith('/sha256sum.txt')) return new Response(`${options.checksum ?? createHash('sha256').update(archive).digest('hex')}  syncthing-linux-amd64-v2.0.11.tar.gz\n`)
+    return new Response(archive)
+  })
+  vi.stubGlobal('fetch', fetcher)
+  return { home, binary, config, calls, downloaded, settings, ports: systemSyncthingPorts({ HOME: home }),
+    allowStart: () => { failStart = false } }
+}
+
+it('installs checksum-verified Syncthing, starts its user service and configures Tailscale through local REST', async () => {
+  const f = await fixture()
+  const identity = await f.ports.prepare()
+  expect(identity).toEqual({ deviceId: mainSyncId, address: '100.64.0.1', rootPath: join(f.home, '.local/share/foreman-code/shared-files') })
+  expect(await readFile(f.binary, 'utf8')).toBe('installed binary')
+  expect((await stat(f.binary)).mode & 0o777).toBe(0o755)
+  expect(await f.ports.available()).toEqual({ installed: true, running: true })
+  expect(f.settings).toEqual([expect.objectContaining({ globalAnnounceEnabled: false, localAnnounceEnabled: false,
+    relaysEnabled: false, natEnabled: false, listenAddresses: ['tcp://100.64.0.1:22001'] })])
+  await writeFile(f.config, '<configuration><gui><apikey>replacementkey</apikey></gui></configuration>')
+  await f.ports.rest('GET', '/rest/system/status')
+  expect(JSON.stringify(identity)).not.toMatch(/key|apikey/)
+})
+
+it('refuses a corrupt download before installing or starting anything', async () => {
+  const f = await fixture({ checksum: '0'.repeat(64) })
+  await expect(f.ports.prepare()).rejects.toThrow('published checksum')
+  await expect(access(f.binary)).rejects.toThrow()
+  expect(f.calls.some(call => call.file === 'systemctl')).toBe(false)
+})
+
+it('uses an existing binary without a download and retries failed service startup without replacing its identity', async () => {
+  const f = await fixture({ installed: true, failStart: true })
+  await expect(f.ports.prepare()).rejects.toThrow('user service failed')
+  const original = await readFile(f.config, 'utf8')
+  f.allowStart()
+  expect((await f.ports.prepare()).deviceId).toBe(mainSyncId)
+  expect(await readFile(f.config, 'utf8')).toBe(original)
+  expect(f.downloaded).toEqual([])
+})
+
+it('lists nested conflict copies without exposing deleted versions or following symlinks', async () => {
+  const f = await fixture()
+  const folder = join(f.home, 'shared')
+  await mkdir(join(folder, 'nested'), { recursive: true })
+  await mkdir(join(folder, '.stversions'))
+  await writeFile(join(folder, 'nested', 'file.sync-conflict-20261008.txt'), 'copy')
+  await writeFile(join(folder, '.stversions', 'old.sync-conflict-20261007.txt'), 'old copy')
+  await writeFile(join(folder, 'ordinary.txt'), 'ordinary')
+  expect(await f.ports.conflicts(folder)).toEqual(['nested/file.sync-conflict-20261008.txt'])
+})

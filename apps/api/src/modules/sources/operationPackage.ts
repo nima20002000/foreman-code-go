@@ -8,7 +8,7 @@ export const SOURCE_PACKAGE_MAX_BYTES = 128 * 1024 * 1024
 export function sourcePackageHeader(raw: SourceManifest): Buffer {
   const manifest = verifySourceManifest(raw), json = Buffer.from(JSON.stringify(manifest)), header = Buffer.alloc(12)
   MAGIC.copy(header); header.writeUInt32BE(json.byteLength, 8)
-  if (12 + json.byteLength + manifest.totalBytes > SOURCE_PACKAGE_MAX_BYTES) throw new SourceError('SOURCE_CAPACITY', 'Source package and metadata exceed the independent source byte budget.')
+  if (12 + json.byteLength + (manifest.git?.metadata?.byteSize ?? 0) + manifest.totalBytes > SOURCE_PACKAGE_MAX_BYTES) throw new SourceError('SOURCE_CAPACITY', 'Source package and metadata exceed the independent source byte budget.')
   return Buffer.concat([header, json])
 }
 /** One source-class object, no archive extraction or per-file transfer IDs. */
@@ -19,6 +19,15 @@ export function sourcePackageStream(manifest: SourceManifest, bytes: SourceByteR
     for (const entry of manifest.entries) {
       signal.throwIfAborted(); const data = await bytes.read(manifest, entry, signal); verifySourceBytes(entry, data)
       for (let offset = 0; offset < data.byteLength; offset += 1024 * 1024) { signal.throwIfAborted(); yield data.subarray(offset, offset + 1024 * 1024) }
+    }
+    if (manifest.git?.metadata) {
+      const data = await bytes.readGitMetadata?.(manifest, signal)
+      if (!data) throw new SourceError('SOURCE_GIT_OBJECT_UNAVAILABLE', 'Approved Git metadata is unavailable.')
+      verifySourceBytes({ ...manifest.git.metadata, path: 'git-objects.json', kind: 'file', executable: false }, data)
+      for (let offset = 0; offset < data.byteLength; offset += 1024 * 1024) {
+        signal.throwIfAborted()
+        yield data.subarray(offset, offset + 1024 * 1024)
+      }
     }
   })(), { objectMode: false, highWaterMark: 1024 * 1024 })
 }
@@ -32,6 +41,7 @@ export class VerifiedSourcePackageReader implements SourceByteReader {
   private consumed = 0
   private index = 0
   private completed = false
+  private metadataRead = false
   private manifest: SourceManifest | undefined
   constructor(private readonly stream: Readable, private readonly byteSize: number, private readonly signal: AbortSignal) {
     if (!Number.isSafeInteger(byteSize) || byteSize < 12 || byteSize > SOURCE_PACKAGE_MAX_BYTES) throw new SourceError('SOURCE_PACKAGE_INVALID', 'Invalid source package size.')
@@ -63,7 +73,7 @@ export class VerifiedSourcePackageReader implements SourceByteReader {
     if (!Buffer.from(text).equals(json)) throw new SourceError('SOURCE_PACKAGE_INVALID', 'Ambiguous source metadata encoding.')
     const manifest = verifySourceManifest(JSON.parse(text))
     if (manifest.snapshotId !== pin.snapshotId || manifest.approvedSourceId !== pin.approvedSourceId || manifest.manifestDigest !== pin.manifestDigest
-      || 12 + size + manifest.totalBytes !== this.byteSize) throw new SourceError('SOURCE_PIN_CONFLICT', 'Source package does not match the accepted exact snapshot and extent.')
+      || 12 + size + manifest.totalBytes + (manifest.git?.metadata?.byteSize ?? 0) !== this.byteSize) throw new SourceError('SOURCE_PIN_CONFLICT', 'Source package does not match the accepted exact snapshot and extent.')
     this.manifest = manifest; return manifest
   }
   async read(pin: SourceSnapshotPin, entry: SourceEntry, signal: AbortSignal): Promise<Uint8Array> {
@@ -73,10 +83,23 @@ export class VerifiedSourcePackageReader implements SourceByteReader {
       throw new SourceError('SOURCE_PACKAGE_INVALID', 'Source package entries must follow the exact complete manifest order.')
     const data = await this.exact(entry.byteSize); verifySourceBytes(entry, data); this.index++; return data
   }
-  get readyToComplete(): boolean { return !!this.manifest && this.index === this.manifest.entries.length }
+  async readGitMetadata(manifest: SourceManifest, signal: AbortSignal): Promise<Uint8Array> {
+    signal.throwIfAborted()
+    if (!isDeepStrictEqual(this.manifest, manifest) || this.index !== manifest.entries.length
+      || !manifest.git?.metadata || this.metadataRead) {
+      throw new SourceError('SOURCE_PACKAGE_INVALID', 'Git metadata must follow the approved source files once.')
+    }
+    const bytes = await this.exact(manifest.git.metadata.byteSize)
+    verifySourceBytes({ ...manifest.git.metadata, path: 'git-objects.json', kind: 'file', executable: false }, bytes)
+    this.metadataRead = true
+    return bytes
+  }
+  get readyToComplete(): boolean {
+    return !!this.manifest && this.index === this.manifest.entries.length && (!this.manifest.git?.metadata || this.metadataRead)
+  }
   async complete(): Promise<void> {
     if (this.completed) return
-    if (!this.manifest || this.index !== this.manifest.entries.length || this.consumed !== this.byteSize || this.position !== this.chunk.length)
+    if (!this.readyToComplete || this.consumed !== this.byteSize || this.position !== this.chunk.length)
       throw new SourceError('SOURCE_PACKAGE_INVALID', 'Source package contains an incomplete or unexpected extent.')
     if (!(await this.iterator.next()).done) throw new SourceError('SOURCE_PACKAGE_INVALID', 'Source package contains trailing bytes.')
     this.completed = true

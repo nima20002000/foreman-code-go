@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
-import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerDriveCompleteInputSchema, ComputerDriveInputSchema, ComputerDriveStatusInputSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
-  DriveLoginStateSchema, GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
+import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerSyncReadInputSchema, ComputerSyncUpdateInputSchema, ComputerSyncStatusSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
+  GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema,
   BuildComputerBatchUpdateSchema, BuildComputerBatchResultSchema } from '@foreman-code/contracts/build-computers'
@@ -23,7 +23,7 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   }
   if (context.services.computerAccounts && operatorToolAvailable(context, 'computer_accounts_list')) {
     server.registerTool('computer_accounts_list', {
-      description: 'Read which harness (Codex, Claude, OpenCode), GitHub CLI and Google Drive (rclone) accounts each paired computer '
+      description: 'Read which harness (Codex, Claude, OpenCode), GitHub CLI accounts each paired computer '
         + 'has installed and is signed in to. Requires global settings:read. Identity strings only (email, username, provider names); '
         + 'no tokens. Results are cached for 30 seconds unless refresh is true; an offline computer reports null accounts. '
         + 'Each page includes up to 100 paired computers; Main appears only on the first page. Continue with nextCursor as cursor until null.',
@@ -63,42 +63,23 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
     annotations: { ...writeAnnotations, destructiveHint: true },
   }, input => invokeOperatorTool(context, 'computer_github_logout',
     () => github.handle(context.principal, 'mcp', input.target, { operation: 'logout' })))
-  const drive = context.services.computerDrive
-  if (drive && operatorToolAvailable(context, 'computer_drive_connect_start')) server.registerTool('computer_drive_connect_start', {
-    description: 'Prepare Google Drive on Main or a paired computer, installing checksum-verified rclone if needed. '
-      + 'Returns authorizationCommand to run on a computer with rclone and a browser (which may be away from Main). '
-      + 'Ask the owner to complete Google sign-in and provide the printed result to computer_drive_connect_complete. '
-      + 'Each computer has its own sign-in session. Uses drive.file scope and mounts only the Foreman Code folder. '
-      + 'Requires global settings:update. Main does not persist the authorization token.',
-    inputSchema: ComputerDriveInputSchema, outputSchema: DriveLoginStateSchema, annotations: writeAnnotations,
-  }, input => invokeOperatorTool(context, 'computer_drive_connect_start',
-    () => drive.connectStart(context.principal, 'mcp', input.target)))
-  if (drive && operatorToolAvailable(context, 'computer_drive_connect_complete')) server.registerTool('computer_drive_connect_complete', {
-    description: 'Complete a Drive sign-in with the JSON or base64url result printed by authorizationCommand. '
-      + 'Rechecks caller access and the full computer registration before forwarding credentials. '
-      + 'Returns the mounted account, or a mount error. Requires global settings:update.',
-    inputSchema: ComputerDriveCompleteInputSchema, outputSchema: DriveLoginStateSchema, annotations: writeAnnotations,
-  }, input => invokeOperatorTool(context, 'computer_drive_connect_complete',
-    () => drive.connectComplete(context.principal, 'mcp', input.target, input.loginId, input.token)))
-  if (drive && operatorToolAvailable(context, 'computer_drive_connect_status')) server.registerTool('computer_drive_connect_status', {
-    description: 'Read an active Google Drive connection: waiting (with its remote authorization command), connecting, connected (with the Google account '
-      + 'and mount path), failed, cancelled or expired. Requires global settings:update.',
-    inputSchema: ComputerDriveStatusInputSchema, outputSchema: DriveLoginStateSchema,
+  const sync = context.services.computerSync
+  if (sync && operatorToolAvailable(context, 'computer_sync_status')) server.registerTool('computer_sync_status', {
+    description: 'Read Syncthing shared file status on Main or a paired computer: installed, running, connected peers, '
+      + 'workspace participation, enabled preferences and revisions, local folder paths, idle/syncing/error and conflicts. '
+      + 'Requires global settings:read. Paths do not grant harness write access.',
+    inputSchema: ComputerSyncReadInputSchema, outputSchema: ComputerSyncStatusSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
-  }, input => invokeOperatorTool(context, 'computer_drive_connect_status',
-    () => drive.connectStatus(context.principal, 'mcp', input.target, input.loginId)))
-  if (drive && operatorToolAvailable(context, 'computer_drive_connect_cancel')) server.registerTool('computer_drive_connect_cancel', {
-    description: 'Cancel a pending Drive sign-in on its selected computer without disconnecting an existing account. '
-      + 'Invalidates its operation before credential installation and mounting. Requires global settings:update.',
-    inputSchema: ComputerDriveStatusInputSchema, outputSchema: DriveLoginStateSchema, annotations: writeAnnotations,
-  }, input => invokeOperatorTool(context, 'computer_drive_connect_cancel',
-    () => drive.cancel(context.principal, 'mcp', input.target, input.loginId)))
-  if (drive && operatorToolAvailable(context, 'computer_drive_disconnect')) server.registerTool('computer_drive_disconnect', {
-    description: 'Unmount Google Drive on that computer and remove the app\'s rclone remote. Files stay in Google Drive. Requires global settings:update.',
-    inputSchema: ComputerDriveInputSchema, outputSchema: DriveLoginStateSchema,
-    annotations: { ...writeAnnotations, destructiveHint: true },
-  }, input => invokeOperatorTool(context, 'computer_drive_disconnect',
-    () => drive.disconnect(context.principal, 'mcp', input.target)))
+  }, input => invokeOperatorTool(context, 'computer_sync_status', () => sync.read(context.principal, 'mcp', input)))
+  if (sync && operatorToolAvailable(context, 'computer_sync_update')) server.registerTool('computer_sync_update', {
+    description: 'Enable or disable one workspace shared folder on one computer. Requires global settings:update. '
+      + 'Use expectedRevision from computer_sync_status and reuse commandId for uncertain saves. '
+      + 'Syncthing installs automatically, pairs through the app and uses Tailscale with Main as hub and simple versioning. '
+      + 'Only computers selected for workspace Agents receive the folder; enabled preferences apply when they participate. '
+      + 'Disabling preserves local files. Main off stops sharing through the hub. Read persisted preferences with computer_sync_status.',
+    inputSchema: ComputerSyncUpdateInputSchema, outputSchema: ComputerSyncStatusSchema,
+    annotations: { ...writeAnnotations, idempotentHint: true },
+  }, input => invokeOperatorTool(context, 'computer_sync_update', () => sync.update(context.principal, 'mcp', input)))
   const service = context.services.buildComputers
   if (!service) return
   const annotations = { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false }
