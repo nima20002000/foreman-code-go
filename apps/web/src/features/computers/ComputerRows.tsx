@@ -82,38 +82,49 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
             event.preventDefault()
             if (draggedKey) move(draggedKey, key)
           }}>
-          <div className="computer-reorder">
-            <span draggable={canReorder} className="computer-drag-handle" title="Drag to reorder" aria-hidden="true"
-              onDragStart={event => {
-                if (!canReorder) { event.preventDefault(); return }
-                dragSnapshot.current = rows.map(row => row.read.data!)
-                drag(key)
-                event.dataTransfer.setData('text/plain', key)
-                event.dataTransfer.effectAllowed = 'move'
-              }}
-              onDragEnd={() => { drag(); dragSnapshot.current = [] }}><GripVertical size={16} /></span>
-            <div><IconButton label={`Move ${computerName(target)} up`} variant="ghost" size="sm"
-              disabled={!canReorder || index === 0} onClick={() => move(key, computerKey(rows[index - 1]!.target))}><ArrowUp size={12} /></IconButton>
-              <IconButton label={`Move ${computerName(target)} down`} variant="ghost" size="sm"
-                disabled={!canReorder || index === rows.length - 1} onClick={() => move(key, computerKey(rows[index + 1]!.target))}><ArrowDown size={12} /></IconButton></div>
+          <div className="computer-row-summary">
+            <div className="computer-reorder">
+              <span draggable={canReorder} className="computer-drag-handle" title="Drag to reorder" aria-hidden="true"
+                onDragStart={event => {
+                  if (!canReorder) {
+                    event.preventDefault()
+                    return
+                  }
+                  dragSnapshot.current = rows.map(row => row.read.data!)
+                  drag(key)
+                  event.dataTransfer.setData('text/plain', key)
+                  event.dataTransfer.effectAllowed = 'move'
+                }}
+                onDragEnd={() => {
+                  drag()
+                  dragSnapshot.current = []
+                }}><GripVertical size={16} /></span>
+              <div><IconButton label={`Move ${computerName(target)} up`} variant="ghost" size="sm"
+                disabled={!canReorder || index === 0} onClick={() => move(key, computerKey(rows[index - 1]!.target))}><ArrowUp size={12} /></IconButton>
+                <IconButton label={`Move ${computerName(target)} down`} variant="ghost" size="sm"
+                  disabled={!canReorder || index === rows.length - 1} onClick={() => move(key, computerKey(rows[index + 1]!.target))}><ArrowDown size={12} /></IconButton></div>
+            </div>
+            <ComputerRowIdentity target={target} computer={observed} complete={activity.data?.activityComplete ?? false} />
+            {read.isPending && <LoadingState label="Loading build settings…" />}
+            {read.isError && <Button size="sm" onClick={() => void read.refetch()}>Retry build settings</Button>}
+            {read.data && !read.isError && <ComputerControls status={read.data} name={computerName(target)}
+              disabled={save.locked} directPriority={rows.length > 101}
+              onEdit={patch => save.mutate([preferenceEdit(read.data!, patch)])} />}
+            <ComputerAccountChips accounts={accounts.data?.computers.find(computer => computerKey(computer.target) === key)?.accounts}
+              onGitHub={() => openGitHub(key)} onDrive={() => openDrive(key)} />
+            <GitHubSignInDialog target={target} name={computerName(target)} account={accounts.data?.computers
+              .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'github')} />
+            <DriveConnectDialog target={target} name={computerName(target)} account={accounts.data?.computers
+              .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'drive')} />
+            <ComputerUtilization target={target} online={observed?.online ?? false} />
+            {target.hostRef.kind === 'device' && onSelectComputer && <IconButton label={`Open ${computerName(target)}`}
+              variant="ghost" size="sm" onClick={() => {
+                if (target.hostRef.kind === 'device') onSelectComputer(target.hostRef.deviceId)
+              }}><ChevronRight size={16} /></IconButton>}
           </div>
-          <ComputerRowIdentity target={target} computer={observed} complete={activity.data?.activityComplete ?? false} />
-          {read.isPending && <LoadingState label="Loading build settings…" />}
-          {read.isError && <Button size="sm" onClick={() => void read.refetch()}>Retry build settings</Button>}
-          {read.data && !read.isError && <ComputerControls status={read.data} name={computerName(target)}
-            disabled={save.locked} directPriority={rows.length > 101}
-            onEdit={patch => save.mutate([preferenceEdit(read.data!, patch)])} />}
-          <ComputerAccountChips accounts={accounts.data?.computers.find(computer => computerKey(computer.target) === key)?.accounts}
-            onGitHub={() => openGitHub(key)} onDrive={() => openDrive(key)} />
-          <GitHubSignInDialog target={target} name={computerName(target)} account={accounts.data?.computers
-            .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'github')} />
-          <DriveConnectDialog target={target} name={computerName(target)} account={accounts.data?.computers
-            .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'drive')} />
-          <ComputerUtilization target={target} online={observed?.online ?? false} />
-          {target.hostRef.kind === 'device' && onSelectComputer && <IconButton label={`Open ${computerName(target)}`}
-            variant="ghost" size="sm" onClick={() => {
-              if (target.hostRef.kind === 'device') onSelectComputer(target.hostRef.deviceId)
-            }}><ChevronRight size={16} /></IconButton>}
+          {read.data && !read.isError && <details className="computer-build-diagnostics"><summary>Build status</summary>
+            <BuildComputerDiagnostics status={read.data} />
+          </details>}
         </li>
       })}
       {devices.filter(device => device.status !== 'paired').map(device => <li key={device.deviceId}
@@ -174,8 +185,5 @@ function ComputerControls({ status, name, disabled, directPriority, onEdit }: {
         onClick={() => onEdit({ buildAllowancePercent: Math.min(100, preference.buildAllowancePercent + 10) })}><Plus size={12} /></IconButton>
     </div>
     {status.state === 'setup-required' && <span className="computer-setup-note" title={status.reasons.join(' ')}>Setup needed</span>}
-    <details className="computer-build-diagnostics"><summary>Build status</summary>
-      <BuildComputerDiagnostics status={status} />
-    </details>
   </div>
 }
