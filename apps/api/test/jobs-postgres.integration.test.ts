@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { z } from 'zod'
+import { CiGetOutputSchema, CiCancelOutputSchema } from '@foreman-code/contracts'
+import { CiService } from '../src/modules/jobs/ci.js'
+import { RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
+import { ciFixture } from './helpers/ciFixture.js'
 import { JobAdmissionResultSchema, JobPendingAdmissionSchema, JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
 import { JobExecutionSchema } from '@foreman-code/contracts/jobs'
 import { JobAuthoringChoicesRecordSchema, JobDefinitionRecordSchema, AutoVerificationJobSpecSchema,
@@ -25,6 +29,7 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
   let database:Awaited<ReturnType<typeof agent3Database>>,app:ReturnType<typeof buildApp>,address:string
   let access:PostgresAccessService,jobs:JobService,worker:JobWorkerService
   let writer:Awaited<ReturnType<PostgresAccessService['issue']>>,reader:Awaited<ReturnType<PostgresAccessService['issue']>>
+  let services: OperatorServices
   let workspaceId: string
   let queue: Awaited<ReturnType<typeof buildQueueFixture>>
   const clients:Client[]=[]
@@ -44,12 +49,55 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
     const commands = queue.commands
     reader=await access.issue({name:'CI reader fixture',audience:'operator',expiresAt:new Date(Date.now()+3600000),grants:[{actions:['job_definitions:read','jobs:read','job_logs:read','job_artifacts:read','capabilities:read'],scope:{workspaceIds:[workspaceId]}}]})
     worker=new JobWorkerService(database.pool,{require:async()=>{},verifyPublication:async()=>{}})
-    app=buildApp({readiness:{database:{ping:async()=>{}},checkpoints:{ping:async()=>{}}},operator:{access,services:{jobs,commands,workflows:new WorkflowManagementService(database.pool,commands)} as unknown as OperatorServices}})
+    services = { jobs, commands, workflows: new WorkflowManagementService(database.pool, commands),
+      ci: new CiService(database.pool, commands, new RunCiAuthority(database.pool), ciFixture().sources, jobs),
+    } as unknown as OperatorServices
+    app=buildApp({readiness:{database:{ping:async()=>{}},checkpoints:{ping:async()=>{}}},operator:{access,services}})
     address=await app.listen({host:'127.0.0.1',port:0})
   },60000)
   afterAll(async()=>{await Promise.allSettled(clients.map(client=>client.close()));await app?.close();await jobs?.closeQueue();await database?.close()})
   const root=()=>`/api/management/workspaces/${workspaceId}/jobs`
   async function connect(token:string) {const client=new Client({name:'ci-tests',version:'1'});clients.push(client);await client.connect(new StreamableHTTPClientTransport(new URL('/mcp',address),{requestInit:{headers:{Authorization:`Bearer ${token}`}}}));return client}
+  it('cancels a persisted CI ticket through authenticated MCP and retains retry and denied-caller facts', async () => {
+    const client = await connect(writer.token)
+    const readonly = await connect(reader.token)
+    const computer = queue.computers[0]!
+    computer.candidate.ready = false
+    computer.candidate.reasons = ['offline']
+    try {
+      const definition = await queue.save()
+      const started = await client.callTool({ name: 'job_start', arguments: { workspaceId,
+        commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision } })
+      expect(started.isError).not.toBe(true)
+      const admission = z.object({ admission: JobPendingAdmissionSchema }).parse(started.structuredContent).admission
+      const scope = { workspaceId, ticketId: admission.ticket.id }
+      await jobs.wakeQueue()
+      const waiting = CiGetOutputSchema.parse((await client.callTool({ name: 'ci_get', arguments: scope })).structuredContent)
+      expect(waiting.queue.state).toBe('waiting')
+      const cancel = { ...scope, expectedRevision: waiting.queue.revision, commandId: randomUUID() }
+      const denied = await readonly.callTool({ name: 'ci_cancel', arguments: cancel })
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+      expect((await jobs.getQueueTicket(writer.principal, workspaceId, scope.ticketId)).cancelRequestedAt).toBeNull()
+      const result = await client.callTool({ name: 'ci_cancel', arguments: cancel })
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+      const stopped = CiCancelOutputSchema.parse(result.structuredContent).ticket
+      expect(stopped).toMatchObject({ state: 'terminal', terminalReason: 'cancelled' })
+      await jobs.closeQueue()
+      jobs = queue.createService()
+      services.jobs = jobs
+      services.ci = new CiService(database.pool, queue.commands, new RunCiAuthority(database.pool), ciFixture().sources, jobs)
+      const replay = await client.callTool({ name: 'ci_cancel', arguments: cancel })
+      expect(CiCancelOutputSchema.parse(replay.structuredContent).ticket).toEqual(stopped)
+      const readback = await client.callTool({ name: 'ci_get', arguments: scope })
+      expect(CiGetOutputSchema.parse(readback.structuredContent).queue).toEqual(stopped)
+      expect(await jobs.getQueueTicket(writer.principal, workspaceId, scope.ticketId)).toEqual(stopped)
+      const audits = await database.pool.query(
+        "select outcome from management_audit where principal_id=$1 and action='ci_cancel'", [reader.principal.id])
+      expect(audits.rows).toContainEqual({ outcome: 'denied' })
+    } finally { queue.online() }
+  })
+
   it('persists accepted version after edits/restart, replays one command, conflicts changed payload, and matches MCP readback',async()=>{
     const saved=await app.inject({method:'POST',url:`${root()}/definitions`,headers:{authorization:`Bearer ${writer.token}`},payload:{commandId:randomUUID(),expectedRevision:null,name:'Version one',spec:queue.computers[0]!.candidate.spec}})
     expect(saved.statusCode).toBe(200);const definition=saved.json().definition

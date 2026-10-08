@@ -31,8 +31,13 @@ export const GRAPHQL_AGENT_TOOLS = {
     label: "Publish workflow output", description: "Publish this turn's sealed output under its saved permissions.",
     roles: ["orchestrator", "coder"],
   },
-  ci_run: { label: "Run CI", description: "Queue install, typecheck, lint, unit or build on Auto build capacity for this Run's workspace and approved commit. Defaults to Main project HEAD; retries reuse commandId. Requires the Run's accepted source and Job grants.", roles: ["operator", "orchestrator", "coder"] },
+  ci_run: { label: "Run CI", description: "Queue install, typecheck, lint, unit or build for this Run's workspace. Defaults to the Agent's current files and prefers its computer, then other build computers; Operator defaults to Main HEAD. placementOverride chooses Auto, a preferred computer, or an explicit computer/root from ci_computers_list. Retry the same commandId and payload. Requires the Run's accepted source and Job grants.", roles: ["operator", "orchestrator", "coder"] },
   ci_get: { label: "Read CI result", description: "Read a workspace CI ticket, waiting reasons, selected computer, process outcome, publication, summary and bounded log tail.", roles: ["operator", "orchestrator", "coder"] },
+  ci_computers_list: { label: "List CI computers", description: "Read authorized build computer/root choices and verification templates for this Run workspace. Does not prepare or start work.", roles: ["operator", "orchestrator", "coder"] },
+  ci_cancel: { label: "Cancel CI", description: "Cancel a CI ticket with its expectedRevision and retryable commandId. Poll ci_get to confirm process closure; cancellation does not immediately release capacity.", roles: ["operator", "orchestrator", "coder"] },
+  ci_logs_read: { label: "Read CI logs", description: "Read sequenced CI logs by ticketId. Resume with nextCursor; truncation is explicit.", roles: ["operator", "orchestrator", "coder"] },
+  ci_artifacts_list: { label: "List CI artifacts", description: "Read a CI ticket's published file and revision IDs, digests, sizes and expiry.", roles: ["operator", "orchestrator", "coder"] },
+  ci_artifact_read: { label: "Read CI artifact", description: "Read digest-verified artifact bytes by ticketId, fileId and revisionId as base64 chunks up to 1 MiB; resume with nextOffset as offset until null. Requires accepted artifact grants.", roles: ["operator", "orchestrator", "coder"] },
 } as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[] }>;
 
 /** Explicit Operator catalog. Listing a tool never supplies a grant or native qualification. */

@@ -82,7 +82,7 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
         detail: JOB_QUEUE_CAPABILITY_DETAIL + ' Only listed operations are available to this caller. '
           + 'Launch requires an approved source/root and current host-bound CI qualification. '
           + 'Connecting a computer or listing tools is not qualification. '
-          + 'Job management tools remain Operator-only; Agents use ci_run and ci_get in their Run workspace. '
+          + 'Job management tools remain Operator-only; Agents use the CI tools to choose computers, run, poll, read logs/artifacts and cancel in their Run workspace. '
           + 'Revoked-Worker cleanup requires separate local-human approval; MCP cannot approve itself or enable execution.'
       }] : []), ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
         detail: 'Schedule CRUD and bounded occurrence history have HTTP/MCP parity. '

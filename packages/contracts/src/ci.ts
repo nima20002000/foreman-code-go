@@ -1,9 +1,9 @@
 import { z } from 'zod'
 import { IdSchema } from './schemaPrimitives.js'
 import { JobOrdinaryVerificationSuiteSchema, JobVerificationReportReadSchema } from './jobVerification.js'
-import { JobQueueTicketSchema } from './jobAdmission.js'
+import { JobPlacementIntentSchema, JobQueueCancelSchema, JobQueueTicketSchema } from './jobAdmission.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
-import { JobExecutionSchema } from './jobs.js'
+import { JobArtifactSchema, JobArtifactReadInputSchema, JobArtifactReadOutputSchema, JobLogPageSchema, JobExecutionSchema } from './jobs.js'
 import { SourceRootRecordSchema, SourcePinSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
@@ -11,6 +11,7 @@ export const CiRunInputSchema = z.object({
   suite: JobOrdinaryVerificationSuiteSchema,
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional(),
   commandId: IdSchema,
+  placementOverride: JobPlacementIntentSchema.optional(),
 }).strict()
 export const OperatorCiRunInputSchema = CiRunInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiRunOutputSchema = z.object({ ticketId: IdSchema, executionId: IdSchema.optional() }).strict()
@@ -27,6 +28,23 @@ export const CiGetOutputSchema = z.object({
 }).strict()
 export type CiRunInput = z.infer<typeof CiRunInputSchema>
 export type CiGetInput = z.infer<typeof CiGetInputSchema>
+
+export const CiCancelInputSchema = JobQueueCancelSchema
+export const OperatorCiCancelInputSchema = CiCancelInputSchema.extend({ workspaceId: IdSchema }).strict()
+export const CiCancelOutputSchema = z.object({ ticket: JobQueueTicketSchema }).strict()
+export const CiLogsInputSchema = CiGetInputSchema.extend({
+  afterSequence: z.number().int().nonnegative().default(0),
+  limit: z.number().int().min(1).max(100).default(50),
+}).strict()
+export const OperatorCiLogsInputSchema = CiLogsInputSchema.extend({ workspaceId: IdSchema }).strict()
+export const CiLogsOutputSchema = JobLogPageSchema
+export const CiArtifactsOutputSchema = z.object({ artifacts: z.array(JobArtifactSchema) }).strict()
+export const CiArtifactInputSchema = CiGetInputSchema.extend(JobArtifactReadInputSchema.shape).strict()
+export const OperatorCiArtifactInputSchema = CiArtifactInputSchema.extend({ workspaceId: IdSchema }).strict()
+export const CiArtifactOutputSchema = JobArtifactReadOutputSchema
+export type CiCancelInput = z.infer<typeof CiCancelInputSchema>
+export type CiLogsInput = z.infer<typeof CiLogsInputSchema>
+export type CiArtifactInput = z.infer<typeof CiArtifactInputSchema>
 
 const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
 const AbsolutePathSchema = z.string().min(2).max(4096).startsWith('/')

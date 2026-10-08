@@ -7,8 +7,8 @@ import { JobResult } from './JobResult'
 import { ApiError } from '../../shared/api/client'
 
 /** Resolve the persisted Run/job relationship; a node execution ID is never assumed to be a job ID. */
-export function JobRunResult({ reference, definitionVersionId, readOnly = false }: {
-  reference: JobWorkflowAdmissionReference; definitionVersionId: string; readOnly?: boolean
+export function JobRunResult({ reference, definitionVersionId }: {
+  reference: JobWorkflowAdmissionReference; definitionVersionId: string
 }) {
   const query = useQuery({ queryKey: ['jobs', 'workflow-execution', reference],
     queryFn: ({ signal }) => jobsClient.workflowExecution(reference, { signal }), retry: jobReadRetry,
@@ -22,5 +22,5 @@ export function JobRunResult({ reference, definitionVersionId, readOnly = false 
   </Alert>
   if (!query.data) return <p role="status">Reading the job accepted for this exact Run execution…</p>
   return <JobResult key={query.data.jobExecutionId} workspaceId={reference.workspaceId} executionId={query.data.jobExecutionId}
-    expectedWorkflow={query.data} expectedDefinitionVersionId={definitionVersionId} readOnly={readOnly} />
+    expectedWorkflow={query.data} expectedDefinitionVersionId={definitionVersionId} />
 }

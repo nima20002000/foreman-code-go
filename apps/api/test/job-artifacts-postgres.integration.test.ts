@@ -1,5 +1,5 @@
 import { logArchive } from '../../../scripts/verification-reports.mjs'
-import { AutoJobDefinitionSpecSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
+import { AutoJobDefinitionSpecSchema, JobArtifactReadOutputSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
@@ -232,6 +232,17 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
           expect(mcp.isError).not.toBe(true)
           expect(mcp.structuredContent).toMatchObject({ artifact: published.artifact, content: data.toString('base64') })
           expect(list.structuredContent).toEqual({ artifacts: [published.artifact] })
+          const firstResult = await client.callTool({ name: 'job_artifact_read',
+            arguments: { ...input, offset: 0, limit: 4 } })
+          expect(firstResult.isError).not.toBe(true)
+          const first = JobArtifactReadOutputSchema.parse(firstResult.structuredContent)
+          expect(first).toMatchObject({ artifact: published.artifact, offset: 0, nextOffset: 4 })
+          const lastResult = await client.callTool({ name: 'job_artifact_read',
+            arguments: { ...input, offset: first.nextOffset } })
+          expect(lastResult.isError).not.toBe(true)
+          const last = JobArtifactReadOutputSchema.parse(lastResult.structuredContent)
+          expect(last).toMatchObject({ artifact: published.artifact, offset: 4, nextOffset: null })
+          expect(Buffer.concat([Buffer.from(first.content, 'base64'), Buffer.from(last.content, 'base64')])).toEqual(data)
         } else {
           expect(mcp.isError).toBe(true)
           expect(list.isError).toBe(true)

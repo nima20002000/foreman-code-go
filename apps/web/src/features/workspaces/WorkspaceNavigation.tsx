@@ -43,7 +43,6 @@ import './workspaces.css'
 export type WorkspaceSection =
   | 'agents'
   | 'workflows'
-  | 'jobs'
   | 'files'
   | 'tasks'
   | 'runs'
@@ -76,13 +75,12 @@ export interface WorkspaceNavigationProps {
 
 const workspaceSections: readonly WorkspaceSection[] = [
   'workflows',
-  'jobs',
   'files',
   'tasks',
   'runs',
 ]
 
-const workspaceSectionItems = [{ id: 'workflows', label: 'Workflows' }, { id: 'jobs', label: 'Jobs' }]
+const workspaceSectionItems = [{ id: 'workflows', label: 'Workflows' }]
 
 /** The always-visible, server-backed create entry point for the workspace list. */
 function NewWorkspaceControl() {
@@ -315,20 +313,6 @@ function WorkspaceTreeItem({
           ) : null}
         </>
       )
-    }
-
-    if (section === 'jobs') {
-      return <div className="nav-item-row" {...reorderProps}>
-        <Link to="/workspaces/$workspaceId/jobs" params={{ workspaceId: entry.id }}
-          activeOptions={{ exact: false }} activeProps={{ className: 'nav-item-active', 'aria-current': 'page' }}
-          className="nav-item" {...sections.getKeyboardProps(section)}
-          aria-label={navigationCollapsed ? 'Jobs' : undefined} title="Jobs">
-          <span className="nav-item-primary">
-            <Icon name="code" aria-hidden="true" className="nav-item-icon" />
-            <span className="nav-item-label">Jobs</span>
-          </span>
-        </Link>
-      </div>
     }
 
     return null

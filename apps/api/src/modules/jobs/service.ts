@@ -175,6 +175,21 @@ export class JobService {
       return {artifact,bytes:result.bytes}
     },source)
   }
+  async readArtifactPage(principal: ManagementPrincipal, workspaceId: string, executionId: string,
+    input: { fileId: string; revisionId: string; offset: number; limit: number }) {
+    const value = await this.readArtifact(principal, workspaceId, executionId, input.fileId, input.revisionId, 'mcp')
+    if (input.offset > value.bytes.length) {
+      throw new DomainError('INVALID_REQUEST', 'Artifact offset exceeds the revision size.', 400)
+    }
+    const end = Math.min(value.bytes.length, input.offset + input.limit)
+    return {
+      artifact: value.artifact,
+      encoding: 'base64' as const,
+      content: value.bytes.subarray(input.offset, end).toString('base64'),
+      offset: input.offset,
+      nextOffset: end < value.bytes.length ? end : null,
+    }
+  }
   listDefinitions(principal:ManagementPrincipal, workspaceId:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'job_definitions:read',async sql => (await sql.query<{record:unknown}>('select record from job_definitions where workspace_id=$1 order by id limit 100',[workspaceId])).rows.map(row=>JobDefinitionRecordSchema.parse(row.record)),source)
   }

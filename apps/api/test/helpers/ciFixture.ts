@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
 import { JobDefinitionRecordSchema, jobPolicyRequirementsRecord, jobVerificationTemplate,
@@ -6,7 +6,7 @@ import { JobDefinitionRecordSchema, jobPolicyRequirementsRecord, jobVerification
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import type { PostgresSourceService } from '../../src/modules/sources/service.js'
-import type { JobService } from '../../src/modules/jobs/service.js'
+import { JobService } from '../../src/modules/jobs/service.js'
 import { CiService } from '../../src/modules/jobs/ci.js'
 import type { CiAuthority } from '../../src/modules/jobs/ciAuthority.js'
 import { requireAuthorization } from '../../src/modules/access/policy.js'
@@ -129,7 +129,7 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
   const scopeCheck = (principal: ManagementPrincipal, scope: string) =>
     requireAuthorization(principal, 'jobs:read', { workspaceId: scope })
   const jobs = {
-    choices: async () => ({ verificationTemplates: structuredClone(templates) }),
+    choices: async () => ({ sources: [], targets: [], policies: [], verificationTemplates: structuredClone(templates) }),
     listDefinitions: async () => [...definitions.values()].map(value => structuredClone(value)),
     saveDefinition: async (_principal: ManagementPrincipal, _source: string, scope: string,
       input: { name: string; spec: unknown }) => {
@@ -171,11 +171,45 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
       }
       return structuredClone(retained)
     },
+    cancelQueued: async (principal: ManagementPrincipal, _source: string, scope: string,
+      input: { ticketId: string; expectedRevision: number; commandId: string }) => {
+      const result = await commands.execute({ principal, source: 'mcp', operation: 'job.queue.cancel',
+        commandId: input.commandId, targetKey: scope, payload: input,
+        authorize: async () => { requireAuthorization(principal, 'jobs:cancel', { workspaceId: scope }) },
+        perform: async () => {
+          const current = tickets.get(input.ticketId)!
+          if (current.revision !== input.expectedRevision) {
+            throw new DomainError('JOB_QUEUE_REVISION_CONFLICT', 'Queue revision changed.', 409)
+          }
+          const stopped = JobQueueTicketSchema.parse({ ...current, revision: current.revision + 1,
+            state: 'terminal', terminalReason: 'cancelled', cancelRequestedAt: current.enqueuedAt,
+            finishedAt: current.enqueuedAt })
+          tickets.set(input.ticketId, stopped)
+          return stopped
+        },
+      })
+      return result.value
+    },
     getExecution: async () => structuredClone(execution),
     readLogTail: async () => ({ text: 'tests passed\n', truncated: false }),
+    readLogs: async (_principal: ManagementPrincipal, _scope: string, id: string, after: number) => ({
+      chunks: after === 0 ? [{ executionId: id, attemptId: execution!.attemptId, sequence: 1,
+        stream: 'stdout', text: 'tests passed\n', byteSize: 13, createdAt: execution!.createdAt }] : [],
+      nextCursor: Math.max(1, after), truncated: false, gap: null,
+    }),
     listArtifacts: async () => [{ path: execution!.acceptedSpec.outputs[0]!.path, state: 'available',
+      executionId: execution!.id, publicationId: 'publication', mediaType: 'application/json',
+      sha256: createHash('sha256').update(JSON.stringify(summary)).digest('hex'),
+      expiresAt: '2099-01-01T00:00:00.000Z',
       byteSize: Buffer.byteLength(JSON.stringify(summary)), fileId: 'summary-file', revisionId: 'summary-revision' }],
-    readArtifact: async () => ({ bytes: Buffer.from(JSON.stringify(summary)) }),
+    readArtifactPage: JobService.prototype.readArtifactPage,
+    readArtifact: async (principal: ManagementPrincipal, scope: string, id: string, fileId: string, revisionId: string) => {
+      const artifact = (await jobs.listArtifacts(principal, scope, id, 'mcp'))[0]!
+      if (artifact.fileId !== fileId || artifact.revisionId !== revisionId) {
+        throw new DomainError('JOB_ARTIFACT_NOT_FOUND', 'Artifact revision unavailable.', 404)
+      }
+      return { artifact, bytes: Buffer.from(JSON.stringify(summary)) }
+    },
   } as unknown as JobService
   const agent = { mainId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222' }
   const pool = { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }),
@@ -190,7 +224,7 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
       return { commit: 'c'.repeat(40), bundle: Buffer.from('bundle') }
     } })
   const services = { commands, ci: createCi() } as unknown as OperatorServices
-  return { workspaceId, worker, operator, readonly, services, audits, createCi, roots, snapshotCalls, approvals, enqueued, agent, agentExecution,
+  return { workspaceId, worker, operator, readonly, accepted, buildTarget: runtime.spec.target, services, audits, createCi, roots, snapshotCalls, approvals, enqueued, agent, agentExecution,
     templates, jobs, sources, commands, ticket: () => structuredClone(ticket!), definition: () => structuredClone(definition!),
     pool, authority,
     counts: () => ({ sourceCaptures, enqueues }), advanceHead: () => { head = 'd'.repeat(40) },

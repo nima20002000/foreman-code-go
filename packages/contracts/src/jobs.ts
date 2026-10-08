@@ -149,6 +149,19 @@ export const JobArtifactSchema = JobInputRevisionSchema.extend({
   executionId: IdSchema, publicationId: IdSchema, path: RelativePath, mediaType: z.string(), state: z.enum(['available', 'expired', 'tombstoned']),
   expiresAt: TimestampSchema,
 }).strict()
+export const JobArtifactReadInputSchema = z.object({
+  fileId: IdSchema,
+  revisionId: IdSchema,
+  offset: z.number().int().nonnegative().default(0),
+  limit: z.number().int().min(1).max(1024 * 1024).default(1024 * 1024),
+}).strict()
+export const JobArtifactReadOutputSchema = z.object({
+  artifact: JobArtifactSchema,
+  encoding: z.literal('base64'),
+  content: z.string(),
+  offset: z.number().int().nonnegative(),
+  nextOffset: z.number().int().nonnegative().nullable(),
+}).strict()
 export const JobValidationSchema = z.object({ valid: z.boolean(), reasons: z.array(z.string()), sideEffects: z.literal(false) }).strict()
 export type JobDefinition = z.infer<typeof JobDefinitionSchema>
 export type JobDefinitionSpec = z.infer<typeof JobDefinitionSpecSchema>

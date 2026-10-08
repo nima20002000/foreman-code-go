@@ -12,7 +12,6 @@ import { GeneralSettingsRouteEntry, NewSkillRouteEntry, SkillDetailRouteEntry, S
 
 import { HarnessComputerSearchSchema } from '../features/settings/harnessComputerSearch'
 import { ComputersSettingsRouteEntry, ComputerDetailsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
-import { JobsRouteEntry, JobExecutionRouteEntry } from '../routes/JobsRoutes'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
 import {
@@ -73,15 +72,19 @@ const workflowsRoute = createRoute({
   component: WorkflowsRouteEntry,
 })
 
-const jobsRoute = createRoute({
+const jobsRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workspaces/$workspaceId/jobs',
-  component: JobsRouteEntry,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: '/workspaces/$workspaceId', params, replace: true })
+  },
 })
-const jobExecutionRoute = createRoute({
+const jobDetailsRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/workspaces/$workspaceId/jobs/$jobExecutionId',
-  component: JobExecutionRouteEntry,
+  path: '/workspaces/$workspaceId/jobs/$',
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: '/workspaces/$workspaceId', params: { workspaceId: params.workspaceId }, replace: true })
+  },
 })
 const computersSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -215,8 +218,8 @@ export const routeTree = rootRoute.addChildren([
   workspacesRoute,
   workspaceRoute.addChildren([nextDraftRoute, runGraphRoute]),
   workflowsRoute,
-  jobsRoute,
-  jobExecutionRoute,
+  jobsRedirectRoute,
+  jobDetailsRedirectRoute,
   agentsRoute,
   browsersRoute,
   tasksRoute,

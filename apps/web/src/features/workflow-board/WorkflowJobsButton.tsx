@@ -45,7 +45,7 @@ function JobsPanel({ workspaceId, workflowId }: { workspaceId: string; workflowI
           {selected ? <>
             <Button size="sm" variant="ghost" onClick={() => store.getState().select(null)}>Back to jobs</Button>
             <JobResult key={selected.execution.id} workspaceId={workspaceId} executionId={selected.execution.id}
-              readOnly expectedDefinitionVersionId={selected.execution.acceptedSpec.definitionVersionId}
+              expectedDefinitionVersionId={selected.execution.acceptedSpec.definitionVersionId}
               {...(selected.execution.initiatingAgent ? { expectedInitiatingAgent: selected.execution.initiatingAgent } : {})} />
           </> : <>
             {history.isPending ? <p role="status">Loading jobs…</p> : null}

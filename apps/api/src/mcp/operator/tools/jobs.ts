@@ -7,7 +7,7 @@ import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
   JobLaunchValidationInputSchema, JobLaunchValidationSchema } from '@foreman-code/contracts/job-admission'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { JobArtifactSchema, JobLogPageSchema, JobValidationSchema } from '@foreman-code/contracts/jobs'
+import { JobArtifactSchema, JobArtifactReadInputSchema, JobArtifactReadOutputSchema, JobLogPageSchema, JobValidationSchema } from '@foreman-code/contracts/jobs'
 import {
   JobAuthoringChoicesRecordSchema,
   JobDefinitionSaveRecordSchema,
@@ -182,11 +182,15 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
     inputSchema: JobCancellationRecoveryGetSchema, outputSchema: JobCancellationRecoveryReadSchema, annotations: read,
   }, input => invoke(context, 'job_cancellation_recovery_get', () => service.getCancellationRecovery(context.principal, input)))
   if(jobToolAvailable(context,'job_logs_read')) server.registerTool('job_logs_read',{description:'Read sequenced log chunks; resume with nextCursor. Reports truncation. Requires job_logs:read scoped to the persisted job origin.',inputSchema:execution.extend({afterSequence:z.number().int().nonnegative().default(0),limit:z.number().int().min(1).max(100).default(50)}),outputSchema:JobLogPageSchema,annotations:read},input=>invoke(context,'job_logs_read',()=>service.readLogs(context.principal,input.workspaceId,input.executionId,input.afterSequence,input.limit,'mcp')))
-  if(jobToolAvailable(context,'job_artifact_read')) server.registerTool('job_artifact_read',{description:'Read bounded digest-verified artifact bytes as base64. Requires job_artifacts:read scoped to the persisted job origin. Expired, missing or corrupt revisions fail; larger artifacts use authenticated HTTP attachment download.',inputSchema:execution.extend({fileId:z.string().min(1),revisionId:z.string().min(1)}),outputSchema:z.object({artifact:JobArtifactSchema,encoding:z.literal('base64'),content:z.string()}),annotations:read},input=>invoke(context,'job_artifact_read',async()=>{
-    const value=await service.readArtifact(context.principal,input.workspaceId,input.executionId,input.fileId,input.revisionId,'mcp')
-    if(value.bytes.length>1024*1024) throw new DomainError('JOB_ARTIFACT_TOO_LARGE','Use the exact revision HTTP attachment endpoint for artifacts above 1 MiB.',413)
-    return {artifact:value.artifact,encoding:'base64',content:value.bytes.toString('base64')}
-  }))
+  if (jobToolAvailable(context, 'job_artifact_read')) server.registerTool('job_artifact_read', {
+    description: 'Read digest-verified immutable artifact bytes as base64 in chunks up to 1 MiB. '
+      + 'Keep fileId/revisionId unchanged and use nextOffset as offset until null. '
+      + 'Requires job_artifacts:read scoped to the persisted job origin. '
+      + 'Missing, expired or corrupt revisions fail. No HTTP download is required.',
+    inputSchema: execution.extend(JobArtifactReadInputSchema.shape),
+    outputSchema: JobArtifactReadOutputSchema, annotations: read,
+  }, input => invoke(context, 'job_artifact_read', () =>
+    service.readArtifactPage(context.principal, input.workspaceId, input.executionId, input)))
   if(jobToolAvailable(context,'job_artifacts_list')) server.registerTool('job_artifacts_list',{description:'Read retained job artifact file/revision/digest/size and expiry. Requires job_artifacts:read scoped to the persisted job origin; latest bytes never substitute the saved revision.',inputSchema:execution,outputSchema:z.object({artifacts:z.array(JobArtifactSchema)}),annotations:read},input=>invoke(context,'job_artifacts_list',async()=>({artifacts:await service.listArtifacts(context.principal,input.workspaceId,input.executionId,'mcp')})))
 }
 export async function unavailableJobToolCall(context:JobMcpContext,body:unknown) {
