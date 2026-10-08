@@ -28,6 +28,8 @@ import { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import { createWorkerQualificationExtension } from '../jobs/workerQualificationCarrier.js'
 import type { InstalledRuntimeConfigurationLocation } from '../jobs/installedRuntimeHost.js'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { selectInstalledCodex } from '../computers/installedCodexSelection.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
@@ -361,9 +363,17 @@ export async function createInstalledWorkerDomains(input: {
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
         throw new DomainError('COMPUTER_MAINTENANCE_STALE', 'Computer maintenance requires the actual authenticated worker channel.', 409)
       }
-      maintenance ??= readInstalledWorkflowConfiguration(input.configuration).catch(() => null).then(selected => new ComputerMaintenance(
-        systemMaintenancePorts(process.env, { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
-          ...(selected?.claude ? { claude: selected.claude.binary } : {}) })))
+      maintenance ??= readInstalledWorkflowConfiguration(input.configuration).catch(() => null).then(selected => {
+        // Maintenance reads the binaries this Worker actually runs; an update moves the Codex selection with it.
+        const binaries: Record<string, string> = { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
+          ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
+        return new ComputerMaintenance({ ...systemMaintenancePorts(process.env, binaries),
+          async selectInstalledCodex(signal) {
+            const binary = await selectInstalledCodex(input.configuration, process.env.HOME ?? homedir(), signal)
+            if (binary) binaries.codex = binary
+            return binary
+          } })
+      })
       const owner = await maintenance
       return { payload: MaintenanceReplySchema.parse(request.operation === 'status'
         ? { operation: 'status', status: await owner.status(AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(90_000)])) }
