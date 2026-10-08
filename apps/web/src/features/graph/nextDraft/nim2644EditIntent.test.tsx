@@ -200,7 +200,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
       nativeAgent: 'saved-agent', thinking: true, autoApprove: false,
     })
     const original = structuredClone(context)
-    useGraphDraftStore.getState().installNextDraft(key, context)
+    useGraphDraftStore.getState().installNextDraft(key, context, true)
     mount()
     await screen.findByRole('region', { name: 'Workflow authoring' })
     expect(savedStartButton()).toBeDisabled()

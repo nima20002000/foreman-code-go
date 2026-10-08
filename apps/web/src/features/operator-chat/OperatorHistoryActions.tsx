@@ -20,6 +20,7 @@ export function OperatorHistoryActions({ summary, queryKey, enabled, removing, o
     select: state => state.settings?.harness,
     staleTime: Infinity,
     retry: false,
+    retryOnMount: false,
   })
   const denied = useAccessFailureLatch(query)
   if (!enabled || denied || !query.isSuccess) return null
