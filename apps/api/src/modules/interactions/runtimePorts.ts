@@ -31,7 +31,7 @@ export interface NativeManagerResolutionContext extends NativeManagerOwnershipCo
   workflowRequest?: HarnessExecutionRequest
 }
 
-export type NativeManagerLifecycle = 'allocated' | 'starting' | 'resident' | 'released' | 'failed'
+export type NativeManagerLifecycle = 'allocated' | 'starting' | 'resident' | 'disposing' | 'released' | 'failed'
 
 export interface ResolvedNativeSessionManager {
   manager: NativeHarnessSessionManager
@@ -103,7 +103,8 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     const admission = { owner, generation: randomUUID() }
     const manager = this.create(context, () => {
       const current = this.entries.get(context.executionId)
-      return !this.disposed && current?.admission === admission && current.lifecycle !== 'failed'
+      return current?.admission === admission
+        && (current.lifecycle === 'disposing' || (!this.disposed && current.lifecycle !== 'failed'))
         ? admission.owner : undefined
     })
     if (manager.harness !== context.harness) throw new Error('The native manager factory returned the wrong harness.')
@@ -180,11 +181,19 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     this.disposed = true
     this.disposal ??= Promise.resolve().then(() => Promise.allSettled([...this.entries.entries()].map(async ([executionId, entry]) => {
       const disposable = entry.manager as NativeHarnessSessionManager & { dispose?: () => Promise<void> }
-      entry.lifecycle = 'failed'
-      entry.admission.owner = undefined
-      if (!disposable.dispose) throw new Error('An execution native manager has no disposal contract.')
-      await disposable.dispose()
-      if (this.entries.get(executionId) === entry) { entry.lifecycle = 'released'; this.entries.delete(executionId) }
+      entry.lifecycle = 'disposing'
+      try {
+        if (!disposable.dispose) throw new Error('An execution native manager has no disposal contract.')
+        await disposable.dispose()
+      } catch (error) {
+        entry.lifecycle = 'failed'
+        throw error
+      }
+      if (this.entries.get(executionId) === entry) {
+        entry.admission.owner = undefined
+        entry.lifecycle = 'released'
+        this.entries.delete(executionId)
+      }
     }))).then((results) => {
       const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Execution native manager disposal was incomplete.')
