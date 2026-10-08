@@ -51,6 +51,28 @@ function setup(defaults: HarnessDefaults, options: { conflicted?: boolean; claud
     } }
 }
 describe('Claude defaults through the HTTP boundary', () => {
+  it.each(['Codex', 'OpenCode'] as const)('saves %s while retaining an incomplete Claude preset', async (name) => {
+    const configuration = { ...savedClaudeConfiguration, sandbox: 'read-only' as const }
+    const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: configuration }, {
+      claudeError: { code: 'CLAUDE_FULL_ACCESS_REQUIRED', message: CLAUDE_FULL_ACCESS_REQUIRED },
+    })
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: `Edit ${name} defaults` }))
+    if (name === 'Codex') {
+      await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
+    } else {
+      await user.click(screen.getByRole('button', { name: 'Session' }))
+      await user.click(screen.getByRole('checkbox', { name: 'Automatic compaction' }))
+    }
+    await user.click(screen.getByRole('button', { name: `Save ${name} preset` }))
+    expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    expect(state.submitted()?.configure).toEqual([name === 'Codex' ? 'codex' : 'opencode'])
+    expect(state.submitted()?.defaults.claude).toEqual(configuration)
+    expect((await getManagedHarnessCatalog()).find(entry => entry.harness === 'claude')).toMatchObject({
+      defaults: configuration, defaultsRevision: 5, discoveryError: { code: 'CLAUDE_FULL_ACCESS_REQUIRED' },
+    })
+  })
   it('shows detected read-only defaults as incomplete and requires an explicit Full access choice', async () => {
     const configuration = { ...savedClaudeConfiguration, sandbox: 'read-only' as const }
     const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: configuration }, {

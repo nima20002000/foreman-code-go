@@ -136,3 +136,63 @@ it.skipIf(!postgresEnabled)('keeps fresh Claude board defaults incomplete until 
     await f.close()
   }
 }, 60_000)
+
+it.skipIf(!postgresEnabled)('saves other provider defaults through HTTP and MCP while preserving incomplete Claude access', async () => {
+  const f = await currentOperatorIntegration()
+  const repository = new PostgresSettingsRepository(f.db.pool)
+  const options = async (harness: HarnessOptions['harness']): Promise<HarnessOptions> => ({
+    harness, providerVersion: 'fixture', authenticated: true,
+    models: [{ id: 'detected-model', defaultPriority: 0, reasoningEfforts: ['medium'], variants: [], serviceTiers: ['standard'] }],
+    nativeAgents: ['build'], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
+  })
+  try {
+    await initializeNativeDefaults({ pool: f.db.pool, options, appMcpEndpoint: new URL('/mcp', f.address).href })
+    const original = await repository.getManagedHarnessDefaults()
+    expect(original.defaults.claude?.sandbox).toBe('read-only')
+    expect(original.unavailable).toContain('claude')
+    const reader = await f.access.issue({ name: 'Defaults reader', audience: 'operator',
+      expiresAt: new Date(Date.now() + 120_000), grants: [{ actions: ['harnesses:read'], scope: {} }] })
+    const readClient = await f.connect(reader.token)
+    const input = { commandId: randomUUID(), expectedRevision: original.revision, configure: ['codex'],
+      defaults: { ...original.defaults, codex: { ...original.defaults.codex, sandbox: 'workspace-write' } } }
+    await expectMcpAccessDenied(readClient.callTool({ name: 'harness_defaults_update', arguments: input }))
+    expect(await repository.getManagedHarnessDefaults()).toEqual(original)
+    const saved = HarnessDefaultsUpdateResultSchema.parse((await f.client.callTool({
+      name: 'harness_defaults_update', arguments: input,
+    })).structuredContent)
+    expect(saved.value.defaults.codex.sandbox).toBe('workspace-write')
+    expect(saved.value.defaults.claude).toEqual(original.defaults.claude)
+    expect((await repository.getManagedHarnessDefaults()).unavailable).toContain('claude')
+    expect(HarnessDefaultsUpdateResultSchema.parse((await f.client.callTool({
+      name: 'harness_defaults_update', arguments: input,
+    })).structuredContent)).toEqual({ ...saved, replayed: true })
+    const http = await fetch(new URL('/api/management/harnesses/defaults', f.address), { method: 'PUT',
+      headers: { authorization: `Bearer ${f.writer.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ commandId: randomUUID(), expectedRevision: saved.value.revision, configure: ['opencode'],
+        defaults: { ...saved.value.defaults, opencode: { ...saved.value.defaults.opencode, instructions: 'Explicit provider instructions.' } } }),
+    })
+    expect(http.status).toBe(200)
+    const httpSaved = HarnessDefaultsUpdateResultSchema.parse(await http.json())
+    expect(httpSaved.value.defaults.opencode.instructions).toBe('Explicit provider instructions.')
+    const persisted = await repository.getManagedHarnessDefaults()
+    expect(persisted.defaults).toEqual(httpSaved.value.defaults)
+    expect(persisted.defaults.claude).toEqual(original.defaults.claude)
+    expect(persisted.unavailable).toContain('claude')
+    expect((await readClient.callTool({ name: 'harness_get', arguments: { harness: 'claude' } })).structuredContent)
+      .toMatchObject({ defaults: original.defaults.claude, defaultsRevision: persisted.revision,
+        capability: null, discoveryError: { code: 'CLAUDE_FULL_ACCESS_REQUIRED' } })
+    for (const claude of [
+      { ...original.defaults.claude!, model: 'edited-restricted-model' },
+      { ...original.defaults.claude!, sandbox: 'danger-full-access',
+        mcpServers: { external: { type: 'http', url: 'https://external.example/mcp' } } },
+    ]) {
+      const rejected = await f.client.callTool({ name: 'harness_defaults_update', arguments: {
+        commandId: randomUUID(), expectedRevision: persisted.revision,
+        defaults: { ...persisted.defaults, claude },
+      } })
+      expect(rejected).toMatchObject({ isError: true,
+        content: [{ type: 'text', text: expect.stringMatching(/CLAUDE_FULL_ACCESS_REQUIRED|CLAUDE_EXTERNAL_MCP_UNSUPPORTED/) }] })
+      expect(await repository.getManagedHarnessDefaults()).toEqual(persisted)
+    }
+  } finally { await f.close() }
+}, 60_000)

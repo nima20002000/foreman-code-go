@@ -117,7 +117,6 @@ export class HarnessCatalogService {
   }) {
     requireAuthorization(principal, 'harnesses:update')
     const defaults = HarnessDefaultsSchema.parse(input.defaults)
-    if (defaults.claude) assertClaudeFullAccess(defaults.claude)
     return this.commands.execute({
       principal, source, operation: 'harness.defaults.update', commandId: input.commandId,
       targetKey: 'harness-defaults', payload: input,
@@ -132,6 +131,7 @@ export class HarnessCatalogService {
             'Choose a complete preset before selecting its default.', 409)
           if (!next || (previous && !configure.has(harness)
             && isDeepStrictEqual(withAdvancedDefaults(previous), withAdvancedDefaults(next)))) continue
+          assertClaudeFullAccess(next)
           // Claude presets are configuration templates, like unqualified host
           // overrides. Exact-host proof is required separately at admission;
           // the model-free defaults checker cannot produce that native proof.

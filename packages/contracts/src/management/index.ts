@@ -548,10 +548,18 @@ export const GraphDraftRevertAppliedResultSchema = z.object({
 
 export const HarnessDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields,
-  defaults: ManagementHarnessDefaultsSchema.safeExtend({ claude: ClaudeFullAccessConfigurationSchema.optional() }),
+  defaults: ManagementHarnessDefaultsSchema.describe('Unchanged incomplete presets may be retained. New, edited or explicitly selected Claude presets require Full access and supported app MCP connections.'),
   /** Explicitly select a preset even when its template values did not change. */
   configure: AgentHarnessSchema.array().max(3).optional(),
-}).strict();
+}).strict().superRefine((input, context) => {
+  if (!input.configure?.includes('claude') || !input.defaults.claude) return;
+  const result = ClaudeFullAccessConfigurationSchema.safeParse(input.defaults.claude);
+  if (!result.success) {
+    for (const issue of result.error.issues) {
+      context.addIssue({ ...issue, path: ['defaults', 'claude', ...issue.path] });
+    }
+  }
+});
 export const HarnessConfigurationCheckInputSchema = z.object({
   configuration: HarnessConfigurationSchema,
 }).strict();

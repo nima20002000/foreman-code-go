@@ -99,6 +99,9 @@ authentication, configuration and execution qualification remain separate facts.
 Automatically detected Claude presets retain read-only access and remain
 unavailable until the user explicitly selects Full access. Startup never converts
 a restricted preset or role default to Full access.
+An unchanged incomplete Claude preset can be retained when saving another
+provider's defaults. Editing or explicitly selecting Claude still requires
+supported access and MCP configuration.
 Claude's local rollout switch is
 `GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK`, independent of OpenCode.
 

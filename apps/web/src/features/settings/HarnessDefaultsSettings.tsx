@@ -22,14 +22,21 @@ function editable(value: HarnessDefaults, harness?: Harness): DefaultsEditor {
   return { codex: createHarnessEditor(value.codex), opencode: createHarnessEditor(value.opencode),
     ...(value.claude ? { claude: createHarnessEditor(value.claude) } : harness === 'claude' ? { claudeSetup: {} } : {}) }
 }
-function prepared(value: DefaultsEditor): HarnessDefaults {
+function prepared(value: DefaultsEditor, harness: Harness): HarnessDefaults {
+  const claudeEditor = value.claude
+  let claude = claudeEditor?.configuration
+  if (claudeEditor && harness === 'claude') {
+    claude = withValidationPath(['claude'], () => prepareHarnessEditor(claudeEditor))
+  } else if (!claudeEditor && value.claudeSetup) {
+    claude = withValidationPath(['claude'], () => ClaudeHarnessConfigurationSchema.parse({
+      harness: 'claude', permissionMode: 'default', tools: [], permissionRules: [], instructions: '',
+      mcpServers: {}, ...value.claudeSetup,
+    }))
+  }
   return HarnessDefaultsSchema.parse({
     codex: withValidationPath(['codex'], () => prepareHarnessEditor(value.codex)),
     opencode: withValidationPath(['opencode'], () => prepareHarnessEditor(value.opencode)),
-    ...(value.claude ? { claude: withValidationPath(['claude'], () => prepareHarnessEditor(value.claude!)) }
-      : value.claudeSetup ? { claude: withValidationPath(['claude'], () => ClaudeHarnessConfigurationSchema.parse({
-        harness: 'claude', permissionMode: 'default', tools: [], permissionRules: [], instructions: '', mcpServers: {}, ...value.claudeSetup,
-      })) } : {}),
+    ...(claude ? { claude } : {}),
   })
 }
 function useProviderDefaults() {
@@ -109,11 +116,11 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
       {query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={{ ...form, reapply }} /></>}
     footer={(activeSection === 'connections' && harness !== 'claude') || activeSection === 'workspace' || activeSection === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
       onSave={() => form.save(async (input) => {
-        const defaults = prepared(input.value)
+        const defaults = prepared(input.value, harness)
         const response = await managedSave.mutateAsync({ defaults: HarnessDefaultsUpdateInputSchema.shape.defaults.parse(defaults),
           configure: [harness], expectedRevision: input.expectedRevision, commandId: input.commandId })
         return { value: editable(response.value.defaults, harness), revision: response.value.revision }
-      }, (value) => { ManagementHarnessDefaultsSchema.parse(prepared(value)); return value })} />}>
+      }, (value) => { ManagementHarnessDefaultsSchema.parse(prepared(value, harness)); return value })} />}>
     {section === 'workspace' && harness !== 'claude' ? <HarnessCompatibilityPanel harness={harness} /> : null}
     {harness === 'codex' && section === 'permissions' ? <section aria-label="Supported Codex requests">
       <h3>Supported requests</h3>
