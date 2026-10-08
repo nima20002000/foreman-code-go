@@ -182,8 +182,21 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
       [command.commandId])
     expect(audit.rows.filter(row => row.outcome === 'succeeded')).toEqual([{ source: 'mcp', outcome: 'succeeded' }])
     const definition = await f.save()
-    const selected = await f.jobs.start(writer.principal, 'http', f.workspaceId,
-      { commandId: randomUUID(), definitionId: definition.id, expectedRevision: 1 })
+    const start = { commandId: randomUUID(), definitionId: definition.id, expectedRevision: 1 }
+    await expect(f.jobs.start(writer.principal, 'http', f.workspaceId, start)).rejects.toMatchObject({
+      code: 'JOB_NO_BUILD_COMPUTER', details: { reasons: ['request_exceeds_maximum'] },
+    })
+    const expanded = BuildComputerBatchResultSchema.parse((await client.callTool({
+      name: 'build_computers_update', arguments: {
+        commandId: randomUUID(), updates: command.updates.map(change => ({
+          ...change, expectedRevision: 1, buildAllowancePercent: 100,
+        })),
+      },
+    })).structuredContent)
+    expect(expanded.computers.map(status => status.preference)).toEqual(saved.computers.map(status => ({
+      ...status.preference, revision: 2, buildAllowancePercent: 100,
+    })))
+    const selected = await f.jobs.start(writer.principal, 'http', f.workspaceId, start)
     expect(selected.acceptedSpec.target).toEqual(f.computers[2]!.candidate.spec.target)
   })
   it('rejects a stale last row without changing any earlier row in the batch', async () => {
