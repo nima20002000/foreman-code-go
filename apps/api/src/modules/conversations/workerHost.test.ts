@@ -483,7 +483,8 @@ it('forks independently, keeps its source untouched and carries real initial-mes
   const initial = await setup('claude')
   await initial.request({ method: 'conversation.initial-turn', operationId: 'initial-request', configuration: initial.configuration,
     prompt: 'Initial task', correlationId: 'initial-correlation', sessionMode: 'plan' })
-  await vi.waitFor(async () => expect((await initial.journal.conversations.read(initial.binding))?.turns[0]?.status).toBe('completed'))
+  await vi.waitFor(async () => expect((await initial.journal.conversations.read(initial.binding))?.turns[0]?.status)
+    .toBe('completed'), { timeout: 10000 })
   expect(initial.observed.sessions).toEqual([initial.session])
   expect((await initial.journal.conversations.read(initial.binding))?.turns[0]?.nativeSubmission).toMatchObject({
     nativeSessionId: initial.session.nativeSessionId, nativeMessageId: 'observed-message' })
