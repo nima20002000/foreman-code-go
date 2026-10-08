@@ -121,6 +121,6 @@ export function useSessionControls(conversationId: string | undefined, workspace
   const scopedMutation = { ...mutation, isPending: activeAttempt && mutation.isPending, isError: error !== null, error }
   const commandFeedback = activeAttempt && mutation.variables?.draft
     ? { draft: mutation.variables.draft, compaction } : undefined
-  return { state: query.data, conversationId, query, mutation: scopedMutation, change, command, commandFeedback }
+  return { state: query.data, conversationId, scope, query, mutation: scopedMutation, change, command, commandFeedback }
 }
 export type ComposerSessionControls = ReturnType<typeof useSessionControls>

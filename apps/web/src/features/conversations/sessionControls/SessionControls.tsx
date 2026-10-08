@@ -9,7 +9,7 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
   const state = controls.state
   const id = useId()
   const [open, setOpen] = useState(false)
-  const budgetOwner = JSON.stringify([state?.conversationId, state?.profileKey])
+  const budgetOwner = JSON.stringify([controls.scope, state?.conversationId, state?.profileKey])
   const [budgetDraft, setBudgetDraft] = useState<{ owner: string; value: string }>()
   const budgetEdited = budgetDraft?.owner === budgetOwner
   const budget = budgetEdited ? budgetDraft.value : String(state?.desired.autoCompactTokens ?? '')
@@ -18,7 +18,7 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
   const surface = useRef<HTMLDivElement>(null)
   const restoringFocus = useRef(false)
   useFloatingSurface(open, anchor, surface, 320, 'end')
-  useEffect(() => { setOpen(false) }, [state?.conversationId])
+  useEffect(() => { setOpen(false) }, [budgetOwner])
   useEffect(() => {
     if (!open) return
     const outside = (event: PointerEvent) => {

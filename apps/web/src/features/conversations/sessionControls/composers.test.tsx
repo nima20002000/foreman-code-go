@@ -215,3 +215,21 @@ it('keeps an unsaved budget through polling and resets it when the chat changes'
   fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
   expect(screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })).toHaveValue(190000)
 })
+
+it('resets an unsaved budget when switching nodes before either conversation exists', () => {
+  const controls = Object.assign(controller(), { scope: 'first-node' })
+  controls.state = { ...state, conversationId: null,
+    capabilities: { ...state.capabilities, modelCapacity: 200000,
+      autoCompactBudget: { supported: true, reason: null } } }
+  const view = render(<SessionControls controls={controls} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-compaction budget' }), {
+    target: { value: '150000' },
+  })
+  controls.scope = 'second-node'
+  view.rerender(<SessionControls controls={controls} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
+  expect(screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })).toHaveValue(null)
+  fireEvent.click(screen.getByRole('button', { name: 'Save as default for future chats' }))
+  expect(controls.change).toHaveBeenCalledExactlyOnceWith({ kind: 'save-default', preferences: state.desired })
+})
