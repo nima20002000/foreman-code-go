@@ -10,6 +10,34 @@ import { buildComputerFixture } from '../../../test/helpers/buildComputerFixture
 import { JobComputerSelection, compatibleJobComputer, jobComputerCapacity, jobComputerCapacityDecision, jobEligibilityReason, orderBuildComputers, orderForPlacement } from './computerSelection.js'
 
 const mainId = '11111111-1111-4111-8111-111111111111'
+
+it('inspects an explicit launch override without reserving and permits an offline computer to wait', async () => {
+  const { candidate, auto } = buildComputerFixture(mainId, 'workspace-fixture')
+  candidate.ready = false
+  candidate.reasons = ['offline']
+  const preference = { target: buildComputerTarget(candidate.spec.target), revision: 1, buildEnabled: true,
+    buildPriority: 100, buildRole: 'primary' as const, buildAllowancePercent: 100 }
+  const candidates = vi.fn(async () => ({ candidates: [candidate], diagnosticCodes: [] }))
+  const settings = { preference: async () => preference } as unknown as BuildComputerSettings
+  const selection = new JobComputerSelection(settings, { candidates },
+    { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
+  const query = vi.fn()
+  const sql = { query } as unknown as JobSql
+  const principal = {} as ManagementPrincipal
+  const placementOverride = { kind: 'explicit' as const, target: candidate.spec.target }
+  expect(await selection.validateRequest(sql, principal, 'workspace-fixture', auto, placementOverride))
+    .toEqual({ valid: false, canQueue: true, reasons: ['offline'], sideEffects: false })
+  expect(candidates).toHaveBeenCalledWith(sql, principal, 'workspace-fixture', auto, placementOverride)
+  expect(query).not.toHaveBeenCalled()
+  candidate.reasons = ['AUTH_REVOKED']
+  expect(await selection.validateRequest(sql, principal, 'workspace-fixture', auto, placementOverride))
+    .toMatchObject({ valid: false, canQueue: false })
+  candidate.reasons = ['offline']
+  expect(await selection.validateRequest(sql, principal, 'workspace-fixture', auto, {
+    kind: 'explicit', target: { ...candidate.spec.target, mainInstallationId: 'replacement-installation' },
+  })).toMatchObject({ valid: false, canQueue: false, reasons: ['incompatible'] })
+})
+
 function capacityRows(profile: ReturnType<typeof verificationCapacityFixture>, computing: number, retained = 0): JobSql {
   const rows = Array.from({ length: computing + retained }, (_, index) => ({
     limits: profile.spec.resources.limits, compute_closed: index >= computing,
@@ -44,6 +72,8 @@ describe('reviewed verification admission capacity', () => {
     expect(await selection.claim(sql, {} as ManagementPrincipal, definition,
       { executionId: 'waiting', attemptId: 'attempt', operationId: 'source-operation' }))
       .toMatchObject({ spec: null, reasons: ['busy'] })
+    expect(await selection.validateRequest(sql, {} as ManagementPrincipal, definition.workspaceId, definition.spec))
+      .toEqual({ valid: false, canQueue: true, reasons: ['busy'], sideEffects: false })
   })
   it.each(['unqualified', 'qualifying'] as const)('waits for a %s profile instead of treating missing measurements as a zero maximum', async status => {
     const measured = verificationCapacityFixture('main')

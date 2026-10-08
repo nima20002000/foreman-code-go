@@ -79,7 +79,7 @@ export async function qualifyCodexOutputProtection(input: {
     const observedTurn: { id?: string } = {}
     const commands: Array<{ threadId: string; turnId: string; item: JsonObject }> = []
     const commandOutput = new CodexCommandOutput()
-    const terminals = new Map<string, string>()
+    const terminals = new Map<string, { status: string; error: string | null }>()
     let complete!: () => void
     let fail!: (error: unknown) => void
     const done = new Promise<void>((resolve, reject) => { complete = resolve; fail = reject })
@@ -114,7 +114,8 @@ export async function qualifyCodexOutputProtection(input: {
         if (method === 'turn/completed') {
           const turn = object(params.turn)
           if (typeof turn.id === 'string' && typeof turn.status === 'string') {
-            terminals.set(turn.id, turn.status)
+            terminals.set(turn.id, { status: turn.status,
+              error: turn.error == null ? null : redact.text(JSON.stringify(turn.error)).slice(0, 2048) })
             if (turn.id === observedTurn.id) complete()
           }
         }
@@ -164,12 +165,13 @@ export async function qualifyCodexOutputProtection(input: {
     }
     if (await readFile(programPath, 'utf8') !== program) throw unavailable()
     const observed = commands.filter((entry) => entry.threadId === threadId && entry.turnId === turnId)
-    if (terminals.get(turnId) !== 'completed' || observed.length !== 1
+    if (terminals.get(turnId)?.status !== 'completed' || observed.length !== 1
       || !matchesCodexNativeProbeCommand(observed[0]!.item.command, command, environment.SHELL ?? '/bin/bash')
       || observed[0]!.item.status !== 'completed' || observed[0]!.item.exitCode !== 0) {
       throw new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',
         'The original native sandbox probe did not execute the required command.', 409, {
-          terminalStatus: terminals.get(turnId) ?? null,
+          terminalStatus: terminals.get(turnId)?.status ?? null,
+          terminalError: terminals.get(turnId)?.error ?? null,
           expectedCommandDigest: createHash('sha256').update(command).digest('hex'),
           commands: observed.map(({ item }) => ({ status: item.status, exitCode: item.exitCode,
             commandType: typeof item.command,

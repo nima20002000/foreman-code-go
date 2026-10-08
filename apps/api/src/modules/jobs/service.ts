@@ -30,13 +30,16 @@ import { requireAuthorization } from '../access/policy.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { releaseUnstartedJobComputer, type JobComputerSelection, type JobPreparationIdentity } from './computerSelection.js'
+import { jobCanWait, releaseUnstartedJobComputer, type JobComputerSelection,
+  type JobPreparationIdentity } from './computerSelection.js'
+import { jobPlacementRequest } from './placementRequest.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import type { JobArtifactPort, JobDispatchPort, JobPreparationPort } from './ports.js'
 import type { JobQueueConfiguration } from './ports.js'
 import { JobQueuePreparation } from './preparation.js'
 import { JobQueueTicketSchema, JobQueuedStartSchema, JobQueueCancelSchema, JobQueueLimitsSchema,
   JobAdmissionResultSchema, JobQueueListInputSchema, JobQueuePageSchema,
+  JobLaunchValidationInputSchema, JobLaunchValidationSchema,
   type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { JobResourceRequestSchema } from '@foreman-code/contracts/job-verification-policy'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
@@ -199,6 +202,36 @@ export class JobService {
       if (checked.valid && !isAutoJobSpecRecord(spec) && this.ports.placement) return this.ports.placement.validateFixed(sql, spec)
       return checked
     },source)
+  }
+  validateLaunch(principal: ManagementPrincipal, workspaceId: string, raw: unknown, source: 'http' | 'mcp' = 'http') {
+    const input = parse(JobLaunchValidationInputSchema, raw)
+    return this.read(principal, workspaceId, 'jobs:start', async (sql, live) => {
+      const configuration = this.queueConfiguration()
+      const definition = await this.repository.definition(sql, workspaceId, input.definitionId)
+      if (definition.revision !== input.expectedRevision) {
+        throw new DomainError('REVISION_CONFLICT', 'The job definition changed since it was read.', 409)
+      }
+      const resources = JobResourceRequestSchema.parse(await configuration.resources(sql, definition))
+      const spec = jobPlacementRequest(definition.spec, {
+        placementOverride: input.placementOverride,
+        limits: resources.limits,
+      })
+      const checked = await this.ports.preparation.validate(sql, live, workspaceId, spec)
+      const mayWait = checked.reasons.length > 0 && checked.reasons.every(jobCanWait)
+      if (!checked.valid && !mayWait) {
+        return JobLaunchValidationSchema.parse({ ...checked, canQueue: false })
+      }
+      try {
+        const readiness = await this.ports.placement!.validateRequest(sql, live, workspaceId,
+          spec, input.placementOverride)
+        return JobLaunchValidationSchema.parse({ ...readiness, valid: checked.valid && readiness.valid,
+          reasons: [...new Set([...checked.reasons, ...readiness.reasons])] })
+      } catch (error) {
+        if (!(error instanceof DomainError) || error.status !== 409) throw error
+        return JobLaunchValidationSchema.parse({ valid: false, canQueue: jobCanWait(error.code),
+          reasons: [error.code], sideEffects: false })
+      }
+    }, source)
   }
   private async transaction<T>(work:(sql:pg.PoolClient)=>Promise<T>):Promise<T> {
     const sql=await this.pool.connect()
