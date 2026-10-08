@@ -544,6 +544,7 @@ export function createClaudeNativeSessionManager(options: {
     if (resume) runtime.session = structuredClone(resume)
     all.add(runtime)
     const startup = startupSignal(signal)
+    let offerStarted = false
     try {
       if (!runtime.sdk) runtime.sdk = await options.runner.open({
         scope: options.scope, options: nativeOptions,
@@ -585,6 +586,7 @@ export function createClaudeNativeSessionManager(options: {
           }
           await initial.turn.input.onSettingsApplied?.()
         }
+        offerStarted = true
         await runtime.sdk.offer({ promptUuid: initial.turn.promptUuid, content: initial.turn.input.prompt }, signal)
       }
       const timer = setTimeout(() => runtime.rejectInit(new HarnessExecutionError('CLAUDE_INIT_TIMEOUT', 'Claude initialization did not provide an exact native session.')), options.initializationTimeoutMs ?? 10_000)
@@ -598,7 +600,11 @@ export function createClaudeNativeSessionManager(options: {
       }
     } catch (error) {
       startup.release()
-      const failure = runtime.failure ?? error
+      let failure = runtime.failure ?? error
+      if (initial && (!offerStarted || error instanceof ClaudeInputNotDeliveredError)) {
+        failure = Object.assign(failure instanceof Error ? failure : new Error('Claude input was not offered.'),
+          { certainty: 'definite' as const, deliveryState: 'not-delivered' as const })
+      }
       runtime.rejectInit(failure)
       await runtime.sdk?.close()
       await runtime.pumping
