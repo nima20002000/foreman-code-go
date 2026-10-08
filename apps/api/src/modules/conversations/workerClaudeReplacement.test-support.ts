@@ -138,12 +138,18 @@ export async function workerClaudeReplacementFixture(f = workerConversationFixtu
       if (denied) throw new Error('Main denied the caller')
       await callbacks.authorize(request, connection, signal)
     } })
-  const manager = new WorkerConversationManager({ binding: f.binding, configuration: f.configuration, bridge,
-    current: async () => {}, channel: { binding: f.connection, request: async payload => {
-      const request = WorkerConversationRpcRequestSchema.parse(payload)
-      if (request.method === 'conversation.initial-turn' || request.method === 'conversation.start-turn') source = request
-      return { payload: await host.handle(request, f.connection) }
-    } } })
+  const managers: WorkerConversationManager[] = []
+  const createManager = () => {
+    const observer = new WorkerConversationManager({ binding: f.binding, configuration: f.configuration, bridge,
+      current: async () => {}, channel: { binding: f.connection, request: async payload => {
+        const request = WorkerConversationRpcRequestSchema.parse(payload)
+        if (request.method === 'conversation.initial-turn' || request.method === 'conversation.start-turn') source = request
+        return { payload: await host.handle(request, f.connection) }
+      } } })
+    managers.push(observer)
+    return observer
+  }
+  const manager = createManager()
   const send = async (correlationId: string) => {
     const record = await journal.conversations.read(f.binding)
     const input = { prompt: correlationId, clientCorrelationId: correlationId, sessionMode: 'regular' as const, onMessageSubmitted: async () => {} }
@@ -152,14 +158,14 @@ export async function workerClaudeReplacementFixture(f = workerConversationFixtu
     for await (const event of stream) void event
     return (await journal.conversations.read(f.binding))!.session!
   }
-  return { ...f, journal, manager, native, owners, launches, offers, resumes, send, start,
+  return { ...f, journal, manager, createManager, native, owners, launches, offers, resumes, send, start,
     deny: () => { denied = true }, failStartup: () => { failStartup = true }, failMode: () => { failMode = true },
     failResume: () => { failResume = true }, holdResume: () => { holdResume = true },
     releaseResume: () => { holdResume = false; releaseResume?.() },
     hasResumeWaiter: () => Boolean(releaseResume), unconfirmedClosure: () => { closureConfirmed = false },
     async close() {
       releaseResume?.()
-      await manager.dispose()
+      for (const observer of managers) await observer.dispose()
       await host.shutdown()
       await journal.close()
       await rm(root, { recursive: true, force: true })

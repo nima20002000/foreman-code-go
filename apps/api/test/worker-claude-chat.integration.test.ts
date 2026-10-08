@@ -53,7 +53,7 @@ it('preserves remote Claude ownership and definite non-delivery through authenti
       expect(id).toBe(conversation.id)
       expect(selected).toEqual(configuration)
       expect(cwd).toBe(db.directory)
-      return worker!.manager
+      return worker!.createManager()
     }, db.directory)
     app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: { agentChat: chat, commands: new PostgresCommandCoordinator(db.pool) } as never } })
@@ -95,7 +95,7 @@ it('preserves remote Claude ownership and definite non-delivery through authenti
     expect(worker!.offers).toHaveLength(2)
     const retry = { ...first, requestId: 'remote-later', expectedConversationId: id }
     expect((await call(writer.token, 'agent_chat_send', { request: retry })).result?.isError).not.toBe(true)
-    await vi.waitFor(async () => expect((await repository.turn(id, retry.requestId))?.delivery).toBe('completed'))
+    await vi.waitFor(async () => expect(await repository.turn(id, retry.requestId)).toMatchObject({ delivery: 'completed' }))
     const read = await call(writer.token, 'agent_chat_read', { query })
     expect(read.result?.isError).not.toBe(true)
     expect(graphRpcValue(read.result)).toMatchObject({ conversation: { id, nativeSession: { nativeSessionId: nativeId } } })
