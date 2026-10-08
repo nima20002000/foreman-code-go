@@ -3,7 +3,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import type { JobDefinitionRecord } from '@foreman-code/contracts/job-verification'
-import { JobPendingAdmissionSchema, JobQueueTicketSchema, JobQueuePageSchema } from '@foreman-code/contracts/job-admission'
+import { JobPendingAdmissionSchema, JobQueueTicketSchema, JobQueuePageSchema,
+  JobLaunchValidationSchema } from '@foreman-code/contracts/job-admission'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -608,6 +609,21 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       expect.objectContaining({ name: 'job_queue_cancel', actions: ['jobs:cancel'] }),
     ]))
     const input = { workspaceId: f.workspaceId, ...command(definition) }
+    const launch = { workspaceId: f.workspaceId, definitionId: definition.id, expectedRevision: definition.revision }
+    expect(tools).toContain('job_launch_validate')
+    expect(readerTools).not.toContain('job_launch_validate')
+    const checked = await client.callTool({ name: 'job_launch_validate', arguments: launch })
+    expect(checked.isError).not.toBe(true)
+    expect(JobLaunchValidationSchema.parse(checked.structuredContent))
+      .toMatchObject({ valid: false, canQueue: true, reasons: ['offline'] })
+    expect((await readOnly.callTool({ name: 'job_launch_validate', arguments: launch })).isError).toBe(true)
+    expect(await ordered(f)).toHaveLength(0)
+    const httpCheck = await app.inject({ method: 'POST',
+      url: `/api/management/workspaces/${f.workspaceId}/jobs/launch/validate`,
+      headers: { authorization: `Bearer ${writer.token}` },
+      payload: { definitionId: definition.id, expectedRevision: definition.revision } })
+    expect(httpCheck.statusCode).toBe(200)
+    expect(httpCheck.json()).toEqual(checked.structuredContent)
     const denied = await readOnly.callTool({ name: 'job_start', arguments: input })
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
@@ -652,6 +668,12 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect(deniedHttp.json().error.code).toBe('ACCESS_DENIED')
     const overrideInput = { ...input, commandId: randomUUID(),
       placementOverride: { kind: 'explicit', target: f.computers[0]!.candidate.spec.target } }
+    const overrideCheck = await client.callTool({ name: 'job_launch_validate', arguments: {
+      ...launch, placementOverride: overrideInput.placementOverride,
+    } })
+    expect(overrideCheck.isError).not.toBe(true)
+    expect(JobLaunchValidationSchema.parse(overrideCheck.structuredContent))
+      .toMatchObject({ valid: false, canQueue: true })
     expect((await readOnly.callTool({ name: 'job_start', arguments: overrideInput })).isError).toBe(true)
     const override = await client.callTool({ name: 'job_start', arguments: overrideInput })
     expect(override.isError).not.toBe(true)

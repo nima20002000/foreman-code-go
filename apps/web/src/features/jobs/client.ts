@@ -4,6 +4,7 @@ import { JobLogPageSchema, JobArtifactSchema, JobValidationSchema } from '@forem
 import { JobDefinitionRecordSchema, JobDefinitionSaveRecordSchema, JobDefinitionSpecRecordSchema, JobExecutionRecordSchema, JobAuthoringChoicesRecordSchema, type JobDefinitionSaveRecord, type JobDefinitionSpecRecord } from '@foreman-code/contracts/job-verification'
 import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
   JobQueueTicketSchema, JobQueueListInputSchema, JobQueuePageSchema,
+  JobLaunchValidationInputSchema, JobLaunchValidationSchema,
   type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 
@@ -40,6 +41,10 @@ export const jobsClient = {
   },
   validate(workspaceId: string, spec: JobDefinitionSpecRecord) {
     return apiClient.request(`${root(workspaceId)}/validate`, JobValidationSchema, { method: 'POST', body: { spec: JobDefinitionSpecRecordSchema.parse(spec) } })
+  },
+  validateLaunch(workspaceId: string, input: z.infer<typeof JobLaunchValidationInputSchema>, options?: RequestOptions) {
+    return apiClient.request(`${root(workspaceId)}/launch/validate`, JobLaunchValidationSchema,
+      { ...options, method: 'POST', body: JobLaunchValidationInputSchema.parse(input) })
   },
   async start(workspaceId: string, input: z.infer<typeof JobQueuedStartSchema>) {
     const { admission } = await apiClient.request(`${root(workspaceId)}/executions`,

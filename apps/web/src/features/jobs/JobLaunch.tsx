@@ -18,9 +18,21 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
   const [placementChoice, setPlacementChoice] = useState('saved')
   const choices = useQuery({ queryKey: ['jobs', workspaceId, 'choices'],
     queryFn: ({ signal }) => jobsClient.choices(workspaceId, { signal }), retry: jobReadRetry })
-  const validation = useQuery({ queryKey: ['jobs', workspaceId, 'validation', definition.id, definition.revision],
-    queryFn: () => jobsClient.validate(workspaceId, definition.spec), retry: jobReadRetry, staleTime: 0 })
-  const readiness = validation.isSuccess && !validation.isFetching ? validation.data : undefined
+  const placementUnavailable = !['saved', 'auto'].includes(placementChoice)
+    && (choices.isError || choices.isFetching || !choices.data?.targets.some(choice => choice.id === placementChoice))
+  let placementOverride: JobPlacementIntent | undefined
+  if (placementChoice === 'auto') placementOverride = { kind: 'auto' }
+  else if (placementChoice !== 'saved') {
+    const target = choices.data?.targets.find(choice => choice.id === placementChoice)?.target
+    if (target) placementOverride = { kind: 'explicit', target }
+  }
+  const launchRequest = { definitionId: definition.id, expectedRevision: definition.revision,
+    ...(placementOverride ? { placementOverride } : {}) }
+  const validation = useQuery({ queryKey: ['jobs', workspaceId, 'validation', definition.id,
+    definition.revision, definition.versionId, placementOverride ?? null], enabled: !placementUnavailable,
+    queryFn: ({ signal }) => jobsClient.validateLaunch(workspaceId, launchRequest, { signal }),
+    retry: jobReadRetry, staleTime: 0 })
+  const readiness = !placementUnavailable && validation.isSuccess && !validation.isFetching ? validation.data : undefined
   const readyLabel = isAutoJobSpecRecord(definition.spec) ? 'Configuration valid' : 'Ready to start'
   const readyMessage = 'Configuration validation passed. The request is saved before preparation and waits for an eligible computer with capacity.'
   const [unresolved, setUnresolved] = useState(false)
@@ -68,32 +80,28 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
     if (result.isSuccess && executionId) onAccepted(result.data)
   }, [result.isSuccess, result.data, executionId, onAccepted])
   const uncertain = unresolved || jobWriteUncertain(start.error)
-  const placementUnavailable = !['saved', 'auto'].includes(placementChoice)
-    && (choices.isError || choices.isFetching || !choices.data?.targets.some(choice => choice.id === placementChoice))
   let startLabel = rerun ? 'Rerun as new execution' : 'Start job'
   if (start.variables) startLabel = 'Retry same start request'
   const input = (): Parameters<typeof jobsClient.start>[1] => {
     if (start.variables) return start.variables
-    let placementOverride: JobPlacementIntent | undefined
-    if (placementChoice === 'auto') placementOverride = { kind: 'auto' }
-    else if (placementChoice !== 'saved') {
-      const target = choices.data?.targets.find(choice => choice.id === placementChoice)?.target
-      if (!target) throw new Error('Refresh computer choices before starting this Job.')
-      placementOverride = { kind: 'explicit', target }
-    }
-    return { commandId: crypto.randomUUID(), definitionId: definition.id, expectedRevision: definition.revision,
-      ...(placementOverride ? { placementOverride } : {}) }
+    if (placementUnavailable) throw new Error('Refresh computer choices before starting this Job.')
+    return { commandId: crypto.randomUUID(), ...launchRequest }
   }
   const submit = () => start.mutateAsync(input())
+  const startDisabled = !start.variables && (!readiness?.canQueue || placementUnavailable)
+  let readinessTitle = readyLabel
+  if (readiness && !readiness.valid) {
+    readinessTitle = readiness.canQueue ? 'Readiness issues; request can queue' : 'Job cannot queue'
+  }
   const close = useUnsavedChanges({ label: 'job launch', scope: 'surface', dirty: false, busy: start.isPending,
-    uncertain, saveDisabled: !start.variables && (!readiness?.valid || placementUnavailable), save: submit, discard: onClose,
+    uncertain, saveDisabled: startDisabled, save: submit, discard: onClose,
     ...(start.error ? { error: jobError(start.error) } : {}) })
   return <Dialog open className="job-dialog" title={rerun ? 'Review rerun' : 'Review job launch'} size="lg"
     busy={start.isPending} dismissible={!uncertain} onOpenChange={open => { if (!open) void close(onClose) }}
     description={`Launch saved revision ${definition.revision} of ${definition.name}.`}
     footer={<>
       <Button disabled={start.isPending || uncertain} onClick={() => void close(onClose)}>{admission ? 'Close' : 'Back'}</Button>
-      {!admission && <Button variant="primary" loading={start.isPending} disabled={!start.variables && (!readiness?.valid || placementUnavailable)}
+      {!admission && <Button variant="primary" loading={start.isPending} disabled={startDisabled}
         onClick={() => start.mutate(input())}>
         {startLabel}
       </Button>}
@@ -112,10 +120,10 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
       {validation.isError && <Alert title="Readiness check failed" tone="danger">{jobError(validation.error)}
         <Button disabled={validation.isFetching} onClick={() => { void validation.refetch() }}>Retry readiness check</Button>
       </Alert>}
-      {readiness && <Alert title={readiness.valid ? readyLabel : 'Readiness issues; request can queue'}
+      {readiness && <Alert title={readinessTitle}
         tone={readiness.valid ? 'success' : 'warning'}>
         {readiness.valid ? readyMessage : readiness.reasons.join(' · ')}
-        {!readiness.valid && <p>The queue rechecks these requirements before launch. Requests may be blocked or rejected.</p>}
+        {!readiness.valid && readiness.canQueue && <p>The queue rechecks these requirements before launch. Requests may be blocked or rejected.</p>}
       </Alert>}
     </>}
     {start.error && <Alert title={uncertain ? 'Start not confirmed' : 'Start failed'} tone="warning">

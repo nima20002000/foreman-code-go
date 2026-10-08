@@ -1,7 +1,7 @@
-import { AutoVerificationJobSpecSchema } from '@foreman-code/contracts/job-verification'
+import { jobPlacementRequest } from './placementRequest.js'
 import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord, type JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
 import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
-import { AutoJobDefinitionSpecSchema, JobComputerSelectionSchema } from '@foreman-code/contracts/jobs'
+import { JobComputerSelectionSchema } from '@foreman-code/contracts/jobs'
 import {
   isAutoJobSpecRecord,
   ResolvedJobDefinitionSpecRecordSchema,
@@ -62,6 +62,10 @@ export function jobEligibilityReason(code: string): JobComputerEligibility['reas
   if (code === 'JOB_RUNTIME_CONTEXT_CHANGED') return 'runtime_unqualified'
   if (code === 'JOB_DEPENDENCIES_CHANGED') return 'dependencies_changed'
   return 'eligibility_check_failed'
+}
+export function jobCanWait(code: string): boolean {
+  return !['authorization_revoked', 'workspace_denied', 'computer_denied', 'root_changed', 'source_unavailable',
+    'incompatible', 'request_exceeds_maximum', 'eligibility_check_failed'].includes(jobEligibilityReason(code))
 }
 export function compatibleJobComputer(candidate: JobComputerCandidate, request: JobDefinitionSpecRecord): boolean {
   const common = (spec: JobDefinitionSpecRecord) => ({ source: spec.source, argv: spec.argv,
@@ -193,32 +197,11 @@ export class JobComputerSelection {
       return { spec, compatibleTargetCount: 1, reasons: [], diagnosticCodes: [], waitingHosts: [],
         selectedHost: buildComputerKey(buildComputerTarget(spec.target)), exceedsMaximum: false }
     }
-    let request = definition.spec
-    if (options.placementOverride) {
-      const schema = 'verification' in request ? AutoVerificationJobSpecSchema : AutoJobDefinitionSpecSchema
-      request = schema.parse({ ...request, target: { kind: 'auto' },
-        policy: isAutoJobSpecRecord(request) ? request.policy : jobPolicyRequirementsRecord(request.policy), limits: options.limits })
-    }
-    const discovery = await this.inventory.candidates(sql, principal, definition.workspaceId, request,
-      options.placementOverride ?? undefined)
-    const enrolled: EnrolledCandidate[] = []
-    const reasons: string[] = [...discovery.diagnosticCodes]
-    for (const candidate of discovery.candidates) {
-      if (!compatibleJobComputer(candidate, request)
-        || (options.placementOverride?.kind === 'explicit'
-          && canonical(candidate.spec.target) !== canonical(options.placementOverride.target))) {
-        reasons.push('incompatible')
-        continue
-      }
-      const preference = await this.settings.preference(sql, buildComputerTarget(candidate.spec.target))
-      enrolled.push({ ...candidate, preference })
-      if (!preference.buildEnabled) reasons.push('disabled')
-      reasons.push(...candidate.reasons)
-    }
+    const request = jobPlacementRequest(definition.spec, options)
+    const { enrolled, reasons } = await this.candidates(sql, principal, definition.workspaceId,
+      request, options.placementOverride)
     const compatibleTargetCount = new Set(enrolled.map(candidate => buildComputerKey(candidate.preference.target))).size
-    const maximumCandidates = enrolled.filter(candidate => this.fitsEmptyComputer(candidate))
-    const exceedsMaximum = enrolled.length > 0 && maximumCandidates.length === 0
-      && enrolled.every(candidate => candidate.profile.schemaVersion !== 2 || candidate.profile.measurement !== null)
+    const exceedsMaximum = this.exceedsMaximum(enrolled)
     const waitingHosts: string[] = []
     for (const candidate of orderForPlacement(enrolled, options.placementOverride)) {
       if (!this.fitsEmptyComputer(candidate)) {
@@ -267,6 +250,57 @@ export class JobComputerSelection {
     return { spec: null, compatibleTargetCount, diagnosticCodes, waitingHosts: [...new Set(waitingHosts)],
       selectedHost: null, exceedsMaximum, reasons: [...new Set(normalized)] }
   }
+  private async candidates(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
+    request: JobDefinitionSpecRecord, placementOverride?: JobPlacementIntent | null) {
+    const discovery = await this.inventory.candidates(sql, principal, workspaceId, request,
+      placementOverride ?? undefined)
+    const enrolled: EnrolledCandidate[] = []
+    const reasons: string[] = [...discovery.diagnosticCodes]
+    for (const candidate of discovery.candidates) {
+      if (!compatibleJobComputer(candidate, request)
+        || (placementOverride?.kind === 'explicit'
+          && canonical(candidate.spec.target) !== canonical(placementOverride.target))) {
+        reasons.push('incompatible')
+        continue
+      }
+      const preference = await this.settings.preference(sql, buildComputerTarget(candidate.spec.target))
+      enrolled.push({ ...candidate, preference })
+      if (!preference.buildEnabled) reasons.push('disabled')
+      reasons.push(...candidate.reasons)
+    }
+    return { enrolled, reasons }
+  }
+
+  async validateRequest(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
+    request: JobDefinitionSpecRecord, placementOverride?: JobPlacementIntent) {
+    const { enrolled, reasons } = await this.candidates(sql, principal, workspaceId, request, placementOverride)
+    for (const candidate of orderForPlacement(enrolled, placementOverride)) {
+      try {
+        this.workerExecution.requireEnabled(candidate.spec.target.hostRef)
+      } catch (error) {
+        if (!(error instanceof DomainError) || error.code !== 'WORKER_EXECUTION_DISABLED') throw error
+        reasons.push('remote_execution_disabled')
+        continue
+      }
+      if (!this.fitsEmptyComputer(candidate)) {
+        reasons.push('request_exceeds_maximum')
+        continue
+      }
+      const capacity = await this.fits(sql, candidate)
+      if (capacity.fits) return { valid: true, canQueue: true, reasons: [], sideEffects: false as const }
+      reasons.push(capacity.reason)
+    }
+    const configuredCandidate = enrolled.some(candidate => candidate.reasons.every(jobCanWait))
+    const canQueue = (configuredCandidate || reasons.every(jobCanWait)) && !this.exceedsMaximum(enrolled)
+    return { valid: false, canQueue,
+      reasons: [...new Set(reasons.length ? reasons : ['setup_required'])], sideEffects: false as const }
+  }
+
+  private exceedsMaximum(candidates: EnrolledCandidate[]): boolean {
+    return candidates.length > 0 && !candidates.some(candidate => this.fitsEmptyComputer(candidate))
+      && candidates.every(candidate => candidate.profile.schemaVersion !== 2 || candidate.profile.measurement !== null)
+  }
+
   private fitsEmptyComputer(candidate: EnrolledCandidate): boolean {
     const capacity = jobComputerCapacity(candidate.profile, candidate.preference.buildAllowancePercent)
     const sourceBytes = candidate.profile.schemaVersion === 2

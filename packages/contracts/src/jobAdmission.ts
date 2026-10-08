@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { DeviceDigestSchema, DeviceSafeIntegerSchema } from './deviceResources.js'
-import { JobTargetSchema, JobComputerSelectionSchema, JobRuntimeLimitsSchema } from './jobs.js'
+import { JobTargetSchema, JobComputerSelectionSchema, JobRuntimeLimitsSchema, JobValidationSchema } from './jobs.js'
 import { JobDefinitionRecordSchema, JobDefinitionSpecRecordSchema, JobExecutionRecordSchema } from './jobVerification.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
 import { JobWorkflowAdmissionReferenceSchema } from './jobWorkflow.js'
@@ -20,6 +20,10 @@ export const JobQueuedStartSchema = z.object({
   expectedRevision: PositiveInteger,
   placementOverride: JobPlacementIntentSchema.optional(),
 }).strict()
+export const JobLaunchValidationInputSchema = JobQueuedStartSchema.omit({ commandId: true })
+/** A request can wait in the queue even when no computer can run it now. */
+export const JobLaunchValidationSchema = JobValidationSchema.extend({ canQueue: z.boolean() }).strict()
+export type JobLaunchValidation = z.infer<typeof JobLaunchValidationSchema>
 
 /** Priority belongs to computers. Tickets are FIFO among eligible requests, with bounded backfill. */
 export const JOB_QUEUE_ORDER = 'fifo-among-eligible' as const
