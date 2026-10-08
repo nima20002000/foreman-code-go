@@ -31,6 +31,7 @@ import type { SourceOperationOwner } from '@foreman-code/contracts/source-operat
 import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { QueuedSourcePreparationCleanup } from './queuedPreparationCleanup.js'
+import { releaseUnusedSourceSnapshots } from './snapshotRetention.js'
 
 export interface SourceExecutionHostPort {
   /** W08/CI allocated this actual attempt; this SQL-only port checks its accepted
@@ -90,6 +91,19 @@ export class PostgresSourceService implements SourceAdmissionPort {
   private scope(deviceId: string | null, installationId: string | null, filesystem: RootBinding['filesystem']): string {
     return `${this.mainId}:${deviceId ?? 'original-main'}:${installationId ?? this.mainId}:${filesystem.device}:${filesystem.mountId}`
   }
+  async releaseUnusedSnapshots(report?: (error: unknown) => void): Promise<void> {
+    const filesystem = await this.store.storageIdentity()
+    await releaseUnusedSourceSnapshots(this.pool, this.store, this.scope(null, null, filesystem), report)
+  }
+  private async captureTransaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
+    try {
+      return await this.transaction(work)
+    } catch (error) {
+      if (!(error instanceof DomainError) || error.code !== 'SOURCE_CAPACITY') throw error
+      await this.releaseUnusedSnapshots()
+      return this.transaction(work)
+    }
+  }
   async resolveApprovedSource(sql: Sql, principal: ManagementPrincipal, workspaceId: string, pin: ApprovedSourcePin): Promise<ApprovedSource> {
     await authorizeSource(sql, principal, 'sources:read', workspaceId); await this.host(sql)
     const row = (await sql.query<{ record: unknown; availability: string }>(`select record,availability from source_snapshots
@@ -133,7 +147,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       perform: async () => {
         // Existing workspace/host ownership is checked before location.snapshot
         // probes its persisted path; input has no filesystem selector.
-        let origin = await this.transaction(async sql => {
+        let origin = await this.captureTransaction(async sql => {
           const live = await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
           requireAuthorization(live.principal, 'workspace_locations:read', input)
           await this.host(sql); await this.workspace(sql, input.workspaceId)
