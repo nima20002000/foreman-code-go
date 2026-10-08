@@ -28,7 +28,7 @@ export function McpConnectionCard({ workspaceId, harness, location }: {
 }) {
   if (harness === 'claude') return <article className="mcp-connection-card" aria-label="Claude">
     <div className="mcp-provider-heading"><h3>Claude</h3></div>
-    <Alert title="Claude workspace connection checks are not available here.">This native workspace check supports Codex and OpenCode. Claude uses MCP servers pinned in its accepted configuration.</Alert>
+    <Alert title="Claude workspace connection checks are not available here.">This native workspace check supports Codex. Claude uses MCP servers pinned in its accepted configuration.</Alert>
     <Link className="n-button n-button--secondary n-button--sm" to="/settings/harnesses" search={{ harness: 'claude', section: 'connections' }}>Configure Claude MCP</Link>
   </article>
   return <SupportedMcpConnectionCard workspaceId={workspaceId} harness={harness} location={location} />
@@ -40,7 +40,7 @@ function SupportedMcpConnectionCard({ workspaceId, harness, location }: {
   const query = useMcpDetectionQuery(workspaceId, harness)
   const accessError = useProtectedAccessError(query)
   const headingId = useId()
-  const name = harness === 'codex' ? 'Codex' : 'OpenCode'
+  const name = 'Codex'
   const mismatched = Boolean(query.data && (query.data.runnerId !== location.runnerId
     || query.data.workingDirectory !== location.rootPath || query.data.detection.harness !== harness))
   const { refetch } = query

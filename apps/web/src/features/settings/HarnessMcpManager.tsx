@@ -10,7 +10,7 @@ import {
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 
-type Harness = 'codex' | 'opencode'
+type Harness = 'codex'
 type Presets = HarnessMcpList['presets']
 /** Retired per-role app entries; installing the graphql preset removes them. */
 const LEGACY_APP_SERVERS = ['graphql-app', 'graphql-operator']
@@ -82,7 +82,6 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
   const plans = useNativeMcpPlans(harness)
   const request = useRequestNativeMcpChange()
   const decision = useDecideNativeMcpChange()
-  const otherPlans = useNativeMcpPlans(harness === 'codex' ? 'opencode' : 'codex')
   const managed = useApplyManagedMcpChange(harness, plans.data?.items)
   const reconciliation = useReconcileNativeMcpChange()
   const reconciliationAttempts = useRef(new Map<string, CommandAttempt<Omit<HarnessMcpReconcileInput, 'commandId'>>>())
@@ -95,7 +94,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
   const [feedback, setFeedback] = useState<string>()
   // A failed HTTP response may hide a committed plan. Reuse the same receipt ID on retry.
   const command = useRef<{ signature: string; id: string } | undefined>(undefined)
-  const allPlans = [...(plans.data?.items ?? []), ...(otherPlans.data?.items ?? [])]
+  const allPlans = [...(plans.data?.items ?? [])]
   const managedPlan = managed.operation?.plan
   const selected = decision.data?.id === active ? decision.data : allPlans.find((plan) => plan.id === active)
     ?? (created?.id === active ? created : managedPlan?.id === active ? managedPlan : undefined)
@@ -215,7 +214,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
       })}
     </section> : null}
     {plans.isError ? <p className="harness-muted" role="status">Change requests: {plans.error.message}</p> : null}
-    <Dialog open={adding} onOpenChange={(open) => { if (open) setAdding(true); else void (async () => { if (!guard || await guard.surfaces()) setAdding(false) })() }} title={`Add ${harness === 'codex' ? 'Codex' : 'OpenCode'} MCP server`} size="md" busy={request.isPending}>
+    <Dialog open={adding} onOpenChange={(open) => { if (open) setAdding(true); else void (async () => { if (!guard || await guard.surfaces()) setAdding(false) })() }} title={`Add ${'Codex'} MCP server`} size="md" busy={request.isPending}>
       {adding ? <ConnectionForm busy={request.isPending} onReview={requestChange} /> : null}
       {request.isError ? <Alert tone="danger" title={request.error.message} /> : null}
     </Dialog>
@@ -227,7 +226,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
           <Button variant="primary" disabled={!inspection.data || inspection.isError || inspection.isFetching || reconciliation.isPending} onClick={reconcile}>
             {reconciliation.isPending ? 'Reconciling…' : 'Reconcile without rewriting'}</Button>
         </> : <Button onClick={() => setActive(undefined)}>Close</Button>}>
-      {selected ? <div className="harness-form-stack"><p>{selected.harness === 'codex' ? 'Codex' : 'OpenCode'} · native user configuration</p><ChangeDetails change={selected.change} />
+      {selected ? <div className="harness-form-stack"><p>Codex · native user configuration</p><ChangeDetails change={selected.change} />
         <p className="harness-access-warning">A server may run programs or send data to its endpoint. Only approve a connection you trust.</p>
         <span className="harness-muted">Requested by {selected.requestedBy}</span>
         {selected.status !== 'pending' || expired ? <Alert tone={selected.status === 'applied' ? 'success' : 'warning'} title={expired && selected.status === 'pending' ? 'Request expired. Reject it before preparing a new request.' : `Change ${selected.status}`}>
@@ -263,7 +262,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
         <StatusBadge tone={!details.enabled ? 'danger' : details.origin === 'inherited' || needsAttention(details.name, presets) ? 'warning' : 'success'}
           label={!details.enabled ? 'Disabled' : details.origin === 'inherited' ? 'Inherited' : needsAttention(details.name, presets) ? 'Needs attention' : 'Enabled'} />
         <dl className="harness-change-details">
-          <div><dt>Harness</dt><dd>{harness === 'codex' ? 'Codex' : 'OpenCode'}</dd></div>
+          <div><dt>Harness</dt><dd>{'Codex'}</dd></div>
           <div><dt>Native name</dt><dd><code>{details.name}</code></dd></div>
           <div><dt>Connection</dt><dd>{details.transport === 'remote' ? 'Remote MCP' : details.transport === 'stdio' ? 'Local program' : 'Native connection'}</dd></div>
           <div><dt>{details.transport === 'remote' ? 'Host' : 'Program'}</dt><dd>{details.label}</dd></div>
@@ -276,7 +275,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
           This retired connection is replaced by <code>foreman-code</code>, which serves Operator chat and workflow agents. Use Upgrade to Foreman Code MCP to remove it.
         </p> : !detailsRemovable ? <p className="harness-muted">{details.protected ? 'This app-managed connection is protected here. Change it in its owning app settings.' : 'This connection comes from another configuration source. Enable, disable, or remove it there.'}</p> : null}
         {details.name === 'linear' && detailsPreset === 'linear' ? <p className="harness-muted">
-          Sign in with <code>{harness === 'codex' ? 'codex mcp login linear' : 'opencode mcp auth linear'}</code>. Removing this connection keeps the harness’s saved sign-in.
+          Sign in with <code>{'codex mcp login linear'}</code>. Removing this connection keeps the harness’s saved sign-in.
         </p> : null}
       </div> : <p role="status">This server is no longer in the native list. Refresh to see current connections.</p>}
     </Dialog>

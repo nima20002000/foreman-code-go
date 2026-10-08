@@ -14,6 +14,7 @@ import './approvals.css'
 
 function QuickApprovalActions({ interaction, onChanged }: { interaction: DurableInteraction; onChanged(): void }) {
   const response = useUserInteractionResponse()
+  if (interaction.harness === 'opencode') return <span>Retired harness (OpenCode): read-only</span>
   const approve = interaction.responseOptions.find((option) => option.semantic === 'approve_once')
     ?? interaction.responseOptions.find((option) => option.semantic === 'allow_turn')
   const reject = interaction.responseOptions.find((option) => option.semantic === 'reject')
@@ -31,7 +32,7 @@ function QuickApprovalActions({ interaction, onChanged }: { interaction: Durable
 function AgentProfileDisclosure({ agent }: { agent?: Agent }) {
   const id = useId()
   const name = agent?.name ?? 'Unknown agent'
-  const harness = agent?.harness === 'opencode' ? 'OpenCode' : agent?.harness === 'codex' ? 'Codex' : undefined
+  const harness = agent?.harness === 'opencode' ? 'Retired harness (OpenCode): read-only' : agent?.harness === 'codex' ? 'Codex' : agent?.harness === 'claude' ? 'Claude' : undefined
   return <span className="approval-agent-disclosure">
     <button type="button" className="approval-agent-button" aria-label={`Agent profile: ${name}`} aria-describedby={id}>
       <Avatar name={name} size="sm" />

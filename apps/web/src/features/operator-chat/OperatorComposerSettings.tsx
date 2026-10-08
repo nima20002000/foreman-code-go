@@ -23,9 +23,9 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
   const models = catalog.data?.models ?? []
   const model = models.find((item) => item.id === value.model)
   const modelName = model?.name || value.model.split('/').at(-1) || value.model
-  const efforts: readonly string[] = value.harness === 'codex' ? supportedEfforts(model) : value.harness === 'opencode' ? model?.variants ?? []
+  const efforts: readonly string[] = value.harness === 'codex' ? supportedEfforts(model)
     : (model?.reasoningEfforts ?? []).filter((effort) => ClaudeEffortSchema.safeParse(effort).success)
-  const effort = value.harness === 'codex' ? value.reasoningEffort : value.harness === 'opencode' ? value.variant : value.effort ?? ''
+  const effort = value.harness === 'codex' ? value.reasoningEffort : value.harness === 'claude' ? value.effort ?? '' : ''
   const fastSupported = model?.serviceTiers.includes('priority') === true
   useEffect(() => {
     if (!open) return
@@ -49,8 +49,7 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
       const allowed = supportedEfforts(next)
       update({ ...value, model: next.id, reasoningEffort: allowed.includes(value.reasoningEffort) ? value.reasoningEffort : allowed.includes('medium') ? 'medium' : allowed[0] ?? value.reasoningEffort,
         serviceTier: next.serviceTiers.includes(value.serviceTier) ? value.serviceTier : 'standard' })
-    } else if (value.harness === 'opencode') update({ ...value, model: next.id, variant: next.variants.includes(value.variant) ? value.variant : '' })
-    else {
+    } else if (value.harness === 'claude') {
       const effort = ClaudeEffortSchema.safeParse(next.reasoningEfforts.includes(value.effort ?? '') ? value.effort
         : next.reasoningEfforts.includes('medium') ? 'medium' : next.reasoningEfforts.find((effort) => ClaudeEffortSchema.safeParse(effort).success))
       update({ harness: 'claude', model: next.id, showThinking: value.showThinking, ...(effort.success ? { effort: effort.data } : {}) })
@@ -99,8 +98,7 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
             if (value.harness === 'codex') {
               const effort = AgentEffortSchema.safeParse(next)
               if (effort.success) update({ ...value, reasoningEffort: effort.data })
-            } else if (value.harness === 'opencode') update({ ...value, variant: next })
-            else { const effort = ClaudeEffortSchema.safeParse(next); if (effort.success) update({ ...value, effort: effort.data }) }
+            } else if (value.harness === 'claude') { const effort = ClaudeEffortSchema.safeParse(next); if (effort.success) update({ ...value, effort: effort.data }) }
           }} /> : null}
         {access}
         <div className="operator-agent-toggles">

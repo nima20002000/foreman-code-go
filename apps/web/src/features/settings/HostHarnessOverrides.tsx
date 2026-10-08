@@ -36,6 +36,10 @@ function OverrideEditor({ value, seed, onCreated, onCancelled }: { value?: HostH
     onCreated?.()
     return { value: editable(result.value), revision: result.value.revision }
   }, input => { prepareHarnessEditor(input.editor); return input })
+  if (draft.editor.configuration.harness === 'opencode') return <section className="computer-inventory-item" aria-label="Retired host settings">
+    <p role="status">Retired harness (OpenCode): read-only</p><p>Model: {draft.editor.configuration.model}</p>
+    <p>Saved immutable revision: {value?.instanceRevision}</p>
+  </section>
   return <section className="computer-inventory-item" aria-label={`${draft.editor.configuration.harness} host settings`}>
     <h3>{draft.editor.configuration.harness} · {value ? 'host override' : 'new host override'}</h3>
     <dl className="computer-facts computer-facts--status computer-facts--inline">
@@ -73,7 +77,7 @@ export function HostHarnessOverrides({ target }: { target: HostHarnessOverrideLi
   const put = useCreation(state => state.put)
   if (overrides.isPending) return <LoadingState label="Loading host instance settings…" />
   if (overrides.isError) return <><Alert title="Host instance settings could not be read." tone="warning" /><Button onClick={() => void overrides.refetch()}>Retry host settings</Button></>
-  const choices = inventory.isSuccess ? inventory.data.installations.filter(installation => installation.installed && installation.installationFingerprint !== null).flatMap(installation => inventory.data.instances.filter(preset => preset.availability === 'available' && preset.configuration && preset.driverId === installation.driverId)
+  const choices = inventory.isSuccess ? inventory.data.installations.filter(installation => installation.installed && installation.installationFingerprint !== null).flatMap(installation => inventory.data.instances.filter(preset => preset.availability === 'available' && preset.configuration && preset.configuration.harness !== 'opencode' && preset.driverId === installation.driverId)
     .map(preset => ({ installation, preset, id: JSON.stringify([installation.harnessInstallationId, installation.installationFingerprint, preset.instanceId, preset.instanceRevision]) }))) : []
   const selected = choices.find(choice => choice.id === selection)
   const presetIds = choices.map(choice => choice.preset.instanceId)

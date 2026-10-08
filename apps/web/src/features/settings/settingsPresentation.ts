@@ -23,18 +23,18 @@ export function sectionForHarnessIssue(path: readonly (string | number)[]): Harn
   if (/sandbox|approval|autoApprove|permission|Writable|workspaceWrite|shellEnvironment/.test(field)) return 'permissions'
   return 'model'
 }
+export const retiredHarnessLabel = 'Retired harness (OpenCode): read-only'
+
 export function harnessSummary(value: HarnessConfiguration): { label: string; value: string }[] {
+  if (value.harness === 'opencode') return [{ label: 'Harness', value: retiredHarnessLabel }, { label: 'Model', value: value.model }]
   if (value.harness === 'claude') return [{ label: 'Harness', value: 'Claude' }, { label: 'Model', value: value.model },
     { label: 'Profile', value: value.configDirectory }, { label: 'Authentication', value: value.authMode },
     { label: 'Access', value: value.sandbox === 'read-only' ? 'Read only' : 'Workspace write' }]
-  return value.harness === 'codex'
-    ? [{ label: 'Harness', value: 'Codex' }, { label: 'Model', value: value.model },
+  return [{ label: 'Harness', value: 'Codex' }, { label: 'Model', value: value.model },
       { label: 'Effort', value: value.reasoningEffort },
       { label: 'Access', value: value.sandbox === 'read-only' ? 'Read only' : value.sandbox === 'workspace-write' ? 'Workspace write' : 'Full access' },
       { label: 'Speed', value: value.serviceTier === 'priority' ? 'Fast' : 'Standard' }]
-    : [{ label: 'Harness', value: 'OpenCode' }, { label: 'Model', value: value.model },
-      { label: 'Variant', value: value.variant || 'Native default' }, { label: 'Native Agent', value: value.nativeAgent },
-      { label: 'Thinking', value: value.thinking ? 'Shown' : 'Hidden' }]
+
 }
 
-export const harnessNames: Record<HarnessConfiguration['harness'], string> = { codex: 'Codex', opencode: 'OpenCode', claude: 'Claude' }
+export const harnessNames: Record<HarnessConfiguration['harness'], string> = { codex: 'Codex', opencode: retiredHarnessLabel, claude: 'Claude' }

@@ -6,7 +6,6 @@ import { useCheckHarnessQualification, useHarnessQualificationsQuery } from '../
 import { Button, useToast } from '../../shared/ui/nocturne'
 import './harnessCompatibility.css'
 
-const nameOf = (harness: CompatibilityHarness) => harness === 'codex' ? 'Codex' : 'OpenCode'
 const statusLabels: Record<HarnessCompatibility['status'], string> = {
   'not-checked': 'Not checked', checking: 'Checking…',
   'known-compatible': 'Version recognized',
@@ -18,7 +17,7 @@ const sourceLabels: Record<HarnessCompatibility['source'], string> = {
   'local-probe': 'Local schema check', cache: 'Reused local check',
 }
 function resultToast(report: HarnessCompatibility) {
-  const name = nameOf(report.harness)
+  const name = 'Codex'
   if (report.status === 'known-compatible') return {
     title: `${name} version is known compatible`, tone: 'success' as const,
     description: 'The version matches the recorded release. Normal execution qualification still applies.',
@@ -45,7 +44,7 @@ function HarnessQualificationRow({ harness }: { harness: CompatibilityHarness })
   const checking = row?.status === 'qualifying' || check.isPending
   const status = row?.status === 'baseline' || row?.status === 'qualified' ? 'Trusted'
     : checking ? 'Checking…' : 'Failed'
-  return <div className="harness-qualification" aria-label={`${nameOf(harness)} qualification`}>
+  return <div className="harness-qualification" aria-label={`${'Codex'} qualification`}>
     <span>Installed {row?.version ?? 'unknown'}</span>
     <span role="status">{query.isPending ? 'Loading…' : status}</span>
     {!query.isPending && status === 'Failed' ? <span>{row?.failureReason ?? (query.isError ? loadError(query.error) : 'Not qualified')}</span> : null}
@@ -56,7 +55,7 @@ function HarnessQualificationRow({ harness }: { harness: CompatibilityHarness })
 export function HarnessCompatibilityPanel({ harness }: { harness: CompatibilityHarness }) {
   const query = useHarnessCompatibilityQuery()
   const { notify } = useToast()
-  const name = nameOf(harness)
+  const name = 'Codex'
   const row = query.data?.harnesses.find((entry) => entry.harness === harness)
   // Notification ownership is local interaction state; reports remain solely in Query.
   const requested = useRef(new Set<string>())
@@ -74,11 +73,11 @@ export function HarnessCompatibilityPanel({ harness }: { harness: CompatibilityH
   const check = async (target: CompatibilityHarness) => {
     if (submitting.current.has(target)) return
     submitting.current.add(target)
-    notify({ title: `Checking ${nameOf(target)} compatibility`, tone: 'info', description: 'Checking the local CLI only. No model turn or settings change will be made.' })
+    notify({ title: `Checking ${'Codex'} compatibility`, tone: 'info', description: 'Checking the local CLI only. No model turn or settings change will be made.' })
     try {
       await retry.mutateAsync(target)
     } catch (error) {
-      notify({ title: `Could not confirm the ${nameOf(target)} check`, tone: 'danger', description:
+      notify({ title: `Could not confirm the ${'Codex'} check`, tone: 'danger', description:
         ApiError.is(error) && [401, 403].includes(error.status) ? 'Access is unavailable. Check the local API connection, then try again.'
           : `${error instanceof Error ? error.message : 'The API is unavailable.'} A check may still be running. Refresh its status before retrying.`,
       })
@@ -113,8 +112,8 @@ export function HarnessCompatibilityPanel({ harness }: { harness: CompatibilityH
         <p>This checks the local version and exported schema only. Authentication, settings, and execution are checked separately.</p>
         {!query.data?.canRetry ? <p>Retry requires harness update access.</p> : null}
         {row.status === 'probe-passed' ? <p>Compatible versions can run after authentication and host policy checks pass.</p> : null}
-        <p>To repair, check <code>{harness === 'codex' ? 'CODEX_BINARY' : 'OPENCODE_BINARY'}</code> on the API host and update or repair the installation to satisfy the reported contract.</p>
-        {harness === 'codex' ? <p>The default uses the computer’s installed native Codex when available. The bundled fallback can be restored with <code>corepack pnpm install --frozen-lockfile</code>. Repair an explicit binary override separately.</p> : <p>OpenCode is installed separately from the app.</p>}
+        <p>To repair, check <code>CODEX_BINARY</code> on the API host and update or repair the installation to satisfy the reported contract.</p>
+        <p>The default uses the computer’s installed native Codex when available. The bundled fallback can be restored with <code>corepack pnpm install --frozen-lockfile</code>. Repair an explicit binary override separately.</p>
         {row.reason?.code.startsWith('CHECKER_') ? <p>If the app checker failed, rebuild and restart the API before changing the CLI.</p> : null}
         {row.reason?.code === 'CLI_CLEANUP_FAILED' ? <p>Stop the unfinished diagnostic process and restart the API before retrying.</p> : null}
         <a href={row.qualifiedRelease.releaseUrl} target="_blank" rel="noopener noreferrer">Official {name} {row.qualifiedRelease.version} release</a>

@@ -14,7 +14,7 @@ import { Alert, Button, Icon, IconButton, Select, Textarea, TextField } from '..
 import { configuredHarness, initialModel } from '../agents/agentSettings'
 import { useHarnessDefaultsQuery, useManagedHarnessCatalogQuery } from '../../shared/api/query'
 import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
-import { harnessNames } from '../settings/settingsPresentation'
+import { harnessNames, retiredHarnessLabel } from '../settings/settingsPresentation'
 import { HarnessConfigurationFields } from '../settings/HarnessConfigurationFields'
 import { HarnessBasicFields } from '../settings/HarnessBasicFields'
 import { createHarnessEditor, prepareHarnessEditor, switchHarnessEditor } from '../settings/harnessEditor'
@@ -23,7 +23,7 @@ import { GraphqlToolsFields } from './GraphqlToolsFields'
 import { AgentSkillsField } from '../skills/AgentSkillsField'
 import './agentSettingsPanel.css'
 
-export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, creationDefaults, onClose, onRemove, onSave, retainedForm, onFormChange, onDiscardForm, canResume,
+function EditableAgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, creationDefaults, onClose, onRemove, onSave, retainedForm, onFormChange, onDiscardForm, canResume,
   nodePlacement, placementOptions, placementHidden, placementOptionsState, placementStage, executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler, designatedOrchestrator = false, embedded = false,
 }: {
   /** Inside an agent popover: the popover owns the title and close button. */
@@ -211,4 +211,15 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
       {embedded ? <Button size="sm" variant="primary" className="agent-settings-save" aria-label="Save agent settings" disabled={!isDirty} onClick={save}>Apply</Button> : null}
     </footer>
   </div>
+}
+
+export function AgentSettingsForm(props: Parameters<typeof EditableAgentSettingsForm>[0]) {
+  if (props.agent.harness === 'opencode' || props.agent.harnessConfiguration?.harness === 'opencode') {
+    return <div className="harness-form-stack"><p role="status">{retiredHarnessLabel}</p>
+      <p>{props.agent.name}</p><p>Model: {props.agent.harnessConfiguration?.model ?? props.agent.model ?? 'Not set'}</p>
+      {props.agent.prompt?.system ? <p>{props.agent.prompt.system}</p> : null}
+      {props.initialPrompt ? <p>{props.initialPrompt}</p> : null}
+    </div>
+  }
+  return <EditableAgentSettingsForm {...props} />
 }

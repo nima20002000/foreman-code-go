@@ -319,7 +319,7 @@ export function useUpdateWorkflowDefaultsMutation() {
   })
 }
 
-export function useMcpDetectionQuery(workspaceId: string, harness: 'codex' | 'opencode', enabled = true) {
+export function useMcpDetectionQuery(workspaceId: string, harness: 'codex', enabled = true) {
   return useQuery({
     enabled,
     queryKey: queryKeys.mcpDetection(workspaceId, harness),
@@ -385,10 +385,9 @@ export function useHarnessDefaultsQuery(options?: Omit<QueryOptions<Awaited<Retu
     queryFn: ({ signal }) => getManagedHarnessCatalog({ signal }),
     select: (catalog): GetHarnessDefaultsResponse => {
       const codex = catalog.find((entry) => entry.harness === 'codex')?.defaults
-      const opencode = catalog.find((entry) => entry.harness === 'opencode')?.defaults
       const claude = catalog.find((entry) => entry.harness === 'claude')?.defaults
-      if (codex?.harness !== 'codex' || opencode?.harness !== 'opencode') throw new Error('Harness defaults are unavailable.')
-      return { defaults: { codex, opencode, ...(claude?.harness === 'claude' ? { claude } : {}) } }
+      if (codex?.harness !== 'codex') throw new Error('Harness defaults are unavailable.')
+      return { defaults: { codex, ...(claude?.harness === 'claude' ? { claude } : {}) } }
     },
   })
 }

@@ -9,6 +9,7 @@ export function HarnessMcpPolicies({ editor, onChange }: { editor: HarnessEditor
   const value = withAdvancedDefaults(editor.configuration)
   const servers = useNativeMcpServers(value.harness, value.harness !== 'claude')
   const [expanded, setExpanded] = useState<string>()
+  if (value.harness === 'opencode') return null
   if (value.harness === 'claude') return <section className="harness-form-stack" aria-label="Claude tool policy">
     <p>Enable exact tool names deliberately. MCP tools use <code>mcp__server__tool</code>. Adding a connection does not enable its tools. Native qualification must observe every enabled tool before execution.</p>
     <HarnessTokenList label="Enabled Claude tools" values={value.tools} onChange={(tools) => onChange({ ...editor, configuration: {
@@ -21,7 +22,7 @@ export function HarnessMcpPolicies({ editor, onChange }: { editor: HarnessEditor
       ] } })} />)}
     <p className="harness-muted">These permissions belong to the saved configuration. App grants and the selected sandbox are checked separately.</p>
   </section>
-  const policies = value.harness === 'codex' ? value.advanced!.mcpServers : value.advanced!.mcp.serverEnabled
+  const policies = value.advanced!.mcpServers
   const names = [...new Set([...Object.keys(policies), ...(servers.data?.servers.map((server) => server.name) ?? [])])].sort()
   const setPolicy = (name: string, enabled?: boolean) => {
     if (value.harness === 'codex') {
@@ -29,11 +30,6 @@ export function HarnessMcpPolicies({ editor, onChange }: { editor: HarnessEditor
       if (enabled === undefined) delete next[name]
       else next[name] = { ...next[name], enabled, required: enabled ? next[name]?.required ?? false : false }
       onChange({ ...editor, configuration: { ...value, advanced: { ...value.advanced!, mcpServers: next } }, mcpText: JSON.stringify(next, null, 2) })
-    } else if (value.harness === 'opencode') {
-      const next = { ...value.advanced!.mcp.serverEnabled }
-      if (enabled === undefined) delete next[name]
-      else next[name] = enabled
-      onChange({ ...editor, configuration: { ...value, advanced: { ...value.advanced!, mcp: { serverEnabled: next } } }, mcpText: JSON.stringify(next, null, 2) })
     }
   }
   const updateCodex = (name: string, updates: Partial<CodexAdvancedConfiguration['mcpServers'][string]>) => {
@@ -52,7 +48,7 @@ export function HarnessMcpPolicies({ editor, onChange }: { editor: HarnessEditor
       const server = servers.data?.servers.find((item) => item.name === name)
       const policy = value.harness === 'codex' ? value.advanced!.mcpServers[name] : undefined
       const hasOverride = Object.hasOwn(policies, name)
-      const enabled = value.harness === 'codex' ? policy?.enabled : value.advanced!.mcp.serverEnabled[name]
+      const enabled = policy?.enabled
       return <div key={name} className="harness-policy-row"><div className="harness-section-heading"><strong>{name}</strong>
         <Select label={`Access for ${name}`} value={hasOverride ? enabled ? 'enabled' : 'disabled' : 'inherit'}
           options={[{ value: 'inherit', label: 'Inherit' }, { value: 'enabled', label: 'Enabled' }, { value: 'disabled', label: 'Disabled' }]}

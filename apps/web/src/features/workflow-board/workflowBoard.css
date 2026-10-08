@@ -115,7 +115,7 @@
   .board-notices { top: 120px; }
 }
 .agent-settings-panel-embedded .agent-settings-general, .agent-settings-panel-embedded .agent-settings-advanced-view { padding: 0; gap: var(--space-3); }
-.agent-settings-panel-embedded .agent-settings-row-codex, .agent-settings-panel-embedded .agent-settings-row-opencode { grid-template-columns: minmax(0, 1fr); }
+.agent-settings-panel-embedded .agent-settings-row-codex { grid-template-columns: minmax(0, 1fr); }
 .agent-settings-panel-embedded > .agent-settings-footer { flex-wrap: nowrap; padding: var(--space-3) 0 0; }
 .agent-settings-panel-embedded .agent-settings-footer .n-button { white-space: nowrap; }
 

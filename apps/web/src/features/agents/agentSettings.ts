@@ -1,5 +1,6 @@
 import {
   DEFAULT_HARNESS_DEFAULTS,
+  AgentHarnessSchema,
   AgentEffortSchema,
   legacyEffortForHarness,
   type Agent,
@@ -14,16 +15,17 @@ export const STANDARD_EFFORTS: readonly NonNullable<Agent['effort']>[] = [
 ]
 
 export function initialModel(agent: Agent, harness: NonNullable<Agent['harness']>): string {
+  const selectedHarness = AgentHarnessSchema.parse(harness)
   return (agent.harnessConfiguration?.harness === harness ? agent.harnessConfiguration.model
-    : agent.harness === harness ? agent.model : undefined) ?? DEFAULT_HARNESS_DEFAULTS[harness]?.model ?? ''
+    : agent.harness === harness ? agent.model : undefined) ?? DEFAULT_HARNESS_DEFAULTS[selectedHarness]?.model ?? ''
 }
 
 export function effortOptions(
   harness: NonNullable<Agent['harness']>,
   model: string,
 ): readonly NonNullable<Agent['effort']>[] {
-  if (harness === 'claude') return []
-  if (harness === 'opencode') return ['low', 'high', 'max']
+  const selectedHarness = AgentHarnessSchema.parse(harness)
+  if (selectedHarness === 'claude') return []
   return model === 'gpt-6-astra' ? [...STANDARD_EFFORTS, 'ultra'] : STANDARD_EFFORTS
 }
 
@@ -47,27 +49,19 @@ export function configuredHarness(
   sandbox: 'read-only' | 'workspace-write' | 'danger-full-access',
   creationDefaults?: HarnessDefaults,
 ): HarnessConfiguration {
+  const selectedHarness = AgentHarnessSchema.parse(harness)
   // New agents use the selected global template; existing agents keep their
   // copied settings and must not inherit later global-default changes.
-  const current = creationDefaults?.[harness]
+  const current = creationDefaults?.[selectedHarness]
     ?? (agent.harnessConfiguration?.harness === harness
       ? agent.harnessConfiguration
-      : DEFAULT_HARNESS_DEFAULTS[harness])
+      : DEFAULT_HARNESS_DEFAULTS[selectedHarness])
   if (!current) throw new Error('Claude requires an explicitly configured host-local profile.')
   if (current.harness !== harness) throw new Error('The configuration must match the selected harness.')
   if (current.harness === 'claude') {
     return ClaudeFullAccessConfigurationSchema.parse({ ...current, model, sandbox })
   }
-  if (current.harness === 'opencode') {
-    const opencode = current
-    return {
-      ...opencode,
-      model,
-      // A custom provider variant cannot be represented by the legacy effort control.
-      variant: !['low', 'high', 'max'].includes(opencode.variant) ? opencode.variant
-        : effort === 'low' || effort === 'high' || effort === 'max' ? effort : opencode.variant,
-    }
-  }
+  if (current.harness === 'opencode') throw new Error('A retired harness cannot execute.')
   const codex = current
   return {
     ...codex,
@@ -85,7 +79,8 @@ export function defaultAgentForHarness(
   configuration?: HarnessConfiguration,
   productRole?: Exclude<AgentProductRole, 'operator'>,
 ): Agent {
-  const selected = configuration ?? DEFAULT_HARNESS_DEFAULTS[harness]
+  const selectedHarness = AgentHarnessSchema.parse(harness)
+  const selected = configuration ?? DEFAULT_HARNESS_DEFAULTS[selectedHarness]
   if (!selected) throw new Error('Claude requires an explicitly configured host-local profile.')
   if (selected.harness !== harness) throw new Error('The configuration must match the selected harness.')
   const exact = structuredClone(selected)
@@ -116,7 +111,8 @@ export function nextHarnessAgentName(
   harness: NonNullable<Agent['harness']>,
   agents: readonly Agent[],
 ): string {
-  const prefix = harness
+  const selectedHarness = AgentHarnessSchema.parse(harness)
+  const prefix = selectedHarness
   const pattern = new RegExp(`^${prefix}-(\\d{3,})$`, 'i')
   const highest = agents.reduce((current, agent) => {
     const match = pattern.exec(agent.name.trim())

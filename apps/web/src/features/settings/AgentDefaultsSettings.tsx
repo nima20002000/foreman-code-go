@@ -66,7 +66,11 @@ function AgentTemplateEditor({ role, section, onSectionChange, onBack, showBack 
   if (!draft) return <LoadingState label="Loading agent defaults…" />
   const current = draft[role].harness
   const info = rolePresentation[role]
+  if (current.configuration.harness === 'opencode') return <div><h1>{info.title} defaults</h1>
+    <p role="status">Retired harness (OpenCode): read-only</p><p>Model: {current.configuration.model}</p>
+  </div>
   const update = (harness: HarnessEditor) => form.setDraft((value) => {
+    if (harness.configuration.harness === 'opencode') return value
     if (!value) return value
     const previous = value[role]
     const changingOperator = role === 'operator' && previous.harness.configuration.harness !== harness.configuration.harness

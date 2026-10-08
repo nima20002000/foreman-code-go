@@ -1,3 +1,4 @@
+import { retiredHarnessLabel } from './settingsPresentation'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import type { HarnessRegistryReadback, HostHarnessInstallationDto } from '@foreman-code/contracts/harness-registry'
 import { Alert } from '../../shared/ui/nocturne'
@@ -10,6 +11,9 @@ function sameComputer(left: CanonicalMachineReference, right: CanonicalMachineRe
 }
 function observed(value: boolean | null) { return value === null ? 'Unknown' : value ? 'Yes' : 'No' }
 function Installation({ value }: { value: HostHarnessInstallationDto }) {
+  if (value.driverId === 'opencode') return <section className="computer-inventory-item">
+    <p role="status">{retiredHarnessLabel}</p><p>{value.observedVersion ?? 'Version unknown'}</p>
+  </section>
   return <section className="computer-inventory-item" aria-label={`${value.driverId} installation`}>
     <h3>{value.driverId} <small>{value.observedVersion ? `version ${value.observedVersion}` : 'version unknown'}</small></h3>
     <dl className="computer-checks">
@@ -56,7 +60,7 @@ export function HostHarnessInventory({ host, registry }: { host: CanonicalMachin
       <h2 className="computers-title">Global configured instances</h2>
       <p className="computer-hint">Global presets are defaults for every computer, not installations. Existing sessions keep the revision they started with.</p>
       {registry.instances.length ? <ul className="computer-instance-list">{registry.instances.map((value) => <li key={value.instanceId}>
-        <strong>{value.driverId}</strong> · {value.instanceId} · revision {value.instanceRevision}
+        <strong>{value.driverId === 'opencode' ? retiredHarnessLabel : value.driverId}</strong> · {value.instanceId} · revision {value.instanceRevision}
         <span>{value.enabled ? value.availability : 'disabled'}</span>
       </li>)}</ul> : <p>No configured instances were returned.</p>}
     </details>

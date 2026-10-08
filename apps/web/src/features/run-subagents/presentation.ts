@@ -1,7 +1,7 @@
 import type { RunSubagent, RunSubagentTool } from '@foreman-code/contracts/subagents'
 import type { Tone } from '../../shared/ui/nocturne'
 
-export const providerNames: Record<RunSubagent['provider'], string> = { codex: 'Codex', claude: 'Claude', opencode: 'OpenCode' }
+export const providerNames: Record<RunSubagent['provider'], string> = { codex: 'Codex', claude: 'Claude', opencode: 'Retired harness (OpenCode): read-only' }
 
 const statuses: Record<RunSubagent['status'], { label: string; tone: Tone }> = {
   pending: { label: 'Starting', tone: 'neutral' },

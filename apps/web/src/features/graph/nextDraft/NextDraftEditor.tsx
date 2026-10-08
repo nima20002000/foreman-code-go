@@ -348,9 +348,11 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
     if (!preflight.data) throw new Error('Checking saved workflow and runtime availability…')
     boardStartPins(context.draft, preflight.data)
   } catch (error) { preflightReason = error instanceof Error ? error.message : 'Saved Start pins are unavailable.' }
-  const startDisabled = !canStart || storageFailed || starting || reloading || (!pendingStart && (!graph.nodes.length || (!needsSave && !!preflightReason) || startReloadRequired || editIntent.locked
+  const retiredHarness = agents.some(agent => graph.nodes.some(node => node.kind !== 'job' && node.agentId === agent.id)
+    && (agent.harness === 'opencode' || agent.harnessConfiguration?.harness === 'opencode'))
+  const startDisabled = retiredHarness || !canStart || storageFailed || starting || reloading || (!pendingStart && (!graph.nodes.length || (!needsSave && !!preflightReason) || startReloadRequired || editIntent.locked
     || edit.busy || !!edit.pending))
-  const startReason = !canStart ? 'Start permission is unavailable for this workflow' : pendingStart ? 'Reconcile the exact earlier Start command' : startReloadRequired ? 'Reload after the saved version was rejected'
+  const startReason = retiredHarness ? 'Retired harness (OpenCode): read-only' : !canStart ? 'Start permission is unavailable for this workflow' : pendingStart ? 'Reconcile the exact earlier Start command' : startReloadRequired ? 'Reload after the saved version was rejected'
     : !graph.nodes.length ? 'Add an agent before saving and running' : needsSave ? 'Save and run' : preflightReason ?? 'Run the saved workflow'
   const saveBusy = edit.busy || reloading || !!edit.pending || !!pendingStart || editIntent.mutation.isPending
   // Workflow-local Run summaries cannot describe blockers of a shared-Agent edit.

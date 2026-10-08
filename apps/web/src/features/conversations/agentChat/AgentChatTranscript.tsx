@@ -17,11 +17,11 @@ import { placeChatActivities } from './activityPlacement'
 import { commandMayHaveBeenAccepted, type AgentChatCommandRecord, type useAgentChat } from './useAgentChat'
 
 export function AgentChatTranscript({
-  state, name, commands, history, notices, cancelReason, responseReason, resendReason, controlResendReason,
+  state, name, commands, history, notices, readOnly = false, cancelReason, responseReason, resendReason, controlResendReason,
   onRefresh, refreshing, onCancel, onRespond, onSendAgain,
 }: {
   state: AgentChatState; name: string; commands: AgentChatCommandRecord[]; history: ReturnType<typeof useAgentChat>['history']
-  notices?: ReactNode; cancelReason?: string; responseReason?: string; resendReason?: string
+  readOnly?: boolean; notices?: ReactNode; cancelReason?: string; responseReason?: string; resendReason?: string
   controlResendReason?: string
   onRefresh?(): void; refreshing?: boolean
   onCancel(requestId: string): void; onRespond(optionId: string, response?: InteractionResponseValue): void;
@@ -67,14 +67,14 @@ export function AgentChatTranscript({
         const original = commands.find((record) => record.command?.kind === 'send' && record.command.input.requestId === turn.requestId)?.command
         const content = original?.kind === 'send' ? original.input.content : undefined
         return <div key={turn.requestId} className="agent-chat-message-actions" data-delivery={turn.delivery}>
-          <p><Badge tone={turn.delivery === 'unknown' ? 'warning' : turn.delivery === 'failed' ? 'danger' : 'neutral'}>{deliveryLabels[turn.delivery]}</Badge> {intentLabels[turn.intent]} · order {turn.sequence}</p>
+          <p><Badge tone={!readOnly && turn.delivery === 'unknown' ? 'warning' : turn.delivery === 'failed' ? 'danger' : 'neutral'}>{deliveryLabels[turn.delivery]}</Badge> {intentLabels[turn.intent]} · order {turn.sequence}</p>
           <p className="agent-chat-note">{turn.delivery === 'unknown' && content
             ? 'Message text is outside the current history page. Your locally submitted text is shown below.'
             : 'Message text is not included in the current history page. Load earlier messages to read it.'}</p>
           {turn.error ? <p className="agent-chat-note">{turn.error.message}</p> : null}
-          {turn.delivery === 'queued' ? <><Button size="sm" disabled={!!cancelReason} title={cancelReason} onClick={() => onCancel(turn.requestId)}>Cancel queued message</Button>
+          {!readOnly && turn.delivery === 'queued' ? <><Button size="sm" disabled={!!cancelReason} title={cancelReason} onClick={() => onCancel(turn.requestId)}>Cancel queued message</Button>
             {cancelReason ? <p className="agent-chat-note">{cancelReason}</p> : null}</> : null}
-          {turn.delivery === 'unknown' ? <><p className="agent-chat-note">Delivery is unknown. No automatic resend. Read the original text before explicitly sending it as a new message.</p>
+          {!readOnly && turn.delivery === 'unknown' ? <><p className="agent-chat-note">Delivery is unknown. No automatic resend. Read the original text before explicitly sending it as a new message.</p>
             {content !== undefined ? <><p className="conversation-message-content">{content}</p>
               <Button size="sm" disabled={!!resendUnavailable(content)} title={resendUnavailable(content)}
                 onClick={() => onSendAgain(content,
@@ -98,9 +98,9 @@ export function AgentChatTranscript({
       return <div className="agent-chat-message-actions">
         {turn.delivery === 'accepted' ? <p className="agent-chat-note">Provider acknowledged delivery; consumption is not yet confirmed.</p> : null}
         {turn.error ? <p className="agent-chat-note">{turn.error.message}</p> : null}
-        {turn.delivery === 'queued' ? <><Button size="sm" disabled={!!cancelReason} title={cancelReason} onClick={() => onCancel(turn.requestId)}>Cancel queued message</Button>
+        {!readOnly && turn.delivery === 'queued' ? <><Button size="sm" disabled={!!cancelReason} title={cancelReason} onClick={() => onCancel(turn.requestId)}>Cancel queued message</Button>
           {cancelReason ? <p className="agent-chat-note">{cancelReason}</p> : null}</> : null}
-        {turn.delivery === 'unknown' ? <><p className="agent-chat-note">The original may have been accepted. It will not be resent automatically.</p>
+        {!readOnly && turn.delivery === 'unknown' ? <><p className="agent-chat-note">The original may have been accepted. It will not be resent automatically.</p>
           {message.originalInput?.requestId === turn.requestId
             ? <Button size="sm" disabled={!!resendUnavailable(message.originalInput.content)}
               title={resendUnavailable(message.originalInput.content)} onClick={() => onSendAgain(
@@ -114,14 +114,14 @@ export function AgentChatTranscript({
       status={<Badge tone={record.status === 'pending' ? 'neutral' : 'warning'}>{record.status === 'pending' ? 'Sending' : 'Unknown'}</Badge>}>
       <p className="conversation-message-content">{record.command.input.content}</p>
       <p className="agent-chat-note">{record.status === 'pending' ? 'Waiting for the server receipt.' : 'No receipt was confirmed. The original may have been accepted; it will not be resent automatically.'}</p>
-      {record.status === 'error' ? <Button size="sm" disabled={!!resendUnavailable(record.command.input.content)}
+      {!readOnly && record.status === 'error' ? <Button size="sm" disabled={!!resendUnavailable(record.command.input.content)}
         title={resendUnavailable(record.command.input.content)} onClick={() => {
         if (record.command?.kind === 'send') {
           onSendAgain(record.command.input.content, record.command.input.attachments, record.command.input.sessionMode)
         }
       }}>Send again as new message</Button> : null}
     </MessageBubble> : null)}
-    {state.pendingInteraction ? <><p className="agent-chat-note">Use these approval controls to reply. An ordinary chat message is not an approval.</p>
+    {!readOnly && state.pendingInteraction ? <><p className="agent-chat-note">Use these approval controls to reply. An ordinary chat message is not an approval.</p>
       <OperatorApprovalCard actor="Agent" interaction={state.pendingInteraction} onBrowse={onBrowse}
         disabled={!!responseReason || !approvalReplyAvailable(state)} onSelect={onRespond} />
       {responseReason || !approvalReplyAvailable(state) ? <p role="status">{responseReason ?? 'The original native request is not available. Refresh; do not reply through chat.'}</p> : null}

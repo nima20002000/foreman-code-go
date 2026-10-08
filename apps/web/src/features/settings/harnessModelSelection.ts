@@ -6,8 +6,7 @@ export function supportedEfforts(model: HarnessOptions['models'][number] | undef
   return (model?.reasoningEfforts ?? []).filter((effort): effort is AgentEffort => knownEfforts.has(effort))
 }
 export function selectNativeModel(configuration: HarnessConfiguration, model: HarnessOptions['models'][number]): HarnessConfiguration {
-  if (configuration.harness === 'opencode') return { ...configuration, model: model.id,
-    variant: model.variants.includes(configuration.variant) ? configuration.variant : '' }
+  if (configuration.harness === 'opencode') throw new Error('A retired harness cannot select a new model.')
   if (configuration.harness === 'claude') return { ...configuration, model: model.id,
     effort: model.reasoningEfforts.includes(configuration.effort ?? '') ? configuration.effort
       : model.reasoningEfforts.includes('medium') ? 'medium' : model.reasoningEfforts.find(effort => ClaudeEffortSchema.safeParse(effort).success) as typeof configuration.effort }

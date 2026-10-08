@@ -1,3 +1,4 @@
+import { SupportedHarnessConfigurationSchema } from '@foreman-code/contracts'
 import type { Agent } from '@foreman-code/contracts'
 import { StagedAgentSchema } from '@foreman-code/contracts/management'
 import type { GraphDraftOperationV3, WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
@@ -34,7 +35,7 @@ function sameAgentContent(before: Agent | undefined, after: Agent): boolean {
 }
 function configuration(agent: Agent) {
   if (!agent.harnessConfiguration) throw new Error('Reload the complete Agent configuration before editing it.')
-  return agent.harnessConfiguration
+  return SupportedHarnessConfigurationSchema.parse(agent.harnessConfiguration)
 }
 export function addAgentOperations(agent: Agent, node: DraftNode): GraphDraftOperationV3[] {
   const harness = configuration(agent)

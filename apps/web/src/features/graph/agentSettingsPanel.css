@@ -56,7 +56,6 @@
 
 .agent-settings-row-primary,
 .agent-settings-row-codex,
-.agent-settings-row-opencode { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 .agent-settings-general .agent-settings-sandbox,
 .agent-settings-general .agent-settings-thinking { grid-column: 1 / -1; }

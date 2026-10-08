@@ -13,7 +13,6 @@
   isolation: isolate;
 }
 .n-agent[data-harness='codex'] { --agent-hue: var(--harness-codex); }
-.n-agent[data-harness='opencode'] { --agent-hue: var(--harness-opencode); }
 
 .n-agent-core {
   position: absolute;
@@ -354,7 +353,6 @@
   font: var(--type-body);
 }
 .n-agent-popover[data-harness='codex'] { --agent-hue: var(--harness-codex); }
-.n-agent-popover[data-harness='opencode'] { --agent-hue: var(--harness-opencode); }
 .n-agent-popover-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-4) 0; }
 .n-agent-popover-header h2 { margin: 0; overflow: hidden; color: var(--text-strong); font: var(--type-heading); text-overflow: ellipsis; white-space: nowrap; }
 .n-agent-popover-header p { margin: 0; color: var(--text-muted); font: var(--type-caption); }

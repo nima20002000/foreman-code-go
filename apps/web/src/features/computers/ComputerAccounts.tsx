@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Bot, CodeXml, GitBranch, Sparkles } from 'lucide-react'
+import { CodeXml, GitBranch, Sparkles } from 'lucide-react'
 import type { ComputerAccount, ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { computerKey } from '../../shared/api/computerActivity'
@@ -7,10 +7,9 @@ import { Button } from '../../shared/ui/nocturne'
 import { GitHubSignInDialog } from './GitHubSignIn'
 import { useComputerUi } from './computerUiStore'
 
-const TOOLS: Record<ComputerAccount['tool'], { label: string; icon: React.ReactNode }> = {
+const TOOLS: Record<Exclude<ComputerAccount['tool'], 'opencode'>, { label: string; icon: React.ReactNode }> = {
   codex: { label: 'Codex', icon: <CodeXml size={13} /> },
   claude: { label: 'Claude', icon: <Sparkles size={13} /> },
-  opencode: { label: 'OpenCode', icon: <Bot size={13} /> },
   github: { label: 'GitHub', icon: <GitBranch size={13} /> },
 }
 
@@ -38,7 +37,7 @@ export function ComputerAccountChips({ accounts, onGitHub, onRetry, retrying }: 
 }) {
   const managed = { github: onGitHub }
   return <div className="computer-accounts" role="group" aria-label="Accounts">
-    {accounts?.accounts.filter(account => account.tool !== 'github').map(account => {
+    {accounts?.accounts.filter(account => account.tool === 'codex' || account.tool === 'claude').map(account => {
       const summary = accountSummary(account)
       return <details key={account.tool} className="computer-account-details">
         <summary className="computer-account" data-state={accountState(account)} title={summary} aria-label={summary}>

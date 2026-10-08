@@ -361,6 +361,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const fileDrop = useFileDrop({ disabled: attachmentsDisabled || !attachments.canAdd, onFiles: attachments.addFiles })
   if (!enabled || sessionIsSwitching()) return null
   const settings = preferencesDenied ? undefined : preferences.settings
+  const retired = conversation?.settings?.harness === 'opencode'
   const pendingHandoff = Boolean(settings && conversation?.settings && settings.harness !== conversation.settings.harness
     && (conversation.messages.length > 0 || conversation.hasEarlierMessages))
   const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
@@ -486,12 +487,12 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
               <span className="operator-chat-title-clip"><span>{item.title ?? 'Conversation'}</span></span>
               <span className={`operator-chat-state-dot${item.needsAttention ? ' needs-attention' : ''}`} aria-label={operatorNavigationStatus(item)} />
             </Button>
-            <ActionMenu width={120} label={`Chat options: ${item.title ?? 'Conversation'}`} className="operator-chat-row-menu" items={[
+            {!(retired && item.conversationId === selectedId) ? <ActionMenu width={120} label={`Chat options: ${item.title ?? 'Conversation'}`} className="operator-chat-row-menu" items={[
               { id: 'delete', label: 'Delete', danger: true,
                 disabled: Boolean(item.activeRequestId) || !['idle', 'error'].includes(item.turnState) || remove.isPending,
                 ...(item.activeRequestId ? { description: 'Stop the response before deleting.' } : {}),
                 onSelect: () => remove.mutate({ id: item.conversationId, title: item.title ?? 'Conversation', generation: sessionGeneration() }) },
-            ]} />
+            ]} /> : null}
           </div>)}</nav>
           {list.data?.hasMore ? <Button size="sm" variant="ghost" className="operator-chat-load-more" loading={list.isFetching} loadingLabel="Loading…" onClick={loadOlderChats}>Load older chats</Button> : null}
         </aside>
@@ -518,7 +519,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
               timeline={partial && partial.conversationId === selectedId ? partial.value : undefined}
               approvalRevision={JSON.stringify([requestId, conversation.pendingInteraction, conversation.activitySnapshot?.pendingInteractions, conversation.activitySnapshot?.activities.filter((item) => item.kind === 'interaction')])}
               approval={(onBrowse) => <><ChatDecisionReceipts snapshot={conversation.activitySnapshot} pending={selected.isFetching} onRefresh={() => { void selected.refetch() }} />
-                {requestId && conversation.pendingInteraction ? <OperatorApprovalCard interaction={conversation.pendingInteraction!} onBrowse={onBrowse}
+                {!retired && requestId && conversation.pendingInteraction ? <OperatorApprovalCard interaction={conversation.pendingInteraction!} onBrowse={onBrowse}
                 disabled={Boolean(archived || !conversation.responseAvailability?.available || conversation.responseAvailability && (conversation.responseAvailability.nativeRequestId !== conversation.pendingInteraction?.turn.nativeRequestId || conversation.responseAvailability.nativeSessionId !== conversation.pendingInteraction?.session.nativeSessionId || conversation.responseAvailability.nativeRequestType !== conversation.pendingInteraction?.nativeRequestType) || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling')}
                 onSelect={(optionId, response) => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
                   input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId,
@@ -534,20 +535,20 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
                 {pending.error ? <Alert live tone="danger" title="Pending message unavailable">{pending.error}</Alert> : null}
                 {sendError ? <Alert live tone="danger" title="Message could not be sent">{sendError}</Alert> : null}
               </div>
-              {pending.command ? <Button disabled={send.isPending && send.variables?.id === selectedId} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
+              {!retired && pending.command ? <Button disabled={send.isPending && send.variables?.id === selectedId} loading={send.isPending && send.variables?.id === selectedId} onClick={() => {
                 setPreparationError(undefined)
                 send.mutate({ id: conversation.conversation.id, command: pending.command!, generation: sessionGeneration(), epoch: identityEpoch(), recoverFirst: true, navigationGeneration: useOperatorChatStore.getState().navigationGeneration })
               }}>Retry pending message</Button> : null}
-              {pending.command && pending.definitiveFailure ? <Button variant="ghost" disabled={pending.inFlight || (send.isPending && send.variables?.id === selectedId)} onClick={() => {
+              {!retired && pending.command && pending.definitiveFailure ? <Button variant="ghost" disabled={pending.inFlight || (send.isPending && send.variables?.id === selectedId)} onClick={() => {
                 void discardDefinitivelyRejectedOperatorMessage(conversation.conversation.id, pending.command!.requestId).then((discarded) => {
                   if (discarded) { attachmentReceipts.forget(pending.command!.requestId); send.reset(); setPreparationError(undefined); refreshOutbox((value) => value + 1) }
                 }).catch((error: unknown) => setPreparationError({ id: conversation.conversation.id,
                   message: error instanceof Error ? error.message : 'The saved attempt could not be cleared.' }))
               }}>Clear rejected attempt and keep draft</Button> : null}
             </div> : null}
-            <footer className="operator-chat-controls">
+            {retired ? <p role="status">Retired harness (OpenCode): read-only</p> : <footer className="operator-chat-controls">
               {attachmentReceiptPending && !pending.command ? <Button size="sm" onClick={attachmentReceipts.reconcile}>Check previous message</Button> : null}
-              {pendingHandoff ? <p className="operator-chat-handoff" role="status">{attachments.hasAttachments ? 'Files stay in this chat. Start a new chat to attach files.' : <>Your next message starts {settings!.harness === 'opencode' ? 'an OpenCode' : 'a Codex'} chat with prior conversation context.</>}</p> : null}
+              {pendingHandoff ? <p className="operator-chat-handoff" role="status">{attachments.hasAttachments ? 'Files stay in this chat. Start a new chat to attach files.' : <>Your next message starts {settings!.harness === 'claude' ? 'a Claude' : 'a Codex'} chat with prior conversation context.</>}</p> : null}
               {preferences.query.isError ? <Alert tone={preferencesDenied ? 'danger' : 'warning'} title={preferencesDenied ? 'Operator settings access unavailable' : 'Could not refresh Operator settings'}
                 action={<Button size="sm" onClick={() => void preferences.query.refetch()}>Retry settings</Button>}>
                 {preferencesDenied ? 'Check your browser enrollment and permissions.' : preferences.query.data ? 'Last saved settings are still available.' : preferences.query.error.message}
@@ -574,7 +575,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
                 sendDisabled={attachmentReceiptPending || attachments.hasBlockingAttachments || (attachments.hasAttachments && pendingHandoff) || !setupReady || !settingsReady || archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
                 isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit}
                 onCancel={requestId && conversation.turnState !== 'canceling' ? () => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() }) : undefined} />
-            </footer>
+            </footer>}
           </> : null}
         </main>
       </div>

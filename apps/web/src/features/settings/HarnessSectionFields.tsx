@@ -1,12 +1,11 @@
 import type { ReactNode } from 'react'
-import { changeCodexSandbox, withAdvancedDefaults, type CodexAdvancedConfiguration, type HarnessConfiguration, type OpenCodeAdvancedConfiguration } from '@foreman-code/contracts'
+import { changeCodexSandbox, withAdvancedDefaults, type CodexAdvancedConfiguration, type HarnessConfiguration } from '@foreman-code/contracts'
 import type { HarnessSettingsSection } from '@foreman-code/contracts/management'
-import { Button, Checkbox, Select, TextField } from '../../shared/ui/nocturne'
+import { Button, Checkbox, Select } from '../../shared/ui/nocturne'
 import type { HarnessEditor } from './harnessEditor'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
 import { HarnessDirectoryPicker } from './HarnessDirectoryPicker'
 import { HarnessBasicFields, HarnessSandboxField } from './HarnessBasicFields'
-import { HarnessPermissionRules } from './HarnessPermissionRules'
 import { HarnessMcpPolicies } from './HarnessMcpPolicies'
 import { HarnessMcpManager } from './HarnessMcpManager'
 import { McpDetectionSettings } from './McpDetectionSettings'
@@ -20,9 +19,7 @@ export function HarnessSectionFields({ editor, onChange, section, issues = [], r
   const error = (path: string) => fieldMessage(issues, path)
   const change = (configuration: HarnessConfiguration) => onChange({ ...editor, configuration })
   const codex = (advanced: CodexAdvancedConfiguration) => { if (value.harness === 'codex') change({ ...value, advanced }) }
-  const opencode = (advanced: OpenCodeAdvancedConfiguration) => {
-    if (value.harness === 'opencode') change({ ...value, autoApprove: advanced.permissionHandling === 'native_auto', advanced })
-  }
+  if (value.harness === 'opencode') return null
   if (value.harness === 'claude') return <div className="harness-section-fields">
     {section === 'model' || section === 'permissions' ? <HarnessBasicFields value={value} onChange={change} issues={issues}
       qualified={qualified} checking={checking} checkError={checkError} /> : section === 'session' ? <>
@@ -73,31 +70,6 @@ export function HarnessSectionFields({ editor, onChange, section, issues = [], r
                 options={[{ value: 'persistent', label: 'Keep history · supports recovery' }, { value: 'ephemeral', label: 'Ephemeral · no resume', disabled: requiresResume || routedApproval }]}
                 onChange={(event) => codex({ ...value.advanced!, sessionPersistence: event.target.value as CodexAdvancedConfiguration['sessionPersistence'] })} />
             </div> : null}
-            {value.harness === 'opencode' && section === 'permissions' ? <>
-              <Select className="harness-opencode-approvals" label="Permission handling" value={value.advanced!.permissionHandling} error={error('advanced.permissionHandling') ?? error('autoApprove')}
-                options={[{ value: 'graphql_routed', label: 'App approval routing' }, { value: 'native_auto', label: 'Native automatic handling (unavailable)', disabled: true }]}
-                hint={value.advanced!.permissionHandling === 'native_auto' ? 'Native automatic handling is unavailable. Choose app approval routing.' : undefined}
-                onChange={(event) => opencode({ ...value.advanced!, permissionHandling: event.target.value as OpenCodeAdvancedConfiguration['permissionHandling'] })} />
-              <HarnessPermissionRules value={value.advanced!.permissionRules} issues={issues} onChange={(permissionRules) => opencode({ ...value.advanced!, permissionRules })} />
-            </> : null}
-            {value.harness === 'opencode' && section === 'session' ? <>
-              <div className="harness-two-columns">
-                <Select label="Plugins" value={value.advanced!.plugins.mode} options={[{ value: 'inherit', label: 'Use configured plugins' }, { value: 'pure', label: 'Pure mode · no plugins' }]}
-                  onChange={(event) => opencode({ ...value.advanced!, plugins: { mode: event.target.value as 'inherit' | 'pure' } })} />
-                <TextField label="Subagent depth" type="number" min={0} step={1} value={Number.isNaN(value.advanced!.subagentDepth) ? '' : value.advanced!.subagentDepth ?? ''} placeholder="Native default" error={error('advanced.subagentDepth')}
-                  onChange={(event) => opencode({ ...value.advanced!, subagentDepth: event.target.value === '' ? undefined : event.target.valueAsNumber })} />
-              </div>
-              <div className="harness-switch-list"><Checkbox label="Automatic compaction" checked={value.advanced!.compaction.auto}
-                onChange={(event) => opencode({ ...value.advanced!, compaction: { ...value.advanced!.compaction, auto: event.target.checked } })} />
-                <Checkbox label="Prune old tool output" checked={value.advanced!.compaction.prune}
-                  onChange={(event) => opencode({ ...value.advanced!, compaction: { ...value.advanced!.compaction, prune: event.target.checked } })} /></div>
-              <div className="harness-two-columns">{([
-                ['reservedTokens', 'Reserved tokens'], ['tailTurns', 'Recent turns to keep'], ['preserveRecentTokens', 'Recent tokens to keep'],
-              ] as const).map(([key, label]) => <TextField key={key} label={label} type="number" min={0} step={1} placeholder="Native default"
-                value={Number.isNaN(value.advanced!.compaction[key]) ? '' : value.advanced!.compaction[key] ?? ''} error={error(`advanced.compaction.${key}`)}
-                onChange={(event) => opencode({ ...value.advanced!, compaction: { ...value.advanced!.compaction, [key]: event.target.value === '' ? undefined : event.target.valueAsNumber } })} />)}</div>
-            </> : null}
-
     {section === 'tools' ? <HarnessMcpPolicies key={`policies-${value.harness}`} editor={editor} onChange={onChange} /> : null}
     {section === 'connections' ? <HarnessMcpManager key={value.harness} harness={value.harness} /> : null}
     {section === 'workspace' ? <McpDetectionSettings workspaceId={workspaceId} harness={value.harness} /> : null}

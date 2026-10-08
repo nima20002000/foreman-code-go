@@ -46,7 +46,7 @@ export const AgentNodeView = forwardRef<HTMLButtonElement, AgentNodeViewProps>(f
   name, harness, harnessLabel, model, icon = 'bot', statusLabel, state = 'idle', transition, transitionKey, meta = [],
   entry, selected, openPanel, pending, ariaLabel, className, onSelect, onAction, children,
 }, ref) {
-  const known = harness === 'codex' || harness === 'opencode' ? harness : 'neutral'
+  const known = harness === 'codex' || harness === 'claude' ? harness : 'neutral'
   return <div className={cx('n-agent', className)} data-state={state} data-transition={transition} data-harness={known} data-selected={selected || undefined}
     data-open={openPanel ? '' : undefined} data-pending={pending || undefined} data-entry={entry || undefined}>
     <span className="n-agent-energy" aria-hidden="true" />
@@ -189,7 +189,7 @@ export function AgentPopover({ open, anchor, title, subtitle, icon = 'bot', harn
     }
   }, [open, anchor])
   if (!open || typeof document === 'undefined') return null
-  const known = harness === 'codex' || harness === 'opencode' ? harness : 'neutral'
+  const known = harness === 'codex' || harness === 'claude' ? harness : 'neutral'
   return createPortal(<section ref={surface} className={cx('n-agent-popover nodrag nowheel', className)} data-harness={known} data-panel={panel}
     role="dialog" aria-modal="false" aria-label={`${title} ${actionLabels[panel]}`}
     onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}
