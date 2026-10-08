@@ -240,6 +240,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         if (scenario.completed) {
           await finish(native.directory, active.sessionId, `RECEIVED ${scenario.answer}`)
           await until(async () => {
+            if (surface === 'operator') await operatorChat.reconcileActive()
             const current = await read()
             const idle = surface === 'agent' ? (current as AgentChatState).sessionState === 'idle'
               : (current as OperatorConversationState).turnState === 'idle'
