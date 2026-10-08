@@ -26,7 +26,7 @@ const actions: Record<WorkflowScheduleToolName, ManagementAction> = {
   workflow_schedule_disable: 'workflows:update', workflow_schedule_clear: 'workflows:update',
 }
 const scheduleTimeContract = 'Calendar time input requires the caller device\'s IANA timezone, never the server timezone. New Once settings are normalized to UTC; weekly weekday/time intent retains its source timezone for DST. All nextOccurrenceAt, anchorAt and dueAt values are canonical UTC instants; format those instants in the viewing device timezone without reinterpreting them. Read or unchanged saves must preserve existing weekly calendar intent; an intentional weekday/time edit may choose the editing device timezone.'
-const scheduleCursorContract = 'Saving unchanged enabled settings or enabling an already-enabled schedule preserves its occurrence cursor, including an exhausted Once, while updating the revision and owner binding.'
+const scheduleCursorContract = 'Saving unchanged enabled settings or enabling an already-enabled schedule preserves its occurrence cursor while updating the revision and owner binding. Re-enabling unchanged Once settings retains exhaustion and never creates another occurrence; future-time validation applies only to new or changed times.'
 
 /** Schedule tools extend the shared Operator discovery names. */
 const CapabilityToolName = z.enum([...CurrentOperatorToolNameSchema.options, ...WORKFLOW_SCHEDULE_TOOLS])
@@ -62,7 +62,7 @@ export function registerWorkflowScheduleTools(server: McpServer, context: Operat
     inputSchema: ScheduleSaveInputSchema, outputSchema: ScheduleSaveResultSchema, annotations: write,
   }, (input) => invokeOperatorTool(context, 'workflow_schedule_save', () => service.save(context.principal, 'mcp', input)))
   if (workflowScheduleToolAvailable(context, 'workflow_schedule_enable')) server.registerTool('workflow_schedule_enable', {
-    description: 'Enable existing saved settings with commandId and expectedRevision. Disabled past Once settings cannot be enabled. This binds the enabling caller\'s root human owner and grant ceiling for future server dispatch; it does not immediately start a Run. Live owner Run and location rights are rechecked at dispatch. ' + scheduleCursorContract,
+    description: 'Enable existing saved settings with commandId and expectedRevision, including an exhausted Once. This binds the enabling caller\'s root human owner and grant ceiling for future server dispatch; it does not immediately start a Run. Live owner Run and location rights are rechecked at dispatch. ' + scheduleCursorContract,
     inputSchema: ScheduleEnableInputSchema, outputSchema: ScheduleEnableResultSchema, annotations: write,
   }, (input) => invokeOperatorTool(context, 'workflow_schedule_enable', () => service.enable(context.principal, 'mcp', input)))
   if (workflowScheduleToolAvailable(context, 'workflow_schedule_disable')) server.registerTool('workflow_schedule_disable', {

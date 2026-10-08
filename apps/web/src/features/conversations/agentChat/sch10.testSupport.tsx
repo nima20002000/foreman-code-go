@@ -1,4 +1,4 @@
-import { useLayoutEffect } from 'react'
+import { useLayoutEffect, useReducer } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router'
 import { act, render, screen, waitFor } from '@testing-library/react'
@@ -102,7 +102,10 @@ export function installSelectedHandlers() {
 
 export async function mountSelected(runId: string | null = 'run-a', activitiesOnly = false) {
   let latest!: SelectedRunState
+  let refreshView!: () => void
   function Probe() {
+    const [, refresh] = useReducer((revision: number) => revision + 1, 0)
+    refreshView = refresh
     const selection = useSelectedRun(scope)
     useLayoutEffect(() => { latest = selection }, [selection])
     return <><RunsSelector selection={selection} />
@@ -120,6 +123,6 @@ export async function mountSelected(runId: string | null = 'run-a', activitiesOn
   const rendered = render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
   await screen.findByLabelText('Selected Run')
   await waitFor(() => expect(latest).toBeDefined())
-  return { ...rendered, client, router, selection: () => latest,
+  return { ...rendered, client, router, selection: () => latest, refreshView: () => act(refreshView),
     select: async (id: string | null) => { await act(async () => { await latest.selectRun(id) }) } }
 }

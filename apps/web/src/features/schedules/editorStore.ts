@@ -152,9 +152,9 @@ export function buildScheduleCommand(
     const input = {
       ...scope, expectedRevision, commandId: 'schedule-validation', schedule,
     }
-    const unchangedEnabledOnce = expectedRevision > 0 && draft.mode === 'once' && draft.enabled
-      && draftIdentity(draft) === state.initialIdentity
-    const parsed = unchangedEnabledOnce ? ScheduleSaveInputSchema.parse(input) : parseScheduleSaveInput(input, nowUtc)
+    const unchangedOnce = expectedRevision > 0 && draft.mode === 'once'
+      && draftIdentity(draft, false) === state.initialSettings
+    const parsed = unchangedOnce ? ScheduleSaveInputSchema.parse(input) : parseScheduleSaveInput(input, nowUtc)
     return { command: { kind: 'save', input: { ...scope, expectedRevision, schedule: parsed.schedule } } }
   } catch (error) {
     if (!(error instanceof ZodError)) return { errors: { form: 'Check schedule.' } }

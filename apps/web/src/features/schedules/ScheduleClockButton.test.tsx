@@ -230,18 +230,23 @@ describe('schedule clock and compact modal', () => {
     expect(saves[0]).toMatchObject({ expectedRevision: 3, schedule: { enabled: true } })
     expect(disables).toHaveLength(0)
   })
-  it.each(['2000-01-01T09:00:00.000Z', null])('sends an unchanged elapsed enabled Once save with cursor %s', async (cursor) => {
+  it.each([
+    { enabled: true, cursor: '2000-01-01T09:00:00.000Z' },
+    { enabled: true, cursor: null },
+    { enabled: false, cursor: null },
+  ])('saves unchanged elapsed Once settings with enabled=$enabled and cursor=$cursor', async ({ enabled, cursor }) => {
     const original: WorkflowSchedule = { ...scope, mode: 'once', localDate: '2000-01-01', time: '09:00', timezone: 'UTC',
-      enabled: true, policy: 'latest_saved', revision: 3, nextOccurrenceAt: cursor }
+      enabled, policy: 'latest_saved', revision: 3, nextOccurrenceAt: cursor }
     persisted = original
     server.use(http.put(path, async ({ request }) => {
       const input = ScheduleSaveInputSchema.parse({ ...scope, ...(await request.json() as object) })
       saves.push(input)
-      persisted = { ...original, revision: original.revision + 1 }
+      persisted = { ...original, enabled: true, revision: original.revision + 1 }
       return HttpResponse.json({ value: persisted, replayed: false })
     }))
     const { user } = mount()
     await open(user)
+    if (!enabled) await user.click(screen.getByRole('switch', { name: 'Enabled' }))
     await user.click(screen.getByRole('button', { name: /^Save$/ }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(saves).toHaveLength(1)
