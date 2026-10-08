@@ -19,9 +19,9 @@ export function preferenceEdit(status: BuildComputerStatus, patch: ComputerPrefe
   }
 }
 export function reorderEdits(statuses: readonly BuildComputerStatus[], from: number, to: number) {
+  if (from < 0 || from >= statuses.length || to < 0 || to >= statuses.length || from === to) return []
   const ordered = [...statuses]
-  const [moved] = ordered.splice(from, 1)
-  if (!moved || to < 0 || to >= statuses.length || from === to) return []
+  const moved = ordered.splice(from, 1)[0]!
   ordered.splice(to, 0, moved)
   // A computer dropped among Backups becomes a Backup, and among Primaries a Primary.
   const role = (ordered[to - 1] ?? ordered[to + 1])!.preference.buildRole

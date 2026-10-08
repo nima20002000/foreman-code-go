@@ -43,6 +43,13 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
   const canReorder = rows.every(row => row.read.isSuccess) && !save.locked
     && rows.length <= 101
   const move = (key: string, destination: string) => {
+    const sourceExists = rows.some(row => computerKey(row.target) === key)
+    const destinationExists = rows.some(row => computerKey(row.target) === destination)
+    if (!sourceExists || !destinationExists) {
+      drag()
+      dragSnapshot.current = []
+      return
+    }
     if (!canReorder) return
     const statuses = draggedKey && dragSnapshot.current.length ? dragSnapshot.current : rows.map(row => row.read.data!)
     const edits = reorderEdits(statuses, statuses.findIndex(row => computerKey(row.preference.target) === key),

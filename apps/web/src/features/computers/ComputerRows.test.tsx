@@ -1,3 +1,4 @@
+import { QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
@@ -6,6 +7,7 @@ import type { BuildComputerBatchUpdate, BuildComputerBatchResult } from '@forema
 import { server } from '../../mocks/server'
 import { computerKey } from '../../shared/api/computerActivity'
 import { ComputerRows } from './ComputerRows'
+import { useComputerUi } from './computerUiStore'
 import { computersFixture, deviceName, deviceTarget, mainId, mainTarget, registration } from './computersTestFixture'
 
 function rows() {
@@ -95,6 +97,52 @@ it('reorders by dragging and reuses the whole command after an uncertain respons
   await ready()
   expect(f.batches).toHaveLength(2)
   expect(f.batches[0]).toEqual(f.batches[1])
+})
+it.each(['removed', 'revoked'] as const)('cancels a drop when the dragged computer is %s', async state => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  await ready()
+  const before = structuredClone([...f.statuses.values()])
+  fireEvent.dragStart(within(rows()[1]!).getByTitle('Drag to reorder'),
+    { dataTransfer: { setData() {}, effectAllowed: '' } })
+  f.rendered.rerender(<QueryClientProvider client={f.client}><ComputerRows mainId={mainId}
+    devices={state === 'removed' ? [] : [{ ...registration, status: 'revoked' }]} /></QueryClientProvider>)
+  fireEvent.dragOver(rows()[0]!)
+  fireEvent.drop(rows()[0]!)
+  await waitFor(() => expect(f.client.isMutating()).toBe(0))
+  expect(f.batches).toHaveLength(0)
+  expect(f.writes).toHaveLength(0)
+  expect([...f.statuses.values()]).toEqual(before)
+  expect(useComputerUi.getState().draggedKey).toBeUndefined()
+})
+it('reconciles a committed reorder after both acknowledgements are lost without partial or duplicate writes', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  const calls: BuildComputerBatchUpdate[] = []
+  let saved: BuildComputerBatchResult | undefined
+  server.use(http.post('*/api/management/settings/build-computers/batch-update', async ({ request }) => {
+    const input = await request.json() as BuildComputerBatchUpdate
+    calls.push(input)
+    saved ??= { computers: input.updates.map(change => f.update({ ...change, commandId: input.commandId })) }
+    if (calls.length <= 2) {
+      return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Response lost' } }, { status: 503 })
+    }
+    return HttpResponse.json(saved)
+  }))
+  await ready()
+  await userEvent.setup().click(screen.getByRole('button', { name: `Move ${deviceName} up` }))
+  const retry = await screen.findByRole('button', { name: 'Retry original save' })
+  expect(calls).toHaveLength(2)
+  expect(calls[0]?.updates).toHaveLength(2)
+  expect(calls[1]).toEqual(calls[0])
+  expect(rows()[0]).toHaveAccessibleName(deviceName)
+  expect(screen.getByRole('switch', { name: 'Builds on Main PC' })).toBeDisabled()
+  expect(f.statuses.get(computerKey(mainTarget))?.preference).toMatchObject({ revision: 2, buildPriority: 0 })
+  expect(f.statuses.get(computerKey(deviceTarget))?.preference).toMatchObject({ revision: 2, buildPriority: 100 })
+  await userEvent.setup().click(retry)
+  await ready()
+  expect(calls).toHaveLength(3)
+  expect(calls[2]).toEqual(calls[0])
+  expect([...f.statuses.values()].map(status => status.preference.revision)).toEqual([2, 2])
+  expect(screen.queryByRole('button', { name: 'Retry original save' })).not.toBeInTheDocument()
 })
 it('restores optimistic order without changing any computer when one revision conflicts', async () => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
