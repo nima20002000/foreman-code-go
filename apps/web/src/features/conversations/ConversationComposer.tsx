@@ -46,11 +46,14 @@ export function ConversationComposer({
   const draft = useConversationDraftStore((state) => state.drafts[conversationId] ?? '')
   const setDraft = useConversationDraftStore((state) => state.setDraft)
 
-  const [commandError, setCommandError] = useState<string>()
+  const [commandError, setCommandError] = useState<{ conversationId: string; content: string; message: string }>()
   const parsed = parseSessionCommand(draft)
   const commandOnly = parsed.kind === 'compact' || parsed.kind === 'mode'
   const submit = async (content: string) => {
     const command = parseSessionCommand(content)
+    const controlOnly = command.kind === 'compact' || command.kind === 'mode'
+    const pending = controlOnly ? sessionControls?.mutation.isPending : isSending
+    if (disabled || pending || (!controlOnly && sendDisabled) || content.length > (maxLength ?? 16000)) return
     setCommandError(undefined)
     try {
       if (command.kind === 'invalid') throw new Error(command.message)
@@ -61,10 +64,15 @@ export function ConversationComposer({
       else if (command.kind === 'plan-task') onSubmit(content.trim(), 'plan')
       else onSubmit(content.trim())
     } catch (failure) {
-      setCommandError(failure instanceof Error ? failure.message : 'The native command could not be confirmed.')
+      setCommandError({ conversationId, content,
+        message: failure instanceof Error ? failure.message : 'The native command could not be confirmed.' })
     }
     field.current?.focus({ preventScroll: true })
   }
+  const feedback = sessionControls?.commandFeedback
+  const compaction = feedback?.draft.key === conversationId && feedback.draft.content === commandError?.content
+    ? feedback.compaction : undefined
+  const recovered = !!compaction && compaction.status !== 'failed'
   const menu = useSlashCommandMenu(draft, value => { setDraft(conversationId, value); setCommandError(undefined) },
     content => { void submit(content) })
   return (
@@ -86,7 +94,9 @@ export function ConversationComposer({
       pending={commandOnly ? sessionControls?.mutation.isPending : isSending}
       disabled={disabled || (isSending && !allowEditingWhileSending)}
       sendDisabled={commandOnly ? sessionControls?.mutation.isPending : sendDisabled}
-      error={commandError ?? (error ? `Message could not be sent: ${error}` : undefined)}
+      error={(commandError?.conversationId === conversationId && !recovered
+        ? compaction?.message ?? commandError.message : undefined)
+        ?? (error ? `Message could not be sent: ${error}` : undefined)}
     />
   )
 }

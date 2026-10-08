@@ -2,10 +2,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
-import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
+import { HostHarnessOverrideSaveSchema, HostHarnessInstanceCheckInputSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { server } from '../../mocks/server'
+import { ToastProvider } from '../../shared/ui/nocturne/ToastProvider'
 import { HostHarnessOverrides } from './HostHarnessOverrides'
 import { clearRevisionedFormPersistence } from './revisionedForm'
 import { savedClaudeConfiguration } from './claudeSettings.fixtures'
@@ -16,9 +17,18 @@ const pc: HostHarnessOverride = { instanceId: mainId, revision: 1, instanceRevis
 const laptop: HostHarnessOverride = { ...pc, instanceId: deviceId, instanceRevision: 'laptop-r1', target: { hostRef: { kind: 'device', mainId, deviceId }, applicationInstallationId: deviceId, harnessInstallationId: 'laptop-installation', installationFingerprint: 'laptop-fingerprint' }, configuration: { ...DEFAULT_HARNESS_DEFAULTS.codex, model: 'laptop-model' } }
 beforeEach(() => server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.json({ instances: [], installations: [] }))))
 const clients: QueryClient[] = []
+function deferredReadback() {
+  let release!: () => void
+  const promise = new Promise<void>(resolve => { release = resolve })
+  return { promise, release }
+}
 function renderHost(value: HostHarnessOverride) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
-  return render(<QueryClientProvider client={client}><HostHarnessOverrides key={value.instanceId} target={{ hostRef: value.target.hostRef, applicationInstallationId: value.target.applicationInstallationId }} /></QueryClientProvider>)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  return render(<QueryClientProvider client={client}><ToastProvider>
+    <HostHarnessOverrides key={value.instanceId} target={{ hostRef: value.target.hostRef,
+      applicationInstallationId: value.target.applicationInstallationId }} />
+  </ToastProvider></QueryClientProvider>)
 }
 afterEach(() => { cleanup(); clearRevisionedFormPersistence(); for (const client of clients.splice(0)) client.clear() })
 describe('host-specific settings revisions', () => {
@@ -47,18 +57,101 @@ describe('host-specific settings revisions', () => {
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
     expect(catalogRequests).toBe(0)
   })
-  it('saves the exact installation and revision without calling API-host model discovery', async () => {
-    server.use(http.post('/api/management/harness-instances/read', () => HttpResponse.json({ overrides: [pc] })),
+  it('saves the exact installation and revision without reporting its own readback as a conflict', async () => {
+    let saved = pc
+    const readback = deferredReadback()
+    server.use(
+      http.get('/api/management/harnesses/registry', async () => {
+        if (saved.revision > 1) await readback.promise
+        return HttpResponse.json({ instances: [], installations: [] })
+      }),
+      http.post('/api/management/harness-instances/read', () => HttpResponse.json({ overrides: [saved] })),
       http.post('/api/management/harness-instances/save', async ({ request }) => {
-        const input = await request.json() as Record<string, unknown>
+        const input = HostHarnessOverrideSaveSchema.parse(await request.json())
         expect(input.expectedRevision).toBe(1); expect(input.target).toEqual(pc.target)
-        return HttpResponse.json({ value: { ...pc, revision: 2, instanceRevision: 'pc-r2', configuration: input.configuration }, replayed: false })
+        saved = { ...pc, revision: 2, instanceRevision: 'pc-r2', configuration: input.configuration }
+        return HttpResponse.json({ value: saved, replayed: false })
       }))
     renderHost(pc)
-    const user = userEvent.setup(); const model = await screen.findByRole('textbox', { name: 'Model' })
-    await user.clear(model); await user.type(model, 'pc-new-model'); await user.click(screen.getByRole('button', { name: 'Save host override' }))
+    const user = userEvent.setup()
+    const model = await screen.findByRole('textbox', { name: 'Model' })
+    await user.clear(model)
+    await user.type(model, 'pc-new-model')
+    await user.click(screen.getByRole('button', { name: 'Save host override' }))
+    await waitFor(() => expect(screen.getByText('Saved immutable revision').nextElementSibling).toHaveTextContent('pc-r2'))
+    expect(screen.getByRole('button', { name: 'Save host override' })).toHaveTextContent('Saving…')
+    readback.release()
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    expect(await screen.findByText('Host override saved')).toBeVisible()
+    expect(screen.getByText('Saved immutable revision').nextElementSibling).toHaveTextContent('pc-r2')
+    expect(screen.queryByText('Host override changed elsewhere')).not.toBeInTheDocument()
+    expect(screen.queryByText('These defaults changed elsewhere. Your edits are preserved.')).not.toBeInTheDocument()
     expect(model).toHaveValue('pc-new-model')
+  })
+  it('warns about an external revision and requires review before saving the retained draft', async () => {
+    let saved = pc
+    const revisions: number[] = []
+    server.use(
+      http.post('/api/management/harness-instances/read', () => HttpResponse.json({ overrides: [saved] })),
+      http.post('/api/management/harness-instances/save', async ({ request }) => {
+        const input = HostHarnessOverrideSaveSchema.parse(await request.json())
+        revisions.push(input.expectedRevision)
+        saved = { ...saved, revision: 3, instanceRevision: 'pc-r3', configuration: input.configuration }
+        return HttpResponse.json({ value: saved, replayed: false })
+      }),
+    )
+    renderHost(pc)
+    const user = userEvent.setup()
+    const model = await screen.findByRole('textbox', { name: 'Model' })
+    await user.clear(model)
+    await user.type(model, 'my-draft')
+    saved = { ...pc, revision: 2, instanceRevision: 'pc-r2', enabled: false,
+      configuration: { ...pc.configuration, model: 'external-model' } }
+    await act(async () => { await clients[0]!.invalidateQueries() })
+    expect(await screen.findByText('Host override changed elsewhere')).toBeVisible()
+    expect(screen.getByText('These defaults changed elsewhere. Your edits are preserved.')).toBeVisible()
+    expect(model).toHaveValue('my-draft')
+    expect(screen.getByRole('button', { name: 'Save host override' })).toBeDisabled()
+    expect(revisions).toEqual([])
+    await user.click(screen.getByRole('button', { name: 'Reapply my edits to current defaults' }))
+    expect(model).toHaveValue('my-draft')
+    expect(screen.getByRole('checkbox', { name: 'Enabled for new admissions' })).not.toBeChecked()
+    await user.click(screen.getByRole('button', { name: 'Save host override' }))
+    expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    expect(revisions).toEqual([2])
+  })
+  it('reports a concurrent revision after the save settles and preserves edits made during saving', async () => {
+    let latest = pc
+    const readback = deferredReadback()
+    server.use(
+      http.get('/api/management/harnesses/registry', async () => {
+        if (latest.revision > 1) await readback.promise
+        return HttpResponse.json({ instances: [], installations: [] })
+      }),
+      http.post('/api/management/harness-instances/read', () => HttpResponse.json({ overrides: [latest] })),
+      http.post('/api/management/harness-instances/save', async ({ request }) => {
+        const input = HostHarnessOverrideSaveSchema.parse(await request.json())
+        const saved = { ...pc, revision: 2, instanceRevision: 'pc-r2', configuration: input.configuration }
+        latest = { ...saved, revision: 3, instanceRevision: 'pc-r3',
+          configuration: { ...saved.configuration, model: 'external-model' } }
+        return HttpResponse.json({ value: saved, replayed: false })
+      }),
+    )
+    renderHost(pc)
+    const user = userEvent.setup()
+    const model = await screen.findByRole('textbox', { name: 'Model' })
+    await user.clear(model)
+    await user.type(model, 'submitted-model')
+    await user.click(screen.getByRole('button', { name: 'Save host override' }))
+    await waitFor(() => expect(screen.getByText('Saved immutable revision').nextElementSibling).toHaveTextContent('pc-r3'))
+    await user.clear(model)
+    await user.type(model, 'newer-draft')
+    readback.release()
+    expect(await screen.findByText('Earlier changes saved')).toBeVisible()
+    expect(await screen.findByText('Host override changed elsewhere')).toBeVisible()
+    expect(screen.getByText('These defaults changed elsewhere. Your edits are preserved.')).toBeVisible()
+    expect(model).toHaveValue('newer-draft')
+    expect(screen.getByRole('button', { name: 'Save host override' })).toBeDisabled()
   })
   it('preserves edits after a revision conflict and refreshes saved evidence', async () => {
     let changed = false
@@ -149,4 +242,78 @@ it('checks a saved profile only on explicit action and reconciles its exact comm
   await user.click(screen.getByRole('button', { name: 'Reconcile original profile check' }))
   expect(await screen.findByText('suite-v1')).toBeVisible()
   expect(requests).toHaveLength(2)
+})
+
+
+it('creates a Claude override from its saved preset, edits the profile directory and explicitly checks persisted settings', async () => {
+  let saved: HostHarnessOverride | undefined
+  let checks = 0
+  const readback = deferredReadback()
+  const target = { ...pc.target, harnessInstallationId: 'claude-sdk', installationFingerprint: 'claude-payload' }
+  server.use(
+    http.get('/api/management/harnesses/registry', async () => {
+      if (saved) await readback.promise
+      return HttpResponse.json({
+        instances: [{ instanceId: 'local-default:claude', instanceRevision: '5', driverId: 'claude',
+          enabled: true, configuration: savedClaudeConfiguration, availability: 'available', driverRevision: '1' }],
+        installations: [{ hostRef: target.hostRef, harnessInstallationId: target.harnessInstallationId,
+          installationFingerprint: target.installationFingerprint, driverId: 'claude', driverRevision: '1',
+          protocolRevision: 'claude-sdk', environmentGeneration: 'env', connectionGeneration: 'conn',
+          installed: true, authenticated: null, compatible: null, qualified: null, observedVersion: null,
+          launcher: { requested: 'claude', resolvedLauncher: '/host/claude', fingerprint: 'claude-payload',
+            status: 'installed', interpreter: null, diagnostics: [], checkedAt: '2026-10-01T00:00:00.000Z',
+            environment: { generation: 'env', provenance: 'terminal', cwd: '/host', path: '/host' } } }],
+      })
+    }),
+    http.post('/api/management/harness-instances/read', () => HttpResponse.json({ overrides: saved ? [saved] : [] })),
+    http.post('/api/management/harness-instances/save', async ({ request }) => {
+      const input = HostHarnessOverrideSaveSchema.parse(await request.json())
+      expect(input).toMatchObject({ expectedRevision: 0, target, presetId: 'local-default:claude',
+        configuration: { ...savedClaudeConfiguration, configDirectory: '/host/different-profile' } })
+      saved = { ...pc, instanceId: input.instanceId, target: input.target, presetId: input.presetId,
+        enabled: input.enabled, configuration: input.configuration,
+        revision: 1, instanceRevision: '1', driverId: 'claude',
+        configurationFingerprint: 'saved-claude', qualification: 'unqualified' }
+      return HttpResponse.json({ value: saved, replayed: false })
+    }),
+    http.post('/api/management/harness-instances/check', async ({ request }) => {
+      const input = HostHarnessInstanceCheckInputSchema.parse(await request.json())
+      expect(input).toMatchObject({ instanceId: saved!.instanceId, expectedRevision: 1, target })
+      expect(saved!.configuration).toMatchObject({ configDirectory: '/host/different-profile' })
+      checks += 1
+      saved = { ...saved!, qualification: 'qualified' }
+      return HttpResponse.json({ value: saved, replayed: false, proof: {
+        target, instanceRevision: '1', configurationFingerprint: 'saved-claude', driverId: 'claude',
+        driverRevision: '1', protocolRevision: 'claude-sdk', suiteRevision: 'profile-suite',
+        environmentGeneration: 'env', connectionGeneration: 'conn', authenticated: true,
+        compatible: true, qualified: true, checkedAt: '2026-10-01T00:00:00.000Z',
+      } })
+    }),
+  )
+  renderHost(pc)
+  const user = userEvent.setup()
+  const choices = await screen.findByRole('combobox', { name: 'Installation and global preset for new override' })
+  await waitFor(() => expect(choices.querySelectorAll('option')).toHaveLength(2))
+  expect(choices.querySelectorAll('option')[1]).toHaveTextContent('claude')
+  await user.selectOptions(choices, choices.querySelectorAll('option')[1]!.value)
+  await user.click(screen.getByRole('button', { name: 'Configure new host override' }))
+  const profile = screen.getByRole('textbox', { name: 'Local Claude profile directory' })
+  await user.clear(profile)
+  await user.type(profile, '/host/different-profile')
+  expect(screen.queryByRole('button', { name: 'Check saved profile on this computer' })).not.toBeInTheDocument()
+  expect(checks).toBe(0)
+  await user.click(screen.getByRole('button', { name: 'Create host override' }))
+  const check = await screen.findByRole('button', { name: 'Check saved profile on this computer' })
+  expect(check).toBeDisabled()
+  readback.release()
+  await waitFor(() => expect(check).toBeEnabled())
+  expect(screen.getByText('Changes saved to the server')).toBeVisible()
+  expect(screen.queryByText(/host override changed elsewhere/i)).not.toBeInTheDocument()
+  expect(screen.queryByText('These defaults changed elsewhere. Your edits are preserved.')).not.toBeInTheDocument()
+  expect(screen.getByRole('textbox', { name: 'Local Claude profile directory' })).toHaveValue('/host/different-profile')
+  expect(screen.getByText(/subscription capacity/)).toBeVisible()
+  expect(checks).toBe(0)
+  await user.click(check)
+  await waitFor(() => expect(screen.getByText('Qualification').nextElementSibling).toHaveTextContent('qualified'))
+  expect(checks).toBe(1)
 })

@@ -12,12 +12,13 @@ export function useSlashCommandMenu(value: string, setValue: (value: string) => 
   const choose = (command: string) => { setValue(command); send(command) }
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (!open || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return false
+    if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return false
     if (event.key === 'Escape') { event.preventDefault(); setDismissed(true); return true }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault(); setSelected((active + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length); return true
     }
     if (event.key === 'Tab') { event.preventDefault(); setValue(options[active]!); return true }
-    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); choose(options[active]!); return true }
+    if (event.key === 'Enter') { event.preventDefault(); choose(options[active]!); return true }
     return false
   }
   return { onKeyDown, reset: () => { setDismissed(false); setSelected(0) },

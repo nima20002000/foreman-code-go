@@ -38,7 +38,7 @@ async function releasable(sql: GraphSqlClient, snapshotId: string): Promise<bool
       left join run_node_placements n on n.run_id=i.run_id and n.node_id=i.node_id
     where s.owner_kind='materialization' and s.state in ('preparing','owned','uncertain')
       and (p.definition#>>'{spec,source,snapshotId}'=$1 or c.spec#>>'{source,snapshotId}'=$1
-        or n.record#>>'{source,snapshotId}'=$1)
+        or n.record#>>'{source,snapshotId}'=$1 or s.record#>>'{preparation,source,snapshotId}'=$1)
     union all
     select m.state<>'closed',
       greatest((m.record#>>'{receipt,verifiedAt}')::timestamptz,m.cleanup_lease_expires_at),null::integer

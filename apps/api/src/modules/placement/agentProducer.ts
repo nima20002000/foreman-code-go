@@ -7,7 +7,7 @@ import { HostHarnessOverrideSchema } from '@foreman-code/contracts/harness-regis
 import { type AcceptedNodePlacement, type DispatchIntent, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { type RunStartV3Input, sameWorkflowValue } from '@foreman-code/contracts/wave25'
+import { type RunStartV3Input, sameWorkflowValue, workflowUsesAgentPlacements } from '@foreman-code/contracts/wave25'
 import { readImmutableWorkflowVersion, IMMUTABLE_WORKFLOW_VERSION_COLUMNS, type ImmutableWorkflowVersionRow } from '../workflows/immutableRead.js'
 import type { SourceAdmissionPort } from '../sources/admissionPorts.js'
 import type { WorkspaceRootPolicyPort } from '../sources/rootPolicyPorts.js'
@@ -50,7 +50,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       signal?.throwIfAborted()
       if (!sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) this.conflict()
       const nodes = version.definition.nodes.filter(node => node.kind !== 'job')
-      if (!nodes.some(node => node.placement || node.artifactOutputs)) return undefined
+      if (!workflowUsesAgentPlacements(version.definition)) return undefined
       const resolveMain = (sql: GraphTransactionSql, principal: ManagementPrincipal, configuration: AgentConfigurationVersion) =>
         resolveLocalMainPlacement({ sql, principal, configuration, mainId: this.mainId, workspaceId: input.workspaceId,
           locationRevision: input.expectedLocationRevision, roots: this.roots, installations: this.registry.installations })

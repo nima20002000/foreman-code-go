@@ -13,7 +13,8 @@ import type { WorkerConversationJournal } from './workerJournal.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
-import type { CompactionState } from '@foreman-code/contracts'
+import { compactionBlocksSend, type CompactionState } from '@foreman-code/contracts'
+import { isDefiniteCompactionRejection } from '../harnesses/errors.js'
 import { recoverPersistedClaudeCompaction } from '../harnesses/claudeSdk/recoverCompaction.js'
 import { unavailableNativeResponse } from '../harnesses/responseAvailability.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
@@ -236,12 +237,14 @@ export class WorkerConversationHost {
   }
 
   private async resident(request: WorkerConversationRpcRequest & { session: NativeSessionReference }) {
-    const record = await this.ports.journal.read(request.binding)
+    let record = await this.ports.journal.read(request.binding)
     const resident = this.residents.get(request.binding.owner.conversationId)
     if (!record || !isDeepStrictEqual(record.session, request.session) || !resident
       || record.applicationAccessChange?.state === 'reserved'
       || !isDeepStrictEqual(resident.binding, request.binding)) unavailable('The original chat session is not resident.')
-    if (!isDeepStrictEqual(record.nativeOwner, sessionOwner(await resident.allocation.nativeOwner(request.session)))) {
+    const owner = sessionOwner(await resident.allocation.nativeOwner(request.session))
+    record = await this.ports.journal.read(request.binding)
+    if (!record || !isDeepStrictEqual(record.nativeOwner, owner)) {
       unavailable('The original native chat process changed.')
     }
     return { resident, record }
@@ -377,15 +380,21 @@ export class WorkerConversationHost {
   private pump(resident: Resident, request: WorkerConversationRpcRequest & { correlationId: string },
     connection: Readonly<DeviceSessionBinding>, stream: () => AsyncIterable<unknown>) {
     const task = (async () => {
+      let streamStarted = false
       try {
         await this.authorize(request, connection, this.lifetime.signal)
+        streamStarted = true
         for await (const event of stream()) void event
         const record = await this.ports.journal.read(resident.binding)
         if (!record?.session) unavailable('The native session was never observed.')
         const history = await resident.allocation.manager.reconcile(record.session, request.correlationId, this.lifetime.signal)
         await this.finish(resident.binding, request.correlationId, history)
       } catch (error) {
-        await this.ports.journal.finishTurn(resident.binding, request.correlationId)
+        const notDelivered = !streamStarted || error && typeof error === 'object'
+          && 'certainty' in error && error.certainty === 'definite'
+          && 'deliveryState' in error && error.deliveryState === 'not-delivered'
+        if (notDelivered) await this.reject(resident.binding, request, error)
+        else await this.ports.journal.finishTurn(resident.binding, request.correlationId)
         this.log.error({ err: error, conversationId: resident.binding.owner.conversationId }, 'Worker chat needs native recovery')
       }
     })()
@@ -393,6 +402,14 @@ export class WorkerConversationHost {
     this.running.set(key, task)
     void task.then(() => this.running.delete(key), () => this.running.delete(key))
     void this.track(task)
+  }
+
+  private reject(binding: WorkerConversationBinding, request: WorkerConversationRpcRequest & { correlationId: string },
+    error: unknown) {
+    const message = error instanceof Error ? error.message : 'Native input was not delivered.'
+    return this.ports.journal.rejectTurn(binding, request.correlationId,
+      { outcome: 'failed', error: { code: 'NATIVE_INPUT_NOT_DELIVERED', message, retryable: true } },
+      request.method === 'conversation.initial-turn' ? request.operationId : undefined)
   }
 
   private finish(binding: WorkerConversationBinding, correlationId: string, history: NativeHistory) {
@@ -410,23 +427,27 @@ export class WorkerConversationHost {
     if (!reserved.dispatch) return { compaction: reserved.state }
     const task = (async () => {
       let offered = false
+      let progress = reserved.state
       try {
         const state = await manager.compactSession!(request.session, {
           requestId: request.requestId, clientCorrelationId: request.correlationId,
           onDispatch: async () => {
             await this.authorize(request, connection, this.lifetime.signal)
-            await this.ports.journal.compactProgress(request.binding, { ...reserved.state, dispatchPhase: 'dispatched' })
+            progress = await this.ports.journal.compactProgress(request.binding,
+              { ...progress, dispatchPhase: 'dispatched' })
             offered = true
           },
-          onProgress: async state => { await this.ports.journal.compactProgress(request.binding, state) },
+          onProgress: async state => { progress = await this.ports.journal.compactProgress(request.binding, state) },
         }, this.lifetime.signal)
         await this.ports.journal.compactProgress(request.binding, state)
       } catch (error) {
         const record = await this.ports.journal.read(request.binding)
         const latest = record?.compactions.find(value => value.state.requestId === request.requestId)?.state ?? reserved.state
         if (['accepted', 'running', 'uncertain'].includes(latest.status)) {
+          const definite = !offered || isDefiniteCompactionRejection(error)
           await this.ports.journal.compactProgress(request.binding, { ...latest,
-            status: offered ? 'uncertain' : 'failed', message: 'Native compaction needs recovery.',
+            status: definite ? 'failed' : 'uncertain',
+            message: definite ? 'The native provider rejected compaction.' : 'Native compaction needs recovery.',
             observedAt: new Date().toISOString() })
         }
         this.log.error({ err: error, conversationId: request.binding.owner.conversationId }, 'Worker compaction needs recovery')
@@ -444,6 +465,10 @@ export class WorkerConversationHost {
     if (!record || !original || !isDeepStrictEqual(record.session, request.session)
       || request.state.nativeSessionId !== request.session.nativeSessionId) unavailable('The persisted compaction owner changed.')
     let state = original.state
+    if (!compactionBlocksSend(state)) {
+      await this.authorize(request, connection, signal)
+      return { compaction: state, receipt: record }
+    }
     if (this.ports.readCompaction) state = await this.ports.readCompaction({ ...request, state }, record, connection, signal)
     else if (request.configuration.harness.harness === 'claude') {
       const profile = request.configuration.harness.configDirectory
@@ -533,22 +558,25 @@ export class WorkerConversationHost {
       const manager = resident.allocation.manager
       if (!manager.startInitialTurn) unavailable('The native driver does not use atomic initial message admission.')
       await this.ports.journal.receive(request.binding, connection)
-      const creation = await this.ports.journal.reserveCreation(request.binding, request.operationId,
-        commandInputHash({ mode: 'initial-turn', correlationId: request.correlationId }))
-      const turn = await this.ports.journal.reserveTurn(request.binding, request.correlationId, commandInputHash({
-        prompt: request.prompt, mode: request.sessionMode ?? 'regular', preferences: request.preferences ?? null }),
-      { mode: request.sessionMode ?? 'regular' })
-      if (creation.dispatch && turn.dispatch) {
-        if (request.preferences) {
-          await manager.configureSessionPreferences?.(request.preferences)
-          await this.ports.journal.preferences(request.binding, request.preferences, null)
+      const initial = await this.ports.journal.reserveInitialTurn(request.binding, request.operationId,
+        commandInputHash({ mode: 'initial-turn', correlationId: request.correlationId }), request.correlationId,
+        commandInputHash({ prompt: request.prompt, mode: request.sessionMode ?? 'regular',
+          preferences: request.preferences ?? null }), request.sessionMode ?? 'regular')
+      if (initial.dispatch) {
+        try {
+          if (request.preferences) {
+            await manager.configureSessionPreferences?.(request.preferences)
+            await this.ports.journal.preferences(request.binding, request.preferences, null)
+          }
+          const start = await resident.allocation.start({ correlationId: request.correlationId, instructionsDelivered: false,
+            ...(request.applicationAccess ? { applicationAccess: request.applicationAccess } : {}) })
+          this.pump(resident, request, connection, () => manager.startInitialTurn!(start, {
+            ...this.callbacks(resident, request, connection, this.lifetime.signal),
+            onSessionObserved: session => this.bind(resident, session, request, this.lifetime.signal),
+          }, this.lifetime.signal))
+        } catch (error) {
+          await this.reject(resident.binding, request, error)
         }
-        const start = await resident.allocation.start({ correlationId: request.correlationId, instructionsDelivered: false,
-          ...(request.applicationAccess ? { applicationAccess: request.applicationAccess } : {}) })
-        this.pump(resident, request, connection, () => manager.startInitialTurn!(start, {
-          ...this.callbacks(resident, request, connection, this.lifetime.signal),
-          onSessionObserved: session => this.bind(resident, session, request, this.lifetime.signal),
-        }, this.lifetime.signal))
       }
       return { receipt: await this.ports.journal.read(request.binding) }
     }
@@ -576,11 +604,11 @@ export class WorkerConversationHost {
       case 'conversation.history':
       case 'conversation.reconcile': {
         const turn = record.turns.find(turn => turn.correlationId === request.correlationId)
-        if (request.method === 'conversation.reconcile' && turn?.nativeSubmission && turn.status !== 'completed') {
+        if (request.method === 'conversation.reconcile' && turn?.nativeSubmission && !['completed', 'rejected'].includes(turn.status)) {
           await resident.allocation.recoverClaudeAuthority?.(request, turn.nativeSubmission, signal)
           await this.authorize(request, connection, signal)
         }
-        if (request.method === 'conversation.reconcile' && turn?.nativeTurnId && turn.status !== 'completed') {
+        if (request.method === 'conversation.reconcile' && turn?.nativeTurnId && !['completed', 'rejected'].includes(turn.status)) {
           if ((request.sessionMode ?? 'regular') !== (turn.sessionMode ?? 'regular')) unavailable('The recovered turn mode changed.')
           await resident.allocation.recoverFiles?.(request, turn.nativeTurnId, signal)
           await this.authorize(request, connection, signal)
@@ -588,7 +616,11 @@ export class WorkerConversationHost {
         let history: NativeHistory
         const running = request.correlationId !== undefined
           && this.running.has(`${request.binding.owner.conversationId}:${request.correlationId}`)
-        if (request.correlationId && !running) history = await manager.reconcile(request.session, request.correlationId, signal)
+        if (turn?.status === 'rejected' && turn.result) {
+          history = { events: [], pendingInteractions: [], nonSubmission: {
+            nativeSessionId: request.session.nativeSessionId, clientCorrelationId: turn.correlationId, result: turn.result,
+          } }
+        } else if (request.correlationId && !running) history = await manager.reconcile(request.session, request.correlationId, signal)
         else if (request.before && manager.historyPage) history = await manager.historyPage(request.session, request.before, signal)
         else history = await manager.history(request.session, signal)
         if (request.correlationId && !running && record.turns.some(turn => turn.correlationId === request.correlationId)) {
@@ -607,7 +639,7 @@ export class WorkerConversationHost {
       case 'conversation.preferences':
         if (!manager.applySessionPreferences) unavailable('The native driver cannot apply these preferences.')
         await this.ports.journal.preferences(request.binding, request.preferences, record.appliedPreferences)
-        if (record.turns.some(turn => turn.status !== 'completed')
+        if (record.turns.some(turn => !['completed', 'rejected'].includes(turn.status))
           || record.compactions.some(control => ['accepted', 'running', 'uncertain'].includes(control.state.status))) {
           return { receipt: await this.ports.journal.read(request.binding) }
         }
@@ -618,6 +650,7 @@ export class WorkerConversationHost {
       case 'conversation.compact-reconcile': {
         const original = record.compactions.find(value => value.state.requestId === request.state.requestId)
         if (!original || request.state.nativeSessionId !== request.session.nativeSessionId) unavailable('The compaction owner changed.')
+        if (!compactionBlocksSend(original.state)) return { compaction: original.state }
         const state = await manager.reconcileCompaction?.(request.session, original.state, signal) ?? original.state
         return { compaction: await this.ports.journal.compactProgress(request.binding, state) }
       }

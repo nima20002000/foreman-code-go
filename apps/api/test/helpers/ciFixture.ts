@@ -36,7 +36,8 @@ export function ciFixture() {
   const commands = {
     execute: async (input: { principal: ManagementPrincipal; operation: string; commandId: string;
       targetKey: string; payload: unknown; authorize?(sql: unknown): Promise<void>; perform(sql: unknown): Promise<unknown> }) => {
-      await input.authorize?.({})
+      const sql = { query: async () => ({ rows: [] }) }
+      await input.authorize?.(sql)
       const key = `${input.principal.id}:${input.operation}:${input.commandId}`
       const digest = jobDigest(input.payload)
       const existing = receipts.get(key)
@@ -46,7 +47,7 @@ export function ciFixture() {
         }
         return { value: structuredClone(existing.result), replayed: true }
       }
-      const value = await input.perform({})
+      const value = await input.perform(sql)
       receipts.set(key, { digest, target: input.targetKey, result: JSON.parse(JSON.stringify(value)) })
       audits.push({ principalId: input.principal.id, action: input.operation, outcome: 'succeeded' })
       return { value, replayed: false }
@@ -87,7 +88,8 @@ export function ciFixture() {
     }
     const principal = caller.audience === 'worker' ? accepted : caller
     for (const action of actions) requireAuthorization(principal, action, { workspaceId: resolved })
-    return { principal, workspaceId: resolved, ...(caller.audience === 'worker' && agentExecution.id ? { executionId: agentExecution.id } : {}) }
+    return { principal, workspaceId: resolved, ...(caller.audience === 'worker' && agentExecution.id ? { executionId: agentExecution.id, initiatingAgent: { workflowId: 'workflow', runId: 'run',
+      agentId: worker.agentId!, executionId: agentExecution.id } } : {}) }
   } }
   const sources = {
     approveProject: async (principal: ManagementPrincipal, input: { workspaceId: string; commandId: string; commit?: string
@@ -134,8 +136,8 @@ export function ciFixture() {
       return structuredClone(definition)
     },
     enqueue: async (principal: ManagementPrincipal, _source: string, scope: string, input: {
-      commandId: string; definitionId: string
-    }) => {
+      commandId: string; definitionId: string; placementOverride?: unknown
+    }, origin: { initiatingAgent?: unknown } = {}) => {
       enqueues++
       enqueued.push(input)
       const queuedDefinition = [...definitions.values()].find(value => value.id === input.definitionId)
@@ -144,8 +146,8 @@ export function ciFixture() {
       const at = Date.now(), now = new Date(at).toISOString()
       ticket = JobQueueTicketSchema.parse({ schemaVersion: 1, id: randomUUID(), workspaceId: scope, revision: 1,
         commandId: input.commandId, commandDigest: jobDigest(input), principalId: principal.id, definition: queuedDefinition,
-        executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(), workflow: null, gateId: null,
-        placement: { kind: 'auto' }, placementOverride: null, resources: runtime.spec.verification.resources,
+        executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(), workflow: null, initiatingAgent: origin.initiatingAgent, gateId: null,
+        placement: input.placementOverride ?? { kind: 'auto' }, placementOverride: input.placementOverride ?? null, resources: runtime.spec.verification.resources,
         enqueueSequence: '1', enqueuedAt: now, deadlineAt: new Date(at + 60_000).toISOString(),
         state: 'waiting', waitingReasons: ['busy'], compatibleTargetCount: 1, queuePosition: 1, estimatedStartAt: null,
         reservationId: null, cancelRequestedAt: null, terminalReason: null, finishedAt: null })
@@ -182,13 +184,16 @@ export function ciFixture() {
   return { workspaceId, worker, operator, readonly, services, audits, createCi, roots, snapshotCalls, approvals,
     enqueued, agent, agentExecution, sources, jobs, commands, pool, authority,
     counts: () => ({ sourceCaptures, enqueues }), advanceHead: () => { head = 'd'.repeat(40) },
-    complete: () => {
+    complete: (options: { publication?: 'collecting' | 'failed' | 'expired'; failed?: true } = {}) => {
       if (!ticket) throw new Error('Missing queued ticket')
       execution = VerificationJobExecutionSchema.parse({ ...jobExecution(), schemaVersion: 2,
-        id: ticket.executionId, attemptId: ticket.attemptId, operationId: ticket.operationId, workspaceId,
+        id: ticket.executionId, initiatingAgent: ticket.initiatingAgent, attemptId: ticket.attemptId, operationId: ticket.operationId, workspaceId,
         acceptedSpec: { ...runtime.spec, definitionVersionId: ticket.definition.versionId,
-          source: { ...runtime.spec.source, ...ticket.definition.spec.source } }, publication: 'complete',
-        process: { phase: 'terminal', outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true } })
+          source: { ...runtime.spec.source, ...ticket.definition.spec.source } },
+        publication: options.publication ?? 'complete',
+        resultIssue: options.publication === 'failed' ? 'publication_failed' : null,
+        process: { phase: 'terminal', outcome: options.failed ? 'build_failed' : 'succeeded',
+          exitCode: options.failed ? 1 : 0, signal: null, processStopped: true } })
       ticket = JobQueueTicketSchema.parse({ ...ticket, state: 'accepted', reservationId: ticket.id,
         waitingReasons: [], selectedComputer: { target: runtime.spec.target,
           rootId: runtime.spec.profile.rootId, bindingRevision: 1, profileId: 'profile', profileRevision: 1 } })
@@ -199,8 +204,9 @@ export function ciFixture() {
         suite: 'unit', executionId: execution!.id, attemptId: execution!.attemptId, target: spec.target,
         profile: spec.profile, resources: spec.verification.resources, parameters: spec.verification.parameters,
         startedAt: ticket.enqueuedAt, finishedAt: new Date().toISOString(),
-        totals: { total: 3, passed: 3, failed: 0, skipped: 0 }, firstPassFailed: 0, expectedPortions: 1,
-        completedPortions: 1, disallowedSkipped: 0, completeness: 'complete', outcome: 'passed' })
+        totals: { total: 3, passed: options.failed ? 2 : 3, failed: options.failed ? 1 : 0, skipped: 0 },
+        firstPassFailed: options.failed ? 1 : 0, expectedPortions: 1,
+        completedPortions: 1, disallowedSkipped: 0, completeness: 'complete', outcome: options.failed ? 'failed' : 'passed' })
     },
   }
 }

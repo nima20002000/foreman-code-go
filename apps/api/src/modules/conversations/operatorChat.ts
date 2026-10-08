@@ -174,18 +174,6 @@ export class OperatorChatService {
   private sessionControlsStore: SessionControlStore | undefined
   private sessionControls() { return this.sessionControlsStore ??= this.repository.createSessionControls() }
 
-  private async nativeTurnSettings(id: string, mode?: import('@foreman-code/contracts').SessionMode) {
-    const settings = await this.sessionControls().turnSettings(id, mode)
-    return {
-      ...settings,
-      onSettingsApplied: async () => {
-        // Reconciliation can own the control queue while awaiting the native manager.
-        // The settings store revision-checks this callback's write.
-        if (settings.sessionMode) await this.sessionControls().appliedMode(id, settings.sessionMode)
-      },
-    }
-  }
-
   private commandReceipts: OperatorChatCommands | undefined
   private setupCheck: { configurationId: string; promise: Promise<OperatorChatSetup> } | undefined
 
@@ -687,7 +675,9 @@ export class OperatorChatService {
           const hint = input.context && Object.values(input.context).some(Boolean)
             ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
           initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(start, {
-            ...await this.nativeTurnSettings(id, input.sessionMode),
+            ...await this.sessionControls().turnSettings(id, {
+              requestId: input.requestId, nativeSessionId: null,
+            }, input.sessionMode),
             prompt: `${initialHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${sessionTaskContent(input.content, input.sessionMode)}${hint}`,
             clientCorrelationId: start.correlationId,
             onTerminal,
@@ -752,7 +742,9 @@ export class OperatorChatService {
       })
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(runtime.session, {
-        ...await this.nativeTurnSettings(id, input.sessionMode),
+        ...await this.sessionControls().turnSettings(id, {
+          requestId: input.requestId, nativeSessionId: runtime.session.nativeSessionId,
+        }, input.sessionMode),
         prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${sessionTaskContent(input.content, input.sessionMode)}${hint}`, clientCorrelationId: correlationId,
         onTerminal,
         onMessageSubmitted: async (receipt) => {

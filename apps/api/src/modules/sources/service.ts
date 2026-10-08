@@ -22,7 +22,7 @@ import type { PrivateSourceSnapshotStore } from './store.js'
 import { authorizeSource } from './authority.js'
 import { assertAcceptedSourceRelativeCwd } from './agentSourceAuthority.js'
 import { sourceBindingHash } from './bindingHash.js'
-import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
+import { PostgresSourceReservations, requireUnreclaimedSourceOperation, type SourceReservation } from './reservations.js'
 import type { RegisteredSourceRootPort, SourceAdmissionPort, SourceClosureProofPort } from './admissionPorts.js'
 import type { MaterializationAttempt } from './ports.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
@@ -394,6 +394,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
   async prepareExecution(input: { principal: ManagementPrincipal; workspaceId: string; rootId: string; bindingRevision: number;
     source: ApprovedSourcePin; attempt: MaterializationAttempt; operationId: string }): Promise<SourceMaterializationRecord> {
     const state = await this.transaction(async sql => {
+      await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${input.operationId}`])
+      await requireUnreclaimedSourceOperation(sql, input.operationId)
       const root = await this.resolveRootBinding(sql, input.principal, input)
       const source = await this.resolveApprovedSource(sql, input.principal, input.workspaceId, input.source)
       if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [input.operationId])).rowCount)
@@ -410,10 +412,17 @@ export class PostgresSourceService implements SourceAdmissionPort {
           || record.receipt.placementHash !== input.attempt.placementHash) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Source preparation belongs to another exact execution/attempt.', 409)
         return { root, source, record, reservation: null, sharedWritableTree: false }
       }
-      const reservation = await this.reservations.reserve(sql, { scopeId: this.scope(root.binding.deviceId, root.binding.workerInstallationId, root.binding.filesystem),
-        ownerKind: 'materialization', ownerId: input.operationId, reservedBytes: source.manifest.totalBytes * 3 + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024 })
       const workflow = await sql.query('select 1 from execution_dispatch_intents where execution_id=$1 and attempt_id=$2 and operation_id=$3',
         [input.attempt.executionId, input.attempt.attemptId, input.operationId])
+      // Worker I/O can outlive admission; keep its cleanup identity with the capacity it owns.
+      const reservation = await this.reservations.reserve(sql, {
+        scopeId: this.scope(root.binding.deviceId, root.binding.workerInstallationId, root.binding.filesystem),
+        ownerKind: 'materialization', ownerId: input.operationId,
+        reservedBytes: source.manifest.totalBytes * 3 + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024,
+        preparation: { identity: { operationId: input.operationId, ownerPrincipalId: input.principal.id,
+          expiresAt: input.principal.expiresAt }, root, attempt: input.attempt, source: root.source, record: null,
+        physicalClosureConfirmed: false, ...(workflow.rowCount === 1 ? { preparationKind: 'workflow' as const } : {}) },
+      })
       const sharedWritableTree = root.binding.accessMode === 'exclusive-write' && workflow.rowCount === 1
       return { root, source, record: null, reservation, sharedWritableTree,
         worktree: sharedWritableTree ? await agentWorktree(sql, input.attempt.executionId) : undefined }
@@ -431,6 +440,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
     const record = SourceMaterializationRecordSchema.parse({ receipt, rootPolicyId: state.root.selection.rootPolicyId,
       rootPolicyRevision: state.root.selection.rootPolicyRevision, operationId: input.operationId, reservationId: state.reservation!.reservationId, sourceBindingHash: input.attempt.placementHash, finalDispatchBindingHash: null, state: 'prepared' })
     const committed = await this.transaction(async sql => {
+      await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${input.operationId}`])
+      await requireUnreclaimedSourceOperation(sql, input.operationId)
       await this.resolveRootBinding(sql, input.principal, input)
       await this.executions.authorize(sql, input.principal, { ...input, root: state.root })
       await sql.query(`insert into source_execution_materializations(materialization_id,workspace_id,execution_id,attempt_id,operation_id,root_id,binding_revision,reservation_id,record,state)

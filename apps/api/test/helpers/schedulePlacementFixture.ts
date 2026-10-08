@@ -80,7 +80,7 @@ export async function schedulePlacementFixture(f: Sch11Fixture) {
       configurationDigest: sourceSha256(Buffer.from(JSON.stringify(configuration))) })
   })
   await publishConfiguration('1')
-  const locations = new WorkspaceBoundLocationService(pool, f.commands, authorities.policies, 'local')
+  const locations = new WorkspaceBoundLocationService(pool, f.commands, authorities.policies, f.locations.runnerId)
   const bound = (await locations.set(writer.principal, 'http', { workspaceId: f.scope.workspaceId,
     commandId: randomUUID(), hostRef, allowedBaseId: allowlist.bases[0]!.baseId, configurationRevision: '1',
     relativePath: '', accessMode: 'read-write', expectedLocationRevision: 1, expectedRootPolicyRevision: 0 })).value

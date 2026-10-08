@@ -54,6 +54,17 @@ describe('Runs selector model', () => {
     expect(readRunSelection(scope, { pathname: `/workspaces/${scope.workspaceId}`, search: { selectedRunId: 'run-a' } }).invalid).toBe(true)
   })
 
+  it('resolves saved Run inspection without inventing version pins and still rejects unselected inspection', () => {
+    const pathname = `/workspaces/${scope.workspaceId}`
+    const search = { workflowId: scope.workflowId, selectedRunId: 'run-a', runNodeId: 'node-saved' }
+    const board = resolveRunsSelectorBoardLocation(pathname, search)
+    expect(board.search).toEqual({ workflowId: scope.workflowId, runNodeId: 'node-saved' })
+    expect(board.run).toBeUndefined()
+    expect(() => resolveRunsSelectorBoardLocation(pathname, { workflowId: scope.workflowId, runNodeId: 'node-saved' }))
+      .toThrow('Run inspection needs a complete Run selection.')
+    expect(() => resolveRunsSelectorBoardLocation(pathname, { ...search, runId: 'run-a' })).toThrow()
+  })
+
   it('reads existing pinned Run URLs as aliases and rejects conflicting selections', () => {
     const search = { workflowId: scope.workflowId, runId: 'run-a', workflowVersionId: 'version-a', executionSemanticsVersion: 3 }
     expect(readRunSelection(scope, { pathname: `/workspaces/${scope.workspaceId}`, search }).identity.runId).toBe('run-a')
