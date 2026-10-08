@@ -77,7 +77,7 @@ describe('NIM-2691 native work result boundary', () => {
     expect(nativeCalls).toBe(0)
   })
 
-  it.each(['codex'] as const)('delivers the received return correlation unchanged to %s', async (harness) => {
+  it.each(['codex'] as const)('delivers the received return correlation unchanged to %s', async () => {
     const fixture = makeCurrentWorkflowFixture('work-return-prompt')
     const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
       ...fixture.version.definition, handoffs: { contractVersion: 1 },

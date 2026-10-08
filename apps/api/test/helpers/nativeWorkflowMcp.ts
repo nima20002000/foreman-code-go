@@ -42,7 +42,7 @@ export async function configureNativeWorkflowMcp(input: {
       .read(AbortSignal.timeout(30_000))
     const codexName = appMcpServerName(codex.effective, input.appServerName)
     const entry = record(codex.effective[codexName])
-    const reference = appLauncherTokenName('codex', entry) ?? entry.bearer_token_env_var
+    const reference = appLauncherTokenName(entry) ?? entry.bearer_token_env_var
     const codexToken = typeof reference === 'string' && isSupportedAppMcpTokenName(reference)
       ? reference : APP_MCP_TOKEN
     // Reuse only the selected provider login; unrelated native configuration stays outside the fixture.

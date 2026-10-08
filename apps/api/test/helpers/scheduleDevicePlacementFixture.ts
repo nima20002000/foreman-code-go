@@ -1,3 +1,4 @@
+import { SupportedHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -95,7 +96,7 @@ export async function scheduleDevicePlacementFixture(f: Sch11Fixture,
     const configuration = f.fixture.configurations.find(item => item.agentId === node.agentId)!
     const instance = (await placement.harness.service.save(placement.writer.principal, 'http', {
       commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0, enabled: true,
-      presetId: 'local-default:codex', configuration: configuration.harness, target: inspected.currentTarget.target,
+      presetId: 'local-default:codex', configuration: SupportedHarnessConfigurationSchema.parse(configuration.harness), target: inspected.currentTarget.target,
     })).value
     node.placement = { schemaVersion: 1, ...selection, projectRoot: policy.canonicalProjectRoot,
       cwdPolicy: 'project-root', relativeCwd: '', instanceId: instance.instanceId,

@@ -1,3 +1,4 @@
+import { SupportedHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
@@ -133,7 +134,7 @@ describe.skipIf(!postgresEnabled)('current execution snapshots and authoring reg
       const revision = Number((await f.db.pool.query('select metadata_revision from agents where id=$1', [original.agentId])).rows[0].metadata_revision)
       const updated = await agents.update(f.writer.principal, { workspaceId: original.workspaceId, agentId: original.agentId,
         commandId: randomUUID(), expectedRevision: revision, expectedConfigurationVersionId: original.id,
-        configuration: { ...original.harness, model: 'new-current-model' } })
+        configuration: SupportedHarnessConfigurationSchema.parse({ ...original.harness, model: 'new-current-model' }) })
       const id = updated.value.agent.configurationVersionId!
       expect(id).not.toBe(original.id)
       expect((await f.db.pool.query('select record from agent_configuration_versions where id=$1', [original.id])).rows[0].record).toEqual(original)

@@ -392,7 +392,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       }
       const interactions = new Wave25InteractionRepository(livePool, new ReviewNativeProofServices(reviewCapture.verify))
       const factories = new NativeHarnessFactories({
-        codexBinary, appMcpEndpoint: endpoint,
+        codexBinary,
         auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
         admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
         abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },

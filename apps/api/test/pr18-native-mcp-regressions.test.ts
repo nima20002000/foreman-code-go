@@ -10,7 +10,7 @@ function snapshot(harness: NativeMcpSnapshot['harness'], name = 'graphql', url =
   const entry = harness === 'codex' ? { url, enabled: true, bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' }
     : { type: 'remote', url, enabled: true, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' } }
   return { harness, revision: fingerprint(entry), user: { [name]: entry }, effective: { [name]: structuredClone(entry) },
-    userConfig: {}, version: '1', file: '/private/native-config', credentialReferences: { [name]: 'GRAPHQL_MCP_TOKEN' } }
+    userConfig: {}, version: '1', file: '/private/native-config', }
 }
 
 describe('PR18 native MCP policy and provenance', () => {
@@ -33,7 +33,7 @@ describe('PR18 native MCP policy and provenance', () => {
       expect(managedStatus(current, 'graphql', endpoint)).toBe('mismatch')
       expect(() => replacement(current, managedEnableChange('graphql', true), { preset: 'graphql', endpoint })).toThrow('matching user-owned preset')
       const next = replacement(current, managedChange('graphql', true, endpoint), { preset: 'graphql', endpoint })
-      expect(next).toEqual({ ...policy, ...nativeConnection(harness, appLauncherConnection()), enabled })
+      expect(next).toEqual({ ...policy, ...nativeConnection(appLauncherConnection()), enabled })
       expect(next).toMatchObject(policy)
     }
   })

@@ -98,9 +98,9 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
               reasoningEffort: 'medium' as const, sandbox: 'read-only' as const, serviceTier: 'standard' as const }
           await operators.update(native, current.configuration.id)
           const responseJournal = new NativeResponseJournal(join(home, 'responses'))
-          const factories = new NativeHarnessFactories({ ...binaries, appMcpEndpoint: endpoint, responseJournal, workspaceRoot: config.harnesses.workspaceRoot })
+          const factories = new NativeHarnessFactories({ ...binaries,  responseJournal, })
           const resolver = productionOperatorManagers({ app: () => app, pool, config, workingDirectory: directory,
-            endpointHost: '127.0.0.1', appMcpEndpoint: endpoint, managers: new Map(), nativeFactories: factories,
+              managers: new Map(), nativeFactories: factories,
             processRegistry: new NativeProcessRegistry(join(home, 'processes')), responseJournal })
           const recorded = new WeakSet()
           // Record the genuine provider stream while the conversation service owns admission and submission.

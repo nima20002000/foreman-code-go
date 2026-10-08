@@ -1,3 +1,4 @@
+import { AgentHarnessSchema } from '@foreman-code/contracts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -73,7 +74,7 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
     const request = (requestId: string, expectedConversationId: string | null): SendAgentChatMessageRequest =>
       ({ requestId, context: query, content: `G4 ${requestId}`, intent: 'next_turn', expectedConversationId })
     const first = await repository.admit({ key: agentChatKey(context), context, request: request('g4-1', null), delivery: 'queued',
-      create: { context, agentConfigurationVersionId: configuration.id, harness: configuration.harness.harness,
+      create: { context, agentConfigurationVersionId: configuration.id, harness: AgentHarnessSchema.parse(configuration.harness.harness),
         origin: { kind: 'fresh' }, workingDirectory: database.directory, runtimeDirectory: database.directory } })
     const id = first.conversationId
     await pool.query(`update operator_conversations set native_session_id='native-g4',provider_version='0.154.0',

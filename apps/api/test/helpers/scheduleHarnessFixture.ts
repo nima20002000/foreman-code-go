@@ -1,3 +1,4 @@
+import { SupportedHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -44,7 +45,7 @@ export async function scheduleHarnessFixture(f: Sch11Fixture, mainId: string, pr
   for (const configuration of f.fixture.configurations) {
     settings.push((await service.save(principal, 'http', { commandId: randomUUID(),
       instanceId: randomUUID(), expectedRevision: 0, enabled: true,
-      presetId: 'local-default:codex', configuration: configuration.harness,
+      presetId: 'local-default:codex', configuration: SupportedHarnessConfigurationSchema.parse(configuration.harness),
       target: { hostRef: installation.hostRef, applicationInstallationId: mainId,
         harnessInstallationId: installation.harnessInstallationId,
         installationFingerprint: installation.installationFingerprint } })).value)
@@ -57,7 +58,7 @@ export async function scheduleHarnessFixture(f: Sch11Fixture, mainId: string, pr
       const value = settings[0]!
       return service.save(principal, 'http', { commandId: randomUUID(), instanceId: value.instanceId,
         expectedRevision: value.revision, target: value.target, presetId: value.presetId,
-        configuration: value.configuration, enabled: patch.enabled ?? true })
+        configuration: SupportedHarnessConfigurationSchema.parse(value.configuration), enabled: patch.enabled ?? true })
     },
     restart: () => { registry.stop(); registry = createRegistry() },
     recover: () => registry.initialize(mainId),

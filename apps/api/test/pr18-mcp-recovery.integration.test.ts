@@ -36,7 +36,7 @@ beforeEach(async () => {
       writes++
       const user = applyMcpEdits(snapshot.user, mcpEdits(snapshot, change, managed))
       snapshots[harness] = { ...snapshot, user, effective: structuredClone(user), revision: fingerprint(user),
-        credentialReferences: { 'graphql': 'GRAPHQL_MCP_TOKEN' } }
+        }
       if (loseAcknowledgement) throw new Error('response lost after successful native write')
     },
   })

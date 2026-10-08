@@ -1,3 +1,4 @@
+import { AgentHarnessSchema } from '@foreman-code/contracts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
@@ -29,7 +30,7 @@ describe.skipIf(!postgresEnabled)('G2 A2-PF-06: acknowledgement / unknown Postgr
     const repository = new PostgresAgentChatRepository(database.pool)
     const admitted = await repository.admit({ key: agentChatKey(context), context, delivery: 'queued',
       request: { requestId: 'A', content: 'G2 synthetic A', context: query, intent: 'next_turn', expectedConversationId: null },
-      create: { context, agentConfigurationVersionId: configuration.id, harness: configuration.harness.harness,
+      create: { context, agentConfigurationVersionId: configuration.id, harness: AgentHarnessSchema.parse(configuration.harness.harness),
         origin: { kind: 'fresh' }, workingDirectory: database.directory, runtimeDirectory: database.directory } })
     const id = admitted.conversationId
     assert.equal(await repository.claim(id, 'A'), true)

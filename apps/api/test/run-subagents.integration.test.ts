@@ -292,7 +292,11 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     f.child.profile.providerVersion = '2.0.0'
     f.child.capabilities.sendInput = { support: 'supported', qualification: 'unverified' }
     await pool.query('update run_subagents set record=$2::jsonb where id=$1', [f.child.id, JSON.stringify(f.child)])
-    f.lease.inputContractVerified = verified
+    f.lease.capabilities = {
+      sendInput: { support: 'supported', qualification: verified ? 'passed' : 'unverified' },
+      interrupt: f.child.capabilities.interrupt, executionResume: f.child.capabilities.executionResume,
+      inputTiming: f.child.capabilities.inputTiming,
+    }
     const input = { ...f.input, subagentId: f.child.id }
     const first = await f.service.get(f.writer.principal, input)
     expect(first.subagent.profile.providerVersion).toBe('2.0.0')

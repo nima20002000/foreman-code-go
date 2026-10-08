@@ -5,12 +5,11 @@ import { applyMcpEdits, assertChange, managedChange, managedEnableChange, manage
 
 describe.each(['codex'] as const)('%s managed MCP naming', (harness) => {
   const endpoint = 'http://127.0.0.1:3000/mcp'
-  const connection = (token: string) => nativeConnection(harness, {
+  const connection = (token: string) => nativeConnection({
     ...appLauncherConnection(), environmentVariables: [token],
   })
   const snapshot = (user: Record<string, unknown>): NativeMcpSnapshot => ({
     harness, revision: 'revision', effective: user, user, userConfig: {}, file: '/tmp/native-config', version: 'version',
-    credentialReferences: { graphql: 'GRAPHQL_MCP_TOKEN', 'foreman-code': 'FOREMAN_CODE_MCP_TOKEN' },
   })
   const managed = { preset: 'graphql' as const, endpoint }
   const add = managedChange('graphql', true, endpoint)
@@ -24,9 +23,9 @@ describe.each(['codex'] as const)('%s managed MCP naming', (harness) => {
 
   it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN'])('keeps the supported old name usable with %s', (token) => {
     const entry = connection(token)
-    expect(isAppLauncher(harness, entry)).toBe(true)
+    expect(isAppLauncher(entry)).toBe(true)
     expect(appMcpServerName({ graphql: entry })).toBe('graphql')
-    expect(managedStatus({ ...snapshot({ graphql: entry }), credentialReferences: { graphql: token } }, 'graphql'))
+    expect(managedStatus(snapshot({ graphql: entry }), 'graphql'))
       .toBe('installed')
     const disabled = applyMcpEdits({ graphql: entry }, mcpEdits(snapshot({ graphql: entry }),
       managedEnableChange('graphql', false), managed))
@@ -60,7 +59,7 @@ describe.each(['codex'] as const)('%s managed MCP naming', (harness) => {
   })
 
   it('leaves customized retired entries untouched and retains disabled policies on supported retired connections', () => {
-    const retired = nativeConnection(harness, { transport: 'remote', url: 'http://127.0.0.1:3000/mcp/tools',
+    const retired = nativeConnection({ transport: 'remote', url: 'http://127.0.0.1:3000/mcp/tools',
       bearerTokenEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN' })
     const policy = { ...retired, enabled: false, disabled_tools: ['interaction_respond'] }
     const after = applyMcpEdits({ 'graphql-app': policy }, mcpEdits(snapshot({ 'graphql-app': policy }), add, managed))

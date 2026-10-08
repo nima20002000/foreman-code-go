@@ -16,5 +16,5 @@ it.each(['codex'] as const)('production routing recognizes the reviewed %s launc
     ? { command: reviewed.executable, args: reviewed.arguments, env_vars: ['GRAPHQL_MCP_TOKEN'] }
     : { type: 'local', command: [reviewed.executable, ...reviewed.arguments],
       environment: { GRAPHQL_MCP_TOKEN: '{env:GRAPHQL_MCP_TOKEN}' } }
-  expect(isAppLauncher(harness, entry)).toBe(true)
+  expect(isAppLauncher(entry)).toBe(true)
 })

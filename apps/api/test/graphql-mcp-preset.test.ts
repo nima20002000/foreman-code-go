@@ -5,12 +5,12 @@ import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.j
 describe.each(['codex'] as const)('%s graphql preset', (harness) => {
   const endpoint = 'http://127.0.0.1:3002/mcp'
   const snapshot = (user: Record<string, unknown>): NativeMcpSnapshot => ({ harness, revision: 'revision', file: '/tmp/config', version: '1',
-    userConfig: {}, user, effective: user, credentialReferences: { graphql: 'GRAPHQL_MCP_TOKEN', 'foreman-code': 'FOREMAN_CODE_MCP_TOKEN' } })
+    userConfig: {}, user, effective: user, })
   const change = managedChange('graphql', true, endpoint)
   const managed = { preset: 'graphql' as const, endpoint }
-  const launcher = nativeConnection(harness, appLauncherConnection())
+  const launcher = nativeConnection(appLauncherConnection())
   it('migrates the standard fixed route while retaining disabled and native tool policies', () => {
-    const fixed = { ...nativeConnection(harness, { transport: 'remote', url: 'http://127.0.0.1:3012/mcp',
+    const fixed = { ...nativeConnection({ transport: 'remote', url: 'http://127.0.0.1:3012/mcp',
       bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN' }), enabled: false, disabled_tools: ['interaction_respond'] }
     const migrated = replacement(snapshot({ graphql: fixed }), change, managed)!
     expect(migrated).toEqual({ ...launcher, enabled: false, disabled_tools: ['interaction_respond'] })
@@ -34,7 +34,7 @@ describe.each(['codex'] as const)('%s graphql preset', (harness) => {
   })
   it('refuses custom or inherited connections instead of overwriting them', () => {
     for (const url of ['https://example.com/mcp', 'http://127.0.0.1:3012/custom']) {
-      const existing = nativeConnection(harness, { transport: 'remote', url, bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN' })
+      const existing = nativeConnection({ transport: 'remote', url, bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN' })
       expect(() => replacement(snapshot({ graphql: existing }), change, managed)).toThrow('custom')
     }
     const inherited = { ...snapshot({ graphql: launcher }), ownership: { graphql: false } }

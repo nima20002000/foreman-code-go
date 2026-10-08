@@ -35,8 +35,8 @@ describe('managed launcher installation identity', () => {
       await installManagedLauncher(source, installed)
       expect(await readFile(installed, 'utf8')).toBe('// launcher')
       const entry = { command: process.execPath, args: [installed], env_vars: [APP_MCP_TOKEN] }
-      expect(isAppLauncher('codex', entry)).toBe(true)
-      expect(isAppLauncher('codex', { ...entry, args: [original] })).toBe(false)
+      expect(isAppLauncher(entry)).toBe(true)
+      expect(isAppLauncher({ ...entry, args: [original] })).toBe(false)
     })
 
   it.each(['GRAPHQL_APP_MCP_DIRECTORY', 'FOREMAN_CODE_APP_MCP_DIRECTORY'])(
@@ -104,12 +104,12 @@ describe('managed launcher installation identity', () => {
     const entry = harness === 'codex'
       ? { command: process.execPath, args: [appLauncherPath()], env_vars: [APP_MCP_TOKEN] }
       : { type: 'local', command: [process.execPath, appLauncherPath()], environment: { [APP_MCP_TOKEN]: `{env:${APP_MCP_TOKEN}}` } }
-    expect(isAppLauncher(harness, entry)).toBe(true)
-    expect(isAppLauncher(harness, { ...entry, url: 'https://custom.invalid' })).toBe(false)
-    expect(isAppLauncher(harness, { ...entry, bearer_token_env_var: 'CUSTOM' })).toBe(false)
-    expect(isAppLauncher(harness, { ...entry, headers: { Authorization: 'custom' } })).toBe(false)
-    expect(isAppLauncher(harness, { ...entry, oauth: true })).toBe(false)
-    expect(isAppLauncher(harness, harness === 'codex'
+    expect(isAppLauncher(entry)).toBe(true)
+    expect(isAppLauncher({ ...entry, url: 'https://custom.invalid' })).toBe(false)
+    expect(isAppLauncher({ ...entry, bearer_token_env_var: 'CUSTOM' })).toBe(false)
+    expect(isAppLauncher({ ...entry, headers: { Authorization: 'custom' } })).toBe(false)
+    expect(isAppLauncher({ ...entry, oauth: true })).toBe(false)
+    expect(isAppLauncher(harness === 'codex'
       ? { ...entry, env: { CUSTOM: 'value' } }
       : { ...entry, environment: { [APP_MCP_TOKEN]: 'resolved', CUSTOM: 'value' } })).toBe(false)
   })

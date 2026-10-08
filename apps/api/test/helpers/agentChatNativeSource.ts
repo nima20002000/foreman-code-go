@@ -29,7 +29,7 @@ export function nativeSourceContent(session: NativeSessionReference, records: Js
 /** A NEW, read-only native observer on every call. No attach/resume/start/fork,
  * turn submission or App MCP credentials. Requires the actual pinned natives.
  */
-export async function readNativeSource(session: NativeSessionReference, directory: string, ownerAgentId: string): Promise<string> {
+export async function readNativeSource(session: NativeSessionReference, directory: string): Promise<string> {
   const binaries = harnessBinaries(process.env)
   const signal = AbortSignal.timeout(90_000)
   const records: JsonObject[] = []

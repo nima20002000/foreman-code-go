@@ -1,3 +1,4 @@
+import { AgentHarnessSchema } from '@foreman-code/contracts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -165,7 +166,7 @@ describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
       get closes() { return closes },
       read: () => chat.read(writer, workspaceId, query),
       close: async () => { controls.mode = 'success'; controls.closeGate?.resolve(); await chat.shutdown() },
-      create: { context, agentConfigurationVersionId: configuration.id, harness: configuration.harness.harness,
+      create: { context, agentConfigurationVersionId: configuration.id, harness: AgentHarnessSchema.parse(configuration.harness.harness),
         origin: { kind: 'fresh' as const }, workingDirectory: database.directory, runtimeDirectory: database.directory },
     }
   }

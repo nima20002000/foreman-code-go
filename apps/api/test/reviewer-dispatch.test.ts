@@ -27,7 +27,7 @@ import { normalizeNativeProducerEvent } from '../src/modules/run-graph/nativePro
 import { reviewTurnEvidence } from '../src/modules/interactions/reviewerEvidence.js'
 import { LeaseGuard, ownedEvents, SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 
-const session: NativeSessionReference = { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'reviewer-native' }
+const session = { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'reviewer-native' } satisfies NativeSessionReference
 const interaction: DurableInteraction = {
   ...NATIVE_INTERACTION_FIXTURES.codex,
   approval: { ...NATIVE_INTERACTION_FIXTURES.codex.approval, handler: 'orchestrator', designatedOrchestratorAgentId: 'reviewer' },

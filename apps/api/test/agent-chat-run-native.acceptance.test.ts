@@ -110,7 +110,7 @@ describe.skipIf(!enabled)('F4 A-R21 actual terminal-Run to Agent-chat immutabili
         'select record from native_session_lanes where native_session_id=$1 order by updated_at desc limit 1', [execution.nativeSessionId])).rows[0]
       const session = NativeSessionReferenceSchema.parse({ harness: initial.capabilities.harness,
         providerVersion: lane?.record.providerVersion, nativeSessionId: execution.nativeSessionId })
-      const sourceBefore = await readNativeSource(session, execution.workingDirectory, context.agentId)
+      const sourceBefore = await readNativeSource(session, execution.workingDirectory)
       const before = await protectedState(pool, schema, checkpointSchema)
       const firstId = randomUUID()
       const sent = SendAgentChatMessageResponseSchema.parse(await request(`${root}/messages`, { requestId: firstId,
@@ -127,7 +127,7 @@ describe.skipIf(!enabled)('F4 A-R21 actual terminal-Run to Agent-chat immutabili
       const second = await settled(secondId)
       expect(second.conversation?.nativeSession).toEqual(first.conversation?.nativeSession)
       // Compare full canonical contents without printing private Run/native content in failed-test diffs.
-      expect(await readNativeSource(session, execution.workingDirectory, context.agentId) === sourceBefore, 'full source native history changed').toBe(true)
+      expect(await readNativeSource(session, execution.workingDirectory) === sourceBefore, 'full source native history changed').toBe(true)
       expect(await protectedState(pool, schema, checkpointSchema) === before, 'protected Run/execution/result/graph/checkpoint rows changed').toBe(true)
     } finally { await pool.end() }
   }, 360_000)

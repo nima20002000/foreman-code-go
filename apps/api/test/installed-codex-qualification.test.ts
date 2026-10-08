@@ -8,7 +8,7 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { ExecutionFactsResultSchema } from '@foreman-code/contracts/execution-authority'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { loadOrCreateWorkerIdentity, persistWorkerPairing } from '@foreman-code/contracts/device-identity-node'
-import { createInstalledCodexQualificationReader, createInstalledHarnessQualificationReader } from '../src/modules/harnesses/installedCodexQualification.js'
+import { createInstalledCodexQualificationReader } from '../src/modules/harnesses/installedCodexQualification.js'
 import type { InstalledCodexInspection } from '../src/modules/harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
@@ -47,7 +47,7 @@ function fixture(options: {
   suiteRevision?: string
   binding?: DeviceSessionBinding
   harness?: 'codex'
-  assertResident?: Parameters<typeof createInstalledHarnessQualificationReader>[0]['assertResident']
+  assertResident?: Parameters<typeof createInstalledCodexQualificationReader>[0]['assertResident']
 } = {}) {
   const harness = options.harness ?? 'codex'
   const suiteRevision = options.suiteRevision ?? `${harness}-live-4`
@@ -111,7 +111,7 @@ function fixture(options: {
     inspect, readFacts, suiteRevision, signal: controller.signal,
     ...(options.assertResident ? { assertResident: options.assertResident } : {}) }
   const reader = harness === 'codex' ? createInstalledCodexQualificationReader(readerInput)
-    : createInstalledHarnessQualificationReader({ ...readerInput, harness })
+    : createInstalledCodexQualificationReader(readerInput)
   return { facts, inspection, reader, inspect, readFacts, controller, binding, setLive: (value: typeof live) => { live = value } }
 }
 
@@ -192,7 +192,7 @@ describe('actual Main and installed Codex qualification read capability', () => 
 it('reads a renewed execution owner without admitting a different operation or configuration', async () => {
   const f = fixture({ harness: 'codex' })
   const originalIntent = structuredClone(f.facts.intent)
-  const reader = createInstalledHarnessQualificationReader({ harness: 'codex', intent: originalIntent,
+  const reader = createInstalledCodexQualificationReader({ intent: originalIntent,
     placement: f.facts.placement, trustedCurrentBinding: () => f.binding,
     trustedCurrentIntent: () => f.facts.intent, inspect: f.inspect, readFacts: f.readFacts,
     suiteRevision: 'codex-live-4', signal: f.controller.signal })

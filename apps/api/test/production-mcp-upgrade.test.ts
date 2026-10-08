@@ -33,18 +33,18 @@ async function fixture() {
 }
 
 it.each(['codex'] as const)(
-  '%s retains its reviewed shared connection when the old production folder is unused', async harness => {
+  '%s retains its reviewed shared connection when the old production folder is unused', async () => {
     const { home, previous, shared } = await fixture()
     await rm(dirname(previous), { recursive: true })
     await mkdir(join(dirname(previous), 'routes'), { recursive: true })
     await installManagedLauncher(source, shared)
-    const entry = nativeConnection(harness, appLauncherConnection())
+    const entry = nativeConnection(appLauncherConnection())
     await upgradeProductionMcpLauncher(home)
-    expect(isAppLauncher(harness, entry)).toBe(true)
-    const uninstalled = nativeConnection(harness, { ...appLauncherConnection(), arguments: [previous] })
-    expect(isAppLauncher(harness, uninstalled)).toBe(false)
+    expect(isAppLauncher(entry)).toBe(true)
+    const uninstalled = nativeConnection({ ...appLauncherConnection(), arguments: [previous] })
+    expect(isAppLauncher(uninstalled)).toBe(false)
     await upgradeProductionMcpLauncher(home)
-    expect(isAppLauncher(harness, entry)).toBe(true)
+    expect(isAppLauncher(entry)).toBe(true)
   },
 )
 
@@ -56,7 +56,7 @@ it.each([
   async (harness, serverName, token) => {
     const { home, previous } = await fixture()
     const entry = {
-      ...nativeConnection(harness, {
+      ...nativeConnection({
         ...appLauncherConnection(), arguments: [previous], environmentVariables: [token],
       }),
       enabled: false,
@@ -69,12 +69,11 @@ it.each([
     const snapshot: NativeMcpSnapshot = {
       harness, revision: 'revision', file: join(home, 'native-config'), version: '1',
       user: { [serverName]: entry }, effective: { [serverName]: entry },
-      userConfig: { permission }, effectivePermissions: permission,
-      credentialReferences: { [serverName]: token },
+      userConfig: { permission },
     }
-    expect(isAppLauncher(harness, entry)).toBe(false)
+    expect(isAppLauncher(entry)).toBe(false)
     await upgradeProductionMcpLauncher(home)
-    expect(isAppLauncher(harness, entry)).toBe(true)
+    expect(isAppLauncher(entry)).toBe(true)
     expect(managedStatus(snapshot, 'graphql')).toBe('disabled')
     const managed = { preset: 'graphql' as const, endpoint: 'http://127.0.0.1:3041/mcp' }
     const enabled = applyMcpEdits(snapshot.user, mcpEdits(snapshot, managedEnableChange('graphql', true), managed))
@@ -99,21 +98,21 @@ it('retains both installed runtimes and its alias when the shared launcher is re
   await installManagedLauncher(source, shared)
   await upgradeProductionMcpLauncher(home)
   const entry = { command: installedRuntime, args: [previous], env_vars: [APP_MCP_TOKEN] }
-  expect(isAppLauncher('codex', entry)).toBe(true)
+  expect(isAppLauncher(entry)).toBe(true)
   await installManagedLauncher(source, shared)
-  expect(isAppLauncher('codex', entry)).toBe(true)
-  expect(isAppLauncher('codex', { ...entry, command: runtime })).toBe(true)
+  expect(isAppLauncher(entry)).toBe(true)
+  expect(isAppLauncher({ ...entry, command: runtime })).toBe(true)
   await rm(installedRuntime)
-  expect(isAppLauncher('codex', entry)).toBe(false)
+  expect(isAppLauncher(entry)).toBe(false)
 })
 
 it('resumes an upgrade interrupted after moving the original directory', async () => {
   const { home, previous } = await fixture()
   await rename(dirname(previous), `${dirname(previous)}.previous`)
   await upgradeProductionMcpLauncher(home)
-  expect(isAppLauncher('codex', { command: runtime, args: [previous], env_vars: [APP_MCP_TOKEN] })).toBe(true)
+  expect(isAppLauncher({ command: runtime, args: [previous], env_vars: [APP_MCP_TOKEN] })).toBe(true)
   await upgradeProductionMcpLauncher(home)
-  expect(isAppLauncher('codex', { command: runtime, args: [previous], env_vars: [APP_MCP_TOKEN] })).toBe(true)
+  expect(isAppLauncher({ command: runtime, args: [previous], env_vars: [APP_MCP_TOKEN] })).toBe(true)
 })
 
 it.each(['codex'] as const)(
@@ -124,7 +123,7 @@ it.each(['codex'] as const)(
     await rm(`${shared}.registration.json`)
     await runLauncherProcess({ kind: 'older-install', launcher: shared })
     const entry = {
-      ...nativeConnection(harness, {
+      ...nativeConnection({
         transport: 'stdio', executable: runtime, arguments: [previous], environmentVariables: [APP_MCP_TOKEN],
       }),
       enabled: false,
@@ -134,15 +133,14 @@ it.each(['codex'] as const)(
     const snapshot: NativeMcpSnapshot = {
       harness, revision: 'revision', file: join(home, 'native-config'), version: '1',
       user: { 'foreman-code': entry }, effective: { 'foreman-code': entry }, userConfig: {},
-      credentialReferences: { 'foreman-code': APP_MCP_TOKEN },
     }
-    expect(isAppLauncher(harness, entry)).toBe(false)
+    expect(isAppLauncher(entry)).toBe(false)
     await runLauncherProcess({ kind: 'upgrade', home })
     expect(managedStatus(snapshot, 'graphql')).toBe('disabled')
     const managed = { preset: 'graphql' as const, endpoint: 'http://127.0.0.1:3041/mcp' }
     const edits = mcpEdits(snapshot, managedEnableChange('graphql', true), managed)
     expect(applyMcpEdits(snapshot.user, edits)).toEqual({ 'foreman-code': { ...entry, enabled: true } })
-    expect(await runLauncherProcess({ kind: 'recognize', launcher: shared, harness, entry })).toBe('true')
+    expect(await runLauncherProcess({ kind: 'recognize', launcher: shared, entry })).toBe('true')
     await runLauncherProcess({ kind: 'older-install', launcher: shared })
     await runLauncherProcess({ kind: 'upgrade', home })
     expect(managedStatus(snapshot, 'graphql')).toBe('disabled')
@@ -159,7 +157,7 @@ it('requires a managed retained installation before restoring an alias', async (
   await rm(`${retained}.registration.json`)
   const entry = { command: runtime, args: [previous], env_vars: [APP_MCP_TOKEN] }
   await expect(upgradeProductionMcpLauncher(home)).rejects.toThrow('valid managed installation record')
-  expect(isAppLauncher('codex', entry)).toBe(false)
+  expect(isAppLauncher(entry)).toBe(false)
 }, 30_000)
 
 it('requires a registered directory alias and retains command and authentication validation', async () => {
@@ -168,20 +166,20 @@ it('requires a registered directory alias and retains command and authentication
   const unregistered = join(home, 'unregistered')
   await symlink(dirname(shared), unregistered)
   const entry = { command: runtime, args: [previous], env_vars: [APP_MCP_TOKEN] }
-  expect(isAppLauncher('codex', { ...entry, args: [join(unregistered, 'launcher.mjs')] })).toBe(false)
+  expect(isAppLauncher({ ...entry, args: [join(unregistered, 'launcher.mjs')] })).toBe(false)
   await upgradeProductionMcpLauncher(home)
-  expect(isAppLauncher('codex', { ...entry, args: [previous, '--custom'] })).toBe(false)
+  expect(isAppLauncher({ ...entry, args: [previous, '--custom'] })).toBe(false)
   const customRuntime = join(home, 'custom-node')
   await writeFile(customRuntime, 'custom runtime')
-  expect(isAppLauncher('codex', { ...entry, command: customRuntime })).toBe(false)
-  expect(isAppLauncher('codex', { ...entry, env: { CUSTOM: 'value' } })).toBe(false)
-  expect(isAppLauncher('codex', { ...entry, bearer_token_env_var: 'CUSTOM' })).toBe(false)
+  expect(isAppLauncher({ ...entry, command: customRuntime })).toBe(false)
+  expect(isAppLauncher({ ...entry, env: { CUSTOM: 'value' } })).toBe(false)
+  expect(isAppLauncher({ ...entry, bearer_token_env_var: 'CUSTOM' })).toBe(false)
   await rm(dirname(previous))
   const custom = join(home, 'custom')
   await mkdir(custom)
   await symlink(shared, join(custom, 'launcher.mjs'))
   await symlink(custom, dirname(previous))
-  expect(isAppLauncher('codex', entry)).toBe(false)
+  expect(isAppLauncher(entry)).toBe(false)
   await expect(upgradeProductionMcpLauncher(home)).rejects.toThrow('unmanaged installation')
 })
 

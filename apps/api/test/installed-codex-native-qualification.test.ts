@@ -52,7 +52,7 @@ async function fixture(harness: 'codex' = 'codex') {
     probe: vi.fn(async () => 'a'.repeat(64)), assertUnchanged: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }
   const run = vi.fn<QualificationSuite['run']>(async input => {
     await requireHarnessQualification(harness, input.version, input.binary)
-    return { checks: completedNativeQualificationChecks(harness).filter(id => !['static-compatibility', 'selected-profile', 'owned-resource-closure'].includes(id))
+    return { checks: completedNativeQualificationChecks().filter(id => !['static-compatibility', 'selected-profile', 'owned-resource-closure'].includes(id))
       .map(id => ({ id, passed: true, detail: null })), evidence: { fixtureOnly: true } }
   })
   const checkConfiguration = vi.fn(async () => {

@@ -5,7 +5,7 @@ type LauncherOperation =
   | { kind: 'install'; launcher: string }
   | { kind: 'older-install'; launcher: string; snapshot?: LauncherInstallation }
   | { kind: 'register'; launcher: string; installation: LauncherInstallation }
-  | { kind: 'recognize'; launcher: string; harness: 'codex'; entry: Record<string, unknown> }
+  | { kind: 'recognize'; launcher: string; entry: Record<string, unknown> }
   | { kind: 'upgrade'; home: string }
 
 const launcherModule = new URL('../../src/modules/harnesses/appMcpLauncher.ts', import.meta.url).href
@@ -59,7 +59,7 @@ const program = `
   } else if (operation.kind === 'recognize') {
     delete process.env.GRAPHQL_APP_MCP_DIRECTORY;
     process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = dirname(operation.launcher);
-    console.log(JSON.stringify(isAppLauncher(operation.harness, operation.entry)));
+    console.log(JSON.stringify(isAppLauncher(operation.entry)));
   } else {
     throw new Error('Unknown launcher operation');
   }

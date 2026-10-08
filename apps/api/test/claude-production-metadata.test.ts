@@ -39,7 +39,7 @@ function delayed() {
 
 it('shares identical pending production discoveries but rechecks each selection and refreshes sequential reads', async () => {
   const f = fixture(), finish = delayed()
-  const service = new NativeConfigurationService('unused', 'unused', '/workspace', undefined, f.port)
+  const service = new NativeConfigurationService('unused', '/workspace', undefined, f.port)
   try {
     const first = service.options('claude'), second = service.options('claude')
     await vi.waitFor(() => expect(discoverClaudeMetadata).toHaveBeenCalledOnce())

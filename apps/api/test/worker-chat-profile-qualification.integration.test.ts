@@ -1,3 +1,4 @@
+import { HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { AgentChatStateSchema } from '@foreman-code/contracts/agent-chat'
@@ -48,7 +49,7 @@ it('uses the selected Worker qualification when the general harness cache has a 
       from harness_instance_profile_evidence where instance_id=$1 order by created_at desc limit 1`,
     [profile.instanceId])
     const proof = HostHarnessProfileEvidenceSchema.parse(row.rows[0]!.record)
-    const native = proof.completedNativeQualification!.record
+    const native = HarnessQualificationSchema.parse(proof.completedNativeQualification!.record)
     if (native.version === null || native.binarySha256 === null) {
       throw new Error('Expected a completed Worker qualification version and binary fingerprint')
     }

@@ -29,7 +29,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     apply: async (snapshot, change, _signal, managed) => {
       const user = applyMcpEdits(snapshot.user, mcpEdits(snapshot, change, managed))
       snapshots[harness] = { ...snapshot, user, effective: structuredClone(user), revision: fingerprint(user),
-        credentialReferences: user['foreman-code'] ? { 'foreman-code': 'FOREMAN_CODE_MCP_TOKEN' } : {} }
+        }
     },
   })
   const adapters = { codex: adapter('codex') }
@@ -122,7 +122,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       const oldEntry = { ...installed as Record<string, unknown>, enabled: false, disabled_tools: ['interaction_respond'] }
       const oldUser = { graphql: oldEntry }
       snapshots[harness] = { ...snapshots[harness], user: oldUser, effective: structuredClone(oldUser),
-        revision: fingerprint(oldUser), credentialReferences: { graphql: 'FOREMAN_CODE_MCP_TOKEN' } }
+        revision: fingerprint(oldUser), }
       expect((await listed(harness)).presets?.graphql).toBe('disabled')
       const rename = HarnessMcpPlanResultSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
         harness, preset: 'graphql', installed: true, expectedRevision: (await listed(harness)).revision, commandId: randomUUID(),

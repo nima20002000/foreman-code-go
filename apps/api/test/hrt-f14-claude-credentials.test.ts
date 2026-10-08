@@ -65,14 +65,14 @@ describe('HRT-F14 production without an authorized Claude credential source', ()
 
   it('refuses launch-ready defaults qualification before querying a native factory', async () => {
     const qualifyConfiguration = vi.fn(async () => qualified)
-    const qualifier = new NativeHarnessConfigurationQualifier('/unused', '/unused', { qualifyConfiguration } as unknown as NativeHarnessFactories)
+    const qualifier = new NativeHarnessConfigurationQualifier('/unused', { qualifyConfiguration } as unknown as NativeHarnessFactories)
     await expect(Promise.resolve().then(() => qualifier.qualify(harness, '/recorded/work'))).rejects.toMatchObject(blocked)
     expect(qualifyConfiguration).not.toHaveBeenCalled()
   })
 
   it('refuses the configuration metadata readiness port before consuming qualified profile evidence', async () => {
     const qualify = vi.fn(async () => qualified)
-    const service = new NativeConfigurationService('/unused', '/unused', '/recorded/work', undefined, { qualify, discover: vi.fn() })
+    const service = new NativeConfigurationService('/unused', '/recorded/work', undefined, { qualify, discover: vi.fn() })
     await expect(service.qualifyConfiguration(harness)).rejects.toMatchObject(blocked)
     expect(qualify).not.toHaveBeenCalled()
     await service.shutdownChecks()
@@ -81,8 +81,8 @@ describe('HRT-F14 production without an authorized Claude credential source', ()
   it('keeps subscription qualification on the existing native and selected-profile ports', async () => {
     const subscription = { ...harness, authMode: 'subscription' as const }
     const qualifyConfiguration = vi.fn(async () => qualified), qualify = vi.fn(async () => qualified)
-    const qualifier = new NativeHarnessConfigurationQualifier('/unused', '/unused', { qualifyConfiguration } as unknown as NativeHarnessFactories)
-    const service = new NativeConfigurationService('/unused', '/unused', '/recorded/work', undefined, { qualify, discover: vi.fn() })
+    const qualifier = new NativeHarnessConfigurationQualifier('/unused', { qualifyConfiguration } as unknown as NativeHarnessFactories)
+    const service = new NativeConfigurationService('/unused', '/recorded/work', undefined, { qualify, discover: vi.fn() })
     expect(await qualifier.qualify(subscription, '/recorded/work')).toEqual(qualified)
     expect(await service.qualifyConfiguration(subscription)).toEqual(qualified)
     expect(qualifyConfiguration).toHaveBeenCalledOnce(); expect(qualify).toHaveBeenCalledOnce()

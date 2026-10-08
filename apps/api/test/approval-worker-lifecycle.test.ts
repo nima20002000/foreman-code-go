@@ -30,9 +30,7 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
   const configuration: AgentConfigurationVersion = {
     id: 'config-1', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
     prompt: {}, assignedSkills: [], contentHash: 'sha256:pinned', createdAt,
-    harness: harness === 'codex'
-      ? { harness, model: 'fixture', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' }
-      : { harness, model: 'fixture', variant: 'high', nativeAgent: 'plan', thinking: true, autoApprove: false },
+    harness: { harness, model: 'fixture', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' },
   }
   let execution: HarnessExecution = {
     id: 'execution-1', runId: 'run-1', workflowNodeId: 'node-1', agentId: configuration.agentId,
@@ -41,9 +39,9 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
     workingDirectory: '/project', runtimeDirectory: '/runtime',
     ...(started ? { nativeSessionId: 'exact-native-session' } : {}),
   }
-  const session: NativeSessionReference = {
-    harness, providerVersion: harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: 'exact-native-session',
-  }
+  const session = {
+    harness, providerVersion: '0.154.0', nativeSessionId: 'exact-native-session',
+  } satisfies NativeSessionReference
   const request: HarnessExecutionRequest = {
     executionId: execution.id, runId: execution.runId, workspaceId: configuration.workspaceId,
     workflowNodeId: execution.workflowNodeId, workingDirectory: '/project', runtimeDirectory: '/runtime',

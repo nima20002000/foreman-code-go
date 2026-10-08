@@ -46,7 +46,7 @@ describe('native scheduled placement recovery', () => {
       expect(exit, `${harness} diagnostic stdout: ${output}\nstderr: ${stderr}`)
         .toEqual({ exitCode: 0, exitSignal: null })
       if (harness === 'node') expect(output).toBe('diagnostic complete\n')
-      else expect(parseInstalledVersion('codex', output, '')).toBe('0.154.0')
+      else expect(parseInstalledVersion(output, '')).toBe('0.154.0')
       expect(errors).toEqual([])
     } finally {
       clearTimeout(timer)

@@ -77,8 +77,8 @@ it.each(cases)(
       transport: 'stdio' as const, executable: installedRuntime, arguments: [savedLauncher],
       environmentVariables: [tokenVariable],
     }
-    const entry = nativeConnection(harness, connection)
-    expect(isAppLauncher(harness, entry)).toBe(true)
+    const entry = nativeConnection(connection)
+    expect(isAppLauncher(entry)).toBe(true)
     const database = createDatabase({
       connectionString: ownedTestDatabaseUrl(),
       maxConnections: 4, connectionTimeoutMs: 5000, queryTimeoutMs: 5000,
@@ -163,9 +163,9 @@ it.each(cases)(
     const { localProductionEnvironment } = await import(runtimeModule)
     const environment = localProductionEnvironment(home, 'a'.repeat(64))
     vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', environment.FOREMAN_CODE_APP_MCP_DIRECTORY)
-    expect(isAppLauncher(harness, entry)).toBe(change === 'unused-directory')
+    expect(isAppLauncher(entry)).toBe(change === 'unused-directory')
     await upgradeProductionMcpLauncher(home)
-    expect(isAppLauncher(harness, entry)).toBe(true)
+    expect(isAppLauncher(entry)).toBe(true)
     const upgraded = await start()
     await assertReadback(upgraded.settings)
     expect(upgraded.requests()).toBeGreaterThan(0)
@@ -190,19 +190,19 @@ it.each(cases)(
         version: 1, executables: [{ path: developmentRuntime, realpath: developmentRuntime }],
       } }, developmentRuntime)
     }
-    expect(isAppLauncher(harness, entry)).toBe(change !== 'retained-recovery')
+    expect(isAppLauncher(entry)).toBe(change !== 'retained-recovery')
     await assertReadback(upgraded.settings)
     await upgraded.close()
     await runLauncherProcess({ kind: 'upgrade', home })
-    expect(isAppLauncher(harness, entry)).toBe(true)
+    expect(isAppLauncher(entry)).toBe(true)
     await installManagedLauncher(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), shared)
     const restarted = await start()
     await assertReadback(restarted.settings)
     expect(restarted.requests()).toBeGreaterThan(0)
-    expect(isAppLauncher(harness, entry)).toBe(true)
+    expect(isAppLauncher(entry)).toBe(true)
     if (change === 'concurrent-writers') {
       for (const executable of [developmentRuntime, concurrentRuntime]) {
-        const installedEntry = nativeConnection(harness, { ...connection, executable })
+        const installedEntry = nativeConnection({ ...connection, executable })
         expect(await runLauncherProcess({ kind: 'recognize', launcher: shared, harness, entry: installedEntry }))
           .toBe('true')
       }

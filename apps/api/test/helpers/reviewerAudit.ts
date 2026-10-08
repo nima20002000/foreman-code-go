@@ -27,9 +27,9 @@ import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { nativeLanes } from './nativeLanes.js'
 import { currentUnitSnapshot } from './currentUnitSnapshot.js'
 
-export const session: NativeSessionReference = {
+export const session = {
   harness: 'codex', providerVersion: 'codex-cli 0.154.0', nativeSessionId: 'review-native-exact',
-}
+} satisfies NativeSessionReference
 export const correlationId = 'review-correlation-exact'
 export const providerId = 'review-turn-exact'
 export const secret = 'injected-reviewer-scoped-credential'

@@ -42,13 +42,13 @@ it.each(['codex'] as const)(
       executables: [{ path: runtimes[0]!, realpath: runtimes[0]! }],
       launcherAliases: [savedLauncher],
     } })
-    const entry = nativeConnection(harness, {
+    const entry = nativeConnection({
       transport: 'stdio', executable: runtimes[0]!, arguments: [savedLauncher], environmentVariables: [APP_MCP_TOKEN],
     })
     await runLauncherProcess({ kind: 'older-install', launcher, snapshot: {
       version: 1, executables: [{ path: process.execPath, realpath: process.execPath }],
     } }, runtimes[1]!)
-    expect(isAppLauncher(harness, entry)).toBe(true)
+    expect(isAppLauncher(entry)).toBe(true)
     expect(await runLauncherProcess({ kind: 'recognize', launcher, harness, entry })).toBe('true')
   }, 30_000,
 )
@@ -73,7 +73,7 @@ it('merges stale registrations and simultaneous installations through both direc
   // A caller may hold a snapshot from before the other installations completed.
   await writeLauncherInstallation(launcher, { version: 1, executables: [] })
   for (const runtime of runtimes) {
-    expect(isAppLauncher('codex', { command: runtime, args: [savedLauncher], env_vars: [APP_MCP_TOKEN] })).toBe(true)
+    expect(isAppLauncher({ command: runtime, args: [savedLauncher], env_vars: [APP_MCP_TOKEN] })).toBe(true)
   }
 }, 30_000)
 

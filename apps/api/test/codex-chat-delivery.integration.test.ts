@@ -98,7 +98,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       executionPages: () => { throw new Error('No Run source in this fixture.') },
     }, factory, database.directory)
     const operatorOwners = new Map<string, NativeHarnessSessionManager>()
-    resolver = (configuration, id) => {
+    resolver = (_configuration, id) => {
       let owner = operatorOwners.get(id)
       if (!owner) {
         owner = createAdmittedNativeManager('codex', async () => ({ manager: native.makeManager(operatorFiles) })).manager

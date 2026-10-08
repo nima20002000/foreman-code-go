@@ -71,7 +71,7 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
         const sourceTurn = await turn(source, sourceSession, 'source', 'Remember the codeword KIWI. Reply OK.')
         expect(sourceTurn.text).toMatch(/ok/i)
         expect(sourceTurn.history.nativeTurnId).toBeTruthy()
-        const sourceBefore = await readNativeSource(sourceSession, directory, config.agentId)
+        const sourceBefore = await readNativeSource(sourceSession, directory)
         const fork = await forker.forkSession!(sourceSession, start(config, directory, 'fork', true))
         expect(fork.nativeSessionId).not.toBe(sourceSession.nativeSessionId)
         const forkTurn = await turn(forker, fork, 'fork', 'What codeword did I ask you to remember? One word.')
@@ -81,7 +81,7 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
         expect(unchanged.nativeMessageId).toBe(sourceTurn.history.nativeMessageId)
         expect(unchanged.terminalResult).toEqual(sourceTurn.history.terminalResult)
         // Compare full persisted records; resident diagnostic events may arrive after completion.
-        expect(await readNativeSource(sourceSession, directory, config.agentId)).toBe(sourceBefore)
+        expect(await readNativeSource(sourceSession, directory)).toBe(sourceBefore)
       } catch (error) {
         const secrets = Object.entries(process.env).filter(([name]) => /TOKEN|KEY|PASSWORD|SECRET/.test(name))
           .map(([, value]) => value).filter((value): value is string => Boolean(value))

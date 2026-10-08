@@ -45,7 +45,7 @@ export function currentRestartUnit(reviewer = false) {
     state: reviewer ? 'completed' : 'waiting', nativeSessionId: 'be001-restart-native',
     workingDirectory: '/synthetic', runtimeDirectory: '/synthetic/runtime',
     ...(reviewer ? { result: { outcome: 'succeeded' }, finishedAt: f.createdAt } : {}) })
-  const session: NativeSessionReference = { harness: 'codex', providerVersion: 'synthetic-no-native-call', nativeSessionId: execution.nativeSessionId! }
+  const session = { harness: 'codex', providerVersion: 'synthetic-no-native-call', nativeSessionId: execution.nativeSessionId! } satisfies NativeSessionReference
   const state = { stopped: false, cleanup: false, finalized: reviewer, outstanding: false, owned: true,
     failBegin: false, failCloseWrite: false, loseCommitReply: false, failNativeClose: false, loseAtFinalFence: false,
     finalizationWrites: 0, revocations: 0, retirementCalls: 0, closeWrites: 0, beginCalls: 0,

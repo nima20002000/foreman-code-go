@@ -213,7 +213,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     const responseJournal = new NativeResponseJournal(join(f.directory, 'responses'))
     const processRegistry = new NativeProcessRegistry(join(f.directory, 'processes'))
     nativeFactories = new NativeHarnessFactories({ ...config.harnesses,
-      appMcpEndpoint: managementEndpoint, responseJournal,
+       responseJournal,
       auxiliaryRecovery: role => processRegistry.scope(`${role}:${randomUUID()}`),
       admitRecovery: recovery => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
       abandonRecovery: async recovery => { await processRegistry.abandonReservedLaunch(recovery) },
@@ -225,7 +225,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
       managementEndpoint, (manager) => nativeFactories.inspector(manager))
     prepare = vi.spyOn(authority, 'prepare')
     resolve = productionOperatorManagers({ app: () => app, pool, config, workingDirectory: cwd,
-      endpointHost: '127.0.0.1', appMcpEndpoint: managementEndpoint, managers,
+        managers,
       processRegistry,
       responseJournal, nativeFactories })
     chat = new OperatorChatService(repository, operators, resolve, cwd, authority)

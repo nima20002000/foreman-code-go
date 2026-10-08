@@ -46,7 +46,7 @@ if (process.argv.includes('--version')) {
       }
     }, 20_000)
   it('only constructs export commands, never run, exec, serve, sessions or prompts', () => {
-    expect(schemaExportArguments('codex', '/isolated')).toEqual(['app-server', 'generate-json-schema', '--experimental', '--out', join('/isolated', 'schemas')])
+    expect(schemaExportArguments('/isolated')).toEqual(['app-server', 'generate-json-schema', '--experimental', '--out', join('/isolated', 'schemas')])
 
   })
   it('removes real credentials, config overrides and executable preload hooks', () => {
@@ -62,10 +62,10 @@ if (process.argv.includes('--version')) {
     expect(JSON.stringify(environment)).not.toMatch(/secret|malicious|external|private|real\/home/)
   })
   it('accepts exact version output, retaining prerelease identity and rejecting extra output', () => {
-    expect(parseInstalledVersion('codex', 'codex-cli 0.154.0\n', '')).toBe('0.154.0')
-    expect(parseInstalledVersion('codex', 'codex-cli 0.154.1-beta.1', '')).toBe('0.154.1-beta.1')
+    expect(parseInstalledVersion('codex-cli 0.154.0\n', '')).toBe('0.154.0')
+    expect(parseInstalledVersion('codex-cli 0.154.1-beta.1', '')).toBe('0.154.1-beta.1')
 
-    expect(() => parseInstalledVersion('codex', 'codex-cli 0.154.0\nextra', '')).toThrow()
+    expect(() => parseInstalledVersion('codex-cli 0.154.0\nextra', '')).toThrow()
 
   })
   it('validates Codex RPC and settings schemas without sending any request', () => {

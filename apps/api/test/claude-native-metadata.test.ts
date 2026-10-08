@@ -7,7 +7,7 @@ import { DomainError } from '../src/modules/errors.js'
 import { NativeConfigurationService } from '../src/modules/harnesses/nativeConfiguration.js'
 import type { ClaudeNativeConfigurationPort } from '../src/modules/harnesses/claudeSdk/nativeConfiguration.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
-import type { runCommand } from '../src/modules/harnesses/process.js'
+import * as nativeProcess from '../src/modules/harnesses/process.js'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
@@ -27,8 +27,10 @@ describe('selected Claude native metadata producer', () => {
   function fixture(port?: ClaudeNativeConfigurationPort) {
     const factories = new NativeHarnessFactories({ codexBinary: 'unused-codex',  })
     const allocate = vi.spyOn(factories, 'allocate')
-    const command = vi.fn<typeof runCommand>(async () => { throw new Error('No native command may run') })
-    return { allocate, command, service: new NativeConfigurationService('unused-codex', '/selected-workspace', factories, port, command) }
+    const command = vi.spyOn(nativeProcess, 'runCommand').mockImplementation(async () => {
+      throw new Error('No native command may run')
+    })
+    return { allocate, command, service: new NativeConfigurationService('unused-codex', '/selected-workspace', factories, port) }
   }
 
   it('requires actual selected-profile discovery instead of falling through to another provider', async () => {

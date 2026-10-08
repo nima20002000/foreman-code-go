@@ -489,7 +489,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
 
   it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN'])(
     'recognizes a managed worker launcher using %s and permits only its scoped execution credential', async tokenName => {
-    const entry = nativeConnection('codex', { ...appLauncherConnection(), environmentVariables: [tokenName] })
+    const entry = nativeConnection({ ...appLauncherConnection(), environmentVariables: [tokenName] })
     await json('mcp.json', { enabled: true, transport: { ...entry, type: 'stdio' } })
     const inspected = await manager.inspectMcpConfiguration(f.directory)
     assert.equal(inspected.configured.automaticEndpoint, true)

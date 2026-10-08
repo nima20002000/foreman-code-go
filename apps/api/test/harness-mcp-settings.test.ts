@@ -25,14 +25,13 @@ describe('native MCP settings reads', () => {
     const endpoint = 'http://127.0.0.1:3000/mcp'
     const snapshot: NativeMcpSnapshot = { harness, revision: 'revision', effective: {}, user: {}, userConfig: {}, file: '/tmp/native', version: 'v' }
     const add = managedChange('graphql', true, endpoint)
-    expect(replacement(snapshot, add, { preset: 'graphql', endpoint })).toEqual(nativeConnection(harness,
-      appLauncherConnection()))
+    expect(replacement(snapshot, add, { preset: 'graphql', endpoint })).toEqual(nativeConnection(appLauncherConnection()))
     expect(() => replacement(snapshot, add)).toThrow('Application MCP connections are managed')
     expect(() => assertManagedChange(snapshot, { kind: 'add', name: 'graphql', connection: { transport: 'remote', url: 'https://other.test/mcp' } },
       'graphql', endpoint)).toThrow('does not match')
     const installed = replacement(snapshot, add, { preset: 'graphql', endpoint })!
     const current = { ...snapshot, user: { 'foreman-code': installed }, effective: { 'foreman-code': installed },
-      credentialReferences: { 'foreman-code': 'FOREMAN_CODE_MCP_TOKEN' } }
+      }
     expect(managedStatus(current, 'graphql', endpoint)).toBe('installed')
     expect(() => replacement(current, managedEnableChange('graphql', false))).toThrow('Application MCP connections are managed')
     expect(managedStatus({ ...current, effective: { 'foreman-code': { url: 'https://override.test/mcp' } } },
@@ -43,7 +42,7 @@ describe('native MCP settings reads', () => {
     expect(replacement(current, managedChange('graphql', false, endpoint), { preset: 'graphql', endpoint })).toBeUndefined()
     expect(() => replacement({ ...current, user: { 'foreman-code': { ...installed, url: 'https://other.test/mcp' } } },
       managedChange('graphql', false, endpoint), { preset: 'graphql', endpoint })).toThrow('matching user-owned preset')
-    const legacy = nativeConnection(harness, { transport: 'remote', url: 'http://127.0.0.1:3012/mcp', bearerTokenEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN' })
+    const legacy = nativeConnection({ transport: 'remote', url: 'http://127.0.0.1:3012/mcp', bearerTokenEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN' })
     expect(replacement({ ...current, user: { 'foreman-code': legacy }, effective: { 'foreman-code': legacy } },
       add, { preset: 'graphql', endpoint })).toEqual(installed)
     expect(managedStatus(current, 'graphql', 'http://127.0.0.1:4567/mcp')).toBe('installed')

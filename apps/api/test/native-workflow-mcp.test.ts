@@ -68,7 +68,7 @@ it.each(storageFixtures)('keeps the $token reference in $storage native storage'
       return [line.slice(0, separator).trim(), JSON.parse(line.slice(separator + 1).trim()) as unknown]
     }))
     expect(entry).toEqual({ command: process.execPath, args: [appLauncherPath()], env_vars: [identity.token] })
-    expect(isAppLauncher('codex', entry)).toBe(true)
+    expect(isAppLauncher(entry)).toBe(true)
     expect(JSON.parse(await readFile(join(ownedHome, 'auth.json'), 'utf8'))).toEqual({ fixture: true })
     await restore()
     restore = undefined
