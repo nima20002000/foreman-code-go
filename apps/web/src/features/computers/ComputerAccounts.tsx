@@ -59,7 +59,7 @@ export function ComputerAccountChips({ accounts, onGitHub, onDrive, onRetry, ret
         {TOOLS[tool].icon}
       </button>
     })}
-    {!accounts && <span className="computer-list-feedback">Account state unavailable
+    {!accounts && <span className="computer-list-feedback"><span>Account state unavailable</span>
       {onRetry && <Button size="sm" variant="ghost" disabled={retrying} onClick={onRetry}>Retry accounts</Button>}
     </span>}
   </div>

@@ -20,7 +20,8 @@ function renderDialog() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
   useComputerUi.setState({ drive: { key: `${mainId}:main`, session: sessionGeneration() } })
-  render(<QueryClientProvider client={client}><DriveConnectDialog target={target} name="Main" account={undefined} /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}><DriveConnectDialog target={target} name="Main"
+    account={{ tool: 'drive', installed: false, signedIn: null, account: null, details: [] }} /></QueryClientProvider>)
   return client
 }
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()); useComputerUi.getState().closeDrive() })

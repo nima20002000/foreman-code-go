@@ -1,3 +1,4 @@
+import { QueryClientProvider } from '@tanstack/react-query'
 import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
@@ -27,6 +28,17 @@ function fixture(state = waiting, signedIn = false) {
   return result
 }
 afterEach(() => { vi.restoreAllMocks(); act(() => useComputerUi.getState().closeGitHub()) })
+
+it('keeps an active sign-in visible when account inventory becomes unavailable', async () => {
+  const f = fixture()
+  await userEvent.click(screen.getByRole('button', { name: 'Connect GitHub' }))
+  await screen.findByText('AB12-CD34')
+  f.rendered.rerender(<QueryClientProvider client={f.client}>
+    <GitHubSignInDialog target={mainTarget} name="Main" account={undefined} />
+  </QueryClientProvider>)
+  expect(screen.getByText('AB12-CD34')).toBeVisible()
+  expect(screen.queryByText('Account state unavailable')).not.toBeInTheDocument()
+})
 
 it('shows signed-out after logout and starts another sign-in without the old result masking it', async () => {
   fixture({ ...waiting, state: 'signed-in', account: 'owner', code: null }, true)
