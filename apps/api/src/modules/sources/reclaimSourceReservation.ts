@@ -119,11 +119,12 @@ export async function reclaimSourceReservation(grant: SourceReservationReclamati
 }, signal: AbortSignal): Promise<SourcePreparationClosure[]> {
   let foundOwner = false
   const closures: SourcePreparationClosure[] = []
+  const unmatchedRoots: SourceRootRecord[] = []
   for (const root of grant.roots) {
     signal.throwIfAborted()
     await ports.authorize()
     const owners = await findOwners(root, grant, signal)
-    if (!owners.length) await preparationChildrenClosed(root.binding.canonicalPath, signal)
+    if (!owners.length) unmatchedRoots.push(root)
     if (owners.length) foundOwner = true
     for (const original of owners) {
       const owner = SourceOperationOwnerSchema.parse({ ...original, preparationClosed: true,
@@ -145,8 +146,11 @@ export async function reclaimSourceReservation(grant: SourceReservationReclamati
       closures.push(closure)
     }
   }
-  if (!foundOwner && !await ports.operationClosed(grant.operationId)) {
-    throw new SourceError('source-reconciliation-unconfirmed', 'Original native operation closure is unconfirmed.')
+  if (!foundOwner) {
+    for (const root of unmatchedRoots) await preparationChildrenClosed(root.binding.canonicalPath, signal)
+    if (!await ports.operationClosed(grant.operationId)) {
+      throw new SourceError('source-reconciliation-unconfirmed', 'Original native operation closure is unconfirmed.')
+    }
   }
   await ports.authorize()
   return closures
