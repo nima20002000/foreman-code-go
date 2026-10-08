@@ -147,11 +147,9 @@ describe('sidebar menu reordering', () => {
 
     expect(reorderIds(sectionsGroup)).toEqual([
       'workflows',
-      'jobs',
     ])
     expect(reorderIds(sectionsGroupTwo)).toEqual([
       'workflows',
-      'jobs',
     ])
   })
 
@@ -182,7 +180,6 @@ describe('sidebar menu reordering', () => {
     expect(reorderIds(workspacesGroup)).toEqual(['workspace-1', 'workspace-2'])
     expect(reorderIds(sectionsGroup)).toEqual([
       'workflows',
-      'jobs',
     ])
   })
 

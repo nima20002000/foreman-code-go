@@ -1,31 +1,23 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { JobWorkflowExecutionReference } from '@foreman-code/contracts/job-workflow'
 import type { JobInitiatingAgent } from '@foreman-code/contracts/jobs'
-import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
-import { Alert, Badge, Button, Card, CardBody, PageHeader } from '../../shared/ui/nocturne'
-import { jobsClient } from './client'
-import { useJobArtifacts, useJobExecution, jobKeys } from './query'
+import { Alert, Badge, Card, CardBody, PageHeader } from '../../shared/ui/nocturne'
+import { useJobArtifacts, useJobExecution } from './query'
 import { jobError, processLabel } from './model'
 import { JobLogs } from './JobLogs'
 import { ArtifactDownload } from './ArtifactDownload'
 import { JobSpecFacts } from './JobSpecFacts'
 import { JobVerificationResult } from './JobVerificationResult'
 
-export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow,
-  expectedDefinitionVersionId, readOnly = false, expectedInitiatingAgent }: {
+export function JobResult({ workspaceId, executionId, expectedWorkflow,
+  expectedDefinitionVersionId, expectedInitiatingAgent }: {
   workspaceId: string
   executionId: string
-  onRerun?: (execution: JobExecutionRecord) => void
   expectedWorkflow?: JobWorkflowExecutionReference
   expectedDefinitionVersionId?: string
   expectedInitiatingAgent?: JobInitiatingAgent
-  readOnly?: boolean
 }) {
   const result = useJobExecution(workspaceId, executionId)
   const artifacts = useJobArtifacts(workspaceId, executionId, Boolean(result.data))
-  const cache = useQueryClient()
-  const cancel = useMutation({ mutationFn: (commandId: string) => jobsClient.cancel(workspaceId, executionId, commandId),
-    onSuccess: execution => { cache.setQueryData(jobKeys.execution(workspaceId, executionId), execution); void cache.invalidateQueries({ queryKey: jobKeys.history(workspaceId) }) }, retry: false })
   if (result.error) return <Alert title="Result unavailable" tone="danger">{jobError(result.error)}</Alert>
   if (!result.data) return <p role="status">Loading job execution…</p>
   const execution = result.data
@@ -43,7 +35,7 @@ export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow,
     return <Alert title="CI origin mismatch" tone="warning">This job does not belong to the selected Agent execution.</Alert>
   }
   return <div className="jobs-page">
-    <PageHeader title="Job result" description={execution.id} actions={!readOnly && <>{onRerun && <Button onClick={() => onRerun(execution)}>Review rerun</Button>}{!execution.process.processStopped && <Button variant="danger" loading={cancel.isPending} disabled={Boolean(execution.cancelRequestedAt)} onClick={() => cancel.mutate(cancel.variables ?? crypto.randomUUID())}>Request cancellation</Button>}</>} />
+    <PageHeader title="Job result" description={execution.id} />
     <div className="job-status" aria-label="Independent job statuses">
       <Badge tone={execution.process.outcome === 'succeeded' ? 'success' : ['build_failed', 'preparation_failed', 'spawn_failed', 'timed_out'].includes(execution.process.outcome ?? '') ? 'danger' : 'neutral'}>Process: {processLabel(execution)}</Badge>
       <Badge tone={execution.transport === 'offline' ? 'warning' : 'neutral'}>Transport: {execution.transport}</Badge>
@@ -52,14 +44,13 @@ export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow,
     {execution.schemaVersion === 2 && <JobVerificationResult execution={execution}
       artifacts={artifacts.data ?? []} artifactsUnavailable={artifacts.isError} />}
     {execution.launchIssue === 'build_disabled' && <Alert title="Builds disabled before launch" tone="warning">
-      This Job kept its selected computer and did not start. Enable builds on that computer before creating a new Start request.
+      This Job kept its selected computer and did not start. An agent can retry after builds are enabled on that computer.
     </Alert>}
     {execution.transport !== 'connected' && <Alert title="Computer connection lost" tone="warning">
       {execution.process.phase === 'terminal'
         ? 'Connection unavailable. The recorded process outcome is shown above. Live computer observations are unavailable.'
         : 'Connection unavailable. The process may still be running. Reconnect to read persisted observations.'}
     </Alert>}
-    {!readOnly && cancel.error && <Alert title="Cancellation not confirmed" tone="warning">Cancellation acknowledgment unavailable: {jobError(cancel.error)} <Button onClick={() => cancel.mutate(cancel.variables ?? crypto.randomUUID())}>Retry same cancellation request</Button></Alert>}
     <dl className="job-facts"><dt>Exit / signal</dt><dd>{execution.process.exitCode ?? 'Not observed'} / {execution.process.signal ?? 'None observed'}</dd>
       <dt>Started / finished</dt><dd>{execution.startedAt ?? 'Not observed'} / {execution.finishedAt ?? 'Not observed'}</dd>
       <dt>Elapsed</dt><dd>{execution.startedAt ? `${Math.max(0, Date.parse(execution.finishedAt ?? execution.updatedAt) - Date.parse(execution.startedAt))} ms${execution.finishedAt ? '' : ' through last result update'}` : execution.process.phase === 'queued' || execution.process.phase === 'preparing' ? `Not started yet (${execution.process.phase})` : 'Start time not recorded'}</dd>
