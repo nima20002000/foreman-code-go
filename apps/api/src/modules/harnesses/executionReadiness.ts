@@ -40,8 +40,7 @@ export class ExecutionReadinessService {
       code: 'NATIVE_ROLLOUT_DISABLED',
       message: harness === 'codex'
         ? 'Codex execution is disabled by this app’s runtime configuration.'
-        : harness === 'claude' ? 'Claude execution is disabled by this app’s runtime configuration.'
-          : 'OpenCode execution is disabled by this app’s runtime configuration.',
+        : 'Claude execution is disabled by this app’s runtime configuration.',
     } : setupReason ?? entry?.discoveryError ?? null
     const unverified = reason && /CHECK_TIMEOUT|QUALIFICATION_FAILED|DISCOVERY_UNAVAILABLE/.test(reason.code)
     return ExecutionReadinessSchema.parse({

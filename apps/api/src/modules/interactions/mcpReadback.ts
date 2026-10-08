@@ -9,7 +9,7 @@ import { DomainError } from '../errors.js'
 
 // Includes both JSON representations and escaping, with room for HTTP/SSE framing and the RPC id.
 export const INTERACTION_MCP_RESPONSE_BYTES = 384 * 1024
-// Stay below OpenCode's default tool-text truncation so options and cursors reach the model.
+// Keep options and cursors within the bounded tool-text response.
 export const INTERACTION_MCP_TEXT_BYTES = 24 * 1024
 const ContentCursorSchema = z.object({
   interactionId: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/),

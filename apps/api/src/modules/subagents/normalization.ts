@@ -36,10 +36,10 @@ function state(value: unknown): RunSubagentTool['status'] {
 export function isChildCandidate(event: HarnessNativeEvent) {
   return event.type === 'native.unlinked_notification' || Boolean(event.payload.parentToolUseId) || Boolean(event.payload.subagentNativeId)
     || event.type === 'claude.subagent' || event.type === 'claude.task'
-    || event.type === 'session.created' || event.type === 'session.updated'
 }
 /** Accepts durable, already-owned provider evidence. Foreign notifications are not discovery evidence. */
 export function normalizeSubagentEvent(context: SubagentProjectionContext, event: HarnessNativeEvent, children: readonly RunSubagent[], aliases: ReadonlyMap<string, string> = new Map()): SubagentChange[] {
+  if (context.provider === 'opencode') return []
   let payload = event.payload
   let method = event.type
   if (method === 'native.unlinked_notification') {
@@ -84,55 +84,6 @@ export function normalizeSubagentEvent(context: SubagentProjectionContext, event
         ? { text: item.aggregatedOutput ?? null, exitCode: item.exitCode } : item.result ?? item.contentItems ?? item.aggregatedOutput,
       error: item.error ?? (item.type === 'commandExecution' && typeof item.exitCode === 'number' && item.exitCode !== 0 ? { exitCode: item.exitCode } : undefined),
       ...(typeof item.durationMs === 'number' && item.durationMs >= 0 ? { durationMs: item.durationMs } : {}) }]
-    return []
-  }
-  if (context.provider === 'opencode') {
-    const info = object(payload.info), part = object(payload.part)
-    const sessionId = text(payload.sessionID) ?? text(part.sessionID) ?? text(info.sessionID)
-    if (['session.created', 'session.updated'].includes(method) && text(info.id) && text(info.parentID)) {
-      const parent = info.parentID as string
-      if (info.id === parent || info.id === context.parentSessionId) return []
-      if (parent !== context.parentSessionId && !children.some(child => nativeChild(child) === parent)) return []
-      return [{ kind: 'discover', childId: info.id as string, parentSessionId: parent, nativeMode: 'opencode-task', status: 'pending',
-        ...(typeof info.title === 'string' ? { name: info.title.slice(0, 512) } : {}) }]
-    }
-    // Parent Task ToolPart metadata is structured discovery; text resembling a tool is never parsed.
-    const metadata = object(object(part.state).metadata)
-    if (part.type === 'tool' && part.tool === 'task' && text(metadata.sessionId)
-      && metadata.parentSessionId === sessionId && (sessionId === context.parentSessionId || children.some(child => nativeChild(child) === sessionId))) {
-      const changes: SubagentChange[] = [{ kind: 'discover', childId: metadata.sessionId as string, parentSessionId: sessionId!, nativeMode: 'opencode-task', status: 'pending',
-        ...(text(part.callID) ? { spawnToolUseId: part.callID as string } : {}) }]
-      const parent = children.find(child => nativeChild(child) === sessionId)
-      const tool = object(part.state)
-      if (parent && text(part.callID)) changes.push({ kind: 'tool', childId: nativeChild(parent)!, nativeToolId: part.callID as string, name: 'task',
-        status: state(tool.status), input: tool.input, output: tool.output, error: tool.error })
-      return changes
-    }
-    const child = children.find(value => nativeChild(value) === sessionId)
-    if (!child) return []
-    const childId = nativeChild(child)!
-    if (method === 'session.error') return [{ kind: 'status', childId, status: 'failed' }]
-    if (method === 'session.status' && object(payload.status).type === 'busy') return [{ kind: 'status', childId, status: 'running' }]
-    if (method === 'message.updated' && info.role === 'user' && text(info.id)) return [{ kind: 'status', childId, status: 'pending', turnId: info.id as string }]
-    if (method === 'message.updated' && info.role === 'assistant' && text(info.id)) {
-      if (info.error) return [{ kind: 'status', childId, status: 'failed', ...(text(info.parentID) ? { turnId: info.parentID as string } : {}) }]
-      if (typeof object(info.time).completed === 'number' && typeof info.finish === 'string' && !['tool-calls', 'unknown', 'error'].includes(info.finish)) {
-        return [{ kind: 'status', childId, status: 'completed', ...(text(info.parentID) ? { turnId: info.parentID as string } : {}) }]
-      }
-    }
-    if (method !== 'message.part.updated' || !text(part.id)) return []
-    if (part.type === 'text' && part.ignored !== true && typeof part.text === 'string' && text(part.messageID)) {
-      // Role must come from the native message, not inferred from a text part.
-      const roles = object(payload.subagentMessage)
-      if (roles.role !== 'assistant' && roles.role !== 'user') return []
-      return [{ kind: 'message', childId, nativeMessageId: part.messageID as string, blockId: part.id as string,
-        role: roles.role, text: part.text, final: typeof object(part.time).end === 'number' }]
-    }
-    if (part.type === 'tool' && text(part.callID)) {
-      const tool = object(part.state)
-      return [{ kind: 'tool', childId, nativeToolId: part.callID as string, ...(text(part.messageID) ? { nativeMessageId: part.messageID as string } : {}),
-        name: String(part.tool ?? 'Tool').slice(0, 512), status: state(tool.status), input: tool.input, output: tool.output, error: tool.error }]
-    }
     return []
   }
   if (payload.nativeSessionId !== context.parentSessionId) return []

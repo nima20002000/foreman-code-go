@@ -51,16 +51,17 @@ test('rejects world-writable installs, nonregular launchers and symlinks escapin
   assert.ok(!workerPath(home, process.execPath).split(':').includes(install.bin));
   const local = join(home, '.local/bin');
   await mkdir(join(local, 'codex'), { recursive: true });
-  await symlink(process.execPath, join(local, 'opencode'));
+  await symlink(process.execPath, join(local, 'claude'));
   assert.ok(!workerPath(home, process.execPath).split(':').includes(local));
 });
 
-test('discovers host-local OpenCode without admitting symlinked installation directories', async (t) => {
-  const home = await fixture(t), bin = join(home, '.opencode/bin');
+test('discovers host-local Claude without admitting symlinked installation directories', async (t) => {
+  const home = await fixture(t), bin = join(home, '.local/bin');
   await mkdir(bin, { recursive: true });
-  await writeFile(join(bin, 'opencode'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  await writeFile(join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
   assert.ok(workerPath(home, process.execPath).split(':').includes(bin));
-  await mkdir(join(home, '.local'));
-  await symlink(bin, join(home, '.local/bin'));
-  assert.ok(!workerPath(home, process.execPath).split(':').includes(join(home, '.local/bin')));
+  const linkedHome = await fixture(t);
+  await mkdir(join(linkedHome, '.local'));
+  await symlink(bin, join(linkedHome, '.local/bin'));
+  assert.ok(!workerPath(linkedHome, process.execPath).split(':').includes(join(linkedHome, '.local/bin')));
 });

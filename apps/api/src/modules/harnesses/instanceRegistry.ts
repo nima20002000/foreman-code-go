@@ -1,4 +1,4 @@
-import { HarnessConfigurationSchema, type HarnessDefaults } from '@foreman-code/contracts'
+import { HarnessConfigurationSchema, RETIRED_OPENCODE_MESSAGE, type HarnessDefaults } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 
 /** Reusable code/metadata only. A registration must not contain a live manager. */
@@ -15,8 +15,9 @@ export interface ConfiguredHarnessInstance {
   readonly configuration: unknown
 }
 export type HarnessInstanceProjection = ConfiguredHarnessInstance & {
-  readonly availability: 'available' | 'disabled' | 'unknown-driver' | 'invalid-configuration'
+  readonly availability: 'available' | 'disabled' | 'unknown-driver' | 'invalid-configuration' | 'retired'
   readonly driverRevision?: string
+  readonly retirementMessage?: string
 }
 
 function freeze(value: unknown): unknown {
@@ -47,7 +48,11 @@ export class HarnessInstanceRegistry {
         catch { availability = 'invalid-configuration' }
       }
       if (!instance.enabled) availability = 'disabled'
-      const projection: HarnessInstanceProjection = { ...instance, configuration: freeze(configuration), availability, ...(driver ? { driverRevision: driver.driverRevision } : {}) }
+      const savedConfiguration = HarnessConfigurationSchema.safeParse(configuration)
+      const retired = instance.driverId === 'opencode'
+        || savedConfiguration.success && savedConfiguration.data.harness === 'opencode'
+      if (retired) availability = 'retired'
+      const projection: HarnessInstanceProjection = { ...instance, configuration: freeze(configuration), availability, ...(retired ? { retirementMessage: RETIRED_OPENCODE_MESSAGE } : {}), ...(driver ? { driverRevision: driver.driverRevision } : {}) }
       const prior = this.instances.get(instance.instanceId)
       if (prior?.instanceRevision === instance.instanceRevision && JSON.stringify(prior) !== JSON.stringify(projection)) {
         throw new Error('A configured instance revision is immutable.')
@@ -60,6 +65,7 @@ export class HarnessInstanceRegistry {
   select(instanceId: string): HarnessInstanceProjection {
     const instance = this.instances.get(instanceId)
     if (!instance) throw new DomainError('HARNESS_INSTANCE_UNAVAILABLE', 'Harness instance inventory is unavailable.', 503)
+    if (instance.availability === 'retired') throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     if (instance.availability !== 'available') {
       throw new DomainError('HARNESS_INSTANCE_INVALID', `Harness instance unavailable: ${instance.availability}.`, 409)
     }
@@ -67,7 +73,7 @@ export class HarnessInstanceRegistry {
   }
 }
 
-export const localHarnessDrivers: readonly HarnessDriverRegistration[] = ['codex', 'opencode', 'claude'].map((driverId) => ({
+export const localHarnessDrivers: readonly HarnessDriverRegistration[] = ['codex', 'claude'].map((driverId) => ({
   driverId, driverRevision: '1', decodeConfiguration: (value: unknown) => {
     const configuration = HarnessConfigurationSchema.parse(value)
     if (configuration.harness !== driverId) throw new Error('Harness configuration driver mismatch.')
@@ -77,7 +83,7 @@ export const localHarnessDrivers: readonly HarnessDriverRegistration[] = ['codex
 
 /** Existing managed-default CAS/auth remains in the catalog/settings services. */
 export function localDefaultInstances(defaults: HarnessDefaults, revision: number): ConfiguredHarnessInstance[] {
-  return (['codex', 'opencode', 'claude'] as const)
+  return (['codex', 'claude'] as const)
     .filter(driverId => defaults[driverId] !== undefined)
     .map((driverId) => ({
       instanceId: `local-default:${driverId}`, instanceRevision: String(revision), driverId,

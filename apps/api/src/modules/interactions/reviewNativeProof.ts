@@ -48,9 +48,7 @@ export function reviewSourceEvents(record: Pick<ReviewNativeProofRecord, 'origin
     : record.original.type === 'history' ? record.original.history.events : []
   return events.map((event) => normalizeNativeProducerEvent({ ...event, executionId: record.execution.executionId }).event)
 }
-/** NativeHistory's convenience terminal enum is NOT positive OpenCode proof:
- * its abort ACK can be cached there. The existing rooted reconciliation writer
- * must additionally validate the immutable original message and marker. */
+/** Readiness requires the original provider events rather than convenience terminal fields. */
 export function reviewSourceReadiness(record: Pick<ReviewNativeProofRecord, 'original' | 'session' | 'job'>,
   providerId?: string): { live: boolean; terminalReady: boolean } {
   const tracker = new ReviewEvidenceTracker(record.session, record.job.correlationId, providerId)

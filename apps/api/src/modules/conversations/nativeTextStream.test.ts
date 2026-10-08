@@ -15,25 +15,11 @@ describe('shared admitted-owner native text path', () => {
     expect(timeline).toEqual(['ab', 'file committed', 'final committed', ''])
     stream.dispose()
   })
-  it('keeps OpenCode blocks sharing a message separate and fences only confirmed final parts', () => {
-    const publish = vi.fn(), stream = createNativeTextStream({ owner, harness: 'opencode', publish, reconcile: vi.fn() })
-    const part = (id: string, text: string, complete = false): NativeHarnessEvent => ({ ...delta(1, ''), type: 'message.part.updated', payload: { part: { id, messageID: 'message-a', type: 'text', text, time: complete ? { end: 1 } : {} } } })
-    stream.push(part('block-a', 'provisional'))
-    stream.push({ ...part('block-a', '', true), sequence: 2 })
-    stream.push({ ...part('block-b', 'second', true), sequence: 3 })
-    stream.push({ ...delta(4, 'late'), type: 'message.part.delta', payload: { partID: 'block-a', field: 'text', delta: 'late' } })
-    expect(publish.mock.calls.map(([operation]) => [operation.identity.itemId, operation.text])).toEqual([
-      ['block-a', 'provisional'], ['block-a', ''], ['block-b', 'second'],
-    ])
-    stream.dispose()
-  })
   it('requests readback for absent native identity and drops callbacks after disposal', () => {
     vi.useFakeTimers()
     const publish = vi.fn(), reconcile = vi.fn(), stream = createNativeTextStream({ owner, harness: 'codex', publish, reconcile })
     stream.push({ ...delta(1, 'x'), payload: { text: 'x' } })
     expect(reconcile).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled()
-    stream.push({ ...delta(2, 'unknown-kind'), type: 'message.part.delta', payload: { partID: 'unknown-part', field: 'text', delta: 'unknown-kind' } })
-    expect(reconcile).toHaveBeenCalledTimes(2)
     stream.push(delta(2, 'buffered')); stream.dispose(); stream.push(delta(3, 'late')); vi.runAllTimers()
     expect(publish).not.toHaveBeenCalled()
   })
@@ -59,10 +45,4 @@ describe('Claude block source provenance', () => {
     stream.push(delta(1, 'buffered')); controller.abort(); vi.runAllTimers(); stream.push(delta(2, 'late'))
     expect(publish).not.toHaveBeenCalled()
   })
-})
-it('does not turn a known tool-part text field into assistant prose', () => {
-  const publish = vi.fn(), stream = createNativeTextStream({ owner, harness: 'opencode', publish, reconcile: vi.fn() })
-  stream.push({ ...delta(1, ''), type: 'message.part.updated', payload: { part: { id: 'tool-part', type: 'tool' } } })
-  stream.push({ ...delta(2, ''), type: 'message.part.delta', payload: { partID: 'tool-part', field: 'text', delta: 'private tool output' } })
-  stream.flush(); expect(publish).not.toHaveBeenCalled(); stream.dispose()
 })

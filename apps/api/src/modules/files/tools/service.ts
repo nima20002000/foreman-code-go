@@ -1,11 +1,9 @@
 import { Readable } from 'node:stream'
-import { createHash } from 'node:crypto'
 import {
   AgentFileListInputSchema, AgentFileListResultSchema, AgentFileReadInputSchema,
   AgentFileCreateWorkingCopyInputSchema, AgentFileCreateWorkingCopyResultSchema,
   AgentFilePublishInputSchema, AgentFilePublishResultSchema, FileWithRevisionSchema, FileRevisionSchema,
   MAX_FILE_BYTES, fileStateAt, parseAgentFileReadResult,
-  type FileRevision,
   type FileScope, type FileWithRevision, type MessageAttachmentRef,
 } from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
@@ -218,31 +216,6 @@ export class AgentFileToolService {
     const finalized = await this.files.finalize(current.principal, targetOf(current.context), requestId)
     await this.sessions.authenticate(token, 'files.publish_result')
     return AgentFilePublishResultSchema.parse({ value: finalized.value, replayed: allocated.replayed })
-  }
-
-  /** Trusted runner recovery keeps edited versions readable after its native credential closes. */
-  async preserveAccepted(context: FileToolContext, input: {
-    id: string; revision: FileRevision; bytes: Uint8Array
-  }, signal: AbortSignal): Promise<void> {
-    const caller = await this.sessions.authorizeAccepted(context, 'files.publish_result')
-    const hash = createHash('sha256').update(input.bytes).digest('hex')
-    if (input.bytes.byteLength !== input.revision.byteSize || hash !== input.revision.sha256) {
-      throw new DomainError('FILE_ARTIFACT_CHANGED', 'The recovered version does not match its bytes.', 409)
-    }
-    const requestId = `opencode:recover:${digest(JSON.stringify([caller.binding, input.id]))}`
-    const allocated = await this.files.allocateAgentResult(caller.principal, targetOf(context), {
-      requestId, filename: input.revision.filename, mediaType: input.revision.mediaType,
-      byteSize: input.bytes.byteLength, sha256: hash,
-    }, 'agent_output', digest(JSON.stringify([caller.binding, input.id, hash])))
-    await this.sessions.authorizeAccepted(context, 'files.publish_result')
-    await this.repository.linkPublication({ ownerPrincipalId: caller.principal.id, requestId, binding: caller.binding,
-      context, ref: { fileId: allocated.value.file.fileId, revisionId: allocated.value.revision.revisionId },
-      createdAt: this.clock().toISOString() })
-    await this.files.upload(caller.principal, targetOf(context), requestId, Readable.from([input.bytes]), {
-      signal, reauthorize: async () => (await this.sessions.authorizeAccepted(context, 'files.publish_result')).principal,
-    })
-    const current = await this.sessions.authorizeAccepted(context, 'files.publish_result')
-    await this.files.finalize(current.principal, targetOf(context), requestId)
   }
 
   /** Attachment adoption/readback seam. Pins survive expiry; pending or canceled attempts are excluded. */

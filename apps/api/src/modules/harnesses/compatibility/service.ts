@@ -11,7 +11,7 @@ import { CompatibilityCheckError, compatibilityReason } from './errors.js'
 import { nativeCompatibilityProbe, type CompatibilityProbe, type HarnessInstallation } from './probe.js'
 import { COMPATIBILITY_CHECKER_REVISION, QUALIFIED_RELEASES, knownRelease } from './releases.js'
 
-const HARNESSES = ['codex', 'opencode'] as const
+const HARNESSES = ['codex'] as const
 const CACHE_WARNING = 'This result is available now, but the compatibility cache could not be read or saved. A later startup may repeat the check.'
 export interface CompatibilityOptions {
   probe: CompatibilityProbe
@@ -55,7 +55,7 @@ export class HarnessCompatibilityService {
     this.revision = options.checkerRevision ?? COMPATIBILITY_CHECKER_REVISION
     this.timeoutMs = options.timeoutMs ?? 6000
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 30_000) throw new RangeError('Invalid compatibility deadline.')
-    this.reports = { codex: this.initial('codex'), opencode: this.initial('opencode') }
+    this.reports = { codex: this.initial('codex') }
   }
   private initial(harness: CompatibilityHarness): HarnessCompatibility {
     return {
@@ -203,9 +203,9 @@ export class HarnessCompatibilityService {
     }
   }
 }
-export function createHarnessCompatibility(config: { codexBinary: string; openCodeBinary: string; workspaceRoot: string }, onUnknownInstalled?: (harness: CompatibilityHarness) => void): HarnessCompatibilityService {
+export function createHarnessCompatibility(config: { codexBinary: string; workspaceRoot: string }, onUnknownInstalled?: (harness: CompatibilityHarness) => void): HarnessCompatibilityService {
   return new HarnessCompatibilityService({
-    probe: nativeCompatibilityProbe({ codex: config.codexBinary, opencode: config.openCodeBinary }, config.workspaceRoot),
+    probe: nativeCompatibilityProbe({ codex: config.codexBinary }, config.workspaceRoot),
     cache: new FileCompatibilityCache(),
     ...(onUnknownInstalled ? { onUnknownInstalled } : {}),
   })

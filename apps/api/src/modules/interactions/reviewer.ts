@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { ReviewJobSchema, type DurableInteraction, type PendingNativeInteraction, type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
+import { RETIRED_OPENCODE_MESSAGE, ReviewJobSchema, type DurableInteraction, type PendingNativeInteraction, type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
@@ -9,7 +9,7 @@ import { pendingReviewCleanup, reviewPreflightIdentity } from './reviewPolicy.js
 import type { ReviewCredentialMaintenance, ReviewerNativeRuntime } from './reviewerRuntime.js'
 import { PostgresInteractionCoordinationRepository } from './coordination.js'
 import { settleReviewCleanup } from './reviewerCleanup.js'
-import { definitelyRejected, ReviewEvidenceTracker } from './reviewerEvidence.js'
+import { ReviewEvidenceTracker } from './reviewerEvidence.js'
 import type { NativeManagerResolutionContext } from './runtimePorts.js'
 import { coordinateSessionManager, isLeaseLost, LeaseGuard, ownedEvents } from './sessionWriter.js'
 import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
@@ -76,6 +76,9 @@ export class ReviewerDispatcher {
     if (this.stopping.signal.aborted) return undefined
     const available = await this.coordination.nextReviewJob(reviewerAgentId)
     if (!available) return undefined
+    if (available.provider === 'opencode') {
+      throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+    }
     // Old queued jobs are not grandfathered in. Cleanup may only stop existing work.
     if (!available.cleanup) await this.coordination.assertReviewConnection(available)
     const jobToken = `review-lease-${randomUUID()}`
@@ -87,6 +90,9 @@ export class ReviewerDispatcher {
       // Losing a queue race is not a dispatch failure and must not modify the winner.
       if (error instanceof DomainError && error.code === 'REVIEW_JOB_NOT_CLAIMABLE') return undefined
       throw error
+    }
+    if (job.provider === 'opencode') {
+      throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     }
     const guard = new LeaseGuard(this.leaseMs,
       () => this.coordination.assertReviewJobLease(job.id, jobToken),
@@ -141,8 +147,7 @@ export class ReviewerDispatcher {
           const signal = AbortSignal.any([lane.guard.signal, AbortSignal.timeout(Math.min(this.leaseMs, 5_000))])
           job = await settleReviewCleanup({ job, session, ownsTurn, closed: recovery.closed, check,
             ...(recovery.resident ? {
-              observe: () => observe(() => lane.guard.wait((session.harness === 'opencode' ? manager.history(session, signal)
-                : manager.reconcile(session, job.correlationId, signal)), signal)),
+              observe: () => observe(() => lane.guard.wait(manager.reconcile(session, job.correlationId, signal), signal)),
               cancel: (id: string) => lane.guard.wait(manager.cancel(session, signal, id), signal),
             } : {}),
             ...(recovery.confirmClosed ? { confirmClosed: () => lane.guard.wait(recovery.confirmClosed!(signal), signal) } : {}),
@@ -189,8 +194,6 @@ export class ReviewerDispatcher {
       return await writer.withLane(attached.session, job.correlationId, attached.signal ? AbortSignal.any([guard.signal, attached.signal]) : guard.signal, async (manager, lane) => {
         const session = attached.session
         let submitted = recovering
-        let submitting = !recovering
-        let acknowledged = Boolean(job.acknowledgedAt || job.providerTurnOrMessageId)
         const tracker = new ReviewEvidenceTracker(session, job.correlationId, job.providerTurnOrMessageId)
         let maintenance: ReviewCredentialMaintenance | undefined
         let workSignal = lane.guard.signal
@@ -216,7 +219,6 @@ export class ReviewerDispatcher {
           if (tracker.snapshot().identityConflict) throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT',
             'The review received conflicting native submission identities. It will not be replayed.', 409)
           await recordProviderTurn(providerId)
-          acknowledged = true
           if (!job.acknowledgedAt || !job.providerTurnOrMessageId) {
             await transition('acknowledged', { providerTurnOrMessageId: providerId })
             lane.observedStatus = 'busy'
@@ -250,8 +252,7 @@ export class ReviewerDispatcher {
           job = await settleReviewCleanup({ job, session, ownsTurn,
             pending: pendingRequests, check,
             observe: async () => {
-              const original = safe.value(await lane.guard.wait((session.harness === 'opencode' ? manager.history(session, cleanupSignal)
-                : manager.reconcile(session, job.correlationId, cleanupSignal)), cleanupSignal))
+              const original = safe.value(await lane.guard.wait(manager.reconcile(session, job.correlationId, cleanupSignal), cleanupSignal))
               await check()
               const capture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane, { type: 'history', history: original })
               await this.coordination.appendReviewNativeHistory(job,
@@ -328,7 +329,6 @@ export class ReviewerDispatcher {
               if (pending) return await approvalFailure(pending)
             }
           }
-          submitting = false
           // Submitted/unknown work is observation-only. Missing evidence is not permission to resend.
           await check()
           workSignal.throwIfAborted()
@@ -338,7 +338,6 @@ export class ReviewerDispatcher {
           const originalHistory = safe.value(history)
           const normalizedEvents = originalHistory.events.map((event) => normalizeNativeProducerEvent(
             { ...safe.value(event), executionId: executionId! }).event)
-          // OpenCode cancellation ACK metadata is not terminal evidence.
           const trackedHistory = { ...originalHistory, events: normalizedEvents }
           delete trackedHistory.terminalTurn; delete trackedHistory.terminalResult
           tracker.observeHistory(trackedHistory)
@@ -405,9 +404,6 @@ export class ReviewerDispatcher {
               retryAfter: new Date(Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(job.attempt, 4))).toISOString(),
             })
           }
-          const rejected = submitting && tracker.processedEvents === 0 && !acknowledged && definitelyRejected(rawError)
-          if (rejected) return await failReview({ code: 'REVIEW_SUBMISSION_REJECTED',
-            message: 'The provider rejected the review submission. Native process and credential cleanup are still required.' })
           lane.observedStatus = 'uncertain'
           return await transition('uncertain', {
             error: { code: 'REVIEW_DELIVERY_UNCERTAIN',

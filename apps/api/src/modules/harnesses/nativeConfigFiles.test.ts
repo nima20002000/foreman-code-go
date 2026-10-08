@@ -25,10 +25,10 @@ it('reads an absent Codex user file as an empty document without creating it', a
     .toBe('model = "qualified-model"\n')
 })
 
-it('preserves the optional JSON document behavior and required-file failures', async () => {
+it('preserves an optional missing-file value and required-file failures', async () => {
   const directory = await fixture()
-  const file = join(directory, 'missing', 'opencode.json')
-  expect(await readNativeUserFile(file, { whenMissing: '{}\n' })).toBe('{}\n')
+  const file = join(directory, 'missing', 'config.toml')
+  expect(await readNativeUserFile(file, { whenMissing: '' })).toBe('')
   await expect(readNativeUserFile(file)).rejects.toMatchObject({ code: 'ENOENT' })
   await expect(readNativeUserFile(file, { whenMissing: '', requireDirectory: true }))
     .rejects.toMatchObject({ code: 'ENOENT' })

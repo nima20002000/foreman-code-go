@@ -1,5 +1,4 @@
 import type pg from 'pg'
-import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { subagentCapabilities, RunSubagentSchema, RunSubagentGetInputSchema, RunSubagentsListInputSchema, RunSubagentItemsInputSchema,
@@ -83,20 +82,7 @@ export class RunSubagentService {
     if (child.workspaceId !== input.workspaceId || child.workflowId !== scope.workflowId || child.workflowVersionId !== scope.workflowVersionId) {
       throw new DomainError('SUBAGENT_SCOPE_CONFLICT', 'The child no longer matches the immutable Run scope.', 409)
     }
-    return this.refreshCapabilities(scope, child)
-  }
-  private async refreshCapabilities(scope: SubagentReadScope, child: ReturnType<typeof RunSubagentSchema.parse>) {
-    const lease = this.controls(child)
-    if (child.nativeMode !== 'opencode-task' || !lease?.inputContractVerified
-      || !lease.sendInput || !lease.matches(child)) return child
-    lease.assertCurrent()
-    const capabilities = { ...subagentCapabilities(child.nativeMode),
-      sendInput: { support: 'supported' as const, qualification: 'passed' as const } }
-    if (isDeepStrictEqual(child.capabilities, capabilities)) return child
-    const updated = RunSubagentSchema.parse({ ...child, capabilities, revision: String(BigInt(child.revision) + 1n) })
-    await scope.sql.query('update run_subagents set revision=$2,record=$3::jsonb where id=$1',
-      [child.id, updated.revision, JSON.stringify(updated)])
-    return updated
+    return child
   }
   async list(principal: ManagementPrincipal, raw: unknown) {
     const input = RunSubagentsListInputSchema.parse(raw)
@@ -105,7 +91,7 @@ export class RunSubagentService {
       const key = decodeCursor(input.cursor, [input.workspaceId, input.runId, 'children'])
       const rows = (await scope.sql.query<{ id: string; record: unknown }>(`select id,record from run_subagents where run_id=$1 and ($2::text is null or id>$2 collate "C") order by id collate "C" limit $3`, [input.runId, key, input.limit + 1])).rows
       return RunSubagentsPageSchema.parse({ items: await Promise.all(rows.slice(0, input.limit).map(async row => {
-        const child = await this.refreshCapabilities(scope, this.readChild(row.record))
+        const child = this.readChild(row.record)
         if (child.workspaceId !== input.workspaceId || child.workflowId !== scope.workflowId || child.workflowVersionId !== scope.workflowVersionId) throw new DomainError('SUBAGENT_SCOPE_CONFLICT', 'The child has inconsistent immutable Run scope.', 409)
         return { subagent: child, availableActions: subagentAvailableActions(child, scope.principal, scope.stopped, this.controls(child)) }
       })), nextCursor: rows.length > input.limit ? encodeCursor([input.workspaceId, input.runId, 'children'], rows[input.limit - 1]!.id) : null, projection })

@@ -4,6 +4,9 @@ import { isAuthorized } from '../access/policy.js'
 import type { SubagentControlLease } from './types.js'
 
 export function subagentAvailableActions(child: RunSubagent, principal: ManagementPrincipal, stopped: boolean, lease?: SubagentControlLease): SubagentAvailableActions {
+  if (child.provider === 'opencode') {
+    return { sendInput: false, interrupt: false, blockedReason: 'SUBAGENT_CONTROL_UNAVAILABLE' }
+  }
   const resource = { workspaceId: child.workspaceId, workflowId: child.workflowId, runId: child.runId }
   const qualified = (key: 'sendInput' | 'interrupt') => child.capabilities[key].support === 'supported' && child.capabilities[key].qualification === 'passed'
   const live = !stopped && Boolean(lease?.matches(child)) && child.evidence === 'confirmed'

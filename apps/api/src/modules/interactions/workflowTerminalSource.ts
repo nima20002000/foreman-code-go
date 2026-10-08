@@ -1,6 +1,5 @@
 import type { HarnessExecution, NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeHistory } from '../harnesses/port.js'
-import { matchesOpenCodeHistorySource, readOpenCodeReconciliation } from '../harnesses/opencodeReconciliation.js'
 import { DomainError } from '../errors.js'
 
 function object(value: unknown): Record<string, unknown> {
@@ -20,8 +19,7 @@ export function workflowProviderId(session: NativeSessionReference, history: Nat
 
 /** Used only AFTER private original-source capture verification. Convenience
  * NativeHistory terminal fields and abort ACKs are not positive provider proof.
- * Require the matching original terminal frame or the rooted OpenCode history
- * marker AND its referenced raw assistant, without rewriting either source. */
+ * Require the matching original terminal frame without rewriting its source. */
 export function assertOriginalWorkflowTerminal(execution: Pick<HarnessExecution, 'id' | 'agentId'>,
   session: NativeSessionReference, history: NativeHistory): void {
   const command = `execution:${execution.id}`, terminal = history.terminalTurn
@@ -44,15 +42,6 @@ export function assertOriginalWorkflowTerminal(execution: Pick<HarnessExecution,
       if (raw.is_error === true && ['error_during_execution', 'error_max_turns', 'error_max_budget_usd',
         'error_max_structured_output_retries'].includes(String(raw.subtype))
         && terminal.result.outcome === 'failed' && terminal.result.error?.code === 'CLAUDE_NATIVE_RESULT_ERROR') return
-    }
-    return fail()
-  }
-  if (session.harness === 'opencode') {
-    for (const event of history.events) {
-      const proof = readOpenCodeReconciliation(event, { ownerAgentId: execution.agentId,
-        nativeSessionId: session.nativeSessionId, providerVersion: session.providerVersion,
-        correlationId: command, nativeTurnId: terminal.providerId })
-      if (proof && proof.outcome === terminal.result.outcome && history.events.some((source) => matchesOpenCodeHistorySource(proof, source))) return
     }
     return fail()
   }

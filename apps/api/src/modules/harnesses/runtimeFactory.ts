@@ -1,10 +1,10 @@
-import { join } from 'node:path'
+import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import { captureOriginalCodexSession, type OriginalCodexSession } from './originalCodexSession.js'
-import { createAdmittedNativeManager, type NativeManagerAdmission } from './admittedManager.js'
+import { createAdmittedNativeManager } from './admittedManager.js'
 import type { ClaudeOwnedVersionObservation } from './claudeSdk/currentPin.js'
 import { createAdmittedClaudeManager } from './claudeSdk/admittedManager.js'
 import { allocateClaudeNativeHarness, type ClaudeNativeAllocation, type ClaudeNativeAllocationResult } from './claudeSdk/composition.js'
-import type { HarnessConfiguration, OpenCodeAdvancedConfiguration, NativeSessionReference } from '@foreman-code/contracts'
+import type { HarnessConfiguration, NativeSessionReference } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { HarnessInstanceRegistry, localHarnessDrivers, type ConfiguredHarnessInstance } from './instanceRegistry.js'
 import type { HarnessInstallationRegistry, RegistryHarnessSelection } from './installationRegistry.js'
@@ -19,10 +19,6 @@ import type { CodexNativeOutputs } from './codexNativeOutput.js'
 import type { CodexChatFiles } from './codexFiles/runtime.js'
 import { codexMcpInspectorAdapter } from './codexMcpInspectorAdapter.js'
 import type { NativeMcpInspector } from './mcpDetection.js'
-import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './opencodeServer.js'
-import type { ManagedOpenCodeServerOptions, OpenCodeServerController } from './opencodeTransport.js'
-import type { OpenCodeChatFiles } from './opencodeFiles/chat.js'
-import { openCodeMcpInspectorAdapter } from './opencodeMcpInspectorAdapter.js'
 import type { NativeHarnessSessionManager, NativeSessionStart } from './port.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import type { NativeResponseJournal } from './recovery/responseJournal.js'
@@ -36,20 +32,19 @@ interface AllocationContext {
   ownerAgentId: string
   processRecovery?: NativeProcessRecovery
   appMcpAccess: 'scoped' | 'none'
-  credentialEnvironmentVariable?: string
   revalidateSelection?: (signal?: AbortSignal) => Promise<void>
 }
-export type NativeHarnessAllocation = AllocationContext & (
-  | { harness: 'codex'; chatFiles?: CodexChatFiles; nativeOutputs?: CodexNativeOutputs }
-  | { harness: 'opencode'; advancedConfiguration?: OpenCodeAdvancedConfiguration
-    chatFiles?: (server: OpenCodeServerController) => OpenCodeChatFiles }
-)
-export type NativeHarnessAllocationResult =
-  | { harness: 'codex'; manager: CodexAppServerSessionManager; inspector: NativeMcpInspector }
-  | { harness: 'opencode'; manager: OpenCodeNativeSessionManager; inspector: NativeMcpInspector }
+export type NativeHarnessAllocation = AllocationContext & {
+  harness: 'codex'
+  chatFiles?: CodexChatFiles
+  nativeOutputs?: CodexNativeOutputs
+}
+export interface NativeHarnessAllocationResult {
+  harness: 'codex'
+  manager: CodexAppServerSessionManager
+  inspector: NativeMcpInspector
+}
 
-type OpenCodeClientFactory = NonNullable<ConstructorParameters<typeof OpenCodeNativeSessionManager>[0]['clientFactory']>
-type ServerFactory = (options: ManagedOpenCodeServerOptions) => OpenCodeServerController
 interface CodexDiagnosticLifetime {
   readonly recovery: NativeProcessRecovery
   readonly writerOwner: string | undefined
@@ -61,8 +56,8 @@ interface CodexDiagnosticLifetime {
   cleanup?: Promise<void>
 }
 export type NativeFactoryInfrastructure =
-  | { mode: 'native'; codex?: CodexSessionDependencies; openCodeServer?: ServerFactory; openCodeClient?: OpenCodeClientFactory }
-  | { mode: 'replay'; codex: CodexSessionDependencies & { mode: 'replay' }; openCodeServer: ServerFactory; openCodeClient: OpenCodeClientFactory }
+  | { mode: 'native'; codex?: CodexSessionDependencies }
+  | { mode: 'replay'; codex: CodexSessionDependencies & { mode: 'replay' } }
 
 /** Shares construction code only. Every allocation constructs a new real adapter
  * and retains the caller's initially unreserved recovery scope. */
@@ -78,16 +73,12 @@ export class NativeHarnessFactories {
   private readonly inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
   constructor(private readonly config: {
     codexBinary: string
-    openCodeBinary: string
-    openCodeFileStorageRoot?: string
-    workspaceRoot?: string
     refreshInstallations?: (signal?: AbortSignal) => Promise<void>
-    appMcpEndpoint?: string
     responseJournal?: NativeResponseJournal
     instances?: HarnessInstanceRegistry
     installations?: HarnessInstallationRegistry
     installationDiscovery?: typeof discoverLauncher
-    selectDefault?: (harness: 'codex' | 'opencode') => RegistryHarnessSelection
+    selectDefault?: (harness: 'codex') => RegistryHarnessSelection
     selectConfiguration?: (configuration: HarnessConfiguration) => RegistryHarnessSelection
     auxiliaryRecovery?: (role: 'diagnostics' | 'qualification') => NativeProcessRecovery
     admitRecovery?: (recovery: NativeProcessRecovery) => void
@@ -106,24 +97,23 @@ export class NativeHarnessFactories {
     if (infrastructure.mode === 'native' && infrastructure.codex?.mode === 'replay') {
       throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay dependencies require the complete replay environment.', 500)
     }
-    if (infrastructure.mode === 'replay' && (!infrastructure.codex || infrastructure.codex.mode !== 'replay'
-      || !infrastructure.openCodeServer || !infrastructure.openCodeClient)) {
+    if (infrastructure.mode === 'replay' && (!infrastructure.codex || infrastructure.codex.mode !== 'replay')) {
       throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay requires every provider infrastructure port.', 500)
     }
   }
 
-  async cacheIdentity(harness: 'codex' | 'opencode', directory: string, configuration?: HarnessConfiguration) {
+  async cacheIdentity(harness: 'codex', directory: string, configuration?: HarnessConfiguration) {
     await this.config.refreshInstallations?.()
     const selection = configuration ? this.config.selectConfiguration?.(configuration) : this.config.selectDefault?.(harness)
     const binary = selection?.installation.launcher.resolvedLauncher
-      ?? (harness === 'codex' ? this.config.codexBinary : this.config.openCodeBinary)
+      ?? this.config.codexBinary
     return binaryCacheIdentity(harness, binary, directory)
   }
 
-  allocateAdmitted(harness: 'codex' | 'opencode',
-    prepare: (signal: AbortSignal, admission: NativeManagerAdmission) => Promise<NativeHarnessAllocation>) {
-    const result = createAdmittedNativeManager<NativeHarnessSessionManager>(harness, async (signal, admission) => {
-      const accepted = await prepare(signal, admission)
+  allocateAdmitted(harness: 'codex',
+    prepare: (signal: AbortSignal) => Promise<NativeHarnessAllocation>) {
+    const result = createAdmittedNativeManager<NativeHarnessSessionManager>(harness, async (signal) => {
+      const accepted = await prepare(signal)
       signal.throwIfAborted()
       return this.allocate(accepted)
     })
@@ -201,7 +191,7 @@ export class NativeHarnessFactories {
       this.instances.select(input.configured.instanceId)
     }
     if ((input.role === 'agent-chat' || input.role === 'diagnostics' || input.role === 'qualification')
-      && (input.appMcpAccess !== 'none' || input.credentialEnvironmentVariable)) {
+      && input.appMcpAccess !== 'none') {
       throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This runtime role has no application MCP credentials.', 403)
     }
     if (input.chatFiles && input.appMcpAccess === 'scoped' && input.role !== 'operator') {
@@ -265,36 +255,6 @@ export class NativeHarnessFactories {
         this.config.responseJournal)
       this.originalCodexManagers.set(manager, () => manager)
       result = { harness: 'codex', manager, inspector: codexMcpInspectorAdapter(manager) }
-    } else if (input.harness === 'opencode') {
-      const options: ManagedOpenCodeServerOptions = {
-        binary: input.selection?.installation.launcher.resolvedLauncher ?? this.config.openCodeBinary, workingDirectory: input.workingDirectory,
-        ownerAgentId: input.ownerAgentId, appMcpAccess: input.appMcpAccess,
-        ...(this.config.openCodeFileStorageRoot
-          ? { protectedFileStorageRoot: this.config.openCodeFileStorageRoot,
-            nativeStorage: { root: join(this.config.workspaceRoot ?? input.workingDirectory, 'opencode-sessions'),
-              owner: recovery?.owner ?? `${input.role}:${input.ownerAgentId}:${input.workingDirectory}` } } : {}),
-        ...(input.chatFiles && this.config.openCodeFileStorageRoot
-          ? { managedFileRoot: join(this.config.workspaceRoot ?? input.workingDirectory, 'chat-files') } : {}),
-        ...(input.role === 'workflow' && recovery ? { restartDetachable: true as const } : {}),
-        ...(recovery ? { processRecovery: recovery } : {}),
-        ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
-        ...(input.advancedConfiguration ? { advancedConfiguration: input.advancedConfiguration } : {}),
-        ...(input.selection ? { assertInstallation: async (signal?: AbortSignal) => {
-          await input.revalidateSelection?.(signal)
-          await this.assertInstallationUnchanged(input.selection!, signal)
-        } } : {}),
-      }
-      const server = this.infrastructure.openCodeServer
-        ? this.infrastructure.openCodeServer(options) : new ManagedOpenCodeServer(options)
-      const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: input.ownerAgentId,
-        appMcpAccess: input.appMcpAccess,
-        ...(this.config.appMcpEndpoint ? { expectedAppMcpEndpoint: this.config.appMcpEndpoint } : {}),
-        ...(this.config.responseJournal ? { responseJournal: this.config.responseJournal } : {}),
-        ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
-        ...(input.chatFiles ? { chatFiles: input.chatFiles(server) } : {}),
-        ...(this.infrastructure.openCodeClient ? { clientFactory: this.infrastructure.openCodeClient } : {}),
-      })
-      result = { harness: 'opencode', manager, inspector: openCodeMcpInspectorAdapter(manager) }
     } else {
       throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'The selected harness driver is unavailable.', 503)
     }
@@ -323,8 +283,6 @@ export class NativeHarnessFactories {
           ...(input.selection ? { selection: input.selection } : {}),
           ...(input.configured ? { configured: input.configured } : {}),
           ...(input.revalidateSelection ? { revalidateSelection: input.revalidateSelection } : {}),
-          ...(input.harness === 'opencode' && input.advancedConfiguration
-            ? { advancedConfiguration: input.advancedConfiguration } : {}),
         })
         try {
           return await diagnostic.inspector.inspect(request)
@@ -367,21 +325,18 @@ export class NativeHarnessFactories {
   }
 
   async qualifyConfiguration(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {
+    if (configuration.harness === 'opencode') throw new DomainError('HARNESS_RETIRED',
+      RETIRED_OPENCODE_MESSAGE, 409)
     await this.config.refreshInstallations?.(signal)
     if (configuration.harness === 'claude') throw new DomainError('CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE',
       'The Claude preset is saved, but native profile qualification is not available in this runtime. Execution still requires verified authentication, sandbox isolation and lifecycle evidence for the exact host profile.', 409)
     const selection = this.config.selectConfiguration?.(configuration)
     const allocation = this.allocate({ harness: configuration.harness, role: 'qualification',
       ...(selection ? { selection, configured: selection.instance } : {}), workingDirectory, ownerAgentId: 'configuration-qualification', appMcpAccess: 'none',
-      ...(configuration.harness === 'opencode' && configuration.advanced
-        ? { advancedConfiguration: configuration.advanced } : {}),
     })
     try {
       this.admitAuxiliary(allocation.manager)
       if (allocation.harness === 'codex' && configuration.harness === 'codex') {
-        return await allocation.manager.qualifyConfiguration(configuration, workingDirectory, signal)
-      }
-      if (allocation.harness === 'opencode' && configuration.harness === 'opencode') {
         return await allocation.manager.qualifyConfiguration(configuration, workingDirectory, signal)
       }
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The configuration differs from its allocated driver.', 409)

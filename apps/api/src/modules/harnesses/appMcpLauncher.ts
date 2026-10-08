@@ -21,8 +21,8 @@ export function appMcpServerName(entries: Readonly<Record<string, unknown>>, req
   if (configured.length > 1) throw new Error('Both foreman-code and graphql MCP entries are configured. Resolve the naming collision at the native source.')
   return configured[0] ?? requested
 }
-export function appLauncherTokenName(harness: 'codex' | 'opencode', entry: Record<string, unknown>): string | undefined {
-  const names = harness === 'codex' ? entry.env_vars : Object.keys((entry.environment as object | undefined) ?? {})
+export function appLauncherTokenName(entry: Record<string, unknown>): string | undefined {
+  const names = entry.env_vars
   if (!Array.isArray(names) || names.length !== 1 || !isSupportedAppMcpTokenName(names[0])) return undefined
   return names[0] as string
 }
@@ -101,20 +101,15 @@ function isAppLauncherCommand(command: unknown): boolean {
       && realpathSync(alias) === realpathSync(launcher) && isManagedLauncherCommand(command, alias)
   } catch { return false }
 }
-export function isAppLauncher(harness: 'codex' | 'opencode', entry: Record<string, unknown>): boolean {
-  const command = harness === 'codex' ? [entry.command, ...(Array.isArray(entry.args) ? entry.args : [])] : entry.command
+export function isAppLauncher(entry: Record<string, unknown>): boolean {
+  const command = [entry.command, ...(Array.isArray(entry.args) ? entry.args : [])]
   if (!isAppLauncherCommand(command)) return false
   if (entry.url != null || entry.bearer_token_env_var != null || entry.oauth != null
     || (entry.headers != null && Object.keys(entry.headers as object).length > 0)
     || (entry.http_headers != null && Object.keys(entry.http_headers as object).length > 0)
     || (entry.env_http_headers != null && Object.keys(entry.env_http_headers as object).length > 0)) return false
-  const tokenName = appLauncherTokenName(harness, entry)
-  if (harness === 'codex') return (!entry.env || Object.keys(entry.env as object).length === 0)
-    && tokenName !== undefined
-  const environment = entry.environment as Record<string, unknown> | undefined
-  // OpenCode expands the reference in effective configuration. Proven separately by its inspector.
-  return entry.type === 'local' && !!environment && Object.keys(environment).length === 1
-    && tokenName !== undefined && typeof environment[tokenName] === 'string'
+  const tokenName = appLauncherTokenName(entry)
+  return (!entry.env || Object.keys(entry.env as object).length === 0) && tokenName !== undefined
 }
 export async function installAppLauncher(): Promise<void> {
   await installManagedLauncher(new URL('../../../../../scripts/graphql-mcp.mjs', import.meta.url), appLauncherPath())

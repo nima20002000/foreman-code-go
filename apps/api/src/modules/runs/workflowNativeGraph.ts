@@ -12,8 +12,6 @@ import { DomainError } from '../errors.js'
 import { assertGraphTransaction, beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
 import { type NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 import type { NativeHistory } from '../harnesses/port.js'
-import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation } from '../harnesses/opencodeReconciliation.js'
-import { openCodeGraphReconciliation } from '../harnesses/opencodeGraphReconciliation.js'
 import { selectNativeGraphEvidence } from '../run-graph/nativeEvidence.js'
 
 export interface WorkflowNativeLease {
@@ -70,10 +68,6 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       executionId: execution.id, agentId: execution.agentId,
       agentConfigurationVersionId: execution.agentConfigurationVersionId!, attempt: execution.attempt },
     workKind: 'workflow', workId: execution.id }
-    const reconciliationIdentity = { ownerAgentId: execution.agentId,
-      nativeSessionId: execution.nativeSessionId ?? '', correlationId: `execution:${execution.id}`,
-      nativeTurnId: lease?.providerId ?? '' }
-    const reconciled = readOpenCodeReconciliation(normalized.event, reconciliationIdentity)
     const approvalRecord = approval ? DurableInteractionSchema.parse((await sql.query<{ record: unknown }>(
       'select record from durable_interactions where id=$1 for update', [approval.interaction.id])).rows[0]?.record) : undefined
     const raw = await appendNormalizedNativeEvent(sql, normalized)
@@ -93,7 +87,6 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
     // The original capture still checks physical ownership before publication
     // and commit. An unchanged correlation has no graph mutation for transcript-only frames.
     const transcriptOnly = !approval && normalized.event.payload.nativeMessageId === undefined
-      && normalized.event.type !== OPENCODE_RECONCILIATION_EVENT
       && normalized.event.type !== 'transport.disconnected'
       && selectNativeGraphEvidence(normalized.event.type, normalized.event.payload).kind === 'ignored'
     if (transcriptOnly && prior && prior.connectionId === (normalized.event.connectionId ?? null)
@@ -132,18 +125,12 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       if (held.rowCount !== 1) throw new DomainError('SESSION_LANE_LEASE_LOST',
         'The native writer lease expired before graph publication committed.', 409)
     })
-    // A reconciliation observation is not a new live attachment. It can only
-    // complete the original same-generation writer correlation.
-    if (normalized.event.type === OPENCODE_RECONCILIATION_EVENT && (!prior || !reconciled
-      || lane.harness !== 'opencode' || prior.provider !== 'opencode'
-      || prior.nativeSessionId !== execution.nativeSessionId
-      || prior.nativeTurnId !== reconciled.nativeTurnId)) return
     if (!prior && !lease.live) return
     if (prior && (prior.connectionId !== (normalized.event.connectionId ?? null)
       || String(prior.connectionGeneration) !== generation)) return
     if (!prior) {
       await new PostgresNativeGraphProjectionWriter().persistCorrelation(sql, scope, null, {
-        key, correlationKey, provider: lane.harness as 'codex' | 'opencode', nativeSessionId: execution.nativeSessionId,
+        key, correlationKey, provider: lane.harness as 'codex' | 'claude', nativeSessionId: execution.nativeSessionId,
         connectionId: normalized.event.connectionId ?? null, connectionGeneration: lane.record.connectionGeneration,
         nativeTurnId: lease.providerId ?? null, nativeRequestId: null,
         interactionId: null, reviewJobId: null, firstNativeSequence: String(normalized.event.sequence),
@@ -184,10 +171,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
         throw new DomainError('GRAPH_SOURCE_CONFLICT', 'The approval native correlation changed.', 409)
       }
     }
-    const reconciliation = reconciled ? await openCodeGraphReconciliation(sql, normalized.event,
-      reconciliationIdentity, scope, key, generation) : undefined
-    if (normalized.event.type === OPENCODE_RECONCILIATION_EVENT && !reconciliation) return
-    const observation = reconciliation ?? nativeDisconnectObservation(scope, key, normalized.event, generation)
+    const observation = nativeDisconnectObservation(scope, key, normalized.event, generation)
     // Raw transcript frames already passed the source/physical/lane checks and
     // were retained above. Preserve correlation initialization, but do not run
     // a second raw append and semantic authority/projection reads for a frame

@@ -137,7 +137,7 @@ export class HarnessQualificationService {
     const { binary, sha256 } = await this.registry.inspectBinary(this.binaries[harness])
     this.assertRunning()
     const probe = this.probeFactory?.(harness, binary, 5000)
-      ?? nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, 5000)
+      ?? nativeCompatibilityProbe({ codex: binary }, process.cwd(), process.env, 5000)
     this.probes.add(probe)
     let version: string
     // The probe bounds the CLI command; installation checks and closure have separate ownership.
@@ -247,7 +247,7 @@ async function checkStaticCompatibility(harness: CompatibilityHarness, binary: s
   probeFactory?: (harness: CompatibilityHarness, binary: string, timeoutMs: number) => CompatibilityProbe): Promise<string> {
   const timeout = attempt === 1 ? 2000 : 10_000
   const probe = probeFactory?.(harness, binary, timeout)
-    ?? nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, timeout)
+    ?? nativeCompatibilityProbe({ codex: binary }, process.cwd(), process.env, timeout)
   probes.add(probe)
   try {
     const installation = await probe.inspect(harness, signal)

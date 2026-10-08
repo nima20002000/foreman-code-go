@@ -6,6 +6,7 @@ import type { SubagentControlResolver } from './types.js'
 /** Resolve only the original resident allocation. Reads never launch a native process. */
 export function productionSubagentControls(managers: Pick<ExecutionScopedNativeSessionManagerResolver, 'residentForRead'>): SubagentControlResolver {
   return child => {
+    if (child.provider === 'opencode') return undefined
     let owned: ReturnType<ExecutionScopedNativeSessionManagerResolver['residentForRead']>
     try { owned = managers.residentForRead(child.parentExecutionId) } catch { return undefined }
     if (!owned) return undefined

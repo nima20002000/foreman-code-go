@@ -25,7 +25,6 @@ export async function recoverWorkerConversation(input: {
   journal: WorkerConversationJournal
   allocate(): Promise<WorkerConversationAllocation>
   assertCurrent(): Promise<void>
-  cleanupFiles?(record: WorkerConversationReceipt, signal: AbortSignal): Promise<void>
   signal: AbortSignal
 }): Promise<WorkerConversationAllocation> {
   const { record, signal } = input
@@ -61,7 +60,6 @@ export async function recoverWorkerConversation(input: {
     unavailable('The original native process has not been positively closed.')
   }
   await input.assertCurrent()
-  await input.cleanupFiles?.(record, signal)
   if (record.turns.some(turn => !['completed', 'rejected'].includes(turn.status) && !turn.nativeTurnId && !turn.nativeSubmission)
     || record.compactions.some(control => !['completed', 'failed', 'no-op'].includes(control.state.status)
       && control.state.dispatchPhase !== 'dispatched')) {

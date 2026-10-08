@@ -9,6 +9,7 @@ export function projectHarnessInstance(instance: HarnessInstanceProjection): Con
   return { instanceId: instance.instanceId, instanceRevision: instance.instanceRevision, driverId: instance.driverId,
     enabled: instance.enabled, availability: instance.availability,
     configuration: configuration.success ? configuration.data : null,
+    ...(instance.retirementMessage ? { retirementMessage: instance.retirementMessage } : {}),
     ...(instance.driverRevision ? { driverRevision: instance.driverRevision } : {}) }
 }
 export function projectHarnessRegistry(instances: readonly HarnessInstanceProjection[], installations: readonly HarnessInstallationRecord[], hostMetadata?: HarnessHostInventoryMetadata): HarnessRegistryReadback {

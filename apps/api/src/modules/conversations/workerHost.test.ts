@@ -18,7 +18,6 @@ import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionReg
 import { adaptDeviceSocket } from '../devices/deviceWire.js'
 import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import { CodexRpcError } from '../harnesses/codexStdioTransport.js'
-import { OpenCodeNativeDeliveryError } from '../harnesses/opencodeTransport.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 
 /** Provider I/O fixture only; these cases do not qualify native installations. */
@@ -206,7 +205,7 @@ it('keeps fresh inspection separate from the first admitted Claude message owner
   expect(f.manager.creates).toBe(1)
 })
 
-it.each(['codex', 'opencode'] as const)('inspects %s configuration without borrowing or closing the active conversation owner', async harness => {
+it.each(['codex'] as const)('inspects %s configuration without borrowing or closing the active conversation owner', async harness => {
   const f = await setup(harness)
   const allocation = await f.ports.allocate(f.binding, f.configuration, f.connection, AbortSignal.timeout(1000))
   const closeWriter = vi.fn(async () => {})
@@ -284,7 +283,7 @@ it('closes an unused prepared owner without closing a conversation that has admi
   expect((await f.journal.conversations.read(f.binding))?.closed).toBe(false)
 })
 
-for (const harness of ['codex', 'claude', 'opencode'] as const) {
+for (const harness of ['codex', 'claude'] as const) {
   it(`forwards native Plan, preferences and separate usage through the ${harness} adapter port`, async () => {
     const f = await setup(harness)
     const preferences = SessionPreferencesSchema.parse(harness === 'claude' ? { autoCompact: 'off' } : {})
@@ -316,7 +315,7 @@ it('deduplicates concurrent native session creation and refuses mismatched confi
 })
 
 it('rejects a changed configuration before persisting a new conversation owner', async () => {
-  const f = await setup('opencode')
+  const f = await setup('claude')
   const allocate = vi.spyOn(f.ports, 'allocate')
   await expect(f.request({ ...f.open, configuration: { ...f.configuration, version: 2 } }))
     .rejects.toThrow('configuration differs')
@@ -337,7 +336,7 @@ it('reauthorizes controls and rejects a foreign native session or replaced chann
   expect(other.manager.creates).toBe(0)
 })
 
-it.each(['codex', 'opencode', 'claude'] as const)(
+it.each(['codex', 'claude'] as const)(
   'retains %s compaction across a lost response without blocking reads or dispatching twice', async harness => {
   const f = await setup(harness)
   await f.request(f.open)
@@ -358,7 +357,7 @@ it.each(['codex', 'opencode', 'claude'] as const)(
   expect((await f.journal.conversations.read(f.binding))?.closed).toBe(false)
 })
 
-for (const harness of ['codex', 'opencode', 'claude'] as const) {
+for (const harness of ['codex', 'claude'] as const) {
   it.each(['timeout', 'disconnect'] as const)(
     `keeps uncertain ${harness} compaction blocked after %s and restart until its terminal result`, async outcome => {
       const f = await setup(harness)
@@ -406,13 +405,12 @@ for (const harness of ['codex', 'opencode', 'claude'] as const) {
   )
 }
 
-it.each(['codex', 'opencode', 'claude'] as const)(
+it.each(['codex', 'claude'] as const)(
   'persists %s definite compaction rejection and allows the next turn after restart', async harness => {
     const f = await setup(harness)
     await f.request(f.open)
     const error = {
       codex: new CodexRpcError('thread/compact/start', 'compact-rpc', false, 'REJECTED'),
-      opencode: new OpenCodeNativeDeliveryError('REJECTED', 'Provider rejected compaction', 'definite'),
       claude: Object.assign(new Error('Command was not delivered'), { deliveryState: 'not-delivered' }),
     }[harness]
     let offered!: () => void
@@ -450,7 +448,7 @@ it.each(['codex', 'opencode', 'claude'] as const)(
 )
 
 it('keeps the native boundary when the provider saves progress before dispatch', async () => {
-  const f = await setup('opencode')
+  const f = await setup('claude')
   await f.request(f.open)
   let finish!: () => void
   const finished = new Promise<void>(resolve => { finish = resolve })

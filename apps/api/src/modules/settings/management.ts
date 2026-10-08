@@ -93,9 +93,6 @@ export class FoundationSettingsManagementService {
             validateHarnessWorkflowCompatibility(configuration, 'user')
             if (configuration.harness === 'codex') CodexSessionCompatibilitySchema.parse({ configuration, requiresResume: true })
           }
-          if (configuration.harness === 'opencode' && configuration.autoApprove) {
-            throw new DomainError('OPENCODE_SERVER_AUTO_CONFLICT', 'Native auto approval is not supported by the managed OpenCode server; choose routed review.', 409)
-          }
           try { await this.harnesses.qualifyConfiguration(configuration) } catch (error) {
             throw new DomainError('AGENT_DEFAULTS_UNQUALIFIED', `The ${role} template was not saved: ${error instanceof Error ? error.message : 'Native qualification failed.'}`, 409)
           }

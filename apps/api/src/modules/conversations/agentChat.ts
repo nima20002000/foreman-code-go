@@ -1,3 +1,4 @@
+import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
 import { resolveAgentChatDirectory, revalidateAgentChatDirectory } from './agentChatDirectory.js'
@@ -58,7 +59,7 @@ import { legacySkillPrompt } from '../skills/instructions.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
-import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from './operatorActivity.js'
+import { currentOperatorHistory, operatorActivity } from './operatorActivity.js'
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
 import { completedNativeAssistantMessage } from './operatorText.js'
 import { nativeActivityFence } from './nativeActivityFence.js'
@@ -121,7 +122,7 @@ interface Resolution {
 }
 
 const TERMINAL_RUN_STATES = new Set(['completed', 'interrupted'])
-const OPENCODE_STEER_REASON = 'OpenCode cannot add input to a running turn with a turn precondition. Queue it for the next turn or interrupt and send.'
+const STEER_UNAVAILABLE_REASON = 'This harness cannot add input to a running turn. Queue it for the next turn or interrupt and send.'
 
 function failure(error: unknown, code = 'AGENT_CHAT_TURN_FAILED'): ExecutionResult {
   const provider = error && typeof error === 'object' && 'result' in error ? (error as { result?: ExecutionResult }).result?.error : undefined
@@ -148,10 +149,8 @@ function definiteNonCreation(error: unknown, row: AgentConversationRow): boolean
   }
   if (error && typeof error === 'object' && ('uncertain' in error && error.uncertain === true
     || 'certainty' in error && error.certainty === 'uncertain')) return false
-  if (row.harness === 'codex') return false
-  // OpenCode fresh creation has no fallible native operation after POST /session succeeds.
-  // Fork also applies/verifies the child's policy; a definite error there can leave a created child.
-  return row.record.origin.kind === 'fresh' && definiteRejection(error)
+
+  return false
 }
 const EPHEMERAL_SESSION_LOST = 'This ephemeral Codex session is no longer live and cannot be resumed after the API restarts. Start a separate conversation.'
 function nativeErrorCode(error: unknown): string | undefined {
@@ -161,11 +160,10 @@ function nativeErrorCode(error: unknown): string | undefined {
 }
 function nativeUnavailable(error: unknown): { reason: 'native_session_missing' | 'harness_unavailable'; message: string } | undefined {
   const code = nativeErrorCode(error)
-  if (code === 'CODEX_SCOPED_ENVIRONMENT_REQUIRED' || code === 'CODEX_APP_MCP_UNAVAILABLE' || code === 'OPENCODE_APP_MCP_UNAVAILABLE') {
+  if (code === 'CODEX_SCOPED_ENVIRONMENT_REQUIRED' || code === 'CODEX_APP_MCP_UNAVAILABLE') {
     return { reason: 'harness_unavailable', message: 'Chat could not verify that the scoped Foreman Code App MCP server was disabled for its native session. Foreman Code workflow tools are not available in chat, and chat never receives App MCP or workflow credentials.' }
   }
-  if (code && ['CODEX_MCP_CONFIG_INVALID', 'CODEX_ENVIRONMENT_INVALID',
-    'OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'OPENCODE_CREDENTIAL_CONTEXT_MISMATCH'].includes(code)) {
+  if (code && ['CODEX_MCP_CONFIG_INVALID', 'CODEX_ENVIRONMENT_INVALID'].includes(code)) {
     return { reason: 'harness_unavailable', message: 'Native App MCP/environment validation failed. Agent chat cannot use application or workflow credentials; check the native configuration.' }
   }
   if (code === 'AGENT_CHAT_EPHEMERAL_SESSION_LOST') return { reason: 'native_session_missing', message: EPHEMERAL_SESSION_LOST }
@@ -319,6 +317,9 @@ export class AgentChatService {
       key = row?.agent_key ?? runChatStorageKey(context, executionId)
       const configuration = await this.workflows.getAgentConfiguration(row?.agent_configuration_version_id ?? source.agentConfigurationVersionId)
       if (!configuration) return blocked('agent_missing', 'The Agent configuration used by this Run is unavailable.')
+      if (configuration.harness.harness === 'opencode') {
+        return { ...blocked('harness_unavailable', RETIRED_OPENCODE_MESSAGE), configuration }
+      }
       if (configuration.id !== source.agentConfigurationVersionId || configuration.agentId !== context.agentId
         || row && row.harness !== configuration.harness.harness) staleRunChat()
       if (!TERMINAL_RUN_STATES.has(run.executionState)) {
@@ -370,6 +371,7 @@ export class AgentChatService {
       : agent.current_configuration_version_id
     const configuration = configurationId ? await this.workflows.getAgentConfiguration(configurationId) : undefined
     if (!configuration) return blocked('agent_missing', 'This Agent has no saved configuration.')
+    if (configuration.harness.harness === 'opencode') return { ...blocked('harness_unavailable', RETIRED_OPENCODE_MESSAGE), configuration }
     const workspace = (await this.pool.query<{ execution_location: unknown }>('select execution_location from workspaces where id=$1', [context.workspaceId])).rows[0]
     const location = ExecutionLocationSchema.safeParse(workspace?.execution_location)
     let directory
@@ -388,16 +390,22 @@ export class AgentChatService {
   private capabilities(configuration: AgentConfigurationVersion | undefined, row?: AgentConversationRow): AgentChatCapabilities {
     const harness = configuration?.harness.harness ?? row?.harness ?? 'codex'
     const providerVersion = row?.provider_version ?? null
+    if (harness === 'opencode') return { harness, providerVersion, steer: 'unavailable',
+      interruptAndSend: false, queueNextTurn: false, resume: false,
+      unavailable: { steer: RETIRED_OPENCODE_MESSAGE, resume: RETIRED_OPENCODE_MESSAGE } }
     const unavailable = row ? this.sessionUnavailable(row, configuration) : undefined
     if (harness === 'codex') {
       return { harness, providerVersion, steer: 'native_expected_turn', interruptAndSend: true, queueNextTurn: true, resume: !unavailable,
         unavailable: unavailable ? { resume: unavailable.message } : {} }
     }
     return { harness, providerVersion, steer: 'unavailable', interruptAndSend: true, queueNextTurn: true, resume: !unavailable,
-      unavailable: { steer: OPENCODE_STEER_REASON, ...(unavailable ? { resume: unavailable.message } : {}) } }
+      unavailable: { steer: STEER_UNAVAILABLE_REASON, ...(unavailable ? { resume: unavailable.message } : {}) } }
   }
 
   private sessionUnavailable(row: AgentConversationRow, configuration: AgentConfigurationVersion | undefined): Resolution['blocked'] {
+    if (row.harness === 'opencode' || configuration?.harness.harness === 'opencode') {
+      return { reason: 'harness_unavailable', message: RETIRED_OPENCODE_MESSAGE }
+    }
     if (!configuration) return { reason: 'agent_missing', message: 'The pinned Agent configuration is unavailable; the transcript remains readable.' }
     if (!row.native_session_id && row.record.sessionCreation && row.turn_state === 'uncertain') {
       return { reason: 'native_session_missing', message: 'Native session creation is unconfirmed. Wait for recovery before sending another message.' }
@@ -768,7 +776,7 @@ export class AgentChatService {
       throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'There is no active turn to steer. Send it as the next turn instead.', 409)
     }
     if (!runtime.manager.steerTurn) {
-      throw new DomainError('AGENT_CHAT_STEER_UNAVAILABLE', OPENCODE_STEER_REASON, 409)
+      throw new DomainError('AGENT_CHAT_STEER_UNAVAILABLE', STEER_UNAVAILABLE_REASON, 409)
     }
     if (input.expectedNativeTurnId !== row.active_native_turn_id) {
       throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'The turn you steered already finished. Send it as the next turn instead.', 409)
@@ -1053,11 +1061,8 @@ export class AgentChatService {
     if (row.record.origin.kind !== 'fresh' || row.record.startupDelivered) return { text: content, startup: false }
     if (configuration.instructionDelivery === 'native-v1') return { text: content, startup: true }
     const skills = legacySkillPrompt(configuration)
-    // Codex receives the system prompt as native developer instructions at thread/start.
-    const system = configuration.harness.harness === 'opencode' && configuration.prompt.system
-      ? ['AGENT SYSTEM PROMPT', configuration.prompt.system, ''] : []
-    if (!system.length && !skills.length) return { text: content, startup: true }
-    return { text: [...system, ...skills, '', 'USER MESSAGE', content].join('\n'), startup: true }
+    if (!skills.length) return { text: content, startup: true }
+    return { text: [...skills, '', 'USER MESSAGE', content].join('\n'), startup: true }
   }
 
   private async runTurn(id: string, turn: AgentChatTurn): Promise<void> {
@@ -1157,7 +1162,6 @@ export class AgentChatService {
         },
         reconcile: () => this.events.publish(id, 'state', { requestId: turn.requestId, snapshotRequired: true }),
       })
-      const currentEvent = openCodeTurnEvents(observedSession.nativeSessionId, () => nativeTurnId)
       finishPreparation()
       runtime.observer = { requestId: turn.requestId, controller: observer }
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(observedSession, {
@@ -1184,22 +1188,21 @@ export class AgentChatService {
         },
       }, streamSignal)) {
         submitted = true
-        for (const event of runtime.manager.harness === 'opencode' ? currentEvent(event_) : [event_]) {
-          textStream.before(event)
-          const text = await committed.record(event, nativeTurnId, nativeSubmission)
-          const recorded = await this.record(id, turn.requestId, runtime, event, redact, nativeTurnId, false, text.handled, nativeSubmission)
-          if (recorded && text.allowed) textStream.push(event)
-          else textStream.rejected(event)
-          if (text.final) this.events.publish(id, 'message', { requestId: turn.requestId, snapshotRequired: true,
-            scopeRevision: committed.revision() })
-          if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
-            // Share the response lock so an older observation cannot overwrite its next approval.
-            await this.control(id, async () => {
-              const pending = await runtime!.manager.pending(observedSession, signal)
-              await this.repository.pending(id, turn.requestId, pending)
-              this.events.publish(id, 'state', { requestId: turn.requestId, pending: Boolean(pending) })
-            })
-          }
+        const event = event_
+        textStream.before(event)
+        const text = await committed.record(event, nativeTurnId, nativeSubmission)
+        const recorded = await this.record(id, turn.requestId, runtime, event, redact, nativeTurnId, false, text.handled, nativeSubmission)
+        if (recorded && text.allowed) textStream.push(event)
+        else textStream.rejected(event)
+        if (text.final) this.events.publish(id, 'message', { requestId: turn.requestId, snapshotRequired: true,
+          scopeRevision: committed.revision() })
+        if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
+          // Share the response lock so an older observation cannot overwrite its next approval.
+          await this.control(id, async () => {
+            const pending = await runtime!.manager.pending(observedSession, signal)
+            await this.repository.pending(id, turn.requestId, pending)
+            this.events.publish(id, 'state', { requestId: turn.requestId, pending: Boolean(pending) })
+          })
         }
       }
       textStream.flush()
@@ -1219,8 +1222,6 @@ export class AgentChatService {
         await this.settle(id, turn.requestId, failure(error.rejection), undefined, true)
         return
       }
-      // Reconciliation can prove completion while OpenCode's SSE stays alive. Its observer
-      // is detached only after finish() commits; this is neither failed delivery nor cancel.
       if (this.closing || observer.signal.aborted) return // Restart recovery reconciles in-flight work.
       const current = await this.repository.get(id)
       const uncertainCodexCreation = creatingSession && current?.harness === 'codex'
@@ -1427,7 +1428,7 @@ export class AgentChatService {
   private async repair(id: string): Promise<void> {
     await this.control(id, async () => {
       const row = await this.repository.restoreUnsettled(id)
-      if (!row || row.record.sessionUnavailable) return
+      if (!row || row.harness === 'opencode' || row.record.sessionUnavailable) return
       if (row.active_request_id && this.preparations.get(id)?.requestId === row.active_request_id) {
         this.scheduleReconcile(id)
         return // The live owner must finish creation/binding; a temporarily null identity is not loss.
@@ -1553,6 +1554,7 @@ export class AgentChatService {
     if (this.closing) return
     for (const row of await this.repository.open()) {
       if (this.closing) return
+      if (row.harness === 'opencode') continue
       await this.repair(row.id)
     }
   }

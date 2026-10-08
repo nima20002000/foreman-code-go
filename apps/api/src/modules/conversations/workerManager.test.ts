@@ -11,7 +11,6 @@ import { WorkerConversationManager } from './workerManager.js'
 import { MainWorkerConversationBridge } from './workerBridge.js'
 import { workerConversationCallbacks } from './workerCallbacks.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
-import { nativeMessageId } from '../harnesses/opencodeProtocol.js'
 import { WorkerConversationRpcRequestSchema, type WorkerConversationRpcRequest,
   type WorkerConversationReceipt } from '@foreman-code/contracts/remote-execution-rpc'
 
@@ -164,82 +163,6 @@ it('carries Plan and context through the issued-request bridge without creating 
     await manager.dispose()
     await bridge.close()
     await host.shutdown()
-    await journal.close()
-    await rm(root, { recursive: true, force: true })
-  }
-})
-
-it('recovers admitted file versions before cold attachment and accepts the same session under its recovered owner', async () => {
-  const f = workerConversationFixture('operator', 'opencode')
-  if (!('operatorId' in f.configuration)) throw new Error('Operator fixture required')
-  const configuration = f.configuration
-  const root = await mkdtemp(join(tmpdir(), 'worker-file-attach-'))
-  const journal = await RemoteOperationJournal.open(join(root, 'operations.json'), { initializeNewInstallation: true })
-  const bridge = new MainWorkerConversationBridge()
-  const correlationId = 'original-message'
-  await journal.conversations.receive(f.binding, f.connection)
-  await journal.conversations.reserveCreation(f.binding, 'original-create', commandInputHash('original-create'))
-  await journal.conversations.bindSession(f.binding, f.session, f.nativeOwner)
-  await journal.conversations.reserveTurn(f.binding, correlationId, commandInputHash('original-message'))
-  await journal.conversations.submitted(f.binding, correlationId, { nativeTurnId: nativeMessageId(correlationId) })
-  const savedRoot = await journal.conversations.reserveFileRoot(f.binding, correlationId, f.session.nativeSessionId)
-  const nextOwner = { ...f.nativeOwner, processIdentityDigest: 'c'.repeat(64) }
-  const requests: string[] = []
-  let allowed = false
-  let recoveredFiles = 0
-  const callbacks = workerConversationCallbacks({ currentBinding: () => f.connection,
-    capture: () => ({ binding: f.connection,
-      request: async raw => ({ payload: await bridge.handle(raw, f.connection, AbortSignal.timeout(1000)) }) }) })
-  const native: NativeHarnessSessionManager = {
-    harness: 'opencode', capabilities: async () => { throw new Error('Unused capability discovery') },
-    inspectMcp: async () => { throw new Error('Unused MCP inspection') },
-    createSession: async () => { throw new Error('Recovery cannot create a session') },
-    attachSession: async () => f.session,
-    startTurn: () => { throw new Error('Recovery cannot submit a model input') },
-    history: async () => ({ events: [], pendingInteractions: [] }),
-    reconcile: async () => ({ events: [], pendingInteractions: [] }),
-    cancel: async () => false, pending: async () => undefined, respond: async () => {}, close: async () => {},
-  }
-  const start: NativeSessionStart = { kind: 'operator', configuration,
-    workingDirectory: f.binding.workingDirectory, correlationId: 'original-create' }
-  const host = new WorkerConversationHost({ journal: journal.conversations, currentBinding: () => f.connection,
-    ...callbacks,
-    allocate: async () => { throw new Error('Cold attach cannot allocate a new conversation') },
-    recoverFileVersions: async (record, request) => {
-      expect(request.correlationId).toBe(correlationId)
-      expect(record.nativeOwner).toEqual(f.nativeOwner)
-      recoveredFiles++
-      await journal.conversations.fileRootRemoved(f.binding, savedRoot.id)
-    },
-    recover: async record => {
-      expect(record.openCodeFileRoots).toEqual([])
-      expect(recoveredFiles).toBe(1)
-      await journal.conversations.finishTurn(f.binding, correlationId, { outcome: 'succeeded' })
-      await journal.conversations.recoveredOwner(f.binding, f.connection, f.nativeOwner, nextOwner)
-      return { manager: native, start: async () => start,
-        nativeOwner: async () => nextOwner, close: async () => {} }
-    } })
-  const manager = new WorkerConversationManager({ binding: f.binding, configuration, bridge,
-    current: async () => { if (!allowed) throw new Error('Original caller revoked') },
-    channel: { binding: f.connection, request: async raw => {
-      const request = WorkerConversationRpcRequestSchema.parse(raw)
-      requests.push(request.method)
-      return { payload: await host.handle(request, f.connection, AbortSignal.timeout(5000)) }
-    } },
-    openCodeFiles: { service: () => { throw new Error('Unused file callback') },
-      resolve: async () => undefined, adopt: async () => {},
-      sourceHost: () => ({ bootId: f.connection.bootId, storageRoot: '/recorded-main-vault' }) } })
-  try {
-    await expect(manager.attachSession(f.session, start)).rejects.toThrow('Original caller revoked')
-    expect((await journal.conversations.read(f.binding))?.openCodeFileRoots).toEqual([savedRoot])
-    allowed = true
-    expect(await manager.attachSession(f.session, start)).toEqual(f.session)
-    expect(requests).toEqual(['conversation.status', 'conversation.recover-files', 'conversation.open'])
-    expect((await journal.conversations.read(f.binding))?.nativeOwner).toEqual(nextOwner)
-  } finally {
-    await manager.dispose()
-    await host.shutdown()
-    await bridge.close()
     await journal.close()
     await rm(root, { recursive: true, force: true })
   }

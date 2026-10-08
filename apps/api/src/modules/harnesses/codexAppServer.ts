@@ -1967,9 +1967,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           enabled: parsed.enabled !== false, required: parsed.required === true,
           transport: transport.type === 'streamable_http' || transport.type === 'stdio'
             ? transport.type : url ? 'streamable_http' : text(transport.command) ? 'stdio' : 'unknown',
-          url, bearerTokenEnvironmentVariable: isAppLauncher('codex', transport)
-            ? appLauncherTokenName('codex', transport) ?? null : text(transport.bearer_token_env_var) ?? null,
-          automaticEndpoint: isSupportedAppMcpServerName(serverName) && isAppLauncher('codex', transport),
+          url, bearerTokenEnvironmentVariable: isAppLauncher(transport)
+            ? appLauncherTokenName(transport) ?? null : text(transport.bearer_token_env_var) ?? null,
+          automaticEndpoint: isSupportedAppMcpServerName(serverName) && isAppLauncher(transport),
           enabledTools: stringArray(parsed.enabled_tools) ?? null, disabledTools: stringArray(parsed.disabled_tools) ?? [],
           defaultToolsApprovalMode: text(parsed.default_tools_approval_mode) ?? null,
           tools: isObject(parsed.tools) ? parsed.tools : {},

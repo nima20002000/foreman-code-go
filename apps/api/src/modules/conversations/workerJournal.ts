@@ -1,11 +1,9 @@
 import { isDeepStrictEqual } from 'node:util'
-import { randomUUID } from 'node:crypto'
 import type { CompactionState, ExecutionResult, NativeSessionReference, SessionPreferences, SessionMode } from '@foreman-code/contracts'
 import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
-import type { WorkerConversationBinding, WorkerConversationReceipt,
-  WorkerOpenCodeFileRoot } from '@foreman-code/contracts/remote-execution-rpc'
+import type { WorkerConversationBinding, WorkerConversationReceipt } from '@foreman-code/contracts/remote-execution-rpc'
 import { DomainError } from '../errors.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -52,10 +50,6 @@ export class WorkerConversationJournal {
     return record
   }
 
-  async fileRecords() {
-    return (await this.store.read()).filter(record => record.openCodeFileDirectory || record.openCodeFileRoots?.length)
-  }
-
   claudeCallbackJournal(binding: WorkerConversationBinding): ClaudeCallbackJournal {
     const records = async () => Object.values((await this.inspectBinding(binding))?.claudeCallbacks ?? {})
       .map(record => definedProperties({ ...record, identity: definedProperties(record.identity) }))
@@ -88,96 +82,6 @@ export class WorkerConversationJournal {
       acknowledged: async sessionId => (await records()).filter(record =>
         record.identity.nativeSessionId === sessionId && record.acknowledged && !record.retired),
     }
-  }
-
-  reserveFileDirectory(binding: WorkerConversationBinding) {
-    return this.changeFileDirectory(binding, record => {
-      if (binding.harness !== 'opencode') conflict('Only OpenCode conversations allocate native file directories.')
-      record.openCodeFileDirectory ??= { id: randomUUID() }
-      return record.openCodeFileDirectory
-    })
-  }
-
-  fileDirectoryCreated(binding: WorkerConversationBinding, id: string,
-    filesystem: NonNullable<WorkerOpenCodeFileRoot['filesystem']>) {
-    return this.changeFileDirectory(binding, record => {
-      const directory = record.openCodeFileDirectory
-      if (!directory || directory.id !== id
-        || directory.filesystem && !isDeepStrictEqual(directory.filesystem, filesystem)) {
-        conflict('The reserved conversation file directory changed.')
-      }
-      directory.filesystem = filesystem
-      return directory
-    })
-  }
-
-  fileDirectoryRemoved(binding: WorkerConversationBinding, id: string) {
-    return this.change(binding, record => {
-      if (record.openCodeFileDirectory?.id !== id || record.openCodeFileRoots?.length) {
-        conflict('Remove only the empty original conversation file directory.')
-      }
-      delete record.openCodeFileDirectory
-    })
-  }
-
-  private changeFileDirectory<T>(binding: WorkerConversationBinding, change: (record: WorkerConversationReceipt) => T) {
-    return this.store.change(records => {
-      const record = records.find(value => value.binding.owner.conversationId === binding.owner.conversationId)
-      if (!record || record.closed || record.closing) conflict('The native conversation is closing or closed.')
-      if (isDeepStrictEqual(record.binding, binding)) writable(record)
-      else {
-        const access = record.applicationAccessChange
-        if (access?.state !== 'reserved' || access.next !== binding.appMcpAccess
-          || !sameConversationForAppAccess(record.binding, binding)
-          || access.inputHash !== commandInputHash({ previous: record.binding, next: binding })) {
-          conflict('The conversation file directory requires its original owner or reserved access change.')
-        }
-      }
-      const result = change(record)
-      record.revision++
-      return result
-    })
-  }
-
-  reserveFileRoot(binding: WorkerConversationBinding, correlationId: string, nativeSessionId: string) {
-    return this.change(binding, record => {
-      writable(record)
-      if (binding.harness !== 'opencode' || record.session?.nativeSessionId !== nativeSessionId
-        || !record.turns.some(turn => turn.correlationId === correlationId && !['completed', 'rejected'].includes(turn.status))) {
-        conflict('The file directory requires its admitted native conversation turn.')
-      }
-      const roots = record.openCodeFileRoots ??= []
-      const original = roots.find(root => root.correlationId === correlationId)
-      if (original) {
-        if (original.nativeSessionId !== nativeSessionId) conflict('The file directory native session changed.')
-        return original
-      }
-      if (roots.length >= 1000) conflict('The conversation file directory journal is full.')
-      const directory = record.openCodeFileDirectory
-      if (directory && !directory.filesystem) conflict('The conversation file directory is not prepared.')
-      const root = { id: randomUUID(), correlationId, nativeSessionId,
-        ...(directory ? { directoryId: directory.id } : {}) }
-      roots.push(root)
-      return root
-    })
-  }
-
-  fileRootCreated(binding: WorkerConversationBinding, id: string,
-    filesystem: NonNullable<WorkerOpenCodeFileRoot['filesystem']>) {
-    return this.change(binding, record => {
-      const root = record.openCodeFileRoots?.find(root => root.id === id)
-      if (!root || root.filesystem && !isDeepStrictEqual(root.filesystem, filesystem)) {
-        conflict('The reserved file directory was replaced.')
-      }
-      root.filesystem = filesystem
-      return root
-    })
-  }
-
-  fileRootRemoved(binding: WorkerConversationBinding, id: string) {
-    return this.change(binding, record => {
-      record.openCodeFileRoots = record.openCodeFileRoots?.filter(root => root.id !== id) ?? []
-    })
   }
 
   reserveApplicationAccess(previous: WorkerConversationBinding, next: WorkerConversationBinding, operationId: string,

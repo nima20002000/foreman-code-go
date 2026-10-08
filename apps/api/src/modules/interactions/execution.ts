@@ -1,3 +1,4 @@
+import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import { timeRuntimeOperation, withRuntimeTimingContext } from '../../infrastructure/runtimeTiming.js'
 import { inspectNativeResponse } from '../harnesses/responseAvailability.js'
 import type { InteractionActivityEvidence } from './activityProjection.js'
@@ -622,6 +623,9 @@ export class ApprovalExecutionCoordinator {
     if (configuration.id !== execution.agentConfigurationVersionId || configuration.agentId !== execution.agentId) {
       throw new Error('The pinned Agent configuration does not match its durable execution.')
     }
+    if (configuration.harness.harness === 'opencode') {
+      throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+    }
     const context = {
       harness: configuration.harness.harness, executionId: execution.id, agentId: execution.agentId,
       runId: execution.runId, attempt: execution.attempt,
@@ -656,21 +660,16 @@ export class ApprovalExecutionCoordinator {
   ) {
     const { signal, purpose, enterNative, restartOwner } = options
     restartOwner?.assertOwned()
-    const recoveredEnvironment = restartOwner && await resolved.manager.recoverEnvironment?.(signal)
-    if (restartOwner && resolved.manager.recoverEnvironment && !recoveredEnvironment) throw new HarnessExecutionError(
-      'NATIVE_PROCESS_RECOVERY_UNAVAILABLE', 'The original native process has no verified restart environment.', false)
     if (this.workflowClosures) {
       const owned = this.ownedSessions.get(context.executionId)
       if (!owned || owned.manager !== resolved.manager) throw new Error('Native preflight has no exact manager owner.')
       // The original process intent must be durable before entered commits.
       // Allocation/reviewer cleanup alone must not reserve or dispatch anything.
-      if (resolved.processState === 'needs_start' && !owned.launchReserved && !recoveredEnvironment) {
+      if (resolved.processState === 'needs_start' && !owned.launchReserved) {
         signal?.throwIfAborted()
         this.reserveNativeLaunch?.(context.executionId, this.rawManagers.get(owned.manager) ?? owned.manager)
         owned.launchReserved = true
       }
-      // OpenCode credential inspection can spawn its server. Invalidate older
-      // closure evidence BEFORE that inspection, not only before attachSession.
       owned.closureRegistration ??= this.workflowClosures.begin(owned.execution)
       const generation = await owned.closureRegistration
       if (owned.closureGeneration !== generation) {
@@ -685,15 +684,6 @@ export class ApprovalExecutionCoordinator {
     }
     await enterNative?.()
     signal?.throwIfAborted()
-    if (recoveredEnvironment) {
-      if (!this.credentials?.restore) throw new DomainError('NATIVE_CREDENTIAL_RECOVERY_REQUIRED',
-        'The original native credential cannot be restored by this execution owner.', 409)
-      const credential = await this.credentials.restore(context.executionId, recoveredEnvironment)
-      restartOwner!.assertOwned()
-      signal?.throwIfAborted()
-      this.managerCredentials.set(resolved.manager, credential)
-      return credential.environment
-    }
     if (!this.credentials) return undefined
     if (resolved.processState === 'resident') {
       const credential = this.managerCredentials.get(resolved.manager)
@@ -1202,6 +1192,9 @@ export class ApprovalExecutionCoordinator {
   }
 
   async attachInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<AttachedInteractionSession> {
+    if (interaction.harness === 'opencode') {
+      throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+    }
     const execution = await this.runs.getExecution(interaction.executionId)
     if (!execution?.workingDirectory || !execution.runtimeDirectory) throw new Error('The durable execution cannot reconstruct its native session start input.')
     if (execution.agentId !== interaction.requestingAgentId || execution.runId !== interaction.runId) {
@@ -1397,6 +1390,9 @@ export class ApprovalExecutionCoordinator {
     const detached = await readDetachedWorkflowSession(owner, execution)
       ?? (await readRemoteWorkflowContinuation(owner, execution))?.session
     if (!detached) return false
+    if (detached.harness === 'opencode') {
+      throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+    }
     if (pending.some((item) => item.runId !== owner.runId || item.nativeSessionId !== detached.nativeSessionId
       || item.harness !== detached.harness || item.providerVersion !== detached.providerVersion
       || item.requestingAgentId !== execution.agentId || !item.graphInterruptId)) {

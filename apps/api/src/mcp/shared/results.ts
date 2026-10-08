@@ -8,7 +8,7 @@ export function toolResult(value: unknown): CallToolResult {
     ? value as Record<string, unknown>
     : { value }
   const json = JSON.stringify(structuredContent)
-  // OpenCode reads structuredContent only when content is empty.
+  // Some MCP clients read structuredContent only when content is empty.
   const content: CallToolResult['content'] = Buffer.byteLength(json, 'utf8') <= TEXT_MIRROR_BYTES
     ? [{ type: 'text', text: json }] : []
   return { content, structuredContent }
@@ -30,6 +30,6 @@ export function toolFailure(error: unknown, internalMessage = 'The Operator serv
     ? { error: { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) } }
     : { error: { code: 'INTERNAL_ERROR', message: internalMessage } }
   // No structuredContent: it must match the tool's success outputSchema, and
-  // clients such as OpenCode validate it even on isError, masking the error.
+  // Clients may validate it even on isError, masking the error.
   return { isError: true, content: [{ type: 'text', text: JSON.stringify(body) }] }
 }

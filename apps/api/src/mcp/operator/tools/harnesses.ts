@@ -20,13 +20,13 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'claude_setup_options_get', async () => context.services.harnesses.claudeSetupOptions(context.principal)))
   if (operatorToolAvailable(context, 'harness_compatibility_list')) server.registerTool('harness_compatibility_list', {
-    description: 'Read dynamic Codex/OpenCode protocol checks, observed versions, cached results and unmet contracts. Claude SDK compatibility is exposed by harness_get and execution_readiness_get. Authentication and host policy are checked separately.',
+    description: 'Read dynamic Codex protocol checks, observed versions, cached results and unmet contracts. Claude SDK compatibility is exposed by harness_get and execution_readiness_get. Authentication and host policy are checked separately.',
     inputSchema: z.object({}).strict(), outputSchema: HarnessCompatibilityListSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'harness_compatibility_list', async () =>
     context.services.harnessCompatibility!.read(context.principal)))
   if (operatorToolAvailable(context, 'harness_compatibility_retry')) server.registerTool('harness_compatibility_retry', {
-    description: 'Recheck the installed Codex/OpenCode protocol contracts without a model turn or settings change. Requires harness update access.',
+    description: 'Recheck the installed Codex protocol contracts without a model turn or settings change. Requires harness update access.',
     inputSchema: HarnessCompatibilityRetryParamsSchema, outputSchema: HarnessCompatibilitySchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_compatibility_retry', () =>
@@ -72,7 +72,7 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_get', () => context.services.harnesses.get(context.principal, input.harness)))
   if (operatorToolAvailable(context, 'harness_defaults_update')) server.registerTool('harness_defaults_update', {
-    description: 'Revision-check and replace defaults copied into future board agents. New, edited or explicitly selected Claude presets accept only explicit Full access and the app MCP connection. Unchanged incomplete Claude presets may be retained while another provider is configured, without changing their access or availability. Use configure to explicitly select a preset even if its template values match. Other unavailable presets stay unavailable. Claude presets persist explicit configuration without native qualification; saving grants no execution or tool authority. Codex/OpenCode selections require their model-free native checks.', inputSchema: HarnessDefaultsUpdateInputSchema,
+    description: 'Revision-check and replace defaults copied into future board agents. New, edited or explicitly selected Claude presets accept only explicit Full access and the app MCP connection. Unchanged incomplete Claude presets may be retained while another provider is configured, without changing their access or availability. Use configure to explicitly select a preset even if its template values match. Other unavailable presets stay unavailable. Claude presets persist explicit configuration without native qualification; saving grants no execution or tool authority. Codex selections require their model-free native checks.', inputSchema: HarnessDefaultsUpdateInputSchema,
     outputSchema: HarnessDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_defaults_update', () => context.services.harnesses.updateDefaults(context.principal, 'mcp', input)))

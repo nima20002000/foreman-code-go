@@ -19,9 +19,9 @@ const plain = (value: string) => value.replace(ansi, '')
 
 /** Passive sign-in facts for this computer. Reads identity only; tokens never leave the probe. */
 export async function probeComputerAccounts(ports: AccountProbePorts = systemPorts(), signal = AbortSignal.timeout(20_000)): Promise<ComputerAccounts> {
-  const accounts = await Promise.all([codex(ports), claude(ports, signal), opencode(ports, signal), probeGitHubAccount(ports, signal)]
+  const accounts = await Promise.all([codex(ports), claude(ports, signal), probeGitHubAccount(ports, signal)]
     .map(probe => probe.catch((): null => null)))
-  const tools = ['codex', 'claude', 'opencode', 'github'] as const
+  const tools = ['codex', 'claude', 'github'] as const
   return ComputerAccountsSchema.parse({ observedAt: new Date().toISOString(),
     accounts: accounts.map((value, index) => value ?? unknown(tools[index]!)) })
 }
@@ -67,16 +67,6 @@ async function claude(ports: AccountProbePorts, signal: AbortSignal): Promise<Co
   return { tool: 'claude', installed: true, signedIn: status.loggedIn === true,
     account: typeof status.email === 'string' ? status.email.slice(0, 320) : null,
     details: typeof status.authMethod === 'string' ? [status.authMethod.slice(0, 200)] : [] }
-}
-
-async function opencode(ports: AccountProbePorts, signal: AbortSignal): Promise<ComputerAccount> {
-  const binary = await ports.find('opencode')
-  if (!binary) return missing('opencode')
-  const result = await ports.run(binary, ['auth', 'list'], signal)
-  // Lines look like "●  OpenCode Go api"; only provider names are kept.
-  const providers = plain(result.stdout).split('\n').map(line => /^[●•]\s+(.+?)\s+(?:api|oauth|wellknown)\s*$/u.exec(line.trim())?.[1])
-    .filter((name): name is string => Boolean(name)).slice(0, 16)
-  return { tool: 'opencode', installed: true, signedIn: providers.length > 0, account: null, details: providers }
 }
 
 const githubStatusSchema = z.object({

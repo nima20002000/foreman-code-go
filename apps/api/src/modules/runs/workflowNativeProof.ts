@@ -31,7 +31,6 @@ import { selectNativeGraphEvidence } from '../run-graph/nativeEvidence.js'
 import { workflowNativeSourceRecord, persistWorkflowNativeSources } from './workflowNativeSource.js'
 import { appendNormalizedNativeEvent } from './nativeEvents.js'
 import { retainedNativeHistoryEvents } from './retainedNativeHistory.js'
-import { OPENCODE_RECONCILIATION_EVENT } from '../harnesses/opencodeReconciliation.js'
 
 /** Durable private ORIGINAL-source record. No payload/session/token reaches the
  * graph feed: G1 publishes only its immutable digest and ordinary graph facts. */
@@ -303,7 +302,7 @@ export class WorkflowNativeProofServices {
         const capture = this.eventCapture(frame.event, frame.evidence, lease)
         const normalized = normalizeNativeProducerEvent(frame.event)
         const transcript = !normalized.rejected && frame.event.type !== 'transport.disconnected'
-          && frame.event.type !== OPENCODE_RECONCILIATION_EVENT && frame.event.payload.nativeMessageId === undefined
+          && frame.event.payload.nativeMessageId === undefined
           && selectNativeGraphEvidence(normalized.event.type, normalized.event.payload).kind === 'ignored'
         const previous = transcripts.at(-1)?.capture
         const samePhysical = !previous || previous.owner === capture.owner

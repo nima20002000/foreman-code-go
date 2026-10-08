@@ -1,3 +1,4 @@
+import { retiredHarnessCredentialsMigration } from './retiredHarnessCredentialsMigration.js'
 import { sessionControlsMigration } from './sessionControlsMigration.js'
 import { workerConversationBindingMigration } from './workerConversationBindingMigration.js'
 import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
@@ -870,6 +871,7 @@ export const migrations = [
   buildComputerRoleMigration,
   computerSyncMigration,
   ciRuntimePreparationMigration,
+  retiredHarnessCredentialsMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

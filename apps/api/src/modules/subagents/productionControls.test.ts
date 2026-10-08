@@ -6,13 +6,13 @@ import { ExecutionScopedNativeSessionManagerResolver } from '../interactions/run
 import type { RunOwnership } from '../runs/ownership.js'
 import { productionSubagentControls } from './productionControls.js'
 
-const context = { harness: 'opencode' as const, executionId: 'execution', agentId: 'agent', workingDirectory: '/fixture',
+const context = { harness: 'codex' as const, executionId: 'execution', agentId: 'agent', workingDirectory: '/fixture',
   runId: 'run', attempt: 1, configuration: { id: 'configuration', workspaceId: 'workspace' } as AgentConfigurationVersion }
 const child = { id: 'child', workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'version', runId: 'run',
   parentExecutionId: 'execution', parentAttemptKey: 'execution:1', parentAgentId: 'agent', parentNodeId: 'node', parentSubagentId: null,
-  provider: 'opencode', nativeMode: 'opencode-task', native: { parentSessionId: 'root', childSessionId: 'native-child' },
-  profile: { deviceId: 'main', harnessInstanceId: 'configuration', providerVersion: '1.18.31' } } as RunSubagent
-function fixture(harness: 'codex' | 'opencode' = 'opencode') {
+  provider: 'codex', nativeMode: 'codex-collab', native: { parentSessionId: 'root', childSessionId: 'native-child' },
+  profile: { deviceId: 'main', harnessInstanceId: 'configuration', providerVersion: '0.154.0' } } as RunSubagent
+function fixture(harness: 'codex' = 'codex') {
   let live = true
   const owner = { runId: 'run', assertOwned() { if (!live) throw new Error('lost') } } as RunOwnership
   const send = vi.fn(async () => {})

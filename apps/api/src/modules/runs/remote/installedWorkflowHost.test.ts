@@ -25,7 +25,6 @@ import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAutho
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
-import { InstalledOpenCodeServer } from '../../harnesses/installedOpenCodeDependencies.js'
 import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import * as installedInspection from '../../harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../../harnesses/hostConnectionGeneration.js'
@@ -107,6 +106,15 @@ describe('protected workflow selection without invented qualification',()=>{
   })
 })
 describe('exact installed workflow native owner observations',()=>{
+  it('rejects a retired OpenCode session before reading any native owner', () => {
+    const f = nativeFixture()
+    expect(() => captureInstalledWorkflowNativeOwner(f.registry, f.connection, f.intent, {
+      harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: 'saved-opencode-session',
+    })).toThrowError(expect.objectContaining({
+      code: 'HARNESS_RETIRED', message: 'OpenCode is retired and cannot execute. Select Codex or Claude for new work.',
+    }))
+    expect(f.snapshot).not.toHaveBeenCalled()
+  })
   it('binds the session to the unique actual execution guardian/provider generation',()=>{
     const f=nativeFixture(),first=captureInstalledWorkflowNativeOwner(f.registry,f.connection,f.intent,f.session)
     expect(first.native.sessionId).toBe(f.session.nativeSessionId)
@@ -240,9 +248,9 @@ describe('positive installed native closure consumption',()=>{
 })
 
 async function sourceFixture(relativeCwd='', options: {
-  harness?: 'codex' | 'opencode'; artifactOutputKeys?: string[]; attemptId?: string; operationId?: string
+  artifactOutputKeys?: string[]; attemptId?: string; operationId?: string
 } = {}) {
-  const harness = options.harness ?? 'codex'
+  const harness = 'codex'
   const root=await directory(),runtime=join(root,'runtime'),project=join(root,'project'),namespace=join(runtime,'source-materializations',randomUUID())
   await mkdir(runtime,{mode:0o700});await mkdir(project,{mode:0o700});await mkdir(namespace,{recursive:true,mode:0o700})
   if(relativeCwd)await mkdir(join(project,relativeCwd),{recursive:true,mode:0o700})
@@ -1075,6 +1083,49 @@ describe('installed worker cold recovery', () => {
   })
 })
 describe('lazy installed worker host qualification boundary',()=>{
+  it('closes and retires a saved OpenCode preparation without allocating another native session', async () => {
+    const f = await constructionFixture()
+    const savedSession = { harness: 'opencode' as const, providerVersion: '1.18.31',
+      nativeSessionId: 'saved-opencode-session' }
+    const originalSession = structuredClone(savedSession)
+    const cleanupOwner = { ...f.owner, preparationKind: 'workflow' as const, preparationClosed: true as const,
+      preparationNativeSession: savedSession }
+    const native = { sessionId: savedSession.nativeSessionId, processIdentityDigest: 'a'.repeat(64) }
+    await f.journal.accept(f.intent, DeviceConnectionIdentitySchema.strip().parse(f.context.binding), randomUUID())
+    await f.journal.reserveEntry(f.intent.operationId)
+    await f.journal.acknowledgeStart(f.intent.operationId, native)
+    const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
+    const reserve = vi.spyOn(f.registry, 'reserveLaunch')
+    const closeOwner = vi.spyOn(f.registry, 'closeOwner').mockResolvedValue(false)
+    try {
+      expect(await f.host.preparationClosed({ ...cleanupOwner, preparationNativeSession: {
+        ...savedSession, nativeSessionId: 'foreign-session',
+      } })).toBe(false)
+      expect(closeOwner).not.toHaveBeenCalled()
+      expect(await f.host.preparationClosed(cleanupOwner)).toBe(false)
+      expect(await f.journal.status(f.intent.operationId)).toMatchObject({
+        status: 'known', receipt: { native, stopFence: true },
+      })
+      expect(await f.journal.isRetired(f.intent.operationId)).toBe(false)
+      f.snapshot.mockReturnValue({ revision: 'closed', launches: [{ ...f.launch,
+        lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }] })
+      closeOwner.mockResolvedValue(true)
+      expect(await f.host.preparationClosed(cleanupOwner)).toBe(true)
+      expect(closeOwner).toHaveBeenLastCalledWith(`execution:${f.intent.executionId}`)
+      expect(await f.journal.status(f.intent.operationId)).toMatchObject({
+        status: 'known', receipt: { phase: 'confirmed_terminal', native, stopFence: true,
+          terminal: { kind: 'cancelled' } },
+      })
+      expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
+      const retired = await f.journal.status(f.intent.operationId)
+      expect(await f.host.preparationClosed(cleanupOwner)).toBe(true)
+      expect(await f.journal.status(f.intent.operationId)).toEqual(retired)
+      expect(cleanupOwner.preparationNativeSession).toEqual(originalSession)
+      expect(f.inspect).not.toHaveBeenCalled()
+      expect(create).not.toHaveBeenCalled()
+      expect(reserve).not.toHaveBeenCalled()
+    } finally { await f.host.close() }
+  })
   it('cannot turn a local version selection into Main qualification, journal entry or native launch',async()=>{
     const f=await sourceFixture(),binary=join(f.root,'codex'),file=join(f.root,'installed-workflow.json')
     await writeFile(binary,Buffer.concat([Buffer.from([0x7f,0x45,0x4c,0x46]),Buffer.from('unit bytes, never executed')]),{mode:0o700})
@@ -1171,11 +1222,11 @@ function deferred() {
 }
 
 async function constructionFixture(fixtureOptions: {
-  harness?: 'codex' | 'opencode'; artifactOutputKeys?: string[]
+  artifactOutputKeys?: string[]
 } = {}) {
-  const harness = fixtureOptions.harness ?? 'codex'
-  const version = harness === 'codex' ? '0.154.0' : '1.18.31'
-  const suiteRevision = harness === 'codex' ? 'codex-live-4' : 'opencode-live-1'
+  const harness = 'codex'
+  const version = '0.154.0'
+  const suiteRevision = 'codex-live-4'
   const binary = `/unit/${harness}`
   const f = await sourceFixture('', fixtureOptions)
   f.intent = { ...f.intent, inputDigest: commandInputHash(f.request.input) }
@@ -1197,7 +1248,7 @@ async function constructionFixture(fixtureOptions: {
     target, presetId: 'unit-preset', enabled: true, driverId: harness, configuration: f.request.configuration.harness,
     configurationFingerprint: commandInputHash(withAdvancedDefaults(f.request.configuration.harness)), qualification: 'qualified' }
   const qualification = { harness, version, binarySha256: 'a'.repeat(64), status: 'qualified',
-    profile: harness === 'codex' ? 'codex-0.156' : 'opencode-1.18.31', suiteRevision, checks: [{ id: 'unit-native-check', passed: true, detail: null }],
+    profile: 'codex-0.156', suiteRevision, checks: [{ id: 'unit-native-check', passed: true, detail: null }],
     failureReason: null, startedAt: timestamp, checkedAt: timestamp }
   const facts = ExecutionFactsResultSchema.parse({ version: 1, intent: f.intent, placement: f.placement,
     configuration: f.request.configuration, executionPlacement: f.nativePlacement,
@@ -1209,7 +1260,7 @@ async function constructionFixture(fixtureOptions: {
       qualified: true, checkedAt: timestamp,
     } } })
   // Main, installed-binary and native-process observations are unit doubles; the host, journal and source guards are real.
-  const inspect = vi.spyOn(installedInspection, harness === 'codex' ? 'inspectInstalledCodex' : 'inspectInstalledHarness').mockImplementation(async () => ({
+  const inspect = vi.spyOn(installedInspection, 'inspectInstalledCodex').mockImplementation(async () => ({
     inventory: { instances: [], installations: [facts.harness.installation] },
     currentTarget: { binding, target, installation: facts.harness.installation,
       binarySha256: 'a'.repeat(64), expectedVersion: version },
@@ -1234,8 +1285,7 @@ async function constructionFixture(fixtureOptions: {
       attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, expiresAt: '2099-01-01T00:00:00.000Z' } }
   })
   const file = join(f.root, 'installed-workflow.json')
-  const selection = harness === 'codex' ? { codexBinary: binary, expectedVersion: version, payloadPaths: [] }
-    : { opencode: { binary, expectedVersion: version, payloadPaths: [] } }
+  const selection = { codexBinary: binary, expectedVersion: version, payloadPaths: [] }
   await writeFile(file, JSON.stringify({ schemaVersion: 1, ...selection, appMcpLauncher: '/unit/launcher.mjs' }), { mode: 0o600 })
   const journal = await RemoteOperationJournal.open(join(f.root, 'construction-journal'), { initializeNewInstallation: true })
   journals.push(journal)
@@ -1251,7 +1301,7 @@ async function constructionFixture(fixtureOptions: {
     configuration: { path: file, ownerUid: process.getuid!() }, currentBinding,
     captureRequest: namespace => applicationChannel?.captureRequest(namespace) ?? { binding: currentBinding(), request: readMain },
     sources: f.sources, approvedRoots: async () => f.approvedRoots,
-    codexSuiteRevision: 'codex-live-4', openCodeSuiteRevision: 'opencode-live-1',
+    codexSuiteRevision: 'codex-live-4',
     signal: new AbortController().signal, registry: n.registry, journal: openJournal }
   const host = await createInstalledWorkflowHost(options)
   if (host.kind !== 'configured') throw new Error('Expected configured installed host')
@@ -1279,29 +1329,6 @@ function delayedFacts(readMain: Awaited<ReturnType<typeof constructionFixture>>[
 }
 
 describe('installed workflow construction concurrency', () => {
-  it('refuses declared installed OpenCode artifact outputs before starting a provider', async () => {
-    const ensure = vi.spyOn(InstalledOpenCodeServer.prototype, 'ensure')
-    vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => ({
-      endpoint: 'http://unit.invalid/mcp', close: async () => {}, bindRelay: async () => {}, refreshLease: () => relay.refresh!(),
-    }))
-    const f = await constructionFixture({ harness: 'opencode', artifactOutputKeys: ['report'] })
-    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => ({ ...f.registry.scope(owner), launchId: f.launch.launchId }))
-    vi.spyOn(f.registry, 'abandonReservedLaunch').mockResolvedValue(false)
-    vi.spyOn(f.registry, 'closeRegistration').mockResolvedValue(undefined)
-    vi.spyOn(f.registry, 'closeOwner').mockImplementation(async () => {
-      f.snapshot.mockReturnValue({ revision: 'closed', launches: [{ ...f.launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }] })
-      return true
-    })
-    try {
-      await expect(f.handler({ method: 'prepare', intent: f.intent, placement: f.placement, request: f.request,
-        executionPlacement: f.nativePlacement, applicationAccess: { kind: 'scoped-worker-mcp', token: 'original-main-token',
-          agentId: f.request.configuration.agentId, executionId: f.intent.executionId, operationId: f.intent.operationId,
-          attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash } }, f.context))
-        .rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE', details: { reason: 'original_native_output_host_missing' } })
-      expect(ensure).not.toHaveBeenCalled()
-    } finally { await f.host.close() }
-  })
-
   it.each(['qualification', 'thread acknowledgement'] as const)(
     'closes an original pending %s on reconnect while the worker remains alive', async stage => {
       const f = await constructionFixture()

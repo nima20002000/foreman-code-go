@@ -27,7 +27,7 @@ export interface AuxiliaryHarnessInfrastructure {
   recovery: Pick<NativeProcessRegistry, 'scope' | 'reserveLaunch' | 'abandonReservedLaunch' | 'closeOwner'>
   compatibility: CompatibilityOptions
   plugins: CodexPluginAdapter
-  mcp: { codex: NativeMcpAdapter; opencode: NativeMcpAdapter }
+  mcp: { codex: NativeMcpAdapter }
   command: typeof runCommand
 }
 export type ProductionHarnessInfrastructure = NativeFactoryInfrastructure & {
@@ -49,7 +49,7 @@ export type ProductionHarnessInfrastructure = NativeFactoryInfrastructure & {
   inventoryDiscovery?: { launcher: typeof discoverLauncher; payloads: typeof passiveDriverPayloads; claude?: NonNullable<NonNullable<ConstructorParameters<typeof ProductionHarnessRegistry>[6]>['claude']> }
   qualificationIdentity?: {
     registry: HarnessInstallationRegistry
-    pin: (harness: 'codex' | 'opencode', input: QualificationSuiteInput) => RegistryHarnessSelection
+    pin: (harness: 'codex', input: QualificationSuiteInput) => RegistryHarnessSelection
   }
 } & (
   | { mode: 'native'; auxiliary?: AuxiliaryHarnessInfrastructure }

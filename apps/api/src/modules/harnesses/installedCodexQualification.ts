@@ -4,6 +4,7 @@ import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@foreman-
 import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { ExecutionFactsResultSchema } from '@foreman-code/contracts/execution-authority'
 import type { HarnessQualificationRepository } from './qualification/repository.js'
+import { HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
 import { QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
 import { DomainError } from '../errors.js'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
@@ -14,8 +15,7 @@ const same = (left: unknown, right: unknown) => commandInputHash(left) === comma
 
 /** This capability is constructed by the installed host from actual W07 read
  * callbacks. It accepts no stored proof/config JSON and has no durable ledger. */
-export function createInstalledHarnessQualificationReader(input: {
-  harness: 'codex' | 'opencode'
+export function createInstalledCodexQualificationReader(input: {
   intent: DispatchIntent
   placement: AcceptedNodePlacement
   trustedCurrentBinding(): Readonly<DeviceSessionBinding> | null
@@ -26,7 +26,7 @@ export function createInstalledHarnessQualificationReader(input: {
   suiteRevision: string
   signal: AbortSignal
 }) {
-  const harness = input.harness
+  const harness = 'codex'
   const initial = input.trustedCurrentBinding()
   const originalBinding = initial ? DeviceSessionBindingSchema.parse(initial) : null
   const verifyBinding = async (binding: Readonly<DeviceSessionBinding>) => {
@@ -109,7 +109,8 @@ export function createInstalledHarnessQualificationReader(input: {
     await verifyBinding(binding)
     if (!same(input.trustedCurrentBinding(), binding)
       || !same(input.trustedCurrentIntent?.() ?? originalIntent, expectedIntent)) return unavailable()
-    return Object.freeze({ binding: Object.freeze(binding), inspection, facts, qualification })
+    return Object.freeze({ binding: Object.freeze(binding), inspection, facts,
+      qualification: HarnessQualificationSchema.parse(qualification) })
   }
   const repository: Pick<HarnessQualificationRepository, 'find' | 'list'> = {
     async list() { return [structuredClone((await capture()).qualification)] },
@@ -120,9 +121,4 @@ export function createInstalledHarnessQualificationReader(input: {
     },
   }
   return Object.freeze({ capture, repository: Object.freeze(repository) })
-}
-
-export function createInstalledCodexQualificationReader(
-  input: Omit<Parameters<typeof createInstalledHarnessQualificationReader>[0], 'harness'>) {
-  return createInstalledHarnessQualificationReader({ ...input, harness: 'codex' })
 }

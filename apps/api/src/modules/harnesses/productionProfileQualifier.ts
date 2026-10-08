@@ -56,12 +56,11 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       'HARNESS_PROFILE_EVIDENCE_MISMATCH', 'The native check must run on the exact selected host.', 409)
     const configuration = value.configuration
     if (configuration.harness === 'claude' && this.claude) return this.claude.qualify(value, input)
-    if (configuration.harness !== 'codex' && configuration.harness !== 'opencode') throw new DomainError(
+    if (configuration.harness !== 'codex') throw new DomainError(
       'HARNESS_DRIVER_UNAVAILABLE', 'This host has no qualified implementation for the selected driver.', 409)
     const allocation = this.factories.allocate({ harness: configuration.harness, role: 'qualification', selection: binding,
       configured: binding.instance, workingDirectory: this.workingDirectory,
       ownerAgentId: `profile-check:${input.checkId}`, appMcpAccess: 'none',
-      ...(configuration.harness === 'opencode' && configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}),
     })
     let authenticated: boolean | null = null
     let compatible: boolean | null = null
@@ -74,10 +73,6 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
         const checked = await allocation.manager.qualifyConfiguration(configuration, this.workingDirectory, input.signal)
         authenticated = checked.authenticated; compatible = checked.structuredEvents
         qualified = checked.ready && harnessProfile('codex', checked.version) !== null
-      } else if (allocation.harness === 'opencode' && configuration.harness === 'opencode') {
-        const checked = await allocation.manager.qualifyConfiguration(configuration, this.workingDirectory, input.signal)
-        authenticated = checked.authenticated; compatible = checked.structuredEvents
-        qualified = checked.ready && harnessProfile('opencode', checked.version) !== null
       }
       await this.factories.assertInstallationUnchanged(binding, input.signal)
       this.registry.installations.assertCurrent(binding)
@@ -85,7 +80,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       input.signal.throwIfAborted()
       const code = error instanceof DomainError ? error.code
         : typeof error === 'object' && error && 'result' in error ? (error as { result?: { error?: { code?: string } } }).result?.error?.code : undefined
-      if (!code || !/^(?:CODEX_(?:CONTRACT|SETTING|MODEL|MCP|REQUIRED_MCP|APP_SERVER_AUTH)|OPENCODE_(?:CONTRACT|SETTING|MODEL|PROVIDER|AGENT|VARIANT|MCP|SERVER_VERSION))/.test(code)) throw error
+      if (!code || !/^(?:CODEX_(?:CONTRACT|SETTING|MODEL|MCP|REQUIRED_MCP|APP_SERVER_AUTH))/.test(code)) throw error
       const sanitized = qualificationError(error)
       failure = { code: sanitized.code, message: sanitized.message }
       qualified = false

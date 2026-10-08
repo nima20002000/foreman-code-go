@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { childHistoryCursor, encodeChildHistoryCursor } from './nativeReadback.js'
 import { createClaudeSdkRunner } from '../harnesses/claudeSdk/runner.js'
 import type { ClaudeSdkClient } from '../harnesses/claudeSdk/port.js'
-import { FixtureServer, manager, sessionFor } from '../../../test/opencode-fixtures.js'
 import { calls, fixture, fixtureQualification, input } from '../../../test/fixtures/codex-test-helpers.js'
 
 // These are unit transport fixtures, never native qualification evidence.
@@ -35,23 +34,6 @@ describe('exact parent native child history readers', () => {
       await expect(runner.subagentHistory!({ ...scope, nativeSessionId: 'root' }, { ...scope, profilePath: '/foreign' })).rejects.toThrow('profilePath mismatch')
       expect(query).not.toHaveBeenCalled()
     } finally { await runner.dispose() }
-  })
-  it('rediscovers OpenCode children, pages their messages and rejects a different directory without prompting', async () => {
-    const server = new FixtureServer(), native = manager(server)
-    try {
-      const root = await sessionFor(native)
-      server.sessionInfos.set('child', { id: 'child', parentID: root.nativeSessionId, directory: '/workspace/project', title: 'Worker' })
-      server.messages.set('child', [{ info: { id: 'm', sessionID: 'child', role: 'assistant', time: { created: 1, completed: 2 }, finish: 'stop' },
-        parts: [{ id: 'text', messageID: 'm', sessionID: 'child', type: 'text', text: 'CHILD ONLY', time: { start: 1, end: 2 } },
-          { id: 'reasoning', messageID: 'm', sessionID: 'child', type: 'reasoning', text: 'PRIVATE REASONING' }] }])
-      const page = await native.subagentHistory(root)
-      expect(page.events.some(event => event.type === 'session.created' && (event.payload.info as { id: string }).id === 'child')).toBe(true)
-      expect(JSON.stringify(page.events)).toContain('CHILD ONLY')
-      expect(JSON.stringify(page.events)).not.toContain('PRIVATE REASONING')
-      expect(server.calls.filter(call => call.path.includes('/prompt_async'))).toEqual([])
-      server.sessionInfos.set('child', { id: 'child', parentID: root.nativeSessionId, directory: '/foreign' })
-      await expect(native.subagentHistory(root)).rejects.toThrow('ancestry and directory')
-    } finally { await native.dispose() }
   })
   it('reads Codex child items only after native ancestry proof and never resumes or starts a child turn', async () => {
     const f = await fixture()

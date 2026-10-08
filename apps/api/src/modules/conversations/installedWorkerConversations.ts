@@ -15,14 +15,6 @@ import { CodexAppServerSessionManager, type CodexSessionDependencies } from '../
 import { CodexDiagnostics } from '../harnesses/codexDiagnostics.js'
 import { codexMcpInspectorAdapter } from '../harnesses/codexMcpInspectorAdapter.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
-import { inspectInstalledOpenCode } from '../harnesses/installedOpenCodeInspection.js'
-import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from '../harnesses/opencodeServer.js'
-import { openCodeMcpInspectorAdapter } from '../harnesses/opencodeMcpInspectorAdapter.js'
-import { HarnessQualificationRegistry } from '../harnesses/qualification/registry.js'
-import { runWithReadOnlyQualification } from '../harnesses/qualification/gate.js'
-import { opencodeQualificationSuite } from '../harnesses/qualification/suites/opencode.js'
-import { qualificationRevisionWithIdentity } from '../harnesses/qualification/identity.js'
-import { APP_MCP_TOKEN } from '../harnesses/appMcpLauncher.js'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import { createInstalledCodexDependencies } from '../harnesses/installedCodexDependencies.js'
@@ -40,11 +32,6 @@ import { assertCodexChatHost } from '../harnesses/codexFiles/localHost.js'
 import { workerConversationProcessDigest } from './workerNativeOwner.js'
 import { recoverWorkerConversation } from './recoverWorkerConversation.js'
 import { join } from 'node:path'
-import { createWorkerOpenCodeFiles } from './workerOpenCodeFiles.js'
-import { assertWorkerOpenCodeFileHost } from './workerOpenCodeFileHost.js'
-import { workerOpenCodeStorageRoot } from './workerOpenCodeStorage.js'
-import { WorkerOpenCodeDirectories } from './workerOpenCodeDirectories.js'
-import { workerOpenCodeVersionRecovery } from './recoverWorkerOpenCodeFiles.js'
 
 function unavailable(message: string): never {
   throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE', message, 409)
@@ -66,18 +53,6 @@ export async function createInstalledWorkerConversations(input: {
   const selected = await readInstalledWorkflowConfiguration(input.configuration)
   if (!selected) return null
   const conversationJournal = (await input.journal()).conversations
-  const openCodeDirectories = new WorkerOpenCodeDirectories(input.stateDirectory, conversationJournal)
-  for (const record of await conversationJournal.fileRecords()) {
-    const closed = input.registry.snapshot().launches.filter(launch =>
-      launch.owner === `conversation:${record.binding.owner.conversationId}`)
-    if (closed.length && closed.every(launch => launch.lifecycle === 'closed' && launch.closureEvidence)) {
-      try { await openCodeDirectories.cleanupClosed(record, input.registry, input.signal) }
-      catch (error) {
-        if (!(error instanceof DomainError) || error.code !== 'WORKER_FILE_VERSION_RECOVERY_REQUIRED') throw error
-        // Keep the original files and journal until an admitted Main recovery is available on the paired channel.
-      }
-    }
-  }
   const operations = new AsyncLocalStorage<WorkerConversationRpcRequest>()
   const source = () => {
     input.signal.throwIfAborted()
@@ -95,14 +70,11 @@ export async function createInstalledWorkerConversations(input: {
       journal: conversationJournal,
       current: input.current, source, callbacks, approvedRoots: input.approvedRoots, registry: input.registry,
       request: input.request, signal: input.signal })
-    if (harness !== 'codex' && harness !== 'opencode') unavailable('The installed native selection does not support this driver.')
-    if (harness === 'opencode' && !selected.opencode) unavailable('The installed OpenCode selection is missing.')
-    const inspect = harness === 'codex' ? inspectInstalledCodex : inspectInstalledOpenCode
-    const suiteRevision = harness === 'codex' ? input.codexSuiteRevision : qualificationRevisionWithIdentity(opencodeQualificationSuite.revision)
+    if (harness !== 'codex') unavailable('The installed native selection does not support this driver.')
     const directory = await installedConversationDirectory({ binding, configuration, approvedRoots: input.approvedRoots })
     const reader = createInstalledConversationNativeReader({ binding, configuration, connection,
-      current: input.current, signal: () => input.signal, suiteRevision,
-      inspect: signal => inspect({ binding: input.current(), configuration: input.configuration,
+      current: input.current, signal: () => input.signal, suiteRevision: input.codexSuiteRevision,
+      inspect: signal => inspectInstalledCodex({ binding: input.current(), configuration: input.configuration,
         environment: process.env, cwd: input.stateDirectory, signal }),
       readFacts: signal => callbacks.profile(source(), signal),
     })
@@ -119,94 +91,56 @@ export async function createInstalledWorkerConversations(input: {
     const scope = input.registry.scope(scopeOwner)
     const before = async (signal?: AbortSignal) => {
       await directory.assertCurrent(signal)
-      const refreshed = await reader.capture()
-      if (harness === 'opencode' && !isDeepStrictEqual(refreshed.fileSourceHost, original.fileSourceHost)) {
-        unavailable('Main file storage changed while this native chat was allocated.')
-      }
+      await reader.capture()
       signal?.throwIfAborted()
     }
     let manager: NativeHarnessSessionManager
     let inspector: NativeMcpInspector
     let codexDiagnostics: CodexDiagnostics | undefined
-    let openCodeFiles: ReturnType<typeof createWorkerOpenCodeFiles> | undefined
-    if (harness === 'codex') {
-      if (configuration.harness.harness !== 'codex') unavailable('The selected Codex configuration changed.')
-      const fileStorageRoot = join(input.stateDirectory, 'conversation-file-storage')
-      const assertFileHost = async (signal: AbortSignal) => {
-        await before(signal)
-        if (configuration.harness.harness !== 'codex' || configuration.harness.sandbox === 'danger-full-access') {
-          unavailable('This Codex configuration cannot safely receive attachment paths.')
-        }
-        await assertCodexChatHost(fileStorageRoot, binding.workingDirectory,
-          configuration.harness.advanced?.additionalWritableDirectories ?? [],
-          configuration.harness.sandbox === 'workspace-write')
+    if (configuration.harness.harness !== 'codex') unavailable('The selected Codex configuration changed.')
+    const fileStorageRoot = join(input.stateDirectory, 'conversation-file-storage')
+    const assertFileHost = async (signal: AbortSignal) => {
+      await before(signal)
+      if (configuration.harness.harness !== 'codex' || configuration.harness.sandbox === 'danger-full-access') {
+        unavailable('This Codex configuration cannot safely receive attachment paths.')
       }
-      const chatFiles = purpose === 'chat' && appMcpAccess === 'none'
-        ? files.adapter({ source, signal: input.signal, assertCurrent: assertFileHost,
-          host: () => localCodexChatHost(fileStorageRoot) }) : undefined
-      const dependencies = createInstalledCodexDependencies({ reader, codexSuiteRevision: suiteRevision })
-      const operations: Extract<CodexSessionDependencies, { mode: 'native' }> = { ...dependencies,
-        qualify: async (executable, cwd, environment, authenticated, signal, recovery = scope) => {
-          await before(signal)
-          return dependencies.qualify(executable, cwd, environment, authenticated, signal, recovery)
-        },
-        assertUnchanged: async qualified => { await before(); await dependencies.assertUnchanged(qualified) },
-        runCommand: async (executable, args, cwd, signal, environment, options) => {
-          await before(signal)
-          return dependencies.runCommand(executable, args, cwd, signal, environment,
-            { ...options, recovery: options?.recovery ?? scope })
-        },
-        qualifyModel: async (configuration, executable, cwd, environment, signal, recovery = scope, inspection) => {
-          await before(signal)
-          return dependencies.qualifyModel(configuration, executable, cwd, environment, signal, recovery, inspection)
-        },
-      }
-      const diagnostics = new CodexDiagnostics({ native: operations,
-        createRecovery: () => input.registry.scope(`conversation-diagnostics:${binding.owner.conversationId}:${randomUUID()}`),
-        admitRecovery: recovery => { Object.assign(recovery, input.registry.reserveLaunch(recovery.owner)) },
-        abandonRecovery: async recovery => { await input.registry.abandonReservedLaunch(recovery) },
-        closeRecovery: async recovery => {
-          if (!await input.registry.closeOwner(recovery.owner)) unavailable('Native diagnostic closure is unconfirmed.')
-        },
-      })
-      codexDiagnostics = diagnostics
-      const native = new CodexAppServerSessionManager(binary, original.qualification.version, undefined, scope, appMcpAccess,
-        chatFiles, { ...operations, withDiagnostics: (pin, run) => diagnostics.run(pin, run, scope) })
-      manager = native
-      inspector = codexMcpInspectorAdapter(native)
-    } else {
-      if (configuration.harness.harness !== 'opencode') unavailable('The selected OpenCode configuration changed.')
-      const ownerId = binding.owner.kind === 'operator' ? binding.owner.operatorId : binding.owner.agentId
-      const registry = new HarnessQualificationRegistry(reader.repository, { opencode: suiteRevision })
-      const protectedRoot = await workerOpenCodeStorageRoot(input.stateDirectory, original.fileSourceHost)
-      const fileDirectory = purpose === 'chat' && appMcpAccess === 'none'
-        ? await openCodeDirectories.reserveDirectory(binding) : undefined
-      const server = new ManagedOpenCodeServer({ binary, workingDirectory: binding.workingDirectory,
-        ownerAgentId: ownerId, processRecovery: scope, appMcpAccess,
-        protectedFileStorageRoot: protectedRoot,
-        nativeStorage: { root: join(input.stateDirectory, 'opencode-sessions'), owner: binding.owner.conversationId },
-        ...(fileDirectory ? { managedFileRoot: fileDirectory.root,
-          managedFileOwner: { id: fileDirectory.id, prepareDirectory: (root: string, signal: AbortSignal) =>
-            openCodeDirectories.prepareDirectory(binding, fileDirectory.id, root, signal) } } : {}),
-        ...(appMcpAccess === 'scoped' ? { credentialEnvironmentVariable: APP_MCP_TOKEN } : {}),
-        ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
-        assertInstallation: before })
-      const ensure = server.ensure.bind(server)
-      server.ensure = signal => runWithReadOnlyQualification(registry, () => ensure(signal))
-      if (purpose === 'chat' && appMcpAccess === 'none') {
-        openCodeFiles = createWorkerOpenCodeFiles({ directories: openCodeDirectories,
-          source, callbacks, server,
-          assertCurrent: (request, signal) => operations.run(request, () => before(signal)),
-          assertSourceIsolation: async (sourceHost, signal) => {
-            if (!isDeepStrictEqual(sourceHost, original.fileSourceHost)) unavailable('The file source differs from Main’s admitted vault.')
-            await assertWorkerOpenCodeFileHost(server, protectedRoot, sourceHost, signal)
-          }, signal: input.signal })
-      }
-      const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: ownerId, appMcpAccess,
-        ...(openCodeFiles ? { chatFiles: openCodeFiles.adapter } : {}) })
-      manager = native
-      inspector = openCodeMcpInspectorAdapter(native)
+      await assertCodexChatHost(fileStorageRoot, binding.workingDirectory,
+        configuration.harness.advanced?.additionalWritableDirectories ?? [],
+        configuration.harness.sandbox === 'workspace-write')
     }
+    const chatFiles = purpose === 'chat' && appMcpAccess === 'none'
+      ? files.adapter({ source, signal: input.signal, assertCurrent: assertFileHost,
+        host: () => localCodexChatHost(fileStorageRoot) }) : undefined
+    const dependencies = createInstalledCodexDependencies({ reader, codexSuiteRevision: input.codexSuiteRevision })
+    const operations: Extract<CodexSessionDependencies, { mode: 'native' }> = { ...dependencies,
+      qualify: async (executable, cwd, environment, authenticated, signal, recovery = scope) => {
+        await before(signal)
+        return dependencies.qualify(executable, cwd, environment, authenticated, signal, recovery)
+      },
+      assertUnchanged: async qualified => { await before(); await dependencies.assertUnchanged(qualified) },
+      runCommand: async (executable, args, cwd, signal, environment, options) => {
+        await before(signal)
+        return dependencies.runCommand(executable, args, cwd, signal, environment,
+          { ...options, recovery: options?.recovery ?? scope })
+      },
+      qualifyModel: async (configuration, executable, cwd, environment, signal, recovery = scope, inspection) => {
+        await before(signal)
+        return dependencies.qualifyModel(configuration, executable, cwd, environment, signal, recovery, inspection)
+      },
+    }
+    const diagnostics = new CodexDiagnostics({ native: operations,
+      createRecovery: () => input.registry.scope(`conversation-diagnostics:${binding.owner.conversationId}:${randomUUID()}`),
+      admitRecovery: recovery => { Object.assign(recovery, input.registry.reserveLaunch(recovery.owner)) },
+      abandonRecovery: async recovery => { await input.registry.abandonReservedLaunch(recovery) },
+      closeRecovery: async recovery => {
+        if (!await input.registry.closeOwner(recovery.owner)) unavailable('Native diagnostic closure is unconfirmed.')
+      },
+    })
+    codexDiagnostics = diagnostics
+    const native = new CodexAppServerSessionManager(binary, original.qualification.version, undefined, scope, appMcpAccess,
+      chatFiles, { ...operations, withDiagnostics: (pin, run) => diagnostics.run(pin, run, scope) })
+    manager = native
+    inspector = codexMcpInspectorAdapter(native)
     let mcp: Awaited<ReturnType<typeof createWorkerMcpEndpoint>> | undefined
     let launch: NativeLaunchObservation | undefined
     const nativeOwner = async (session: NativeSessionReference) => {
@@ -240,13 +174,9 @@ export async function createInstalledWorkerConversations(input: {
         workflowNodeId: owner.workflowNodeId, correlationId: options.correlationId,
         workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
     }
-    const nativeFiles = openCodeFiles
     return { manager, inspector, nativeOwner, start,
       ...(harness === 'codex' && appMcpAccess === 'none' ? {
         recoverFiles: (request, nativeTurnId, signal) => files.recover(request, nativeTurnId, signal),
-      } satisfies Pick<WorkerConversationAllocation, 'recoverFiles'> : {}),
-      ...(nativeFiles ? {
-        recoverFiles: (request, nativeTurnId, signal) => nativeFiles.recover(request, nativeTurnId, signal),
       } satisfies Pick<WorkerConversationAllocation, 'recoverFiles'> : {}),
       async close() {
         const errors: unknown[] = []
@@ -257,10 +187,6 @@ export async function createInstalledWorkerConversations(input: {
         if (!await input.registry.closeOwner(scope.owner)) unavailable('Native chat closure is unconfirmed.')
         if (purpose === 'chat') {
           try {
-            await openCodeFiles?.releaseClosedHandles()
-            const record = await conversationJournal.read(binding)
-            if (record) await openCodeDirectories.cleanupClosed(record, input.registry, AbortSignal.timeout(10000))
-            await openCodeFiles?.close()
             await files.closeConversation(binding.owner.conversationId)
           } catch (error) { errors.push(error) }
         }
@@ -272,17 +198,11 @@ export async function createInstalledWorkerConversations(input: {
     journal: conversationJournal,
     allocate: (binding, configuration, connection) => allocate(binding, configuration, connection, 'chat'),
     prepare: (binding, configuration, connection) => allocate(binding, configuration, connection, 'preparation'),
-    recoverFileVersions: (record, request, signal) => openCodeDirectories.cleanupClosed({ ...record,
-      openCodeFileRoots: record.openCodeFileRoots?.filter(root => root.correlationId === request.correlationId) ?? [],
-    }, input.registry, signal, workerOpenCodeVersionRecovery({ record, request,
-      configuration: request.configuration, callbacks })),
     recover: (record, configuration, connection, signal, request) => recoverWorkerConversation({
       record, configuration, connection, signal, request, registry: input.registry, journal: conversationJournal,
       allocate: () => allocate(request.method === 'conversation.open' && request.previousBinding
         ? request.binding : record.binding, configuration, connection, 'chat'),
       assertCurrent: () => callbacks.authorize(request, connection, signal),
-      cleanupFiles: (record, cleanupSignal) => openCodeDirectories.cleanupClosed(record, input.registry, cleanupSignal,
-        workerOpenCodeVersionRecovery({ record, request, configuration, callbacks })),
     }),
     readCompaction: async (request, _record, connection, signal) => {
       const observer = await allocate(request.binding, request.configuration, connection, 'compaction-read')

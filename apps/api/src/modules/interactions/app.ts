@@ -9,14 +9,11 @@ import {
   HarnessExecutionSchema,
   GraphqlToolDefaultsSchema,
   GraphqlToolOverrideSchema,
-  HarnessConfigurationSchema,
   effectiveGraphqlTools,
   type GraphqlAgentTool,
 } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
-import { WorkflowArtifactOutputsV1Schema } from '@foreman-code/contracts/workflow-artifact-result'
 import { WORKER_NATIVE_OUTPUT_TOOL_NAMES, WorkerNativeOutputOperationSchema } from '@foreman-code/contracts/worker-native-output'
-import { openCodeWorkflowOutputAllowed } from '../runs/remote/localWorkflowOutputPolicy.js'
 import { resolveImmutableApprovalRoute } from '../workflows/approvalRoutes.js'
 import { assertWave25WorkerBinding } from './wave25/credentialAuthority.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -158,14 +155,11 @@ export class PostgresAppInteractionService implements AppInteractionService {
     const role = row?.role === 'orchestrator' ? 'orchestrator' : 'coder'
     const defaults = row?.defaults == null ? undefined : GraphqlToolDefaultsSchema.parse(row.defaults)
     const override = row?.override == null ? undefined : GraphqlToolOverrideSchema.parse(row.override)
-    const harness = HarnessConfigurationSchema.safeParse(row?.harness)
-    const declaresOutputs = WorkflowArtifactOutputsV1Schema.safeParse(row?.artifact_outputs).success
     const tools = effectiveGraphqlTools(role, defaults, override).filter(tool => {
       const operation = WorkerNativeOutputOperationSchema.options.find(operation =>
         WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation] === tool)
       if (!operation) return true
-      return row?.purpose === 'workflow' && row.local_outputs === true && declaresOutputs && harness.success
-        && harness.data.harness === 'opencode' && openCodeWorkflowOutputAllowed(harness.data, operation)
+      return false
     })
     return { role, tools }
   }

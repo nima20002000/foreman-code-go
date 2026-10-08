@@ -3,44 +3,10 @@ import { join } from 'node:path'
 import { ExecutionResultSchema, NativeSessionReferenceSchema,
   type ExecutionResult, type NativeSessionReference } from '@foreman-code/contracts'
 import { z } from 'zod'
-import type { NativeOutputCallCapture, NativeResponseIdentity } from '../port.js'
+import type { NativeResponseIdentity } from '../port.js'
 import type { NativeResponseDeliveryEvidence } from '../../interactions/delivery.js'
 import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
 import { responseValueDigest } from '../../interactions/delivery.js'
-import { isDeepStrictEqual } from 'node:util'
-import { bootIdentity, identityAlive } from './linuxIdentity.js'
-
-export interface NativeOutputAutoApprovalRecord {
-  session: NativeSessionReference
-  rootTurnId: string
-  process: { bootId: string; pid: number; startTicks: string; generation: number }
-  approval: NonNullable<NativeOutputCallCapture['nativeAutoApproval']>
-}
-
-function checkedAuto(value: unknown): NativeOutputAutoApprovalRecord {
-  const row = recordObject(value)
-  const session = recordObject(row.session)
-  const nativeProcess = recordObject(row.process)
-  const approval = recordObject(row.approval)
-  const strings = [session.providerVersion, session.nativeSessionId, row.rootTurnId,
-    approval.nativeRequestId, approval.nativeSessionId, approval.permission,
-    approval.assistantMessageId, approval.callId]
-  if (session.harness !== 'opencode' || strings.some(value => typeof value !== 'string' || !value.trim() || value.length > 4096)
-    || approval.nativeSessionId !== session.nativeSessionId || approval.reply !== 'once'
-    || !isDeepStrictEqual(approval.patterns, ['*'])
-    || typeof nativeProcess.bootId !== 'string' || !/^[0-9a-f-]{36}$/.test(nativeProcess.bootId)
-    || !Number.isSafeInteger(nativeProcess.pid) || Number(nativeProcess.pid) <= 1
-    || typeof nativeProcess.startTicks !== 'string' || !/^[0-9]+$/.test(nativeProcess.startTicks)
-    || !Number.isSafeInteger(nativeProcess.generation) || Number(nativeProcess.generation) < 0) {
-    throw new Error('Invalid native output automatic approval receipt.')
-  }
-  return row as unknown as NativeOutputAutoApprovalRecord
-}
-function autoKey(session: NativeSessionReference, rootTurnId: string, assistantMessageId: string, callId: string) {
-  return createHash('sha256').update(JSON.stringify([
-    session.harness, session.providerVersion, session.nativeSessionId, rootTurnId, assistantMessageId, callId,
-  ])).digest('hex')
-}
 
 const fields = ['source', 'harness', 'providerVersion', 'nativeSessionId', 'nativeRequestId',
   'nativeRequestType', 'optionId', 'semantic'] as const
@@ -62,7 +28,7 @@ function checked(value: unknown): NativeResponseDeliveryEvidence {
   if (Object.keys(proof).length !== keys.length || fields.some((key) => typeof proof[key] !== 'string'
     || !String(proof[key]).trim() || String(proof[key]).length > 4096)
     || !['provider_acknowledgement', 'provider_history'].includes(String(proof.source))
-    || !['codex', 'opencode'].includes(String(proof.harness))
+    || !['codex', 'claude'].includes(String(proof.harness))
     || !semantics.includes(String(proof.semantic))
     || proof.responseDigest !== undefined && !/^[a-f0-9]{64}$/.test(String(proof.responseDigest))) {
     throw new Error('Invalid native response receipt.')
@@ -155,35 +121,4 @@ export class NativeResponseJournal {
     return proof
   }
 
-  recordNativeOutputAutoApproval(evidence: NativeOutputAutoApprovalRecord): void {
-    const proof = checkedAuto(evidence)
-    const directory = privateDirectory(this.root)
-    const path = join(directory, `native-output-auto-${autoKey(proof.session, proof.rootTurnId,
-      proof.approval.assistantMessageId, proof.approval.callId)}.json`)
-    try { writeRecord(path, { format: 1, evidence: proof }, true) } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      const existing = recordObject(readRecord(path))
-      if (existing.format !== 1 || !isDeepStrictEqual(checkedAuto(existing.evidence), proof)) {
-        throw new Error('Conflicting native output automatic approval receipts.', { cause: error })
-      }
-      syncDirectory(directory)
-    }
-  }
-
-  readNativeOutputAutoApproval(session: NativeSessionReference, rootTurnId: string,
-    assistantMessageId: string, callId: string, nativeProcess: NativeOutputAutoApprovalRecord['process']) {
-    const directory = privateDirectory(this.root)
-    const stored = readRecord(join(directory, `native-output-auto-${autoKey(session, rootTurnId, assistantMessageId, callId)}.json`))
-    if (stored === undefined) return undefined
-    const envelope = recordObject(stored)
-    if (envelope.format !== 1) throw new Error('Unsupported native output automatic approval receipt format.')
-    const proof = checkedAuto(envelope.evidence)
-    if (!isDeepStrictEqual(proof.session, session) || proof.rootTurnId !== rootTurnId
-      || proof.approval.assistantMessageId !== assistantMessageId || proof.approval.callId !== callId
-      || !isDeepStrictEqual(proof.process, nativeProcess)
-      || nativeProcess.bootId !== bootIdentity() || !identityAlive(nativeProcess)) {
-      throw new Error('The persisted automatic approval belongs to another native process or call.')
-    }
-    return proof.approval
-  }
 }

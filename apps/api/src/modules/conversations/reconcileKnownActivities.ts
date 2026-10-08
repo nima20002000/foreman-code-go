@@ -16,8 +16,6 @@ export async function reconcileKnownActivities(input: {
     if (visited.has(owner.conversationId) || input.signal.aborted) continue
     visited.add(owner.conversationId)
     const runtime = input.runtimeFor(owner.conversationId)
-    // Codex history reads an already bound channel. OpenCode legacy history can auto-reply/start,
-    // so it needs a separately qualified read-only history port before this idle-owner path is usable.
     if (!runtime || runtime.manager.harness !== 'codex' || runtime.session.nativeSessionId !== owner.ownerNative.sessionId) continue
     let history
     try { history = await runtime.manager.history(runtime.session, input.signal) } catch { continue }

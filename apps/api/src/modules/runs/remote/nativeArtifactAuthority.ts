@@ -206,9 +206,10 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
       if (message.rowCount !== 1) return denied()
     }
     const harness = current.configuration.harness
-    const canWrite = harness.harness === 'opencode' ? harness.nativeAgent !== 'plan' : harness.sandbox === 'workspace-write'
+    if (harness.harness !== 'codex') return denied()
+    const canWrite = harness.sandbox === 'workspace-write'
     if (context.allowMutation && !canWrite || context.allowedTools.some(tool => isMutation(tool) && (!context.allowMutation || !canWrite))
-      || harness.harness === 'codex' && context.allowedTools.some(tool => !codexChatFileTools(harness).includes(tool))) return denied()
+      || context.allowedTools.some(tool => !codexChatFileTools(harness).includes(tool))) return denied()
     if (context.allowMutation) requireAuthorization(principal, 'agent_chat:write', {
       workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId })
     return { context: structuredClone(context), principal, binding: bindingIdentity(context) }

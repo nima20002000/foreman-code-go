@@ -13,15 +13,13 @@ function ports(installed: string[], outputs: Record<string, { code?: number; std
 }
 
 it('reads each tool account without exposing tokens', async () => {
-  const result = await probeComputerAccounts(ports(['codex', 'claude', 'opencode', 'gh'], {
+  const result = await probeComputerAccounts(ports(['codex', 'claude', 'gh'], {
     'claude auth status': { stdout: JSON.stringify({ loggedIn: true, email: 'claude@example.com', authMethod: 'claude.ai' }) },
-    'opencode auth list': { stdout: '\u001b[0m┌  Credentials ~/.local/share/opencode/auth.json\n│\n●  OpenCode Go \u001b[90mapi\n│\n●  OpenRouter api\n└  2 credentials' },
     'gh auth status --active --hostname github.com --json hosts': { stdout: JSON.stringify({ hosts: { 'github.com': [{ login: 'octo-owner', active: true, state: 'success' }] } }) },
   }, { '/home/agent/.codex/auth.json': JSON.stringify({ auth_mode: 'chatgpt', tokens: { id_token: token({ email: 'codex@example.com' }), refresh_token: 'secret' } }) }))
   expect(result.accounts).toEqual([
     { tool: 'codex', installed: true, signedIn: true, account: 'codex@example.com', details: ['ChatGPT'] },
     { tool: 'claude', installed: true, signedIn: true, account: 'claude@example.com', details: ['claude.ai'] },
-    { tool: 'opencode', installed: true, signedIn: true, account: null, details: ['OpenCode Go', 'OpenRouter'] },
     { tool: 'github', installed: true, signedIn: true, account: 'octo-owner', details: [] },
   ])
   expect(JSON.stringify(result)).not.toMatch(/secret|gho_/)
@@ -36,7 +34,7 @@ it('separates missing tools, signed-out tools and unreadable sign-in state', asy
     'gh auth status --active --hostname github.com --json hosts': { code: 1, stderr: 'You are not logged into any GitHub hosts.' },
   }))
   expect(result.accounts.map(value => [value.tool, value.installed, value.signedIn])).toEqual([
-    ['codex', true, false], ['claude', true, null], ['opencode', false, null], ['github', true, false],
+    ['codex', true, false], ['claude', true, null], ['github', true, false],
   ])
 })
 

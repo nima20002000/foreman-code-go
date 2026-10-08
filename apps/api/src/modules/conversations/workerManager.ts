@@ -25,7 +25,6 @@ import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import { MainWorkerConversationBridge, type WorkerConversationCallbacks, type WorkerConversationChannel } from './workerBridge.js'
 import { DomainError } from '../errors.js'
 import type { PrepareWorkerFiles } from './mainWorkerFiles.js'
-import type { MainOpenCodeFilePorts } from './mainWorkerOpenCodeFiles.js'
 
 function conflict(message: string): never { throw new DomainError('WORKER_CONVERSATION_CONFLICT', message, 409) }
 interface ManagerOptions {
@@ -39,7 +38,6 @@ interface ManagerOptions {
   claudeAuthority?(request: WorkerClaudeAuthorityRequest, signal: AbortSignal): Promise<unknown>
   sourceWorkingDirectory?: string
   files?: PrepareWorkerFiles
-  openCodeFiles?: MainOpenCodeFilePorts
   previousBinding?: WorkerConversationBinding
 }
 
@@ -68,7 +66,6 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     const lease = this.options.bridge.capture({ request: frame, channel: this.options.channel,
       callbacks: { ...(this.options.profile ? { profile: this.options.profile } : {}),
         ...(this.options.files ? { files: this.options.files } : {}),
-        ...(this.options.openCodeFiles ? { openCodeFiles: this.options.openCodeFiles } : {}),
         ...(this.options.claudeAuthority ? { claudeAuthority: this.options.claudeAuthority } : {}), ...options.callbacks },
       ...(options.recoveredSubmission ? { recoveredSubmission: options.recoveredSubmission } : {}),
       ...(options.recoveredTurnId ? { recoveredTurnId: options.recoveredTurnId } : {}),
@@ -178,20 +175,6 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   async createSession(start: NativeSessionStart, signal?: AbortSignal) { return this.open(start, 'create', undefined, signal) }
   async attachSession(session: NativeSessionReference, start: NativeSessionStart, signal?: AbortSignal) {
-    if (this.harness === 'opencode' && this.options.openCodeFiles && !this.options.previousBinding) {
-      this.startFields(start)
-      const record = this.adopt(await this.request({ method: 'conversation.status' }, signal))
-      if (!record?.session || !isDeepStrictEqual(record.session, session)) conflict('The persisted worker session changed.')
-      for (const root of record.openCodeFileRoots ?? []) {
-        const turn = record.turns.find(value => value.correlationId === root.correlationId)
-        if (!turn?.nativeTurnId) conflict('The file turn has no persisted native acknowledgement.')
-        const frame = this.frame({ method: 'conversation.recover-files', session,
-          configuration: this.options.configuration, correlationId: root.correlationId,
-          ...(turn.sessionMode ? { sessionMode: turn.sessionMode } : {}) })
-        const lease = this.capture(frame, { recoveredTurnId: turn.nativeTurnId })
-        try { this.adopt(await lease.request(signal)) } finally { await this.release(lease) }
-      }
-    }
     return this.open(start, 'attach', session, signal)
   }
   async forkSession(source: NativeSessionReference, start: NativeSessionStart, signal?: AbortSignal) {
@@ -341,15 +324,15 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
       ...(input.sessionPreferences ? { preferences: input.sessionPreferences } : {}) }), input, input, signal)
   }
   async history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory> {
-    return this.readHistory(session, {}, signal)
+    return this.readHistory(session, signal)
   }
   async retireTurn(session: NativeSessionReference, correlationId: string) {
     this.assertSession(session)
     this.adopt(await this.request({ method: 'conversation.retire-turn', session, correlationId }))
   }
-  private async readHistory(session: NativeSessionReference, fields: Record<string, unknown>, signal?: AbortSignal): Promise<NativeHistory> {
+  private async readHistory(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory> {
     this.assertSession(session)
-    return this.historyResponse(await this.request({ method: 'conversation.history', session, ...fields }, signal))
+    return this.historyResponse(await this.request({ method: 'conversation.history', session }, signal))
   }
   private historyResponse(raw: unknown): NativeHistory {
     const value = z.object({ history: WorkerConversationHistorySchema, context: ContextSnapshotSchema.nullable(),
@@ -391,7 +374,6 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     const accepted = this.receipt?.turns.find(turn => turn.correlationId === correlationId)
     const submission = this.harness === 'claude' ? accepted?.nativeSubmission : undefined
     const files = this.harness === 'codex' && this.options.files
-      || this.harness === 'opencode' && this.options.openCodeFiles
     const recoveredTurnId = files
       && accepted?.status !== 'completed' ? accepted?.nativeTurnId : undefined
     const frame = this.frame({ method: 'conversation.reconcile', session, correlationId,
@@ -411,9 +393,6 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
       await this.release(lease)
       throw error
     }
-  }
-  async historyPage(session: NativeSessionReference, before?: string, signal?: AbortSignal) {
-    return this.readHistory(session, before ? { before } : {}, signal)
   }
   private async recoverPendingCallbacks(session: NativeSessionReference, signal?: AbortSignal) {
     if (this.harness !== 'claude') return

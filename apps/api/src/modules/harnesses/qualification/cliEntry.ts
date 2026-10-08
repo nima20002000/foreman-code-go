@@ -2,7 +2,6 @@
 export { QUALIFICATION_TARGET_PROFILE } from './profiles.js'
 export { runAsQualificationCandidate } from './gate.js'
 export { codexQualificationSuite } from './suites/codex.js'
-export { opencodeQualificationSuite } from './suites/opencode.js'
 
 export { withNativeQualificationOwnership } from './nativeOwnership.js'
 export { NativeProcessRegistry } from '../recovery/processRegistry.js'

@@ -53,27 +53,7 @@ export function nativeAction(type: string, payload: ObjectValue): NativeActionCh
       || payload.nativeTurnStatus === 'completed' || Boolean(item.error)
       || ['completed', 'failed', 'declined', 'canceled', 'cancelled', 'interrupted'].includes(String(item.status)) }
   }
-  if (type !== 'message.part.updated') return undefined
-  const part = nativeObject(payload.part)
-  const id = nativeString(part.id)
-  if (!id || part.type !== 'tool') return undefined
-  const state = nativeObject(part.state)
-  const tool = nativeString(part.tool)
-  let kind: RunNodeActionKind
-  if (tool === 'read') kind = 'reading_file'
-  else if (tool === 'grep') kind = 'searching_files'
-  else if (tool === 'glob' || tool === 'list') kind = 'listing_files'
-  else if (['write', 'edit', 'apply_patch', 'multiedit'].includes(tool ?? '')) kind = 'writing_file'
-  else if (tool === 'task') kind = 'spawning_subagent'
-  else if (tool === 'bash') kind = 'running_command'
-  else if (['websearch', 'webfetch', 'codesearch'].includes(tool ?? '')) kind = 'searching_web'
-  else if (tool?.startsWith('graphql-app_') || tool?.startsWith('graphql_app_')) kind = mcpAction('graphql-app', tool.slice('graphql-app_'.length))
-  else if (tool?.startsWith('graphql-operator_') || tool?.startsWith('graphql_operator_')) kind = mcpAction('graphql-operator', tool.slice('graphql-operator_'.length))
-  else if (tool?.startsWith('foreman-code_') || tool?.startsWith('foreman_code_')) kind = mcpAction('foreman-code', tool.slice('foreman-code_'.length))
-  else if (tool?.startsWith('graphql_')) kind = mcpAction('graphql', tool.slice('graphql_'.length))
-  else return undefined
-  if (!['pending', 'running', 'completed', 'error'].includes(String(state.status))) return undefined
-  return { id, kind, pending: state.status === 'pending', ended: state.status === 'completed' || state.status === 'error' }
+  return undefined
 }
 
 const labels: Record<RunNodeActionKind, string> = {

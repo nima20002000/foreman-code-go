@@ -8,7 +8,6 @@ import { graphSourceDigest } from '../run-graph/publication.js'
 import { readNativeGraphCorrelation } from '../run-graph/records.js'
 import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import type { WorkflowNativeCapture } from '../interactions/workflowNativeCapture.js'
-import { OPENCODE_RECONCILIATION_EVENT } from '../harnesses/opencodeReconciliation.js'
 import { DomainError } from '../errors.js'
 import { repeatExecutionIdentity, sameRepeatValue, type RepeatScope } from './repeatResolution.js'
 
@@ -32,7 +31,7 @@ export async function retainedNativeHistoryEvents(sql: GraphTransactionSql, scop
     const normalized = normalizeNativeProducerEvent(event)
     const selected = selectNativeGraphEvidence(normalized.event.type, normalized.event.payload)
     if (normalized.rejected || selected.kind === 'invalid' || event.type === 'transport.disconnected'
-      || event.type === OPENCODE_RECONCILIATION_EVENT || event.payload.nativeMessageId !== undefined) continue
+      || event.payload.nativeMessageId !== undefined) continue
     const identity = sourceKey(event.connectionId ?? null, event.sequence)
     const previous = candidates.get(identity)
     if (previous && !sameRepeatValue(previous.normalized, normalized.event)) conflicted.add(identity)

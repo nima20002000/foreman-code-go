@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
@@ -82,7 +83,7 @@ export class HostHarnessInstanceProfileChecks {
     const failures: unknown[] = []
     for (const value of profiles) {
       signal.throwIfAborted()
-      if (!value.enabled) continue
+      if (!value.enabled || value.driverId === 'opencode' || value.configuration.harness === 'opencode') continue
       const previous = await this.proofs.latest(value.instanceId, value.revision)
       if (!previous?.qualified || previous.authenticated !== true || previous.compatible !== true) continue
       const generation = harnessConnectionGeneration(binding)
@@ -128,6 +129,14 @@ export class HostHarnessInstanceProfileChecks {
       await this.authority.authorize(principal, 'harnesses:read', input.target.hostRef, input.target.applicationInstallationId, client)
       await this.authority.authorize(principal, 'harnesses:update', input.target.hostRef, input.target.applicationInstallationId, client)
     }
+    await this.settings.readAuthorized(async client => {
+      await authorize(client)
+      const saved = await this.settings.latest(client, input.instanceId)
+      if (saved && sameTarget(saved.target, input.target)
+        && (saved.driverId === 'opencode' || saved.configuration.harness === 'opencode')) {
+        throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+      }
+    })
     const checkId = nativeProfileCheckId(input.target.hostRef.mainId, principal.id, input.commandId)
     const deadline = new AbortController()
     const timer = setTimeout(() => deadline.abort(new DomainError('HARNESS_PROFILE_CHECK_TIMEOUT', 'Exact-host profile qualification exceeded its deadline.', 504)), 240_000)
@@ -147,6 +156,8 @@ export class HostHarnessInstanceProfileChecks {
     if (!value || value.revision !== input.expectedRevision || !sameTarget(value.target, input.target)) {
       throw new DomainError('REVISION_CONFLICT', 'The exact host instance changed before qualification.', 409)
     }
+    if (value.driverId === 'opencode' || value.configuration.harness === 'opencode') throw new DomainError(
+      'HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     if (!value.enabled) throw new DomainError('HARNESS_INSTANCE_DISABLED', 'Disabled host instances cannot be qualified.', 409)
     assertClaudeFullAccess(value.configuration)
     return value

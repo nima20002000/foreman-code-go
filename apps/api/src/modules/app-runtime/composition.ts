@@ -7,7 +7,6 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { CodexAppServerSessionManager } from '../harnesses/codexAppServer.js'
 import { codexMcpInspectorAdapter } from '../harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService, WorkerLaunchCredentialService } from '../harnesses/mcpDetection.js'
-import { openCodeConfigurationInspector } from '../harnesses/opencodeMcpConfiguration.js'
 import { PostgresAppInteractionService } from '../interactions/app.js'
 import type { PostgresInteractionRepository } from '../interactions/postgres.js'
 
@@ -27,12 +26,9 @@ export function createAppMcpRuntime(input: {
   runnerId: string
 }) {
   // The Codex manager supplies its model-free inspection primitive only.
-  // Execution remains on the existing production-qualified legacy adapters.
+  // Execution uses the production-qualified adapters.
   const codex = codexMcpInspectorAdapter(new CodexAppServerSessionManager(input.config.harnesses.codexBinary))
-  const opencode = openCodeConfigurationInspector(input.config.harnesses.openCodeBinary)
-  const detection = new McpDetectionService({
-    inspect: (request) => (request.harness === 'codex' ? codex : opencode).inspect(request),
-  }, localAppMcpEndpoint(input.config.host, input.config.port))
+  const detection = new McpDetectionService(codex, localAppMcpEndpoint(input.config.host, input.config.port))
   const credentials = new Wave25WorkerCredentialService(input.pool, input.access)
   return {
     appMcp: {

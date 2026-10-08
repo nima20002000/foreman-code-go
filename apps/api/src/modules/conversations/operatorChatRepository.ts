@@ -9,7 +9,7 @@ import {
   applyOperatorChatSettings, operatorChatSettings, ConversationSchema, MessageSchema, OperatorConfigurationVersionSchema, OperatorConversationStateSchema,
   ExecutionResultSchema,
   OperatorConversationSummarySchema, type OperatorConversationSummary,
-  type HarnessConfiguration, type Conversation, type ExecutionResult, type OperatorAgent, type OperatorConfigurationVersion, type AgentHarness,
+  type HarnessConfiguration, type Conversation, type ExecutionResult, type OperatorAgent, type OperatorConfigurationVersion, type RecordedAgentHarness,
   type OperatorConversationState, type PendingNativeInteraction, type SendOperatorMessageRequest,
 } from '@foreman-code/contracts'
 import {
@@ -46,12 +46,12 @@ export interface ConversationRow {
   deleted_at?: Date | null
   owner_principal_id: string | null
   operator_configuration_version_id: string
-  harness: AgentHarness
+  harness: RecordedAgentHarness
   provider_version: string | null
   native_session_id: string | null
   parent_conversation_id: string | null
   fork_request_id: string | null
-  handoff_source_harness: 'codex' | 'opencode' | null
+  handoff_source_harness: RecordedAgentHarness | null
   handoff_source_sequence: string | null
   handoff_omitted_messages: number
   handoff_context: string | null
@@ -270,7 +270,10 @@ export class PostgresOperatorConversationRepository {
       } } : {}),
       activities: row.activities, activityNextCursor: row.activity_cursor,
       hasEarlierMessages: Number(row.message_count) > row.messages.length,
-      settings: operatorChatSettings(configuration.harness, configuration.showThinking),
+      settings: configuration.harness.harness === 'opencode'
+        ? { harness: 'opencode', model: configuration.harness.model, variant: configuration.harness.variant,
+          showThinking: configuration.harness.thinking }
+        : operatorChatSettings(configuration.harness, configuration.showThinking),
       turnState: row.turn_state, revision: Number(row.revision), activeRequestId: row.active_request_id,
       ...(row.native_submission ? { nativeSubmission: row.native_submission } : {}),
       ...(row.last_error ? { error: row.last_error } : {}),
@@ -419,7 +422,7 @@ export class PostgresOperatorConversationRepository {
     const settings = input.settings
     if (!settings) return configuration.harness
     // A chat owns its policy. Editing application defaults never mutates an
-    // existing native session, including OpenCode's equality-checked policy.
+    // existing native session.
     if (settings.harness === configuration.harness.harness) return applyOperatorChatSettings(configuration.harness, settings)
     const defaults = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults()
     if (input.defaultsRevision === undefined || input.defaultsRevision !== defaults.revision) {
@@ -710,7 +713,7 @@ export class PostgresOperatorConversationRepository {
     await this.pool.query(`update operator_conversations set response_delivery='uncertain',revision=revision+1,updated_at=now()
       where id=$1 and active_request_id=$2 and response_delivery='submitted'`, [id, requestId])
   }
-  /** Codex messages are immutable; OpenCode public parts keep their first position while streaming. */
+  /** Completed messages are immutable; streaming blocks keep their first position. */
   async appendAssistantMessage(id: string, requestId: string, nativeMessageId: string, content: string,
     nativePart?: { parentMessageId?: string; complete: boolean; truncation?: TextTruncation }, precedingActivityId?: string | null): Promise<boolean> {
     const client = await this.pool.connect()
@@ -865,8 +868,7 @@ export class PostgresOperatorConversationRepository {
         const output = result.output
         const content = typeof output === 'string' ? output : output && typeof output === 'object' && !Array.isArray(output)
           ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : undefined : undefined
-        // OpenCode's terminal result repeats the text of its already persisted
-        // native parts. A real parent message ID must not create a second answer.
+        // A parent result must not duplicate already persisted message blocks.
         const prior = await client.query(`select 1 from operator_conversation_messages
           where conversation_id=$1 and (native_message_id=$2 or
             (record->>'nativeParentMessageId'=$2 and record->>'requestId'=$3)) limit 1`, [id,nativeMessageId,requestId])

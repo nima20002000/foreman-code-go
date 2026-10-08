@@ -27,7 +27,7 @@ export class HarnessCatalogService {
   async warmup(): Promise<void> {
     const managed = await this.settings.getManagedHarnessDefaults()
     const unavailable = new Set(managed.unavailable ?? [])
-    await Promise.allSettled((['codex', 'opencode', 'claude'] as const).flatMap((harness) =>
+    await Promise.allSettled((['codex', 'claude'] as const).flatMap((harness) =>
       managed.defaults[harness] && !unavailable.has(harness) ? [this.qualifyConfiguration(managed.defaults[harness]!)] : []))
   }
 
@@ -62,7 +62,7 @@ export class HarnessCatalogService {
     requireAuthorization(principal, 'harnesses:read')
     const managed = await this.settings.getManagedHarnessDefaults()
     const unavailable = new Set(managed.unavailable ?? [])
-    return Promise.all((['codex', 'opencode', 'claude'] as const).filter((harness) => managed.defaults[harness] !== undefined)
+    return Promise.all((['codex', 'claude'] as const).filter((harness) => managed.defaults[harness] !== undefined)
       .map((harness) => this.describe(principal, harness, managed.defaults, managed.revision, unavailable)))
   }
 
@@ -125,7 +125,7 @@ export class HarnessCatalogService {
         const unavailable = new Set(current.unavailable ?? [])
         const configure = new Set(input.configure ?? [])
         if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409)
-        for (const harness of ['codex', 'opencode', 'claude'] as const) {
+        for (const harness of ['codex', 'claude'] as const) {
           const next = defaults[harness], previous = current.defaults[harness]
           if (!next && configure.has(harness)) throw new DomainError('HARNESS_PROFILE_REQUIRED',
             'Choose a complete preset before selecting its default.', 409)

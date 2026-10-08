@@ -70,7 +70,7 @@ describe('scoped MCP credential mechanism evidence', () => {
     delete value.entry!.credentialArrangement
     expect((await inspect(value)).detection).toMatchObject({ state: 'misconfigured', credentialArrangement: { kind: 'unknown' } })
   })
-  it.each(['codex', 'opencode'] as const)('preserves legacy %s environment reference facts', async (harness) => {
+  it.each(['codex'] as const)('preserves legacy %s environment reference facts', async (harness) => {
     const value = evidence()
     value.harness = harness
     delete value.entry!.credentialArrangement

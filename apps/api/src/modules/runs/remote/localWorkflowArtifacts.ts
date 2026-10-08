@@ -61,16 +61,16 @@ export class LocalWorkflowArtifacts {
   async admitContextLocked(sql: GraphTransactionSql, capture: WorkflowNativeCapture,
     proof: WorkflowNativeProofRecord): Promise<void> {
     assertGraphTransaction(sql)
-    if (!['codex', 'opencode'].includes(capture.session.harness) || !capture.lane?.providerId
+    if (capture.session.harness !== 'codex' || !capture.lane?.providerId
       || !['running', 'waiting'].includes(capture.execution.state)
-      || capture.source.type === 'event' && capture.session.harness === 'codex' && capture.source.event.type !== 'turn.started'
+      || capture.source.type === 'event' && capture.source.event.type !== 'turn.started'
       || capture.source.type !== 'event' && capture.source.type !== 'history'
       || capture.source.type === 'history' && capture.source.history.terminalTurn) return
     const current = await this.authority.execution(sql, capture.execution.id)
     const key = workflowNativeFileConversationKey(this.authority.mainId, current.execution.id, current.attempt.attemptId)
     const conversationId = `workflow-native-files-${digest(key)}`
     const harness = current.configuration.harness
-    if (harness.harness === 'claude' || !same(proof.execution, repeatExecutionIdentity(capture.execution))
+    if (harness.harness !== 'codex' || !same(proof.execution, repeatExecutionIdentity(capture.execution))
       || proof.inputDigest !== repeatDigest(capture.execution.input) || !same(proof.original, capture.source)
       || !same(proof.session, capture.session) || proof.lane?.providerId !== capture.lane.providerId) return conflict()
     const context: FileToolContext = { ownerPrincipalId: current.principal.id,
@@ -78,9 +78,8 @@ export class LocalWorkflowArtifacts {
         workflowId: current.run.workflowId, runId: current.run.id, executionId: current.execution.id,
         agentId: current.execution.agentId } }, nativeSessionId: capture.session.nativeSessionId,
       turnId: capture.lane.providerId,
-      allowMutation: harness.harness === 'codex' ? harness.sandbox === 'workspace-write' : harness.nativeAgent === 'build',
-      allowedTools: harness.harness === 'codex' ? codexChatFileTools(harness)
-        : ['files.list', 'files.read', 'files.write_working_copy', 'files.publish_result'] }
+      allowMutation: harness.sandbox === 'workspace-write',
+      allowedTools: codexChatFileTools(harness) }
     const record = { origin: { kind: 'run_execution', runId: current.run.id, executionId: current.execution.id,
       sourceNativeSessionId: capture.session.nativeSessionId }, workingDirectory: current.execution.workingDirectory,
       runtimeDirectory: current.execution.runtimeDirectory, localWorkflowFileContext: { context, attempt: current.attempt, proof } }

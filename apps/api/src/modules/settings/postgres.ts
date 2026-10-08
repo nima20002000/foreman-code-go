@@ -1,11 +1,13 @@
 import {
   DEFAULT_HARNESS_DEFAULTS,
   HarnessDefaultsSchema,
+  RetiredOpenCodeConfigurationSchema,
   withAdvancedDefaults,
   type AgentHarness,
   type HarnessDefaults,
 } from '@foreman-code/contracts'
 import type pg from 'pg'
+import type { ConfiguredHarnessInstance } from '../harnesses/instanceRegistry.js'
 import { UnavailableHarnessDefaultsSchema } from '@foreman-code/contracts/management'
 import { inTransaction } from '../../infrastructure/transaction.js'
 
@@ -20,12 +22,13 @@ export function normalizeHarnessDefaults(record: unknown): HarnessDefaults {
   const candidate = structuredClone(record === undefined ? DEFAULT_HARNESS_DEFAULTS : record) as HarnessDefaults
   // Startup's native initializer persists actual discovered values. Until it
   // completes, missing legacy fields can still be inventoried without executing.
-  for (const harness of ['codex', 'opencode'] as const) {
+  for (const harness of ['codex'] as const) {
     if (!candidate[harness]) candidate[harness] = structuredClone(DEFAULT_HARNESS_DEFAULTS[harness]) as never
     else if (typeof candidate[harness].model !== 'string' || !candidate[harness].model.trim()) candidate[harness].model = DEFAULT_HARNESS_DEFAULTS[harness].model
   }
-  const defaults = HarnessDefaultsSchema.parse(candidate)
-  return { codex: withAdvancedDefaults(defaults.codex), opencode: withAdvancedDefaults(defaults.opencode),
+  const defaults = HarnessDefaultsSchema.parse({ codex: candidate.codex,
+    ...(candidate.claude ? { claude: candidate.claude } : {}) })
+  return { codex: withAdvancedDefaults(defaults.codex),
     ...(defaults.claude ? { claude: withAdvancedDefaults(defaults.claude) } : {}) }
 }
 
@@ -41,19 +44,34 @@ export class PostgresSettingsRepository {
   }
 
   async getManagedHarnessDefaults(client?: pg.ClientBase): Promise<{
-    defaults: HarnessDefaults; revision: number; unavailable?: AgentHarness[]
+    defaults: HarnessDefaults; revision: number; unavailable?: AgentHarness[]; retiredDefaults?: ConfiguredHarnessInstance[]
   }> {
-    const result = await (client ?? this.pool).query<{ record: unknown; revision: string; unavailable: unknown }>(
+    const result = await (client ?? this.pool).query<{ record: unknown; revision: string; unavailable: unknown;
+      retired: { opencode?: unknown } | null; retired_revision: string | null }>(
       `select record, revision,
-        (select record from application_settings where key = $2) as unavailable
+        (select record from application_settings where key = $2) as unavailable,
+        (select record from application_settings where key = 'retired-harness-defaults') as retired,
+        (select revision from application_settings where key = 'retired-harness-defaults') as retired_revision
        from application_settings where key = $1`,
       [SETTINGS_KEY, UNAVAILABLE_HARNESS_DEFAULTS_KEY],
     )
-    const unavailable = UnavailableHarnessDefaultsSchema.parse(result.rows[0]?.unavailable ?? [])
+    const saved = result.rows[0];
+    const unavailable = UnavailableHarnessDefaultsSchema.parse(
+      ((saved?.unavailable as string[] | undefined) ?? []).filter(harness => harness !== 'opencode'),
+    );
+    const retiredDefaults: ConfiguredHarnessInstance[] = [];
+    if (saved?.retired?.opencode) {
+      retiredDefaults.push({
+        instanceId: 'local-default:opencode', instanceRevision: String(saved.retired_revision),
+        driverId: 'opencode', enabled: false,
+        configuration: RetiredOpenCodeConfigurationSchema.parse(saved.retired.opencode),
+      });
+    }
     return {
       defaults: normalizeHarnessDefaults(result.rows[0]?.record),
       revision: Number(result.rows[0]?.revision ?? 0),
       ...(unavailable.length ? { unavailable } : {}),
+      ...(retiredDefaults.length ? { retiredDefaults } : {}),
     }
   }
 

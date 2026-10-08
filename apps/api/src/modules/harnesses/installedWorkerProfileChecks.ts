@@ -10,8 +10,6 @@ import { runCommand } from './process.js'
 import { createHostHarnessProfileCheckExtension } from './instanceSettings/profileChannel.js'
 import { inspectInstalledCodex } from './installedCodexInspection.js'
 import { createInstalledNativeQualifier } from './installedNativeQualification.js'
-import { inspectInstalledOpenCode } from './installedOpenCodeInspection.js'
-import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './opencodeServer.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
 import { createInstalledClaudeQualifier } from './installedClaudeQualification.js'
 
@@ -36,14 +34,11 @@ export async function createInstalledWorkerProfileChecks(input: {
       }
       const harness = value.configuration.harness
       if (harness === 'claude') return claude.qualify(value, request)
-      if (harness !== 'codex' && harness !== 'opencode') throw new DomainError(
+      if (harness !== 'codex') throw new DomainError(
         'HARNESS_DRIVER_UNAVAILABLE', 'The installed native profile checker does not support this driver.', 409)
-      if (harness === 'opencode' && !configuration.opencode) throw new DomainError(
-        'HARNESS_DRIVER_UNAVAILABLE', 'Select the installed OpenCode binary before checking its profile.', 409)
-      const inspect = harness === 'codex' ? inspectInstalledCodex : inspectInstalledOpenCode
       const qualifier = createInstalledNativeQualifier({ harness,
         binding, trustedCurrentBinding: input.current,
-        inspect: (current, signal) => inspect({ binding: current,
+        inspect: (current, signal) => inspectInstalledCodex({ binding: current,
           configuration: input.configuration, environment: process.env, cwd: input.stateDirectory, signal }),
         registry: input.registry, workingRoot: input.stateDirectory, environment: process.env,
         checkConfiguration: async (profile, directory, signal, recovery, assertInstallation) => {
@@ -53,22 +48,9 @@ export async function createInstalledWorkerProfileChecks(input: {
             await assertInstallation(effectSignal)
             return result
           }
-          const settings = profile.configuration
-          if (settings.harness === 'opencode') {
-            const selected = configuration.opencode
-            if (!selected) throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'The installed OpenCode selection is missing.', 409)
-            const server = new ManagedOpenCodeServer({ binary: selected.binary, workingDirectory: directory,
-              ownerAgentId: `profile-check:${request.checkId}`, appMcpAccess: 'none', processRecovery: recovery,
-              ...(settings.advanced ? { advancedConfiguration: settings.advanced } : {}),
-              assertInstallation: effectSignal => assertInstallation(effectSignal) })
-            const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: `profile-check:${request.checkId}`,
-              appMcpAccess: 'none' })
-            try { return await guarded(() => manager.qualifyConfiguration(settings, directory, signal)) }
-            finally { await manager.dispose() }
-          }
           if (profile.configuration.harness !== 'codex') throw new DomainError('HARNESS_DRIVER_UNAVAILABLE',
             'The selected driver has no installed profile checker.', 409)
-          const codex = installedHarnessSelection(configuration, 'codex')
+          const codex = installedHarnessSelection(configuration)
           if (!codex) throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'The installed Codex selection is missing.', 409)
           const manager = new CodexAppServerSessionManager(codex.binary, codex.expectedVersion,
             undefined, recovery, 'none', undefined, {

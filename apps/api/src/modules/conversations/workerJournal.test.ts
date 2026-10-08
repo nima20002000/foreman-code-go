@@ -41,44 +41,6 @@ it('keeps a persisted Agent session busy for runtime refresh until its own closu
   await expect(reopened.assertRuntimeQuiescent()).resolves.toBeUndefined()
 })
 
-it('requires a reserved Operator access change before preparing its next file directory', async () => {
-  const f = workerConversationFixture('operator', 'opencode')
-  const j = await journal()
-  const previous = { ...f.binding, appMcpAccess: 'scoped' as const }
-  await j.chats.receive(previous, f.connection)
-  await j.chats.reserveCreation(previous, 'create', commandInputHash('create'))
-  await j.chats.bindSession(previous, f.session, f.nativeOwner)
-  await expect(j.chats.reserveFileDirectory(f.binding)).rejects.toThrow('reserved access change')
-  await j.chats.reserveApplicationAccess(previous, f.binding, 'disable-management-mcp', f.session)
-  const directory = await j.chats.reserveFileDirectory(f.binding)
-  const filesystem = { device: '1', inode: '2', mountId: '3' }
-  await j.chats.fileDirectoryCreated(f.binding, directory.id, filesystem)
-  await j.store.close()
-  const reopened = await RemoteOperationJournal.open(j.path)
-  closing.push(() => reopened.close())
-  const record = await reopened.conversations.inspectBinding(f.binding)
-  expect(record?.binding).toEqual(previous)
-  expect(record?.applicationAccessChange?.state).toBe('reserved')
-  expect(record?.openCodeFileDirectory).toEqual({ id: directory.id, filesystem })
-  expect(record?.nativeOwner).toEqual(f.nativeOwner)
-  expect(record?.session).toEqual(f.session)
-  const changedProfile = { ...f.binding, profile: { ...f.binding.profile, instanceRevision: 'changed-profile' } }
-  await expect(reopened.conversations.reserveFileDirectory(changedProfile)).rejects.toThrow('original owner')
-})
-
-it('persists the conversation file directory and refuses an inode replacement', async () => {
-  const f = workerConversationFixture('agent', 'opencode')
-  const j = await journal()
-  await j.chats.receive(f.binding, f.connection)
-  const directory = await j.chats.reserveFileDirectory(f.binding)
-  const filesystem = { device: '1', inode: '2', mountId: '3' }
-  await j.chats.fileDirectoryCreated(f.binding, directory.id, filesystem)
-  await expect(j.chats.fileDirectoryCreated(f.binding, directory.id, { ...filesystem, inode: '4' }))
-    .rejects.toThrow('directory changed')
-  expect((await j.chats.fileRecords())[0]?.openCodeFileDirectory).toEqual({ id: directory.id, filesystem })
-  expect(await j.chats.reserveFileDirectory(f.binding)).toEqual({ id: directory.id, filesystem })
-})
-
 it('retains Claude callback consumption across reopen and rejects changed input or another native session', async () => {
   const f = workerConversationFixture('agent', 'claude')
   const j = await journal()

@@ -1,3 +1,4 @@
+import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import {
   AcceptedWorkflowApprovalConfigurationSchema,
   CodexSessionCompatibilitySchema,
@@ -26,6 +27,8 @@ export function assertNativeWorkflowConfiguration(
   approval?: WorkflowApprovalConfiguration,
   designatedOrchestrator = false,
 ): void {
+  if (configuration.harness === 'opencode') throw new DomainError('HARNESS_RETIRED',
+    RETIRED_OPENCODE_MESSAGE, 409)
   assertClaudeFullAccess(configuration)
   if (approval && !AcceptedWorkflowApprovalConfigurationSchema.safeParse(approval).success) {
     throw new DomainError('WORKFLOW_APPROVAL_INCOMPLETE', 'Reopen and save the workflow with complete approval settings before starting it.', 409)
@@ -43,8 +46,6 @@ export function assertNativeWorkflowConfiguration(
   }
   if (configuration.harness === 'codex'
     && (configuration.advanced?.approvalPolicy === 'never' || configuration.advanced?.approvalsReviewer === 'auto_review')) return
-  if (configuration.harness === 'opencode'
-    && (configuration.autoApprove || configuration.advanced?.permissionHandling === 'native_auto')) return
   throw new DomainError(
     'NATIVE_APPROVAL_CONFIGURATION_REQUIRED',
     'This workflow has no accepted approval handler and its Agent may ask for permission. Reopen and save the workflow with a routed handler, or explicitly configure native approval handling on the Agent. No approval authority or automatic approval was inferred.',

@@ -1,7 +1,6 @@
 import { ExecutionResultSchema, type NativeHarnessEvent, type NativeSessionReference } from '@foreman-code/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
-import { nativeMessageId } from '../harnesses/opencodeProtocol.js'
 
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -24,7 +23,6 @@ export interface TurnEvidence {
  */
 export class ReviewEvidenceTracker {
   private providerId: string | undefined
-  private readonly messageId: string | undefined
   private acknowledged: boolean
   private terminal = false
   private nativeIdle = false
@@ -43,8 +41,6 @@ export class ReviewEvidenceTracker {
     this.acknowledged = Boolean(knownProviderId)
     // Claude message identity is supplied by its admitted SDK manager and exact
     // native receipt. This tracker does not grant release/profile qualification.
-    this.messageId = session.harness === 'opencode' ? nativeMessageId(correlationId) : undefined
-    if (knownProviderId && this.messageId && knownProviderId !== this.messageId) this.identityConflict = true
   }
 
   get processedEvents(): number { return this.count }
@@ -52,8 +48,7 @@ export class ReviewEvidenceTracker {
 
   /** The provider's submission receipt is bound by the startTurn call, not by an idle event. */
   acknowledge(providerId: string): void {
-    if (!providerId || (this.providerId && this.providerId !== providerId)
-      || (this.messageId && this.messageId !== providerId)) {
+    if (!providerId || (this.providerId && this.providerId !== providerId)) {
       this.identityConflict = true
       return
     }
@@ -144,23 +139,6 @@ export class ReviewEvidenceTracker {
         || ['completed', 'failed', 'interrupted'].includes(String(last.status)))
         || (this.terminal && last.id === this.providerId))
     }
-    if (event.type === 'message.updated' && this.messageId) {
-      const info = object(payload.info)
-      if (info.sessionID !== this.session.nativeSessionId) return
-      if ((info.role === 'user' && info.id === this.messageId)
-        || (info.role === 'assistant' && info.parentID === this.messageId)) {
-        this.acknowledge(this.messageId)
-        this.busy(this.messageId)
-        if (info.role === 'assistant' && typeof object(info.time).completed === 'number'
-          && (['stop', 'length', 'content-filter'].includes(String(info.finish)) || info.error)) {
-          this.terminal = true
-          this.idle()
-        }
-      }
-    }
-    // These observations can release a stale lane, but cannot complete a review.
-    if (event.type === 'session.idle' || (event.type === 'session.status' && object(payload.status).type === 'idle')) this.idle()
-    if (event.type === 'session.status' && ['busy', 'retry'].includes(String(object(payload.status).type))) this.busy()
   }
 
   observeHistory(history: NativeHistory): void {
@@ -204,11 +182,4 @@ export function reviewTurnEvidence(
   const tracker = new ReviewEvidenceTracker(session, correlationId, knownProviderId)
   tracker.observeHistory(history)
   return tracker.snapshot()
-}
-
-export function definitelyRejected(error: unknown): boolean {
-  const failure = object(error)
-  const code = object(object(failure.result).error).code ?? failure.code
-  // A definite SSE/history failure says nothing about an earlier prompt mutation.
-  return failure.certainty === 'definite' && code === 'OPENCODE_NATIVE_DELIVERY_REJECTED'
 }

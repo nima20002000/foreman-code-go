@@ -7,8 +7,8 @@ import type { ClaudeNativeConfigurationPort } from './claudeSdk/nativeConfigurat
 /** Model-free native qualification is separate from passive installation discovery. */
 export class NativeHarnessConfigurationQualifier implements HarnessConfigurationQualifier {
   private readonly factories: NativeHarnessFactories
-  constructor(codexBinary: string, openCodeBinary: string, factories?: NativeHarnessFactories, private readonly claude?: ClaudeNativeConfigurationPort) {
-    this.factories = factories ?? new NativeHarnessFactories({ codexBinary, openCodeBinary })
+  constructor(codexBinary: string, factories?: NativeHarnessFactories, private readonly claude?: ClaudeNativeConfigurationPort) {
+    this.factories = factories ?? new NativeHarnessFactories({ codexBinary })
   }
 
   qualify(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal): Promise<HarnessQualification> {

@@ -6,10 +6,10 @@ import { DomainError } from '../../errors.js'
 
 export function isNativeReadUnavailable(error: unknown, session: NativeSessionReference,
   owner: { binding: SessionControlBinding; manager: NativeHarnessSessionManager }) {
+  if (session.harness === 'opencode') return true
   const unavailableCode = {
     codex: 'CODEX_SESSION_UNAVAILABLE',
     claude: 'CLAUDE_SESSION_UNAVAILABLE',
-    opencode: 'OPENCODE_SESSION_CONTEXT_MISSING',
   }[session.harness]
   if (error instanceof HarnessExecutionError) return error.result.error?.code === unavailableCode
   if (error instanceof DomainError) {

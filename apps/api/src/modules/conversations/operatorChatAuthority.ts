@@ -1,5 +1,5 @@
+import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, isSupportedAppMcpTokenName, registerAppRoute } from '../harnesses/appMcpLauncher.js'
-import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../access/workerCredentials.js'
 import type pg from 'pg'
 import type { OperatorChatSetup, OperatorConfigurationVersion } from '@foreman-code/contracts'
@@ -28,11 +28,12 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
 
   current(principalId: string) { return this.access.currentOperator(principalId) }
   assertConfiguration(configuration: OperatorConfigurationVersion) {
+    if (configuration.harness.harness === 'opencode') {
+      throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+    }
     if (configuration.harness.harness === 'claude') {
       if (!configuration.harnessProfileSelection || !this.deliverClaudeCredential) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE',
         'Claude Operator chat requires an explicit host profile and composed native admission.', 409)
-      // Current native proof is read asynchronously by the exact role owner;
-      // OpenCode rollout flags cannot qualify or disable a Claude profile.
       return
     }
     this.rollout.assertChat(configuration)
@@ -56,12 +57,6 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
 
   async setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup> {
     const result = { harness: manager.harness, endpoint: this.endpoint, checkedAt: new Date().toISOString() }
-    if (configuration?.harness.harness === 'opencode'
-      && APP_MCP_SERVER_NAMES.some((name) => configuration.harness.harness === 'opencode'
-        && configuration.harness.advanced?.mcp.serverEnabled[name] === false)) {
-      return { ...result, status: 'setup_required',
-        reason: 'The selected Operator settings disable Foreman Code MCP. Enable that connection in Operator advanced settings before sending a new message.' }
-    }
     if (!this.inspectorFor) this.invalidSetup()
     const context = manager.mcpInspectionContext ? await manager.mcpInspectionContext(signal)
       : { runnerId: 'runner-local', workingDirectory: this.directory }

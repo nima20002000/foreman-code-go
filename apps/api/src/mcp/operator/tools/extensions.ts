@@ -28,15 +28,6 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     context.services.harnesses.invalidateChecks()
     return extension.native.refreshOptions(input.harness, 'catalog')
   }))
-  if (operatorToolAvailable(context, 'opencode_models_cache_update')) server.registerTool('opencode_models_cache_update', {
-    description: "Update the API host's shared OpenCode models.dev cache through the qualified native CLI, then reread connected provider models. Requires harnesses:read and harnesses:update.", inputSchema: contracts.OpenCodeModelsRefreshInputSchema, outputSchema: contracts.HarnessOptionsResultSchema,
-    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true},
-  }, async () => invokeOperatorTool(context, 'opencode_models_cache_update', async () => {
-    requireAuthorization(context.principal, 'harnesses:read')
-    requireAuthorization(context.principal, 'harnesses:update')
-    context.services.harnesses.invalidateChecks()
-    return extension.native.refreshOptions('opencode', 'upstream')
-  }))
   if (operatorToolAvailable(context, 'harness_mcp_detection_get')) server.registerTool('harness_mcp_detection_get', {
     description: "Inspect MCP configuration in the validated saved workspace directory; requires location-read permission.", inputSchema: contracts.HarnessMcpDetectionInputSchema, outputSchema: contracts.HarnessMcpDetectionResultSchema,
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},

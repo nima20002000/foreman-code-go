@@ -7,7 +7,7 @@ import { messageAttachmentIdentity } from '@foreman-code/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
-import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type Message, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
+import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type RecordedAgentHarness, type Message, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
   type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
@@ -35,7 +35,7 @@ export interface AgentConversationRow {
   agent_configuration_version_id: string
   origin_run_id: string | null
   origin_execution_id: string | null
-  harness: AgentHarness
+  harness: RecordedAgentHarness
   provider_version: string | null
   native_session_id: string | null
   active_request_id: string | null
@@ -193,6 +193,10 @@ export class PostgresAgentChatRepository {
       await client.query('begin')
       const row = (await client.query<AgentConversationRow>(`select * from operator_conversations
         where id=$1 and kind='agent' and deleted_at is null for update`, [id])).rows[0]
+      if (row?.harness === 'opencode') {
+        await client.query('commit')
+        return row
+      }
       if (row && !row.active_request_id) {
         const unresolved = (await client.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
           where conversation_id=$1 and intent <> 'steer' and delivery in ('submitting','accepted','unknown')
@@ -605,7 +609,7 @@ export class PostgresAgentChatRepository {
       }
       const delivery = result.outcome === 'succeeded' ? 'completed' : result.outcome
       // Cold Codex history has a terminal answer/identity without an item.completed event.
-      // Persist it in the settlement transaction, deduplicating native messages and OpenCode parts.
+      // Persist it in the settlement transaction, deduplicating native messages and blocks.
       if (result.outcome === 'succeeded' && nativeMessageId) {
         const output = result.output
         const content = typeof output === 'string' ? output : output && typeof output === 'object' && !Array.isArray(output)

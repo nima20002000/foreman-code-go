@@ -16,8 +16,6 @@ import type { AgentPlacementProducer } from '../../placement/agentProducer.js'
 import { readReconciledDispatchIntent } from './persistence.js'
 import { repeatDigest, repeatExecutionIdentity } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
-import { openCodeWorkflowOutputAllowed } from './localWorkflowOutputPolicy.js'
-import type { WorkerNativeOutputOperation } from '@foreman-code/contracts/worker-native-output'
 
 const denied = (reason?: string): never => {
   throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original local artifact execution is unavailable.', 403,
@@ -79,7 +77,7 @@ export class LocalWorkflowArtifactAuthority {
   }
 
   async context(executionId: string, options: {
-    query?: FileQuery; mutation?: boolean; operation?: WorkerNativeOutputOperation
+    query?: FileQuery; mutation?: boolean
   } = {}): Promise<{
     attempt: ArtifactAttempt; caller: AuthorizedFileCaller
   }> {
@@ -119,26 +117,23 @@ export class LocalWorkflowArtifactAuthority {
     }
     requireAuthorization(current.principal, 'agent_chat:read', { workspaceId: current.run.workspaceId,
       workflowId: current.run.workflowId, runId: current.run.id })
-    if (options.mutation) await this.assertWritable(query, current, context, options.operation ?? 'publish')
+    if (options.mutation) await this.assertWritable(query, current, context)
     return { attempt: current.attempt, caller: { principal: current.principal, context, binding: bindingIdentity(context) } }
   }
 
-  async assertDeclarations(executionId: string, query: FileQuery = this.pool,
-    operation?: WorkerNativeOutputOperation): Promise<void> {
+  async assertDeclarations(executionId: string, query: FileQuery = this.pool): Promise<void> {
     const current = await this.execution(query, executionId)
     const harness = current.configuration.harness
-    if (harness.harness === 'codex') {
-      if (harness.sandbox !== 'workspace-write' || !codexChatFileTools(harness).includes('files.write_working_copy')
-        || !codexChatFileTools(harness).includes('files.publish_result')) return denied()
-    } else if (harness.harness !== 'opencode' || harness.nativeAgent !== 'build'
-      || operation && !openCodeWorkflowOutputAllowed(harness, operation)) return denied()
+    if (harness.harness !== 'codex' || harness.sandbox !== 'workspace-write'
+      || !codexChatFileTools(harness).includes('files.write_working_copy')
+      || !codexChatFileTools(harness).includes('files.publish_result')) return denied()
     requireAuthorization(current.principal, 'agent_chat:write', { workspaceId: current.run.workspaceId,
       workflowId: current.run.workflowId, runId: current.run.id })
   }
 
   private async assertWritable(query: FileQuery, current: Awaited<ReturnType<LocalWorkflowArtifactAuthority['execution']>>,
-    context: FileToolContext, operation: WorkerNativeOutputOperation): Promise<void> {
-    await this.assertDeclarations(current.execution.id, query, operation)
+    context: FileToolContext): Promise<void> {
+    await this.assertDeclarations(current.execution.id, query)
     if (!context.allowMutation || !context.allowedTools.includes('files.publish_result')
       || !['running', 'waiting'].includes(current.execution.state)) {
       return denied('The saved artifact context cannot write in this execution state.')

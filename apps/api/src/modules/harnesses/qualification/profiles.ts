@@ -9,30 +9,27 @@ export interface BaselineRelease { harness: CompatibilityHarness; version: strin
 export const BASELINE_RELEASES: readonly BaselineRelease[] = [
   { harness: 'codex', version: '0.154.0', profile: 'codex-0.154' },
   { harness: 'codex', version: '0.156.1', profile: 'codex-0.156' },
-  { harness: 'opencode', version: '1.18.31', profile: 'opencode-1.18.31' },
 ]
 
 /** The profile a newly qualified version is tested and run against: the newest baseline. */
 export const QUALIFICATION_TARGET_PROFILE: Record<CompatibilityHarness, HarnessProfileId> = {
   codex: 'codex-0.156',
-  opencode: 'opencode-1.18.31',
 }
 
 /** `codex-cli 0.158.0` and `0.158.0` both normalize to `0.158.0`. */
-export function normalizeHarnessVersion(harness: CompatibilityHarness, value: string): string {
-  const trimmed = value.trim()
-  return harness === 'codex' ? trimmed.replace(/^codex-cli\s+/, '') : trimmed
+export function normalizeHarnessVersion(value: string): string {
+  return value.trim().replace(/^codex-cli\s+/, '')
 }
 
 export function baselineProfile(harness: CompatibilityHarness, version: string): HarnessProfileId | null {
-  const normalized = normalizeHarnessVersion(harness, version)
+  const normalized = normalizeHarnessVersion(version)
   return BASELINE_RELEASES.find((release) => release.harness === harness && release.version === normalized)?.profile ?? null
 }
 
 /** Qualified (non-baseline) versions, loaded from PostgreSQL at startup and after each passing run. */
 const qualified = new Map<string, HarnessProfileId>()
 const checkingProfile = new AsyncLocalStorage<{ harness: CompatibilityHarness; version: string; profile: HarnessProfileId }>()
-const key = (harness: CompatibilityHarness, version: string) => `${harness}\u0000${normalizeHarnessVersion(harness, version)}`
+const key = (harness: CompatibilityHarness, version: string) => `${harness}\u0000${normalizeHarnessVersion(version)}`
 
 export function rememberQualifiedProfile(harness: CompatibilityHarness, version: string, profile: HarnessProfileId): void {
   qualified.set(key(harness, version), profile)
@@ -56,7 +53,7 @@ export function runWithQualificationProfile<T>(input: {
     throw new Error('The native suite has not qualified this installation for a profile check.')
   }
   return checkingProfile.run({ harness: input.harness,
-    version: normalizeHarnessVersion(input.harness, input.version), profile: input.profile }, work)
+    version: normalizeHarnessVersion(input.version), profile: input.profile }, work)
 }
 
 /**
@@ -67,7 +64,7 @@ export function runWithQualificationProfile<T>(input: {
  */
 export function harnessProfile(harness: CompatibilityHarness, version: string): HarnessProfileId | null {
   const checking = checkingProfile.getStore()
-  const profile = checking?.harness === harness && checking.version === normalizeHarnessVersion(harness, version)
+  const profile = checking?.harness === harness && checking.version === normalizeHarnessVersion(version)
     ? checking.profile : undefined
   return baselineProfile(harness, version) ?? profile ?? qualified.get(key(harness, version)) ?? null
 }

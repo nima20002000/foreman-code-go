@@ -22,7 +22,7 @@ export async function runAsQualificationCandidate<T>(harness: CompatibilityHarne
 }
 
 export async function requireHarnessQualification(harness: CompatibilityHarness, version: string, binary: string): Promise<void> {
-  const normalized = normalizeHarnessVersion(harness, version)
+  const normalized = normalizeHarnessVersion(version)
   const scoped = readOnly.getStore()
   if (scoped) {
     const { sha256 } = await scoped.inspectBinary(binary)

@@ -2,7 +2,7 @@ import { ActivityChangeEnvelopeV1Schema, type ActivityChangeEnvelopeV1 } from '@
 import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 
 /** Shared Operator/Agent/execution adapter. Transport arrival counters never become native provenance. */
-export function activityTextEnvelope(operation: ActivityTextOperation, harness: 'codex' | 'opencode' | 'claude'): ActivityChangeEnvelopeV1 {
+export function activityTextEnvelope(operation: ActivityTextOperation, harness: 'codex' | 'claude'): ActivityChangeEnvelopeV1 {
   const { identity, source } = operation
   if (identity.scope.kind === 'workflow_run') throw new Error('An aggregate Run cannot own native text.')
   const requestId = identity.requestId ?? ('requestId' in identity.scope ? identity.scope.requestId : undefined)

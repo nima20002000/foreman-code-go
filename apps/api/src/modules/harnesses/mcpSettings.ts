@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
+import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import { HarnessMcpManagedInputSchema, HarnessMcpPlanInputSchema, HarnessMcpPlanSchema, HarnessMcpReconcileInputSchema,
   type HarnessMcpManagedInput, type HarnessMcpManagedPreset, type HarnessMcpPlan, type HarnessMcpPlanInput,
   type HarnessMcpReconcileInput, type ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -12,13 +13,19 @@ import { NativeMcpNotSubmittedError } from './nativeMcpDelivery.js'
 import { qualificationError } from './qualificationErrors.js'
 import { assertNoUnresolvedPluginWrites, lockNativeConfigurationFile } from './nativeSettingsWrites.js'
 
-type Harness = 'codex' | 'opencode'
-type Row = { id: string; harness: Harness; revision: string; change: unknown; managed_preset: HarnessMcpManagedPreset | null;
+type Harness = 'codex'
+type RecordedMcpHarness = Harness | 'opencode'
+type Row = { id: string; harness: RecordedMcpHarness; revision: string; change: unknown; managed_preset: HarnessMcpManagedPreset | null;
   requested_by: string; status: string; created_at: Date; expires_at: Date; error: string | null;
   native_user_after_hash: string | null; native_file: string | null }
 const projection = (row: Row): HarnessMcpPlan => HarnessMcpPlanSchema.parse({ id: row.id, harness: row.harness, revision: row.revision,
   change: row.change, managedPreset: row.managed_preset ?? null, requestedBy: row.requested_by, status: row.status,
-  createdAt: row.created_at.toISOString(), expiresAt: row.expires_at.toISOString(), error: row.error })
+  createdAt: row.created_at.toISOString(), expiresAt: row.expires_at.toISOString(), error: row.error,
+  ...(row.harness === 'opencode' ? { retirementMessage: RETIRED_OPENCODE_MESSAGE } : {}) })
+
+function assertSupportedHarness(harness: RecordedMcpHarness): asserts harness is Harness {
+  if (harness === 'opencode') throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+}
 
 /** Preserve the byte-for-byte legacy command payload shape for generic plans. */
 export function mcpPlanPayload(input: HarnessMcpPlanInput, managedPreset?: HarnessMcpManagedPreset) {
@@ -62,7 +69,7 @@ export class HarnessMcpSettingsService {
   async recover(): Promise<void> {
     await this.closeProcesses()
     // Startup alone proves neither delivery nor non-delivery. Settlement is an explicit owner action.
-    await this.pool.query("update harness_mcp_change_plans set status='uncertain', error='Server restarted during this change. Use Reconcile in MCP settings; this write will not be repeated.' where status='submitting'")
+    await this.pool.query("update harness_mcp_change_plans set status='uncertain', error='Server restarted during this change. Use Reconcile in MCP settings; this write will not be repeated.' where status='submitting' and harness='codex'")
   }
   async list(principal: ManagementPrincipal, harness: Harness) {
     requireAuthorization(principal, 'harnesses:read')
@@ -133,6 +140,7 @@ export class HarnessMcpSettingsService {
   }
   async applyManaged(principal: ManagementPrincipal, input: HarnessMcpManagedInput): Promise<HarnessMcpPlan> {
     const plan = await this.planManaged(principal, 'http', input)
+    assertSupportedHarness(plan.value.harness)
     try { return await this.decide(principal, plan.value.id, true) }
     catch (error) {
       // Planning committed. A busy/expired/pre-apply 4xx is not rejection of the
@@ -177,6 +185,7 @@ export class HarnessMcpSettingsService {
         const row = await client.query<Row>('select * from harness_mcp_change_plans where id=$1', [id])
         if (!row.rows[0]) throw new DomainError('MCP_PLAN_NOT_FOUND', 'This MCP change is unavailable.', 404)
         selected = projection(row.rows[0])
+        assertSupportedHarness(selected.harness)
         if (selected.status !== 'pending') return selected // Never replay an uncertain or settled write.
         if (approve && Date.parse(selected.expiresAt) <= Date.now()) throw new DomainError('MCP_PLAN_EXPIRED', 'This review expired. Reject it and prepare a new change.', 409)
         if (approve) {
@@ -252,6 +261,7 @@ export class HarnessMcpSettingsService {
     requireAuthorization(principal, 'harnesses:read')
     const input = HarnessMcpReconcileInputSchema.parse(raw)
     const plan = await this.get(principal, input.planId)
+    assertSupportedHarness(plan.harness)
     const result = await this.commands.execute({ principal, source: 'http', operation: 'harness.mcp.reconcile',
       commandId: input.commandId, targetKey: `harness-mcp:${plan.harness}`, payload: input,
       perform: (client) => this.work(async (signal) => {
@@ -262,6 +272,7 @@ export class HarnessMcpSettingsService {
         const rows = await client.query<Row>('select * from harness_mcp_change_plans where id=$1 for update', [input.planId])
         const row = rows.rows[0]
         if (!row) throw new DomainError('MCP_PLAN_NOT_FOUND', 'This MCP change is unavailable.', 404)
+        assertSupportedHarness(row.harness)
         if (!['submitting', 'uncertain'].includes(row.status)) return projection(row)
         // Do not release the blocker while an owned native configuration process
         // could still complete the old write. Unknown cleanup remains a hard error.

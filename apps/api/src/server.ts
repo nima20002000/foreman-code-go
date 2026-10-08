@@ -14,7 +14,6 @@ import { buildProductionApp } from './production.js'
 import { registerBuiltWeb } from './builtWeb.js'
 import { readDeviceListenerConfig } from './modules/devices/productionConfig.js'
 import { codexQualificationSuite } from './modules/harnesses/qualification/suites/codex.js'
-import { opencodeQualificationSuite } from './modules/harnesses/qualification/suites/opencode.js'
 import { join } from 'node:path'
 import { readMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 
@@ -49,7 +48,7 @@ async function main() {
   )
   const { app, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage, rsync } = buildProductionApp(config, database, checkpoints,
     componentLogger('http'), undefined, undefined,
-    { codex: codexQualificationSuite, opencode: opencodeQualificationSuite },
+    { codex: codexQualificationSuite },
     { mode: 'native', rsyncInstallation, ...(deviceListener ? { deviceListener } : {}) })
   let reconciliationTimer: NodeJS.Timeout | undefined
   const engineLog = componentLogger('engine')

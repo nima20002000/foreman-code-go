@@ -15,7 +15,7 @@ export class HarnessQualificationRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   async list(): Promise<HarnessQualification[]> {
-    const result = await this.pool.query('select * from harness_qualifications order by harness, version, started_at desc')
+    const result = await this.pool.query("select * from harness_qualifications where harness='codex' order by version, started_at desc")
     return result.rows.map((row: Record<string, unknown>) => this.parse(row))
   }
 
@@ -39,6 +39,8 @@ export class HarnessQualificationRepository {
       and record->>'qualified'='true'
       order by created_at desc,check_id desc limit 1`, [binarySha256, suiteRevision, JSON.stringify(target)])
     return result.rows.map(row => HostHarnessProfileEvidenceSchema.parse(row.record).completedNativeQualification!.record)
+      .filter(record => record.harness === 'codex')
+      .map(record => HarnessQualificationSchema.parse(record))
   }
 
   async save(record: HarnessQualification, evidence: Record<string, unknown> = {}, client?: pg.ClientBase): Promise<void> {

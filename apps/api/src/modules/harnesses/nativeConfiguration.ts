@@ -1,3 +1,4 @@
+import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import {
   HarnessConfigurationSchema, HarnessQualificationSchema, type AgentHarness, type HarnessConfiguration,
 } from '@foreman-code/contracts'
@@ -5,9 +6,7 @@ import { HarnessOptionsResultSchema } from '@foreman-code/contracts/management'
 import { QualificationCache } from './qualificationCache.js'
 import { qualificationError } from './qualificationErrors.js'
 import { NativeHarnessFactories } from './runtimeFactory.js'
-import { requireHarnessQualification } from './qualification/gate.js'
 import { harnessSettingSupport } from './operatorOptions.js'
-import { runCommand } from './process.js'
 import { HarnessExecutionError } from './errors.js'
 import { DomainError } from '../errors.js'
 import { claudeSettingSupport, type ClaudeNativeConfigurationPort } from './claudeSdk/nativeConfiguration.js'
@@ -19,12 +18,14 @@ export class NativeConfigurationService {
   invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear() }
   async shutdownChecks(): Promise<void> { await Promise.all([this.catalogCache.close(), this.configurationChecks.close()]) }
   private readonly factories: NativeHarnessFactories
-  constructor(private readonly codexBinary: string, private readonly openCodeBinary: string, private readonly directory: string, factories?: NativeHarnessFactories, private readonly claude?: ClaudeNativeConfigurationPort, private readonly command: typeof runCommand = runCommand) {
-    this.factories = factories ?? new NativeHarnessFactories({ codexBinary, openCodeBinary })
+  constructor(codexBinary: string, private readonly directory: string, factories?: NativeHarnessFactories, private readonly claude?: ClaudeNativeConfigurationPort) {
+    this.factories = factories ?? new NativeHarnessFactories({ codexBinary })
   }
 
   async qualifyConfiguration(input: HarnessConfiguration) {
     const value = HarnessConfigurationSchema.parse(input)
+    if (value.harness === 'opencode') throw new DomainError('HARNESS_RETIRED',
+      RETIRED_OPENCODE_MESSAGE, 409)
     try {
       // The selected Claude host/profile proof must be rechecked on every read.
       if (value.harness === 'claude') return await this.inspectConfiguration(value)
@@ -64,16 +65,7 @@ export class NativeConfigurationService {
       try {
         if (refresh === 'upstream') {
           if (harness === 'claude') throw new DomainError('CLAUDE_MODEL_REFRESH_UNSUPPORTED', 'Claude has no supported upstream model cache refresh operation.', 422)
-          if (harness !== 'opencode') throw new HarnessExecutionError('CODEX_MODEL_REFRESH_UNSUPPORTED', 'Codex has no upstream catalog refresh command.')
-          const signal = AbortSignal.timeout(60_000)
-          const version = await this.command(this.openCodeBinary, ['--version'], this.directory, signal)
-          if (version.exitCode !== 0) {
-            throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'The configured OpenCode CLI could not report its version.')
-          }
-          await requireHarnessQualification('opencode', (version.stdout || version.stderr).trim(), this.openCodeBinary)
-          // Update the shared registry without loading plugins; the fresh /provider read still filters connected providers.
-          const result = await this.command(this.openCodeBinary, ['models', '--refresh', '--pure'], this.directory, signal)
-          if (result.exitCode !== 0) throw new HarnessExecutionError('OPENCODE_MODEL_REFRESH_UNAVAILABLE', 'OpenCode could not refresh its models.dev cache.')
+          throw new HarnessExecutionError('CODEX_MODEL_REFRESH_UNSUPPORTED', 'Codex has no upstream catalog refresh command.')
         }
       } finally { this.invalidateOptions() }
       return await this.options(harness)
@@ -87,25 +79,14 @@ export class NativeConfigurationService {
       return HarnessOptionsResultSchema.parse({ harness, ...options, settings: claudeSettingSupport(),
         restrictions: ['Metadata comes from this API host’s installed SDK and the saved or detected local profile. Execution requires an exact qualified host profile.', 'Metadata discovery does not qualify execution or create a model turn.'], checkedAt: new Date().toISOString() })
     }
-    if (harness === 'codex') {
-      const allocated = this.factories.allocate({ harness: 'codex', role: 'diagnostics',
-        workingDirectory: this.directory, ownerAgentId: 'catalog-inspection', appMcpAccess: 'none' })
-      if (allocated.harness !== 'codex') throw new Error('The Codex driver returned another harness.')
-      const manager = allocated.manager
-      try {
-        const options = await manager.discoverModels(this.directory, signal)
-        return HarnessOptionsResultSchema.parse({ harness, ...options, authenticated: true, nativeAgents: [],
-          settings: harnessSettingSupport(harness), restrictions: ['Global qualification directory; workspace MCP diagnostics are separate.', 'No native session or model turn was created.'], checkedAt: new Date().toISOString() })
-      } finally { await this.factories.disposeAuxiliary(manager) }
-    }
-    const allocated = this.factories.allocate({ harness: 'opencode', role: 'diagnostics',
+    const allocated = this.factories.allocate({ harness: 'codex', role: 'diagnostics',
       workingDirectory: this.directory, ownerAgentId: 'catalog-inspection', appMcpAccess: 'none' })
-    if (allocated.harness !== 'opencode') throw new Error('The OpenCode driver returned another harness.')
+    if (allocated.harness !== 'codex') throw new Error('The Codex driver returned another harness.')
     const manager = allocated.manager
     try {
-      const options = await manager.discoverOptions(this.directory, signal)
-      return HarnessOptionsResultSchema.parse({ harness, ...options, settings: harnessSettingSupport(harness),
-        restrictions: ['Only connected providers are selectable.', 'An empty variant selects the native default.', 'No native session or model turn was created.'], checkedAt: new Date().toISOString() })
+      const options = await manager.discoverModels(this.directory, signal)
+      return HarnessOptionsResultSchema.parse({ harness, ...options, authenticated: true, nativeAgents: [],
+        settings: harnessSettingSupport(), restrictions: ['Global qualification directory; workspace MCP diagnostics are separate.', 'No native session or model turn was created.'], checkedAt: new Date().toISOString() })
     } finally { await this.factories.disposeAuxiliary(manager) }
   }
 }

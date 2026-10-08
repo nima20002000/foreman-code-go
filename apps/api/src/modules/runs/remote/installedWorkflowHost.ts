@@ -3,7 +3,8 @@ import { componentLogger } from '../../diagnostics/logger.js'
 import { open, realpath } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { ExecutionResultSchema, type HarnessExecutionRequest, type NativeSessionReference } from '@foreman-code/contracts'
+import { ExecutionResultSchema, RETIRED_OPENCODE_MESSAGE,
+  type HarnessExecutionRequest, type NativeSessionReference } from '@foreman-code/contracts'
 import { randomUUID } from 'node:crypto'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
@@ -31,12 +32,8 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } f
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../../harnesses/instanceRegistry.js'
 import { HarnessInstallationRegistry } from '../../harnesses/installationRegistry.js'
 import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
-import { OpenCodeNativeSessionManager } from '../../harnesses/opencodeServer.js'
-import { InstalledOpenCodeServer } from '../../harnesses/installedOpenCodeDependencies.js'
-import { opencodeQualificationSuite } from '../../harnesses/qualification/suites/opencode.js'
-import { qualificationRevisionWithIdentity } from '../../harnesses/qualification/identity.js'
-import { inspectInstalledCodex, inspectInstalledHarness } from '../../harnesses/installedCodexInspection.js'
-import { createInstalledCodexQualificationReader, createInstalledHarnessQualificationReader } from '../../harnesses/installedCodexQualification.js'
+import { inspectInstalledCodex } from '../../harnesses/installedCodexInspection.js'
+import { createInstalledCodexQualificationReader } from '../../harnesses/installedCodexQualification.js'
 import { createInstalledCodexDependencies } from '../../harnesses/installedCodexDependencies.js'
 import { normalizeHarnessVersion } from '../../harnesses/qualification/profiles.js'
 import { NativeProcessRegistry, type NativeLaunchObservation, type NativeProcessRecovery } from '../../harnesses/recovery/processRegistry.js'
@@ -90,7 +87,10 @@ export interface InstalledWorkflowNativeOwner {
 /** The manager's exact execution owner supplies this single actual guardian/provider pair. Names, PID absence and another launch are never used. */
 export function captureInstalledWorkflowNativeOwner(registry:NativeProcessRegistry,connection:DeviceConnectionIdentity,
   intent:DispatchIntent,session:NativeSessionReference):InstalledWorkflowNativeOwner {
-  if(!['codex', 'opencode'].includes(session.harness)||intent.mainId!==connection.mainId)unavailable('native_binding_conflict')
+  if (session.harness === 'opencode') {
+    throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+  }
+  if(session.harness !== 'codex'||intent.mainId!==connection.mainId)unavailable('native_binding_conflict')
   const owner=`execution:${intent.executionId}`
   const launches=registry.snapshot().launches.filter(row=>row.owner===owner&&row.lifecycle==='active')
   if(launches.length!==1)unavailable('native_owner_missing_or_ambiguous')
@@ -244,7 +244,6 @@ export interface InstalledWorkflowHostOptions {
   sources:SourceOperationWorkerService
   approvedRoots():Promise<ApprovedRootAllowlist>
   codexSuiteRevision:string
-  openCodeSuiteRevision?:string
   nativeOutputs?(context: InstalledWorkflowNativeOutputContext): InstalledNativeOutputProviders
   signal:AbortSignal
   /** Explicit installation initialization; absence of an established journal is otherwise recovery-required. */
@@ -261,7 +260,7 @@ interface InstalledOperation {
   capture:QualificationCapture
   scope:NativeProcessRecovery
   host?:RemoteExecutionHost
-  manager?:CodexAppServerSessionManager | OpenCodeNativeSessionManager
+  manager?:CodexAppServerSessionManager
   launchDisabled?:true
   native?:InstalledWorkflowNativeOwner
   session?:NativeSessionReference
@@ -409,17 +408,15 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     } else {
       if(operations.size>=1000)unavailable('operation_retention_full')
       const harness = placement.payload.kind === 'agent' ? placement.payload.driverId : undefined
-      if (harness !== 'codex' && harness !== 'opencode') unavailable('installed_harness_selection_missing')
-      const suiteRevision = harness === 'codex' ? input.codexSuiteRevision
-        : input.openCodeSuiteRevision ?? qualificationRevisionWithIdentity(opencodeQualificationSuite.revision)
+      if (harness !== 'codex') unavailable('installed_harness_selection_missing')
+      const suiteRevision = input.codexSuiteRevision
       const readerInput: Parameters<typeof createInstalledCodexQualificationReader>[0] = {intent,placement,signal,
         trustedCurrentBinding:()=>input.currentBinding()??null,
         trustedCurrentIntent: () => operations.get(intent.executionId)?.intent ?? intent,
         inspect: (binding, effectSignal) => {
           const inspectionInput = { binding, configuration: input.configuration,
             environment: process.env, cwd: input.stateDirectory, signal: effectSignal }
-          return harness === 'codex' ? inspectInstalledCodex(inspectionInput)
-            : inspectInstalledHarness({ ...inspectionInput, harness: 'opencode' })
+          return inspectInstalledCodex(inspectionInput)
         },
         readFacts: () => {
           const resident = operations.get(intent.executionId)
@@ -447,8 +444,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           await workerExecutionAuthorizer(forBinding(binding))(resident.intent, placement, 'read')
           await assertOriginal()
         }, suiteRevision }
-      const reader = harness === 'codex' ? createInstalledCodexQualificationReader(readerInput)
-        : createInstalledHarnessQualificationReader({ ...readerInput, harness: 'opencode' })
+      const reader = createInstalledCodexQualificationReader(readerInput)
       const capture=await reader.capture()
       current(context.binding)
       if(operations.size>=1000)unavailable('operation_retention_full')
@@ -468,7 +464,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       }
       const managers=new ExecutionScopedNativeSessionManagerResolver(configurationContext=>{
         const resident=operations.get(configurationContext.executionId)
-        if(!resident||!['codex', 'opencode'].includes(configurationContext.harness)||!isDeepStrictEqual(configurationContext.configuration,resident.capture.facts.configuration)
+        if(!resident||configurationContext.harness !== 'codex'||!isDeepStrictEqual(configurationContext.configuration,resident.capture.facts.configuration)
           ||configurationContext.workingDirectory!==resident.capture.facts.executionPlacement.workingTree.canonicalCwd)unavailable('accepted_configuration_conflict')
         const actual=resident!,binary=actual.capture.inspection.currentTarget?.installation.launcher.resolvedLauncher
         if(!binary)unavailable('installed_launcher_unavailable')
@@ -534,29 +530,6 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             }
           },
         }
-        if (configurationContext.harness === 'opencode') {
-          // Installed OpenCode has no qualified native output producer.
-          if (actual.placement.payload.kind === 'agent' && actual.placement.payload.artifactOutputs) {
-            unavailable('original_native_output_host_missing')
-          }
-          const settings = actual.capture.facts.configuration.harness
-          if (settings.harness !== 'opencode') unavailable('accepted_configuration_conflict')
-          const server = new InstalledOpenCodeServer({ binary: binary!,
-            workingDirectory: configurationContext.workingDirectory, ownerAgentId: actual.capture.facts.configuration.agentId,
-            appMcpAccess: 'scoped',
-            processRecovery: actual.scope, assertInstallation: async effectSignal => {
-              effectSignal?.throwIfAborted()
-              await before()
-              await actual.reader.capture()
-              effectSignal?.throwIfAborted()
-            }, ...(settings.harness === 'opencode' && settings.advanced ? { advancedConfiguration: settings.advanced } : {}) },
-          { reader: actual.reader, suiteRevision: input.openCodeSuiteRevision
-            ?? qualificationRevisionWithIdentity(opencodeQualificationSuite.revision) })
-          const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: actual.capture.facts.configuration.agentId,
-            appMcpAccess: 'scoped' })
-          actual.manager = manager
-          return manager
-        }
         const dependencies=createInstalledCodexDependencies({reader:actual.reader,codexSuiteRevision:input.codexSuiteRevision})
         const declared = actual.placement.payload.kind === 'agent' && actual.placement.payload.artifactOutputs
         const outputPorts = declared ? (input.nativeOutputs
@@ -587,7 +560,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           qualify:async(binary,cwd,environment,authenticated,effectSignal)=>{
             await before()
             const result=await dependencies.qualify(binary,cwd,environment,authenticated,effectSignal,actual.scope)
-            if(normalizeHarnessVersion('codex',result.providerVersion)!==actual.capture.qualification.version)unavailable('native_version_changed')
+            if(normalizeHarnessVersion(result.providerVersion)!==actual.capture.qualification.version)unavailable('native_version_changed')
             return result
           },
           assertUnchanged:async value=>{await before();await dependencies.assertUnchanged(value)},
@@ -682,9 +655,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             if(observed.lifecycle!=='active'||!isDeepStrictEqual(observed.guardian,captured.launch.guardian)
               ||!isDeepStrictEqual(observed.provider,captured.launch.provider)||!isDeepStrictEqual(observed.boundary,captured.launch.boundary))unavailable('original_native_process_changed')
           }
-          const lifetime = resident.manager instanceof OpenCodeNativeSessionManager
-            ? resident.manager.originalSessionLifetime(session, resident.nativeStart!)
-            : captureOriginalCodexSession(resident.manager, session, resident.nativeStart!, assertOwnerCurrent)
+          const lifetime = captureOriginalCodexSession(resident.manager, session, resident.nativeStart!, assertOwnerCurrent)
           assertOwnerCurrent()
           if(!lifetime)unavailable('original_native_residency_unavailable')
           lifetime!.assertCurrent()

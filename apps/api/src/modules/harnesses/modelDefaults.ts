@@ -1,19 +1,13 @@
-import { AgentEffortSchema, ClaudeEffortSchema, type HarnessConfiguration } from '@foreman-code/contracts'
+import { AgentEffortSchema, ClaudeEffortSchema, RETIRED_OPENCODE_MESSAGE, type HarnessConfiguration } from '@foreman-code/contracts'
 import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
-
-/** OpenCode automatic defaults use the OpenCode Go subscription whenever it is connected;
- * other connected providers stay selectable explicitly. */
-export const OPENCODE_DEFAULT_PROVIDER = 'opencode-go'
 
 /** Recency comes from provider release metadata; preference comes from its
  * ranked native catalog. IDs and display labels never establish recency. */
 export function latestNativeModel(options: HarnessOptions): HarnessOptions['models'][number] {
   if (!options.authenticated || !options.models.length) throw new DomainError('HARNESS_MODEL_UNAVAILABLE',
     'The installed harness has no authenticated selectable model.', 409)
-  const preferred = options.harness === 'opencode'
-    ? options.models.filter(model => model.providerId === OPENCODE_DEFAULT_PROVIDER) : []
-  const models = preferred.length ? preferred : options.models
+  const models = options.models
   const dated = models.filter(model => model.releasedAt && Number.isFinite(Date.parse(model.releasedAt)))
   if (dated.length) return dated.reduce((latest, model) => Date.parse(model.releasedAt!) > Date.parse(latest.releasedAt!) ? model : latest)
   const ranked = models.filter(model => model.defaultPriority !== undefined)
@@ -22,6 +16,7 @@ export function latestNativeModel(options: HarnessOptions): HarnessOptions['mode
 }
 
 export function nativeModelDefaults<T extends HarnessConfiguration>(configuration: T, options: HarnessOptions): T {
+  if (configuration.harness === 'opencode') throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
   if (configuration.harness !== options.harness) throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The model catalog belongs to another harness.', 409)
   const model = latestNativeModel(options)
   if (configuration.harness === 'codex') {
@@ -30,9 +25,6 @@ export function nativeModelDefaults<T extends HarnessConfiguration>(configuratio
     return { ...configuration, model: model.id, reasoningEffort: AgentEffortSchema.parse(effort),
       serviceTier: model.serviceTiers.includes(configuration.serviceTier) ? configuration.serviceTier : 'standard' } as T
   }
-  if (configuration.harness === 'opencode') return { ...configuration, model: model.id,
-    variant: model.variants.includes('medium') ? 'medium' : '',
-    nativeAgent: options.nativeAgents.includes(configuration.nativeAgent) ? configuration.nativeAgent : options.nativeAgents[0] ?? configuration.nativeAgent } as T
   return { ...configuration, model: model.id, effort: model.reasoningEfforts.includes('medium') ? 'medium'
     : model.reasoningEfforts.find(effort => ClaudeEffortSchema.safeParse(effort).success) } as T
 }

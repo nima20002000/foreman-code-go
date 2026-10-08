@@ -13,7 +13,6 @@ export const InstalledWorkflowConfigurationSchema = z.object({
   appMcpLauncher: path,
   expectedVersion: version.optional(),
   payloadPaths: payloadPaths.optional(),
-  opencode: z.object({ binary: path, expectedVersion: version, payloadPaths }).strict().optional(),
   claude: z.object({ binary: path, installedLockPath: path, sdkEntrypoint: path.optional() }).strict().optional(),
 }).strict().superRefine((value, context) => {
   const codexSelected = value.codexBinary !== undefined || value.expectedVersion !== undefined
@@ -21,14 +20,12 @@ export const InstalledWorkflowConfigurationSchema = z.object({
   if (codexSelected && (!value.codexBinary || !value.expectedVersion || !value.payloadPaths)) {
     context.addIssue({ code: 'custom', message: 'The Codex selection requires its binary, version and payload paths.' })
   }
-  if (!codexSelected && !value.opencode && !value.claude) {
+  if (!codexSelected && !value.claude) {
     context.addIssue({ code: 'custom', message: 'Select at least one installed workflow harness.' })
   }
 })
 export type InstalledWorkflowConfiguration=z.infer<typeof InstalledWorkflowConfigurationSchema>
-export function installedHarnessSelection(configuration: InstalledWorkflowConfiguration,
-  harness: 'codex' | 'opencode') {
-  if (harness === 'opencode') return configuration.opencode ?? null
+export function installedHarnessSelection(configuration: InstalledWorkflowConfiguration) {
   if (!configuration.codexBinary || !configuration.expectedVersion || !configuration.payloadPaths) return null
   return { binary: configuration.codexBinary, expectedVersion: configuration.expectedVersion,
     payloadPaths: configuration.payloadPaths }

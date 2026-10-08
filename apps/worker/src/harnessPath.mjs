@@ -24,7 +24,7 @@ export function workerPath(home, node) {
   function add(directory) {
     try {
       if (!trusted(directory)) return;
-      const installed = ['codex', 'opencode'].some((name) => {
+      const installed = ['codex', 'claude'].some((name) => {
         try {
           const launcher = realpathSync(join(directory, name));
           if (!trusted(launcher, false)) return false;
@@ -37,7 +37,6 @@ export function workerPath(home, node) {
   }
   if (typeof home === 'string' && home.startsWith('/') && resolve(home) === home && /^[/a-zA-Z0-9_.-]+$/.test(home)) {
     add(join(home, '.local/bin'));
-    add(join(home, '.opencode/bin'));
     const versions = join(home, '.nvm/versions/node');
     try {
       if (trusted(versions)) {

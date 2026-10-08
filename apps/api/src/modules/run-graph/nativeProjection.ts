@@ -125,12 +125,13 @@ export function projectNativeEvidence(previous: NativeProjectionState | undefine
   const initial = previous ?? emptyNativeProjection(binding)
   const answer = (state: NativeProjectionState, disposition: NativeProjectionResult['disposition'], reason: NativeProjectionResult['reason']): NativeProjectionResult =>
     ({ state, activity: nativeProjectionActivity(state, binding), disposition, reason })
+  if (binding.provider === 'opencode') return answer(initial, 'ignored', 'identity')
   if (initial.version !== 1 || initial.bindingDigest !== bindingDigest(binding)
     || (initial.boundTurnId !== null && initial.boundTurnId !== binding.nativeTurnId)) return { state: initial, activity: { workflowNodeId: binding.key.execution.workflowNodeId, status: 'unknown' }, disposition: 'rejected', reason: 'identity' }
   if (![event.nativeSequence, event.sourcePosition, event.connectionGeneration, binding.connectionGeneration].every(sequence)) return answer(initial, 'rejected', 'invalid')
   if (event.connectionGeneration !== binding.connectionGeneration || BigInt(event.connectionGeneration) < BigInt(initial.generation)) return answer(initial, 'ignored', 'generation')
   if (initial.terminalNativeSequence !== null || binding.closed) return answer(initial, 'ignored', 'terminal')
-  const relevant = ['item.started', 'item.completed', 'item.snapshot', 'message.updated', 'message.part.updated',
+  const relevant = ['item.started', 'item.completed', 'item.snapshot',
     'turn.started', 'turn.completed', 'graph.native.acknowledged', 'graph.native.disconnected', 'graph.native.uncertain', 'graph.native.terminal'].includes(event.type)
   if (!relevant) return answer(initial, 'ignored', 'irrelevant')
   if (!identity(event.sourceId) || !identity(event.sourceStreamId)) return answer(initial, 'rejected', 'invalid')
@@ -205,36 +206,14 @@ export function projectNativeEvidence(previous: NativeProjectionState | undefine
   } else if (event.type === 'turn.started') {
     if (binding.provider !== 'codex' || !binding.nativeTurnId || nativeTurnId !== binding.nativeTurnId || turn.status !== 'inProgress') return answer(initial, 'ignored', 'identity')
     stamp(); acknowledge(event.sourceId)
-  } else if (event.type === 'message.updated') {
-    if (binding.provider !== 'opencode' || info.role !== 'assistant' || info.summary === true) return answer(initial, 'ignored', 'identity')
-    const id = identity(info.id), parent = identity(info.parentID)
-    if (!id || !parent) return answer(initial, 'rejected', 'invalid')
-    let link = state.messages.find((message) => message.id === id)
-    if (!link) {
-      if (state.messages.length >= NATIVE_PROJECTION_LIMITS.messages) { state.overflow = true; stamp(); return answer(state, 'rejected', 'capacity') }
-      link = { id, parent, conflicted: false }; state.messages.push(link)
-    } else if (link.parent !== parent) { link.parent = null; link.conflicted = true; state.uncertain = true; state.acknowledgement = null }
-    stamp()
-    // Identity-only metadata is not work. A retained running tool supplies its own acknowledgement.
-    const pending = state.operations.filter((operation) => eligible(operation, state, binding))
-    if (pending.length && !link.conflicted) {
-      // Do not turn an OLD reconnect observation into new current work merely because identity arrived late.
-      const newest = pending.sort((a, b) => BigInt(a.nativeSequence) > BigInt(b.nativeSequence) ? -1 : 1)[0]!
-      const ack = state.acknowledgement
-      if (!ack || (ack.stream === newest.stream && BigInt(newest.position) > BigInt(ack.position))) {
-        state.acknowledgement = { id: newest.sourceId, position: newest.position, stream: newest.stream, generation: newest.generation }
-      }
-      if (!initial.disconnected && initial.generation === binding.connectionGeneration) state.disconnected = false
-    }
   } else {
-    if (event.type.startsWith('item.') ? binding.provider !== 'codex' : binding.provider !== 'opencode') return answer(initial, 'ignored', 'identity')
+    if (!event.type.startsWith('item.') || binding.provider !== 'codex') return answer(initial, 'ignored', 'identity')
     // nativeAction is the S1 parity classifier. Its output contains no user/native text.
     const change = nativeAction(event.type, payload)
     if (!change || !identity(change.id)) return answer(initial, 'ignored', 'irrelevant')
-    const messageId = event.type === 'message.part.updated' ? identity(part.messageID) : undefined
-    if (binding.provider === 'opencode' ? !messageId : !nativeTurnId) return answer(initial, 'rejected', 'invalid')
+    if (!nativeTurnId) return answer(initial, 'rejected', 'invalid')
     if (binding.provider === 'codex' && binding.nativeTurnId !== null && nativeTurnId !== binding.nativeTurnId) return answer(initial, 'ignored', 'identity')
-    const id = nativeProjectionId('operation', binding.nativeSessionId, messageId ?? nativeTurnId, change.id)
+    const id = nativeProjectionId('operation', binding.nativeSessionId, nativeTurnId, change.id)
     const existing = state.operations.find((operation) => operation.id === id)
     // Finished is a monotonic tombstone: duplicate or late starts cannot resurrect a completed tool.
     if (existing?.ended) return answer(initial, 'ignored', 'terminal')
@@ -244,7 +223,7 @@ export function projectNativeEvidence(previous: NativeProjectionState | undefine
     if (!existing && state.operations.length >= NATIVE_PROJECTION_LIMITS.operations) {
       state.overflow = true; stamp(); return answer(state, 'rejected', 'capacity')
     }
-    const operation: Operation = { id, messageId: messageId ?? null, turnId: nativeTurnId ?? null,
+    const operation: Operation = { id, messageId: null, turnId: nativeTurnId ?? null,
       action: mappedAction(change.kind), position: event.sourcePosition, nativeSequence: event.nativeSequence,
       sourceId: event.sourceId, stream: event.sourceStreamId, generation: event.connectionGeneration,
       pending: change.pending, ended: change.ended }
@@ -286,7 +265,7 @@ export function reconcileNativeEvidence(previous: NativeProjectionState | undefi
     || BigInt(ack.position) > BigInt(cut.sourcePosition))) return rejected()
   let state = emptyNativeProjection(binding)
   for (const event of evidence) {
-    if (!['item.snapshot', 'message.updated', 'message.part.updated', 'graph.native.acknowledged', 'graph.native.terminal'].includes(event.type)
+    if (!['item.snapshot', 'graph.native.acknowledged', 'graph.native.terminal'].includes(event.type)
       || event.sourceStreamId !== cut.sourceStreamId || event.connectionGeneration !== cut.connectionGeneration
       || ![event.nativeSequence, event.sourcePosition].every(sequence)
       || BigInt(event.sourcePosition) > BigInt(cut.sourcePosition) || BigInt(event.nativeSequence) > BigInt(cut.nativeSequence)) return rejected()

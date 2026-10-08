@@ -1,23 +1,20 @@
-import type { OpenCodeServerController } from '../opencodeTransport.js'
+import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import { PostgresOperatorConversationRepository } from '../../conversations/operatorChatRepository.js'
 import type { FastifyInstance } from 'fastify'
 import type pg from 'pg'
 import type { ApiConfig } from '../../../config.js'
 import type { NativeManagerResolver } from '../../conversations/operatorChat.js'
-import { OPERATOR_MCP_ENVIRONMENT_VARIABLE } from '../../conversations/operatorChatAuthority.js'
 import { DomainError } from '../../errors.js'
 import { defaultFileStorageRoot } from '../../files/storage.js'
 import { productionCodexChatFiles } from '../codexFiles/production.js'
 import { NativeHarnessFactories } from '../runtimeFactory.js'
-import { productionOpenCodeChatFiles } from '../opencodeFiles/production.js'
 import type { NativeHarnessSessionManager } from '../port.js'
 import type { NativeProcessRegistry } from '../recovery/processRegistry.js'
 import type { RegistryHarnessSelection } from '../installationRegistry.js'
 import type { OperatorConfigurationVersion } from '@foreman-code/contracts'
 import type { NativeResponseJournal } from '../recovery/responseJournal.js'
 import { operatorCodexFileAdmissions } from './codex.js'
-import { adoptOperatorFilePublications, operatorTurnHasFileInputs, recordOperatorFileSubmission,
-  resolveOperatorOpenCodeFileAdmission } from './postgres.js'
+import { operatorTurnHasFileInputs, recordOperatorFileSubmission } from './postgres.js'
 
 /** Operator management credentials and accepted-turn file tokens remain separate. */
 export function productionOperatorManagers(input: {
@@ -25,8 +22,6 @@ export function productionOperatorManagers(input: {
   pool: pg.Pool
   config: ApiConfig
   workingDirectory: string
-  endpointHost: string
-  appMcpEndpoint: string
   processRegistry: Pick<NativeProcessRegistry, 'scope' | 'closeOwner'>
   responseJournal: NativeResponseJournal
   managers: Map<string, NativeHarnessSessionManager>
@@ -37,10 +32,11 @@ export function productionOperatorManagers(input: {
   selectInstallation?: (configuration: OperatorConfigurationVersion) => RegistryHarnessSelection | undefined
 }): NativeManagerResolver {
   const factories = input.nativeFactories ?? new NativeHarnessFactories({ ...input.config.harnesses,
-    openCodeFileStorageRoot: input.config.fileStorageRoot ?? defaultFileStorageRoot(),
-    appMcpEndpoint: input.appMcpEndpoint, responseJournal: input.responseJournal })
+    responseJournal: input.responseJournal })
   const modes = new Map<string, boolean>()
   const resolver: NativeManagerResolver = (configuration, conversationId, fileInputs = false) => {
+    if (configuration.harness.harness === 'opencode') throw new DomainError('HARNESS_RETIRED',
+      RETIRED_OPENCODE_MESSAGE, 409)
     const existing = input.managers.get(conversationId)
     if (existing) {
       if (modes.get(conversationId) !== fileInputs) throw new DomainError(
@@ -75,20 +71,11 @@ export function productionOperatorManagers(input: {
       configured: { instanceId: selection?.instance.instanceId ?? configuration.operatorId, instanceRevision: configuration.id, driverId: configuration.harness.harness,
         enabled: true, configuration: configuration.harness },
       processRecovery: recovery, appMcpAccess: 'scoped',
-      ...(configuration.harness.harness === 'codex'
-        ? { harness: 'codex' as const, ...(fileInputs ? {
-          chatFiles: productionCodexChatFiles(input.app, conversationId, operatorCodexFileAdmissions(input.app, input.pool,
-            configuration, input.workingDirectory, input.config.fileStorageRoot ?? defaultFileStorageRoot())),
-        } : {}) }
-        : { harness: 'opencode' as const,
-          credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
-          ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
-          ...(fileInputs ? { chatFiles: (server: OpenCodeServerController) => productionOpenCodeChatFiles(input.app, input.pool, input.config,
-            conversationId, server, input.endpointHost, {
-              resolve: (pool, id, identity) => resolveOperatorOpenCodeFileAdmission(pool, id, configuration, input.workingDirectory, identity),
-              adoptPublished: adoptOperatorFilePublications,
-            }) } : {}),
-        }),
+      harness: 'codex',
+      ...(fileInputs ? {
+        chatFiles: productionCodexChatFiles(input.app, conversationId, operatorCodexFileAdmissions(input.app, input.pool,
+          configuration, input.workingDirectory, input.config.fileStorageRoot ?? defaultFileStorageRoot())),
+      } : {}),
     })
     input.managers.set(conversationId, manager)
     modes.set(conversationId, fileInputs)

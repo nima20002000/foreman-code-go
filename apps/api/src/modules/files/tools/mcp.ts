@@ -9,43 +9,11 @@ import { ALL_FILE_TOOL_NAMES, type FileToolOperation } from './types.js'
 import { createFileMcpServer, type FileMcpService } from './mcpServer.js'
 export { createFileMcpServer, type FileMcpService } from './mcpServer.js'
 export const FILE_TOOLS_MCP_PATH = '/mcp/files'
-const openCodeMounts = new WeakMap<FastifyInstance, Map<string, FileMcpService>>()
-/** The mounted facade authenticates the exact turn token. No shared-service fallback exists here. */
-export function mountOpenCodeFileMcp(app: FastifyInstance, mountId: string, service: FileMcpService): () => void {
-  const mounts = openCodeMounts.get(app)
-  if (!mounts || mounts.has(mountId)) throw new Error('OpenCode file MCP mount is unavailable or already owned.')
-  mounts.set(mountId, service)
-  return () => { if (mounts.get(mountId) === service) mounts.delete(mountId) }
-}
 const bearer = (header: string | undefined) => /^Bearer (gql_file_[A-Za-z0-9_-]{43})$/i.exec(header ?? '')?.[1]
 const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.string() }).passthrough() }).passthrough()
 /** Separate authenticated surface, not the workflow /mcp server or an Operator credential exchange. */
 export function registerFileToolsMcp(app: FastifyInstance, service: FileMcpService): void {
-  const mounted = new Map<string, FileMcpService>()
-  openCodeMounts.set(app, mounted)
-  app.post(`${FILE_TOOLS_MCP_PATH}/opencode/:mountId`, { bodyLimit: 4 * Math.ceil(MAX_FILE_WRITE_BYTES / 3) + 512 * 1024,
-    onRequest: async (request) => {
-      requireLocalRequest(request)
-      const selected = mounted.get((request.params as { mountId: string }).mountId)
-      if (!selected) throw new DomainError('FILE_SESSION_INVALID', 'The file turn is not mounted.', 401)
-      await (selected.sessions.discover ?? selected.sessions.authenticate).call(
-        selected.sessions, bearer(request.headers.authorization))
-    },
-  }, async (request, reply) => {
-    requireLocalRequest(request)
-    const selected = mounted.get((request.params as { mountId: string }).mountId)
-    if (!selected) throw new DomainError('FILE_SESSION_INVALID', 'The file turn is not mounted.', 401)
-    const token = bearer(request.headers.authorization)
-    await (selected.sessions.discover ?? selected.sessions.authenticate).call(selected.sessions, token)
-    const server = await createFileMcpServer(selected, token!)
-    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
-    reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
-    reply.header('cache-control', 'no-store')
-    await server.connect(transport)
-    reply.hijack()
-    await transport.handleRequest(request.raw, reply.raw, request.body)
-  })
   // Authenticate before buffering the larger, still bounded base64 request body.
   app.post(FILE_TOOLS_MCP_PATH, { bodyLimit: 4 * Math.ceil(MAX_FILE_WRITE_BYTES / 3) + 512 * 1024,
     onRequest: async (request) => {

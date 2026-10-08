@@ -82,12 +82,7 @@ export async function settleReviewCleanup(input: ReviewCleanupAttempt): Promise<
     else if (input.observe) {
       const history = await attempt(input.observe)
       if (history) {
-        // OpenCode's old cancellation adapter can cache an ACK as terminalTurn.
-        // Cleanup therefore requires actual message history for that provider;
-        // an absent final message must await real process closure instead.
-        const nativeHistory = { ...history }
-        if (input.session.harness === 'opencode') { delete nativeHistory.terminalTurn; delete nativeHistory.terminalResult }
-        const evidence = reviewTurnEvidence(input.session, nativeHistory, job.correlationId, job.providerTurnOrMessageId)
+        const evidence = reviewTurnEvidence(input.session, history, job.correlationId, job.providerTurnOrMessageId)
         const requests = [...(input.pending ?? []), ...history.pendingInteractions,
           ...(history.pendingInteraction ? [history.pendingInteraction] : [])]
         if (evidence.terminal && !requests.length) {

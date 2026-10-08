@@ -2,7 +2,7 @@ import type { discoverInstalledClaudeSdk } from './claudeSdk/currentPin.js'
 import { randomUUID } from 'node:crypto'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
 import type pg from 'pg'
-import { HarnessConfigurationSchema, withAdvancedDefaults, type HarnessDefaults } from '@foreman-code/contracts'
+import { HarnessConfigurationSchema, RETIRED_OPENCODE_MESSAGE, withAdvancedDefaults, type HarnessDefaults } from '@foreman-code/contracts'
 import { HarnessHostReferenceSchema, HarnessRegistryReadbackSchema, type HarnessRegistryReadback,
   type HostHarnessOverride, type HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
@@ -38,8 +38,8 @@ export class ProductionHarnessRegistry {
   private refreshGeneration = 0
   private refreshTask: Promise<void> | undefined
   private inventoryIdentity = ''
-  constructor(private readonly pool: pg.Pool, private readonly binaries: { codexBinary: string; openCodeBinary: string },
-    private readonly managedDefaults: (client?: pg.ClientBase) => Promise<{ revision: number; defaults: HarnessDefaults }>,
+  constructor(private readonly pool: pg.Pool, private readonly binaries: { codexBinary: string },
+    private readonly managedDefaults: (client?: pg.ClientBase) => Promise<{ revision: number; defaults: HarnessDefaults; retiredDefaults?: ConfiguredHarnessInstance[] }>,
     private readonly profiles: HostHarnessProfileEvidenceRepository,
     private readonly currentRemoteBinding: (deviceId: string) => DeviceSessionBinding | null,
     private readonly environment: NodeJS.ProcessEnv = process.env,
@@ -53,7 +53,7 @@ export class ProductionHarnessRegistry {
     this.mainId = mainId
     const managed = await this.managedDefaults()
     this.assertOpen()
-    this.defaults = localDefaultInstances(managed.defaults, managed.revision)
+    this.defaults = [...localDefaultInstances(managed.defaults, managed.revision), ...(managed.retiredDefaults ?? [])]
     this.reloadInstances()
     await this.refreshMain()
   }
@@ -87,7 +87,7 @@ export class ProductionHarnessRegistry {
     this.assertOpen(); signal?.throwIfAborted()
     const generation = ++this.refreshGeneration
     const managed = await this.managedDefaults()
-    const defaults = localDefaultInstances(managed.defaults, managed.revision)
+    const defaults = [...localDefaultInstances(managed.defaults, managed.revision), ...(managed.retiredDefaults ?? [])]
     if (commandInputHash(defaults) !== commandInputHash(this.defaults)) { this.defaults = defaults; this.reloadInstances() }
     this.assertOpen(); signal?.throwIfAborted()
     const hostRef = this.host()
@@ -108,7 +108,7 @@ export class ProductionHarnessRegistry {
           installed: Boolean(discovered), authenticated: null, compatible: null, qualified: null })
         continue
       }
-      const requested = driver.driverId === 'codex' ? this.binaries.codexBinary : this.binaries.openCodeBinary
+      const requested = this.binaries.codexBinary
       let launcher = await this.discovery.launcher(requested, environment, [], signal)
       let complete = false
       if (launcher.resolvedLauncher && launcher.status === 'installed') {
@@ -149,6 +149,7 @@ export class ProductionHarnessRegistry {
   pinAccepted(configuration: { id: string; agentId: string; harness: unknown }): RegistryHarnessSelection {
     this.assertOpen()
     const value = HarnessConfigurationSchema.parse(configuration.harness)
+    if (value.harness === 'opencode') throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     const instance: ConfiguredHarnessInstance = { instanceId: configuration.id, instanceRevision: configuration.id,
       driverId: value.harness, enabled: true, configuration: value }
     const prior = this.accepted.get(instance.instanceId)
@@ -161,7 +162,7 @@ export class ProductionHarnessRegistry {
     return this.installations.pin({ instanceId: instance.instanceId, hostRef, harnessInstallationId: installation.harnessInstallationId,
       connectionGeneration: this.mainGeneration, environmentGeneration: this.targetEnvironment().generation })
   }
-  pinDefault(harness: 'codex' | 'opencode'): RegistryHarnessSelection {
+  pinDefault(harness: 'codex'): RegistryHarnessSelection {
     this.assertOpen()
     const hostRef = this.host()
     const installation = this.snapshots.get(harnessHostKey(hostRef))?.value.installations.find((record) => record.driverId === harness)
@@ -172,6 +173,8 @@ export class ProductionHarnessRegistry {
   }
   pinOverride(value: HostHarnessOverride): RegistryHarnessSelection {
     this.assertOpen()
+    if (value.driverId === 'opencode' || value.configuration.harness === 'opencode') throw new DomainError(
+      'HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     const instance: ConfiguredHarnessInstance = { instanceId: value.instanceId, instanceRevision: value.instanceRevision,
       driverId: value.driverId, enabled: value.enabled, configuration: value.configuration }
     const hostRef = value.target.hostRef
@@ -227,7 +230,7 @@ export class ProductionHarnessRegistry {
       const applicationInstallationId = await this.applicationInstallationId(client, hostRef)
       await authorizeDeviceHost(client, principal, 'harnesses:read', hostRef, applicationInstallationId)
       const managed = await this.managedDefaults(client)
-      const defaults = localDefaultInstances(managed.defaults, managed.revision)
+      const defaults = [...localDefaultInstances(managed.defaults, managed.revision), ...(managed.retiredDefaults ?? [])]
       if (commandInputHash(defaults) !== commandInputHash(this.defaults)) { this.defaults = defaults; this.reloadInstances() }
       const cached = this.snapshots.get(harnessHostKey(hostRef))?.value
       const snapshot = cached?.hostMetadata?.applicationInstallationId === applicationInstallationId ? cached : undefined
@@ -236,9 +239,10 @@ export class ProductionHarnessRegistry {
       const connection = observed && registration && observed.binding.workerInstallationId === registration.workerInstallationId
         && observed.binding.keyRevision === registration.keyRevision
         && observed.binding.authorizationRevision === registration.authorizationRevision ? observed : null
+      const defaultIds = new Set(this.defaults.map(value => value.instanceId))
+      const instances = this.instances.list().filter(value => defaultIds.has(value.instanceId)).map(projectHarnessInstance)
       const result = snapshot ? { ...structuredClone(snapshot),
-        ...(snapshot.hostMetadata ? { hostMetadata: { ...snapshot.hostMetadata, connection } } : {}), instances: this.defaults.map((value) => projectHarnessInstance(this.instances.select(value.instanceId))) } : { instances: this.defaults.map((value) =>
-        ({ ...value, configuration: HarnessConfigurationSchema.parse(value.configuration), availability: 'available' as const, driverRevision: '1' })),
+        ...(snapshot.hostMetadata ? { hostMetadata: { ...snapshot.hostMetadata, connection } } : {}), instances } : { instances,
         installations: [], hostMetadata: { hostRef, applicationInstallationId, platform: null, workspaceRoots: null, connection } }
       await client.query('commit')
       return HarnessRegistryReadbackSchema.parse(result)

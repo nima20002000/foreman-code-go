@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { isDeepStrictEqual } from 'node:util'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
-import { NativeSessionReferenceSchema, withAdvancedDefaults } from '@foreman-code/contracts'
+import { NativeSessionReferenceSchema, withAdvancedDefaults, RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import type { HarnessQualification } from '@foreman-code/contracts/harness-qualification'
 import { WorkerConversationBindingSchema, type WorkerConversationConfiguration,
   WorkerConversationProfileFactsSchema, type WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
@@ -13,7 +13,7 @@ import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.js'
 import type { HarnessQualificationRepository } from '../harnesses/qualification/repository.js'
-import { readInstalledHarnessQualification } from '../harnesses/installedCodexInspection.js'
+import { readInstalledCodexQualification } from '../harnesses/installedCodexInspection.js'
 import type { AcceptedHarnessProfileAdmission } from '../harnesses/instanceSettings/acceptedProfile.js'
 import type { ClaudeProfileOwner } from '../harnesses/claudeSdk/production.js'
 import { PostgresClaudeInteractionAuthority } from '../harnesses/claudeSdk/domainAuthority.js'
@@ -36,9 +36,6 @@ import type { PrepareWorkerFiles } from './mainWorkerFiles.js'
 import { createMainWorkerClaudeFiles } from './mainWorkerClaudeFiles.js'
 import type { AgentFileToolService } from '../files/tools/service.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
-import { resolveOpenCodeFileAdmission, adoptOpenCodePublications } from '../harnesses/opencodeFiles/postgres.js'
-import { resolveOperatorOpenCodeFileAdmission, adoptOperatorFilePublications } from '../harnesses/operatorFiles/postgres.js'
-import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { definedProperties } from '../definedProperties.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
@@ -69,12 +66,11 @@ export function createProductionWorkerConversations(input: {
   agents: PostgresAgentChatRepository
   registry: ProductionHarnessRegistry
   qualifications: Pick<HarnessQualificationRepository, 'findInstalled'>
-  suiteRevisions: Partial<Record<'codex' | 'opencode', string>>
+  suiteRevisions: Partial<Record<'codex', string>>
   access: Pick<PostgresAccessService, 'authenticate'>
   mcpForward(): SelectedMainMcpForward
   files?(conversationId: string, configuration: WorkerConversationConfiguration, workingDirectory: string): PrepareWorkerFiles
   fileService?(): AgentFileToolService
-  fileStorageRoot: string
 }) {
   const bridge = new MainWorkerConversationBridge()
   const inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
@@ -90,6 +86,9 @@ export function createProductionWorkerConversations(input: {
   const create = (options: { conversationId: string; configuration: WorkerConversationConfiguration;
     workingDirectory: string; appMcpAccess: 'scoped' | 'none'; observationPrincipalId?: string }) => {
     const configuration = structuredClone(options.configuration)
+    if (configuration.harness.harness === 'opencode') {
+      throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+    }
     const selector = configuration.harnessProfileSelection
     if (!selector || selector.target.hostRef.kind !== 'device') unavailable('A selected device profile is required.')
     let caller = options.observationPrincipalId
@@ -99,7 +98,7 @@ export function createProductionWorkerConversations(input: {
       : { kind: 'agent', conversationId: options.conversationId,
         workspaceId: configuration.workspaceId, repository: input.agents }
     const profiles = configuration.harness.harness === 'claude' ? input.claudeProfiles : input.profiles
-    const admitted = createAdmittedNativeManager(configuration.harness.harness, async signal => {
+    const admitted = createAdmittedNativeManager<WorkerConversationManager>(configuration.harness.harness, async signal => {
       const original = await row(options.conversationId)
       const directoryBinding = original.kind === 'agent' && original.record.directoryBinding
         ? AgentChatDirectoryBindingSchema.parse(original.record.directoryBinding) : undefined
@@ -239,17 +238,6 @@ export function createProductionWorkerConversations(input: {
         sourceWorkingDirectory: options.workingDirectory,
         ...(configuration.harness.harness === 'codex' && binding.appMcpAccess === 'none' && input.files
           ? { files: input.files(options.conversationId, configuration, binding.workingDirectory) } : {}),
-        ...(configuration.harness.harness === 'opencode' && binding.appMcpAccess === 'none' && input.fileService
-          ? { openCodeFiles: {
-            sourceHost: () => ({ bootId: bootIdentity(), storageRoot: input.fileStorageRoot }),
-            resolve: (identity) => 'operatorId' in configuration
-              ? resolveOperatorOpenCodeFileAdmission(input.pool, options.conversationId, configuration,
-                binding.workingDirectory, identity)
-              : resolveOpenCodeFileAdmission(input.pool, options.conversationId, identity),
-            service: input.fileService,
-            adopt: (context) => 'operatorId' in configuration
-              ? adoptOperatorFilePublications(input.pool, context) : adoptOpenCodePublications(input.pool, context),
-          } } : {}),
         ...(configuration.harness.harness === 'claude' ? { claudeAuthority: async (
           request: import('@foreman-code/contracts/remote-execution-rpc').WorkerClaudeAuthorityRequest,
           effectSignal: AbortSignal) => {
@@ -285,16 +273,15 @@ export function createProductionWorkerConversations(input: {
           const harness = configuration.harness.harness
           const binary = installation.launcher.resolvedLauncher
           const sha256 = installation.launcher.payloadFingerprints?.find(value => value.path === binary)?.fingerprint
-          const revision = harness === 'claude' ? undefined : input.suiteRevisions[harness]
+          const revision = harness === 'codex' ? input.suiteRevisions.codex : undefined
           if (harness !== 'claude' && sha256 && revision) {
-            qualification = await readInstalledHarnessQualification(input.qualifications,
+            qualification = await readInstalledCodexQualification(input.qualifications,
               { target: accepted.override.target, binarySha256: sha256, installation }, revision)
           }
           return WorkerConversationProfileFactsSchema.parse({
             installation: qualification ? { ...installation, observedVersion: qualification.version } : installation,
             override: accepted.override,
-            profile: accepted.persistedProof, qualification,
-            fileSourceHost: { bootId: bootIdentity(), storageRoot: input.fileStorageRoot } })
+            profile: accepted.persistedProof, qualification })
         },
         observeSession: async session => {
           const saved = await input.pool.query(`update operator_conversations set worker_conversation_binding=$2::jsonb

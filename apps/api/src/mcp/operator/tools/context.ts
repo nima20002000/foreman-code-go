@@ -34,7 +34,6 @@ export const OPERATOR_RUNTIME_LIMITS = [
   {feature:'codex_plugins',state:'protected',detail:'Installed and available Codex plugins and verified bundle contents can be read through Operator MCP. Installing or removing a plugin is human-only in Codex Harness Settings because plugins can add executable hooks, skills, and external MCP access; Operator cannot request or approve plugin writes.'},
   {feature:'schedule_delivery',state:'unsupported',detail:'Retired unpinned trigger admission is not active. This current delivery exposes only explicit pinned manual run_start; no scheduled or event Start is promised.'},
   {feature:'skills',state:'limited',detail:'Skills are workspace-owned Markdown instruction text managed with skill_list/get/versions_list/create/update/archive. Every save creates an immutable version; Agents pin exact versions through agent_create/agent_update or the board and never follow later edits. Skill text is delivered as native Agent instructions, never as tool grants. Packages, folders, scripts, URLs and includes are not supported. Persistent instructions plus skills are limited to 512 KiB per Agent.'},
-  {feature:'opencode_thinking',state:'limited',detail:'The stored thinking flag is metadata-only on the server path; choose an advertised variant for runtime model behavior.'},
 ] as const
 
 export function registerContextTools(server: McpServer, context: OperatorRequestContext): void {

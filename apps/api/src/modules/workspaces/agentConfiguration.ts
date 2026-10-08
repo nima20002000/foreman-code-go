@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   AgentConfigurationVersionSchema,
   AgentSchema,
+  RETIRED_OPENCODE_MESSAGE,
   projectHarnessEffort,
   type Agent,
   type AgentConfigurationVersion,
@@ -27,6 +28,9 @@ export function configurationInput(
     throw new DomainError('AGENT_HARNESS_MISMATCH', 'The agent harness and its configuration must match.', 400)
   }
   const harness = agent.harnessConfiguration?.harness ?? agent.harness ?? current?.harness.harness ?? 'codex'
+  if (harness === 'opencode') {
+    throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+  }
   const prompt = agent.prompt ?? current?.prompt ?? {}
   const assignedSkills = agent.assignedSkills ?? current?.assignedSkills ?? []
   const productRole = agent.productRole ?? current?.productRole
@@ -45,33 +49,6 @@ export function configurationInput(
     return { workspaceId, agentId: agent.id, productRole, prompt, assignedSkills, ...profile,
       ...(graphqlTools ? { graphqlTools } : {}), harness: configuration } as const
   }
-  if (harness === 'opencode') {
-    const suppliedHarness = agent.harnessConfiguration?.harness === 'opencode'
-      ? agent.harnessConfiguration
-      : undefined
-    const currentHarness = suppliedHarness
-      ?? (current?.harness.harness === 'opencode' ? current.harness : undefined)
-    const variant = suppliedHarness?.variant ?? agent.effort ?? currentHarness?.variant ?? 'max'
-    return {
-      workspaceId,
-      ...profile,
-      agentId: agent.id,
-      productRole,
-      prompt,
-      assignedSkills,
-      ...(graphqlTools ? { graphqlTools } : {}),
-      harness: {
-        harness,
-        model: agent.model ?? currentHarness?.model ?? 'opencode-go/deepseek-v4.1-flash',
-        variant,
-        nativeAgent: currentHarness?.nativeAgent ?? 'build',
-        thinking: currentHarness?.thinking ?? false,
-        autoApprove: currentHarness?.autoApprove ?? false,
-        ...(currentHarness?.advanced ? { advanced: currentHarness.advanced } : {}),
-      },
-    } as const
-  }
-
   const suppliedHarness = agent.harnessConfiguration?.harness === 'codex'
     ? agent.harnessConfiguration
     : undefined

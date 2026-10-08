@@ -11,7 +11,7 @@ import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } fr
 import { DomainError } from '../errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput, NativeInitialTurnInput } from '../harnesses/port.js'
 import { PostgresInteractionCoordinationRepository, type WriterFence } from './coordination.js'
-import { definitelyRejected, ReviewEvidenceTracker, reviewTurnEvidence, type TurnEvidence } from './reviewerEvidence.js'
+import { ReviewEvidenceTracker, reviewTurnEvidence, type TurnEvidence } from './reviewerEvidence.js'
 
 /** Heartbeats start before any potentially long native await. Loss aborts the writer, never retries it. */
 export class LeaseGuard {
@@ -165,7 +165,6 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   readonly startInitialTurnBatches?: (start: NativeSessionStart, input: NativeInitialTurnInput,
     signal?: AbortSignal) => AsyncIterable<NativeHarnessEvent[]>
   readonly inspectResponseAvailability?: NonNullable<ResponseAvailabilityInspector['inspectResponseAvailability']>
-  readonly recoverEnvironment?: NonNullable<NativeHarnessSessionManager['recoverEnvironment']>
 
   constructor(
     private readonly manager: NativeHarnessSessionManager & ResponseAvailabilityInspector,
@@ -174,7 +173,6 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     private readonly leaseMs = 30_000,
   ) {
     this.harness = manager.harness
-    if (manager.recoverEnvironment) this.recoverEnvironment = manager.recoverEnvironment.bind(manager)
     if (manager.inspectResponseAvailability) this.inspectResponseAvailability = manager.inspectResponseAvailability.bind(manager)
     if (manager.startInitialTurn) {
       this.startInitialTurn = (start, input, signal) => this.initialTurn(start, input, signal)
@@ -512,7 +510,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       this.observeEvidence(evidence.snapshot(), lease)
     } catch (error) {
       if (submitted && !isLeaseLost(error)) {
-        lease.observedStatus = definitelyRejected(error) && evidence.processedEvents === 0 && !evidence.snapshot().acknowledged ? 'idle' : 'uncertain'
+        lease.observedStatus = 'uncertain'
       }
       throw error
     } finally {

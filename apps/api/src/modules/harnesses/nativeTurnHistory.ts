@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import type { ExecutionResult } from '@foreman-code/contracts'
 
 export type NativeObject = Record<string, unknown>
@@ -6,9 +5,6 @@ export function nativeObject(value: unknown): NativeObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as NativeObject : {}
 }
 function text(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined }
-export function openCodeMessageId(correlationId: string): string {
-  return `msg_${createHash('sha256').update(correlationId).digest('hex').slice(0, 24)}`
-}
 export interface AddressedNativeResult {
   correlationId: string
   nativeTurnId: string
@@ -41,41 +37,6 @@ export function addressedCodexTurn(thread: NativeObject, correlationId: string, 
     const answer = [...messages].reverse().find((item) => item.phase === 'final_answer') ?? messages.at(-1)
     result.nativeMessageId = text(answer?.id) ?? `${id}:terminal`
     result.terminalResult = { outcome: 'succeeded', output: { text: text(answer?.text) ?? '' } }
-  }
-  return result
-}
-
-/** Completed intermediate/tool-use messages do not prove that the addressed turn ended. */
-export function addressedOpenCodeTurn(values: unknown[], correlationId: string): AddressedNativeResult | undefined {
-  const parentID = openCodeMessageId(correlationId)
-  const messages = values.map(nativeObject)
-  const user = messages.find((message) => nativeObject(message.info).role === 'user' && nativeObject(message.info).id === parentID)
-  const children = messages.filter((message) => {
-    const info = nativeObject(message.info)
-    return info.role === 'assistant' && info.parentID === parentID
-  })
-  if (!user && !children.length) return undefined
-  const result: AddressedNativeResult = { correlationId, nativeTurnId: parentID }
-  const final = [...children].reverse().find((message) => {
-    const info = nativeObject(message.info)
-    if (typeof nativeObject(info.time).completed !== 'number') return false
-    return Boolean(info.error) || ['stop', 'end_turn', 'length', 'content_filter'].includes(String(info.finish))
-  })
-  if (!final) return result
-  const info = nativeObject(final.info)
-  result.nativeMessageId = text(info.id) ?? `${parentID}:terminal`
-  if (info.error) {
-    const error = nativeObject(info.error)
-    const data = nativeObject(error.data)
-    result.terminalResult = error.name === 'MessageAbortedError' ? { outcome: 'canceled' } : {
-      outcome: 'failed', error: { code: text(error.name) ?? 'OPENCODE_TURN_FAILED',
-        message: text(data.message) ?? text(error.message) ?? 'OpenCode turn failed.', retryable: data.isRetryable === true },
-    }
-  } else {
-    const parts = Array.isArray(final.parts) ? final.parts.map(nativeObject) : []
-    result.terminalResult = { outcome: 'succeeded', output: { text: parts
-      .filter((part) => part.type === 'text' && typeof part.text === 'string' && part.ignored !== true)
-      .map((part) => part.text as string).join('') } }
   }
   return result
 }

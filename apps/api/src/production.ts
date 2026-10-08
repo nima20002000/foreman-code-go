@@ -1,3 +1,4 @@
+import { inTransaction } from './infrastructure/transaction.js'
 import { ComputerActivityService } from './modules/computers/activity.js'
 import { registerComputerActivityRoutes } from './routes/computerActivity.js'
 import { ComputerAccountsService } from './modules/computers/accounts.js'
@@ -75,7 +76,6 @@ import { registerResourceTelemetrySelectorRoutes } from './routes/resourceTeleme
 import { WorkspaceBoundLocationService } from './modules/workspace-roots/service.js'
 import { bootstrapLocalMainWorkspaceRoot } from './modules/workspace-roots/localMainBootstrap.js'
 import { registerWorkspaceRootRoutes } from './modules/workspace-roots/transports.js'
-import type { OpenCodeServerController } from './modules/harnesses/opencodeTransport.js'
 import { RemoteJobMainRpcRequestRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { JOB_INPUT_NAMESPACE } from './modules/files/jobInputs/service.js'
 import { PostgresWorkflowJobNodeStore, workflowJobStorePublication } from './modules/jobs/workflowStore.js'
@@ -107,14 +107,17 @@ import { requireAuthorization } from './modules/access/policy.js'
 import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from './modules/harnesses/instanceSettings/acceptedProfile.js'
 import { workflowProfileSelection } from './modules/harnesses/workflowProfileSelection.js'
 import { authorizeOperatorProfileObservation } from './modules/harnesses/operatorProfileObservation.js'
-import { HarnessExecutionRequestSchema, OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
+import {
+  HarnessExecutionRequestSchema,
+  OperatorConfigurationVersionSchema,
+  RETIRED_OPENCODE_MESSAGE,
+  type AgentDefaults,
+} from '@foreman-code/contracts'
 import { inspectClaudeOperatorConfiguration } from './modules/harnesses/claudeSdk/operatorConfigurationInspection.js'
 import { requireClaudePolicyQualification } from './modules/harnesses/claudeSdk/configuration.js'
 import { qualificationError } from './modules/harnesses/qualificationErrors.js'
 import { authorizeOperatorConfigurationRead } from './modules/operators/configurationRead.js'
 import { operatorCodexFileAdmissions } from './modules/harnesses/operatorFiles/codex.js'
-import { adoptOperatorFilePublications, resolveOperatorOpenCodeFileAdmission } from './modules/harnesses/operatorFiles/postgres.js'
-import { OPERATOR_MCP_ENVIRONMENT_VARIABLE } from './modules/conversations/operatorChatAuthority.js'
 import { nativeCorrelation } from './modules/conversations/operatorChatRepository.js'
 import { randomUUID } from 'node:crypto'
 import { createWorkflowNativeCaptureChannel } from './modules/interactions/workflowNativeCapture.js'
@@ -129,8 +132,6 @@ import { createWorkflowArtifactOutputsGate } from './modules/runs/remote/workflo
 import { LocalWorkflowArtifactAuthority, workflowArtifactsAreLocal } from './modules/runs/remote/localWorkflowArtifactAuthority.js'
 import { LocalWorkflowArtifacts } from './modules/runs/remote/localWorkflowArtifacts.js'
 import { createLocalWorkflowNativeOutputs } from './modules/runs/remote/localWorkflowNativeOutputs.js'
-import { LocalWorkflowNativeOutputMcp } from './modules/runs/remote/localWorkflowNativeOutputMcp.js'
-import { assertOpenCodeNativeOutputCall } from './modules/runs/remote/localWorkflowOutputApproval.js'
 import { readAcceptedRepeatRunLocked } from './modules/runs/repeatStartRead.js'
 import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { qualifyCodex } from './modules/harnesses/codexProtocol.js'
@@ -172,7 +173,6 @@ import { NativeCodexPlugins } from './modules/harnesses/codexPlugins.js'
 import { workspaceStorageRoot } from './modules/workspaces/storage.js'
 import { HarnessDirectoryBrowser } from './modules/harnesses/directoryBrowser.js'
 import { CodexMcpConnections } from './modules/harnesses/codexMcpConnections.js'
-import { OpenCodeMcpConnections } from './modules/harnesses/openCodeMcpConnections.js'
 import type { CheckpointStore } from './infrastructure/checkpoints.js'
 import type { createDatabase } from './infrastructure/database.js'
 import { OperatorRuntimeOwner } from './infrastructure/operatorRuntimeOwner.js'
@@ -206,11 +206,10 @@ import { NativeHarnessFactories } from './modules/harnesses/runtimeFactory.js'
 import type { ProductionHarnessInfrastructure } from './modules/harnesses/productionInfrastructure.js'
 import { productionCodexChatFiles, type ProductionCodexChatFiles } from './modules/harnesses/codexFiles/production.js'
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from './modules/harnesses/mcpDetection.js'
-import { productionOpenCodeChatFiles } from './modules/harnesses/opencodeFiles/production.js'
 import { productionOperatorManagers } from './modules/harnesses/operatorFiles/managers.js'
 import { ExecutionReadinessService } from './modules/harnesses/executionReadiness.js'
 import { NativeRollout } from './modules/harnesses/nativeRollout.js'
-import type { NativeHarnessSessionManager, NativeOutputCallCapture } from './modules/harnesses/port.js'
+import type { NativeHarnessSessionManager } from './modules/harnesses/port.js'
 import { NativeHarnessConfigurationQualifier } from './modules/harnesses/nativeConfigurationQualifier.js'
 import { PostgresAppInteractionService } from './modules/interactions/app.js'
 import { PostgresApprovalBudgetRepository } from './modules/interactions/budget.js'
@@ -266,7 +265,7 @@ export function buildProductionApp(
   const workerExecution = new WorkerExecutionPolicy(config.workerExecution)
   if (infrastructure?.mode === 'replay' && (!infrastructure.auxiliary
     || !infrastructure.auxiliary.compatibility || !infrastructure.auxiliary.plugins
-    || !infrastructure.auxiliary.mcp?.codex || !infrastructure.auxiliary.mcp.opencode
+    || !infrastructure.auxiliary.mcp?.codex
     || !infrastructure.auxiliary.command || !infrastructure.auxiliary.recovery || !infrastructure.inventoryDiscovery || qualificationSuites)) {
     throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay must inject settings and probes and cannot run installed CLI qualification.', 500)
   }
@@ -450,7 +449,7 @@ export function buildProductionApp(
           { operation: 'discover', refreshId: randomUUID() }, { signal })
         signal.throwIfAborted()
         if (selectedSuites) await retainInstalledHarnessInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
-          binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision, opencodeSuiteRevision: selectedSuites.opencode.revision })
+          binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision })
         else harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
       }
       if (infrastructure?.deviceDomains) await infrastructure.deviceDomains.reconcile(binding, signal, endpoint)
@@ -466,7 +465,6 @@ export function buildProductionApp(
   let artifactResultSource: ReturnType<typeof createProductionWorkflowArtifactResultSource> | undefined
   let artifactOutputsGate: ReturnType<typeof createWorkflowArtifactOutputsGate> | undefined
   let localWorkflowArtifacts: LocalWorkflowArtifacts | undefined
-  let localNativeOutputMcp: LocalWorkflowNativeOutputMcp | undefined
   const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify, (sql, owner, capture) => {
     if (!remoteWorkflow) throw new DomainError('REMOTE_WORKFLOW_UNAVAILABLE', 'The actual original native physical composition is unavailable.', 503)
     return remoteWorkflow.assertPhysical(sql, owner, capture)
@@ -494,7 +492,6 @@ export function buildProductionApp(
       if (await workflowArtifactsAreLocal(database.pool, execution.runId, execution.workflowNodeId)) {
         if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
           'Local workflow artifact storage is unavailable.', 503)
-        await localNativeOutputMcp?.cleanupClosed()
         await localWorkflowArtifacts.recover(owner, execution, signal)
         return
       }
@@ -593,19 +590,17 @@ export function buildProductionApp(
   const selectedSuites = qualificationSuites && identity ? {
     codex: withQualificationIdentity(withNativeQualificationOwnership(qualificationSuites.codex, processRegistry,
       (input) => { const binding = identity.pin('codex', input); return (signal) => nativeFactories.assertInstallationUnchanged(binding, signal) }), identity.registry, (input) => identity.pin('codex', input)),
-    opencode: withQualificationIdentity(withNativeQualificationOwnership(qualificationSuites.opencode, processRegistry,
-      (input) => { const binding = identity.pin('opencode', input); return (signal) => nativeFactories.assertInstallationUnchanged(binding, signal) }), identity.registry, (input) => identity.pin('opencode', input)),
   } : qualificationSuites
   const qualificationRegistry = selectedSuites ? new HarnessQualificationRegistry(qualificationRepository, {
-    codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
+    codex: selectedSuites.codex.revision,
   }) : undefined
   const harnessQualifications = selectedSuites && qualificationRegistry ? new HarnessQualificationService(
     qualificationRepository, qualificationRegistry, selectedSuites,
-    { codex: config.harnesses.codexBinary, opencode: config.harnesses.openCodeBinary }, commands, settings,
+    { codex: config.harnesses.codexBinary }, commands, settings,
     undefined, (harness) => harnessCompatibility.refreshAfterQualification(harness),
     (harness, binary, timeoutMs) => compatibilityProbe(timeoutMs, { harness, binary }),
     (harness, signal) => {
-      if (harness !== 'codex' && harness !== 'opencode') throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'Unsupported qualification driver.', 409)
+      if (harness !== 'codex') throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'Unsupported qualification driver.', 409)
       return harnessRegistry.refreshMain(signal)
     },
   ) : undefined
@@ -618,8 +613,7 @@ export function buildProductionApp(
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   // One endpoint for every role; the bearer credential decides Operator, Orchestrator or Coder.
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
-  const nativeFactories = new NativeHarnessFactories({ ...config.harnesses, appMcpEndpoint, responseJournal,
-    openCodeFileStorageRoot: fileStorageRoot,
+  const nativeFactories = new NativeHarnessFactories({ codexBinary: config.harnesses.codexBinary, responseJournal,
     refreshInstallations: signal => harnessRegistry.refreshMain(signal),
     instances: harnessRegistry.instances, installations: harnessRegistry.installations,
     selectDefault: (harness) => harnessRegistry.pinDefault(harness),
@@ -716,7 +710,7 @@ export function buildProductionApp(
           assertCurrent: async () => { await nativeFactories.assertInstallationUnchanged(binding, input.signal); harnessRegistry.installations.assertCurrent(binding) } }) }
         finally { await close() }
       } }, workerExecution), selectedSuites ? createInstalledNativeQualificationRetention({
-      repository: qualificationRepository, suiteRevision: selectedSuites.codex.revision, opencodeSuiteRevision: selectedSuites.opencode.revision,
+      repository: qualificationRepository, suiteRevision: selectedSuites.codex.revision,
       currentBinding: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, 'host-harness-check-v1')?.binding ?? null,
       currentInstallation: value => harnessRegistry.pinOverride(value).installation,
       async refreshInstallation(value, signal) {
@@ -727,7 +721,7 @@ export function buildProductionApp(
         const result = await captured.request({ operation: 'discover', refreshId: randomUUID() }, { signal: bounded })
         bounded.throwIfAborted()
         await retainInstalledHarnessInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
-          binding: captured.binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision, opencodeSuiteRevision: selectedSuites.opencode.revision })
+          binding: captured.binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision })
       },
     }) : undefined)
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
@@ -743,11 +737,10 @@ export function buildProductionApp(
   })
   const claudeMetadata = infrastructure?.mode === 'replay' ? undefined : productionClaudeMetadata({ registry: harnessRegistry,
     processes: processRegistry, factories: nativeFactories, settings: hostSettings, defaults: () => settings.getHarnessDefaults(), current: claudeDiscovery.currentForConfiguration })
-  const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary, nativeFactories, claudeMetadata)
+  const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, nativeFactories, claudeMetadata)
   const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot, appMcpEndpoint)
   const nativeConfigurations = new NativeConfigurationService(
-    config.harnesses.codexBinary, config.harnesses.openCodeBinary, config.harnesses.workspaceRoot, nativeFactories,
-    claudeMetadata, infrastructure?.auxiliary?.command,
+    config.harnesses.codexBinary, config.harnesses.workspaceRoot, nativeFactories, claudeMetadata,
   )
   const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint)
   const harnessSettings = {
@@ -756,15 +749,17 @@ export function buildProductionApp(
       processRegistry.scope('settings:plugins:codex')), () => processRegistry.closeOwner('settings:plugins:codex')),
     mcp: new HarnessMcpSettingsService(database.pool, commands, {
       codex: infrastructure?.auxiliary?.mcp.codex ?? new CodexMcpConnections(config.harnesses.codexBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:codex')),
-      opencode: infrastructure?.auxiliary?.mcp.opencode ?? new OpenCodeMcpConnections(config.harnesses.openCodeBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:opencode')),
     }, () => { harnessCatalog.invalidateChecks(); nativeConfigurations.invalidateOptions() }, async () => {
-      await Promise.all([processRegistry.closeOwner('settings:mcp:codex'), processRegistry.closeOwner('settings:mcp:opencode')])
+      await processRegistry.closeOwner('settings:mcp:codex')
     }, appMcpEndpoint),
   }
   const launchScopes = new WeakMap<NativeHarnessSessionManager, NativeProcessRecovery>()
   const claudeLaunches = new WeakMap<NativeHarnessSessionManager, ReturnType<typeof productionClaudeManager>>()
   const managers = new ExecutionScopedNativeSessionManagerResolver((context, getOwner) => {
     const configuration = context.configuration.harness
+    if (configuration.harness === 'opencode') {
+      throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+    }
     if (configuration.harness !== context.harness) {
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The pinned configuration does not match the execution harness.', 409)
     }
@@ -831,8 +826,8 @@ export function buildProductionApp(
       configured: { instanceId: selection?.instance.instanceId ?? context.agentId, instanceRevision: context.configuration.id, driverId: configuration.harness,
         enabled: true, configuration },
       processRecovery: recovery, appMcpAccess: 'scoped',
-      ...(configuration.harness === 'codex' ? { harness: 'codex' as const, ...(nativeOutputs ? { nativeOutputs } : {}) }
-        : { harness: 'opencode' as const, ...(configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}) }),
+      harness: 'codex',
+      ...(nativeOutputs ? { nativeOutputs } : {}),
     })
     launchScopes.set(manager, recovery)
     return manager
@@ -1021,53 +1016,6 @@ export function buildProductionApp(
     prepareWorkflowManagerContext,
     executionId => remoteWorkflow.afterReviewCommit(executionId),
   )
-  const captureLocalNativeOutputCall = async (executionId: string, toolName: string,
-    args: unknown, signal: AbortSignal): Promise<NativeOutputCallCapture> => {
-    const deadline = AbortSignal.any([signal, AbortSignal.timeout(30_000)])
-    for (;;) {
-      deadline.throwIfAborted()
-      const owned = approvals.passiveOwnedNativeSessions().find(item => item.execution.id === executionId
-        && item.session.harness === 'opencode' && item.manager.harness === 'opencode')
-      if (owned) {
-        try {
-          owned.assertCurrent()
-          const lane = await repository.coordination.getLane('opencode', owned.session.nativeSessionId)
-          if (lane?.id === owned.writer.id && lane.leaseToken === owned.writer.token
-            && lane.ownerAgentId === owned.execution.agentId
-            && lane.connectionGeneration === owned.writer.connectionGeneration
-            && lane.correlationId === `execution:${executionId}` && lane.currentTurnOrMessageId) {
-            if (!owned.manager.captureNativeOutputCall) throw new DomainError('WORKFLOW_NATIVE_OUTPUT_CAPTURE_REQUIRED',
-              'The native output call cannot be inspected on its original owner.', 409)
-            const capture = await owned.manager.captureNativeOutputCall(owned.session, toolName, args,
-              AbortSignal.any([signal, owned.signal]))
-            if (capture.descriptor.rootTurnId !== lane.currentTurnOrMessageId) throw new DomainError(
-              'WORKFLOW_NATIVE_OUTPUT_CALL_CONFLICT', 'The native output call belongs to another turn.', 409)
-            const assertCurrent = () => {
-              owned.assertCurrent()
-              capture.assertCurrent()
-              signal.throwIfAborted()
-            }
-            assertCurrent()
-            return { ...capture, assertCurrent }
-          }
-        } catch (error) {
-          if (!(error instanceof DomainError) || !['SESSION_LANE_LEASE_LOST', 'WORKER_EXECUTION_IDENTITY_INVALID']
-            .includes(error.code)) throw error
-        }
-      }
-      const execution = await runs.getExecution(executionId)
-      const run = execution && await runs.get(execution.runId)
-      if (!execution || !run || execution.state === 'completed' || run.executionState === 'completed'
-        || !['running', 'waiting'].includes(run.executionState) || await runs.hasPendingCleanup(run.id)) throw new DomainError(
-        'WORKFLOW_NATIVE_OUTPUT_CALL_CONFLICT', 'The native output execution is no longer active.', 409)
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => { deadline.removeEventListener('abort', abort); resolve() }, 25)
-        const abort = () => { clearTimeout(timer); deadline.removeEventListener('abort', abort); reject(deadline.reason) }
-        deadline.addEventListener('abort', abort, { once: true })
-        if (deadline.aborted) abort()
-      })
-    }
-  }
   let telemetry: ResourceTelemetryRuntime | undefined
   const telemetryLifetime = new AbortController()
   let mainTelemetryContext: Extract<TrustedTelemetryContext, { kind: 'main-local' }> | null = null
@@ -1095,7 +1043,6 @@ export function buildProductionApp(
     operators: operatorConversations, agents: agentConversations, registry: harnessRegistry,
     qualifications: qualificationRepository, access, mcpForward: () => selectedMainMcpForward(app),
     fileService: () => productionFileTools(app),
-    fileStorageRoot,
     files: (conversationId, configuration, workingDirectory) => async ({ host, assertHost, ...turn }) => {
       const admissions = 'operatorId' in configuration
         ? operatorCodexFileAdmissions(() => app, database.pool, configuration, workingDirectory, fileStorageRoot,
@@ -1107,7 +1054,7 @@ export function buildProductionApp(
       return productionCodexChatFiles(() => app, conversationId, admissions).prepare(turn)
     },
     suiteRevisions: selectedSuites ? {
-      codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
+      codex: selectedSuites.codex.revision,
     } : {} })
   const recoverChatCompaction = async (
       configuration: import('@foreman-code/contracts').OperatorConfigurationVersion | import('@foreman-code/contracts').AgentConfigurationVersion,
@@ -1115,6 +1062,9 @@ export function buildProductionApp(
       start: import('./modules/harnesses/port.js').NativeSessionStart, state: import('@foreman-code/contracts').CompactionState,
       principalId: string, signal: AbortSignal,
     ) => {
+      if (session.harness === 'opencode' || configuration.harness.harness === 'opencode') {
+        throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+      }
       if (configuration.harnessProfileSelection?.target.hostRef.kind === 'device') {
         const manager = workerChats.create({ configuration, conversationId, workingDirectory: sessionStartDirectory(start),
           appMcpAccess: 'none', observationPrincipalId: principalId })
@@ -1146,22 +1096,20 @@ export function buildProductionApp(
     }
   const resolveOperatorManager = productionOperatorManagers({
     app: () => app, pool: database.pool, config, workingDirectory: operatorWorkingDirectory,
-    endpointHost, appMcpEndpoint, processRegistry, responseJournal, managers: operatorManagers, nativeFactories,
+    processRegistry, responseJournal, managers: operatorManagers, nativeFactories,
     createDevice: (configuration, conversationId, fileInputs) => workerChats!.create({
       configuration, conversationId, workingDirectory: operatorWorkingDirectory, appMcpAccess: fileInputs ? 'none' : 'scoped' }),
     createSelected: (configuration, conversationId, fileInputs, recovery) => {
+      if (configuration.harness.harness === 'opencode') {
+        throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+      }
       if (!configuration.harnessProfileSelection || configuration.harness.harness === 'claude') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The selected Operator driver profile is unavailable.', 409)
       return productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
         selector: configuration.harnessProfileSelection, binding: { kind: 'operator', conversationId, repository: operatorConversations },
         configuration: configuration.harness, role: 'operator', workingDirectory: operatorWorkingDirectory, ownerAgentId: configuration.operatorId,
         recovery, appMcpAccess: 'scoped',
-        ...(configuration.harness.harness === 'opencode' ? { credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE } : {}),
         ...(fileInputs ? { files: productionCodexChatFiles(() => app, conversationId, operatorCodexFileAdmissions(() => app, database.pool,
-          configuration, operatorWorkingDirectory, fileStorageRoot)),
-          openCodeFiles: (server: OpenCodeServerController) => productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost, {
-            resolve: (pool, id, identity) => resolveOperatorOpenCodeFileAdmission(pool, id, configuration, operatorWorkingDirectory, identity),
-            adoptPublished: adoptOperatorFilePublications,
-          }) } : {}),
+          configuration, operatorWorkingDirectory, fileStorageRoot)) } : {}),
       }).manager
     },
     createClaude: (configuration, conversationId, fileInputs, recovery) => {
@@ -1242,6 +1190,9 @@ export function buildProductionApp(
   )
   const agentChatManagers = new Map<string, NativeHarnessSessionManager>()
   const resolveAgentChatManager: AgentChatManagerFactory = (conversationId, configuration, workingDirectory) => {
+    if (configuration.harness.harness === 'opencode') {
+      throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+    }
     const existing = agentChatManagers.get(conversationId)
     if (existing) return existing
     if (configuration.harnessProfileSelection?.target.hostRef.kind === 'device') {
@@ -1272,8 +1223,7 @@ export function buildProductionApp(
         selector: configuration.harnessProfileSelection,
         binding: { kind: 'agent', conversationId, workspaceId: configuration.workspaceId, repository: agentConversations },
         configuration: harness, role: 'agent-chat', workingDirectory, ownerAgentId: configuration.agentId, recovery, appMcpAccess: 'none',
-        files: productionCodexChatFiles(() => app, conversationId, chatFileAdmissions),
-        openCodeFiles: (server) => productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost) })
+        files: productionCodexChatFiles(() => app, conversationId, chatFileAdmissions) })
       agentChatManagers.set(conversationId, manager)
       return manager
     }
@@ -1284,11 +1234,8 @@ export function buildProductionApp(
       configured: { instanceId: selection?.instance.instanceId ?? configuration.agentId, instanceRevision: configuration.id, driverId: harness.harness,
         enabled: true, configuration: harness },
       processRecovery: recovery, appMcpAccess: 'none',
-      ...(harness.harness === 'codex' ? { harness: 'codex' as const,
-        chatFiles: productionCodexChatFiles(() => app, conversationId, chatFileAdmissions) }
-        : { harness: 'opencode' as const,
-          ...(harness.advanced ? { advancedConfiguration: harness.advanced } : {}),
-          chatFiles: (server: OpenCodeServerController) => productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost) }),
+      harness: 'codex',
+      chatFiles: productionCodexChatFiles(() => app, conversationId, chatFileAdmissions),
     })
     agentChatManagers.set(conversationId, manager)
     return manager
@@ -1435,19 +1382,7 @@ export function buildProductionApp(
     appMcp: { access, interactions: Object.assign(new PostgresAppInteractionService(database.pool, repository, commands, interactions), {
       syncedFolder: (workspaceId: string, hostRef: { kind: 'main' } | { kind: 'device'; deviceId: string }) =>
         runtimeServices.computerSync?.sharedFolder(workspaceId, hostRef) ?? Promise.resolve(null) }) },
-    workerArtifacts: () => {
-      const local = localNativeOutputMcp, remote = workflowArtifacts?.extension
-      if (!local) return remote
-      return {
-        async register(server, request, principal) {
-          if (await local.isLocal(principal)) await local.register(server, request, principal)
-          else await remote?.register(server, request, principal)
-        },
-        async call(request, principal, body) {
-          return await local.call(request, principal, body) ?? await remote?.call(request, principal, body)
-        },
-      }
-    },
+    workerArtifacts: () => workflowArtifacts?.extension,
     mcpDetection: { pool: database.pool, service: detection },
     logger,
   })
@@ -1503,7 +1438,6 @@ export function buildProductionApp(
       { name: 'worker conversation callback admissions', run: async () => { await workerChats?.close() } },
       { name: 'installed rsync canonical receiver', run: () => entrypoint ? entrypoint.close() : undefined },
       { name: 'workflow artifact byte receiver', run: async () => { await workflowArtifacts?.receiver.close() } },
-      { name: 'closed local native output bytes', run: async () => { await localNativeOutputMcp?.cleanupClosed() } },
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
@@ -1543,6 +1477,19 @@ export function buildProductionApp(
   const assertOpen = (): void => {
     if (closing) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'The native runtime is shutting down.', 503)
   }
+  const synchronizeOperatorDefaults = async (
+    current: Awaited<ReturnType<PostgresOperatorRepository['ensure']>>,
+    template: AgentDefaults['operator'],
+  ): Promise<void> => {
+    if (current.configuration.harness.harness === 'opencode') {
+      await inTransaction(database.pool, undefined, client => operators.updateWithClient(
+        client, template.harness, current.operator.currentConfigurationVersionId,
+        template.showThinking ?? false, template.assignedSkills, template.harnessProfileSelection ?? null,
+      ))
+      return
+    }
+    await operators.update(template.harness, current.operator.currentConfigurationVersionId)
+  }
   const initialize = (): Promise<void> => {
     if (closing) return Promise.reject(new DomainError('NATIVE_RUNTIME_CLOSING', 'The native runtime is shutting down.', 503))
     if (initialized) return Promise.resolve()
@@ -1561,7 +1508,7 @@ export function buildProductionApp(
       const defaults = await foundationSettings.getAgentDefaults()
       assertOpen()
       if (!isDeepStrictEqual(operator.configuration.harness, defaults.value.operator.harness)) {
-        await operators.update(defaults.value.operator.harness, operator.operator.currentConfigurationVersionId)
+        await synchronizeOperatorDefaults(operator, defaults.value.operator)
         assertOpen()
       }
       await chatAuthority.revokeOrphanedCredentials()
@@ -1656,7 +1603,7 @@ export function buildProductionApp(
         ...(infrastructure?.jobs ? { infrastructure: infrastructure.jobs } : {}) })
       if (selectedSuites) {
         agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
-          harnessRegistry, { codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision },
+          harnessRegistry, { codex: selectedSuites.codex.revision },
           workerExecution, host => hostProfileChecks.assertReady(host))
         agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, agentPlacement)
         executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)
@@ -1673,15 +1620,6 @@ export function buildProductionApp(
             'Local workflow artifact storage is unavailable.', 503)
           return fileStorage
         })
-      localNativeOutputMcp = new LocalWorkflowNativeOutputMcp({ pool: database.pool, commands,
-        artifacts: () => {
-          if (!localWorkflowArtifacts) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE',
-            'Local workflow artifact storage is unavailable.', 503)
-          return localWorkflowArtifacts
-        }, nativeCall: (executionId, toolName, args, signal) =>
-          captureLocalNativeOutputCall(executionId, toolName, args, signal),
-        authorizeNativeCall: (sql, executionId, command, capture) =>
-          assertOpenCodeNativeOutputCall(sql, capture, { executionId, command }) })
       const outputAuthorization = infrastructure?.nativeOutputAuthorization?.(artifactAuthority)
         ?? createWorkerNativeOutputAuthorizationPort(artifactAuthority, async (input, connection, sql) => {
           const binding = deviceRuntime.currentBinding(connection.deviceId)
@@ -1827,7 +1765,7 @@ export function buildProductionApp(
       const initializedDefaults = await foundationSettings.getAgentDefaults()
       const currentOperator = await operators.ensure()
       if (!isDeepStrictEqual(currentOperator.configuration.harness, initializedDefaults.value.operator.harness)) {
-        await operators.update(initializedDefaults.value.operator.harness, currentOperator.operator.currentConfigurationVersionId)
+        await synchronizeOperatorDefaults(currentOperator, initializedDefaults.value.operator)
       }
     })()
     await nativeDefaultsInitialization
@@ -1840,7 +1778,6 @@ export function buildProductionApp(
       if (jobRuntime) await jobRuntime.reconcileMaterializationReservations(report)
       if (jobRuntime) await closeCompletedWorkflowSources(database.pool, jobRuntime.sources, report)
       if (jobRuntime) await jobRuntime.sources.releaseUnusedSnapshots(report)
-      await localNativeOutputMcp?.cleanupClosed()
       await engine.reconcile(report)
       if (closing) return
       if (initialized) {

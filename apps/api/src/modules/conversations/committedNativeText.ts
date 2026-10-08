@@ -9,17 +9,17 @@ import type { NativeSessionReference } from '@foreman-code/contracts'
 /** Canonical message writes precede presentation coalescing; each source operation keeps its provenance. */
 export function committedNativeText(input: {
   id: string; requestId: string; repository: PostgresOperatorConversationRepository;
-  harness: 'codex' | 'opencode' | 'claude'; session: NativeSessionReference;
+  harness: 'codex' | 'claude'; session: NativeSessionReference;
   owner(): Omit<ActivityTextIdentity, 'itemId' | 'partId' | 'parentId' | 'channel'>;
   reconcile(): void;
   sanitize?(operation: ActivityTextOperation): ActivityTextOperation;
 }) {
-  const kinds = new Map<string, string>(), parents = new Map<string, string>()
+  const parents = new Map<string, string>()
   let revision: string | undefined
   return {
     revision: () => revision,
     async record(event: NativeHarnessEvent, nativeTurnId: string | null, nativeSubmission?: NativeMessageSubmission): Promise<{ allowed: boolean; handled: boolean; final: boolean }> {
-      const normalized = normalizeNativeTextOperations(event, { harness: input.harness, owner: input.owner, kinds, parents })
+      const normalized = normalizeNativeTextOperations(event, { harness: input.harness, owner: input.owner, parents })
       const publicText = normalized.filter((operation): operation is ActivityTextOperation => !!operation && operation.identity.channel === 'assistant')
       if (!publicText.length) return { allowed: true, handled: false, final: false }
       if (!nativeTurnId && !nativeSubmission) { input.reconcile(); return { allowed: false, handled: true, final: false } }

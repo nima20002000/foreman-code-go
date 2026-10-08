@@ -38,7 +38,7 @@ it.each(['endpoint', 'credential', 'arrangement', 'harness', 'server', 'broken',
     if (defect === 'endpoint') f.detection.endpointMatches = false
     if (defect === 'credential') f.detection.credentialEnvironmentVariable = null
     if (defect === 'arrangement') f.detection.credentialArrangement = { kind: 'unknown' }
-    if (defect === 'harness') f.detection.harness = 'opencode'
+    if (defect === 'harness') f.detection.harness = 'claude'
     if (defect === 'server') f.detection.serverName = 'another-server'
     if (defect === 'broken') f.detection.state = 'broken'
     if (defect === 'missing') f.detection.state = 'not_detected'

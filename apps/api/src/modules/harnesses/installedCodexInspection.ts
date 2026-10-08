@@ -29,8 +29,7 @@ const unavailable = (reason: string): never => { throw new DomainError('HARNESS_
 
 /** Worker-safe file inspection only: no DB, version/login command, model turn,
  * installation, qualification run, or authority inferred from a config flag. */
-export async function inspectInstalledHarness(input: {
-  harness: 'codex' | 'opencode'
+export async function inspectInstalledCodex(input: {
   binding: Readonly<DeviceSessionBinding>
   configuration: InstalledWorkflowConfigurationLocation | null
   environment: NodeJS.ProcessEnv
@@ -47,7 +46,7 @@ export async function inspectInstalledHarness(input: {
   } }
   const configuration = await readInstalledWorkflowConfiguration(input.configuration)
   input.signal.throwIfAborted()
-  const selection = configuration && installedHarnessSelection(configuration, input.harness)
+  const selection = configuration && installedHarnessSelection(configuration)
   if (!selection) return { inventory: HarnessRegistryReadbackSchema.parse(inventory), currentTarget: null }
   const generation = () => commandInputHash({ path: input.environment.PATH ?? '', cwd: input.cwd, node: process.execPath,
     platform: process.platform, architecture: process.arch, nodeOptions: input.environment.NODE_OPTIONS ?? '' })
@@ -57,7 +56,7 @@ export async function inspectInstalledHarness(input: {
   let complete = false
   if (launcher.status === 'installed' && launcher.resolvedLauncher) {
     // A standalone worker may not contain this application's bundled npm launcher.
-    const payload = await passiveDriverPayloads(input.harness, launcher.resolvedLauncher).catch(() => ({ complete: false, paths: [] }))
+    const payload = await passiveDriverPayloads('codex', launcher.resolvedLauncher).catch(() => ({ complete: false, paths: [] }))
     complete = payload.complete
     const paths = [...new Set([...selection.payloadPaths, ...payload.paths, ...(launcher.interpreter ? [launcher.interpreter] : [])])]
     launcher = await discoverLauncher(selection.binary, environment, paths, input.signal)
@@ -69,9 +68,9 @@ export async function inspectInstalledHarness(input: {
   input.signal.throwIfAborted()
   if (commandInputHash(current) !== commandInputHash(configuration) || commandInputHash(binding) !== commandInputHash(input.binding) || environment.generation !== generation()) unavailable('installed_context_changed')
   const installation: HostHarnessInstallationDto = {
-    hostRef, harnessInstallationId: commandInputHash({ hostRef, driverId: input.harness, launcher: launcher.resolvedLauncher ?? selection.binary }),
+    hostRef, harnessInstallationId: commandInputHash({ hostRef, driverId: 'codex', launcher: launcher.resolvedLauncher ?? selection.binary }),
     installationFingerprint: complete && launcher.status === 'installed' ? launcher.fingerprint : null,
-    driverId: input.harness, driverRevision: '1', protocolRevision: `${input.harness}-native-adapter-v1`,
+    driverId: 'codex', driverRevision: '1', protocolRevision: 'codex-native-adapter-v1',
     environmentGeneration: environment.generation, connectionGeneration: harnessConnectionGeneration(binding),
     launcher, observedVersion: null, installed: launcher.status === 'installed', authenticated: null, compatible: null, qualified: false,
   }
@@ -80,7 +79,7 @@ export async function inspectInstalledHarness(input: {
   const currentTarget = installation.installationFingerprint && binarySha256 ? {
     binding, target: { hostRef, applicationInstallationId: binding.workerInstallationId,
       harnessInstallationId: installation.harnessInstallationId, installationFingerprint: installation.installationFingerprint },
-    installation, binarySha256, expectedVersion: normalizeHarnessVersion(input.harness, selection.expectedVersion),
+    installation, binarySha256, expectedVersion: normalizeHarnessVersion(selection.expectedVersion),
   } : null
   return { inventory: HarnessRegistryReadbackSchema.parse(inventory), currentTarget }
 }
@@ -88,11 +87,11 @@ export async function inspectInstalledHarness(input: {
 /** Main-side read port over the existing persisted exact-binary qualification.
  * The authenticated execution authority owns calling this after its live tuple
  * checks. Worker file inventory and known baselines do not create a proof. */
-export async function readInstalledHarnessQualification(repository: Pick<HarnessQualificationRepository, 'findInstalled'>,
+export async function readInstalledCodexQualification(repository: Pick<HarnessQualificationRepository, 'findInstalled'>,
   current: Pick<CurrentInstalledHarnessTarget, 'target' | 'binarySha256' | 'installation'>,
   suiteRevision: string): Promise<HarnessQualification | null> {
   const harness = current.installation.driverId
-  if (harness !== 'codex' && harness !== 'opencode') return null
+  if (harness !== 'codex') return null
   const records = await repository.findInstalled(current.target, current.binarySha256, suiteRevision)
   if (records.length !== 1) return null
   const record = records[0]
@@ -113,16 +112,15 @@ export async function retainInstalledHarnessInventory(input: {
   binding: DeviceSessionBinding
   inventory: unknown
   suiteRevision: string
-  opencodeSuiteRevision?: string
 }): Promise<void> {
   const inventory = HarnessRegistryReadbackSchema.parse(input.inventory)
   for (const installation of inventory.installations) {
     const harness = installation.driverId
-    if (harness !== 'codex' && harness !== 'opencode') continue
+    if (harness !== 'codex') continue
     installation.observedVersion = null; installation.qualified = false
     installation.authenticated = null; installation.compatible = null
     const sha256 = installation.launcher.payloadFingerprints?.find(value => value.path === installation.launcher.resolvedLauncher)?.fingerprint
-    const suiteRevision = harness === 'codex' ? input.suiteRevision : input.opencodeSuiteRevision
+    const suiteRevision = input.suiteRevision
     if (!sha256 || !installation.installationFingerprint || !suiteRevision) continue
     const target = { hostRef: installation.hostRef, applicationInstallationId: input.binding.workerInstallationId,
       harnessInstallationId: installation.harnessInstallationId, installationFingerprint: installation.installationFingerprint }
@@ -140,20 +138,3 @@ export async function retainInstalledHarnessInventory(input: {
 
 export type CurrentInstalledCodexTarget = CurrentInstalledHarnessTarget
 export type InstalledCodexInspection = InstalledHarnessInspection
-
-export function inspectInstalledCodex(input: Omit<Parameters<typeof inspectInstalledHarness>[0], 'harness'>) {
-  return inspectInstalledHarness({ ...input, harness: 'codex' })
-}
-
-export function readInstalledCodexQualification(repository: Pick<HarnessQualificationRepository, 'findInstalled'>,
-  current: CurrentInstalledCodexTarget, suiteRevision: string) {
-  return readInstalledHarnessQualification(repository, current, suiteRevision)
-}
-
-export async function inspectInstalledWorkflowHarnesses(
-  input: Omit<Parameters<typeof inspectInstalledHarness>[0], 'harness'>): Promise<HarnessRegistryReadback> {
-  const codex = await inspectInstalledHarness({ ...input, harness: 'codex' })
-  const opencode = await inspectInstalledHarness({ ...input, harness: 'opencode' })
-  return HarnessRegistryReadbackSchema.parse({ ...codex.inventory,
-    installations: [...codex.inventory.installations, ...opencode.inventory.installations] })
-}

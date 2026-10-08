@@ -27,19 +27,8 @@ export async function readProjectionContext(sql: GraphSqlClient, executionId: st
 }
 export async function projectSubagentEvent(sql: GraphSqlClient, context: SubagentProjectionContext, input: unknown) {
   const event = HarnessNativeEventSchema.parse(input)
+  if (context.provider === 'opencode') return
   const payload = event.payload
-  const info = payload.info && typeof payload.info === 'object' ? payload.info as Record<string, unknown> : {}
-  if (context.provider === 'opencode' && event.type === 'message.updated' && typeof info.sessionID === 'string'
-    && typeof info.id === 'string' && (info.role === 'assistant' || info.role === 'user')) {
-    await sql.query(`insert into run_subagent_message_roles(execution_id,native_session_id,native_message_id,role) values($1,$2,$3,$4)
-      on conflict do nothing`, [event.executionId, info.sessionID, info.id, info.role])
-  }
-  const part = payload.part && typeof payload.part === 'object' ? payload.part as Record<string, unknown> : {}
-  if (context.provider === 'opencode' && typeof part.messageID === 'string' && typeof part.sessionID === 'string') {
-    const role = (await sql.query<{ role: string }>('select role from run_subagent_message_roles where execution_id=$1 and native_session_id=$2 and native_message_id=$3',
-      [event.executionId, part.sessionID, part.messageID])).rows[0]?.role
-    if (role) event.payload = { ...payload, subagentMessage: { role } }
-  }
   const children = await readChildren(sql, context.runId, context.parentExecutionId)
   const aliases = new Map<string, string>()
   if (context.provider === 'claude') {
@@ -59,16 +48,10 @@ export async function projectSubagentEvent(sql: GraphSqlClient, context: Subagen
   const changes = event.type === 'transport.disconnected' || event.type === 'claude.diagnostic' && ['CLAUDE_EOF_WITHOUT_RESULT', 'CLAUDE_STREAM_ERROR_WITHOUT_RESULT'].includes(String(payload.code))
     ? children.filter(child => !['completed', 'failed', 'canceled'].includes(child.status)).map(child => ({ kind: 'status' as const, childId: (child.native.childSessionId ?? child.native.agentId)!, status: 'unknown' as const }))
     : normalizeSubagentEvent(context, event, children, aliases)
-  // The source receipt digests the original immutable record, not the role-enriched projection.
   await applySubagentChanges(sql, context, HarnessNativeEventSchema.parse(input), changes)
-  const sessionId = part.sessionID ?? info.sessionID ?? payload.sessionID
-  const possibleChild = isChildCandidate(event) || context.provider === 'opencode' && typeof sessionId === 'string' && sessionId !== context.parentSessionId
-  const known = children.some(child => (child.native.childSessionId ?? child.native.agentId) === (sessionId ?? payload.threadId)
-    || child.native.spawnToolUseId && child.native.spawnToolUseId === payload.parentToolUseId)
-  const retainedRole = known && event.type === 'message.updated' && (info.role === 'assistant' || info.role === 'user')
-  if (!changes.length && possibleChild && !retainedRole) {
+  if (!changes.length && isChildCandidate(event)) {
     await sql.query('insert into run_subagent_pending_events(execution_id,sequence) values($1,$2) on conflict do nothing', [event.executionId, event.sequence])
-  } else if (changes.length || retainedRole) {
+  } else if (changes.length) {
     await sql.query('delete from run_subagent_pending_events where execution_id=$1 and sequence=$2', [event.executionId, event.sequence])
   }
 }

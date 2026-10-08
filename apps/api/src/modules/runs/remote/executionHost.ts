@@ -3,7 +3,8 @@ import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
 import { HarnessExecutionRequestSchema, AgentConfigurationVersionSchema, ApprovalResponseOptionSchema,
-  withInteractionResponse, type NativeSessionReference, type HarnessExecutionRequest } from '@foreman-code/contracts'
+  RETIRED_OPENCODE_MESSAGE, withInteractionResponse, type NativeSessionReference, type HarnessExecutionRequest,
+  type RecordedAgentHarness, type AgentHarness } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent, type NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
 import { RemoteOwnerControlSchema, RemoteReviewerAssignmentSchema, remoteActiveNative, type RemoteReviewerRequest,
@@ -16,6 +17,14 @@ import { assertRuntimeLeafPath, assertRuntimeLeafBinding, type RuntimeLeafAttest
 import { readPlacement } from '../../placement/binding.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
+import { DomainError } from '../../errors.js'
+
+function executableHarness(harness: RecordedAgentHarness): AgentHarness {
+  if (harness === 'opencode') {
+    throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+  }
+  return harness
+}
 
 export interface RemoteExecutionHostPorts {
   journal: RemoteOperationJournal
@@ -220,6 +229,7 @@ export class RemoteExecutionHost {
   async inspect(raw: { intent: unknown; placement: unknown; configuration: unknown; executionPlacement?: NativeExecutionPlacement | undefined }, method: 'capabilities' | 'inspectMcp') {
     if (this.closing) throw new Error('Worker execution host is shutting down.')
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), configuration = AgentConfigurationVersionSchema.parse(raw.configuration)
+    const harness = executableHarness(configuration.harness.harness)
     if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId || placement.mainId !== this.ports.connection.mainId
       || intent.bindingHash !== placement.bindingHash || placement.payload.kind !== 'agent' || placement.payload.agentId !== configuration.agentId
       || placement.payload.agentConfigurationVersionId !== configuration.id) throw new Error('Remote discovery binding mismatch')
@@ -233,7 +243,7 @@ export class RemoteExecutionHost {
     controllers.add(controller); this.inspections.set(intent.operationId, controllers)
     try {
       const context = { executionId: intent.executionId, agentId: configuration.agentId,
-        harness: configuration.harness.harness, configuration,
+        harness, configuration,
         workingDirectory: executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd }
       const resolved = this.ports.managers.resolve(context)
       if (this.closing) throw new Error('Worker execution host is shutting down.')
@@ -261,6 +271,7 @@ export class RemoteExecutionHost {
   }
   private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@foreman-code/contracts').SessionPreferences | undefined }) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
+    const harness = executableHarness(request.configuration.harness.harness)
     const executionPlacement = 'kind' in placement.source && placement.source.kind === 'pending'
       ? readNativeExecutionBinding(placement, intent, raw.executionPlacement) : undefined
     if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
@@ -293,7 +304,7 @@ export class RemoteExecutionHost {
       const before = await this.ports.journal.status(intent.operationId)
       if (before.status !== 'known' || before.receipt.stopFence) throw new Error('Remote launch stopped before native submission')
       const context = { executionId: intent.executionId, agentId: request.configuration.agentId,
-        harness: request.configuration.harness.harness, configuration: request.configuration,
+        harness, configuration: request.configuration,
         workingDirectory: request.workingDirectory }
       const resolved = this.ports.managers.resolve(context)
       controller.signal.throwIfAborted()
@@ -338,6 +349,7 @@ export class RemoteExecutionHost {
       || status.receipt.terminal || !isDeepStrictEqual(status.receipt.intent, raw.intent)
       || status.receipt.native.sessionId !== raw.session.nativeSessionId) throw new Error('Original native recovery evidence required')
     const placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
+    const harness = executableHarness(request.configuration.harness.harness)
     const executionPlacement = 'kind' in placement.source && placement.source.kind === 'pending'
       ? readNativeExecutionBinding(placement, raw.intent, raw.executionPlacement) : undefined
     if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
@@ -356,7 +368,7 @@ export class RemoteExecutionHost {
     if (existing && (!isDeepStrictEqual(existing.request, request) || !isDeepStrictEqual(existing.session, raw.session)
       || !isDeepStrictEqual(existing.placement, placement))) throw new Error('Recovery changed original resident')
     const resolved = this.ports.managers.resolve({ executionId: raw.intent.executionId, agentId: request.configuration.agentId,
-      harness: request.configuration.harness.harness, configuration: request.configuration, workingDirectory: request.workingDirectory })
+      harness, configuration: request.configuration, workingDirectory: request.workingDirectory })
     // A saved provider thread is not the surviving original physical lifetime.
     // Cold attachment may launch a replacement process: never call it here.
     if (resolved.processState !== 'resident') throw new Error('Original resident native lifetime required; cold recovery unavailable')
@@ -591,7 +603,7 @@ export class RemoteExecutionHost {
     if (!allocation && resident) {
       allocation = { manager: resident.manager, context: {
         executionId: resident.intent.executionId, agentId: resident.request.configuration.agentId,
-        harness: resident.request.configuration.harness.harness, configuration: resident.request.configuration,
+        harness: executableHarness(resident.request.configuration.harness.harness), configuration: resident.request.configuration,
         workingDirectory: resident.request.workingDirectory,
       } }
     }

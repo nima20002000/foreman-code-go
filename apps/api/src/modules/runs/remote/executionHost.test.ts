@@ -87,6 +87,27 @@ async function productionShutdownFixture() {
 }
 
 describe('actual worker native-port adapter', () => {
+  it.each(['prepare', 'inspect'] as const)('rejects retired OpenCode before %s can allocate a native manager', async operation => {
+    const f = await setup()
+    const configuration: AgentConfigurationVersion = {
+      ...f.request.configuration,
+      harness: { harness: 'opencode', model: 'saved-provider/model', variant: '',
+        nativeAgent: 'build', thinking: true, autoApprove: false },
+    }
+    const resolve = vi.spyOn(f.managers, 'resolve')
+    const preflight = vi.spyOn(f.ports, 'preflight')
+    const result = operation === 'prepare'
+      ? f.host.prepare({ ...f, request: { ...f.request, configuration } })
+      : f.host.inspect({ ...f, configuration }, 'capabilities')
+    await expect(result).rejects.toMatchObject({ code: 'HARNESS_RETIRED' })
+    expect(resolve).not.toHaveBeenCalled()
+    expect(preflight).not.toHaveBeenCalled()
+    expect(await f.journal.status(f.intent.operationId)).toEqual({
+      status: 'unknown', reason: 'journal_absence_requires_reconciliation',
+    })
+    expect(f.state.starts).toBe(0)
+    expect(configuration.harness.harness).toBe('opencode')
+  })
   it.each(['questions', 'form'] as const)('delivers validated %s values once and recovers the complete response', async kind => {
     const f = await setup()
     await f.host.prepare(f)

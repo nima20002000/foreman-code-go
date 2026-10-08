@@ -59,7 +59,6 @@ export function readTestResourcesIdentity(config: ApiConfig): string | undefined
     environment.XDG_RUNTIME_DIR,
     environment.CODEX_HOME ?? join(home, '.codex'),
     environment.CLAUDE_CONFIG_DIR ?? join(home, '.claude'),
-    environment.OPENCODE_CONFIG_DIR ?? join(configHome, 'opencode'),
     environment.FOREMAN_CODE_APP_MCP_DIRECTORY ?? join(home, '.local/share/graphql/mcp'),
     environment.TMPDIR ?? tmpdir(),
     config.fileStorageRoot ?? defaultFileStorageRoot(),

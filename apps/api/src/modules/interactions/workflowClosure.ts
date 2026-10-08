@@ -10,7 +10,7 @@ import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-exe
 import { readExecutionPlacement } from '../placement/persistence.js'
 
 /** Backend-only lifetime receipt. It is not a native action or Run authority.
- * Reserve BEFORE credential preflight (which can spawn OpenCode), create or
+ * Reserve BEFORE credential preflight, create or
  * attach. Record ONLY after the captured manager confirms exact-session close.
  * No receipt is synthesized for pre-upgrade or uncertain native work. */
 export interface WorkflowClosureStore {

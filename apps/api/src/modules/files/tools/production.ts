@@ -25,7 +25,7 @@ export function registerProductionFileTools(app: FastifyInstance, pool: pg.Pool,
   return service
 }
 
-/** Trusted composition seam for later Codex/OpenCode registration. Never exposed as an HTTP issuer. */
+/** Trusted composition seam for native harness registration. Never exposed as an HTTP issuer. */
 export function productionFileTools(app: FastifyInstance): AgentFileToolService {
   const service = registered.get(app)
   if (!service) throw new Error('Register production file storage/tools before admitting a file session.')

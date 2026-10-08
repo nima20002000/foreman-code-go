@@ -1,5 +1,6 @@
 import type { NativeMcpInspectionEvidence, NativeMcpInspector } from './mcpDetection.js'
 import type { CodexAppServerSessionManager } from './codexAppServer.js'
+import { DomainError } from '../errors.js'
 
 export type CodexMcpConfigurationInspector = Pick<CodexAppServerSessionManager, 'inspectMcpConfiguration'>
 
@@ -15,6 +16,8 @@ function errorCode(error: unknown): string | undefined {
 export function codexMcpInspectorAdapter(manager: CodexMcpConfigurationInspector): NativeMcpInspector {
   return {
     async inspect(input): Promise<NativeMcpInspectionEvidence> {
+      if (input.harness !== 'codex') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH',
+        'This native configuration inspector supports Codex only.', 409)
       try {
         const result = await manager.inspectMcpConfiguration(input.workingDirectory, input.signal)
         return {

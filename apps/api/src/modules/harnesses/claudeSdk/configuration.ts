@@ -58,7 +58,7 @@ export interface ClaudeCompiledConfiguration {
 export function claudeEnvironment(configuration: ClaudeHarnessConfiguration, source: NodeJS.ProcessEnv, apiKey?: string): NodeJS.ProcessEnv {
   const env = inheritedAgentEnvironment(source)
   for (const key of Object.keys(env)) {
-    if (['BASH_ENV', 'ENV', 'NODE_OPTIONS', 'NODE_PATH', 'PYTHONPATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'SSH_AUTH_SOCK'].includes(key) || /(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)(?:_|$)/.test(key) || /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$|OPENAI_|CODEX_|OPENCODE_|GOOGLE_|GEMINI_|AWS_|AZURE_|VERTEX_|BEDROCK_)/.test(key)) delete env[key]
+    if (['BASH_ENV', 'ENV', 'NODE_OPTIONS', 'NODE_PATH', 'PYTHONPATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'SSH_AUTH_SOCK'].includes(key) || /(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)(?:_|$)/.test(key) || /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$|OPENAI_|CODEX_|GOOGLE_|GEMINI_|AWS_|AZURE_|VERTEX_|BEDROCK_)/.test(key)) delete env[key]
   }
   env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1'
   env.CLAUDE_CONFIG_DIR = configuration.configDirectory

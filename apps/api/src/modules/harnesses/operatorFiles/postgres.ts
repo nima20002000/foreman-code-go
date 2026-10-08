@@ -9,8 +9,6 @@ import { DomainError } from '../../errors.js'
 import { PostgresFileConversationAuthorization } from '../../files/authorization.js'
 import { bindingIdentity } from '../../files/tools/context.js'
 import type { FileToolContext } from '../../files/tools/types.js'
-import { nativeMessageId } from '../opencodeProtocol.js'
-import type { OpenCodeChatFileIdentity } from '../opencodeFiles/chat.js'
 
 interface ReceiptRow {
   owner_principal_id: string
@@ -18,7 +16,7 @@ interface ReceiptRow {
   operator_configuration_version_id: string
   native_session_id: string | null
   provider_version: string | null
-  harness: 'codex' | 'opencode'
+  harness: 'codex' | 'claude'
   active_request_id: string | null
   active_native_turn_id: string | null
   active_phase: string | null
@@ -126,26 +124,6 @@ export async function recordOperatorFileSubmission(pool: pg.Pool, conversationId
       and t.payload->>'attachmentIdentity' is not null`, [conversationId, requestId, nativeTurnId])
   if (result.rowCount !== 1) throw new DomainError(
     'OPERATOR_FILE_SUBMISSION_MISMATCH', 'The native file acknowledgement could not be bound to its Operator message.', 409)
-}
-
-export async function resolveOperatorOpenCodeFileAdmission(pool: pg.Pool, conversationId: string,
-  configuration: OperatorConfigurationVersion, workingDirectory: string, identity: OpenCodeChatFileIdentity) {
-  if (configuration.harness.harness !== 'opencode' || identity.ownerAgentId !== configuration.operatorId
-    || identity.directory !== workingDirectory || !isDeepStrictEqual(identity.configuration, configuration.harness)
-    || nativeMessageId(identity.clientCorrelationId) !== identity.nativeTurnId) throw new DomainError(
-    'OPERATOR_FILE_ADMISSION_MISMATCH', 'The OpenCode Operator session or security configuration changed.', 409)
-  const accepted = await acceptedOperatorFileInputs(pool, conversationId, identity.clientCorrelationId,
-    configuration, identity.nativeSessionId)
-  if (accepted.row.native_turn_id && accepted.row.native_turn_id !== identity.nativeTurnId
-    || accepted.row.active_native_turn_id && accepted.row.active_native_turn_id !== identity.nativeTurnId) throw new DomainError(
-    'OPERATOR_FILE_ADMISSION_MISMATCH', 'The OpenCode turn is not the acknowledged Operator turn.', 409)
-  const allowMutation = configuration.harness.nativeAgent !== 'plan'
-  if (allowMutation) await accepted.authorization.resolve(accepted.owner, { kind: 'operator', conversationId }, 'write')
-  const context: FileToolContext = { ownerPrincipalId: accepted.row.owner_principal_id, scope: accepted.scope,
-    nativeSessionId: identity.nativeSessionId, turnId: identity.nativeTurnId, messageId: accepted.row.message_id,
-    allowMutation, allowedTools: ['files.list', 'files.read',
-      ...(allowMutation ? ['files.create_working_copy', 'files.write_working_copy', 'files.apply_format_edit', 'files.publish_result'] as const : [])] }
-  return { context, attachments: accepted.attachments }
 }
 
 /** Token-free repair from finalized publications; scoped to the original durable

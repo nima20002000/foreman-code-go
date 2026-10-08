@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
@@ -71,11 +70,9 @@ it('preserves an unplaced local chat folder and rejects borrowing it for a selec
   await expect(resolveAgentChatDirectory({ ...input, configuration: f.configuration })).rejects.toThrow('another execution host')
 })
 
-it.each(['opencode', 'claude'] as const)('requires an explicitly approved read-write root for the %s profile', async harness => {
+it('requires an explicitly approved read-write root for the Claude profile', async () => {
   const f = fixture()
-  const configuration = { ...f.configuration, harness: harness === 'opencode'
-    ? structuredClone(DEFAULT_HARNESS_DEFAULTS.opencode)
-    : ClaudeFullAccessConfigurationSchema.parse({ harness: 'claude', model: 'profile-model',
+  const configuration = { ...f.configuration, harness: ClaudeFullAccessConfigurationSchema.parse({ harness: 'claude', model: 'profile-model',
       authMode: 'subscription', configDirectory: '/profile', permissionMode: 'default',
       sandbox: 'danger-full-access', tools: ['Write'], permissionRules: [], instructions: '', mcpServers: {} }) }
   const input = { ...f.input, configuration }

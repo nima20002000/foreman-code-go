@@ -12,9 +12,7 @@ import { appendNativeGraphEvent, claudeNativeGraphObservation, nativeGraphSource
 import { nativeProjectionId } from '../../run-graph/nativeProjection.js'
 import { readNativeGraphCorrelation, type NativeGraphProjectionGuard } from '../../run-graph/records.js'
 import { PostgresNativeGraphProjectionWriter } from '../../run-graph/nativeWriter.js'
-import { recordReviewObservation, reviewEvidence } from './nativeEvidence.js'
-import { OPENCODE_RECONCILIATION_EVENT } from '../../harnesses/opencodeReconciliation.js'
-import { openCodeGraphReconciliation } from '../../harnesses/opencodeGraphReconciliation.js'
+import { recordReviewObservation } from './nativeEvidence.js'
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -43,12 +41,6 @@ function observationFor(job: ReviewJob, event: HarnessNativeEvent, scope: Native
     && (payload.clientCorrelationId === undefined || payload.clientCorrelationId === job.correlationId)
   const codexEnd = job.provider === 'codex' && ['turn.completed', 'turn/completed'].includes(event.type) && turnId === providerId
     && (payload.clientCorrelationId === undefined || payload.clientCorrelationId === job.correlationId)
-  const openCodeStart = job.provider === 'opencode' && event.type === 'message.updated' && info.role === 'user' && info.id === providerId
-    && info.sessionID === job.nativeSessionId
-  // A live OpenCode assistant frame does not prove rooted selection, idle
-  // status or absence of pending tools. Keep it as raw/activity evidence only.
-  // Both live+history and lost-live reviews settle through the adapter's exact
-  // reconciliation marker below, with the same review-only terminal policy.
   if (terminalReady && codexEnd) {
     const status = typeof payload.status === 'string' ? payload.status : turn.status
     if (!['completed', 'failed', 'interrupted'].includes(String(status))) return undefined
@@ -56,7 +48,7 @@ function observationFor(job: ReviewJob, event: HarnessNativeEvent, scope: Native
     return { ...base, kind: 'terminal', terminal: { outcome: failed ? 'failed' : 'succeeded',
       evidenceKind: 'provider_terminal', evidenceId: source.sourceId, nativeSettled: true } }
   }
-  return codexStart || openCodeStart ? { ...base, kind: 'submission', state: 'acknowledged' } : undefined
+  return codexStart ? { ...base, kind: 'submission', state: 'acknowledged' } : undefined
 }
 
 /** Called only from the existing reviewer writer lease. It retains the raw
@@ -138,9 +130,6 @@ export async function appendReviewNativeGraphHistory(pool: pg.Pool, supplied: Re
       const raw = await appendNormalizedNativeEvent(sql, { ...normalized, event })
       if (raw.rejected || !job.submittedAt) continue
       const correlation = await readNativeGraphCorrelation(sql, publication.scope, key, job.correlationId)
-      if (event.type === OPENCODE_RECONCILIATION_EVENT && (!correlation || job.provider !== 'opencode'
-        || correlation.provider !== 'opencode' || correlation.nativeSessionId !== job.nativeSessionId
-        || correlation.nativeTurnId !== job.providerTurnOrMessageId)) continue
       if (!correlation && !live) continue
       if (correlation && (correlation.connectionId !== (event.connectionId ?? null)
         || String(correlation.connectionGeneration) !== row.generation)) continue
@@ -151,24 +140,10 @@ export async function appendReviewNativeGraphHistory(pool: pg.Pool, supplied: Re
         interactionId: job.interactionId, reviewJobId: job.id, firstNativeSequence: String(event.sequence),
         lastNativeSequence: String(event.sequence), terminalNativeSequence: null, metadataRevision: '0',
       }, guard)
-      const reconciled = job.provider === 'opencode' && terminalReady && job.providerTurnOrMessageId
-        ? await openCodeGraphReconciliation(sql, event, { ownerAgentId: job.reviewerAgentId,
-          nativeSessionId: job.nativeSessionId, correlationId: job.correlationId,
-          nativeTurnId: job.providerTurnOrMessageId, providerVersion: row.provider_version }, publication.scope, key, row.generation!) : undefined
-      if (event.type === OPENCODE_RECONCILIATION_EVENT && !reconciled) continue
-      const transport = reconciled ?? nativeDisconnectObservation(publication.scope, key, event, row.generation!)
+      const transport = nativeDisconnectObservation(publication.scope, key, event, row.generation!)
       await appendNativeGraphEvent(publication, event, [{ guard, correlationKey: job.correlationId,
         ...(transport ? { observation: transport } : {}) }])
-      let observation = reconciled ?? observationFor(job, event, publication.scope, key, row.generation!, terminalReady)
-      if (reconciled?.kind === 'terminal') {
-        const previous = await reviewEvidence(sql, job.id)
-        // A pre-fix live terminal or a prior marker may have settled this turn. Retain that
-        // original receipt, rather than relabeling it with a reconciliation source.
-        // The shared consumer still validates scope, work, authority and identity.
-        if (previous?.kind === 'terminal' && previous.submissionId === reconciled.submissionId
-          && previous.connectionGeneration === reconciled.connectionGeneration
-          && previous.terminal.nativeSettled && previous.terminal.outcome === reconciled.terminal.outcome) observation = previous
-      }
+      const observation = observationFor(job, event, publication.scope, key, row.generation!, terminalReady)
       if (observation) await recordReviewObservation(publication, observation, guard, original.proofId)
     }
   })

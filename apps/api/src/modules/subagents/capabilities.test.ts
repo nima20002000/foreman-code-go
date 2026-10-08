@@ -7,6 +7,19 @@ const child = { id: 'child', workspaceId: 'w', workflowId: 'wf', runId: 'r', sta
   capabilities: subagentCapabilities('codex-multi-agent-v2') } as RunSubagent
 const lease = { generation: 'g', nativeTurnId: 't', matches: () => true, assertCurrent: () => {}, sendInput: async () => {}, interrupt: async () => {} }
 describe('native mode and current child action gates', () => {
+  it('keeps retired children readable without allowing their recorded controls to execute', () => {
+    const retired = { ...child, provider: 'opencode' as const, nativeMode: 'opencode-task' as const,
+      capabilities: { ...child.capabilities,
+        sendInput: { support: 'supported' as const, qualification: 'passed' as const },
+        interrupt: { support: 'supported' as const, qualification: 'passed' as const },
+        inputTiming: 'active' as const,
+      } }
+    const saved = structuredClone(retired)
+    expect(subagentAvailableActions(retired, principal, false, lease)).toEqual({
+      sendInput: false, interrupt: false, blockedReason: 'SUBAGENT_CONTROL_UNAVAILABLE',
+    })
+    expect(retired).toEqual(saved)
+  })
   it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('requires qualified owned %s controls and separate grants', nativeMode => {
     const qualified = { ...child, nativeMode, native: { ...child.native, currentTurnId: 't' }, capabilities: {
       ...child.capabilities, sendInput: { support: 'supported' as const, qualification: 'passed' as const },
@@ -23,8 +36,8 @@ describe('native mode and current child action gates', () => {
     expect(subagentAvailableActions(qualified, principal, true, lease)).toMatchObject({ sendInput: false, interrupt: false })
   })
   it('requires exact live lease, scoped permission and a clear Run-stop fence', () => {
-    const qualified = { ...child, provider: 'opencode' as const, nativeMode: 'opencode-task' as const, status: 'waiting' as const,
-      capabilities: { ...subagentCapabilities('opencode-task'), sendInput: { support: 'supported' as const, qualification: 'passed' as const } } }
+    const qualified = { ...child, provider: 'codex' as const, nativeMode: 'codex-collab' as const, status: 'waiting' as const,
+      capabilities: { ...subagentCapabilities('codex-collab'), inputTiming: 'idle' as const, sendInput: { support: 'supported' as const, qualification: 'passed' as const } } }
     expect(subagentAvailableActions(qualified, principal, false, { ...lease, nativeTurnId: null }).sendInput).toBe(true)
     expect(subagentAvailableActions(qualified, principal, false, lease).sendInput).toBe(false)
     expect(subagentAvailableActions(qualified, principal, true, lease).sendInput).toBe(false)

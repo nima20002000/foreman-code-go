@@ -39,14 +39,14 @@ import { workflowNativeReservation } from '../workflowNativeEntry.js'
 const roots:string[]=[],journals:RemoteOperationJournal[]=[]
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
 async function directory() {const root=await mkdtemp('/tmp/installed-workflow-');roots.push(root);return root}
-function nativeFixture(harness: 'codex' | 'opencode' = 'codex') {
+function nativeFixture(harness: 'codex' = 'codex') {
   const connection=DeviceConnectionIdentitySchema.parse({mainId:randomUUID(),deviceId:randomUUID(),workerInstallationId:randomUUID(),
     bootId:bootIdentity(),keyRevision:1,authorizationRevision:1,connectionGeneration:4})
   const intent=DispatchIntentSchema.parse({schemaVersion:1,protocolVersion:1,mainId:connection.mainId,runId:'run',nodeId:'node',executionId:'execution',
     occurrenceId:null,occurrenceIndex:0,technicalAttempt:1,attemptId:'attempt',operationId:'operation',bindingHash:'a'.repeat(64),inputDigest:`sha256:${'b'.repeat(64)}`,owner:{grantId:'grant',epoch:'1'}})
   const session: NativeSessionReference = {
     harness,
-    providerVersion: harness === 'codex' ? 'codex-cli 0.154.0' : '1.18.31',
+    providerVersion: 'codex-cli 0.154.0',
     nativeSessionId: 'native-session',
   }
   // Provider/closure doubles test the exact consumer contract; no process or physical closure is produced here.
@@ -55,7 +55,7 @@ function nativeFixture(harness: 'codex' | 'opencode' = 'codex') {
   const registry=new NativeProcessRegistry('/unit/registry'),snapshot=vi.spyOn(registry,'snapshot').mockReturnValue({revision:'snapshot:1',launches:[launch]})
   return {connection,intent,session,launch,registry,snapshot}
 }
-async function sourceFixture(options: { relativeCwd?: string; harness?: 'codex' | 'opencode' } = {}) {
+async function sourceFixture(options: { relativeCwd?: string; harness?: 'codex' } = {}) {
   const relativeCwd = options.relativeCwd ?? ''
   const harness = options.harness ?? 'codex'
   const root=await directory(),runtime=join(root,'runtime'),project=join(root,'project'),namespace=join(runtime,'source-materializations',randomUUID())
@@ -104,7 +104,7 @@ async function sourceFixture(options: { relativeCwd?: string; harness?: 'codex' 
 }
 async function physicalFixture(options: {
   artifacts?: WorkflowPhysicalArtifactsPort
-  harness?: 'codex' | 'opencode'
+  harness?: 'codex'
   phase?: 'session-created' | 'running'
 } = {}) {
   const artifacts = options.artifacts
@@ -202,7 +202,7 @@ async function physicalFixture(options: {
 }
 // Real private directories and original capability; SQL/carrier/process boundaries
 // are unit doubles. These fixtures never establish physical qualification.
-async function terminalFixture(harness: 'codex' | 'opencode' = 'codex') {
+async function terminalFixture(harness: 'codex' = 'codex') {
   const artifacts={assertPublications:vi.fn(async()=>{}),assertAdopted:vi.fn(async()=>{})}
   const f=await physicalFixture({ artifacts, harness })
   const artifactOutputs={version:1 as const,outputs:[{outputKey:'report',commandId:randomUUID()}]}
@@ -280,7 +280,7 @@ it('recovers closure only from the captured closed original session', async () =
 })
 
 describe('accepted physical session harness', () => {
-  it.each(['codex', 'opencode'] as const)('verifies the installed %s session before its first turn', async harness => {
+  it.each(['codex'] as const)('verifies the installed %s session before its first turn', async harness => {
     const f = await physicalFixture({ harness, phase: 'session-created' })
     try {
       expect(f.readout.receipt.native?.turnId).toBeUndefined()
@@ -290,8 +290,8 @@ describe('accepted physical session harness', () => {
     } finally { await f.sqlConnection.close() }
   })
 
-  it('keeps the accepted OpenCode process available to its running Main owner', async () => {
-    const f = await physicalFixture({ harness: 'opencode' })
+  it('keeps the accepted Codex process available to its running Main owner', async () => {
+    const f = await physicalFixture({ harness: 'codex' })
     try {
       const original = await f.bind()
       await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
@@ -301,7 +301,7 @@ describe('accepted physical session harness', () => {
     } finally { await f.sqlConnection.close() }
   })
 
-  it.each(['codex', 'opencode'] as const)('verifies %s completion with the original result and owner closure', async harness => {
+  it.each(['codex'] as const)('verifies %s completion with the original result and owner closure', async harness => {
     const f = await physicalFixture({ harness })
     try {
       await closeTextOnlyFixture(f, 'completed')
@@ -313,7 +313,7 @@ describe('accepted physical session harness', () => {
     } finally { await f.sqlConnection.close() }
   })
 
-  it.each(['codex', 'opencode'] as const)('verifies %s Stop after the original owner closes', async harness => {
+  it.each(['codex'] as const)('verifies %s Stop after the original owner closes', async harness => {
     const f = await physicalFixture({ harness })
     try {
       await closeTextOnlyFixture(f, 'stopped')
@@ -325,8 +325,8 @@ describe('accepted physical session harness', () => {
     } finally { await f.sqlConnection.close() }
   })
 
-  it('keeps OpenCode artifact completion verifiable after its Main lifetime and lane release', async () => {
-    const f = await terminalFixture('opencode')
+  it('keeps Codex artifact completion verifiable after its Main lifetime and lane release', async () => {
+    const f = await terminalFixture('codex')
     try {
       await f.retain()
       f.complete()
@@ -336,18 +336,18 @@ describe('accepted physical session harness', () => {
     } finally { await f.sqlConnection.close() }
   })
 
-  it.each(['codex', 'opencode'] as const)('rejects a different session harness for accepted %s placement', async harness => {
+  it.each(['codex'] as const)('rejects a different session harness for accepted %s placement', async harness => {
     const f = await physicalFixture({ harness })
     try {
-      f.readout.session = { ...f.session, harness: harness === 'codex' ? 'opencode' : 'codex' }
+      f.readout.session = { ...f.session, harness: 'claude' }
       await expect(f.producer.prefetch(f.readout.receipt, f.placement, f.source)).rejects.toMatchObject({
         code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'harness_binding' },
       })
     } finally { await f.sqlConnection.close() }
   })
 
-  it.each(['session', 'owner', 'provider', 'boundary'] as const)('preserves the OpenCode %s identity check', async identity => {
-    const f = await physicalFixture({ harness: 'opencode' })
+  it.each(['session', 'owner', 'provider', 'boundary'] as const)('preserves the Codex %s identity check', async identity => {
+    const f = await physicalFixture({ harness: 'codex' })
     try {
       if (identity === 'session') f.readout.session.nativeSessionId = 'replacement-session'
       if (identity === 'owner') f.readout.observation.owner = 'execution:replacement'
@@ -359,8 +359,8 @@ describe('accepted physical session harness', () => {
     } finally { await f.sqlConnection.close() }
   })
 
-  it('rejects OpenCode completion when the output differs from the original provider result', async () => {
-    const f = await physicalFixture({ harness: 'opencode' })
+  it('rejects Codex completion when the output differs from the original provider result', async () => {
+    const f = await physicalFixture({ harness: 'codex' })
     try {
       await closeTextOnlyFixture(f, 'completed')
       f.readout.output = { kind: 'text-only', result: { outcome: 'succeeded', output: { text: 'Replacement output' } } }
@@ -370,8 +370,8 @@ describe('accepted physical session harness', () => {
     } finally { await f.sqlConnection.close() }
   })
 
-  it('rejects OpenCode Stop without positive original owner closure', async () => {
-    const f = await physicalFixture({ harness: 'opencode' })
+  it('rejects Codex Stop without positive original owner closure', async () => {
+    const f = await physicalFixture({ harness: 'codex' })
     try {
       await closeTextOnlyFixture(f, 'stopped')
       delete f.readout.closure

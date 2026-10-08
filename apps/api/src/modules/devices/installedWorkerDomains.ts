@@ -60,7 +60,6 @@ import { currentCiRuntimePaths, lastCiRuntimeRefresh, retainedCiRuntimeImages,
 import { systemGitWorktreePorts } from '../sources/gitWorktree.js'
 import { readInstalledWorkflowConfiguration } from '../runs/remote/installedWorkflowConfiguration.js'
 import { probeComputerAccounts, systemPorts } from '../computers/accountProbe.js'
-import { inspectInstalledOpenCode } from '../harnesses/installedOpenCodeInspection.js'
 import { inspectInstalledClaude } from '../harnesses/installedClaudeInspection.js'
 import { createInstalledWorkerProfileChecks } from '../harnesses/installedWorkerProfileChecks.js'
 import { DomainError } from '../errors.js'
@@ -85,7 +84,6 @@ export async function createInstalledWorkerDomains(input: {
   approvedRoots(): Promise<ApprovedRootAllowlist | null>
   connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest'> | undefined
   codexSuiteRevision: string
-  openCodeSuiteRevision?: string
   /** Installed original source/output, canonical acknowledgement and stopped-writer ports. */
   rsync?: InstalledRsyncProviders
 }) {
@@ -270,7 +268,7 @@ export async function createInstalledWorkerDomains(input: {
       captureRequest: namespace => input.connection()?.captureRequest(namespace), sources, approvedRoots: roots,
       ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs } : {}),
       codexSuiteRevision: input.codexSuiteRevision,
-      ...(input.openCodeSuiteRevision ? { openCodeSuiteRevision: input.openCodeSuiteRevision } : {}), signal: lifetime.signal, registry, journal })
+      signal: lifetime.signal, registry, journal })
     extensions.push({ ...receiver.extension, role: 'duplex' }, { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
       return { payload: await sources.handle(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) }) }
     } }, ...(native.kind === 'configured' ? native.extensions : []))
@@ -348,7 +346,7 @@ export async function createInstalledWorkerDomains(input: {
       }
       const selected = await readInstalledWorkflowConfiguration(input.configuration).catch(() => null)
       const binaries = { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
-        ...(selected?.opencode ? { opencode: selected.opencode.binary } : {}), ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
+        ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
       return { payload: await probeComputerAccounts(systemPorts(process.env, binaries),
         AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(20_000)])) }
     },
@@ -390,13 +388,11 @@ export async function createInstalledWorkerDomains(input: {
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The actual installed inventory requires its original worker channel.', 409)
       const inspected = await inspectInstalledCodex({ binding: context.binding, configuration: input.configuration,
         environment: process.env, cwd: input.stateDirectory, signal: AbortSignal.any([context.signal, lifetime.signal]) })
-      const openCode = await inspectInstalledOpenCode({ binding: context.binding, configuration: input.configuration,
-        environment: process.env, cwd: input.stateDirectory, signal: AbortSignal.any([context.signal, lifetime.signal]) })
       const claude = await inspectInstalledClaude({ binding: context.binding, configuration: input.configuration,
         environment: process.env, cwd: input.stateDirectory, signal: AbortSignal.any([context.signal, lifetime.signal]) })
       if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
       return { payload: { ...inspected.inventory,
-        installations: [...inspected.inventory.installations, ...openCode.inventory.installations,
+        installations: [...inspected.inventory.installations,
           ...claude.inventory.installations] } }
     },
   })

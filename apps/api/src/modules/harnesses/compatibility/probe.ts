@@ -34,10 +34,10 @@ type DiagnosticProcess = ReturnType<typeof spawnOwnedStdioProcess>
 const EXPORT_LIMIT = 16 * 1024 * 1024
 const unavailable = () => new CompatibilityCheckError('CLI_UNAVAILABLE', 'The configured CLI could not be found or executed. Repair that installation; no other harness was substituted.')
 
-export function parseInstalledVersion(harness: CompatibilityHarness, stdout: string, stderr: string): string {
+export function parseInstalledVersion(stdout: string, stderr: string): string {
   const value = (stdout.trim() || stderr.trim())
   const semver = '(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?'
-  const prefix = harness === 'codex' ? 'codex-cli ' : ''
+  const prefix = 'codex-cli '
   if (!new RegExp(`^${prefix}${semver}$`).test(value) || value.length > 100) {
     throw new CompatibilityCheckError('CLI_VERSION_INVALID', 'The configured CLI returned an unrecognized version. Check the binary setting and retry.')
   }
@@ -55,18 +55,12 @@ export function diagnosticEnvironment(directory: string, source: NodeJS.ProcessE
     TMPDIR: directory, TMP: directory, TEMP: directory,
     XDG_CONFIG_HOME: join(directory, 'config'), XDG_CACHE_HOME: join(directory, 'cache'),
     XDG_DATA_HOME: join(directory, 'data'), XDG_STATE_HOME: join(directory, 'state'),
-    CODEX_HOME: join(directory, 'codex'), OPENCODE_CONFIG_DIR: join(directory, 'config'),
-    OPENCODE_CONFIG_CONTENT: '{"plugin":[],"mcp":{},"autoupdate":false}',
-    OPENCODE_PURE: '1', OPENCODE_DISABLE_AUTOUPDATE: '1', OPENCODE_DISABLE_MODELS_FETCH: '1',
-    OPENCODE_DISABLE_DEFAULT_PLUGINS: '1', OPENCODE_DISABLE_LSP_DOWNLOAD: '1',
-    OPENCODE_DISABLE_CLAUDE_CODE: '1', OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+    CODEX_HOME: join(directory, 'codex'),
     CI: '1', NO_COLOR: '1', TERM: 'dumb',
   }
 }
-export function schemaExportArguments(harness: CompatibilityHarness, directory: string): string[] {
-  return harness === 'codex'
-    ? ['app-server', 'generate-json-schema', '--experimental', '--out', join(directory, 'schemas')]
-    : ['--pure', 'generate']
+export function schemaExportArguments(directory: string): string[] {
+  return ['app-server', 'generate-json-schema', '--experimental', '--out', join(directory, 'schemas')]
 }
 async function executable(binary: string, cwd: string, environment: NodeJS.ProcessEnv): Promise<string> {
   const paths = isAbsolute(binary) || binary.includes('/') || binary.includes('\\')
@@ -190,24 +184,23 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
       const version = await isolated(source, directories, async (directory, environment) => {
         const output = await command(resolved, ['--version'], directory, environment,
           AbortSignal.any([signal, AbortSignal.timeout(attempt === 1 ? inspectTimeoutMs : 10_000)]), 4096, processes, ownership)
-        return parseInstalledVersion(harness, output.stdout, output.stderr)
+        return parseInstalledVersion(output.stdout, output.stderr)
       })
       return { executable: resolved, identity, version, payloadPaths }
     },
     async probe(harness, installation, signal) {
       return isolated(source, directories, async (directory, environment) => {
-        let output: Awaited<ReturnType<typeof command>>
         try {
-          output = await command(installation.executable, schemaExportArguments(harness, directory), directory, environment, signal, EXPORT_LIMIT, processes, ownership)
+          await command(installation.executable, schemaExportArguments(directory), directory, environment, signal, EXPORT_LIMIT, processes, ownership)
         } catch (error) {
           if (error instanceof CompatibilityCheckError && error.code === 'CLI_CHECK_REJECTED') {
-            const contract = harness === 'codex' ? 'app-server generate-json-schema --experimental' : '--pure generate'
+            const contract = 'app-server generate-json-schema --experimental'
             throw new CompatibilityCheckError(error.code,
               `${harness} ${installation.version} could not complete the required ${contract} schema export contract.`)
           }
           throw error
         }
-        const text = harness === 'codex' ? await readExport(join(directory, 'schemas', 'codex_app_server_protocol.schemas.json')) : output.stdout
+        const text = await readExport(join(directory, 'schemas', 'codex_app_server_protocol.schemas.json'))
         signal.throwIfAborted()
         const input = join(directory, 'diagnostic-schema.json')
         await writeFile(input, text, { flag: 'wx', mode: 0o600 })

@@ -46,7 +46,7 @@ describe('reviewer credentials pending authenticated recovery', () => {
   it.each([false, true])('preserves a recovery candidate with detached=%s while denying its stale App binding', async detached => {
     const f = fixture()
     vi.mocked(readRecoverableRemoteReviewer).mockResolvedValue({ generation: '1', principalId: f.principalId,
-      session: { harness: 'opencode', providerVersion: '1.0.0', nativeSessionId: f.execution.nativeSessionId! }, detached })
+      session: { harness: 'codex', providerVersion: '1.0.0', nativeSessionId: f.execution.nativeSessionId! }, detached })
     await f.service.reconcileTerminalCredentials()
     expect(f.revoked).toEqual({ principal: false, binding: false })
     await expect(assertWave25WorkerBinding(f.pool, f.principalId))
@@ -57,7 +57,7 @@ describe('reviewer credentials pending authenticated recovery', () => {
     const f = fixture()
     vi.mocked(readRecoverableRemoteReviewer).mockResolvedValue(candidate === 'missing' ? undefined : {
       generation: '1', principalId: 'replacement-principal',
-      session: { harness: 'opencode', providerVersion: '1.0.0', nativeSessionId: f.execution.nativeSessionId! }, detached: false,
+      session: { harness: 'codex', providerVersion: '1.0.0', nativeSessionId: f.execution.nativeSessionId! }, detached: false,
     })
     await expect(assertWave25WorkerBinding(f.pool, f.principalId)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
     await f.service.reconcileTerminalCredentials()

@@ -1,5 +1,5 @@
-import { APP_MCP_PATH, APP_MCP_SERVER_NAME, LEGACY_APP_MCP_SERVER_NAMES, appLauncherConnection, appLauncherPath, appLauncherTokenName, isAppLauncher, isManagedLauncherCommand, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
-import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
+import { APP_MCP_PATH, APP_MCP_SERVER_NAME, LEGACY_APP_MCP_SERVER_NAMES, appLauncherConnection, appLauncherPath, isAppLauncher, isManagedLauncherCommand, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { createHash } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import type { HarnessMcpChange, HarnessMcpConnection, HarnessMcpList, HarnessMcpManagedPreset } from '@foreman-code/contracts/management'
@@ -9,13 +9,10 @@ export type JsonObject = Record<string, unknown>
 export const record = (value: unknown): JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {}
 export const fingerprint = (value: unknown): string => `sha256:${createHash('sha256').update(canonical(value)).digest('hex')}`
 export interface NativeMcpSnapshot {
-  harness: 'codex' | 'opencode'; revision: string; effective: JsonObject; user: JsonObject
+  harness: 'codex'; revision: string; effective: JsonObject; user: JsonObject
   userConfig: JsonObject; version: string; file: string
   /** False means that the effective member has another native configuration source. */
   ownership?: Readonly<Record<string, boolean>>
-  /** Only provider-proven references; never infer these from expanded header values. */
-  credentialReferences?: Readonly<Record<string, string>>
-  effectivePermissions?: unknown
 }
 export interface NativeMcpAdapter {
   read(signal: AbortSignal): Promise<NativeMcpSnapshot>
@@ -36,24 +33,17 @@ export function managedEnableChange(preset: HarnessMcpManagedPreset, enabled: bo
   return { kind: 'enable', name: managedName(preset), enabled }
 }
 
-function remote(harness: NativeMcpSnapshot['harness'], entry: JsonObject, effective = false): boolean {
+function remote(entry: JsonObject, effective = false): boolean {
   if (typeof entry.url !== 'string' || entry.command !== undefined) return false
-  return harness === 'opencode' ? entry.type === 'remote'
-    : entry.type === undefined || (effective && entry.type === 'streamable_http')
+  return entry.type === undefined || (effective && entry.type === 'streamable_http')
 }
 function authorizationHeaders(value: unknown): [string, unknown][] {
   return Object.entries(record(value)).filter(([key]) => key.toLowerCase() === 'authorization')
 }
-function appReference(harness: NativeMcpSnapshot['harness'], entry: JsonObject): boolean {
-  if (isAppLauncher(harness, entry)) {
-    const token = appLauncherTokenName(harness, entry)
-    return harness === 'codex' || token !== undefined && record(entry.environment)[token] === `{env:${token}}`
-  }
-  if (harness === 'codex') return isSupportedAppMcpTokenName(String(entry.bearer_token_env_var))
+function appReference(entry: JsonObject): boolean {
+  if (isAppLauncher(entry)) return true
+  return isSupportedAppMcpTokenName(String(entry.bearer_token_env_var))
     && authorizationHeaders(entry.http_headers).length === 0 && authorizationHeaders(entry.env_http_headers).length === 0
-  const headers = authorizationHeaders(entry.headers)
-  return entry.oauth === false && headers.length === 1
-    && APP_MCP_TOKEN_NAMES.some((token) => headers[0]![1] === `Bearer {env:${token}}`)
 }
 function configuredManagedName(snapshot: NativeMcpSnapshot, preset: HarnessMcpManagedPreset): string {
   if (preset !== 'graphql') return managedName(preset)
@@ -64,15 +54,6 @@ function assertNoAppCollision(snapshot: NativeMcpSnapshot): void {
   const names = APP_MCP_SERVER_NAMES.filter((name) => Object.hasOwn(snapshot.user, name) || Object.hasOwn(snapshot.effective, name))
   if (names.length > 1) throw new DomainError('MCP_SERVER_COLLISION',
     'Both foreman-code and graphql entries are configured. Resolve their naming collision at the native source before changing the managed connection.', 409)
-}
-function assertAppRenamePolicies(snapshot: NativeMcpSnapshot): void {
-  if (snapshot.harness !== 'opencode' || configuredManagedName(snapshot, 'graphql') === APP_MCP_SERVER_NAME
-    && legacyAppEntries(snapshot).length === 0) return
-  const permissions = [record(snapshot.userConfig.permission), record(snapshot.effectivePermissions)]
-  if (permissions.some((rules) => Object.keys(rules).some((name) => /^graphql(?:[-_]|\*|$)/.test(name)))) {
-    throw new DomainError('MCP_PRESET_NATIVE_REVIEW_REQUIRED',
-      'This connection has native permissions bound to its graphql name. Keep the supported entry or review its rename and policies at the native source.', 409)
-  }
 }
 const connectionFields = ['url', 'bearer_token_env_var', 'headers', 'http_headers', 'env_http_headers',
   'oauth', 'type', 'command', 'args', 'env_vars', 'env', 'environment', 'enabled']
@@ -85,30 +66,26 @@ function legacyAppPolicies(snapshot: NativeMcpSnapshot): JsonObject {
       'A retired app connection is inherited. Remove it at its owning source before installing another app connection.', 409)
     const entry = record(snapshot.user[name])
     const token = name === 'graphql-app' ? 'GRAPHQL_APP_MCP_TOKEN' : 'GRAPHQL_OPERATOR_MCP_TOKEN'
-    const headers = authorizationHeaders(entry.headers)
-    const credential = snapshot.harness === 'codex' ? entry.bearer_token_env_var === token
-      : entry.oauth === false && headers.length === 1 && headers[0]![1] === `Bearer {env:${token}}`
+    const credential = entry.bearer_token_env_var === token
     let standard = Object.keys(entry).every((key) => key === 'enabled')
-    if (remote(snapshot.harness, entry) && credential) {
+    if (remote(entry) && credential) {
       try {
         const url = new URL(String(entry.url))
         standard = url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
           && ['/mcp/tools', '/mcp/operator'].includes(url.pathname) && !url.username && !url.password && !url.search && !url.hash
       } catch { standard = false }
-      const headerValues = snapshot.harness === 'codex' ? [entry.http_headers, entry.env_http_headers] : [entry.headers]
-      standard = standard && headerValues.every((value) => Object.keys(record(value))
-        .every((key) => snapshot.harness === 'opencode' && key.toLowerCase() === 'authorization'))
+      const headerValues = [entry.http_headers, entry.env_http_headers]
+      standard = standard && headerValues.every((value) => Object.keys(record(value)).length === 0)
         && [entry.env, entry.environment].every((value) => Object.keys(record(value)).length === 0)
         && (!Array.isArray(entry.env_vars) || entry.env_vars.length === 0)
     }
-    const command = snapshot.harness === 'codex' ? [entry.command, ...(Array.isArray(entry.args) ? entry.args : [])] : entry.command
+    const command = [entry.command, ...(Array.isArray(entry.args) ? entry.args : [])]
     const launcher = join(dirname(dirname(appLauncherPath())), name === 'graphql-app' ? 'worker-mcp' : 'operator-mcp', 'launcher.mjs')
     if (isManagedLauncherCommand(command, launcher)) {
       standard = entry.url === undefined && entry.bearer_token_env_var === undefined && entry.oauth === undefined
         && [entry.headers, entry.http_headers, entry.env_http_headers].every((value) => Object.keys(record(value)).length === 0)
-        && (snapshot.harness === 'codex' ? JSON.stringify(entry.env_vars) === JSON.stringify([token])
+        && JSON.stringify(entry.env_vars) === JSON.stringify([token])
         && Object.keys(record(entry.env)).length === 0
-        : entry.type === 'local' && fingerprint(entry.environment) === fingerprint({ [token]: `{env:${token}}` }))
     }
     if (!standard) throw new DomainError('MCP_PRESET_CUSTOMIZED',
       'A retired app entry has custom connection settings. Review it at its native source before upgrading.', 409)
@@ -122,11 +99,10 @@ function legacyAppPolicies(snapshot: NativeMcpSnapshot): JsonObject {
   }
   return { ...policies, enabled }
 }
-function standardAppRemote(harness: NativeMcpSnapshot['harness'], entry: JsonObject): boolean {
-  if (!remote(harness, entry) || !appReference(harness, entry)) return false
+function standardAppRemote(entry: JsonObject): boolean {
+  if (!remote(entry) || !appReference(entry)) return false
   if ([entry.env, entry.environment, entry.http_headers, entry.env_http_headers].some((value) => Object.keys(record(value)).length > 0)
-    || Array.isArray(entry.env_vars) && entry.env_vars.length > 0
-    || harness === 'opencode' && Object.keys(record(entry.headers)).some((key) => key.toLowerCase() !== 'authorization')) return false
+    || Array.isArray(entry.env_vars) && entry.env_vars.length > 0) return false
   try {
     const url = new URL(String(entry.url))
     return url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
@@ -144,13 +120,10 @@ export function userOwnsMcpEntry(snapshot: NativeMcpSnapshot, name: string): boo
   if (!Object.hasOwn(snapshot.effective, name)) return true
   const user = record(snapshot.user[name])
   const effective = record(snapshot.effective[name])
-  if (isAppLauncher(snapshot.harness, user) !== isAppLauncher(snapshot.harness, effective)) return false
+  if (isAppLauncher(user) !== isAppLauncher(effective)) return false
   if (user.url !== effective.url || (user.enabled !== false) !== (effective.enabled !== false)) return false
-  if (remote(snapshot.harness, user) !== remote(snapshot.harness, effective, true)) return false
-  if (snapshot.harness === 'codex' && (user.bearer_token_env_var ?? null) !== (effective.bearer_token_env_var ?? null)) return false
-  // An OpenCode resolved Authorization value is a secret, not an environment reference.
-  if (snapshot.harness === 'opencode' && isSupportedAppMcpServerName(name) && appReference(snapshot.harness, user)
-    && !isSupportedAppMcpTokenName(snapshot.credentialReferences?.[name])) return false
+  if (remote(user) !== remote(effective, true)) return false
+  if ((user.bearer_token_env_var ?? null) !== (effective.bearer_token_env_var ?? null)) return false
   return true
 }
 
@@ -158,9 +131,9 @@ function managedNativeConnection(snapshot: NativeMcpSnapshot, preset: HarnessMcp
   const name = configuredManagedName(snapshot, preset)
   if (preset === 'graphql') {
     const retiredPolicies = legacyAppPolicies(snapshot)
-    if (!Object.hasOwn(snapshot.user, name)) return { ...nativeConnection(snapshot.harness, appLauncherConnection()), ...retiredPolicies }
+    if (!Object.hasOwn(snapshot.user, name)) return { ...nativeConnection(appLauncherConnection()), ...retiredPolicies }
     const existing = record(snapshot.user[name])
-    if (!standardAppRemote(snapshot.harness, existing) && !(isAppLauncher(snapshot.harness, existing) && appReference(snapshot.harness, existing))) {
+    if (!standardAppRemote(existing) && !(isAppLauncher(existing) && appReference(existing))) {
       throw new DomainError('MCP_PRESET_CUSTOMIZED', 'The graphql entry has custom transport or authentication settings. Edit it at its native source.', 409)
     }
     // Do not reconstruct the entry. Native policy fields, including future supported
@@ -172,12 +145,12 @@ function managedNativeConnection(snapshot: NativeMcpSnapshot, preset: HarnessMcp
       }
     }
     for (const key of ['url', 'bearer_token_env_var', 'headers', 'oauth', 'type']) delete preserved[key]
-    return { ...retiredPolicies, ...preserved, ...nativeConnection(snapshot.harness, appLauncherConnection()),
+    return { ...retiredPolicies, ...preserved, ...nativeConnection(appLauncherConnection()),
       enabled: existing.enabled !== false && retiredPolicies.enabled !== false }
   }
-  if (!Object.hasOwn(snapshot.user, name)) return nativeConnection(snapshot.harness, { transport: 'remote', url: LINEAR_MCP_ENDPOINT })
+  if (!Object.hasOwn(snapshot.user, name)) return nativeConnection({ transport: 'remote', url: LINEAR_MCP_ENDPOINT })
   const existing = record(snapshot.user[name])
-  if (!remote(snapshot.harness, existing) || (existing.url !== LINEAR_MCP_ENDPOINT && existing.url !== LINEAR_READ_WRITE_ENDPOINT)) {
+  if (!remote(existing) || (existing.url !== LINEAR_MCP_ENDPOINT && existing.url !== LINEAR_READ_WRITE_ENDPOINT)) {
     throw new DomainError('MCP_PRESET_CUSTOMIZED',
       'This entry has custom transport or authentication settings. Review it in the native configuration; automatic repair would not be safe.', 409)
   }
@@ -193,15 +166,14 @@ export function managedStatus(snapshot: NativeMcpSnapshot, preset: HarnessMcpMan
   const entry = record(snapshot.user[name])
   const effective = record(snapshot.effective[name])
   if (preset === 'graphql') {
-    const reference = appReference(snapshot.harness, entry) && (snapshot.harness === 'codex'
-      ? appReference(snapshot.harness, effective) : isSupportedAppMcpTokenName(snapshot.credentialReferences?.[name]))
-    if (!isAppLauncher(snapshot.harness, entry) || !isAppLauncher(snapshot.harness, effective) || !reference) return 'mismatch' as const
+    const reference = appReference(entry) && appReference(effective)
+    if (!isAppLauncher(entry) || !isAppLauncher(effective) || !reference) return 'mismatch' as const
     if (legacy) return 'legacy' as const
     return entry.enabled === false || effective.enabled === false ? 'disabled' as const : 'installed' as const
   }
   // Linear is not an exception to the protected application-credential boundary.
   if (protectedServer(name, entry) || protectedServer(name, effective)) return 'mismatch' as const
-  if (!remote(snapshot.harness, entry) || !remote(snapshot.harness, effective, true)) return 'mismatch' as const
+  if (!remote(entry) || !remote(effective, true)) return 'mismatch' as const
   return entry.url === LINEAR_MCP_ENDPOINT
     ? entry.enabled === false || effective.enabled === false ? 'disabled' as const : 'installed' as const : 'mismatch' as const
 }
@@ -214,7 +186,6 @@ export function assertManagedChange(snapshot: NativeMcpSnapshot, change: Harness
   }
   if (preset === 'graphql') {
     assertNoAppCollision(snapshot)
-    if (change.kind === 'add') assertAppRenamePolicies(snapshot)
   }
   if (preset === 'linear' && (protectedServer(change.name, snapshot.user[change.name])
     || protectedServer(change.name, snapshot.effective[change.name]))) {
@@ -240,7 +211,7 @@ export function protectedServer(name: string, entry: unknown): boolean {
 export function assertChange(snapshot: NativeMcpSnapshot, change: HarnessMcpChange): void {
   const current = snapshot.effective[change.name]
   if (protectedServer(change.name, current) || protectedServer(change.name, snapshot.user[change.name])
-    || (change.kind === 'add' && protectedServer(change.name, nativeConnection(snapshot.harness, change.connection)))) {
+    || (change.kind === 'add' && protectedServer(change.name, nativeConnection(change.connection)))) {
     throw new DomainError('MCP_SERVER_PROTECTED', 'Application MCP connections are managed by the server and cannot be changed here.', 403)
   }
   if (change.kind === 'add' && (Object.hasOwn(snapshot.effective, change.name) || Object.hasOwn(snapshot.user, change.name))) {
@@ -250,15 +221,13 @@ export function assertChange(snapshot: NativeMcpSnapshot, change: HarnessMcpChan
     throw new DomainError('MCP_SERVER_INHERITED', 'This connection is inherited. Edit it at its original configuration source.', 409)
   }
 }
-export function nativeConnection(harness: 'codex' | 'opencode', input: HarnessMcpConnection): JsonObject {
-  if (input.transport === 'remote') return harness === 'codex'
-    ? { url: input.url, enabled: true, ...(input.bearerTokenEnvironmentVariable ? { bearer_token_env_var: input.bearerTokenEnvironmentVariable } : {}) }
-    : { type: 'remote', url: input.url, enabled: true, ...(input.bearerTokenEnvironmentVariable
-      ? { oauth: false, headers: { Authorization: `Bearer {env:${input.bearerTokenEnvironmentVariable}}` } } : {}) }
-  return harness === 'codex'
-    ? { command: input.executable, args: input.arguments, env_vars: input.environmentVariables, enabled: true }
-    : { type: 'local', command: [input.executable, ...input.arguments], enabled: true,
-      environment: Object.fromEntries(input.environmentVariables.map((name) => [name, `{env:${name}}`])) }
+export function nativeConnection(input: HarnessMcpConnection): JsonObject {
+  if (input.transport === 'remote') return {
+    url: input.url,
+    enabled: true,
+    ...(input.bearerTokenEnvironmentVariable ? { bearer_token_env_var: input.bearerTokenEnvironmentVariable } : {}),
+  }
+  return { command: input.executable, args: input.arguments, env_vars: input.environmentVariables, enabled: true }
 }
 export function replacement(snapshot: NativeMcpSnapshot, change: HarnessMcpChange,
   managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): JsonObject | undefined {
@@ -269,7 +238,7 @@ export function replacement(snapshot: NativeMcpSnapshot, change: HarnessMcpChang
   }
   assertChange(snapshot, change)
   if (change.kind === 'remove') return undefined
-  if (change.kind === 'add') return nativeConnection(snapshot.harness, change.connection)
+  if (change.kind === 'add') return nativeConnection(change.connection)
   return { ...record(snapshot.user[change.name]), enabled: change.enabled }
 }
 /** Every user-file member one change writes. A graphql install also retires the legacy app entries. */
@@ -290,14 +259,14 @@ export function applyMcpEdits(user: JsonObject, edits: readonly { name: string; 
   return next
 }
 export function mcpUserFingerprint(snapshot: NativeMcpSnapshot): string {
-  const key = snapshot.harness === 'codex' ? 'mcp_servers' : 'mcp'
+  const key = 'mcp_servers'
   return fingerprint({ ...snapshot.userConfig, [key]: snapshot.user })
 }
 /** Opaque durable evidence; the raw native configuration never enters a receipt. */
 export function expectedMcpUserFingerprint(snapshot: NativeMcpSnapshot, change: HarnessMcpChange,
   managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): string {
   const user = applyMcpEdits(snapshot.user, mcpEdits(snapshot, change, managed))
-  const key = snapshot.harness === 'codex' ? 'mcp_servers' : 'mcp'
+  const key = 'mcp_servers'
   return fingerprint({ ...snapshot.userConfig, [key]: user })
 }
 export function publicMcpList(snapshot: NativeMcpSnapshot): HarnessMcpList {
@@ -310,7 +279,7 @@ export function publicMcpList(snapshot: NativeMcpSnapshot): HarnessMcpList {
       const remote = typeof entry.url === 'string'
       let label = local ? 'Local program' : 'Native connection'
       if (local) { const command = Array.isArray(entry.command) ? entry.command[0] : entry.command; if (typeof command === 'string') label = basename(command) }
-      if (isSupportedAppMcpServerName(name) && isAppLauncher(snapshot.harness, entry)) label = 'Automatic app connection'
+      if (isSupportedAppMcpServerName(name) && isAppLauncher(entry)) label = 'Automatic app connection'
       if ((LEGACY_APP_MCP_SERVER_NAMES as readonly string[]).includes(name)) label = 'Legacy app connection · replaced by foreman-code'
       let endpoint: string | undefined
       if (remote) { try {

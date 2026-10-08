@@ -12,7 +12,7 @@ vi.mock('../placement/persistence.js', () => ({ readExecutionPlacement: vi.fn() 
 
 function fixture(detached: boolean) {
   const execution = recoveryExecution('waiting')
-  const session = { harness: 'opencode' as const, providerVersion: '1.0.0',
+  const session = { harness: 'codex' as const, providerVersion: '1.0.0',
     nativeSessionId: execution.nativeSessionId! }
   const digest = 'a'.repeat(64)
   const mainId = randomUUID()

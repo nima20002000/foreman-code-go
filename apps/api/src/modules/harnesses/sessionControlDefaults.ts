@@ -1,7 +1,9 @@
-import { unavailableSessionControls, type HarnessConfiguration, type SessionControlCapabilities } from '@foreman-code/contracts'
+import { RETIRED_OPENCODE_MESSAGE, unavailableSessionControls, type HarnessConfiguration, type SessionControlCapabilities } from '@foreman-code/contracts'
 
 /** Preferences for a not-yet-created native session are desired, never applied. */
 export function pendingSessionControls(configuration: HarnessConfiguration): SessionControlCapabilities {
+  if (configuration.harness === 'opencode') return unavailableSessionControls(
+    `${configuration.harness}:${configuration.model}`, RETIRED_OPENCODE_MESSAGE)
   const controls = unavailableSessionControls(`${configuration.harness}:${configuration.model}`,
     'Native settings will be checked when the first session is admitted.')
   return { ...controls, model: configuration.model,

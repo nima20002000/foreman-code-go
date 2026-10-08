@@ -27,7 +27,7 @@ export function createInstalledConversationNativeReader(input: {
   const binding = structuredClone(input.binding)
   const configuration = structuredClone(input.configuration)
   const harness = binding.harness
-  if (harness !== 'codex' && harness !== 'opencode') unavailable()
+  if (harness !== 'codex') unavailable()
   const connection = structuredClone(input.connection)
   const capture = async () => {
     const signal = input.signal()
@@ -77,8 +77,7 @@ export function createInstalledConversationNativeReader(input: {
       || qualification.suiteRevision !== input.suiteRevision || qualification.status !== 'qualified'
       || qualification.profile !== QUALIFICATION_TARGET_PROFILE[harness] || !qualification.checkedAt
       || !qualification.checks.length || qualification.checks.some(check => !check.passed)) unavailable()
-    return { inspection: before, qualification,
-      ...(facts.fileSourceHost ? { fileSourceHost: facts.fileSourceHost } : {}) }
+    return { inspection: before, qualification }
   }
   const repository: Pick<HarnessQualificationRepository, 'find' | 'list'> = {
     async list() { return [(await capture()).qualification] },

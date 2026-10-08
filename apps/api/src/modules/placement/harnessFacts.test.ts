@@ -63,7 +63,7 @@ function fixture(driver: 'codex' | 'claude' = 'codex') {
     installationFingerprint: fingerprint, runtimeContractVersion: 1, protocolRevision: installation.protocolRevision, credentialScopeRefs: [],
   } }
   const read = (options?: { purpose: 'resident' }) => readPlacementHarnessFacts(
-    { query } as unknown as GraphSqlClient, placement, installations, { codex: suiteRevision, opencode: 'unused' }, options)
+    { query } as unknown as GraphSqlClient, placement, installations, { codex: suiteRevision }, options)
   return { read, installations, records, proof, evidence, override, placement, query }
 }
 

@@ -23,7 +23,7 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   }
   if (context.services.computerAccounts && operatorToolAvailable(context, 'computer_accounts_list')) {
     server.registerTool('computer_accounts_list', {
-      description: 'Read which harness (Codex, Claude, OpenCode), GitHub CLI accounts each paired computer '
+      description: 'Read which harness (Codex, Claude), GitHub CLI accounts each paired computer '
         + 'has installed and is signed in to. Requires global settings:read. Identity strings only (email, username, provider names); '
         + 'no tokens. Results are cached for 30 seconds unless refresh is true; an offline computer reports null accounts. '
         + 'Each page includes up to 100 paired computers; Main appears only on the first page. Continue with nextCursor as cursor until null.',

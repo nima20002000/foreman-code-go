@@ -3,6 +3,7 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { CompletedNativeQualificationSchema, type HostHarnessOverride, type HostHarnessProfileEvidence, type HostHarnessInstallationDto } from '@foreman-code/contracts/harness-registry'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
+import { HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
 import type { HarnessQualificationRepository } from './qualification/repository.js'
 import { completedNativeQualificationChecks } from './installedNativeQualification.js'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
@@ -25,14 +26,13 @@ export function createInstalledNativeQualificationRetention(input: {
   currentBinding(deviceId: string): Readonly<DeviceSessionBinding> | null
   currentInstallation(value: HostHarnessOverride): HostHarnessInstallationDto | null
   suiteRevision: string
-  opencodeSuiteRevision?: string
   refreshInstallation(value: HostHarnessOverride, signal: AbortSignal): Promise<void>
 }): NativeQualificationRetention {
   return { refresh: input.refreshInstallation, async retain(client, value, proof, checkId, signal) {
     const parsedDriver = CompatibilityHarnessSchema.safeParse(value.driverId)
     if (!parsedDriver.success) return denied()
     const harness = parsedDriver.data
-    const suiteRevision = harness === 'codex' ? input.suiteRevision : input.opencodeSuiteRevision
+    const suiteRevision = input.suiteRevision
     if (!suiteRevision) denied()
     const receipt = CompletedNativeQualificationSchema.parse(proof.completedNativeQualification)
     const assertCurrent = async () => {
@@ -60,10 +60,10 @@ export function createInstalledNativeQualificationRetention(input: {
         || proof.connectionGeneration !== installation.connectionGeneration || proof.connectionGeneration !== harnessConnectionGeneration(binding)
         || proof.qualified !== (record.status === 'qualified')) denied()
       if (record.status === 'qualified' && (proof.authenticated !== true || proof.compatible !== true || !record.checks.length
-        || record.checks.some(check => !check.passed) || completedNativeQualificationChecks(harness).some(id => !record.checks.some(check => check.id === id && check.passed)))) denied()
+        || record.checks.some(check => !check.passed) || completedNativeQualificationChecks().some(id => !record.checks.some(check => check.id === id && check.passed)))) denied()
     }
     await assertCurrent()
-    await input.repository.save(receipt.record, { purpose: receipt.purpose, checkId: receipt.checkId,
+    await input.repository.save(HarnessQualificationSchema.parse(receipt.record), { purpose: receipt.purpose, checkId: receipt.checkId,
       binding: receipt.binding, target: receipt.target, profile: proof }, client)
     await assertCurrent()
     return assertCurrent

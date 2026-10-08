@@ -45,10 +45,9 @@ function installedCodex(path: string, bundled?: string): string | undefined {
 }
 
 /** Shared by normal configuration and the DB-free build diagnostic. No fallback provider. */
-export function harnessBinaries(environment: NodeJS.ProcessEnv): { codexBinary: string; openCodeBinary: string } {
+export function harnessBinaries(environment: NodeJS.ProcessEnv): { codexBinary: string } {
   const codex = environment.CODEX_BINARY === undefined ? 'codex' : environment.CODEX_BINARY.trim()
-  const opencode = environment.OPENCODE_BINARY === undefined ? 'opencode' : environment.OPENCODE_BINARY.trim()
-  if (!codex || !opencode) throw new Error('Configured harness binaries must not be empty.')
+  if (!codex) throw new Error('Configured harness binaries must not be empty.')
   let bundled: string | undefined
   if (codex === 'codex') {
     try { bundled = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js') }
@@ -60,6 +59,5 @@ export function harnessBinaries(environment: NodeJS.ProcessEnv): { codexBinary: 
         ?? (environment.CODEX_BINARY === undefined
           ? bundled ?? codex : codex)
       : codex,
-    openCodeBinary: opencode,
   }
 }

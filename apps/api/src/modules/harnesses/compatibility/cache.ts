@@ -8,7 +8,7 @@ import { HarnessCompatibilityReasonSchema, type CompatibilityHarness } from '@fo
 
 export const CompatibilityCacheEntrySchema = z.object({
   format: z.literal(1), key: z.string().regex(/^[a-f0-9]{64}$/),
-  harness: z.enum(['codex', 'opencode']),
+  harness: z.literal('codex'),
   checkedAt: z.string().datetime(), expiresAt: z.string().datetime(),
   status: z.enum(['probe-passed', 'probe-failed']),
   reason: HarnessCompatibilityReasonSchema.nullable(),

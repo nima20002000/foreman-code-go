@@ -2,7 +2,7 @@ import type pg from 'pg'
 import { isDeepStrictEqual } from 'node:util'
 import type { HarnessConfiguration } from '@foreman-code/contracts'
 import { HarnessProfileSelectionSchema, type HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
-import { withAdvancedDefaults } from '@foreman-code/contracts'
+import { RETIRED_OPENCODE_MESSAGE, withAdvancedDefaults } from '@foreman-code/contracts'
 import { HostHarnessOverrideListInputSchema, HostHarnessOverrideSaveSchema, type HostHarnessOverride, type HostHarnessOverrideListInput, type HostHarnessOverrideSave, type HostHarnessInstanceCheckInput } from '@foreman-code/contracts/harness-registry'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
@@ -45,6 +45,9 @@ export class HostHarnessOverrideService {
     }
   }
   private async describe(value: HostHarnessOverride, client?: pg.PoolClient): Promise<HostHarnessOverride> {
+    if (value.driverId === 'opencode' || value.configuration.harness === 'opencode') return {
+      ...value, qualification: 'retired', retirementMessage: RETIRED_OPENCODE_MESSAGE,
+    }
     if (!value.enabled) return { ...value, qualification: 'disabled' }
     // Missing/remote failed evidence remains unavailable, never substitutes local discovery.
     const evidence = await this.evidence(value, client).catch(() => null)
@@ -154,6 +157,8 @@ export class HostHarnessOverrideService {
 
 /** Admission consumes the exact readback snapshot; saved settings alone grant no execution trust. */
 export function requireQualifiedHostOverride(value: HostHarnessOverride, expected: { instanceRevision: string; target: HostHarnessOverride['target'] }): HostHarnessOverride {
+  if (value.driverId === 'opencode' || value.configuration.harness === 'opencode') throw new DomainError(
+    'HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
   if (!value.enabled || value.qualification !== 'qualified' || value.instanceRevision !== expected.instanceRevision
     || value.target.installationFingerprint !== expected.target.installationFingerprint
     || value.target.harnessInstallationId !== expected.target.harnessInstallationId

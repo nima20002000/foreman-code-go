@@ -57,7 +57,7 @@ export function scopedCompatibilityProbe(options: {
     const launcher = binding.installation.launcher.resolvedLauncher
     if (!launcher) throw new Error('The selected diagnostic launcher is unavailable.')
     const record: OwnedProbe = { harness, recovery, controller, admitted: false,
-      probe: (options.nativeProbe ?? nativeCompatibilityProbe)({ codex: launcher, opencode: launcher },
+      probe: (options.nativeProbe ?? nativeCompatibilityProbe)({ codex: launcher },
         options.workingDirectory, options.environment ?? process.env, options.timeoutMs ?? 2000, {
           recovery,
           async beforeCommand(binary, commandSignal) {

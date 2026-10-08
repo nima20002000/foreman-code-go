@@ -218,7 +218,7 @@ export class McpDetectionService {
     // token. This does NOT accept broken connections or relax config checks.
     if (!['connected', 'status_unavailable', 'authentication_required'].includes(result.detection.state)) {
       throw new DomainError('APP_MCP_PREFLIGHT_FAILED', result.detection.state === 'not_detected'
-        ? `Foreman Code MCP is not installed for ${input.harness === 'codex' ? 'Codex' : 'OpenCode'}. Add it in Harness Settings › Connections, then start again.`
+        ? `Foreman Code MCP is not installed for ${input.harness === 'codex' ? 'Codex' : 'Claude'}. Add it in Harness Settings › Connections, then start again.`
         : `Foreman Code MCP credential injection refused: ${result.detection.state}.`, 409,
       { inspectionCodes: result.nativeFilters.diagnostics ?? [] })
     }

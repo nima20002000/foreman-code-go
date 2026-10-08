@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 
 import {
   AgentDefaultsSchema,
+  UpdateAgentDefaultsRequestSchema,
   DEFAULT_AGENT_DEFAULTS,
   WorkflowDefaultsSchema,
   withAdvancedDefaults,
@@ -73,7 +74,8 @@ export class PostgresFoundationSettingsRepository {
   }
 
   updateAgentDefaults(value: AgentDefaults, expectedRevision: number, client?: pg.ClientBase) {
-    return this.write(KEYS.agents, AgentDefaultsSchema.parse(value), expectedRevision, client)
+    const accepted = UpdateAgentDefaultsRequestSchema.parse({ value, expectedRevision }).value
+    return this.write(KEYS.agents, accepted, expectedRevision, client)
   }
 
   updateWorkflowDefaults(value: WorkflowDefaults, expectedRevision: number, client?: pg.ClientBase) {

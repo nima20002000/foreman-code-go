@@ -26,7 +26,7 @@ async function canonicalConfigurationPath(file: string): Promise<string> {
   }
 }
 export async function lockNativeConfigurationFile(client: pg.PoolClient, file: string): Promise<() => Promise<void>> {
-  // Fresh OpenCode profiles can create a user file. The broad lock stays held
+  // Fresh profiles can create a user file. The broad lock stays held
   // while its canonical parent and missing suffix establish the same file key.
   const key = `graphql:native-config:${await canonicalConfigurationPath(file)}`
   const lock = await client.query<{ locked: boolean }>('select pg_try_advisory_lock(hashtext($1)) as locked', [key])

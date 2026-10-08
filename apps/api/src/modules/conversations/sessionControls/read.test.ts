@@ -11,7 +11,6 @@ import { SessionControlStore, type SessionControlBinding } from './store.js'
 const providers = [
   { harness: 'codex', code: 'CODEX_SESSION_UNAVAILABLE' },
   { harness: 'claude', code: 'CLAUDE_SESSION_UNAVAILABLE' },
-  { harness: 'opencode', code: 'OPENCODE_SESSION_CONTEXT_MISSING' },
 ] as const
 
 async function fixture(harness: NativeSessionReference['harness'] = 'codex') {

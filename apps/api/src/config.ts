@@ -28,12 +28,10 @@ const EnvironmentSchema = z.object({
   HARNESS_WORKSPACE_ROOT: z.string().trim().min(1).default('/tmp/graphql-harness-runs'),
   HARNESS_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
   CODEX_BINARY: z.string().trim().min(1).default('codex'),
-  OPENCODE_BINARY: z.string().trim().min(1).default('opencode'),
   FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: z.enum(['0', '1']).default('0'),
   FOREMAN_CODE_LOCAL_PRODUCTION: z.enum(['0', '1']).default('0'),
   FOREMAN_CODE_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: z.enum(['0', '1']).optional(),
   FOREMAN_CODE_ENABLE_EXPERIMENTAL_CLAUDE_SDK: z.enum(['0', '1']).optional(),
-  FOREMAN_CODE_OPENCODE_PARITY_QUALIFIED: z.enum(['0', '1']).optional(),
 })
 
 export interface ApiConfig {
@@ -59,7 +57,6 @@ export interface ApiConfig {
     workspaceRoot: string
     timeoutMs: number
     codexBinary: string
-    openCodeBinary: string
   }
 }
 
