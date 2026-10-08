@@ -193,7 +193,9 @@ export class DriveComputer {
           await this.systemctl(['stop', UNIT])
           if (input.previousUnit === null) await this.systemctl(['disable', UNIT])
         }
-        if (await this.ports.mounted(this.mountPath)) throw new Error('The failed mount is still active.')
+        if (await this.ports.mounted(this.mountPath)) {
+          throw new Error('The failed mount is still active.', { cause: error })
+        }
         await this.restoreFile(input.configPath, stoppedConfig)
         await this.restoreFile(this.unitPath, input.previousUnit)
         await this.systemctl(['daemon-reload'])

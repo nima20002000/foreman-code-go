@@ -298,7 +298,7 @@ it('connects Google Drive on a paired computer through remote authorization, sen
     expect((await reader.callTool({ name: 'computer_drive_connect_start', arguments: { target } })).isError).toBe(true)
     expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_drive_connect_complete')
     expect((await reader.callTool({ name: 'computer_drive_connect_complete',
-      arguments: { target, loginId: started.loginId, token: '{\"access_token\":\"a\",\"refresh_token\":\"r\"}' } })).isError).toBe(true)
+      arguments: { target, loginId: started.loginId, token: '{"access_token":"a","refresh_token":"r"}' } })).isError).toBe(true)
     expect(f.driveCalls).toHaveLength(5)
     expect(f.audited.mock.calls.map(call => [call[2], call[4]])).toEqual([
       ['computer_drive_connect_start', 'succeeded'], ['computer_drive_connect_complete', 'succeeded'], ['computer_drive_disconnect', 'succeeded']])
