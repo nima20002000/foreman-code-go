@@ -9,12 +9,11 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
   const state = controls.state
   const id = useId()
   const [open, setOpen] = useState(false)
-  const [budget, setBudget] = useState('')
-  const [budgetEdited, setBudgetEdited] = useState(false)
-  useEffect(() => {
-    setBudget(String(state?.desired.autoCompactTokens ?? ''))
-    setBudgetEdited(false)
-  }, [state?.conversationId, state?.profileKey, state?.desired.autoCompactTokens])
+  const budgetOwner = JSON.stringify([state?.conversationId, state?.profileKey])
+  const [budgetDraft, setBudgetDraft] = useState<{ owner: string; value: string }>()
+  const budgetEdited = budgetDraft?.owner === budgetOwner
+  const budget = budgetEdited ? budgetDraft.value : String(state?.desired.autoCompactTokens ?? '')
+  const saveDefault = useRef<HTMLButtonElement>(null)
   const anchor = useRef<HTMLButtonElement>(null)
   const surface = useRef<HTMLDivElement>(null)
   const restoringFocus = useRef(false)
@@ -90,16 +89,23 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
             onChange={event => update({ ...state.desired, autoCompact: event.target.value as SessionPreferences['autoCompact'] })} /> : null}
           {state.capabilities.autoCompactBudget.supported ? <TextField label="Auto-compaction budget" type="number" min="100000" max={state.capabilities.modelCapacity ?? 1000000}
               placeholder="Native default" value={budget} disabled={pending}
-              onChange={event => { setBudget(event.target.value); setBudgetEdited(true) }}
-              onBlur={() => {
+              onChange={event => setBudgetDraft({ owner: budgetOwner, value: event.target.value })}
+              onBlur={event => {
+                if (pending) return
+                if (event.relatedTarget instanceof Node && saveDefault.current?.contains(event.relatedTarget)) return
                 if (!budgetEdited) return
-                setBudgetEdited(false)
+                setBudgetDraft(undefined)
                 const tokens = budget ? Number(budget) : null
                 if (tokens !== state.desired.autoCompactTokens) update({ ...state.desired, autoCompactTokens: tokens })
               }} /> : null}
           <p>{state.applicability === 'applied' ? 'Applied now' : `Applies ${state.applicability.replace('-', ' ')}`}</p>
-          <Button size="sm" variant="secondary" disabled={pending} onClick={() => {
-            void controls.change({ kind: 'save-default', preferences: state.desired }).catch(() => undefined)
+          <Button ref={saveDefault} size="sm" variant="secondary" disabled={pending}
+            onMouseDown={event => { if (budgetEdited) event.preventDefault() }} onClick={() => {
+              const autoCompactTokens = budget ? Number(budget) : null
+              const preferences = budgetEdited ? { ...state.desired, autoCompactTokens } : state.desired
+              void controls.change({ kind: 'save-default', preferences }).then(() => {
+                setBudgetDraft(draft => draft?.owner === budgetOwner && draft.value === budget ? undefined : draft)
+              }).catch(() => undefined)
           }}>Save as default for future chats</Button>
         </details>
         <Button size="sm" disabled={pending || !!compactReason} title={compactReason ?? undefined}
@@ -110,6 +116,6 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
         <Button size="sm" variant="secondary" onClick={close}>Close context details</Button>
       </div> : null}
     </div>
-    {controls.mutation.isError ? <p role="alert">{controls.mutation.error.message}</p> : null}
+    {controls.mutation.isError ? <p role="alert">{controls.mutation.error?.message}</p> : null}
   </div>
 }
