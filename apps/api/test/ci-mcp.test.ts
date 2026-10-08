@@ -35,6 +35,17 @@ async function fixture() {
 }
 
 describe('CI over the authenticated unified MCP transport', () => {
+  it('retains the caller’s preparation grants and explicit runtime selection on the queued ticket', async () => {
+    const f = await fixture()
+    try {
+      const result = await f.call('ci_run', { workspaceId: f.workspaceId, suite: 'unit', commandId: 'queue-preparation' }, 'operator')
+      expect(result.result.isError).not.toBe(true)
+      const ticket = f.ticket()
+      expect(ticket.runtimePreparation?.id).toBe(f.operator.id)
+      expect(ticket.runtimePreparation?.grants).toEqual(f.operator.grants)
+      expect(ticket.definition.spec).toMatchObject({ runtimeSelection: 'qualified-profile' })
+    } finally { await f.app.close() }
+  })
   it('lists Agent schemas with no workspace selector and Operator schemas with workspaceId', async () => {
     const f = await fixture()
     try {

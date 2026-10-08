@@ -1,141 +1,7 @@
-import Fastify from 'fastify'
-import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import { BuildComputerPrepareStatusSchema, CI_RUNTIME_NAMESPACE, type PreparedCiRuntime } from '@foreman-code/contracts'
-import type { PostgresAccessService } from '../src/modules/access/postgres.js'
-import type { AppInteractionService } from '../src/modules/interactions/app.js'
-import type { OperatorServices } from '../src/mcp/operator/types.js'
-import { DomainError } from '../src/modules/errors.js'
-import { registerGraphqlMcp } from '../src/mcp/unified/transport.js'
-import { CiRuntimeProvisioner } from '../src/modules/jobs/ciRuntimeProvisioner.js'
-import { CiRuntimeWorker } from '../src/modules/jobs/ciRuntimeWorker.js'
-import { ciFixture } from './helpers/ciFixture.js'
-
-const mainId = '11111111-1111-4111-8111-111111111111'
-const dexter = '22222222-2222-4222-8222-222222222222', mana = '33333333-3333-4333-8333-333333333333'
-const oldImage = `sha256:${'1'.repeat(64)}`, newImage = `sha256:${'2'.repeat(64)}`, commit = 'c'.repeat(40)
-const uuid = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`
-const oldPin = { approvedSourceId: uuid('a'), snapshotId: uuid('b'), manifestDigest: 'a'.repeat(64) }
-const newPin = { approvedSourceId: uuid('d'), snapshotId: uuid('e'), manifestDigest: 'd'.repeat(64) }
-const manifest = { version: 1, ...newPin, capturePolicy: 'git-tree-v1', executablePolicy: 'preserve-approved',
-  git: { commit, tree: 'f'.repeat(40), objectFormat: 'sha1' }, entries: [], deletions: [], totalEntries: 0, totalBytes: 0 }
-const dexterRoot = uuid('4'), manaRoot = uuid('5')
-
-function root(deviceId: string, rootId: string, bindingRevision: number, source = oldPin) {
-  return { version: 1, source, selection: { hostRef: { kind: 'device', mainId, deviceId }, rootPolicyId: 'root-policy', rootPolicyRevision: '1', locationRevision: '2' },
-    binding: { version: 1, mainId, deviceId, workerInstallationId: deviceId, workspaceId: 'workspace-fixture', rootId, bindingRevision,
-      locationRevision: 2, canonicalPath: '/ci/workspaces/project', filesystem: { device: '1', inode: '2', mountId: '3' },
-      accessMode: 'exclusive-write', snapshotId: source.snapshotId, manifestDigest: source.manifestDigest },
-    ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner', registration: { workerInstallationId: deviceId, keyRevision: 1, authorizationRevision: 1 },
-    attestationId: 'attestation', attestationDigest: '7'.repeat(64), boundAt: '2026-10-07T00:00:00.000Z' }
-}
-function profile(id: string, name: string, deviceId: string, rootId: string, suites: string[], memoryBytes = 6 * 2 ** 30) {
-  return { schemaVersion: 2, id, name, revision: 3, status: 'qualified', sourceCommit: 'a'.repeat(40), root: root(deviceId, rootId, 1),
-    approvalConfig: { review: { decisionDigest: 'e'.repeat(64) } },
-    spec: { rootId, bindingRevision: 1, suites, resources: { schemaVersion: 1,
-      limits: { cpuLimit: 4, memoryBytes, pidsLimit: 512, diskBytes: 20 * 2 ** 30 }, mutableInodes: 1_000_000,
-      controlTempBytes: 2 ** 26, scratchBytes: 2 ** 34, scratchExecutable: true, shmBytes: 2 ** 26, spoolBytes: 2 ** 25,
-      reportBytes: 2 ** 26 }, approvalConfig: {}, policy: { imageDigest: oldImage, toolchainDigest: 't' } } }
-}
-
-async function fixture(options: { prepareFails?: boolean } = {}) {
-  const data = ciFixture()
-  const workspaceId = data.workspaceId
-  const profiles = new Map([
-    ['p-install', profile('p-install', 'Dexter install', dexter, dexterRoot, ['install'])],
-    ['p-unit', profile('p-unit', 'Dexter unit', dexter, dexterRoot, ['install', 'unit'])],
-    ['p-mana', profile('p-mana', 'Mana install', mana, manaRoot, ['install'])],
-    // Another runtime size on the same computer cannot share its one protected runtime.
-    ['p-small', profile('p-small', 'Dexter small', dexter, dexterRoot, ['install'], 2 ** 30)],
-  ])
-  const calls = { prepare: [] as unknown[], bind: [] as unknown[], saves: [] as Array<{ id: string; spec: { bindingRevision: number; policy: { imageDigest: string } } }>,
-    refresh: [] as unknown[], qualified: [] as string[] }
-  const prepared: PreparedCiRuntime = { commit, imageId: newImage, imageManifestDigest: `sha256:${'9'.repeat(64)}`,
-    seedReceiptPath: '/ci/installer/context/seed-receipt.json', contextReceiptPath: '/ci/installer/context/context-receipt.json',
-    qualificationSource: '/ci/installer/qualification-source', unitCodex: { executable: '/opt/graphql-ci/tools/codex',
-      sourceExecutable: '/ci/codex', version: 'codex-cli 1.0.0', binarySha256: '8'.repeat(64) } }
-  let refreshed = false
-  const workerPorts = {
-    git: { cloneDirectory: (repository: string) => `/clones/${repository}`,
-      git: async () => ({ code: 0, stdout: '', stderr: '' }) },
-    managedRuntimeRoot: async () => '/ci/managed',
-    prepare: async (input: { repository: string; commit: string; installer: string; keepImages?: readonly string[]; keepPaths?: readonly string[]; log?: (stage: string) => void }) => {
-      calls.prepare.push({ repository: input.repository, commit: input.commit, installer: input.installer, keepImages: input.keepImages, keepPaths: input.keepPaths })
-      input.log?.('fetch-packages')
-      if (options.prepareFails) throw new Error('podman build failed: no space left on device')
-      return prepared
-    },
-    refresh: async (input: unknown) => { calls.refresh.push(input); refreshed = true; return { unit: 'refresh', workerUnit: 'worker.service' } },
-    lastRefresh: async () => refreshed ? { commit, ok: true, log: 'exit=0' } : null,
-    currentRuntimePaths: async () => ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'],
-    now: () => new Date('2026-10-07T00:00:00.000Z'),
-  }
-  let worker = new CiRuntimeWorker('/ci/state', workerPorts as never, new AbortController().signal)
-  let restarted = false
-  const endpoint = {
-    capabilities: (deviceId: string) => deviceId === dexter ? [{ namespace: CI_RUNTIME_NAMESPACE, mainCanRequest: true }] : [],
-    request: async (_deviceId: string, _namespace: string, payload: unknown) => {
-      // The refresh restarts the Worker: its next status comes from a fresh process.
-      if (refreshed && !restarted) { restarted = true; worker = new CiRuntimeWorker('/ci/state', workerPorts as never, new AbortController().signal) }
-      return { payload: await worker.handle(payload) }
-    },
-  }
-  const profileService = {
-    list: async () => ({ profiles: [...profiles.values()].map(value => ({ profile: structuredClone(value), ready: true, reasons: [], sideEffects: false })), approvals: [] }),
-    save: async (_principal: unknown, _source: unknown, _workspaceId: string, input: { id: string; expectedRevision: number; spec: never }) => {
-      const current = profiles.get(input.id)!
-      if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'changed', 409)
-      calls.saves.push({ id: input.id, spec: input.spec })
-      const saved = { ...current, revision: current.revision + 1, status: 'unqualified', spec: input.spec as typeof current.spec }
-      profiles.set(input.id, saved)
-      return saved
-    },
-    requestQualification: async (_principal: unknown, _source: unknown, _workspaceId: string, input: { profileId: string }) => ({ id: `approval-${input.profileId}` }),
-    qualify: async (_principal: unknown, _source: unknown, _workspaceId: string, _commandId: string, approvalId: string) => {
-      const id = approvalId.replace('approval-', '')
-      calls.qualified.push(id)
-      const value = { ...profiles.get(id)!, status: 'qualified', sourceCommit: commit }
-      profiles.set(id, value)
-      return value
-    },
-  }
-  const newRoot = root(dexter, dexterRoot, 2, newPin)
-  const sources = {
-    approveProject: async () => ({ manifest }),
-    rootList: async () => ({ items: [root(dexter, dexterRoot, 1), root(mana, manaRoot, 1)] }),
-    bindRoot: async (_principal: unknown, _source: unknown, input: unknown) => { calls.bind.push(input); return { value: newRoot } },
-  }
-  const pool = { query: async () => ({ rows: [{ record: { id: workspaceId, name: 'CI',
-    repository: { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' } } }] }) } as unknown as pg.Pool
-  const ciRuntime = new CiRuntimeProvisioner(pool, profileService as never, sources as never, () => endpoint,
-    data.services.commands, { pollMs: 0, wait: () => new Promise(resolve => setImmediate(resolve)), now: () => new Date('2026-10-07T00:00:00.000Z') })
-  const services = { ...data.services, jobRuntimeProfiles: profileService, ciRuntime } as unknown as OperatorServices
-  const app = Fastify()
-  const access = { authenticate: async (token: string) => {
-    const principal = { operator: data.operator, readonly: data.readonly }[token]
-    if (!principal) throw new DomainError('AUTH_INVALID', 'Invalid bearer token.', 401)
-    return principal
-  } } as unknown as PostgresAccessService
-  const interactions = { toolAccess: async () => ({ role: 'coder', tools: [] }), canRead: async () => false,
-    canRespond: async () => false } as unknown as AppInteractionService
-  registerGraphqlMcp(app, { access, operator: services, interactions })
-  const call = async (name: string, input: unknown, token = 'operator') => {
-    const response = await app.inject({ method: 'POST', url: '/mcp',
-      headers: { host: 'localhost', authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
-      payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } } })
-    const body = response.body.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? response.body
-    return JSON.parse(body).result as { isError?: boolean; structuredContent?: unknown; content?: { text: string }[] }
-  }
-  const settle = async (profileId: string) => {
-    for (let attempt = 0; attempt < 500; attempt++) {
-      const status = BuildComputerPrepareStatusSchema.parse((await call('build_computer_prepare_get', { workspaceId, profileId })).structuredContent)
-      if (['qualified', 'failed'].includes(status.state)) return status
-      await new Promise(resolve => setImmediate(resolve))
-    }
-    throw new Error('Preparation did not settle.')
-  }
-  return { ...data, app, call, settle, calls, profiles }
-}
+import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
+import { ciPreparationFixture as fixture, qualifiedPreparationProfile, dexter, oldImage, newImage, commit, newPin }
+  from './helpers/ciPreparationFixture.js'
 
 describe('build computer CI runtime preparation over the authenticated MCP endpoint', () => {
   it('prepares the computer, moves its profiles to the new image and root, refreshes it and requalifies them', async () => {
@@ -184,5 +50,122 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.prepare).toEqual([])
       expect(f.audits).toContainEqual({ principalId: f.readonly.id, action: 'build_computer_prepare', outcome: 'denied' })
     } finally { await f.app.close() }
+  })
+})
+
+describe('runtime preparation ownership and recovery', () => {
+  it('leaves computers with disabled build participation untouched', async () => {
+    const f = await fixture({ disabled: true })
+    try {
+      await f.ciRuntime.prepareForCommit(f.operator, f.workspaceId, 'unit', commit)
+      expect(f.calls.prepare).toEqual([])
+      expect(f.memory.records.size).toBe(0)
+      const denied = await f.call('build_computer_prepare', {
+        workspaceId: f.workspaceId, profileId: 'p-unit', commit, commandId: 'disabled' })
+      expect(denied.isError).toBe(true)
+      expect(f.calls.saves).toEqual([])
+      expect(f.calls.refresh).toEqual([])
+    } finally { await f.ciRuntime.close(); await f.app.close() }
+  })
+
+  it('reports busy for a newer commit and accepts the same command once the owner finishes', async () => {
+    let release!: () => void
+    const paused = new Promise<void>(resolve => { release = resolve })
+    const f = await fixture({ pause: stage => stage === 'source' ? paused : Promise.resolve() })
+    try {
+      await f.ciRuntime.start(f.operator, 'mcp', { workspaceId: f.workspaceId,
+        profileId: 'p-unit', commit, commandId: 'first' })
+      const next = { workspaceId: f.workspaceId, profileId: 'p-unit', commit: 'd'.repeat(40), commandId: 'next' }
+      await expect(f.ciRuntime.start(f.operator, 'mcp', next)).rejects.toMatchObject({ code: 'CI_RUNTIME_BUSY' })
+      release()
+      expect((await f.settle('p-unit')).state).toBe('qualified')
+      expect((await f.ciRuntime.start(f.operator, 'mcp', next)).commit).toBe(next.commit)
+      expect((await f.settle('p-unit')).commit).toBe(next.commit)
+      expect(f.calls.prepare).toHaveLength(2)
+    } finally { release(); await f.ciRuntime.close(); await f.app.close() }
+  })
+
+  it('allows only one workspace to own preparation on a physical computer, even at the same commit', async () => {
+    let release!: () => void
+    const paused = new Promise<void>(resolve => { release = resolve })
+    const f = await fixture({ pause: stage => stage === 'source' ? paused : Promise.resolve() })
+    const other = f.createProvisioner()
+    try {
+      const foreign = structuredClone(f.profiles.get('p-unit')!)
+      foreign.id = 'p-other'
+      foreign.workspaceId = 'another-workspace'
+      foreign.root.binding.workspaceId = 'another-workspace'
+      f.profiles.set(foreign.id, qualifiedPreparationProfile(foreign))
+      await f.ciRuntime.start(f.operator, 'mcp', { workspaceId: f.workspaceId,
+        profileId: 'p-unit', commit, commandId: 'workspace-first' })
+      const principal = { ...f.operator, grants: f.operator.grants.map(grant => ({ ...grant, scope: {} })) }
+      f.principals.set(principal.id, principal)
+      await expect(other.start(principal, 'mcp', { workspaceId: 'another-workspace',
+        profileId: 'p-other', commit, commandId: 'workspace-second' })).rejects.toMatchObject({ code: 'CI_RUNTIME_BUSY' })
+      await other.recover()
+      release()
+      expect((await f.settle('p-unit')).state).toBe('qualified')
+      expect(f.calls.refresh).toHaveLength(1)
+      expect(f.memory.records.size).toBe(1)
+      expect(await other.get(principal, { workspaceId: 'another-workspace', profileId: 'p-other' }))
+        .toMatchObject({ state: 'idle' })
+    } finally { release(); await other.close(); await f.ciRuntime.close(); await f.app.close() }
+  })
+
+  it.each(['source', 'root', 'profile', 'refresh', 'capture', 'qualify'] as const)(
+    'recovers after Main stops following the committed %s command', async stage => {
+      let reached!: () => void
+      const atStage = new Promise<void>(resolve => { reached = resolve })
+      let release!: () => void
+      const paused = new Promise<void>(resolve => { release = resolve })
+      let stopped = false
+      const f = await fixture({ pause: async current => {
+        if (current === stage && !stopped) { reached(); await paused }
+      } })
+      let recovered: ReturnType<typeof f.createProvisioner> | undefined
+      try {
+        const input = { workspaceId: f.workspaceId, profileId: 'p-unit', commit, commandId: `restart-${stage}` }
+        await f.ciRuntime.start(f.operator, 'mcp', input)
+        await atStage
+        stopped = true
+        const closing = f.ciRuntime.close()
+        release()
+        await closing
+        recovered = f.createProvisioner()
+        expect((await recovered.get(f.operator, { workspaceId: f.workspaceId, profileId: 'p-unit' })).state)
+          .not.toBe('idle')
+        await recovered.recover()
+        const done = await f.settle('p-unit', recovered)
+        expect(done).toMatchObject({ state: 'qualified', commit })
+        expect(await recovered.start(f.operator, 'mcp', input)).toEqual(done)
+        expect(f.calls.prepare).toHaveLength(1)
+        expect(f.calls.refresh).toHaveLength(1)
+        expect(f.calls.saves).toHaveLength(2)
+        expect(f.calls.qualified.sort()).toEqual(['p-install', 'p-unit'])
+        expect(f.memory.records.size).toBe(1)
+      } finally { release(); await recovered?.close(); await f.ciRuntime.close(); await f.app.close() }
+    })
+
+  it.each([{ statusDrops: 1 }, { loseRefreshAck: true }])('reconciles a temporary channel failure: %j', async options => {
+    const f = await fixture(options)
+    try {
+      await f.ciRuntime.start(f.operator, 'mcp', { workspaceId: f.workspaceId,
+        profileId: 'p-unit', commit, commandId: 'disconnect' })
+      expect(await f.settle('p-unit')).toMatchObject({ state: 'qualified', commit })
+      expect(f.calls.prepare).toHaveLength(1)
+      expect(f.calls.refresh).toHaveLength(1)
+    } finally { await f.ciRuntime.close(); await f.app.close() }
+  })
+
+  it('does not gain missing preparation grants when the stored Operator grants are broader', async () => {
+    const f = await fixture()
+    try {
+      const caller = { ...f.operator, grants: f.operator.grants.map(grant => ({ ...grant,
+        actions: grant.actions.filter(action => action !== 'job_artifacts:read') })) }
+      await expect(f.ciRuntime.start(caller, 'mcp', { workspaceId: f.workspaceId,
+        profileId: 'p-unit', commit, commandId: 'limited' })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+      expect(f.calls.prepare).toEqual([])
+      expect(f.memory.records.size).toBe(0)
+    } finally { await f.ciRuntime.close(); await f.app.close() }
   })
 })
