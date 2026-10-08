@@ -168,7 +168,7 @@ it('retains one access handoff across reopen and changes only the native process
   await expect(reopened.conversations.reserveApplicationAccess(f.binding, next, 'different-change', f.session))
     .rejects.toThrow('needs recovery')
   const newOwner = { ...f.nativeOwner, processIdentityDigest: 'c'.repeat(64) }
-  await reopened.conversations.recoveredOwner(f.binding, f.connection, f.nativeOwner, newOwner, next)
+  await reopened.conversations.recoveredOwner(f.binding, f.connection, f.nativeOwner, newOwner, { targetBinding: next })
   const saved = await reopened.conversations.read(next)
   expect(saved?.session).toEqual(f.session)
   expect(saved?.binding).toEqual(next)
@@ -278,4 +278,54 @@ it('refuses owner recovery across a pending input, foreign session or changed de
   await f.chats.reserveTurn(f.binding, 'pending-message', commandInputHash('pending-input'))
   await expect(f.chats.recoveredOwner(f.binding, f.connection, f.nativeOwner, next)).rejects.toThrow('settled conversation')
   expect((await f.chats.read(f.binding))?.nativeOwner).toEqual(f.nativeOwner)
+})
+
+it('persists a rejected turn across reopen and allows new input while retaining the old receipt', async () => {
+  const f = await opened()
+  const result = { outcome: 'failed' as const, error: { code: 'NATIVE_INPUT_NOT_DELIVERED', message: 'Not offered', retryable: true } }
+  const hash = commandInputHash('rejected')
+  await f.chats.reserveTurn(f.binding, 'rejected', hash)
+  await f.chats.rejectTurn(f.binding, 'rejected', result)
+  await f.store.close()
+  const reopened = await RemoteOperationJournal.open(f.path)
+  closing.push(() => reopened.close())
+  expect((await reopened.conversations.read(f.binding))?.turns[0]).toMatchObject({ status: 'rejected', result })
+  expect((await reopened.conversations.reserveTurn(f.binding, 'rejected', hash)).dispatch).toBe(false)
+  await reopened.conversations.finishTurn(f.binding, 'rejected')
+  expect((await reopened.conversations.read(f.binding))?.turns[0]?.status).toBe('rejected')
+  await expect(reopened.conversations.submitted(f.binding, 'rejected', { nativeTurnId: 'late-native-id' }))
+    .rejects.toThrow('rejected native input')
+  expect((await reopened.conversations.reserveTurn(f.binding, 'later', commandInputHash('later'))).dispatch).toBe(true)
+})
+
+it('updates a replacement owner before its reserved input but refuses submitted or unrelated pending input', async () => {
+  const f = await opened()
+  const next = { ...f.nativeOwner, processIdentityDigest: 'd'.repeat(64) }
+  await f.chats.reserveTurn(f.binding, 'pending', commandInputHash('pending'))
+  await expect(f.chats.recoveredOwner(f.binding, f.connection, f.nativeOwner, next, { pendingCorrelationId: 'foreign' }))
+    .rejects.toThrow('settled conversation')
+  await f.chats.recoveredOwner(f.binding, f.connection, f.nativeOwner, next, { pendingCorrelationId: 'pending' })
+  expect((await f.chats.read(f.binding))?.ownerTransitions).toEqual([{ previous: f.nativeOwner, next }])
+  await f.chats.submitted(f.binding, 'pending', { nativeTurnId: 'submitted' })
+  await expect(f.chats.recoveredOwner(f.binding, f.connection, next, f.nativeOwner, { pendingCorrelationId: 'pending' }))
+    .rejects.toThrow('settled conversation')
+})
+
+it('reserves initial creation and input together and preserves rejected startup replay after another reservation', async () => {
+  const f = workerConversationFixture('operator', 'claude')
+  const j = await journal()
+  await j.chats.receive(f.binding, f.connection)
+  const first = () => j.chats.reserveInitialTurn(f.binding, 'first-operation', commandInputHash('create'),
+    'first-turn', commandInputHash('prompt'), 'regular')
+  expect((await first()).dispatch).toBe(true)
+  await j.chats.rejectTurn(f.binding, 'first-turn', { outcome: 'failed', error: {
+    code: 'NATIVE_INPUT_NOT_DELIVERED', message: 'Startup failed', retryable: true,
+  } }, 'first-operation')
+  await expect(j.chats.reserveInitialTurn(f.binding, 'other-operation', commandInputHash('other'),
+    'first-turn', commandInputHash('prompt'), 'regular')).rejects.toThrow('initial turn input changed')
+  expect((await j.chats.read(f.binding))?.creation).toMatchObject({ operationId: 'first-operation', status: 'rejected' })
+  expect((await j.chats.reserveInitialTurn(f.binding, 'later-operation', commandInputHash('later-create'),
+    'later-turn', commandInputHash('later'), 'regular')).dispatch).toBe(true)
+  expect((await first()).dispatch).toBe(false)
+  expect((await j.chats.read(f.binding))?.creation?.operationId).toBe('later-operation')
 })

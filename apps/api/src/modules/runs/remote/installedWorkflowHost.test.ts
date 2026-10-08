@@ -12,8 +12,15 @@ import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { NativeHistory } from '../../harnesses/port.js'
+import type { ExecutionResult } from '@foreman-code/contracts'
 import * as installedQualification from '../../harnesses/installedCodexQualification.js'
 import * as workerMcpEndpoint from './workerMcpEndpoint.js'
+import * as installedNativeOutput from './installedNativeOutput.js'
+import * as codexOutputProtection from '../../harnesses/codexOutputProtection.js'
+import { createInstalledWorkflowNativeOutputProviders } from './installedWorkflowNativeOutputs.js'
+import type { CodexNativeOutputs, CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
+import { runCommand } from '../../harnesses/process.js'
+import { workflowNativeOutputMain } from '../../../../test/support/workflowNativeOutputs.js'
 import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAuthorityRequestSchema } from '@foreman-code/contracts/execution-authority'
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
@@ -233,7 +240,7 @@ describe('positive installed native closure consumption',()=>{
 })
 
 async function sourceFixture(relativeCwd='', options: {
-  harness?: 'codex' | 'opencode'; artifactOutputKeys?: string[]
+  harness?: 'codex' | 'opencode'; artifactOutputKeys?: string[]; attemptId?: string; operationId?: string
 } = {}) {
   const harness = options.harness ?? 'codex'
   const root=await directory(),runtime=join(root,'runtime'),project=join(root,'project'),namespace=join(runtime,'source-materializations',randomUUID())
@@ -258,7 +265,11 @@ async function sourceFixture(relativeCwd='', options: {
     source:{kind:'pending',...source,revisionId:'revision',rootId:sourceRoot.binding.rootId,bindingRevision:1,materializationId:null,materializationDigest:null},
     payload:{kind:'agent',agentId:'agent',agentConfigurationVersionId:'configuration',driverId:harness,driverRevision:'1',instanceId:randomUUID(),instanceRevision:'1',harnessInstallationId:`installed-${harness}`,installationFingerprint:'a'.repeat(64),runtimeContractVersion:1,protocolRevision:`${harness}-native-adapter-v1`,credentialScopeRefs:[],
       ...(options.artifactOutputKeys ? { artifactOutputs: { version: 1 as const, outputKeys: options.artifactOutputKeys } } : {})}})
-  const intent=deriveDispatch(placement,{executionId:'execution',attemptId:'attempt',operationId:'operation',technicalAttempt:1,occurrenceId:null,occurrenceIndex:0,inputDigest:`sha256:${'b'.repeat(64)}`,owner:{grantId:'grant',epoch:'1'}})
+  const intent=deriveDispatch(placement,{
+    executionId:'execution', attemptId:options.attemptId??'attempt', operationId:options.operationId??'operation',
+    technicalAttempt:1, occurrenceId:null, occurrenceIndex:0, inputDigest:`sha256:${'b'.repeat(64)}`,
+    owner:{grantId:'grant',epoch:'1'},
+  })
   const attempt={executionId:intent.executionId,attemptId:intent.attemptId,keyRevision:1,authorizationRevision:1,placementHash:''}
   attempt.placementHash=sourceBindingHash(sourceRoot,attempt,intent.operationId)
   const receipt=await new PrivateSourceMaterializer({read:async()=>bytes},async()=>undefined).prepare({manifest,binding:sourceRoot.binding,attempt,signal:new AbortController().signal})
@@ -275,8 +286,13 @@ async function sourceFixture(relativeCwd='', options: {
   return {root,approvedRoots,sources,owner,nativePlacement,intent,placement,request,context:{binding,signal:new AbortController().signal}}
 }
 
-async function runningInstalledFixture(phase: 'generation' | 'approval wait' = 'generation') {
-  const f = await sourceFixture()
+async function runningInstalledFixture(phase: 'generation' | 'approval wait' = 'generation',
+  artifactOutputKeys?: string[]) {
+  const f = await sourceFixture('', artifactOutputKeys
+    ? { artifactOutputKeys, attemptId: randomUUID(), operationId: randomUUID() } : {})
+  if (artifactOutputKeys) {
+    f.request.configuration.harness = { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'workspace-write' }
+  }
   f.intent = { ...f.intent, inputDigest: commandInputHash(f.request.input) }
   const file = join(f.root, 'workflow.json')
   const binary = join(f.root, 'codex')
@@ -358,9 +374,10 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
   vi.spyOn(CodexAppServerSessionManager.prototype, 'pending').mockImplementation(async () => history.pendingInteractions[0])
   vi.spyOn(CodexAppServerSessionManager.prototype, 'close').mockResolvedValue(undefined)
   vi.spyOn(CodexAppServerSessionManager.prototype, 'dispose').mockResolvedValue(undefined)
-  const finish = (outcome: 'succeeded' | 'canceled') => {
+  const finish = (outcome: 'succeeded' | 'canceled', output?: ExecutionResult['output']) => {
     history.pendingInteractions = []
-    history.terminalTurn = { correlationId: 'execution:execution', providerId: 'original-turn', result: { outcome } }
+    history.terminalTurn = { correlationId: 'execution:execution', providerId: 'original-turn',
+      result: { outcome, ...(output === undefined ? {} : { output }) } }
     release()
   }
   const cancel = vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel').mockImplementation(async () => {
@@ -368,6 +385,24 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
     return true
   })
   let live: DeviceSessionBinding | undefined = f.context.binding
+  let outputs: CodexNativeOutputs | undefined
+  let outputMain: Awaited<ReturnType<typeof workflowNativeOutputMain>> | undefined
+  let outputDirectory: string | undefined
+  if (artifactOutputKeys) {
+    outputDirectory = await mkdtemp('/tmp/installed-workflow-output-')
+    roots.push(outputDirectory)
+    outputMain = await workflowNativeOutputMain({ directory: outputDirectory,
+      currentIntent: () => f.intent, currentBinding: () => live,
+      rootId: f.nativePlacement.materialization.receipt.binding.rootId,
+      rootBindingRevision: f.nativePlacement.materialization.receipt.binding.bindingRevision })
+    // Native qualification is a boundary double; the installed output store and publication path remain real.
+    vi.spyOn(codexOutputProtection, 'qualifyCodexOutputProtection').mockResolvedValue()
+    const createOutputs = installedNativeOutput.createInstalledNativeOutputs
+    vi.spyOn(installedNativeOutput, 'createInstalledNativeOutputs').mockImplementation(ports => {
+      outputs = createOutputs(ports)
+      return outputs
+    })
+  }
   let expiresAt = new Date(Date.now() + 15 * 60_000).toISOString()
   let launchDenied = false
   let cleanupOnly = false
@@ -381,22 +416,35 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
     captureRequest: namespace => {
       if (!live) return undefined
       const binding = structuredClone(live)
-      return { binding, request: async payload => {
+      return { binding, request: async (payload, requestOptions) => {
         requests.push({ namespace, payload, binding })
         if (namespace === 'execution-authority-v1') {
-          const request = payload as { action: string }
+          const request = payload as { action: string; intent: typeof f.intent }
           if (launchDenied && request.action !== 'stop' && request.action !== 'read') throw new Error('Launch authority revoked')
           return { payload: { version: 1, action: request.action, operationId: f.intent.operationId,
-            attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: f.intent.owner,
+            attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: request.intent.owner,
             ...(cleanupOnly ? { cleanupOnly: true } : {}) } }
         }
         if (launchDenied) throw new Error('Original MCP lease revoked')
+        if (outputMain && namespace === 'byte-transfer-v1') {
+          return outputMain.handleBytes(payload, binding, requestOptions?.bytes)
+        }
+        if (outputMain && namespace === WORKER_MCP_EXTENSION.namespace
+          && (payload as { operation?: string }).operation !== 'worker-mcp.authorize') {
+          return outputMain.handleMcp(payload, binding)
+        }
         return { payload: { version: 1, mainId: f.intent.mainId, audience: 'worker', principalId: 'original-principal',
           executionId: f.intent.executionId, agentId: 'agent', operationId: f.intent.operationId,
           attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, expiresAt } }
       } }
     }, sources: f.sources, approvedRoots: async () => f.approvedRoots, codexSuiteRevision: 'codex-live-4',
     signal: new AbortController().signal, journal: async () => log }
+  if (outputDirectory) {
+    options.nativeOutputs = context => createInstalledWorkflowNativeOutputProviders({
+      stateDirectory: outputDirectory!, context, registry, captureRequest: options.captureRequest,
+      qualification: { qualify: async () => { throw new Error('Native qualification boundary double') }, command: runCommand },
+    })
+  }
   const host = await createInstalledWorkflowHost(options)
   if (host.kind !== 'configured') throw new Error('Expected installed test host')
   const handler = host.extensions[0]!.handle!
@@ -417,7 +465,16 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
       operationId: f.intent.operationId, attemptId: f.intent.attemptId, executionId: f.intent.executionId,
       bindingHash: f.intent.bindingHash, owner: f.intent.owner, native: initialStatus.receipt.native, action: { kind: 'stop' } } })
   }
+  const renewOwner = async () => {
+    const nextIntent = { ...f.intent, owner: { grantId: 'renewed-grant', epoch: '2' } }
+    await call('renew-owner', { intent: nextIntent, transition: { commandId: 'owner-renewal',
+      operationId: f.intent.operationId, previousOwner: f.intent.owner, nextOwner: nextIntent.owner,
+      native: initialStatus.receipt.native, evidenceDigest: 'a'.repeat(64) } })
+    f.intent = nextIntent
+    return nextIntent
+  }
   return { ...f, host, journal: log, prepared, call, stop, finish, settled, history, create, attach, turns, cancel, closeOwner, requests,
+    outputs, outputMain, session, renewOwner,
     disconnect: () => { live = undefined }, reconnect: (binding: DeviceSessionBinding) => { live = binding },
     cleanup: () => { cleanupOnly = true; launchDenied = true },
     renew: (expiry: string) => { expiresAt = expiry }, revoke: () => { launchDenied = true },
@@ -536,6 +593,107 @@ describe('installed host resident execution continuity', () => {
       expect(f.attach).not.toHaveBeenCalled()
       expect(f.requests.at(-1)?.binding).toEqual(replacement)
     } finally {
+      f.finish('canceled')
+      await f.host.close()
+    }
+  })
+
+  it.each([
+    ['reconnect', 'before create'], ['reconnect', 'after seal'],
+    ['owner renewal', 'before create'], ['owner renewal', 'after seal'],
+  ] as const)('publishes original artifacts after %s %s', async (change, stage) => {
+    const f = await runningInstalledFixture('generation', ['report'])
+    if (!f.outputs || !f.outputMain) throw new Error('Missing output composition')
+    const outputMain = f.outputMain
+    const configuration = f.request.configuration.harness
+    if (configuration.harness !== 'codex') throw new Error('Expected Codex fixture')
+    const sandbox = { cwd: f.request.workingDirectory, writableRoots: [f.request.workingDirectory],
+      networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true, tmpdir: undefined }
+    const signal = new AbortController().signal
+    const pin: CodexNativeOutputTurnPin = { session: f.session, connectionId: 'native-connection',
+      runtimeGeneration: 1, nativeTurnId: 'original-turn', assertCurrent: () => {} }
+    const bridge = await f.outputs.prepare({ configuration,
+      binary: '/unit/codex', binaryIdentity: 'unit-binary', providerVersion: f.session.providerVersion,
+      schemaIdentity: 'unit-schema', expectedSandbox: sandbox, effectiveSandbox: sandbox,
+      session: f.session, clientCorrelationId: 'execution:execution',
+      connectionId: pin.connectionId, runtimeGeneration: pin.runtimeGeneration }, signal)
+    const callback = () => ({ ...pin, rpcId: 'output-rpc', callId: randomUUID() })
+    const body = Buffer.from('# original workflow report\n')
+    const seal = async () => {
+      const created = await bridge.dispatch({ operation: 'create', commandId: randomUUID(),
+        filename: 'report.md', mediaType: 'text/markdown' }, callback(), signal)
+      if (created.operation !== 'create') throw new Error('Expected create reply')
+      await bridge.dispatch({ operation: 'append', commandId: randomUUID(), artifactId: created.artifactId,
+        offset: 0, contentBase64: body.toString('base64') }, callback(), signal)
+      await bridge.dispatch({ operation: 'seal', commandId: randomUUID(), artifactId: created.artifactId }, callback(), signal)
+      return created.artifactId
+    }
+    try {
+      await bridge.activate(pin, signal)
+      let artifactId = stage === 'after seal' ? await seal() : undefined
+      const initial = await f.journal.status(f.intent.operationId)
+      let binding = f.context.binding
+      let intent = f.intent
+      if (change === 'reconnect') {
+        f.disconnect()
+        binding = { ...binding, connectionGeneration: binding.connectionGeneration + 1, connectionEpoch: randomUUID() }
+        f.reconnect(binding)
+        await f.call('history')
+        await expect(f.call('history', {}, f.context.binding)).rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
+      } else intent = await f.renewOwner()
+      if (!artifactId) artifactId = await seal()
+      const publication = { commandId: randomUUID(), artifactId, filename: 'report.md', mediaType: 'text/markdown' as const }
+      outputMain.received.length = 0
+      const reply = await bridge.dispatch({ operation: 'publish', publication }, callback(), signal)
+      if (reply.operation !== 'publish') throw new Error('Expected publication reply')
+      expect(reply.result.value.revision).toMatchObject({ byteSize: body.length, sha256: sourceSha256(body) })
+      expect(reply.result.value.file.scope).toEqual(outputMain.files.scope)
+      expect(await bridge.dispatch({ operation: 'publish', publication }, callback(), signal)).toEqual(reply)
+      expect(outputMain.links.size).toBe(1)
+      expect(outputMain.admissions.has(publication.commandId)).toBe(true)
+      expect(outputMain.received.length).toBeGreaterThan(0)
+      for (const request of outputMain.received) expect(request).toEqual({ binding, intent })
+      const downloaded = await outputMain.files.files.download(outputMain.files.principal,
+        { kind: 'agent', workspaceId: 'workspace', conversationId: outputMain.files.scope.chat.conversationId },
+        { fileId: reply.result.value.file.fileId, revisionId: reply.result.value.revision.revisionId })
+      const chunks: Buffer[] = []
+      for await (const chunk of downloaded.stream) chunks.push(Buffer.from(chunk))
+      expect(Buffer.concat(chunks)).toEqual(body)
+      const status = await f.journal.status(f.intent.operationId)
+      if (initial.status !== 'known' || status.status !== 'known') throw new Error('Missing original receipt')
+      expect(status.receipt.native).toEqual(initial.receipt.native)
+      expect(status.receipt.connection).toEqual(initial.receipt.connection)
+      expect(status.receipt.intent).toEqual(intent)
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.turns).toHaveBeenCalledOnce()
+      expect(f.attach).not.toHaveBeenCalled()
+      const handleMcp = outputMain.handleMcp
+      vi.spyOn(outputMain, 'handleMcp').mockImplementationOnce(async (raw, capturedBinding) => {
+        const response = await handleMcp(raw, capturedBinding)
+        binding = { ...binding, connectionGeneration: binding.connectionGeneration + 1, connectionEpoch: randomUUID() }
+        f.reconnect(binding)
+        await f.call('history')
+        return response
+      })
+      await expect(bridge.dispatch({ operation: 'publish', publication }, callback(), signal))
+        .rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_UNAVAILABLE' })
+      expect(await bridge.dispatch({ operation: 'publish', publication }, callback(), signal)).toEqual(reply)
+      outputMain.files.revoke()
+      await expect(bridge.dispatch({ operation: 'publish', publication }, callback(), signal)).rejects.toThrow('Revoked')
+      expect(outputMain.links.size).toBe(1)
+      f.finish('succeeded', { text: JSON.stringify({ data: { report: 'complete' }, artifactOutputs: {
+        version: 1, outputs: [{ outputKey: 'report', commandId: publication.commandId }],
+      } }) })
+      await f.settled
+      const completed = await f.journal.status(f.intent.operationId)
+      expect(completed).toMatchObject({ receipt: { terminal: {
+        kind: 'completed', artifactDigests: [sourceSha256(body)],
+      } } })
+      if (completed.status !== 'known') throw new Error('Missing settled receipt')
+      expect(completed.receipt.terminal).not.toHaveProperty('artifactValidationError')
+    } finally {
+      await bridge.close()
+      await outputMain.close()
       f.finish('canceled')
       await f.host.close()
     }

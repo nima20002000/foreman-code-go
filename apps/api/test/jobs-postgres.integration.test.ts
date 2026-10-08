@@ -206,6 +206,41 @@ describe.skipIf(!postgresEnabled)('verification Job authenticated MCP authoring'
         ...saveInput, commandId: randomUUID(),
       } })
       expect(deniedSave.isError).toBe(true)
+
+      const editableResult = await writer.callTool({ name: 'job_definition_save', arguments: {
+        ...saveInput, commandId: randomUUID(), name: 'Editable repository unit',
+      } })
+      expect(editableResult.isError, JSON.stringify(editableResult.content)).not.toBe(true)
+      const editable = z.object({ definition: JobDefinitionRecordSchema })
+        .parse(editableResult.structuredContent).definition
+      const editedLimits = { ...spec.limits, cpuLimit: spec.limits.cpuLimit + 1,
+        memoryBytes: spec.limits.memoryBytes * 2 }
+      const editedSpec = AutoVerificationJobSpecSchema.parse({ ...spec, limits: editedLimits,
+        policy: { ...spec.policy, executionTimeoutMs: spec.policy.executionTimeoutMs + 1000 },
+        verification: { ...spec.verification,
+          resources: { ...spec.verification.resources, limits: editedLimits } } })
+      const editedValidation = await writer.callTool({ name: 'job_validate', arguments: {
+        workspaceId, spec: editedSpec,
+      } })
+      expect(editedValidation.structuredContent).toEqual({ valid: true, reasons: [], sideEffects: false })
+      const editInput = { workspaceId, commandId: randomUUID(), id: editable.id,
+        expectedRevision: editable.revision, name: editable.name, spec: editedSpec }
+      const deniedEdit = await readonly.callTool({ name: 'job_definition_save', arguments: editInput })
+      expect(deniedEdit.isError).toBe(true)
+      const editedResult = await writer.callTool({ name: 'job_definition_save', arguments: editInput })
+      expect(editedResult.isError, JSON.stringify(editedResult.content)).not.toBe(true)
+      const edited = z.object({ definition: JobDefinitionRecordSchema }).parse(editedResult.structuredContent).definition
+      expect(edited).toMatchObject({ id: editable.id, revision: 2, spec: editedSpec })
+      const editRetry = await writer.callTool({ name: 'job_definition_save', arguments: editInput })
+      expect(editRetry.structuredContent).toEqual({ definition: edited })
+      const editedReadback = await readonly.callTool({ name: 'job_definition_get', arguments: {
+        workspaceId, definitionId: editable.id,
+      } })
+      expect(editedReadback.structuredContent).toEqual({ definition: edited })
+      const originalReadback = await readonly.callTool({ name: 'job_definition_version_get', arguments: {
+        workspaceId, definitionId: editable.id, versionId: editable.versionId,
+      } })
+      expect(originalReadback.structuredContent).toEqual({ definition: editable })
       const command = { workspaceId, commandId: randomUUID(), definitionId: definition.id,
         expectedRevision: definition.revision }
       const deniedStart = await readonly.callTool({ name: 'job_start', arguments: command })
@@ -244,6 +279,10 @@ describe.skipIf(!postgresEnabled)('verification Job authenticated MCP authoring'
       app = createApp()
       address = await app.listen({ host: '127.0.0.1', port: 0 })
       const restarted = await connect(f.writer.token)
+      const restartedDefinition = await restarted.callTool({ name: 'job_definition_get', arguments: {
+        workspaceId, definitionId: edited.id,
+      } })
+      expect(restartedDefinition.structuredContent).toEqual({ definition: edited })
       const read = await restarted.callTool({ name: 'job_queue_get', arguments: { workspaceId, ticketId: ticket.id } })
       expect(read.structuredContent).toEqual({ ticket })
       const replay = await restarted.callTool({ name: 'job_start', arguments: command })

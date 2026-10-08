@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessInstanceRegistry } from '../src/modules/harnesses/instanceRegistry.js'
+import { DEFAULT_HARNESS_DEFAULTS, type ClaudeHarnessConfiguration } from '@foreman-code/contracts'
+import { HarnessInstanceRegistry, localDefaultInstances, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
 
 describe('configured harness instances', () => {
   it('decodes once and pins independent immutable revisions without live resources', () => {
@@ -27,4 +28,24 @@ describe('configured harness instances', () => {
     }
     expect(() => registry.select('missing')).toThrow(expect.objectContaining({ code: 'HARNESS_INSTANCE_UNAVAILABLE', status: 503 }))
   })
+})
+
+it('exposes a saved Claude preset for host configuration and keeps its revision immutable', () => {
+  const configuration: ClaudeHarnessConfiguration = {
+    harness: 'claude', model: 'saved-model', configDirectory: '/saved/profile',
+    authMode: 'subscription', permissionMode: 'default', sandbox: 'danger-full-access',
+    tools: ['Write'], permissionRules: [], instructions: '', mcpServers: {},
+  }
+  const registry = new HarnessInstanceRegistry(localHarnessDrivers)
+  registry.reload(localDefaultInstances(DEFAULT_HARNESS_DEFAULTS, 1))
+  expect(registry.list().map(value => value.driverId)).toEqual(['codex', 'opencode'])
+  registry.reload(localDefaultInstances({ ...DEFAULT_HARNESS_DEFAULTS, claude: configuration }, 2))
+  const saved = registry.select('local-default:claude')
+  expect(saved).toMatchObject({ driverId: 'claude', instanceRevision: '2',
+    enabled: true, configuration, availability: 'available' })
+  registry.reload(localDefaultInstances({ ...DEFAULT_HARNESS_DEFAULTS,
+    claude: { ...configuration, configDirectory: '/different/profile' } }, 3))
+  expect(registry.select('local-default:claude')).toMatchObject({ instanceRevision: '3',
+    configuration: { configDirectory: '/different/profile' } })
+  expect(saved.configuration).toEqual(configuration)
 })

@@ -5,5 +5,5 @@ export const savedClaudeConfiguration: ClaudeHarnessConfiguration = {
   configDirectory: '/actual/claude/profile', permissionMode: 'default', sandbox: 'danger-full-access',
   tools: ['Read', 'Bash'], permissionRules: [{ tool: 'Read', effect: 'allow' }, { tool: 'Bash', effect: 'ask' }],
   instructions: 'Retain these saved instructions.',
-  mcpServers: { local: { type: 'http', url: 'http://127.0.0.1:4100/mcp' } },
+  mcpServers: { graphql: { type: 'http', url: 'http://127.0.0.1:4100/mcp' } },
 }

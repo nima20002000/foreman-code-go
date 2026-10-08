@@ -1,6 +1,7 @@
 import type pg from 'pg'
 import {
   BuildComputerPreferenceSchema, BuildComputerReadSchema, BuildComputerUpdateSchema,
+  BuildComputerBatchUpdateSchema, type BuildComputerBatchResult, type BuildComputerChange,
   type BuildComputerPreference, type BuildComputerStatus,
 } from '@foreman-code/contracts/build-computers'
 import { sameDeviceProvisioningTarget, DeviceProvisioningTargetSchema, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -35,11 +36,13 @@ export async function assertBuildComputerTarget(sql: JobSql, target: DeviceProvi
 
 export class BuildComputerSettings {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    private readonly readiness: (sql: JobSql, target: DeviceProvisioningTarget) => Promise<
+    private readonly readiness: (sql: JobSql, target: DeviceProvisioningTarget, allowancePercent: number) => Promise<
       Pick<BuildComputerStatus, 'state' | 'reasons' | 'remoteExecutionEnabled'>>,
     private readonly changed?: () => void) {}
 
   async preference(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerPreference> {
+    // Retain one order through scheduling's transaction, even when a save commits between reads.
+    await sql.query('select pg_advisory_xact_lock_shared(hashtext($1))', [`build-order:${target.hostRef.mainId}`])
     const row = (await sql.query<{ target: DeviceProvisioningTarget; revision: string; build_enabled: boolean; build_priority: number;
       build_role: 'primary' | 'backup'; build_allowance_percent: number }>(
       'select target,revision::text,build_enabled,build_priority,build_role,build_allowance_percent from build_computer_preferences where host_key=$1 for share',
@@ -63,7 +66,7 @@ export class BuildComputerSettings {
   }
   private async status(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerStatus> {
     const preference = await this.preference(sql, target)
-    const readiness = await this.readiness(sql, target)
+    const readiness = await this.readiness(sql, target, preference.buildAllowancePercent)
     return { preference, ...readiness,
       state: preference.buildEnabled ? readiness.state : 'disabled',
       reasons: preference.buildEnabled ? readiness.reasons : ['Enable builds to participate.'] }
@@ -90,24 +93,47 @@ export class BuildComputerSettings {
   }
   async update(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown): Promise<BuildComputerStatus> {
     const input = BuildComputerUpdateSchema.parse(raw)
+    const { commandId, ...change } = input
+    const result = await this.save(principal, source, { commandId, updates: [change] },
+      'build.computer.update', buildComputerKey(input.target), input,
+      async sql => (await this.savePreferences(sql, principal, [change]))[0]!)
+    return result
+  }
+  async updateBatch(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown): Promise<BuildComputerBatchResult> {
+    const input = BuildComputerBatchUpdateSchema.parse(raw)
+    return this.save(principal, source, input, 'build.computers.update', input.updates[0]!.target.hostRef.mainId, input,
+      async sql => ({ computers: await this.savePreferences(sql, principal, input.updates) }))
+  }
+  private async save<T>(principal: ManagementPrincipal, source: 'http' | 'mcp',
+    input: { commandId: string; updates: BuildComputerChange[] }, operation: string, targetKey: string,
+    payload: unknown, perform: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
     try { requireAuthorization(principal, 'settings:update') } catch (error) {
-      await this.commands.recordDenied(principal.id, source, 'build.computer.update', buildComputerKey(input.target))
+      await this.commands.recordDenied(principal.id, source, operation, targetKey)
       throw error
     }
     const result = await this.commands.execute({ principal, source, commandId: input.commandId,
-      operation: 'build.computer.update', targetKey: buildComputerKey(input.target), payload: input,
+      operation, targetKey, payload,
       authorize: async sql => {
         await this.authorize(sql, principal, 'settings:update')
-        await assertBuildComputerTarget(sql, input.target)
+        for (const change of input.updates) await assertBuildComputerTarget(sql, change.target)
       },
-      perform: async sql => {
-        await assertBuildComputerTarget(sql, input.target)
-        await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`build-settings:${buildComputerKey(input.target)}`])
-        const old = await this.preference(sql, input.target)
-        if (old.revision !== input.expectedRevision) {
-          throw new DomainError('REVISION_CONFLICT', 'Build settings changed. Refresh before saving again.', 409)
-        }
-        await sql.query(`insert into build_computer_preferences
+      perform })
+    if (!result.replayed) this.changed?.()
+    return result.value
+  }
+  private async savePreferences(sql: JobSql, principal: ManagementPrincipal, updates: BuildComputerChange[]) {
+    await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`build-order:${updates[0]!.target.hostRef.mainId}`])
+    const preferences: BuildComputerPreference[] = []
+    for (const input of updates) {
+      const old = await this.preference(sql, input.target)
+      if (old.revision !== input.expectedRevision) {
+        throw new DomainError('REVISION_CONFLICT', 'Build settings changed. Refresh before saving again.', 409)
+      }
+      preferences.push(old)
+    }
+    for (const [index, input] of updates.entries()) {
+      const old = preferences[index]!
+      await sql.query(`insert into build_computer_preferences
           (host_key,target,revision,build_enabled,build_priority,build_role,build_allowance_percent,updated_by) values($1,$2::jsonb,$3,$4,$5,$6,$7,$8)
           on conflict(host_key) do update set target=excluded.target,revision=excluded.revision,
           build_enabled=excluded.build_enabled,build_priority=excluded.build_priority,build_role=excluded.build_role,
@@ -115,9 +141,7 @@ export class BuildComputerSettings {
         [buildComputerKey(input.target), JSON.stringify(input.target), old.revision + 1,
           input.buildEnabled, input.buildPriority, input.buildRole ?? old.buildRole,
           input.buildAllowancePercent ?? old.buildAllowancePercent, principal.id])
-        return this.status(sql, input.target)
-      } })
-    this.changed?.()
-    return result.value
+    }
+    return Promise.all(updates.map(input => this.status(sql, input.target)))
   }
 }

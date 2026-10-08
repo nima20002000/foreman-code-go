@@ -1,3 +1,4 @@
+import { JobInitiatingAgentSchema, type JobInitiatingAgent } from '@foreman-code/contracts/jobs'
 import { jobDigest } from './digest.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
@@ -29,13 +30,16 @@ import { requireAuthorization } from '../access/policy.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { releaseUnstartedJobComputer, type JobComputerSelection, type JobPreparationIdentity } from './computerSelection.js'
+import { jobCanWait, releaseUnstartedJobComputer, type JobComputerSelection,
+  type JobPreparationIdentity } from './computerSelection.js'
+import { jobPlacementRequest } from './placementRequest.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import type { JobArtifactPort, JobDispatchPort, JobPreparationPort } from './ports.js'
 import type { JobQueueConfiguration } from './ports.js'
 import { JobQueuePreparation } from './preparation.js'
 import { JobQueueTicketSchema, JobQueuedStartSchema, JobQueueCancelSchema, JobQueueLimitsSchema,
   JobAdmissionResultSchema, JobQueueListInputSchema, JobQueuePageSchema,
+  JobLaunchValidationInputSchema, JobLaunchValidationSchema,
   type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { JobResourceRequestSchema } from '@foreman-code/contracts/job-verification-policy'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
@@ -199,6 +203,36 @@ export class JobService {
       return checked
     },source)
   }
+  validateLaunch(principal: ManagementPrincipal, workspaceId: string, raw: unknown, source: 'http' | 'mcp' = 'http') {
+    const input = parse(JobLaunchValidationInputSchema, raw)
+    return this.read(principal, workspaceId, 'jobs:start', async (sql, live) => {
+      const configuration = this.queueConfiguration()
+      const definition = await this.repository.definition(sql, workspaceId, input.definitionId)
+      if (definition.revision !== input.expectedRevision) {
+        throw new DomainError('REVISION_CONFLICT', 'The job definition changed since it was read.', 409)
+      }
+      const resources = JobResourceRequestSchema.parse(await configuration.resources(sql, definition))
+      const spec = jobPlacementRequest(definition.spec, {
+        placementOverride: input.placementOverride,
+        limits: resources.limits,
+      })
+      const checked = await this.ports.preparation.validate(sql, live, workspaceId, spec)
+      const mayWait = checked.reasons.length > 0 && checked.reasons.every(jobCanWait)
+      if (!checked.valid && !mayWait) {
+        return JobLaunchValidationSchema.parse({ ...checked, canQueue: false })
+      }
+      try {
+        const readiness = await this.ports.placement!.validateRequest(sql, live, workspaceId,
+          spec, input.placementOverride)
+        return JobLaunchValidationSchema.parse({ ...readiness, valid: checked.valid && readiness.valid,
+          reasons: [...new Set([...checked.reasons, ...readiness.reasons])] })
+      } catch (error) {
+        if (!(error instanceof DomainError) || error.status !== 409) throw error
+        return JobLaunchValidationSchema.parse({ valid: false, canQueue: jobCanWait(error.code),
+          reasons: [error.code], sideEffects: false })
+      }
+    }, source)
+  }
   private async transaction<T>(work:(sql:pg.PoolClient)=>Promise<T>):Promise<T> {
     const sql=await this.pool.connect()
     try {await sql.query('begin');const value=await work(sql);await sql.query('commit');return value}
@@ -218,8 +252,11 @@ export class JobService {
     JobQueueLimitsSchema.parse(configuration.limits)
     return configuration
   }
-  async enqueue(principal: ManagementPrincipal, source: 'http' | 'mcp', workspaceId: string, raw: unknown) {
+  async enqueue(principal: ManagementPrincipal, source: 'http' | 'mcp', workspaceId: string, raw: unknown,
+    origin: { initiatingAgent?: JobInitiatingAgent | undefined } = {}) {
     const input = parse(JobQueuedStartSchema, raw)
+    const initiatingAgent = origin.initiatingAgent ? JobInitiatingAgentSchema.parse(origin.initiatingAgent) : undefined
+    const payload = initiatingAgent ? { ...input, initiatingAgent } : input
     const historical = await this.read(principal, workspaceId, 'jobs:start', async sql =>
       (await sql.query(`select 1 from job_preparations p
         where p.principal_id=$1 and p.command_id=$2 and p.workspace_id=$3
@@ -230,7 +267,7 @@ export class JobService {
       return JobAdmissionResultSchema.parse({ kind: 'retained-execution', execution })
     }
     const result = await this.command(principal, source, workspaceId, 'jobs:start', input.commandId,
-      'job.enqueue', input, async (sql, live) => {
+      'job.enqueue', payload, async (sql, live) => {
         const configuration = this.queueConfiguration()
         await sql.query('select pg_advisory_xact_lock(810038,hashtext($1))', ['job-admission-order'])
         const original = (await sql.query<{ execution_id: string }>(
@@ -260,9 +297,11 @@ export class JobService {
         const placement = placementOverride ?? (isAutoJobSpecRecord(definition.spec)
           ? { kind: 'auto' as const } : { kind: 'explicit' as const, target: definition.spec.target })
         const ticket = JobQueueTicketSchema.parse({ schemaVersion: 1, id: randomUUID(), workspaceId,
-          revision: 1, commandId: input.commandId, commandDigest: jobDigest(input), principalId: live.id,
+          revision: 1, commandId: input.commandId, commandDigest: jobDigest(payload), principalId: live.id,
           definition, executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(),
-          workflow: null, gateId: null, placement, placementOverride, resources, enqueueSequence: sequence,
+          workflow: null,
+          ...(initiatingAgent ? { initiatingAgent } : {}),
+          gateId: null, placement, placementOverride, resources, enqueueSequence: sequence,
           enqueuedAt: now.toISOString(), deadlineAt: new Date(now.getTime() + definition.spec.policy.queueTimeoutMs).toISOString(),
           state: 'waiting', waitingReasons: [], compatibleTargetCount: 0, queuePosition: 1, estimatedStartAt: null,
           reservationId: null, cancelRequestedAt: null, terminalReason: null, finishedAt: null })
@@ -316,12 +355,14 @@ export class JobService {
         or exists(select 1 from source_preparation_reconciliations c where c.operation_id=q.record->>'operationId'
           and c.workspace_id=q.workspace_id and c.status<>'closed'))`
       const rows = (await sql.query<{ record: unknown }>(`select q.record from job_admission_queue q
-        where q.workspace_id=$1 and ${active} order by q.enqueue_sequence`, [workspaceId])).rows
+        where q.workspace_id=$1 and ($2::text is null or q.record #>> '{initiatingAgent,executionId}'=$2)
+          and ${active} order by q.enqueue_sequence`, [workspaceId, input.initiatingExecutionId ?? null])).rows
       const history = (await sql.query<{ record: unknown }>(`select q.record from job_admission_queue q
-        where q.workspace_id=$1 and not ${active}
+        where q.workspace_id=$1 and ($4::text is null or q.record #>> '{initiatingAgent,executionId}'=$4)
+          and not ${active}
           and ($2::bigint is null or q.enqueue_sequence<$2::bigint)
         order by q.enqueue_sequence desc limit $3`,
-      [workspaceId, input.historyBeforeSequence ?? null, input.historyLimit + 1])).rows
+      [workspaceId, input.historyBeforeSequence ?? null, input.historyLimit + 1, input.initiatingExecutionId ?? null])).rows
       const hasMore = history.length > input.historyLimit
       const historyTickets = history.slice(0, input.historyLimit).map(row => JobQueueTicketSchema.parse(row.record))
       const tickets: JobQueueTicket[] = []
@@ -506,7 +547,15 @@ export class JobService {
     return this.admitPrepared(sql,principal,definition,workflow,workflowInput,spec,{executionId:id,attemptId,operationId})
   }
   /** Same admission writer after a workflow driver performs source I/O outside the Run-owner transaction. */
-  async admitPrepared(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinitionRecord,workflow:JobExecutionRecord['workflow'],workflowInput:RunInput|null,spec:PreparedJobSpecRecord,identity:{executionId:string;attemptId:string;operationId:string}):Promise<JobExecutionRecord> {
+  async admitPrepared(
+    sql: JobSql,
+    principal: ManagementPrincipal,
+    definition: JobDefinitionRecord,
+    workflow: JobExecutionRecord['workflow'],
+    workflowInput: RunInput | null,
+    spec: PreparedJobSpecRecord,
+    identity: JobPreparationIdentity & { initiatingAgent?: JobInitiatingAgent | undefined },
+  ): Promise<JobExecutionRecord> {
     this.workerExecution.requireEnabled(spec.target.hostRef)
     if((workflow===null)!==(workflowInput===null)||workflow&&workflow.nodeExecutionId!==identity.executionId)throw new DomainError('JOB_INPUT_BINDING_MISSING','The prepared job must match its exact workflow execution and input.',409)
     const {executionId:id,attemptId,operationId}=identity
@@ -530,6 +579,7 @@ export class JobService {
     const now=this.clock().toISOString()
     const binding=await this.ports.dispatch.accept(sql,{workspaceId:definition.workspaceId,executionId:id,attemptId,operationId,spec:acceptedSpec,workflow,principal})
     const execution=JobExecutionRecordSchema.parse({schemaVersion:'verification' in acceptedSpec ? 2 : 1,id,workspaceId:definition.workspaceId,acceptedSpec,...binding,workflow,
+      ...(identity.initiatingAgent ? { initiatingAgent: identity.initiatingAgent } : {}),
       process:{phase:'queued',outcome:null,exitCode:null,signal:null,processStopped:false},transport:'unknown',publication:'pending',
       startedAt:null,finishedAt:null,lastSeenAt:null,resultIssue:null,cancelRequestedAt:null,createdAt:now,updatedAt:now})
     await sql.query('insert into job_executions(id,workspace_id,definition_version_id,operation_id,attempt_id,record,accepted_spec,accepted_by) values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)',[id,definition.workspaceId,definition.versionId,execution.operationId,execution.attemptId,JSON.stringify(execution),JSON.stringify(acceptedSpec),principal.id])

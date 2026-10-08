@@ -12,24 +12,36 @@ export type NodePlacementOption = Readonly<{
 export type NodePlacementFieldProps = {
   value?: SavedNodePlacement
   options: readonly NodePlacementOption[]
-  onChange(value: SavedNodePlacement): void
+  onChange(value: SavedNodePlacement | undefined): void
   disabled?: boolean
   optionsState?: 'ready' | 'loading' | 'unavailable'
   stage?: 'editing' | 'draft' | 'saved'
 }
+const stageMessages = {
+  editing: 'Editing computer choice — Apply to this node’s draft.',
+  draft: 'Applied to draft — Save graph to persist this placement.',
+  saved: 'Persisted Board placement — configured for a later Run.',
+}
 export function NodePlacementField({ value, options, onChange, disabled, optionsState = 'ready', stage }: NodePlacementFieldProps) {
   const selected = value ? options.findIndex((option) => sameWorkflowValue(option.placement, value)) : -1
   const current = selected >= 0 ? options[selected] : undefined
+  let selection = 'inherited'
+  if (value) selection = selected < 0 ? 'retained' : String(selected)
   return <div className="node-placement-field">
-    <Select label="Computer" aria-label="Computer" value={selected < 0 ? 'retained' : String(selected)} disabled={disabled}
+    <Select label="Computer" aria-label="Computer" value={selection} disabled={disabled}
       options={[
-        ...(selected < 0 ? [{ value: 'retained', label: value ? 'Configured computer — retained' : 'Main (default)', disabled: true }] : []),
+        { value: 'inherited', label: 'Main (default)' },
+        ...(value && selected < 0 ? [{ value: 'retained', label: 'Configured computer — retained', disabled: true }] : []),
         ...options.map((option, index) => ({ value: String(index), label: option.unavailableReason ? `${option.label} — ${option.unavailableReason}` : option.label, disabled: !!option.unavailableReason })),
       ]} onChange={(event) => {
+        if (event.target.value === 'inherited') {
+          onChange(undefined)
+          return
+        }
         const option = options[Number(event.target.value)]
         if (option && !option.unavailableReason) onChange(structuredClone(option.placement))
       }} />
-    {value && stage ? <p role="status">{stage === 'editing' ? 'Editing computer choice — Apply to this node’s draft.' : stage === 'draft' ? 'Applied to draft — Save graph to persist this placement.' : 'Persisted Board placement — configured for a later Run.'}</p> : null}
+    {stage && (value || stage !== 'saved') ? <p role="status">{stageMessages[stage]}</p> : null}
     <p>Agents without a computer choice use Main. In workflows with computer choices,
       Start records every Agent’s authorized source, root and harness in the Run.</p>
     {value ? <>

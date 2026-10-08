@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { it, expect } from 'vitest'
 import type { JobWorkflowAdmissionReference, JobWorkflowExecutionReference } from '@foreman-code/contracts/job-workflow'
@@ -78,3 +78,17 @@ it('drops the previous result when another execution is selected', async () => {
   expect(await screen.findByText(/Reading the job accepted for this exact Run execution/)).toBeInTheDocument()
   expect(screen.queryByText(/Process:/)).toBeNull()
 })
+
+it('recovers when the persisted job mapping appears after the first read', async () => {
+  respond()
+  let reads = 0
+  server.use(http.get(mapping, () => {
+    reads += 1
+    if (reads === 1) return HttpResponse.json({ error: { code: 'JOB_NOT_FOUND', message: 'Not saved yet' } }, { status: 404 })
+    return HttpResponse.json({ reference: mapped })
+  }))
+  render(tree(reference))
+  await screen.findByText('Run job result unavailable')
+  await waitFor(() => expect(screen.getByText('Process: build failed')).toBeInTheDocument(), { timeout: 5000 })
+  expect(reads).toBeGreaterThan(1)
+}, 8000)

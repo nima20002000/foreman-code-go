@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { APP_MCP_SERVER_NAMES, PRODUCT_SLUG } from '@foreman-code/contracts/product'
-import { ClaudeMcpServerNameSchema, ClaudeMcpServerSchema, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import { ClaudeMcpServerNameSchema, ClaudeMcpServerSchema, ClaudeSupportedMcpServersSchema,
+  type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { useClaudeSetupOptions } from '../../shared/api/harnessSettings'
 import { Alert, Button, TextField } from '../../shared/ui/nocturne'
 
@@ -25,11 +26,13 @@ export function ClaudeMcpConfiguration({ value, onChange, appPreset = true }: {
       return
     }
     if (!parsedServer.success) { setError('Use HTTPS or a local HTTP endpoint without credentials, a query or a fragment.'); return }
+    const supported = ClaudeSupportedMcpServersSchema.safeParse({ [parsedName.data]: parsedServer.data })
+    if (!supported.success) { setError(supported.error.issues[0]!.message); return }
     setServer(parsedName.data, parsedServer.data)
     setName(''); setUrl(''); setError(undefined)
   }
   return <section className="harness-form-stack" aria-label="Claude MCP configuration">
-    <p>MCP connections are saved in this configuration and supplied directly to Claude. Save your changes below to apply them to future configurations. Existing agents and sessions keep their pins.</p>
+    <p>Claude supports the Foreman Code app MCP connection. External MCP servers are not supported because their tool manifests cannot be verified. Save changes below to apply them to future configurations.</p>
     {appPreset ? <div className="harness-section-heading"><div><strong>Foreman Code MCP</strong><p className="harness-muted">The app delivers a scoped credential at authorized execution. Adding this connection does not grant tool access or qualify Claude.</p></div>
       <Button size="sm" disabled={!setup.data?.graphqlMcp || appConfigured}
         onClick={() => { if (setup.data?.graphqlMcp) setServer(PRODUCT_SLUG, setup.data.graphqlMcp) }}>{appConfigured ? 'Foreman Code added' : 'Add Foreman Code MCP'}</Button>
@@ -45,6 +48,6 @@ export function ClaudeMcpConfiguration({ value, onChange, appPreset = true }: {
       <TextField label="MCP endpoint" value={url} placeholder="https://example.com/mcp" onChange={event => setUrl(event.target.value)} /></div>
     {error ? <p role="alert" className="n-field-error">{error}</p> : null}
     <Button size="sm" disabled={!name.trim() || !url.trim()} onClick={add}>Add HTTP MCP server</Button>
-    <p className="harness-muted">HTTP connections are supported. Native CLI connections, package installers and ambient configuration are excluded from this accepted profile.</p>
+    <p className="harness-muted">Only the app HTTP connection is supported. Tool access still requires an accepted manifest, application grants and tool permissions.</p>
   </section>
 }

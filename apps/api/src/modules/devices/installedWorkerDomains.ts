@@ -1,5 +1,8 @@
 import { realpath } from 'node:fs/promises'
 import { setTimeout as wait } from 'node:timers/promises'
+import { SourceReservationReclamationAuthorityResponseSchema } from '@foreman-code/contracts/source-operations'
+import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure }
+  from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { recoverInstalledJobRuntimeQualifications } from '../jobs/installedRuntimeQualification.js'
 import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
 import { JOB_OUTPUT_NAMESPACE } from '../files/jobs/workerProtocol.js'
@@ -40,6 +43,7 @@ import { createAuthenticatedTransferReceiver, transferContextForBinding } from '
 import { sourceTransfersOnMain } from '../sources/operationCarrier.js'
 import { SourceOperationWorkerService } from '../sources/operationWorker.js'
 import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '../runs/remote/installedWorkflowHost.js'
+import { InstalledWorkflowRecovery } from '../runs/remote/installedWorkflowRecovery.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
 import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_DRIVE_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccountsRequestSchema, GitHubLoginRequestSchema } from '@foreman-code/contracts/computer-accounts'
@@ -178,6 +182,45 @@ export async function createInstalledWorkerDomains(input: {
         const value = SourceOperationResponseSchema.parse(reply.payload)
         if (reply.bytes !== undefined || value.operation !== 'sources.authorize') throw new DomainError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'The original Main did not return source operation authority.', 403)
         return value.owner
+      },
+      currentReclamation: async (reservationId, reclamationId, context) => {
+        const reply = await request(SOURCE_OPERATION_EXTENSION.namespace, { version: 1,
+          operation: 'sources.reclamation-authorize', reservationId, reclamationId }, { signal: context.signal })
+        if (reply.bytes !== undefined) throw new DomainError('SOURCE_ROLE_DENIED', 'Cleanup authority contains no binary data.', 403)
+        return SourceReservationReclamationAuthorityResponseSchema.parse(reply.payload).grant
+      },
+      reclamationNativeClosed: async (owner, operationId) => {
+        const retained = await jobJournal()
+        const status = await retained.jobStatus(operationId)
+        if (status.status === 'known' && (!status.receipt.terminal?.processStopped
+          || !['complete', 'failed'].includes(status.receipt.publication))) return false
+        const jobOwner = await retained.jobNativeOwner(operationId)
+        if (jobOwner) {
+          if (jobOwner.connection.bootId !== input.bootId || status.status !== 'known' || !status.receipt.terminal?.processStopped
+            || !['complete', 'failed'].includes(status.receipt.publication)
+            || jobOwner.launches.some(launch => !launch.closed)) return false
+          const certificate = jobOwner.container?.certificate
+          if (!jobOwner.nonEntryConfirmed || !jobContainerNonEntryObserved(jobOwner)) {
+            if (!certificate || certificate.lifecycle !== 'closed'
+              || certificate.scope.subject.operationId !== operationId
+              || certificate.scope.bootId !== input.bootId || !await proveOCIBoundaryEmpty(certificate.boundary)
+              || !(await Promise.all(certificate.helpers.map(helper => helper.boundary
+                ? proveOCIBoundaryEmpty(helper.boundary) : Promise.resolve(false)))).every(Boolean)) return false
+          }
+        }
+        if (native?.kind === 'configured') {
+          if (!owner) return native.reservationClosed(operationId)
+          return native.preparationClosed({ ...owner, preparationKind: 'workflow', preparationClosed: true })
+        }
+        // Removing a runtime selection does not erase protected operation or process records.
+        if ([...registry.snapshot().launches, ...jobRegistry.snapshot().launches]
+          .some(launch => launch.lifecycle !== 'closed')) return false
+        const workflow = await (await journal()).status(operationId)
+        if (workflow.status === 'known') {
+          return hasPositiveRemoteEntryClosure(workflow.receipt) || hasPositiveRemoteNonEntryClosure(workflow.receipt)
+        }
+        const recovery = new InstalledWorkflowRecovery(join(input.stateDirectory, 'workflow-recovery'), registry)
+        return !recovery.hasCapture(operationId)
       },
       transfers: receiver.receiver,
       transferContext: async context => { if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'The source transfer generation changed.', 409); return transferContextForBinding(context.binding) },

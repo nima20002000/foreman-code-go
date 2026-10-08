@@ -10,7 +10,8 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema,
   GraphDigestSchema, RunStartV3InputSchema, SavedRunVersionSnapshotSchema, canonicalGraphJson,
-  sameWorkflowValue, type AcceptedRepeatStartV1, type AcceptedWorkflowRunV3, type RunStartV3Input,
+  sameWorkflowValue, workflowRequiresWorkspaceDirectory,
+  type AcceptedRepeatStartV1, type AcceptedWorkflowRunV3, type RunStartV3Input,
 } from '@foreman-code/contracts/wave25'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -166,8 +167,8 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
     signal.throwIfAborted()
     // Placement insertion verifies every Agent/configuration and its current
     // destination at commit. Jobs still execute in the workspace directory.
-    const allNodesPlaced = placements !== undefined && version.definition.nodes.every(node => node.kind !== 'job')
-    const location = allNodesPlaced
+    const useAssignedLocation = placements !== undefined && !workflowRequiresWorkspaceDirectory(version.definition)
+    const location = useAssignedLocation
       ? await locations.snapshotAssigned(client, input.workspaceId, input.expectedLocationRevision, signal)
       : await locations.snapshot(client, input.workspaceId, input.expectedLocationRevision,
         requiredLocationAccess(configurations), signal)

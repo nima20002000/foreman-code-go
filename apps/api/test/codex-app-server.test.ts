@@ -272,16 +272,38 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await turn.result
   })
 
-  it('recovers a cold compaction through thread read without resume or another dispatch', async () => {
+  it('preserves definite compaction rejection and permits another command and follow-up turn', async () => {
+    const session = await manager.createSession(source)
+    await flag('reject-compact')
+    let control: CompactionState | undefined
+    await assert.rejects(manager.compactSession(session, { requestId: 'rejected-control', clientCorrelationId: 'rejected-control',
+      onProgress: async value => { control = value } }), error => {
+      assert.equal((error as { uncertain: boolean }).uncertain, false)
+      return true
+    })
+    assert.equal((await manager.reconcileCompaction(session, { ...control!, status: 'uncertain' })).status, 'failed')
+    await unflag('reject-compact')
+    const completed = await manager.compactSession(session, { requestId: 'next-control', clientCorrelationId: 'next-control',
+      onProgress: async () => {} })
+    assert.equal(completed.status, 'completed')
+    const followup = await start(session, 'next task', 'after-rejection')
+    await finish(f.directory, session.nativeSessionId)
+    await followup.result
+  })
+
+  it.each(['timeout', 'disconnect'] as const)(
+    'recovers a cold compaction after %s through thread read without another dispatch', async outcome => {
     const session = await manager.createSession(source)
     await flag('drop-compact-events')
+    if (outcome === 'disconnect') await flag('disconnect-compact')
     const abort = new AbortController()
     let control: CompactionState | undefined
     const operation = manager.compactSession(session, { requestId: 'cold-compact-request', clientCorrelationId: 'cold-control',
       onProgress: async value => { control = value } }, abort.signal)
+    const rejected = assert.rejects(operation)
     await until(async () => (await wire('thread/compact/start')).length === 1)
-    abort.abort(new Error('API observer lost'))
-    await assert.rejects(operation)
+    if (outcome === 'timeout') abort.abort(new DOMException('Native response timed out', 'TimeoutError'))
+    await rejected
     await manager.shutdown()
     const before = (await wire()).length
     const cold = makeManager()

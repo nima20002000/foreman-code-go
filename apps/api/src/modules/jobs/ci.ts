@@ -12,6 +12,7 @@ import { DomainError } from '../errors.js'
 import { DeviceAccessError } from '../devices/access.js'
 import { z } from 'zod'
 import { MaterializationReceiptSchema } from '@foreman-code/contracts/source-materialization'
+import type { ApprovedSourcePin, SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import type { CiRuntimeProvisioner } from './ciRuntimeProvisioner.js'
 
 /** The few facts CI needs from an Agent's accepted native placement. */
@@ -38,19 +39,29 @@ export class CiService {
     const outcome = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.run',
       commandId: input.commandId, targetKey: scope.workspaceId, payload: input, dedicatedConnection: true,
       authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
-      perform: async () => {
+      perform: async commandConnection => {
         // An Agent's CI tests its current files and runs on its own computer first, then spills over in build order.
         const agent = scope.executionId ? await this.agentWorkspace(scope.executionId) : undefined
-        const snapshot = agent?.worktree && !input.commit && this.snapshots ? { baseCommit: agent.worktree.commit,
-          ...await this.snapshots(agent.hostRef, agent.path, agent.worktree.commit) } : undefined
+        const captured = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.snapshot',
+          commandId: input.commandId, targetKey: scope.workspaceId, payload: input, dedicatedConnection: true,
+          authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
+          perform: async () => {
+            if (!agent?.worktree || input.commit || !this.snapshots) return null
+            const snapshot = await this.snapshots(agent.hostRef, agent.path, agent.worktree.commit)
+            return { baseCommit: agent.worktree.commit, commit: snapshot.commit,
+              bundleBase64: snapshot.bundle.toString('base64') }
+          },
+        })
+        const snapshot = captured.value ? { baseCommit: captured.value.baseCommit, commit: captured.value.commit,
+          bundle: Buffer.from(captured.value.bundleBase64, 'base64') } : undefined
         const source = await this.sources.approveProject(scope.principal, {
           workspaceId: scope.workspaceId, commandId: `${commandKey}:source`,
           ...(input.commit ? { commit: input.commit } : {}), ...(snapshot ? { snapshot } : {}),
         })
-        const lock = await this.pool.connect()
+        // Suite waiters use the command connection, leaving the application pool available for nested work.
         const lockKey = `ci:${scope.workspaceId}:${input.suite}`
         try {
-          await lock.query('select pg_advisory_lock(hashtext($1))', [lockKey])
+          await commandConnection.query('select pg_advisory_lock(hashtext($1))', [lockKey])
           const prepared = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.prepare',
             commandId: input.commandId, targetKey: scope.workspaceId, payload: input, dedicatedConnection: true,
             authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
@@ -60,7 +71,7 @@ export class CiService {
             commandId: `${commandKey}:enqueue`, definitionId: prepared.value.id,
             expectedRevision: prepared.value.revision,
             ...(agent ? { placementOverride: { kind: 'prefer', hostRef: agent.hostRef } } : {}),
-          })
+          }, { initiatingAgent: scope.initiatingAgent })
           if (admitted.kind === 'retained-execution') {
             throw new DomainError('CI_QUEUE_CONFLICT', 'The CI command belongs to an earlier nonqueued execution.', 409)
           }
@@ -72,8 +83,7 @@ export class CiService {
           return CiRunOutputSchema.parse({ ticketId: admitted.kind === 'accepted' ? admitted.ticketId : admitted.ticket.id,
             ...(admitted.kind === 'accepted' ? { executionId: admitted.executionId } : {}) })
         } finally {
-          try { await lock.query('select pg_advisory_unlock(hashtext($1))', [lockKey]) }
-          finally { lock.release() }
+          await commandConnection.query('select pg_advisory_unlock(hashtext($1))', [lockKey])
         }
       },
     })
@@ -110,12 +120,10 @@ export class CiService {
       if (root.binding.accessMode !== 'exclusive-write') continue
       if (canonical(root.source) === canonical(pin)) { bound++; continue }
       try {
-        await this.sources.bindRoot(principal, 'mcp', { workspaceId, source: pin,
-          selection: root.selection, accessMode: root.binding.accessMode,
-          expectedBindingRevision: root.binding.bindingRevision,
-          commandId: `${commandKey}:root:${root.binding.rootId}` })
+        await this.bindBuildRoot(principal, workspaceId, root, pin, commandKey)
         bound++
       } catch (error) {
+        if (error instanceof DomainError && error.code === 'SOURCE_ROOT_REVISION_CONFLICT') throw error
         // An offline or removed computer is not a build candidate for this commit; the queue uses the others.
         if (!(error instanceof DeviceAccessError) && !(error instanceof DomainError && ![401, 403].includes(error.status))) throw error
       }
@@ -135,6 +143,28 @@ export class CiService {
     })
   }
 
+  private async bindBuildRoot(principal: ManagementPrincipal, workspaceId: string,
+    root: SourceRootRecord, source: ApprovedSourcePin, commandKey: string): Promise<void> {
+    let current = root
+    while (canonical(current.source) !== canonical(source)) {
+      try {
+        await this.sources.bindRoot(principal, 'mcp', { workspaceId, source,
+          selection: current.selection, accessMode: 'exclusive-write',
+          expectedBindingRevision: current.binding.bindingRevision,
+          commandId: `${commandKey}:root:${root.binding.rootId}:${current.binding.bindingRevision}` })
+        return
+      } catch (error) {
+        if (!(error instanceof DomainError) || error.code !== 'SOURCE_ROOT_REVISION_CONFLICT') throw error
+        const roots = await this.sources.rootList(principal, 'mcp', { workspaceId, limit: 100 })
+        const updated = roots.items.find(value => value.binding.rootId === root.binding.rootId)
+        if (!updated || updated.binding.bindingRevision <= current.binding.bindingRevision
+          || updated.binding.accessMode !== 'exclusive-write'
+          || canonical(updated.selection) !== canonical(root.selection)) throw error
+        current = updated
+      }
+    }
+  }
+
   async get(caller: ManagementPrincipal, input: CiGetInput & { workspaceId?: string }) {
     const { principal, workspaceId } = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
     const queue = await this.jobs.getQueueTicket(principal, workspaceId, input.ticketId, 'mcp')
@@ -144,7 +174,7 @@ export class CiService {
     const execution = await this.jobs.getExecution(principal, workspaceId, queue.executionId, 'mcp')
     const logTail = await this.jobs.readLogTail(principal, workspaceId, execution.id)
     let summaryReport = null
-    if (execution.schemaVersion === 2 && execution.publication === 'complete') {
+    if (execution.schemaVersion === 2) {
       const artifacts = await this.jobs.listArtifacts(principal, workspaceId, execution.id, 'mcp')
       const declaration = execution.acceptedSpec.outputs.find(output => output.kind === 'suite-summary')!
       const artifact = artifacts.find(value => value.path === declaration.path && value.state === 'available')

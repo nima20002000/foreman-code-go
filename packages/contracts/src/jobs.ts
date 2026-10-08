@@ -114,10 +114,20 @@ export const JobProcessStateSchema = z.object({
   }
   if(process.outcome==='succeeded' && (process.exitCode!==0 || process.signal!==null)) context.addIssue({code:'custom',message:'Successful process evidence requires exit zero and no signal.'})
 })
+/** CI origin is separate from membership in a workflow's job graph. Set by the bound Agent service. */
+export const JobInitiatingAgentSchema = z.object({
+  workflowId: IdSchema,
+  runId: IdSchema,
+  agentId: IdSchema,
+  executionId: IdSchema,
+}).strict()
+export type JobInitiatingAgent = z.infer<typeof JobInitiatingAgentSchema>
+
 export const JobExecutionSchema = z.object({
   schemaVersion: z.literal(1), id: IdSchema, workspaceId: IdSchema, acceptedSpec: AcceptedJobSpecSchema,
   operationId: IdSchema, attemptId: IdSchema, owner: z.object({ grantId: IdSchema, epoch: z.string().regex(/^[1-9][0-9]*$/) }).strict(),
   workflow: z.object({ workflowId: IdSchema, runId: IdSchema, nodeId: IdSchema, nodeExecutionId: IdSchema }).strict().nullable(),
+  initiatingAgent: JobInitiatingAgentSchema.optional(),
   process: JobProcessStateSchema, transport: z.enum(['connected', 'offline', 'unknown']),
   publication: z.enum(['pending', 'collecting', 'complete', 'failed', 'expired']),
   startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(), lastSeenAt: TimestampSchema.nullable(),

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
@@ -141,6 +141,82 @@ function runHistory(kind: 'job-only' | 'early-failed' | 'mixed') {
   }
   return RunActivitiesPageSchema.parse({ ...base, items })
 }
+
+function renderedNodeBounds(node: HTMLElement) {
+  const viewport = node.closest<HTMLElement>('.react-flow__viewport')!
+  const transform = /translate\(([-\d.]+)px,\s*([-\d.]+)px\) scale\(([-\d.]+)\)/.exec(viewport.style.transform)!
+  const zoom = Number(transform[3])
+  const bounds = node.getBoundingClientRect()
+  const left = Number(transform[1]) + bounds.x * zoom
+  const top = Number(transform[2]) + bounds.y * zoom
+  return { left, top, right: left + bounds.width * zoom, bottom: top + bounds.height * zoom }
+}
+
+it('keeps the saved Agent and Inspect reachable after desktop resize and Selected Run panel close', async () => {
+  installSelectedHandlers()
+  server.use(http.get('*/api/management/workspaces/:workspaceId/runs/:runId/subagents', () =>
+    HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })),
+  http.get('*/api/management/workspaces/:workspaceId/runs/:runId/executions', () =>
+    HttpResponse.json({ error: { code: 'DENIED', message: 'No access' } }, { status: 403 })),
+  http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/nodes/:nodeId/placement', () =>
+    HttpResponse.json({ error: { code: 'DENIED', message: 'No access' } }, { status: 403 })))
+  const layout = installFlowLayout(1431, 800)
+  await mountBoard()
+  const node = await screen.findByRole('group', { name: 'Removed Coder, saved agent, read only' })
+  await waitFor(() => expect(renderedNodeBounds(node).left).toBeGreaterThan(320))
+  const savedPosition = node.style.transform
+  const pane = node.closest('.react-flow')!.querySelector('.react-flow__pane')!
+  for (const type of ['mousedown', 'mouseup']) {
+    const event = new MouseEvent(type, { bubbles: true, clientX: 200, clientY: 200, button: 0 })
+    // jsdom's UIEvent constructor rejects Vitest's Window proxy.
+    Object.defineProperty(event, 'view', { value: document.defaultView })
+    fireEvent(pane, event)
+  }
+
+  act(() => layout.resize(320, 480))
+  await userEvent.click(screen.getByRole('button', { name: 'Close Selected Run panel' }))
+  expect(screen.queryByRole('complementary', { name: 'Agent chat' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Open Selected Run panel' })).toHaveFocus()
+  await waitFor(() => {
+    const bounds = renderedNodeBounds(node)
+    expect(bounds.left).toBeGreaterThanOrEqual(0)
+    expect(bounds.right).toBeLessThanOrEqual(320)
+    expect(bounds.top).toBeGreaterThanOrEqual(0)
+    expect(bounds.bottom).toBeLessThanOrEqual(480)
+  })
+  expect(node.style.transform).toBe(savedPosition)
+  expect(within(node).getByRole('button', { name: 'Inspect Removed Coder' })).toBeEnabled()
+
+  await userEvent.click(screen.getByRole('button', { name: 'Open Selected Run panel' }))
+  act(() => layout.resize(280, 480))
+  await screen.findByRole('button', { name: 'Close Selected Run panel' })
+  await waitFor(() => expect(renderedNodeBounds(node).right).toBeLessThanOrEqual(280))
+  await userEvent.click(screen.getByRole('button', { name: 'Close Selected Run panel' }))
+  await userEvent.click(within(node).getByRole('button', { name: 'Inspect Removed Coder' }))
+  expect(await screen.findByRole('region', { name: 'Run node inspector: Removed Coder' })).toBeInTheDocument()
+})
+
+it.each(['Zoom In', 'Zoom Out'])('preserves a saved Run viewport adjusted with %s when resized and the panel closes', async (action) => {
+  installSelectedHandlers()
+  server.use(http.get('*/api/management/workspaces/:workspaceId/runs/:runId/subagents', () =>
+    HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })))
+  const layout = installFlowLayout(1431, 800)
+  await mountBoard()
+  const node = await screen.findByRole('group', { name: 'Removed Coder, saved agent, read only' })
+  await waitFor(() => expect(renderedNodeBounds(node).left).toBeGreaterThan(320))
+  const viewport = node.closest<HTMLElement>('.react-flow__viewport')!
+  await userEvent.click(screen.getByRole('button', { name: action }))
+  const expectedZoom = action === 'Zoom In' ? 1.2 : 1 / 1.2
+  await waitFor(() => {
+    const zoom = Number(/scale\(([-\d.]+)\)/.exec(viewport.style.transform)![1])
+    expect(zoom).toBeCloseTo(expectedZoom, 5)
+  })
+  const adjusted = viewport.style.transform
+  act(() => layout.resize(320, 480))
+  await userEvent.click(screen.getByRole('button', { name: 'Close Selected Run panel' }))
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)) })
+  expect(viewport.style.transform).toBe(adjusted)
+})
 
 it.each(['job-only', 'early-failed', 'mixed'] as const)('shows Run-wide history for a %s Run chosen in the picker', async (kind) => {
   const source = installSelectedHandlers()

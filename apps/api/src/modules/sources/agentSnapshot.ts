@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SourceError } from './manifest.js'
@@ -31,7 +32,7 @@ export async function snapshotAgentWorktree(ports: Pick<GitWorktreePorts, 'git'>
     await git(['add', '-A'], index)
     const tree = await git(['write-tree'], index)
     const commit = await git(['commit-tree', tree, '-p', 'HEAD', '-m', 'Foreman Code CI snapshot'], author)
-    const ref = `refs/foreman/ci/${commit}`
+    const ref = `refs/foreman/ci/snapshots/${randomUUID()}`
     await git(['update-ref', ref, commit])
     try {
       await git(['bundle', 'create', join(scratch, 'snapshot.bundle'), ref, `^${input.baseCommit}`])
@@ -52,8 +53,14 @@ export async function importAgentSnapshot(ports: Pick<GitWorktreePorts, 'git'>, 
   try {
     const file = join(scratch, 'snapshot.bundle')
     await writeFile(file, snapshot.bundle, { mode: 0o600 })
+    const heads = await ports.git(['bundle', 'list-heads', file], { cwd: clone, signal })
+    const [commit, bundledRef] = heads.stdout.trim().split(/\s+/u)
+    if (heads.code !== 0 || commit !== snapshot.commit || !bundledRef
+      || !/^refs\/foreman\/ci\/(?:[a-f0-9]{40}(?:[a-f0-9]{24})?|snapshots\/[a-f0-9-]{36})$/u.test(bundledRef)) {
+      throw new SourceError('SOURCE_SNAPSHOT_FAILED', 'The Agent snapshot does not contain the expected commit.')
+    }
     const ref = `refs/foreman/ci/${snapshot.commit}`
-    const fetched = await ports.git(['fetch', '--no-tags', file, `${ref}:${ref}`], { cwd: clone, signal })
+    const fetched = await ports.git(['fetch', '--no-tags', file, `${bundledRef}:${ref}`], { cwd: clone, signal })
     if (fetched.code !== 0) throw new SourceError('SOURCE_SNAPSHOT_FAILED', 'The Agent snapshot could not be added to the clone.')
     const head = await ports.git(['rev-parse', '--verify', `${ref}^{commit}`], { cwd: clone, signal })
     if (head.code !== 0 || head.stdout.trim() !== snapshot.commit) {
