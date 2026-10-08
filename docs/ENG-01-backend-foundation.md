@@ -1,5 +1,9 @@
 # ENG-01 backend foundation
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 > Historical foundation record. The real workflow slice described in
 > [`ENG-02-real-workflow-engine.md`](./ENG-02-real-workflow-engine.md) now
 > implements several items originally listed below as future work.

@@ -1,5 +1,9 @@
 # NIM-2648 / ENG04-D — current regression and retirement inventory
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 This checkpoint starts at PR #26 head `c327f4a7a70635643c9302fd9ba80bfa1ea41ac2`.
 It changes tests and fixtures only. It does not claim the NIM-2649 live gate.
 

@@ -1,5 +1,9 @@
 # FIL-09a — partial native-manager integration
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Base: `nima20002000/graphql`, `feat/nim-2733-files`,
 `0fe0b630dcdd15c7c219d04f4cd17a9d7fc1d3cf`.
 

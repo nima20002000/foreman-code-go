@@ -103,7 +103,7 @@ An unchanged incomplete Claude preset can be retained when saving another
 provider's defaults. Editing or explicitly selecting Claude still requires
 supported access and MCP configuration.
 Claude's local rollout switch is
-`GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK`, independent of OpenCode.
+`GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK`.
 
 The explicit `harness_instance_check` operation now has a real local Claude
 producer. A first Operator Claude default selection reuses an exact qualified

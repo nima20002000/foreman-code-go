@@ -1,7 +1,7 @@
 # Skills v1 (NIM-2672)
 
 Database-backed Skills: a Settings library, board Agent assignment, unified-MCP management,
-immutable version pinning, and native instruction delivery for Codex and OpenCode.
+immutable version pinning, and native instruction delivery for Codex and Claude.
 
 ## Model
 
@@ -41,7 +41,7 @@ body, in saved order. Snapshot identity/order/hash are verified before any nativ
 | Harness | Channel | Notes |
 | --- | --- | --- |
 | Codex app-server | `developerInstructions` on `thread/start` and `thread/resume` | `baseInstructions` untouched; task text is only the turn input. |
-| OpenCode server | `system` on every `prompt_async` | Stored per native user message; reconciliation of a reused correlation also compares `info.system`. Observation never resubmits. |
+| Claude SDK | Accepted `instructions` and system prompt bundle | The saved Agent instructions and pinned skill bodies are passed to the owned SDK session. |
 
 Configurations accepted before this change (no `instructionDelivery`) keep their original in-task
 prompt sections, so existing sessions do not switch behavior.
@@ -89,10 +89,10 @@ already taken.
   revision, concurrency, archive, HTTP/MCP parity with audit source, scoped/read-only/revoked/Worker
   denials without mutation, pinning, forged/foreign/duplicate/missing/archived/oversized references,
   Operator skills across workspaces.
-- `skills-instructions.test.ts`, `opencode-skills.test.ts`, `codex-app-server.test.ts` (SKL-05): bundle
+- `skills-instructions.test.ts`, `codex-app-server.test.ts` (SKL-05): bundle
   order, full bodies, task separation, legacy mode, corrupt/oversized failures before native calls,
   resume/attach retention, correlation conflicts.
 - `apps/web/src/features/skills/skills.test.tsx`: library states, validation/focus, double submit,
   conflicts, lost response, remote edits vs dirty drafts, safe preview, import, board picker.
-- `skills-native.acceptance.test.ts` (`RUN_SKILLS_NATIVE=1`): real Codex 0.154.0 and OpenCode 1.18.31 —
+- `skills-native.acceptance.test.ts` (`RUN_SKILLS_NATIVE=1`): native Codex instruction delivery —
   skilled vs concurrent control sessions, later turn, backend restart, Operator sessions.

@@ -44,14 +44,15 @@ setup and wall-clock checks need shared host resources without concurrent fixtur
 migrations. Other integration files use the configured disposable slots.
 
 Native acceptance uses dedicated authentication. Set `FOREMAN_CODE_TEST_CODEX_AUTH_FILE`
-and/or `FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE` to explicit test authentication files;
-only those files are referenced from private homes; credentials are not copied.
+and/or `FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE` to explicit test authentication files;
+Codex references its dedicated private authentication file; Claude copies its
+credentials into the disposable profile with mode 0600 so refresh leaves the
+source credentials unchanged.
 Each supplied file must be private and owned by the current user. The native CLI
 uses its normal authentication store, including token refresh, so use dedicated
 test credentials and verify the supplied stores before and after live runs.
 API-key authentication can use
-`FOREMAN_CODE_TEST_OPENAI_API_KEY`, `FOREMAN_CODE_TEST_ANTHROPIC_API_KEY`, or
-`FOREMAN_CODE_TEST_OPENCODE_API_KEY`. Ambient provider keys and real harness homes are
+`FOREMAN_CODE_TEST_OPENAI_API_KEY` or `FOREMAN_CODE_TEST_ANTHROPIC_API_KEY`. Ambient provider keys and real harness homes are
 not reused. Do not commit credential files. Acceptance fails when its native
 prerequisites or dedicated authentication are unavailable.
 Native agents do not inherit controller Node startup options, database selector URLs,

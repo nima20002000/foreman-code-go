@@ -15,7 +15,7 @@ Native scenario evidence survives queue cleanup under
 `.logs/native-acceptance/<invocation-database>/`. This ignored directory retains
 the tested source identity, native events, and failure-state diagnostics.
 
-Set `ENG03_A_OPENCODE_BINARY` to the qualified OpenCode executable when selecting
-a pinned installation. The root runner respects that explicit path or resolves
-OpenCode from PATH. Qualification, authentication, scoped
-App MCP validation, and harness sandbox checks still run through the native path.
+Only Codex and Claude are supported. Supply dedicated test authentication for the
+selected harness. Qualification, scoped App MCP validation, and the accepted
+harness access policy still run through the native path. Saved retired-harness
+history does not qualify or enable a new native execution.

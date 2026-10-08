@@ -221,12 +221,6 @@ async function main() {
     ...(isolated.FOREMAN_CODE_HEAVY_JOB_COMMON ? { FOREMAN_CODE_HEAVY_JOB_COMMON: isolated.FOREMAN_CODE_HEAVY_JOB_COMMON } : {}),
     ...(isolated.FOREMAN_CODE_HEAVY_JOB_TOKEN ? { FOREMAN_CODE_HEAVY_JOB_TOKEN: isolated.FOREMAN_CODE_HEAVY_JOB_TOKEN } : {}),
   }
-  // Do not run native providers in smoke mode: it verifies setup/transport only.
-  if (!opts.smoke) {
-    stage = 'OpenCode prerequisite (installed native binary)'
-    const version = await command(safeEnv.OPENCODE_BINARY ?? 'opencode', ['--version'], { capture: true })
-    if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version)) throw new Error('OpenCode returned no recognized version.')
-  }
   stage = 'port reservation check'
   await freePort(opts.apiPort); await freePort(opts.webPort)
   const head = await command('git', ['rev-parse', 'HEAD'], { capture: true })

@@ -1,5 +1,9 @@
 # ENG-07 requirement coverage matrix
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 **ENG07-A · NIM-2660 · PR #26 · execution semantics 3 only**
 Repository: `nima20002000/graphql` · branch context: `feat/eng03-integration`
 Frozen source: [`16b3337`](https://github.com/nima20002000/graphql/commit/16b33373b3b2962dd0d0c57ad0b2f2c93198c400) (`16b33373b3b2962dd0d0c57ad0b2f2c93198c400`) · assessed 26 September 2026.

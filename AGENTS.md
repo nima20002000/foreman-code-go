@@ -5,7 +5,7 @@
 This repository contains the React web shell in `apps/web`, the shared
 contracts package in `packages/contracts`, and the Fastify/PostgreSQL workflow
 engine in `apps/api`. The saved Website workflow can run real local Codex and
-OpenCode harnesses. Do not add GraphQL transport or unrelated external
+Claude harnesses. Do not add GraphQL transport or unrelated external
 integrations unless the current workstream explicitly authorizes them.
 
 Keep feature work behind the shared contracts package. The web app should not

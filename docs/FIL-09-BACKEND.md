@@ -1,5 +1,9 @@
 # FIL-09 — OpenCode files: partial backend handoff
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Base: `4c7bb220d4d545ba076657d75bae99a36511121f` on `feat/nim-2733-files`.
 
 ## Status

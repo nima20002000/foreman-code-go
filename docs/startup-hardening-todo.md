@@ -1,5 +1,9 @@
 # Startup hardening todo
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Goal: resolve the six startup risks audited in this conversation. Source baseline:
 `26e49892feb24668ff742625ee61a93055c5153a`. No Linear work is authorized.
 

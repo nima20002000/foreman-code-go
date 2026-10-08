@@ -1,5 +1,9 @@
 # FIL-08a — native Codex file-turn integration (partial)
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Base: `5d80063a83d5b0b091eaa29da1136db63e76e74e` on `feat/nim-2733-files`.
 Apply these full files over that exact checkout. This handoff supplements, rather
 than replaces, `FIL-08-CODEX.md` and the existing `codexFiles/turn.ts` bridge.

@@ -1,5 +1,9 @@
 # Real workflow engine and harness qualification
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Qualified on 2026-09-14 from the installed binaries, their live model catalogs,
 their help output, and harmless authenticated probes.
 

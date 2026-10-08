@@ -1,5 +1,9 @@
 # Connection handoffs and Board Activities
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 NIM-2691 implements the new work-handoff policy on the existing execution-semantics-3 workflow and Run services. The saved policy marker is `definition.handoffs: { "contractVersion": 1 }`. It is distinct from the old optional `definition.repeat` contract. The two cannot coexist in one saved definition. Omission of both on an **old** saved version retains its ordinary DAG meaning; omission of `maxWorkHandoffsPerRun` on a **marked new** work connection means no per-connection cap.
 
 ## Saved work connections

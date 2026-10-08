@@ -1,5 +1,9 @@
 # FIL-10 — attachments on real chat messages
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Base: `nima20002000/graphql`, branch `feat/nim-2733-files`, commit
 `dfaaf97b8691923f75813f051251788c875e94b8`.
 

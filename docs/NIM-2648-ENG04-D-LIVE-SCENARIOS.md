@@ -1,5 +1,9 @@
 # NIM-2648 / ENG04-D — ENG-S3-ONLY reusable gate scenarios
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 This document prepares NIM-2649 live testing. The current D checkpoint ran authenticated HTTP/MCP and PostgreSQL 17 tests, but did not run the mounted browser or a real Codex/OpenCode workflow.
 
 Current regression checkpoint base: `c327f4a7a70635643c9302fd9ba80bfa1ea41ac2`.

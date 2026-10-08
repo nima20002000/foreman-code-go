@@ -10,6 +10,10 @@
 > resolved from the credential. See [`../graphql-mcp.md`](../graphql-mcp.md). The
 > sections below record the original decision.
 
+> **Amended 2026-10-08:** only Codex and Claude are supported. OpenCode setup
+> below records the original decision and is retired; it is not a supported
+> configuration path. Saved historical facts remain readable.
+
 ## Decision
 
 The API process owns two logically separate MCP domains:

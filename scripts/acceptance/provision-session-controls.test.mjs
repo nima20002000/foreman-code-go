@@ -27,7 +27,7 @@ function fixture() {
   const identity = { installationId: mainId, checkoutId: 'b'.repeat(64), databaseId: 'c'.repeat(64) }
   const defaults = { value: structuredClone(contracts.DEFAULT_AGENT_DEFAULTS), revision: 0, versionId: null }
   const subjects = []
-  for (const harness of ['codex', 'opencode', 'claude']) for (const kind of ['main', 'device']) {
+  for (const harness of ['codex', 'claude']) for (const kind of ['main', 'device']) {
     const configuration = harness === 'claude' ? { harness, model: 'claude-haiku-4-5-20251001',
       authMode: 'subscription', configDirectory: '/owned/recorded-profile', permissionMode: 'default',
       sandbox: 'danger-full-access', tools: ['Write'], permissionRules: [], instructions: '', mcpServers: {} }
@@ -57,7 +57,7 @@ function fixture() {
         appVersion: 'recorded', protocolVersion: 1, lastSeenAt: createdAt } : null
       return { hostMetadata: { hostRef: args, applicationInstallationId: args.kind === 'main' ? mainId : workerInstallationId,
         connection, platform: { platform: 'linux', architecture: 'x64' }, workspaceRoots: null }, instances: [],
-        installations: ['codex', 'opencode', 'claude'].map(driverId => ({ hostRef: args,
+        installations: ['codex', 'claude'].map(driverId => ({ hostRef: args,
           harnessInstallationId: `recorded-${driverId}`, installationFingerprint: 'recorded-fingerprint',
           driverId, driverRevision: 'recorded', protocolRevision: 'recorded', environmentGeneration: 'recorded',
           connectionGeneration: 'recorded', observedVersion: null, installed: true,
@@ -223,13 +223,13 @@ function editResponse(node) {
   return { intent, current: [], canStop: false, affectedSetChanged: false }
 }
 
-test('provisions six saved nodes and independently checked host profiles without starting a Run or changing defaults', async () => {
+test('provisions four saved nodes and independently checked host profiles without starting a Run or changing defaults', async () => {
   const f = fixture()
   const original = structuredClone(f.defaults)
   const subjects = await provisionSessionControlSubjects(f.input, f.ports)
-  assert.equal(subjects.length, 6)
-  assert.equal(new Set(subjects.map(value => value.nativeProfile)).size, 6)
-  assert.equal(new Set(subjects.map(value => value.agent.workspaceId)).size, 6)
+  assert.equal(subjects.length, 4)
+  assert.equal(new Set(subjects.map(value => value.nativeProfile)).size, 4)
+  assert.equal(new Set(subjects.map(value => value.agent.workspaceId)).size, 4)
   for (const subject of subjects) {
     const selected = subject.operatorDefaults.harnessProfileSelection
     assert.equal(subject.nativeProfile, selected.instanceId)
@@ -272,7 +272,7 @@ test('rejects unsupported Claude access before any product call', async () => {
 })
 
 test('provisions only the selected providers on Main and the paired Worker', async () => {
-  for (const harnesses of [['codex'], ['opencode', 'claude']]) {
+  for (const harnesses of [['codex'], ['claude']]) {
     const f = fixture()
     f.input.harnesses = harnesses
     f.input.subjects = f.input.subjects.filter(subject => harnesses.includes(subject.configuration.harness))

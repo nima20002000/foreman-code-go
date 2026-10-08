@@ -1,8 +1,7 @@
 # Local production on Linux
 
 From a desktop session, with Node 22.23.2, the pinned Corepack/pnpm runtime,
-Docker Compose, user systemd, `/usr/bin/ss`, and `/usr/bin/google-chrome` installed.
-OpenCode execution also requires `/usr/bin/bwrap` with user namespace support:
+Docker Compose, user systemd, `/usr/bin/ss`, and `/usr/bin/google-chrome` installed:
 
 ```sh
 corepack pnpm production:install
@@ -62,7 +61,6 @@ Production storage is independent of development and tests:
 | Operator settings | `~/.config/graphql-production/operator.json` (0600) |
 | Workspaces/uploads | `~/.local/share/graphql-production/{workspaces,files}` |
 | Runs/cache | `~/.local/state/graphql-production/{runs,cache}` |
-| Owned OpenCode sessions and file materializations | `~/.local/state/graphql-production/runs/{opencode-sessions,chat-files}` |
 | Managed MCP launcher/routes | `~/.local/share/graphql/mcp/` (shared launcher; credential-scoped routes) |
 | Releases | `~/.local/lib/graphql-production/releases/`, selected by `current` |
 | API logs | `~/.local/state/graphql-production/logs/` (rotating, bounded) |
@@ -126,14 +124,9 @@ One OS file lock serializes the complete installation, including migration,
 activation and readiness. Readiness verifies the database installation identity
 and selected compiled release before opening Chrome.
 
-Native harnesses use the desktop user's existing login files. The service keeps
-that user's `HOME`; without explicit XDG overrides, OpenCode loads the provider
-login from `~/.local/share/opencode/auth.json` and configuration from
-`~/.config/opencode`. The runtime copies that login into private, owner-specific
-OpenCode storage and isolates native history, media and file materializations.
-Its Bubblewrap namespace hides the API file vault and other native owners'
-storage. The installer keeps its cache separate; accepted harness permissions
-and file-tool grants still control each operation.
+Native Codex and Claude harnesses use the desktop user's configured login files.
+The service keeps that user's `HOME`; accepted harness permissions, native
+qualification and application file-tool grants still control each operation.
 
 ## Claude access mode
 
@@ -146,7 +139,7 @@ an explicitly selected Full access profile before using the installed preset.
 No Claude-specific AppArmor exception is required or installed.
 
 For an environment-based provider credential, explicitly add the provider's
-variable, such as `OPENCODE_API_KEY`, as a string in private `operator.json`,
+variable, such as `ANTHROPIC_API_KEY`, as a string in private `operator.json`,
 then rerun `production:install`. This is an OS-owner setting, outside Operator
 MCP; the file and generated service environment remain 0600. Provider credentials
 reach native subprocesses, while database credentials and unscoped application
@@ -197,7 +190,7 @@ verify credential-free human creation and edits in the actual browser, where OS
 client attribution identifies the human client. It also
 checks configuration migration and updates against actual systemd environment
 values in a temporary service. It tests
-an Operator reply, Codex/OpenCode workflows, denied callers, native cancellation,
+an Operator reply, Codex/Claude workflows, denied callers, native cancellation,
 a failed first database activation followed by automatic recovery, a production
 PostgreSQL container restart, and recovery after killing the API's
 main process or the entire service during native work. After service-wide SIGKILL,

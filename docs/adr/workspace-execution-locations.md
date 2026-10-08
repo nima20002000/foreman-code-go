@@ -24,4 +24,4 @@ Host paths require explicit `workspace_locations:read`, `workspace_locations:val
 
 Legacy workspaces migrate to location revision zero with no location. They remain editable, but new run admission fails with an actionable setup error. Legacy run history remains parseable without a fabricated location, and a queued legacy run without a snapshot cannot be silently launched in a newly configured directory.
 
-Location is not confinement. Native Codex/OpenCode policies, environment and network controls, remote runners, managed worktrees, locking, and OS/container isolation remain deferred. Existing sandbox and authorization protections are not weakened.
+Location is not confinement. Native Codex/Claude policies, environment and network controls, remote runners, managed worktrees, locking, and OS/container isolation remain deferred. Existing sandbox and authorization protections are not weakened.

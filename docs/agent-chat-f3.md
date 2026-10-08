@@ -1,5 +1,9 @@
 # Agent chat: F3 native safety and lifecycle
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Applies to the F3 patch against backend `a8c4ebef23733d7d509e5e5ebb13e46f3a731b6a`.
 Scope: A-R01, A-R13, A-R16, A-R18 and A-R19 only. This does not resolve the
 other receipt, steering, authorization or UI findings being fixed in parallel.

@@ -21,9 +21,9 @@ node --test scripts/acceptance/*.test.mjs
 node scripts/acceptance/local.mjs --help
 ```
 
-For native work, have **OpenCode 1.18.31** installed and test credentials authorized for **`opencode-go/deepseek-v4.1-flash`**. The version is taken from this head's `opencodeTransport.ts` and `opencodeMcpConfiguration.ts`, not an assumption about the latest release. OpenCode model availability and authentication remain live preflight checks. Native Starts may incur provider charges; seeding itself does not start a Run.
+For native work, select a qualified **Claude** installation and test credentials authorized for **`claude-haiku-4-5-20251001`**. Claude model availability and authentication remain live preflight checks. This walkthrough explicitly uses the supported Full access policy with no native tools except a human-approved Bash call in S3-04. Native Starts may incur provider charges; seeding itself does not start a Run.
 
-Supply authentication explicitly through `FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE` and, for a mixed run, `FOREMAN_CODE_TEST_CODEX_AUTH_FILE`. Each value is an absolute path to a credential file authorized for tests; the provisioner copies it into this invocation's private OpenCode or Codex home with mode 0600. Provider keys may instead be supplied through `FOREMAN_CODE_TEST_OPENAI_API_KEY`, `FOREMAN_CODE_TEST_ANTHROPIC_API_KEY` or `FOREMAN_CODE_TEST_OPENCODE_API_KEY` using a secure environment source. Do not paste credential values into commands, prompts, `.env`, screenshots or the launcher's input. Ambient provider keys and native account/configuration directories are excluded. The API/native process receives the selected test authentication; Vite does not receive provider keys. The launcher ignores ambient `DATABASE_URL`, all `PG*` variables, proxy settings, `NODE_OPTIONS`, application env-file selectors and rollout flags. It does not enable experimental/parity gates to make a provider appear qualified.
+Supply authentication explicitly through `FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE` and, for a mixed run, `FOREMAN_CODE_TEST_CODEX_AUTH_FILE`. Each value is an absolute path to a private credential file authorized for tests. Claude credentials are copied into this invocation's disposable profile with mode 0600; Codex references its dedicated authentication file. Do not paste credential values into commands, prompts, `.env`, screenshots or the launcher's input. Ambient provider keys and native account/configuration directories are excluded. The API/native process receives the selected test authentication; Vite does not receive provider keys. The launcher ignores ambient `DATABASE_URL`, all `PG*` variables, proxy settings, `NODE_OPTIONS`, application env-file selectors and rollout flags. Qualification remains required.
 
 Run a disposable setup smoke check first; native credentials are unnecessary for smoke mode:
 
@@ -36,7 +36,7 @@ node scripts/acceptance/local.mjs --smoke
 Start the interactive session with available ports:
 
 ```sh
-FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE=/absolute/path/to/test-opencode-auth.json \
+FOREMAN_CODE_TEST_CLAUDE_AUTH_FILE=/absolute/path/to/test-claude-credentials.json \
 node scripts/acceptance/local.mjs \
   --api-port 3307 --web-port 5307
 ```
@@ -51,13 +51,13 @@ Every invocation creates a fresh owner-only `eng07-*` directory under `~/.cache/
 
 There is no external database URL, existing-state attachment, reset or drop-database option. PostgreSQL calls use the dedicated loopback test endpoint, test administrator and generated database. The app/production database is excluded. Project files, native runtime files, provider homes, logs and temporary files stay beneath the private invocation root. Cleanup targets owned child handles and verified ownership markers. Nested invocation ownership keeps the parent root and database available until child cleanup completes.
 
-The execution folder receives an `opencode.json` with the selected API's `/mcp` URL and the literal reference `Bearer {env:GRAPHQL_MCP_TOKEN}`. That reference is **not a token**. Runtime issues scoped credentials; the launcher does not fabricate or persist them. Do not archive task database/runtime directories: the existing native recovery subsystem retains private control/ownership state there, and private Run bodies also belong outside acceptance evidence bundles.
+Claude uses the explicitly saved profile directory and configuration. Runtime issues scoped credentials; the launcher does not fabricate or persist them. Do not archive task database/runtime directories: the native recovery subsystem retains private control/ownership state there, and private Run bodies also belong outside acceptance evidence bundles.
 
-### Optional mixed Codex/OpenCode run
+### Optional mixed Codex/Claude run
 
-Adding `--codex-model OWNER_AUTHENTICATED_MODEL_ID` replaces only **Right** in S3-02 with Codex, preserving an OpenCode Left branch. Supply `FOREMAN_CODE_TEST_CODEX_AUTH_FILE` or `FOREMAN_CODE_TEST_OPENAI_API_KEY` and use a model available to that test account's repository-qualified Codex installation. The launcher does not guess a model, change trust settings or auto-enable an experimental rollout.
+Adding `--codex-model OWNER_AUTHENTICATED_MODEL_ID` replaces only **Right** in S3-02 with Codex, preserving a Claude Left branch. Supply `FOREMAN_CODE_TEST_CODEX_AUTH_FILE` or `FOREMAN_CODE_TEST_OPENAI_API_KEY` and use a model available to that test account's repository-qualified Codex installation. The launcher does not guess a model, change trust settings or auto-enable an experimental rollout.
 
-A project-local `.codex/config.toml` contains only the App MCP endpoint and `bearer_token_env_var = "GRAPHQL_MCP_TOKEN"`. Confirm in native configuration inspection that this **task folder's** configuration is trusted/loaded and that the App MCP endpoint matches the printed API port. If project config is ignored or qualification fails, record the Codex row as BLOCKED; do not change global configuration, grant broad permissions or bypass preflight merely to pass. The default all-OpenCode S3-02 does not establish mixed-provider acceptance.
+A project-local `.codex/config.toml` contains only the App MCP endpoint and `bearer_token_env_var = "FOREMAN_CODE_MCP_TOKEN"`. Confirm in native configuration inspection that this **task folder's** configuration is trusted/loaded and that the App MCP endpoint matches the printed API port. If project config is ignored or qualification fails, record the Codex row as BLOCKED; do not change global configuration, grant broad permissions or bypass preflight merely to pass. The default all-Claude S3-02 does not establish mixed-provider acceptance.
 
 ## 2. Common owner observation rules
 
@@ -71,7 +71,7 @@ For every scenario, check current Run facts while active, past Run facts after s
 
 ## 3. S3-01 — sequential
 
-1. Select **S3-01 Sequential**. Verify `First → Second`, no repeat, and the saved OpenCode configurations. Start once.
+1. Select **S3-01 Sequential**. Verify `First → Second`, no repeat, and the saved Claude configurations. Start once.
    **Expected:** First starts before Second; Second is not eligible merely because First was submitted.
 2. Wait for completion, then inspect both executions and the connecting relationship.
    **Expected:** two successful executions, one per node, with First's exact accepted result bound into Second's accepted predecessor input. Markers are `ENG07_S3-01_0` and `ENG07_S3-01_1`; pin/receipt identity, not marker text alone, establishes provenance.
@@ -85,7 +85,7 @@ For every scenario, check current Run facts while active, past Run facts after s
 2. Inspect Join before and after the branches settle.
    **Expected:** it does not run after just one branch; its exact accepted input contains both successful predecessor results with their distinct execution identities/bindings, and it runs once. Normal total: four executions.
 3. With the optional Codex seed, inspect each accepted configuration.
-   **Expected:** Left is OpenCode, Right is Codex, both actually execute, and Join consumes both results. Model labels without native execution are not mixed-provider proof. Without this option, record mixed-provider evidence as NOT RUN.
+   **Expected:** Left is Claude, Right is Codex, both actually execute, and Join consumes both results. Model labels without native execution are not mixed-provider proof. Without this option, record mixed-provider evidence as NOT RUN.
 
 ### S3-02 Uneven parallel join (both branches selected)
 
@@ -104,8 +104,8 @@ Run **S3-02 Uneven parallel join**. Fork feeds Short and Long one; Long one feed
 
 ## 6. S3-04 — a real human approval, without repeat
 
-1. Select **S3-04 Human approval** and Start. Permission requests native bash **exactly once** for `printf ENG07_APPROVED`.
-   **Expected:** the narrow native permission request appears as a pending human approval in the same Board; the Run waits and After approval does not execute. Native-auto approval is off. A model saying “approved” without a real request/acknowledgement fails the case.
+1. Select **S3-04 Human approval** and Start. Permission requests native Bash **exactly once** for `printf ENG07_APPROVED`.
+   **Expected:** the narrow native permission request appears as a pending human approval in the same Board; the Run waits and After approval does not execute. The saved Bash rule asks the human for each call. A model saying “approved” without a real request/acknowledgement fails the case.
 2. Reload while pending; inspect request identity, context and one-request scope. Choose the one-request approval option, not a session/persistent policy change.
    **Expected:** the same pending interaction survives reload; one accepted response goes to the original request. Delivered and native-acknowledged are distinct facts. Only the acknowledged continuation may let After approval run. Normal successful total: two executions and no repeat history.
 3. After the response, attempt no fresh response command. Refresh/read back instead.
@@ -201,4 +201,4 @@ Argument validation runs before provisioning. For test-server/version/dependency
 
 ### Source anchors at the baseline
 
-`apps/api/src/config.ts`, `server.ts`, `production.ts`, `infrastructure/{database,migrations,checkpoints}.ts`; `modules/workspaces/{management,storage}.ts`; `modules/workflows/currentAuthoring.ts`; `modules/graph-drafts/currentEditIntent.ts`; `modules/harnesses/{opencodeTransport,opencodeMcpConfiguration}.ts`; `modules/harnesses/recovery/processRegistry.ts`; `modules/runs/{workflowPrompt,inspection}.ts`; `routes/{currentWorkflow,runInspection}.ts`; `modules/access/postgres.ts`; `packages/contracts/src/wave25/{currentAuthoring,currentEditIntent,currentJournal,repeat,runInspection}.ts`; `apps/web/vite.config.ts`; `apps/web/src/features/workflow-board/WorkflowBoard.tsx` and its actions/inspect modules.
+`apps/api/src/config.ts`, `server.ts`, `production.ts`, `infrastructure/{database,migrations,checkpoints}.ts`; `modules/workspaces/{management,storage}.ts`; `modules/workflows/currentAuthoring.ts`; `modules/graph-drafts/currentEditIntent.ts`; `modules/harnesses/claudeSdk/`; `modules/harnesses/recovery/processRegistry.ts`; `modules/runs/{workflowPrompt,inspection}.ts`; `routes/{currentWorkflow,runInspection}.ts`; `modules/access/postgres.ts`; `packages/contracts/src/wave25/{currentAuthoring,currentEditIntent,currentJournal,repeat,runInspection}.ts`; `apps/web/vite.config.ts`; `apps/web/src/features/workflow-board/WorkflowBoard.tsx` and its actions/inspect modules.

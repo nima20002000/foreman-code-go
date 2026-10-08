@@ -131,7 +131,7 @@ export function testEnvironment(environment, resource) {
   const clean = { ...environment }
   for (const key of Object.keys(clean)) {
     if (/^PG/.test(key) || (!key.startsWith('FOREMAN_CODE_TEST_') && /(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN)$/.test(key))
-      || ['FOREMAN_CODE_MCP_TOKEN', 'OPENCODE_CONFIG_CONTENT', 'OPENCODE_CONFIG', 'LOG_FILE',
+      || ['FOREMAN_CODE_MCP_TOKEN', 'LOG_FILE',
         'FOREMAN_CODE_PRODUCTION_DB_PASSWORD', 'FOREMAN_CODE_WEB_DIST', 'NODE_OPTIONS'].includes(key)) delete clean[key]
   }
   for (const key of new Set([...databaseVariables, ...Object.keys(clean).filter(key => key.endsWith('DATABASE_URL'))])) {
@@ -141,7 +141,7 @@ export function testEnvironment(environment, resource) {
     HOME: 'home', CODEX_HOME: 'home/.codex', CLAUDE_CONFIG_DIR: 'home/.claude',
     XDG_CONFIG_HOME: 'home/.config', XDG_DATA_HOME: 'home/.local/share',
     XDG_CACHE_HOME: 'home/.cache', XDG_STATE_HOME: 'home/.local/state', XDG_RUNTIME_DIR: 'xdg-runtime',
-    OPENCODE_CONFIG_DIR: 'home/.config/opencode', FILE_STORAGE_ROOT: 'app/files',
+    FILE_STORAGE_ROOT: 'app/files',
     WORKSPACE_STORAGE_ROOT: 'app/projects', FOREMAN_CODE_APP_MCP_DIRECTORY: 'home/.local/share/graphql/mcp',
     HARNESS_WORKSPACE_ROOT: 'app/workspaces', LOG_DIR: 'logs', ENG03_A_EVIDENCE_DIR: 'evidence',
     TMPDIR: 'tmp', TMP: 'tmp', TEMP: 'tmp',
@@ -165,12 +165,11 @@ export function testEnvironment(environment, resource) {
   mkdirSync(dirname(launcher), { recursive: true, mode: 0o700 })
   copyFileSync(new URL('./graphql-mcp.mjs', import.meta.url), launcher)
   chmodSync(launcher, 0o600)
-  for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENCODE_API_KEY']) {
+  for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY']) {
     if (environment[`FOREMAN_CODE_TEST_${key}`]) clean[key] = environment[`FOREMAN_CODE_TEST_${key}`]
   }
   for (const [variable, destination] of [
     ['FOREMAN_CODE_TEST_CODEX_AUTH_FILE', join(clean.CODEX_HOME, 'auth.json')],
-    ['FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE', join(clean.XDG_DATA_HOME, 'opencode', 'auth.json')],
   ]) {
     if (!environment[variable]) continue
     referenceTestAuthenticationFile(resource, environment[variable], destination)

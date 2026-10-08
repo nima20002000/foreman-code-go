@@ -44,10 +44,10 @@ export function options(args) {
 export function environment(source) {
   const keys = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TMP', 'TEMP',
     'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR',
-    'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'OPENCODE_BINARY', 'CODEX_BINARY',
+    'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_BINARY',
     'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT', 'LOG_DIR', 'COREPACK_HOME',
     'FOREMAN_CODE_TEST_ROOT', 'FOREMAN_CODE_TEST_OWNER', 'TEST_DATABASE_URL',
-    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENCODE_API_KEY']
+    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY']
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]))
 }
 export async function freePort(port) {

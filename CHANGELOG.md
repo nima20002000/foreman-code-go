@@ -13,6 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Removed
 
+- OpenCode support. Saved OpenCode history remains readable as a retired, non-executable harness.
 - Google Drive shared folders via rclone, including OAuth sign-in and mount services.
 
 ## [0.0.53] - 2026-10-08

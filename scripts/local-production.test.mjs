@@ -92,27 +92,27 @@ test('failed release cleanup removes only uninstalled staging and retains the ac
 test('native startup requires a live provider event on the bound execution and session', () => {
   const execution = { id: 'execution', nativeSessionId: 'session' }
   const codex = { executionId: execution.id, type: 'turn.started', payload: { threadId: 'session' } }
-  const opencode = { executionId: execution.id, type: 'message.updated',
-    payload: { info: { role: 'assistant', sessionID: 'session' } } }
+  const claude = { executionId: execution.id, type: 'claude.text',
+    payload: { role: 'assistant', text: 'native answer', nativeSessionId: 'session' } }
   assert.equal(hasNativeTurnStarted('codex', execution, codex), true)
-  assert.equal(hasNativeTurnStarted('opencode', execution, opencode), true)
-  for (const [harness, event] of [['codex', codex], ['opencode', opencode]]) {
+  assert.equal(hasNativeTurnStarted('claude', execution, claude), true)
+  for (const [harness, event] of [['codex', codex], ['claude', claude]]) {
     assert.equal(hasNativeTurnStarted(harness, { id: execution.id }, event), false)
     assert.equal(hasNativeTurnStarted(harness, execution, { ...event, executionId: 'other' }), false)
     assert.equal(hasNativeTurnStarted(harness, { ...execution, nativeSessionId: 'other' }, event), false)
     assert.equal(hasNativeTurnStarted(harness, execution, { ...event, connectionId: 'history-replay' }), false)
   }
-  assert.equal(hasNativeTurnStarted('opencode', execution,
-    { ...opencode, payload: { info: { role: 'user', sessionID: 'session' } } }), false)
-  assert.equal(hasNativeTurnStarted('opencode', execution,
-    { ...opencode, payload: { sessionID: 'session' }, type: 'session.idle' }), false)
+  assert.equal(hasNativeTurnStarted('claude', execution,
+    { ...claude, payload: { role: 'user', text: 'input', nativeSessionId: 'session' } }), false)
+  assert.equal(hasNativeTurnStarted('claude', execution,
+    { ...claude, type: 'claude.session' }), false)
 })
 
 test('production updates retire the browser-access setting while retaining native settings', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'production-retired-settings-'))
   const path = join(directory, 'operator.json')
   const owned = localProductionEnvironment('/owner/home', 'a'.repeat(64))
-  const native = { OPENCODE_BINARY: '/opt/owner/opencode' }
+  const native = { CODEX_BINARY: '/opt/owner/codex' }
   const retired = { FOREMAN_CODE_DEV_BROWSER_ACCESS: '0', GRAPHQL_DEV_BROWSER_ACCESS: '1' }
   try {
     assert.equal(Object.hasOwn(owned, 'FOREMAN_CODE_DEV_BROWSER_ACCESS'), false)
@@ -135,20 +135,20 @@ test('renamed installer settings retain operator values and the existing databas
   const owned = { FOREMAN_CODE_LOCAL_PRODUCTION: '1', FOREMAN_CODE_APP_MCP_DIRECTORY: '/installed/mcp',
     GRAPHQL_PRODUCTION_DB_PASSWORD: password }
   const previous = { GRAPHQL_LOCAL_PRODUCTION: '1', GRAPHQL_APP_MCP_DIRECTORY: '/installed/mcp',
-    FOREMAN_CODE_PRODUCTION_DB_PASSWORD: password, GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0',
-    OPENCODE_BINARY: '/opt/owner cli/opencode' }
+    FOREMAN_CODE_PRODUCTION_DB_PASSWORD: password, GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '0',
+    CODEX_BINARY: '/opt/owner cli/codex' }
   const validate = environment => {
     assert.equal(readProductEnvironment(environment, 'LOCAL_PRODUCTION'), '1')
     assert.equal(readProductEnvironment(environment, 'APP_MCP_DIRECTORY'), '/installed/mcp')
     assert.equal(readProductEnvironment(environment, 'PRODUCTION_DB_PASSWORD'), password)
-    assert.equal(readProductEnvironment(environment, 'OPENCODE_PARITY_QUALIFIED'), '0')
+    assert.equal(readProductEnvironment(environment, 'ENABLE_EXPERIMENTAL_CODEX_APP_SERVER'), '0')
   }
   try {
     const environment = await preserveOperatorConfiguration(path, previous, owned, validate)
-    assert.deepEqual(environment, { ...owned, GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0',
-      OPENCODE_BINARY: previous.OPENCODE_BINARY })
+    assert.deepEqual(environment, { ...owned, GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '0',
+      CODEX_BINARY: previous.CODEX_BINARY })
     assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
-      GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0', OPENCODE_BINARY: previous.OPENCODE_BINARY,
+      GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '0', CODEX_BINARY: previous.CODEX_BINARY,
     })
     for (const name of ['GRAPHQL_LOCAL_PRODUCTION', 'FOREMAN_CODE_LOCAL_PRODUCTION',
       'GRAPHQL_PRODUCTION_DB_PASSWORD', 'FOREMAN_CODE_PRODUCTION_DB_PASSWORD']) {
@@ -164,7 +164,7 @@ test('configuration aliases reject conflicts before publishing and retain matchi
   const directory = await mkdtemp(join(tmpdir(), 'production-alias-conflicts-'))
   const path = join(directory, 'operator.json')
   const owned = { FOREMAN_CODE_LOCAL_PRODUCTION: '1' }
-  const settings = { GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0', FOREMAN_CODE_OPENCODE_PARITY_QUALIFIED: '0' }
+  const settings = { GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '0', FOREMAN_CODE_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '0' }
   try {
     await preserveOperatorConfiguration(path, settings, owned, () => undefined)
     assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), settings)
@@ -177,7 +177,7 @@ test('configuration aliases reject conflicts before publishing and retain matchi
         return true
       })
     assert.equal(await readFile(path, 'utf8'), before)
-    await writeFile(path, JSON.stringify({ ...settings, FOREMAN_CODE_OPENCODE_PARITY_QUALIFIED: '1' }))
+    await writeFile(path, JSON.stringify({ ...settings, FOREMAN_CODE_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '1' }))
     await assert.rejects(preserveOperatorConfiguration(path, undefined, owned, () => undefined), /conflicts/)
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -188,11 +188,11 @@ test('updates retain operator settings separately from installer isolation setti
   const directory = await mkdtemp(join(tmpdir(), 'production-settings-'))
   const path = join(directory, 'operator.json')
   const owned = { HOST: '127.0.0.1', NODE_ENV: 'production', GRAPHQL_PRODUCTION_DB_PASSWORD: 'a'.repeat(64) }
-  const previous = { ...owned, HOST: '0.0.0.0', GRAPHQL_OPENCODE_PARITY_QUALIFIED: '1',
-    CODEX_BINARY: '/opt/native CLI/codex', OPENCODE_BINARY: '/opt/native/opencode', HARNESS_TIMEOUT_MS: '600000' }
+  const previous = { ...owned, HOST: '0.0.0.0', GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '1',
+    CODEX_BINARY: '/opt/native CLI/codex', HARNESS_TIMEOUT_MS: '600000' }
   const validate = environment => {
     assert.equal(environment.HOST, '127.0.0.1')
-    assert.equal(environment.GRAPHQL_OPENCODE_PARITY_QUALIFIED, '1')
+    assert.equal(environment.GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER, '1')
     assert.equal(environment.HARNESS_TIMEOUT_MS, '600000')
   }
   try {
@@ -201,12 +201,11 @@ test('updates retain operator settings separately from installer isolation setti
     const next = await preserveOperatorConfiguration(path, await readEnvironment(join(directory, 'production.env')),
       { ...owned, GRAPHQL_LOCAL_PRODUCTION: '1' }, validate)
     assert.equal(next.CODEX_BINARY, previous.CODEX_BINARY)
-    assert.equal(next.OPENCODE_BINARY, previous.OPENCODE_BINARY)
     assert.equal(next.GRAPHQL_PRODUCTION_DB_PASSWORD, owned.GRAPHQL_PRODUCTION_DB_PASSWORD)
     assert.equal(next.GRAPHQL_LOCAL_PRODUCTION, '1')
     assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
-      GRAPHQL_OPENCODE_PARITY_QUALIFIED: '1', CODEX_BINARY: previous.CODEX_BINARY,
-      OPENCODE_BINARY: previous.OPENCODE_BINARY, HARNESS_TIMEOUT_MS: '600000',
+      GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '1', CODEX_BINARY: previous.CODEX_BINARY,
+      HARNESS_TIMEOUT_MS: '600000',
     })
     assert.equal((await stat(path)).mode & 0o777, 0o600)
     const before = await readFile(path, 'utf8')
@@ -228,7 +227,6 @@ test('first migration and later updates preserve quoted, escaped and multiline o
   const owned = { HOST: '127.0.0.1', GRAPHQL_PRODUCTION_DB_PASSWORD: 'a'.repeat(64) }
   const settings = {
     CODEX_BINARY: '/opt/native "qualified"/codex',
-    OPENCODE_BINARY: "/opt/native\\tools/'qualified'/opencode",
     PROVIDER_API_KEY: " space\\slash\"quote'single$literal`tick\nsecond line\\ ",
     LITERAL_NEWLINE: '\\n',
     TRAILING_BACKSLASH: 'end\\',

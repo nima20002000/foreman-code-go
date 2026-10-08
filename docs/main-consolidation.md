@@ -1,5 +1,9 @@
 # Main consolidation
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 The canonical checkout is `/home/nima/Desktop/graphql` on `main`. GitHub `main`
 is authoritative. Startup, Operator routing, catalog pagination/batch selection,
 and the restored approval-detail display were replayed onto GitHub main at

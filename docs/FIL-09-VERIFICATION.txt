@@ -1,4 +1,9 @@
 FIL-09 partial component verification
+
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Base: 4c7bb220d4d545ba076657d75bae99a36511121f
 Environment: Node v22.16.0; available TypeScript 5.8.3.
 Command executed:

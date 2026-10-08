@@ -2,14 +2,16 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { configuration, OPEN_CODE_MODEL, SCENARIOS, scenarioGraph, seed } from './scenarios.mjs'
+import { CLAUDE_MODEL, SCENARIOS, scenarioGraph, seed } from './scenarios.mjs'
 
+const claudeConfigDirectory = '/owned/claude-profile'
+const nativeSettings = { claudeConfigDirectory, appMcpUrl: 'http://127.0.0.1:3307/mcp' }
 const workflow = { id: 'wf-test', workspaceId: 'ws-test', name: 'test', executionSemanticsVersion: 3,
   entryNodeId: null, nodes: [], edges: [], executionCondition: { kind: 'manual' }, handoffs: { contractVersion: 1 } }
 test('all eight concrete scenarios use semantics 3 and distinct real Agent identities', () => {
   const ids = new Set()
   for (const spec of SCENARIOS) {
-    const { graph, agents } = scenarioGraph(spec, workflow)
+    const { graph, agents } = scenarioGraph(spec, workflow, nativeSettings)
     assert.equal(graph.executionSemanticsVersion, 3)
     assert.equal(graph.nodes.length, spec.nodes.length)
     assert.equal(agents.length, graph.nodes.length)
@@ -17,7 +19,10 @@ test('all eight concrete scenarios use semantics 3 and distinct real Agent ident
     assert.equal(graph.approval.handler, 'user')
     for (const { agent, baseRevision } of agents) {
       assert.equal(baseRevision, null); assert.equal(agent.configurationVersionId, undefined)
-      assert.equal(agent.harnessConfiguration.model, OPEN_CODE_MODEL)
+      assert.equal(agent.harnessConfiguration.model, CLAUDE_MODEL)
+      assert.equal(agent.harnessConfiguration.configDirectory, claudeConfigDirectory)
+      assert.deepEqual(agent.harnessConfiguration.mcpServers,
+        { 'foreman-code': { type: 'http', url: nativeSettings.appMcpUrl } })
       assert.equal(ids.has(agent.id), false); ids.add(agent.id)
     }
     assert.equal(graph.edges.every((edge) => edge.kind === 'execution'), true)
@@ -28,16 +33,16 @@ test('all eight concrete scenarios use semantics 3 and distinct real Agent ident
 })
 test('ordinary workflows never manufacture a repeat plan, even an empty one', () => {
   for (const spec of SCENARIOS.filter((item) => !item.repeat)) {
-    assert.equal(JSON.stringify(scenarioGraph(spec, workflow).graph).includes('"repeat"'), false)
+    assert.equal(JSON.stringify(scenarioGraph(spec, workflow, nativeSettings).graph).includes('"repeat"'), false)
   }
 })
 test('parallel diamond and unequal conditional paths have explicit all-required joins', () => {
-  const parallel = scenarioGraph(SCENARIOS.find((spec) => spec.key === 'S3-02'), workflow).graph
+  const parallel = scenarioGraph(SCENARIOS.find((spec) => spec.key === 'S3-02'), workflow, nativeSettings).graph
   assert.equal(parallel.executionPolicy.maxParallelism, 2)
   assert.deepEqual(parallel.nodes.at(-1).join, { mode: 'all' })
   for (const route of ['short', 'long']) {
     const spec = SCENARIOS.find((item) => item.route === route)
-    const graph = scenarioGraph(spec, workflow).graph
+    const graph = scenarioGraph(spec, workflow, nativeSettings).graph
     assert.equal(graph.nodes.length, 5); assert.equal(graph.edges.length, 5)
     assert.deepEqual(graph.nodes.at(-1).join, { mode: 'all' })
     assert.deepEqual(graph.nodes[0].choice.outcomes.map((item) => item.outcome), ['short', 'long'])
@@ -47,7 +52,7 @@ test('parallel diamond and unequal conditional paths have explicit all-required 
 })
 test('repeat limits include the first occurrence and preserve findings at exhaustion', () => {
   for (const spec of SCENARIOS.filter((item) => item.repeat)) {
-    const graph = scenarioGraph(spec, workflow).graph
+    const graph = scenarioGraph(spec, workflow, nativeSettings).graph
     const block = graph.repeat.blocks[0]
     assert.equal(block.maxOccurrences, 3)
     assert.equal(graph.executionPolicy.maxNodeExecutions, block.maxOccurrences * block.nodeIds.length)
@@ -63,20 +68,19 @@ test('repeat limits include the first occurrence and preserve findings at exhaus
 })
 test('human approval is narrow, Foreman Code-routed and never native auto-approval', () => {
   const spec = SCENARIOS.find((item) => item.approval)
-  const { graph, agents } = scenarioGraph(spec, workflow)
+  const { graph, agents } = scenarioGraph(spec, workflow, nativeSettings)
   const cfg = agents[0].agent.harnessConfiguration
-  assert.equal(cfg.autoApprove, false); assert.equal(cfg.advanced.permissionHandling, 'graphql_routed')
-  assert.deepEqual(cfg.advanced.permissionRules, [
-    { permission: '*', pattern: '*', effect: 'deny' },
-    { permission: 'bash', pattern: 'printf ENG07_APPROVED', effect: 'ask' },
-  ])
+  assert.equal(cfg.permissionMode, 'default')
+  assert.equal(cfg.sandbox, 'danger-full-access')
+  assert.deepEqual(cfg.tools, ['Bash'])
+  assert.deepEqual(cfg.permissionRules, [{ tool: 'Bash', effect: 'ask' }])
   assert.match(graph.nodes[0].initialPrompt, /exactly once/)
   assert.equal(graph.repeat, undefined)
 })
 test('optional Codex changes exactly the parallel Right branch, with read-only sandbox', () => {
   const spec = SCENARIOS.find((item) => item.key === 'S3-02')
-  const { agents } = scenarioGraph(spec, workflow, 'owner-supplied-model')
-  assert.deepEqual(agents.map((item) => item.agent.harness), ['opencode', 'opencode', 'codex', 'opencode'])
+  const { agents } = scenarioGraph(spec, workflow, { ...nativeSettings, codexModel: 'owner-supplied-model' })
+  assert.deepEqual(agents.map((item) => item.agent.harness), ['claude', 'claude', 'codex', 'claude'])
   const codex = agents[2].agent.harnessConfiguration
   assert.equal(codex.model, 'owner-supplied-model'); assert.equal(codex.sandbox, 'read-only')
   assert.equal(codex.advanced.sessionPersistence, 'persistent')
@@ -115,13 +119,16 @@ test('seed uses real-route request shapes and reserved journal commands, never R
   }
   try {
     const parse = { parse: (value) => value }
-    const demo = await seed({ apiUrl: 'http://127.0.0.1:3307', webUrl: 'http://127.0.0.1:5307', projectRoot: state,
+    const demo = await seed({ apiUrl: 'http://127.0.0.1:3307', webUrl: 'http://127.0.0.1:5307',
+      projectRoot: state, codexModel: 'owner-supplied-model', claudeConfigDirectory,
       schemas: { CurrentEditStageInputSchema: parse, CurrentWorkflowReadResultSchema: parse } })
     assert.equal(demo.workflowIds.length, 8); assert.equal(demo.agentCount, 27)
     assert.equal(calls.some((call) => call.path.includes('/runs')), false)
-    const native = JSON.parse(await readFile(join(folder, 'opencode.json'), 'utf8'))
-    assert.deepEqual(native.mcp['foreman-code'], { type: 'remote', url: 'http://127.0.0.1:3307/mcp',
-      enabled: true, oauth: false, headers: { Authorization: 'Bearer {env:FOREMAN_CODE_MCP_TOKEN}' } })
+    const native = await readFile(join(folder, '.codex/config.toml'), 'utf8')
+    assert.equal(native, '[mcp_servers."foreman-code"]\nurl = "http://127.0.0.1:3307/mcp"\n'
+      + 'bearer_token_env_var = "FOREMAN_CODE_MCP_TOKEN"\nenabled = true\n')
+    assert.equal(staged.flatMap(item => item.stagedAgents).filter(({ agent }) => agent.harness === 'claude')
+      .every(({ agent }) => agent.harnessConfiguration.configDirectory === claudeConfigDirectory), true)
     assert.equal(calls.filter((call) => call.body?.action === 'stage_edits').length, 8)
     assert.equal(calls.filter((call) => call.body?.action === 'stop_and_save').length, 8)
   } finally { globalThis.fetch = original; await rm(state, { recursive: true, force: true }) }

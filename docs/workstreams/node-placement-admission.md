@@ -98,5 +98,5 @@ exact host override/profile/installation and persisted native qualification. Wor
 clients reject binary payloads and identity drift. Native qualification requires
 exact resolved-launcher SHA/current suite/observed version/target profile/positive
 checks and a real check date; baseline or installer expectations are not proof.
-The compatibility lookup supports Codex/OpenCode. Claude requires its separate
+The compatibility lookup supports Codex. Claude requires its separate
 Claude proof schema rather than a fabricated compatibility qualification.

@@ -54,6 +54,6 @@ and checks metadata restoration after host restart. It does not substitute a
 quota observation or mutate the installed seed.
 
 Single-device physical qualification belongs to Phase 2. The two-computer
-Codex-to-Codex gate belongs to Phase 5. Claude/OpenCode two-computer cases remain
+Codex-to-Codex gate belongs to Phase 5. Claude two-computer cases remain
 untested. Provider credentials stay on their original computers; real Claude
 qualification or acceptance turns explicitly use `claude-haiku-4-5-20251001`.

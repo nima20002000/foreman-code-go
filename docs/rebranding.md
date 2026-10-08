@@ -17,7 +17,7 @@ Supported suffixes include `API_ENV_FILE`, `BROWSER_ORIGIN`, `DEV_BROWSER_ORIGIN
 `LAPTOP_EXECUTION_ENABLED`, `DEVICE_LISTENER_ENABLED`, `LOCAL_PRODUCTION`,
 `WEB_DIST`, `APP_MCP_DIRECTORY`, `PRODUCTION_DB_PASSWORD`,
 `ENABLE_EXPERIMENTAL_CODEX_APP_SERVER`, `ENABLE_EXPERIMENTAL_CLAUDE_SDK`,
-`OPENCODE_PARITY_QUALIFIED`, `MCP_TOKEN`, `WORKER_BUILD_COMMIT`,
+`MCP_TOKEN`, `WORKER_BUILD_COMMIT`,
 `WORKER_ARTIFACT_DIRECTORY`, `HEAVY_BASE_TMPDIR`, `HEAVY_JOB_COMMON`,
 `HEAVY_JOB_TOKEN`, `INTEGRATION_START_AT`, `INTEGRATION_FAILED_LOG`,
 `INTEGRATION_SHARDS`, `INTEGRATION_IDLE_TIMEOUT_MS`, and
@@ -39,9 +39,8 @@ supported existing `graphql` entry. Installing or repairing through Harness
 Settings is a human-reviewed action: it migrates a supported owned old entry,
 preserves disabled/tool/approval policies, and removes retired `graphql-app` and
 `graphql-operator` entries in the same write. Customized or inherited entries and
-collisions between old and new names require native-source review. OpenCode global
-permission rules using old tool prefixes require native-source review before a
-rename. Review saved Agent/Operator policies tied to the old name too; scoped
+collisions between old and new names require native-source review. Review saved
+Agent/Operator policies tied to the old name too; scoped
 launches refuse a policy whose app connection name is absent. The existing
 supported connection stays usable. No native
 configuration is rewritten merely by upgrading the app. Operator MCP requests

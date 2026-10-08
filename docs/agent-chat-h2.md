@@ -1,5 +1,9 @@
 # H2 — Agent chat without Foreman Code App MCP authority
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 This A-R01 follow-up supersedes the F3 requirement to manually remove or disable
 the native Foreman Code App MCP entry before using Agent chat. The accepted Agent
 configuration and native configuration files are not rewritten.

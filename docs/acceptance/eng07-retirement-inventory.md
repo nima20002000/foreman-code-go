@@ -1,5 +1,9 @@
 # ENG-07 V1/V2 product-reference retirement inventory
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 **NIM-2660 / ENG07-A · source `16b33373b3b2962dd0d0c57ad0b2f2c93198c400` (`16b3337`)**
 [Coverage matrix](eng07-matrix.md) · [supported limits](../architecture/execution-runtime-v3.md)
 

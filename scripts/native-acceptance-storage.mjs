@@ -58,8 +58,6 @@ export async function withNativeAcceptanceStorage(source, execute) {
     XDG_CACHE_HOME: join(root, 'cache'),
     XDG_STATE_HOME: join(root, 'state'),
     TMPDIR: join(root, 'tmp'),
-    OPENCODE_CONFIG_DIR: join(root, 'config', 'opencode'),
-    OPENCODE_DB: join(root, 'data', 'opencode', 'opencode.db'),
     FOREMAN_CODE_NATIVE_TEST_ROOT: root,
     FOREMAN_CODE_NATIVE_SOURCE_APP_MCP_DIRECTORY: sourceMcpDirectory,
     FOREMAN_CODE_APP_MCP_DIRECTORY: join(root, 'app-mcp'),
@@ -79,21 +77,10 @@ export async function withNativeAcceptanceStorage(source, execute) {
     } catch (error) {
       if (error.code !== 'EEXIST') throw error
     }
-    const config = source.OPENCODE_CONFIG_DIR
-      ?? join(source.XDG_CONFIG_HOME ?? join(originalHome, '.config'), 'opencode')
-    await copyOptional(config, environment.OPENCODE_CONFIG_DIR)
-    const data = join(source.XDG_DATA_HOME ?? join(originalHome, '.local', 'share'), 'opencode')
-    const auth = join(environment.XDG_DATA_HOME, 'opencode', 'auth.json')
-    await copyOptional(join(data, 'auth.json'), auth)
-    const cache = source.XDG_CACHE_HOME ?? join(originalHome, '.cache')
-    await copyOptional(join(cache, 'opencode', 'models.json'),
-      join(environment.XDG_CACHE_HOME, 'opencode', 'models.json'))
-    for (const path of [join(environment.CODEX_HOME, 'auth.json'), auth]) {
-      try {
-        await chmod(path, 0o600)
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error
-      }
+    try {
+      await chmod(join(environment.CODEX_HOME, 'auth.json'), 0o600)
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
     }
     return await execute(environment)
   } finally {

@@ -1,5 +1,9 @@
 # CHAT-READY — FEAT-15 selected-Agent chat (NIM-2682 gate)
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Frozen seam for NIM-2683 (backend, lane A) and NIM-2684 (node-chat UI, lane B).
 Base: the commit that adds this file on branch `feat/chat-foundation`.
 

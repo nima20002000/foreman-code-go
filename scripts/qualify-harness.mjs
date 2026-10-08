@@ -11,8 +11,8 @@ import { completeTestResourceCleanup, createTestRoot, ownedTestDatabaseUrl,
 
 const { values } = parseArgs({ options: { harness: { type: 'string' }, binary: { type: 'string' },
   model: { type: 'string' } } })
-if (!['codex', 'opencode'].includes(values.harness) || !values.binary) {
-  throw new Error('Usage: qualify-harness --harness codex|opencode --binary /path/to/binary [--model provider/model]')
+if (values.harness !== 'codex' || !values.binary) {
+  throw new Error('Usage: qualify-harness --harness codex --binary /path/to/binary [--model ID]')
 }
 const resolveBinary = async (binary) => {
   const candidates = isAbsolute(binary) || binary.includes('/') ? [resolve(binary)]
@@ -29,7 +29,7 @@ const before = await sha256()
 const requireApi = createRequire(new URL('../apps/api/package.json', import.meta.url))
 const { tsImport } = await import(requireApi.resolve('tsx/esm/api'))
 const source = (name) => new URL(`../apps/api/src/modules/harnesses/qualification/${name}`, import.meta.url).href
-const { QUALIFICATION_TARGET_PROFILE, runAsQualificationCandidate, codexQualificationSuite, opencodeQualificationSuite,
+const { QUALIFICATION_TARGET_PROFILE, runAsQualificationCandidate, codexQualificationSuite,
   withNativeQualificationOwnership, NativeProcessRegistry, runCommand, inheritedAgentEnvironment,
   discoverLauncher, passiveDriverPayloads } = await tsImport(source('cliEntry.ts'), import.meta.url)
 ownedTestDatabaseUrl()
@@ -52,8 +52,7 @@ const guard = async (signal) => {
     (installation.payloadFingerprints ?? []).filter((entry) => entry.path !== binary).map((entry) => entry.path), signal)
   if (!installation.fingerprint || current.fingerprint !== installation.fingerprint) throw new Error('Selected native payload changed during qualification.')
 }
-const rawSuite = values.harness === 'codex' ? codexQualificationSuite : opencodeQualificationSuite
-const suite = withNativeQualificationOwnership(rawSuite, registry, () => guard)
+const suite = withNativeQualificationOwnership(codexQualificationSuite, registry, () => guard)
 const controller = new AbortController()
 const timeout = setTimeout(() => controller.abort(new Error('Harness qualification exceeded four minutes.')), 240_000)
 const stop = () => controller.abort(new Error('Harness qualification was stopped.'))
@@ -78,7 +77,7 @@ try {
   await closeVersion(); releaseVersion()
   if (versionResult.exitCode !== 0) throw new Error('Harness version probe failed.')
   const reported = (versionResult.stdout || versionResult.stderr).trim()
-  const version = values.harness === 'codex' ? reported.replace(/^codex-cli\s+/, '') : reported
+  const version = reported.replace(/^codex-cli\s+/, '')
   if (!/^\d+\.\d+\.\d+/.test(version)) throw new Error('Harness did not report a release version.')
   const result = await runAsQualificationCandidate(values.harness, before, binary, () => suite.run({ binary, version, binarySha256: before,
     profile: QUALIFICATION_TARGET_PROFILE[values.harness], model: values.model ?? null,

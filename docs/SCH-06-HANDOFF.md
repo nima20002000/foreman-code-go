@@ -1,5 +1,9 @@
 # SCH-06 — exact historical Run agent chat
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Repository: `nima20002000/graphql`  
 Branch: `feat/nim-2701-schedules`  
 Base: `b99c4aa7a829e0dc5d7bb83a09f05375eabed5cd`

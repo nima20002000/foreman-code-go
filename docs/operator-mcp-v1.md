@@ -48,31 +48,10 @@ codex mcp add foreman-code \
   --bearer-token-env-var FOREMAN_CODE_MCP_TOKEN
 ```
 
-OpenCode CLI `1.18.31` accepts a remote MCP URL and header. For isolated qualification, create a temporary config and set both `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR`; do not use `opencode mcp add`, which writes the installed v1 CLI's global config. Environment substitution keeps the credential out of the file:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "foreman-code": {
-      "type": "remote",
-      "url": "http://127.0.0.1:3000/mcp",
-      "enabled": true,
-      "oauth": false,
-      "headers": {
-        "Authorization": "Bearer {env:FOREMAN_CODE_MCP_TOKEN}"
-      }
-    }
-  }
-}
-```
-
-```sh
-OPENCODE_CONFIG=/path/to/temporary/opencode.json \
-OPENCODE_CONFIG_DIR=/path/to/temporary/config-dir \
-opencode run --pure --model opencode-go/deepseek-v4.1-flash \
-  --variant max --agent build 'Use the Operator MCP capabilities tool.'
-```
+Claude uses the saved harness configuration's `mcpServers` entry for the app
+endpoint. Read `claude_setup_options_get`, select the explicitly authorized
+Full access profile, and save through Harness Settings or the shared Operator
+MCP services. Credentials are issued for the accepted native process.
 
 ## Tool catalog
 
@@ -94,7 +73,7 @@ New runs require the current location revision. Start atomically stores the exac
 
 The selected project directory is the harness `workingDirectory`. Foreman Code scratch data remains under `HARNESS_WORKSPACE_ROOT` as a distinct `runtimeDirectory` keyed by workspace, run, node, and attempt. Project and runtime roots may not contain one another. Cleanup and cancellation never delete the selected project directory.
 
-This establishes where native agents start; it is not a filesystem sandbox. Codex/OpenCode native permissions and future runner isolation remain separate controls. The Settings copy states this explicitly.
+This establishes where native agents start; it is not a filesystem sandbox. Codex/Claude native permissions and future runner isolation remain separate controls. The Settings copy states this explicitly.
 
 `graph_draft_apply` accepts strict typed agent, node, edge, execution-limit, and required-agent-count operations. A workflow may declare `requiredAgentCount`; validation, Save, and Start then reject any graph whose number of distinct referenced agents differs. Batches and Save require the expected revision. Save creates an immutable workflow version but does not Start. Start requires that exact current saved version and the expected workspace location revision, and returns a durable Run ID before asynchronous execution.
 
@@ -108,7 +87,7 @@ Archive retains versions, configurations, runs, results, and activity. Active wo
 
 ## Verification and limitations
 
-`corepack pnpm test:integration` uses the official SDK client against the real Fastify Streamable HTTP endpoint and PostgreSQL. It covers the complete discovered catalog, credential audience and scope isolation, command replay/conflicts, concurrent duplicate Start, location validation and canonical persistence, stale location writes, HTTP/MCP parity, immutable Run locations, migration, batch rollback, explicit Save/Start, archive blocking, bad Origin, revocation, and legacy HTTP mutation-bypass prevention. Process fixtures—not model output—prove both adapters receive the accepted project CWD and separate runtime storage. `corepack pnpm test:acceptance` is the separately reported live Codex/OpenCode gate.
+`corepack pnpm test:integration` uses the official SDK client against the real Fastify Streamable HTTP endpoint and PostgreSQL. It covers the complete discovered catalog, credential audience and scope isolation, command replay/conflicts, concurrent duplicate Start, location validation and canonical persistence, stale location writes, HTTP/MCP parity, immutable Run locations, migration, batch rollback, explicit Save/Start, archive blocking, bad Origin, revocation, and legacy HTTP mutation-bypass prevention. Process fixtures—not model output—prove both adapters receive the accepted project CWD and separate runtime storage. `corepack pnpm test:acceptance` is the separately reported live Codex/Claude gate.
 
 The current local credential mechanism is not OAuth. Worker Tools MCP, board-agent credential delivery, remote/public access, a full Operator chat UI, memory, Files, Kanban, browser services, scheduling, and remote runners remain deferred. See [the access ADR](./adr/operator-and-worker-mcp-access.md).
 

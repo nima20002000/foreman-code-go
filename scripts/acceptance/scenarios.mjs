@@ -3,21 +3,19 @@ import { mkdir, realpath, writeFile } from 'node:fs/promises'
 import { join, relative, isAbsolute } from 'node:path'
 import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '../../packages/contracts/dist/product.js'
 
-export const OPEN_CODE_MODEL = 'opencode-go/deepseek-v4.1-flash'
+export const CLAUDE_MODEL = 'claude-haiku-4-5-20251001'
 const COMMON = 'This is an isolated acceptance demo. Use only accepted workflow inputs. Do not read secrets, credentials, home directories or external services. Do not change files. Follow the node instruction exactly.'
-export function configuration(kind, codexModel, approval = false) {
+export function configuration(kind, { codexModel, approval = false, claudeConfigDirectory, appMcpUrl }) {
   if (kind === 'codex') return {
     harness: 'codex', model: codexModel, reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard',
     advanced: { approvalPolicy: 'on-request', approvalsReviewer: 'user', additionalWritableDirectories: [],
       sessionPersistence: 'persistent', shellEnvironment: { inherit: 'core', ignoreDefaultExcludes: false, filters: {}, set: {} },
       webSearch: 'disabled', mcpServers: {} },
   }
-  return { harness: 'opencode', model: OPEN_CODE_MODEL, variant: '', nativeAgent: 'build', thinking: false, autoApprove: false,
-    advanced: { apiVersion: 'v1', permissionHandling: 'graphql_routed',
-      permissionRules: [{ permission: '*', pattern: '*', effect: 'deny' },
-        ...(approval ? [{ permission: 'bash', pattern: 'printf ENG07_APPROVED', effect: 'ask' }] : [])],
-      plugins: { mode: 'pure' }, compaction: { auto: true, prune: false },
-      configLoading: { mode: 'native' }, mcp: { serverEnabled: {} } },
+  return { harness: 'claude', model: CLAUDE_MODEL, authMode: 'subscription',
+    configDirectory: claudeConfigDirectory, permissionMode: 'default', sandbox: 'danger-full-access',
+    tools: approval ? ['Bash'] : [], permissionRules: approval ? [{ tool: 'Bash', effect: 'ask' }] : [],
+    instructions: '', mcpServers: { [APP_MCP_SERVER_NAMES[0]]: { type: 'http', url: appMcpUrl } },
   }
 }
 export const SCENARIOS = [
@@ -35,9 +33,11 @@ export const SCENARIOS = [
   { key: 'S3-05-early', name: 'S3-05 Repeat early', nodes: ['Deliver', 'Decide'], pairs: [[0, 1]], executions: 2, repeat: 'early' },
   { key: 'S3-05-limit', name: 'S3-05 Repeat limit', nodes: ['Deliver', 'Decide'], pairs: [[0, 1]], executions: 6, repeat: 'limit' },
 ]
-export function scenarioGraph(spec, workflow, codexModel) {
+export function scenarioGraph(spec, workflow, { codexModel, claudeConfigDirectory, appMcpUrl }) {
   const agents = spec.nodes.map((name, i) => {
-    const cfg = configuration(codexModel && spec.key === 'S3-02' && i === 2 ? 'codex' : 'opencode', codexModel, spec.approval && i === 0)
+    const harness = codexModel && spec.key === 'S3-02' && i === 2 ? 'codex' : 'claude'
+    const cfg = configuration(harness, { codexModel, approval: spec.approval && i === 0,
+      claudeConfigDirectory, appMcpUrl })
     return { baseRevision: null, agent: { id: `agent-${randomUUID()}`, name: `${spec.key} ${name}`,
       productRole: i === 0 ? 'orchestrator' : 'coder', harness: cfg.harness, model: cfg.model,
       harnessConfiguration: cfg, prompt: { system: COMMON }, assignedSkills: [] } }
@@ -52,7 +52,7 @@ export function scenarioGraph(spec, workflow, codexModel) {
     nodes[0].choice = { outcomes: ['short', 'long'].map((outcome, i) => ({ outcome, target: { kind: 'edge', relationshipId: edges[i].id } })) }
     nodes[0].initialPrompt = `Do not use tools. Return exactly {"routing":{"outcome":"${spec.route}"},"data":{"marker":"ENG07_${spec.route}"}}.`
   }
-  if (spec.approval) nodes[0].initialPrompt = 'Use the native bash tool exactly once with command printf ENG07_APPROVED. Let the native permission request be routed to the human. Do not substitute another command, tool or a textual claim of approval. After approval and successful command completion, return ENG07_APPROVED.'
+  if (spec.approval) nodes[0].initialPrompt = 'Use the native Bash tool exactly once with command printf ENG07_APPROVED. Let the native permission request be routed to the human. Do not substitute another command, tool or a textual claim of approval. After approval and successful command completion, return ENG07_APPROVED.'
   if (spec.repeat) {
     nodes[1].choice = { outcomes: ['pass', 'issues'].map((outcome) => ({ outcome, target: { kind: 'branch_end' } })) }
     const outcome = spec.repeat === 'early' ? 'pass' : 'issues'
@@ -70,7 +70,8 @@ export function scenarioGraph(spec, workflow, codexModel) {
   return { graph, agents }
 }
 
-export async function seed({ apiUrl, webUrl, projectRoot, codexModel, schemas }) {
+export async function seed({ apiUrl, webUrl, projectRoot, codexModel, schemas,
+  claudeConfigDirectory = process.env.CLAUDE_CONFIG_DIR }) {
   const request = async (path, method = 'GET', body) => {
     const response = await fetch(`${apiUrl}${path}`, { method,
       headers: { origin: webUrl, ...(body ? { 'content-type': 'application/json' } : {}) },
@@ -90,13 +91,7 @@ export async function seed({ apiUrl, webUrl, projectRoot, codexModel, schemas })
   const folder = await realpath(workspace.executionLocation.rootPath)
   const suffix = relative(await realpath(projectRoot), folder)
   if (!suffix || suffix.startsWith('..') || isAbsolute(suffix)) throw new Error('Execution folder escaped task storage.')
-  // Native preflight must resolve the exact endpoint and environment reference.
-  // These are PUBLIC templates, not expanded credentials. Never change HOME's
-  // OpenCode/Codex configuration or copy native account files into this task.
-  await writeFile(join(folder, 'opencode.json'), JSON.stringify({ mcp: { [APP_MCP_SERVER_NAMES[0]]: {
-    type: 'remote', url: `${apiUrl}/mcp`, enabled: true, oauth: false,
-    headers: { Authorization: `Bearer {env:${APP_MCP_TOKEN_NAMES[0]}}` },
-  } } }, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
+  // The public template refers to a credential issued by the app for the native turn.
   if (codexModel) {
     await mkdir(join(folder, '.codex'), { mode: 0o700 })
     await writeFile(join(folder, '.codex/config.toml'),
@@ -109,7 +104,8 @@ export async function seed({ apiUrl, webUrl, projectRoot, codexModel, schemas })
     const created = (await request(`/api/management/workspaces/${workspaceId}/workflows`, 'POST', {
       commandId: randomUUID(), name: spec.name, executionSemanticsVersion: 3,
     })).value
-    const { graph, agents } = scenarioGraph(spec, created.workflow, codexModel)
+    const { graph, agents } = scenarioGraph(spec, created.workflow,
+      { codexModel, claudeConfigDirectory, appMcpUrl: `${apiUrl}/mcp` })
     for (const { agent } of agents) expectedAgents.set(agent.id, agent)
     const path = `/api/management/workspaces/${workspaceId}/workflows/${created.workflow.id}/definition`
     const draftId = `eng07-draft-${randomUUID()}`

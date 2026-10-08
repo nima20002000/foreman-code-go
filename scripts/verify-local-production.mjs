@@ -147,9 +147,8 @@ async function qualifyEnvironmentMigration(release) {
   const operatorFile = join(directory, 'operator.json')
   const settings = {
     CODEX_BINARY: '/opt/native "qualified"/codex',
-    OPENCODE_BINARY: "/opt/native\\tools/'qualified'/opencode",
     OPENAI_API_KEY: "test-only\\secret\"quote'single$literal`tick\nsecond line\\",
-    OPENCODE_API_KEY: 'test-only-provider-credential',
+    ANTHROPIC_API_KEY: 'test-only-provider-credential',
     HARNESS_TIMEOUT_MS: '600000',
   }
   const owned = { NODE_ENV: 'production', FOREMAN_CODE_LOCAL_PRODUCTION: '1', HOST: '127.0.0.1',
@@ -169,7 +168,6 @@ async function qualifyEnvironmentMigration(release) {
     assert.deepEqual(await readEffective(), settings, 'Initial settings must match the actual systemd environment')
     const migrated = await preserveOperatorConfiguration(operatorFile, await readEnvironment(envFile), owned, loadConfig)
     assert.equal(loadConfig(migrated).harnesses.codexBinary, settings.CODEX_BINARY)
-    assert.equal(loadConfig(migrated).harnesses.openCodeBinary, settings.OPENCODE_BINARY)
     assert.deepEqual(JSON.parse(await readFile(operatorFile, 'utf8')), settings)
     await publish(envFile, renderEnvironment(migrated))
     assert.deepEqual(await readEffective(), settings, 'Migration must preserve effective settings')
@@ -179,8 +177,8 @@ async function qualifyEnvironmentMigration(release) {
     const module = pathToFileURL(join(release, 'apps/api/dist/modules/harnesses/secrets.js')).href
     const code = `const { inheritedAgentEnvironment } = await import(${JSON.stringify(module)});\n`
       + 'const native = inheritedAgentEnvironment();\n'
-      + 'console.log(JSON.stringify({ providerCredentialDelivered: !!process.env.OPENCODE_API_KEY\n'
-      + '&& native.OPENCODE_API_KEY === process.env.OPENCODE_API_KEY,\n'
+      + 'console.log(JSON.stringify({ providerCredentialDelivered: !!process.env.ANTHROPIC_API_KEY\n'
+      + '&& native.ANTHROPIC_API_KEY === process.env.ANTHROPIC_API_KEY,\n'
       + 'databaseCredentialRemoved: !Object.hasOwn(native, "GRAPHQL_PRODUCTION_DB_PASSWORD")\n'
       + '&& !Object.hasOwn(native, "DATABASE_URL") }));'
     const { stdout } = await execute('/usr/bin/systemd-run', ['--user', '--wait', '--pipe', '--collect', '--quiet',
@@ -358,7 +356,7 @@ async function main() {
        from harness_native_events ne join harness_executions he on he.id=ne.execution_id
        where he.run_id=$1`, [scope.runId])).rows.some(({ execution, event }) =>
       hasNativeTurnStarted(harness, execution, event)), started => started, `${harness} native startup`)
-    for (const harness of ['codex', 'opencode']) {
+    for (const harness of ['codex', 'claude']) {
       const scope = await startWorkflow(harness,
         'Finish with routing.kind finish, latestDeliverable {"marker":"LOCAL_PRODUCTION_WORKFLOW"}, remainingFindings [].')
       const record = await settled(scope)
@@ -403,8 +401,8 @@ async function main() {
     const persistedChat = await call(writer, 'operator_chat_get', { conversationId: conversation.conversation.id })
     assert.ok(persistedChat.messages.some(message => message.content.includes('LOCAL_PRODUCTION_OPERATOR')))
 
-    const recovering = await startWorkflow('opencode', longTask)
-    await positivelyStarted(recovering, 'opencode')
+    const recovering = await startWorkflow('claude', longTask)
+    await positivelyStarted(recovering, 'claude')
     const sessions = await nativeSessions(recovering)
     const beforeCrash = await systemctl('show', '--property=MainPID', '--value', unit)
     await systemctl('kill', '--kill-whom=main', '--signal=KILL', unit)
@@ -417,7 +415,7 @@ async function main() {
     await settled(recovering)
     assert.deepEqual(await nativeSessions(recovering), sessions, 'Recovery must retain original execution/session bindings')
 
-    for (const harness of ['codex', 'opencode']) {
+    for (const harness of ['codex', 'claude']) {
       denied = await connect(deniedCredential)
       const killed = await startWorkflow(harness, longTask)
       await positivelyStarted(killed, harness)

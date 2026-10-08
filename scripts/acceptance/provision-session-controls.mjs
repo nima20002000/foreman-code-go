@@ -36,7 +36,7 @@ function validateSubjects(input, contracts, profiles, roots, identity) {
   })
   assert.equal(keys.size, harnesses.length * 2, 'Installation selections must cover each selected harness/host pair.')
   const devices = new Set(subjects.filter(subject => subject.hostRef.kind === 'device').map(subject => subject.hostRef.deviceId))
-  assert.equal(devices.size, 1, 'Use one exact paired Worker for all three harnesses.')
+  assert.equal(devices.size, 1, 'Use one exact paired Worker for the selected harnesses.')
   return subjects
 }
 
@@ -187,7 +187,7 @@ export async function provisionSessionControlSubjects(input, ports) {
   return prepared
 }
 
-/** Public product provisioning, followed by twelve fresh chat admissions; no Run is allocated. */
+/** Public product provisioning, followed by fresh chat admissions; no Run is allocated. */
 export async function provisionSessionControlMatrix(input, ports) {
   const subjects = await provisionSessionControlSubjects(input, ports)
   return prepareSessionControlMatrix({ ...input, subjects }, ports)

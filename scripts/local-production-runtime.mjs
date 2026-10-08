@@ -24,8 +24,8 @@ export function hasNativeTurnStarted(harness, execution, event) {
   const session = execution.nativeSessionId
   if (!session || event.executionId !== execution.id || event.connectionId?.startsWith('history-')) return false
   if (harness === 'codex') return event.type === 'turn.started' && event.payload.threadId === session
-  if (harness === 'opencode') return event.type === 'message.updated'
-    && event.payload.info?.role === 'assistant' && event.payload.info.sessionID === session
+  if (harness === 'claude') return event.type === 'claude.text'
+    && event.payload.role !== 'user' && Boolean(event.payload.text) && event.payload.nativeSessionId === session
   return false
 }
 

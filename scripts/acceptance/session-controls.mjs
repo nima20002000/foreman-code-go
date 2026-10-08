@@ -10,7 +10,7 @@ import { assertCodexContextBudget } from './native-context-budget.mjs'
 import { sessionControlProduct } from './session-control-product.mjs'
 import { sessionControlTransport } from './session-control-transport.mjs'
 
-// Run against the integrated production-wired app and twelve separately owned native chats.
+// Run against the integrated production-wired app and eight separately owned native chats.
 // Tokens are referenced by environment-variable name in the manifest and never written to the report.
 const require = createRequire(new URL('../../apps/api/package.json', import.meta.url))
 const { Client, StreamableHTTPClientTransport } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/client')).href)
@@ -19,7 +19,7 @@ const matrix = JSON.parse(await readFile(process.argv[2], 'utf8'))
 const source = await promisify(execFile)('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('../../', import.meta.url)) })
 assert.equal(matrix.sourceCommit, source.stdout.trim(), 'The source commit does not match this checkout.')
 const pkg = JSON.parse(await readFile(new URL('../../apps/api/package.json', import.meta.url), 'utf8'))
-assert.equal(matrix.rows.length, 12, 'Provide Operator and node chats for each harness on main and a paired worker.')
+assert.equal(matrix.rows.length, 8, 'Provide Operator and node chats for each harness on main and a paired worker.')
 for (const row of matrix.rows) {
   assert.equal(row.mcpTokenEnv, matrix.mcpTokenEnv, 'Use the same creating MCP caller for the prepared chats.')
   if (row.harness === 'claude') assert.ok(['haiku', 'claude-haiku-4-5-20251001'].includes(row.model),
@@ -30,13 +30,13 @@ assert.match(matrix.sourceCommit, /^[a-f0-9]{40}$/)
 const base = new URL(matrix.baseUrl)
 assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname), 'Use the reviewed local app instance.')
 const cases = new Set(matrix.rows.map(row => `${row.harness}:${row.role}:${row.hostKind}`))
-for (const harness of ['codex', 'claude', 'opencode']) {
+for (const harness of ['codex', 'claude']) {
   for (const role of ['operator', 'agent']) for (const host of ['main', 'device']) {
     assert.ok(cases.has(`${harness}:${role}:${host}`), `Missing ${harness}:${role}:${host}`)
   }
 }
-const evidence = { sdkPins: { codex: pkg.dependencies['@openai/codex'], claude: pkg.dependencies['@anthropic-ai/claude-agent-sdk'],
-  opencode: pkg.dependencies['@opencode-ai/sdk'] }, sourceCommit: matrix.sourceCommit, baseUrl: base.origin, rows: [],
+const evidence = { sdkPins: { codex: pkg.dependencies['@openai/codex'], claude: pkg.dependencies['@anthropic-ai/claude-agent-sdk'] },
+  sourceCommit: matrix.sourceCommit, baseUrl: base.origin, rows: [],
   nativeQualification: false }
 
 const httpHeaders = sessionControlHeaders(matrix)
@@ -373,7 +373,7 @@ try {
   }
   evidence.nativeQualification = true
   await writeFile(process.argv[3], `${JSON.stringify(evidence, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
-  process.stdout.write('Twelve production native control paths, policy checks and restart recovery qualified.\n')
+  process.stdout.write('Eight production native control paths, policy checks and restart recovery qualified.\n')
 } finally {
   await product.close()
 }

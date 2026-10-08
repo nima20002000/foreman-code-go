@@ -8,13 +8,13 @@ const agentChat = await import(new URL('../../packages/contracts/dist/agentChat.
 const management = await import(new URL('../../packages/contracts/dist/management/index.js', import.meta.url))
 const profileContracts = await import(new URL('../../packages/contracts/dist/harnessRegistry.js', import.meta.url))
 
-// Product-response ports are recorded. These checks do not qualify native profiles or a twelve-chat runtime.
+// Product-response ports are recorded. These checks do not qualify native profiles or an eight-chat runtime.
 function fixture() {
   const mainId = randomUUID()
   const identity = { installationId: mainId, checkoutId: 'a'.repeat(64), databaseId: 'b'.repeat(64) }
   const createdAt = '2026-10-05T00:00:00.000Z'
   const subjects = []
-  for (const harness of ['codex', 'opencode', 'claude']) for (const hostKind of ['main', 'device']) {
+  for (const harness of ['codex', 'claude']) for (const hostKind of ['main', 'device']) {
     const nativeHost = hostKind === 'main' ? mainId : randomUUID()
     const configuration = harness === 'claude' ? { harness, model: 'claude-haiku-4-5-20251001',
       authMode: 'subscription', configDirectory: '/owned/recorded-profile', permissionMode: 'default',
@@ -104,23 +104,23 @@ function fixture() {
     fail() { failRead = true }, conflict() { conflictRestore = true } }
 }
 
-test('creates twelve distinct empty chats through the product tools and restores fixture defaults', async () => {
+test('creates eight distinct empty chats through the product tools and restores fixture defaults', async () => {
   const f = fixture()
   const matrix = await prepareSessionControlMatrix(f.input, f.ports)
-  assert.equal(matrix.rows.length, 12)
-  assert.equal(new Set(matrix.rows.map(row => row.conversationId)).size, 12)
+  assert.equal(matrix.rows.length, 8)
+  assert.equal(new Set(matrix.rows.map(row => row.conversationId)).size, 8)
   assert.ok(matrix.rows.every(row => !Object.hasOwn(row, 'httpTokenEnv')))
   assert.ok(matrix.rows.every(row => row.mcpTokenEnv === f.input.mcpTokenEnv))
   const futureIds = matrix.rows.filter(row => row.role === 'operator').map(row => row.futureDefaultsConversationId)
-  assert.equal(new Set(futureIds).size, 6)
+  assert.equal(new Set(futureIds).size, 4)
   assert.ok(futureIds.every(id => !matrix.rows.some(row => row.conversationId === id)))
   const creates = f.calls.filter(call => call.name === 'operator_chat_create')
-  assert.equal(creates.length, 12)
-  assert.equal(new Set(creates.map(call => call.args.commandId)).size, 12)
-  assert.equal(f.calls.filter(call => call.name === 'operator_chat_get').length, 6)
+  assert.equal(creates.length, 8)
+  assert.equal(new Set(creates.map(call => call.args.commandId)).size, 8)
+  assert.equal(f.calls.filter(call => call.name === 'operator_chat_get').length, 4)
   assert.equal(matrix.mcpTokenEnv, f.input.mcpTokenEnv)
   assert.deepEqual(matrix.expectedIdentity, f.input.expectedIdentity)
-  assert.equal(f.calls.filter(call => call.name === 'agent_chat_controls_update').length, 12)
+  assert.equal(f.calls.filter(call => call.name === 'agent_chat_controls_update').length, 8)
   assert.equal(f.calls.some(call => call.name.endsWith('_send') || call.name === 'run_start'), false)
   assert.deepEqual(f.defaults().value, f.original.value)
 })
@@ -131,8 +131,8 @@ test('refuses a changed fixture identity before any product write', async () => 
   assert.equal(f.calls.length, 0)
 })
 
-test('prepares four Codex chats or eight Claude/OpenCode chats without selecting another provider', async () => {
-  for (const harnesses of [['codex'], ['opencode', 'claude']]) {
+test('prepares four Codex chats or four Claude chats without selecting another provider', async () => {
+  for (const harnesses of [['codex'], ['claude']]) {
     const f = fixture()
     f.input.harnesses = harnesses
     f.input.subjects = f.input.subjects.filter(subject => harnesses.includes(subject.harness))

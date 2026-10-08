@@ -1,5 +1,9 @@
 # Agent chat G4: readback, legacy overflow and unknown activity
 
+> Historical implementation and verification record. OpenCode support was
+> removed on 2026-10-08. Its references below describe saved history and
+> earlier observations, not a supported creation or execution path.
+
 Backend patch base: `277113c4452f9be8712a0469104cb9d5e0346368`.
 Scope: A2-PF-09, pre-existing receipt overflow, T-09, and a partial A-R01 classification improvement.
 
