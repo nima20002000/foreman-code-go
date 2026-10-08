@@ -6,7 +6,7 @@ import {
   SavedRunDetailsSchema, RUN_INSPECTION_TOOLS, CANONICAL_RUN_GRAPH_MCP_TOOLS,
   RunRecordDetailSchema, RunExecutionsPageSchema, RunVersionDetailSchema,
   RunExecutionDetailSchema, RunExecutionBindingsPageSchema,
-  canonicalGraphJson,
+  canonicalGraphJson, SavedWorkflowVersionSchema, SavedRunVersionSnapshotSchema,
 } from '@foreman-code/contracts/wave25'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
@@ -215,12 +215,16 @@ it.each(['physical Agent mismatch', 'duplicate configuration pins'] as const)('r
         [configuration.id, foreignAgentId, malformed.version, JSON.stringify(malformed)])
     } else {
       const pins = Object.fromEntries(Object.keys(f.f.version.agentConfigurationVersionIds).map(id => [id, configuration.id]))
-      const version = { ...f.f.version, id: randomUUID(), version: f.f.version.version + 1,
+      const revision = f.f.version.version + 1
+      const version = { ...f.f.version, id: randomUUID(), version: revision,
+        definition: { ...f.f.version.definition, version: revision },
         agentConfigurationVersionIds: pins }
       version.contentHash = `sha256:${createHash('sha256').update(canonicalGraphJson({
         definition: version.definition, configurations: pins, entryNodeId: version.entryNodeId,
       })).digest('hex')}`
       const run = { ...f.f.run, id: randomUUID(), workflowVersionId: version.id, agentConfigurationVersionIds: pins }
+      SavedWorkflowVersionSchema.parse(version)
+      SavedRunVersionSnapshotSchema.parse({ run, version })
       // Seed malformed saved facts as new rows; existing version and Run pins remain immutable.
       await f.db.pool.query(`insert into workflow_versions
         (id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record)
