@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.52] - 2026-10-08
+
+### Changed
+
+- Integration file durations now live in `~/.cache/graphql-disposable-tests/integration-durations.json` on each machine, so fresh snapshot checkouts (Dexter lanes) keep the slowest-first schedule.
+
 ## [0.0.51] - 2026-10-08
 
 ### Changed
