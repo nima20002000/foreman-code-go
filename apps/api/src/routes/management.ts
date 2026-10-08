@@ -23,6 +23,7 @@ import { registerSkillRoutes } from './skills.js'
 
 import {
   AgentGetInputSchema,
+  GeneralSettingsUpdateInputSchema,
   AgentDefaultsUpdateInputSchema,
   AgentListInputSchema,
   HarnessDefaultsUpdateInputSchema,
@@ -188,6 +189,11 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     services.harnesses.updateDefaults(requirePrincipal(request), 'http', HarnessDefaultsUpdateInputSchema.parse(request.body)))
 
   if (services.settings) {
+    app.get('/api/management/settings/general', async request =>
+      services.settings!.getGeneralSettings(requirePrincipal(request)))
+    app.put<{ Body: unknown }>('/api/management/settings/general', async request =>
+      services.settings!.updateGeneralSettings(requirePrincipal(request), 'http',
+        GeneralSettingsUpdateInputSchema.parse(request.body)))
     app.get('/api/management/settings/agents', async (request) =>
       services.settings!.getAgentDefaults(requirePrincipal(request)))
     app.put<{ Body: unknown }>('/api/management/settings/agents', async (request) =>

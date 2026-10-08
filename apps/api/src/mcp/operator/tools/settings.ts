@@ -11,6 +11,9 @@ import { OperatorConversationHistoryPageSchema, OperatorConversationHistoryQuery
 
 import {
   WorkerExecutionSettingsSchema,
+  ManagedGeneralSettingsSchema,
+  GeneralSettingsUpdateInputSchema,
+  GeneralSettingsUpdateResultSchema,
   AgentDefaultsUpdateInputSchema,
   AgentDefaultsUpdateResultSchema,
   ManagedAgentDefaultsSchema,
@@ -94,6 +97,20 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     context.services.operatorChat!.setup(context.principal, input)))
   const settings = context.services.settings
   if (!settings) return
+  if (operatorToolAvailable(context, 'general_settings_get')) server.registerTool('general_settings_get', {
+    description: 'Read Main’s saved general preferences and revision. Theme is shared by browsers on all computers '
+      + 'connected to this Main. Requires global settings:read. Credentials and native profiles remain per computer.',
+    inputSchema: z.object({}).strict(), outputSchema: ManagedGeneralSettingsSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, () => invokeOperatorTool(context, 'general_settings_get', () => settings.getGeneralSettings(context.principal)))
+  if (operatorToolAvailable(context, 'general_settings_update')) server.registerTool('general_settings_update', {
+    description: 'Save general preferences on Main for all connected browsers. Requires global settings:update. '
+      + 'Use expectedRevision from general_settings_get and reuse commandId with the same input after an uncertain save. '
+      + 'Read back with general_settings_get. This does not sync database files, credentials or native profiles.',
+    inputSchema: GeneralSettingsUpdateInputSchema, outputSchema: GeneralSettingsUpdateResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, input => invokeOperatorTool(context, 'general_settings_update',
+    () => settings.updateGeneralSettings(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'agent_defaults_get')) server.registerTool('agent_defaults_get', {
     description: 'Read saved role defaults, including the Operator chat model, harness, Codex or Claude sandbox, OpenCode native permission rules, effort, and thinking preferences. Unsaved Operator defaults use full access; existing saved settings remain authoritative. New Operator conversations inherit these settings. Operator UI enablement does not disable management MCP.',
     inputSchema: z.object({}).strict(), outputSchema: ManagedAgentDefaultsSchema,
