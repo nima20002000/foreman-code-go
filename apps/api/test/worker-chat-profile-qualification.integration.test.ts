@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { AgentChatStateSchema } from '@foreman-code/contracts/agent-chat'
+import { AgentSchema } from '@foreman-code/contracts'
+import { AgentVersionResultSchema, ManagedAgentDetailSchema } from '@foreman-code/contracts/management'
 import { HostHarnessProfileEvidenceSchema } from '@foreman-code/contracts/harness-registry'
+import { CURRENT_WORKFLOW_TOOLS, CurrentEditReadResultSchema, CurrentWorkflowReadResultSchema }
+  from '@foreman-code/contracts/wave25'
+import { WorkspaceBoundLocationReadbackSchema } from '@foreman-code/contracts/workspace-bound-location'
 import { HarnessQualificationRepository } from '../src/modules/harnesses/qualification/repository.js'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 
@@ -9,6 +14,35 @@ it('uses the selected Worker qualification when the general harness cache has a 
   const fixture = await remoteReviewProduction({ workflow: 'sequential' })
   try {
     const profile = fixture.profiles[0]!
+    const workspaceId = fixture.version.workspaceId
+    const workflowId = fixture.version.workflowId
+    const scope = { workspaceId, workflowId }
+    const before = CurrentWorkflowReadResultSchema.parse(await fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope))
+    const node = before.version.definition.nodes[0]!
+    if (!('agentId' in node)) throw new Error('Agent chat requires an Agent fixture node')
+    const managed = ManagedAgentDetailSchema.parse(await fixture.value('agent_get',
+      { workspaceId, agentId: node.agentId }))
+    const agent = AgentSchema.parse({ ...managed.agent, harness: profile.driverId, model: profile.configuration.model,
+      harnessConfiguration: profile.configuration, harnessProfileSelection: { instanceId: profile.instanceId,
+        instanceRevision: profile.instanceRevision, target: profile.target } })
+    const location = WorkspaceBoundLocationReadbackSchema.parse(await fixture.value('workspace_root_location_get',
+      { workspaceId }))
+    const draftId = randomUUID()
+    await fixture.value('workflow_edit_v3', { action: 'stage_edits', ...scope, draftId, commandId: randomUUID(),
+      executionSemanticsVersion: 3, expectedRevision: before.revision, expectedWorkflowVersionId: before.version.id,
+      expectedLocationRevision: location.locationRevision,
+      expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds,
+      graph: before.version.definition, stagedAgents: [{ agent, baseRevision: managed.metadataRevision }] })
+    const intent = CurrentEditReadResultSchema.parse(await fixture.value('workflow_edits_get_v3',
+      { action: 'read_edits', ...scope, draftId })).intent
+    expect(intent?.state).toBe('staged')
+    expect(intent?.affected).toEqual([])
+    await fixture.value('workflow_edit_v3', { action: 'stop_and_save', ...scope, draftId,
+      intentId: intent!.id, commandId: intent!.advanceCommandId })
+    const saved = CurrentWorkflowReadResultSchema.parse(await fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope))
+    const configuration = AgentVersionResultSchema.parse(await fixture.value('agent_configuration_version_get',
+      { workspaceId, agentId: node.agentId, versionId: saved.version.agentConfigurationVersionIds[node.agentId] })).version
+    expect(configuration.harnessProfileSelection).toEqual(agent.harnessProfileSelection)
     const row = await fixture.db.pool.query<{ record: unknown }>(`select record
       from harness_instance_profile_evidence where instance_id=$1 order by created_at desc limit 1`,
     [profile.instanceId])
@@ -26,10 +60,7 @@ it('uses the selected Worker qualification when the general harness cache has a 
     expect(await qualifications.findInstalled(profile.target, native.binarySha256, native.suiteRevision))
       .toEqual(retained)
 
-    const node = fixture.version.definition.nodes[0]!
-    if (!('agentId' in node)) throw new Error('Agent chat requires an Agent fixture node')
-    const workspaceId = fixture.version.workspaceId
-    const context = { workflowId: fixture.version.workflowId, workflowNodeId: node.id, agentId: node.agentId }
+    const context = { workflowId, workflowNodeId: node.id, agentId: node.agentId }
     const reader = await fixture.access.issue({ name: 'Worker chat read-only caller', audience: 'operator',
       grants: [{ actions: ['agent_chat:read'], scope: { workspaceIds: [workspaceId] } }],
       expiresAt: new Date(Date.now() + 600_000) })
