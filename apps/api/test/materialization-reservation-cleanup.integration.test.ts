@@ -59,6 +59,7 @@ async function setup() {
       filesystem, canonicalPath: namespace, manifestDigest: manifest.manifestDigest } })
   computer.candidate.spec.source = { ...computer.candidate.spec.source, ...source }
   computer.candidate.spec.target.destination.attestationId = root.attestationId
+  computer.candidate.spec.target.destination.canonicalProjectRoot = namespace
   computer.auto.source = computer.candidate.spec.source
   computer.candidate.profile.root = root
   const scopeId = `${root.binding.mainId}:${root.binding.deviceId}:${root.binding.workerInstallationId}:${filesystem.device}:${filesystem.mountId}`
@@ -172,6 +173,7 @@ it('reclaims abandoned owned and preparing copies and restores placement through
   const pending = JobPendingAdmissionSchema.parse((started.structuredContent as { admission: unknown }).admission)
   await f.jobs.wakeQueue()
   const before = await client.callTool({ name: 'job_queue_get', arguments: { workspaceId: f.workspaceId, ticketId: pending.ticket.id } })
+  expect(before.isError, JSON.stringify(before)).not.toBe(true)
   expect(JobQueueTicketSchema.parse((before.structuredContent as { ticket: unknown }).ticket).waitingReasons).toEqual(['busy'])
   const denied = await f.access.issue({ name: 'Unscoped fixture reader', audience: 'operator',
     expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['jobs:read'], scope: { workspaceIds: ['another-workspace'] } }] })
@@ -191,8 +193,10 @@ it('reclaims abandoned owned and preparing copies and restores placement through
   expect(await f.cleanup.reconcile()).toBe(0)
   await f.jobs.wakeQueue()
   const after = await client.callTool({ name: 'job_queue_get', arguments: { workspaceId: f.workspaceId, ticketId: pending.ticket.id } })
+  expect(after.isError, JSON.stringify(after)).not.toBe(true)
   expect(JobQueueTicketSchema.parse((after.structuredContent as { ticket: unknown }).ticket))
-    .toMatchObject({ state: 'accepted', waitingReasons: [] })
+    .toMatchObject({ state: 'accepted', waitingReasons: [],
+      selectedComputer: { rootId: f.root.binding.rootId, bindingRevision: f.root.binding.bindingRevision } })
   expect(f.accept).toHaveBeenCalledTimes(1)
 }, 60_000)
 
