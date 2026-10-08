@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitHubLoginStateSchema, type GitHubLoginState } from '@foreman-code/contracts/computer-accounts'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -46,7 +46,8 @@ export function useGitHubLogin(target: DeviceProvisioningTarget) {
     },
   })
   const loginId = start.data?.loginId ?? null
-  const queryKey = [...queryPrefix, loginId]
+  const queryKey = useMemo(() => ['computer-github-login', generation, target, loginId],
+    [generation, target, loginId])
   const setup = useMutation<GitHubLoginState, Error, number>({ retry: false, scope,
     mutationFn: () => {
       assertSession(generation)
