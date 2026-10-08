@@ -36,7 +36,7 @@ function fixture() {
     const hostRef = kind === 'main' ? { kind, mainId } : { kind, mainId, deviceId }
     subjects.push({ hostRef, configuration, parentPath: '/owned/projects', compactionInputs: ['Accepted context'],
       ...(kind === 'device' ? { rootSelection: { hostRef, allowedBaseId, configurationRevision: '1',
-        relativePath: 'controls', accessMode: harness === 'opencode' ? 'read-write' : 'read-only' } } : {}) })
+        relativePath: 'controls', accessMode: harness === 'codex' ? 'read-only' : 'read-write' } } : {}) })
   }
   const input = { subjects, expectedIdentity: identity }
   const overrides = new Map()
@@ -239,7 +239,7 @@ test('provisions six saved nodes and independently checked host profiles without
     assert.equal(saved.saved, true)
     if (subject.hostKind === 'device') {
       assert.equal(f.locations.get(subject.agent.workspaceId).binding.accessMode,
-        subject.harness === 'opencode' ? 'read-write' : 'read-only')
+        subject.harness === 'codex' ? 'read-only' : 'read-write')
       assert.deepEqual(saved.request.graph.nodes[0].placement.hostRef, selected.target.hostRef)
       assert.equal(saved.request.graph.nodes[0].placement.instanceId, selected.instanceId)
       assert.equal(saved.request.expectedLocationRevision, 2)

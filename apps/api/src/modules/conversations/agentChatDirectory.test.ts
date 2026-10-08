@@ -70,9 +70,11 @@ it('preserves an unplaced local chat folder and rejects borrowing it for a selec
   await expect(resolveAgentChatDirectory({ ...input, configuration: f.configuration })).rejects.toThrow('another execution host')
 })
 
-it('requires an explicitly approved read-write root for the OpenCode profile', async () => {
+it.each(['opencode', 'claude'] as const)('requires an explicitly approved read-write root for the %s profile', async harness => {
   const f = fixture()
-  const configuration = { ...f.configuration, harness: structuredClone(DEFAULT_HARNESS_DEFAULTS.opencode) }
+  const configuration = { ...f.configuration, harness: harness === 'opencode'
+    ? structuredClone(DEFAULT_HARNESS_DEFAULTS.opencode)
+    : { ...structuredClone(DEFAULT_HARNESS_DEFAULTS.claude), sandbox: 'danger-full-access' as const } }
   const input = { ...f.input, configuration }
   await expect(resolveAgentChatDirectory(input)).rejects.toThrow('approved host settings')
   f.policy.accessMode = 'read-write'
