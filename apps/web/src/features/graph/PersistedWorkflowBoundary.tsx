@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useIsMutating, useQuery } from '@tanstack/react-query'
 import { WorkflowDefinitionV3Schema } from '@foreman-code/contracts/wave25'
 import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { boardDraftContextKey } from '../workflow-board/keys'
@@ -6,6 +6,7 @@ import { NextDraftEditor } from './nextDraft/NextDraftEditor'
 import { nextDraftApi } from './nextDraft/transport'
 import { nextDraftKey } from './nextDraft/state'
 import { useGraphDraftStore } from './store'
+import { editIntentCommandKey } from './nextDraft/useGraphEditIntent'
 import type { BoardUpdateFailure } from '../workflow-board/BoardAlerts'
 
 /** Persisted execution tags are explicit. No default, conversion, complexity
@@ -24,6 +25,7 @@ export function PersistedWorkflowBoundary({ workspaceId, workflowId, workflow, u
 function AuthoringBoundary({ workspaceId, workflowId, updateFailures = [] }: { workspaceId: string; workflowId: string; updateFailures?: readonly BoardUpdateFailure[] }) {
   const key = nextDraftKey(workspaceId, workflowId)
   const edit = useGraphDraftStore((state) => state.nextDrafts[key])
+  const saving = useIsMutating({ mutationKey: editIntentCommandKey(key), exact: true }) > 0
   const source = useQuery({ queryKey: boardDraftContextKey(workspaceId, workflowId),
     queryFn: ({ signal }) => nextDraftApi.context(workspaceId, workflowId, { signal }),
     staleTime: 3000, refetchInterval: 3000, refetchOnWindowFocus: true, retry: false,
@@ -32,7 +34,9 @@ function AuthoringBoundary({ workspaceId, workflowId, updateFailures = [] }: { w
   if (denied) return <section role="alert">Draft access is unavailable. Retained local edits have not been replaced or discarded.</section>
   // Polling only reports drift. It never installs a server graph over local work.
   if (edit || source.data && !source.isError) {
-    const changed = edit && source.data && (source.data.draft.id !== edit.context.draft.id || source.data.draft.revision !== edit.context.draft.revision)
+    // The save acknowledgement can advance the editor before its draft query refetch finishes.
+    const changed = !saving && edit && source.data && (source.data.draft.id !== edit.context.draft.id
+      || source.data.draft.revision > edit.context.draft.revision)
     return <>
       {changed ? <p role="status">The shared draft changed elsewhere. Your local edits and original revision are retained; reload explicitly before overwriting anything.</p> : null}
       <NextDraftEditor key={key} workspaceId={workspaceId} workflowId={workflowId} initialContext={source.data}

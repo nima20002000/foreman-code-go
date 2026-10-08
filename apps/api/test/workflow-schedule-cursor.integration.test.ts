@@ -279,15 +279,49 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
     expect(enabled.value).toMatchObject({ enabled: true, revision: 3, nextOccurrenceAt: nextDue(mode) })
   }, 60_000)
 
-  it('still rejects a disabled past Once and a new past Once configuration', async () => {
+  it.each([
+    { transport: 'http', operation: 'save' },
+    { transport: 'mcp', operation: 'save' },
+    { transport: 'http', operation: 'enable' },
+    { transport: 'mcp', operation: 'enable' },
+  ] as const)('re-enables exhausted Once through $transport $operation without another Run', async ({ transport, operation }) => {
+    const settings = configuration('once')
+    const saved = await f.save(settings)
+    f.time.now = new Date(Date.parse(dueAt) + 2_000).toISOString()
+    await f.dispatcher().dispatch(saved)
+    const history = await f.history()
+    expect(await f.countRuns()).toBe(1)
+    const caller = { token: f.writer.token, client: await connect(f.writer.token) }
+    const reader = await connect(f.reader.token)
+    const disabled = await caller.client.callTool({ name: 'workflow_schedule_disable', arguments: f.command(1) })
+    expect(disabled.isError).not.toBe(true)
+    const paused = ScheduleSaveResultSchema.parse(disabled.structuredContent).value
+    expect(paused).toMatchObject({ enabled: false, nextOccurrenceAt: null, revision: 2 })
+    const input = { ...f.command(2), ...(operation === 'save' ? { schedule: settings } : {}) }
+    const before = await sch11DomainState(f)
+    const denied = await reader.callTool({ name: `workflow_schedule_${operation}`, arguments: input })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    expect(await sch11DomainState(f)).toEqual(before)
+    const enabled = await write(transport, operation, input, caller)
+    expect(enabled.value).toEqual({ ...paused, enabled: true, revision: 3 })
+    expect(await readBoth(reader)).toEqual(enabled.value)
+    expect(await write(transport === 'http' ? 'mcp' : 'http', operation, input, caller))
+      .toEqual({ value: enabled.value, replayed: true })
+    await f.dispatcher().dispatch(enabled.value)
+    expect(await f.countRuns()).toBe(1)
+    expect(await f.history()).toEqual(history)
+  }, 60_000)
+
+  it('still rejects changed past Once times after disable', async () => {
     const settings = configuration('once')
     await f.save(settings)
     f.time.now = new Date(Date.parse(dueAt) + 2_000).toISOString()
     await f.service.disable(f.writer.principal, 'http', f.command(1))
     const before = await sch11DomainState(f)
-    await expect(f.service.enable(f.writer.principal, 'mcp', f.command(2)))
-      .rejects.toMatchObject({ code: 'INVALID_REQUEST' })
-    await expect(f.service.save(f.writer.principal, 'http', { ...f.command(2), schedule: settings }))
+    await expect(f.service.save(f.writer.principal, 'http', {
+      ...f.command(2), schedule: { ...settings, localDate: '2000-01-01' },
+    }))
       .rejects.toMatchObject({ code: 'INVALID_REQUEST' })
     expect(await sch11DomainState(f)).toEqual(before)
   }, 60_000)

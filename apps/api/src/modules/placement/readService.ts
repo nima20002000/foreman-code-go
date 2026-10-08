@@ -1,11 +1,35 @@
 import type pg from 'pg'
 import { WorkerObservationSchema, type WorkerObservation } from '@foreman-code/contracts/node-placement'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { RunPlacementGetInputSchema, RunPlacementGetResultSchema, type RunPlacementGetResult } from '@foreman-code/contracts/placement-readback'
+import {
+  RunPlacementGetInputSchema, RunPlacementGetResultSchema, type RunPlacementGetInput, type RunPlacementGetResult,
+} from '@foreman-code/contracts/placement-readback'
+import { SavedRunVersionSnapshotSchema, workflowUsesAgentPlacements } from '@foreman-code/contracts/wave25'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'
 import { readPlacement } from './binding.js'
+
+async function readUnplacedNode(client: pg.PoolClient, input: RunPlacementGetInput): Promise<RunPlacementGetResult> {
+  const saved = await client.query<{ run: unknown; version: unknown }>(`
+    select r.record as run, v.record as version from runs r
+    join workflow_versions v on v.id=r.workflow_version_id where r.id=$1`, [input.runId])
+  const snapshot = SavedRunVersionSnapshotSchema.parse(saved.rows[0])
+  if (snapshot.run.id !== input.runId || snapshot.run.workspaceId !== input.workspaceId
+    || snapshot.run.workflowId !== input.workflowId) {
+    throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'Persisted Run is outside the requested scope.', 409)
+  }
+  const node = snapshot.version.definition.nodes.find(node => node.id === input.nodeId)
+  if (!node) throw new DomainError('RUN_NODE_NOT_FOUND', 'Node not found in this Run.', 404)
+  if (node.kind !== 'job' && workflowUsesAgentPlacements(snapshot.version.definition)) {
+    throw new DomainError('RUN_NODE_PLACEMENT_NOT_FOUND',
+      'No accepted placement exists for this node; current settings cannot replace it.', 404)
+  }
+  // Inherited Main Runs have no per-node binding. Keep their missing evidence
+  // distinct from a missing Run without substituting today's computer settings.
+  return RunPlacementGetResultSchema.parse({ ...input,
+    readback: { evidence: 'legacy_missing', originalMainInstallationId: null } })
+}
 
 /** Accepted-but-unstarted nodes have zero observations. This service never
  * substitutes current Board settings or claims that admission proves execution. */
@@ -29,7 +53,13 @@ export class RunPlacementReadService {
       if (!run.rowCount) throw new DomainError('RUN_NOT_FOUND', 'Run not found in this workspace and workflow.', 404)
       const rows = await client.query<{ record: unknown }>('select record from run_node_placements where run_id=$1 and node_id=$2', [input.runId, input.nodeId])
       const pin = rows.rows[0]
-      if (!pin) throw new DomainError('RUN_NODE_PLACEMENT_NOT_FOUND', 'No accepted placement exists for this node; current settings cannot replace it.', 404)
+      if (!pin) {
+        const result = await readUnplacedNode(client, input)
+        authorize(principal)
+        authorize(live)
+        await client.query('commit')
+        return result
+      }
       const placement = readPlacement(pin.record)
       if (rows.rows.length !== 1 || placement.runId !== input.runId || placement.nodeId !== input.nodeId) {
         throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'Persisted placement is outside the requested Run node.', 409)
