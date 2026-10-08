@@ -135,6 +135,63 @@ describe('repository draft', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/files'))
   })
 
+  it('keeps the draft and navigation guard through a failed workspace refresh', async () => {
+    fixture()
+    let fail = true
+    const user = userEvent.setup()
+    const view = mount()
+    const input = await screen.findByRole('textbox', { name: 'Repository' })
+    await user.type(screen.getByRole('textbox', { name: 'Base branch' }), '-local')
+    server.use(http.get('/api/management/workspaces/workspace-1', () => fail
+      ? HttpResponse.json({ error: { code: 'INTERNAL_ERROR', message: 'Workspace refresh unavailable.' } }, { status: 503 })
+      : undefined))
+    await act(async () => {
+      await view.queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspace('workspace-1') })
+    })
+    expect(await screen.findByText('Workspace refresh unavailable.')).toBeVisible()
+    await user.click(screen.getByRole('link', { name: /Project files/ }))
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent('You have unsaved changes in repository settings.')
+    await user.keyboard('{Escape}')
+    fail = false
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(screen.queryByText('Workspace refresh unavailable.')).not.toBeInTheDocument())
+    expect(input).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Base branch' })).toHaveValue('main-local')
+  })
+
+  it('retains the original unconfirmed command through a failed workspace refresh', async () => {
+    const state = fixture()
+    const attempts: unknown[] = []
+    server.use(http.patch('/api/management/workspaces/workspace-1', async ({ request }) => {
+      attempts.push(await request.clone().json())
+      if (attempts.length === 1) return HttpResponse.json({
+        error: { code: 'INTERNAL_ERROR', message: 'Save response unavailable.' },
+      }, { status: 503 })
+      return undefined
+    }))
+    const user = userEvent.setup()
+    const view = mount()
+    await user.type(await screen.findByRole('textbox', { name: 'Base branch' }), '-release')
+    await user.click(screen.getByRole('button', { name: 'Save repository' }))
+    expect(await screen.findByRole('button', { name: 'Retry repository save' })).toBeEnabled()
+    let fail = true
+    server.use(http.get('/api/management/workspaces/workspace-1', () => fail
+      ? HttpResponse.json({ error: { code: 'INTERNAL_ERROR', message: 'Workspace refresh unavailable.' } }, { status: 503 })
+      : undefined))
+    await act(async () => {
+      await view.queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspace('workspace-1') })
+    })
+    expect(await screen.findByText('Workspace refresh unavailable.')).toBeVisible()
+    fail = false
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    const retry = await screen.findByRole('button', { name: 'Retry repository save' })
+    expect(screen.getByRole('textbox', { name: 'Base branch' })).toBeDisabled()
+    await user.click(retry)
+    await waitFor(() => expect(attempts).toHaveLength(2))
+    expect(attempts[1]).toEqual(attempts[0])
+    expect(state.read().workspace.repository?.defaultBranch).toBe('main-release')
+  })
+
   it('loads a rejected revision without losing the draft and retries after reapplying', async () => {
     const state = fixture()
     const user = userEvent.setup()
