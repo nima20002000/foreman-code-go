@@ -1,3 +1,4 @@
+import { WorkflowJobListInputSchema, WorkflowJobPageSchema, type WorkflowJobListInput } from '@foreman-code/contracts/job-verification'
 import { JobWorkflowExecutionReferenceSchema, type JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
 import { z } from 'zod'
 import { JobLogPageSchema, JobArtifactSchema, JobValidationSchema } from '@foreman-code/contracts/jobs'
@@ -86,6 +87,21 @@ export const jobsClient = {
       z.object({ ticket: JobQueueTicketSchema }), { method: 'POST', body })
     if (ticket.workspaceId !== workspaceId || ticket.id !== ticketId) mismatch()
     return ticket
+  },
+  async workflowHistory(workspaceId: string, workflowId: string, pageInput: WorkflowJobListInput,
+    options?: RequestOptions) {
+    const input = WorkflowJobListInputSchema.parse(pageInput)
+    const query = new URLSearchParams({ limit: String(input.limit) })
+    if (input.cursor) query.set('cursor', JSON.stringify(input.cursor))
+    const page = await apiClient.request(
+      `${root(workspaceId)}/workflows/${encodeURIComponent(workflowId)}/executions?${query}`,
+      WorkflowJobPageSchema, options)
+    if (page.workspaceId !== workspaceId || page.workflowId !== workflowId
+      || page.items.some(({ execution }) => execution.workspaceId !== workspaceId
+        || execution.workflow?.workflowId !== workflowId && execution.initiatingAgent?.workflowId !== workflowId)) {
+      mismatch()
+    }
+    return page
   },
   async executions(workspaceId: string, options?: RequestOptions) {
     const { executions } = await apiClient.request(`${root(workspaceId)}/executions`, z.object({ executions: z.array(JobExecutionRecordSchema) }), options)

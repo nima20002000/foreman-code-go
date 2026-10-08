@@ -1,9 +1,11 @@
+import type { WorkflowJobPage } from '@foreman-code/contracts/job-verification'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { jobsClient } from './client'
 import { jobAccessLost, jobReadRetry, loadedChunks } from './model'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 
 export const jobKeys = {
+  workflowHistory: (workspaceId: string, workflowId: string) => ['jobs', workspaceId, 'workflow', workflowId] as const,
   definitions: (workspaceId: string) => ['jobs', workspaceId, 'definitions'] as const,
   history: (workspaceId: string) => ['jobs', workspaceId, 'history'] as const,
   queue: (workspaceId: string) => ['jobs', workspaceId, 'queue'] as const,
@@ -59,4 +61,21 @@ export function useJobLogs(workspaceId: string, id: string, attemptId: string, e
 export function useJobArtifacts(workspaceId: string, id: string, enabled: boolean) {
   const query = useQuery({ queryKey: jobKeys.artifacts(workspaceId, id), queryFn: ({ signal }) => jobsClient.artifacts(workspaceId, id, { signal }), enabled, retry: jobReadRetry, gcTime: 0, refetchInterval: query => enabled && !jobAccessLost(query.state.error) ? 5000 : false })
   return { ...query, data: !enabled || query.isError ? undefined : query.data }
+}
+
+export function useWorkflowJobHistory(workspaceId: string, workflowId: string, enabled: boolean) {
+  const query = useInfiniteQuery({
+    queryKey: jobKeys.workflowHistory(workspaceId, workflowId),
+    initialPageParam: undefined as NonNullable<WorkflowJobPage['nextCursor']> | undefined,
+    queryFn: ({ signal, pageParam }) => jobsClient.workflowHistory(workspaceId, workflowId,
+      pageParam ? { cursor: pageParam } : {}, { signal }),
+    getNextPageParam: page => page.nextCursor ?? undefined,
+    enabled, retry: jobReadRetry,
+    refetchInterval: query => enabled && !jobAccessLost(query.state.error) ? 5000 : false,
+  })
+  const items = new Map<string, WorkflowJobPage['items'][number]>()
+  for (const page of query.data?.pages ?? []) {
+    for (const item of page.items) items.set(item.execution.id, item)
+  }
+  return { ...query, items: query.isError ? [] : [...items.values()] }
 }
