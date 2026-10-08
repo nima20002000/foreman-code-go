@@ -2,6 +2,7 @@ import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useEffect, type ReactNode } from 'react'
 import { AgentDefaultsSettings } from '../features/settings/AgentDefaultsSettings'
 import { ComputerSettings } from '../features/settings/ComputerSettings'
+import { GeneralSettings } from '../features/settings/GeneralSettings'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { Alert } from '../shared/ui/nocturne'
 import { HarnessComputerScope } from '../features/settings/HarnessComputerScope'
@@ -60,6 +61,9 @@ export function SkillDetailRouteEntry() {
 }
 export function WorkspaceDefaultsSettingsRouteEntry() {
   return <SettingsShell><WorkspaceDefaultsSettings /></SettingsShell>
+}
+export function GeneralSettingsRouteEntry() {
+  return <SettingsShell><GeneralSettings /></SettingsShell>
 }
 export function AccountRouteEntry() {
   return <WorkspaceShell workspaceId="workspace-1" activeGlobalSection="account" slots={{ main:

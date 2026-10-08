@@ -8,7 +8,7 @@ import { ApprovalInboxSearchSchema, UrlSearchSelectionSchema } from '@foreman-co
 import { RunsSelectorSearchSchema } from '../features/runs-selector'
 import { RootShell } from './RootShell'
 import { AgentSettingsSearchSchema, SkillSettingsSearchSchema } from '@foreman-code/contracts/management'
-import { AccountRouteEntry, NewSkillRouteEntry, SkillDetailRouteEntry, SkillsSettingsRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
+import { AccountRouteEntry, GeneralSettingsRouteEntry, NewSkillRouteEntry, SkillDetailRouteEntry, SkillsSettingsRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
 import { HarnessComputerSearchSchema } from '../features/settings/harnessComputerSearch'
 import { ComputersSettingsRouteEntry, ComputerDetailsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
@@ -146,6 +146,11 @@ const globalSettingsRoute = createRoute({
   path: '/settings',
   component: GlobalSettingsRouteEntry,
 })
+const generalSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/general',
+  component: GeneralSettingsRouteEntry,
+})
 const accountRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/account',
@@ -220,6 +225,7 @@ export const routeTree = rootRoute.addChildren([
   workspaceLocationSettingsRoute,
   globalTerminalRoute,
   globalSettingsRoute,
+  generalSettingsRoute,
   accountRoute,
   harnessSettingsRoute,
   computersSettingsRoute,
