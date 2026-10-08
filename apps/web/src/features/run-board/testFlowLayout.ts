@@ -5,6 +5,7 @@ import { vi } from 'vitest'
  * This is NOT a substitute for the 320px browser verification in the handoff.
  */
 export function installFlowLayout(width = 320, height = 480) {
+  const observers = new Set<Observer>()
   const dimensions = (element: HTMLElement) => {
     if (element.classList.contains('react-flow__handle')) return { width: 8, height: 8 }
     const px = (value: string) => /^\d+(?:\.\d+)?px$/.test(value) ? parseFloat(value) : undefined
@@ -32,20 +33,39 @@ export function installFlowLayout(width = 320, height = 480) {
   class Observer implements ResizeObserver {
     private targets = new Set<Element>()
     private callback: ResizeObserverCallback
-    constructor(callback: ResizeObserverCallback) { this.callback = callback }
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback
+      observers.add(this)
+    }
+    notify() {
+      const entries = [...this.targets].map((target) => {
+        const contentRect = target.getBoundingClientRect()
+        const size = [{ inlineSize: contentRect.width, blockSize: contentRect.height }]
+        return { target, contentRect, borderBoxSize: size, contentBoxSize: size, devicePixelContentBoxSize: size }
+      })
+      if (entries.length) this.callback(entries, this)
+    }
     observe(target: Element) {
       this.targets.add(target)
       queueMicrotask(() => {
         if (!this.targets.has(target)) return
-        const contentRect = target.getBoundingClientRect()
-        const size = [{ inlineSize: contentRect.width, blockSize: contentRect.height }]
-        this.callback([{ target, contentRect, borderBoxSize: size, contentBoxSize: size, devicePixelContentBoxSize: size }], this)
+        this.notify()
       })
     }
     unobserve(target: Element) { this.targets.delete(target) }
-    disconnect() { this.targets.clear() }
+    disconnect() {
+      this.targets.clear()
+      observers.delete(this)
+    }
   }
   vi.stubGlobal('ResizeObserver', Observer)
   // The synthetic rectangles above use unscaled coordinates consistently.
   vi.stubGlobal('DOMMatrixReadOnly', class { m22 = 1 })
+  return {
+    resize(nextWidth: number, nextHeight: number) {
+      width = nextWidth
+      height = nextHeight
+      for (const observer of observers) observer.notify()
+    },
+  }
 }
