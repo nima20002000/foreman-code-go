@@ -4,6 +4,7 @@ import {
   useInfiniteQuery,
   useQuery,
   useQueryClient,
+  type InfiniteData,
   type UseMutationOptions,
   type UseQueryOptions,
 } from '@tanstack/react-query'
@@ -92,9 +93,13 @@ export function useWorkspaceDetailsQuery(
 type CatalogView = 'navigation' | 'directory'
 
 export function useWorkspacePages(enabled = true, view: CatalogView = 'navigation') {
+  const client = useQueryClient()
+  type Pages = InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkspacePage>>, string | undefined>
   return useInfiniteQuery({
     enabled, queryKey: [...queryKeys.managedWorkspaces, 'pages', ...(view === 'directory' ? ['directory'] : [])],
-    ...(view === 'directory' ? { maxPages: 0 } : {}), initialPageParam: undefined as string | undefined,
+    // The directory shows the sidebar's already-loaded page while it reads the full list.
+    ...(view === 'directory' ? { maxPages: 0, placeholderData: () => client.getQueryData<Pages>([...queryKeys.managedWorkspaces, 'pages']) } : {}),
+    initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkspacePage(pageParam, { signal }),
     getNextPageParam: (last, _pages, _lastParam, params) => {
       const next = last.pageInfo.nextCursor
@@ -180,9 +185,13 @@ export function usePrefetchBoard() {
 }
 
 export function useWorkflowPages(workspaceId: string, enabled = true, view: CatalogView = 'navigation') {
+  const client = useQueryClient()
+  type Pages = InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkflowPage>>, string | undefined>
   return useInfiniteQuery({
     enabled, queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages', ...(view === 'directory' ? ['directory'] : [])],
-    ...(view === 'directory' ? { maxPages: 0 } : {}), initialPageParam: undefined as string | undefined,
+    // The directory shows the sidebar's already-loaded page while it reads the full list.
+    ...(view === 'directory' ? { maxPages: 0, placeholderData: () => client.getQueryData<Pages>([...queryKeys.managedWorkflows(workspaceId), 'pages']) } : {}),
+    initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkflowPage(workspaceId, pageParam, { signal }),
     getNextPageParam: (last, _pages, _lastParam, params) => {
       const next = last.pageInfo.nextCursor
