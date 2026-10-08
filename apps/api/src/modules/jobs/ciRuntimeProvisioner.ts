@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { createHash, randomUUID } from 'node:crypto'
 import { BuildComputerPrepareGetInputSchema, BuildComputerPrepareInputSchema, BuildComputerPrepareStatusSchema,
   CI_RUNTIME_NAMESPACE, CiRuntimeWorkerStateSchema, WorkspaceSchema, type BuildComputerPrepareInput,
   type BuildComputerPrepareStatus, type CiRuntimeRequest, type CiRuntimeWorkerState } from '@foreman-code/contracts'
@@ -18,7 +19,7 @@ export const BUILD_COMPUTER_PREPARE_ACTIONS: readonly ManagementAction[] = ['job
 const PREPARE_LIMIT_MS = 3 * 60 * 60_000
 const RESTART_LIMIT_MS = 15 * 60_000
 type Profiles = Pick<JobRuntimeProfiles, 'list' | 'save' | 'requestQualification' | 'qualify'>
-type Sources = Pick<PostgresSourceService, 'approveProject' | 'rootList' | 'bindRoot'>
+type Sources = Pick<PostgresSourceService, 'approveProject' | 'rootList' | 'bindRoot' | 'sourcePackage'>
 type Source = 'http' | 'mcp'
 type Status = Omit<BuildComputerPrepareStatus, 'updatedAt'>
 
@@ -86,11 +87,16 @@ export class CiRuntimeProvisioner {
   private async run(principal: ManagementPrincipal, source: Source, key: string, input: BuildComputerPrepareInput,
     profile: JobVerificationProfile, deviceId: string) {
     const update = (patch: Partial<Status>) => this.set(key, { ...this.runs.get(key)!, ...patch })
-    const repository = await this.repository(input.workspaceId)
+
     const approved = await this.sources.approveProject(principal, { workspaceId: input.workspaceId,
       commandId: `${input.commandId}:source`, ...(input.commit ? { commit: input.commit } : {}) })
     const commit = approved.manifest.git!.commit
+    const repository = approved.manifest.git!.repository ?? await this.repository(input.workspaceId)
     update({ state: 'preparing', commit, stage: null })
+
+    if (approved.manifest.git?.metadata) {
+      await this.deliverSource(principal, input.workspaceId, deviceId, repository, approved.manifest)
+    }
 
     // 1. The computer builds the seed and image for this commit; Main follows its stages.
     let state = await this.device(deviceId, { operation: 'prepare', repository, commit,
@@ -163,6 +169,31 @@ export class CiRuntimeProvisioner {
       }
     }
     update({ state: 'qualified', stage: null })
+  }
+
+  private async deliverSource(principal: ManagementPrincipal, workspaceId: string, deviceId: string,
+    repository: string, manifest: import('@foreman-code/contracts/source-materialization').SourceManifest) {
+    const source = { approvedSourceId: manifest.approvedSourceId, snapshotId: manifest.snapshotId,
+      manifestDigest: manifest.manifestDigest }
+    let byteSize = 0
+    const hash = createHash('sha256')
+    for await (const value of await this.sources.sourcePackage(principal, workspaceId, source)) {
+      const bytes = value as Buffer
+      hash.update(bytes)
+      byteSize += bytes.length
+    }
+    const sha256 = hash.digest('hex')
+    const transferId = randomUUID()
+    let offset = 0
+    for await (const value of await this.sources.sourcePackage(principal, workspaceId, source)) {
+      const bytes = value as Buffer
+      for (let index = 0; index < bytes.length; index += 512 * 1024) {
+        const chunk = bytes.subarray(index, index + 512 * 1024)
+        await this.device(deviceId, { operation: 'source', transferId, repository, source, byteSize, sha256, offset,
+          dataBase64: chunk.toString('base64'), complete: offset + chunk.length === byteSize })
+        offset += chunk.length
+      }
+    }
   }
 
   /** The Worker's channel comes back a moment after it reconnects; capture retries briefly. */

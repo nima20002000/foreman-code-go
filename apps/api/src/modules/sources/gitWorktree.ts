@@ -27,7 +27,7 @@ export function assertWorktreeRequest(request: WorktreeRequest) {
 
 /** Fetches the approved commit into this computer's clone and adds a worktree on the agent's branch. */
 export async function addGitWorktree(ports: GitWorktreePorts, request: WorktreeRequest, commit: string, path: string,
-  signal: AbortSignal): Promise<{ branch: string; commit: string }> {
+  signal: AbortSignal, options?: { checkout: 'deferred' }): Promise<{ branch: string; commit: string }> {
   assertWorktreeRequest(request)
   if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(commit)) throw new SourceError('SOURCE_WORKTREE_INVALID', 'The approved commit is invalid.')
   const clone = await ensureCommit(ports, request.repository, commit, signal)
@@ -46,7 +46,9 @@ export async function addGitWorktree(ports: GitWorktreePorts, request: WorktreeR
     const branch = `${request.branch.slice(0, branchLimit - suffix.length)}${suffix}`
     const existing = await ports.git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: clone, signal })
     if (existing.code === 0) continue
-    await run(['worktree', 'add', '-b', branch, path, commit], clone)
+    await run(['worktree', 'add', ...(options?.checkout === 'deferred' ? ['--no-checkout'] : []),
+      '-b', branch, path, commit], clone)
+    if (options?.checkout === 'deferred') await run(['read-tree', commit], path)
     const head = (await run(['rev-parse', 'HEAD'], path)).trim()
     if (head !== commit) throw new SourceError('SOURCE_WORKTREE_CONFLICT', 'The worktree is not at the approved commit.')
     return { branch, commit }

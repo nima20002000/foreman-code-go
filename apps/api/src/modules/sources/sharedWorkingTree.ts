@@ -170,6 +170,7 @@ export async function prepareAgentWorktree(input: {
   binding: RootBinding
   executionId: string
   manifest: SourceManifest
+  reference: FileHandle
   request: WorktreeRequest
   ports: GitWorktreePorts
   authorize(): Promise<void>
@@ -181,12 +182,16 @@ export async function prepareAgentWorktree(input: {
   const id = randomUUID()
   await mkdir(anchored(root, id), { mode: 0o700 })
   const path = join(binding.canonicalPath, id, 'tree')
-  const added = await addGitWorktree(input.ports, input.request, commit, path, signal)
+  const added = await addGitWorktree(input.ports, input.request, commit, path, signal, { checkout: 'deferred' })
   const directory = await openChildDirectory(root, id)
   try {
     const tree = await openChildDirectory(directory, 'tree')
     let filesystem: RootBinding['filesystem']
     try {
+      for (const entry of manifest.entries) {
+        signal.throwIfAborted()
+        await copyEntry(input.reference, tree, entry)
+      }
       await verifyWorktreeContent(tree, manifest, signal)
       await input.authorize()
       filesystem = await identity(tree)

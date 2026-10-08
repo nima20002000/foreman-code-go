@@ -1,3 +1,4 @@
+import { CiRuntimeSourceReceiver } from './ciRuntimeSource.js'
 import { join } from 'node:path'
 import { CiRuntimeRequestSchema, CiRuntimeWorkerStateSchema, PreparedCiRuntimeSchema,
   type CiRuntimeRequest, type CiRuntimeWorkerState } from '@foreman-code/contracts'
@@ -20,14 +21,24 @@ export interface CiRuntimeWorkerPorts {
 
 /** One CI runtime preparation at a time on this build computer; Main follows it with `status`. */
 export class CiRuntimeWorker {
+  private readonly sources: CiRuntimeSourceReceiver
   private state: CiRuntimeWorkerState | undefined
   /** `lifetime` is the Worker's, not a request's: preparation outlives the call that started it. */
   constructor(private readonly stateDirectory: string, private readonly ports: CiRuntimeWorkerPorts,
-    private readonly lifetime: AbortSignal) {}
+    private readonly lifetime: AbortSignal) {
+    this.sources = new CiRuntimeSourceReceiver(ports.git, lifetime)
+  }
 
   async handle(raw: unknown): Promise<CiRuntimeWorkerState> {
     const request = CiRuntimeRequestSchema.parse(raw)
     if (request.operation === 'status') return this.status()
+    if (request.operation === 'source') {
+      if (this.state?.state === 'preparing' || this.state?.state === 'refreshing') {
+        throw new DomainError('CI_RUNTIME_BUSY', 'This computer is already preparing its CI runtime.', 409)
+      }
+      await this.sources.receive(request)
+      return this.status()
+    }
     if (request.operation === 'prepare') return this.prepare(request)
     return this.refresh(request)
   }
@@ -41,6 +52,9 @@ export class CiRuntimeWorker {
   }
 
   private async prepare(request: Extract<CiRuntimeRequest, { operation: 'prepare' }>) {
+    if (this.sources.active) {
+      throw new DomainError('CI_RUNTIME_BUSY', 'This computer is receiving approved source for runtime preparation.', 409)
+    }
     if (this.state?.state === 'preparing' || this.state?.state === 'refreshing') {
       if (this.state.commit === request.commit) return this.state
       throw new DomainError('CI_RUNTIME_BUSY', 'This computer is already preparing its CI runtime for another commit.', 409)

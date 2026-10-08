@@ -1,3 +1,4 @@
+import { importGitSourceObjects } from './gitSourceObjects.js'
 import { sourceMaterializationClaimName, restoreQuotaMaterializationClaim, writeSourceClaim } from './quotaClaims.js'
 import { reclaimMaterializationQuota, reclaimPreparationQuota } from './quotaReclamation.js'
 import { constants } from 'node:fs'
@@ -57,6 +58,9 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     const manifest = verifySourceManifest(input.manifest), binding = RootBindingSchema.parse(input.binding)
     if (binding.snapshotId !== manifest.snapshotId || binding.manifestDigest !== manifest.manifestDigest)
       throw new SourceError('SOURCE_PIN_CONFLICT', 'The root is not bound to this exact source snapshot.')
+    if (input.worktree && manifest.git?.repository && input.worktree.repository !== manifest.git.repository) {
+      throw new SourceError('SOURCE_PIN_CONFLICT', 'The worktree repository differs from the approved source.')
+    }
     const attempt = input.attempt
     // Parse every accepted attempt pin before any I/O; the authorization port
     // rechecks current device/root/placement authority, never chooses a new pin.
@@ -139,14 +143,22 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
         } finally { await parent.close() }
       }
       await verifyMaterializedSourceTree(tree, manifest)
+      const writable = input.sharedWritableTree && binding.accessMode === 'exclusive-write'
+      if (manifest.git?.metadata) {
+        const metadata = await this.bytes.readGitMetadata?.(manifest, signal)
+        if (!metadata) throw new SourceError('SOURCE_GIT_OBJECT_UNAVAILABLE', 'Approved Git metadata is unavailable.')
+        if (writable && input.worktree) {
+          await importGitSourceObjects({ ports: this.git, repository: input.worktree.repository, manifest, metadata, signal,
+            blobPath: async path => join(binding.canonicalPath, ...(quota ? [quota.namespace] : []), id, 'staging', path) })
+        }
+      }
       signal.throwIfAborted(); await this.authorize(binding, attempt)
       const current = await openPrivateRoot(binding.canonicalPath)
       try { if (!equal(await identity(current), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root replaced before activation.') }
       finally { await current.close() }
       const referenceIdentity = await identity(tree)
-      const writable = input.sharedWritableTree && binding.accessMode === 'exclusive-write'
       const worktree = writable && input.worktree ? await prepareAgentWorktree({ root, binding, executionId: attempt.executionId,
-        manifest, request: input.worktree, ports: this.git, signal, authorize: () => this.authorize(binding, attempt) }) : undefined
+        manifest, reference: tree, request: input.worktree, ports: this.git, signal, authorize: () => this.authorize(binding, attempt) }) : undefined
       const shared = worktree ?? (writable
         ? await withClaimLock(root, () => prepareSharedWorkingTree({ root: root!, binding, manifest,
           reference: tree!, signal, authorize: () => this.authorize(binding, attempt) })) : undefined)

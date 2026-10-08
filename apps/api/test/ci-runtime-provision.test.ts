@@ -1,3 +1,15 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { gitFixtureEnvironment } from './helpers/gitFixture.js'
+import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
+import { snapshotAgentWorktree, importAgentSnapshot } from '../src/modules/sources/agentSnapshot.js'
+import { captureGitSource } from '../src/modules/sources/capture.js'
+import { sourcePackageStream } from '../src/modules/sources/operationPackage.js'
+import { systemGitWorktreePorts, type GitWorktreePorts } from '../src/modules/sources/gitWorktree.js'
+import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import Fastify from 'fastify'
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
@@ -38,7 +50,13 @@ function profile(id: string, name: string, deviceId: string, rootId: string, sui
       reportBytes: 2 ** 26 }, approvalConfig: {}, policy: { imageDigest: oldImage, toolchainDigest: 't' } } }
 }
 
-async function fixture(options: { prepareFails?: boolean } = {}) {
+async function fixture(options: { prepareFails?: boolean; source?: {
+  manifest: SourceManifest; store: PrivateSourceSnapshotStore; git: GitWorktreePorts
+} } = {}) {
+  const acceptedManifest = options.source?.manifest ?? manifest
+  const acceptedCommit = acceptedManifest.git!.commit
+  const acceptedPin = { approvedSourceId: acceptedManifest.approvedSourceId,
+    snapshotId: acceptedManifest.snapshotId, manifestDigest: acceptedManifest.manifestDigest }
   const data = ciFixture()
   const workspaceId = data.workspaceId
   const profiles = new Map([
@@ -50,23 +68,25 @@ async function fixture(options: { prepareFails?: boolean } = {}) {
   ])
   const calls = { prepare: [] as unknown[], bind: [] as unknown[], saves: [] as Array<{ id: string; spec: { bindingRevision: number; policy: { imageDigest: string } } }>,
     refresh: [] as unknown[], qualified: [] as string[] }
-  const prepared: PreparedCiRuntime = { commit, imageId: newImage, imageManifestDigest: `sha256:${'9'.repeat(64)}`,
+  const prepared: PreparedCiRuntime = { commit: acceptedCommit, imageId: newImage, imageManifestDigest: `sha256:${'9'.repeat(64)}`,
     seedReceiptPath: '/ci/installer/context/seed-receipt.json', contextReceiptPath: '/ci/installer/context/context-receipt.json',
     qualificationSource: '/ci/installer/qualification-source', unitCodex: { executable: '/opt/graphql-ci/tools/codex',
       sourceExecutable: '/ci/codex', version: 'codex-cli 1.0.0', binarySha256: '8'.repeat(64) } }
   let refreshed = false
   const workerPorts = {
-    git: { cloneDirectory: (repository: string) => `/clones/${repository}`,
+    git: options.source?.git ?? { cloneDirectory: (repository: string) => `/clones/${repository}`,
       git: async () => ({ code: 0, stdout: '', stderr: '' }) },
     managedRuntimeRoot: async () => '/ci/managed',
     prepare: async (input: { repository: string; commit: string; installer: string; keepImages?: readonly string[]; keepPaths?: readonly string[]; log?: (stage: string) => void }) => {
+      if (options.source) expect(execFileSync('git', ['show', `${input.commit}:pnpm-lock.yaml`],
+        { cwd: input.repository, encoding: 'utf8', env: gitFixtureEnvironment() })).toBe('unpublished lockfile\n')
       calls.prepare.push({ repository: input.repository, commit: input.commit, installer: input.installer, keepImages: input.keepImages, keepPaths: input.keepPaths })
       input.log?.('fetch-packages')
       if (options.prepareFails) throw new Error('podman build failed: no space left on device')
       return prepared
     },
     refresh: async (input: unknown) => { calls.refresh.push(input); refreshed = true; return { unit: 'refresh', workerUnit: 'worker.service' } },
-    lastRefresh: async () => refreshed ? { commit, ok: true, log: 'exit=0' } : null,
+    lastRefresh: async () => refreshed ? { commit: acceptedCommit, ok: true, log: 'exit=0' } : null,
     currentRuntimePaths: async () => ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'],
     now: () => new Date('2026-10-07T00:00:00.000Z'),
   }
@@ -94,14 +114,15 @@ async function fixture(options: { prepareFails?: boolean } = {}) {
     qualify: async (_principal: unknown, _source: unknown, _workspaceId: string, _commandId: string, approvalId: string) => {
       const id = approvalId.replace('approval-', '')
       calls.qualified.push(id)
-      const value = { ...profiles.get(id)!, status: 'qualified', sourceCommit: commit }
+      const value = { ...profiles.get(id)!, status: 'qualified', sourceCommit: acceptedCommit }
       profiles.set(id, value)
       return value
     },
   }
-  const newRoot = root(dexter, dexterRoot, 2, newPin)
+  const newRoot = root(dexter, dexterRoot, 2, acceptedPin)
   const sources = {
-    approveProject: async () => ({ manifest }),
+    approveProject: async () => ({ manifest: acceptedManifest }),
+    sourcePackage: async () => sourcePackageStream(acceptedManifest as SourceManifest, options.source!.store, AbortSignal.timeout(30_000)),
     rootList: async () => ({ items: [root(dexter, dexterRoot, 1), root(mana, manaRoot, 1)] }),
     bindRoot: async (_principal: unknown, _source: unknown, input: unknown) => { calls.bind.push(input); return { value: newRoot } },
   }
@@ -119,18 +140,22 @@ async function fixture(options: { prepareFails?: boolean } = {}) {
   const interactions = { toolAccess: async () => ({ role: 'coder', tools: [] }), canRead: async () => false,
     canRespond: async () => false } as unknown as AppInteractionService
   registerGraphqlMcp(app, { access, operator: services, interactions })
+  const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const call = async (name: string, input: unknown, token = 'operator') => {
-    const response = await app.inject({ method: 'POST', url: '/mcp',
-      headers: { host: 'localhost', authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
-      payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } } })
-    const body = response.body.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? response.body
+    const response = await fetch(`${address}/mcp`, { method: 'POST',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream',
+        'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) })
+    const text = await response.text()
+    const body = text.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? text
     return JSON.parse(body).result as { isError?: boolean; structuredContent?: unknown; content?: { text: string }[] }
   }
   const settle = async (profileId: string) => {
     for (let attempt = 0; attempt < 500; attempt++) {
       const status = BuildComputerPrepareStatusSchema.parse((await call('build_computer_prepare_get', { workspaceId, profileId })).structuredContent)
       if (['qualified', 'failed'].includes(status.state)) return status
-      await new Promise(resolve => setImmediate(resolve))
+      if (options.source) await new Promise(resolve => setTimeout(resolve, 10))
+      else await new Promise(resolve => setImmediate(resolve))
     }
     throw new Error('Preparation did not settle.')
   }
@@ -186,3 +211,51 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
     } finally { await f.app.close() }
   })
 })
+
+
+it('delivers an unpublished snapshot to another computer before runtime preparation through authenticated MCP', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ci-unpublished-'))
+  let f: Awaited<ReturnType<typeof fixture>> | undefined
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
+    { cwd, encoding: 'utf8', env: gitFixtureEnvironment() }).trim()
+  try {
+    const origin = join(directory, 'origin')
+    await mkdir(origin)
+    git(origin, 'init', '-q', '-b', 'main')
+    await writeFile(join(origin, 'pnpm-lock.yaml'), 'published lockfile\n')
+    git(origin, 'add', '.')
+    git(origin, 'commit', '-qm', 'published')
+    const main = join(directory, 'main')
+    git(directory, 'clone', '-q', origin, main)
+    const agent = join(directory, 'agent')
+    git(directory, 'clone', '-q', origin, agent)
+    await writeFile(join(agent, 'pnpm-lock.yaml'), 'unpublished lockfile\n')
+    const system = systemGitWorktreePorts(gitFixtureEnvironment())
+    const signal = AbortSignal.timeout(30_000)
+    const snapshot = await snapshotAgentWorktree(system, { path: agent, baseCommit: git(origin, 'rev-parse', 'HEAD') }, signal)
+    await importAgentSnapshot(system, main, snapshot, signal)
+    const acceptedCommit = snapshot.commit
+    const storage = join(directory, 'snapshots')
+    await mkdir(storage, { mode: 0o700 })
+    const store = new PrivateSourceSnapshotStore(storage)
+    const acceptedManifest = await captureGitSource({ root: main, commit: acceptedCommit,
+      approvedSourceId: randomUUID(), approvedPaths: ['pnpm-lock.yaml'], executablePolicy: 'preserve-approved',
+      repository: 'octo/site', sink: store })
+    const workerGit: GitWorktreePorts = { cloneDirectory: () => join(directory, 'worker-clone'),
+      git: (args, options) => system.git(args[0] === 'clone'
+        ? ['clone', '--no-checkout', origin, args.at(-1)!] : args, options) }
+    f = await fixture({ source: { manifest: acceptedManifest, store, git: workerGit } })
+    const input = { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'unpublished-runtime' }
+    expect((await f.call('build_computer_prepare', input, 'readonly')).isError).toBe(true)
+    expect(f.calls.prepare).toEqual([])
+    expect((await f.call('build_computer_prepare', input)).isError).not.toBe(true)
+    expect(await f.settle('p-unit')).toMatchObject({ state: 'qualified', commit: acceptedCommit })
+    expect(f.calls.prepare).toHaveLength(1)
+    expect(f.profiles.get('p-unit')?.sourceCommit).toBe(acceptedCommit)
+    expect(git(origin, 'rev-parse', 'HEAD')).not.toBe(acceptedCommit)
+    expect(await readFile(join(origin, 'pnpm-lock.yaml'), 'utf8')).toBe('published lockfile\n')
+  } finally {
+    await f?.app.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 30_000)
