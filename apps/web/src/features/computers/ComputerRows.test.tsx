@@ -210,6 +210,38 @@ it('shows Main build readiness, failure reasons and the remote execution warning
   expect(within(main).getByText(/Busy · More available memory is required/)).toBeVisible()
   expect(within(main).getByText('Remote execution disabled on Main')).toBeVisible()
 })
+it.each(['Main PC', deviceName])('keeps expanded diagnostics below the compact controls for %s', async (name) => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  const target = name === 'Main PC' ? mainTarget : deviceTarget
+  f.statuses.set(computerKey(target), { ...f.statuses.get(computerKey(target))!,
+    state: 'setup-required', reasons: ['Job execution is not installed on this computer.'],
+    remoteExecutionEnabled: false })
+  await ready()
+  const row = screen.getByRole('listitem', { name })
+  const identity = within(row).getByRole('button', { name: `Activity on ${name}` })
+  const compactRow = identity.parentElement!
+  const summary = within(row).getByText('Build status')
+  const disclosure = summary.parentElement!
+  expect(within(identity).getByText(name)).toBeVisible()
+  expect(disclosure).not.toHaveAttribute('open')
+
+  const user = userEvent.setup()
+  await user.click(summary)
+  expect(disclosure).toHaveAttribute('open')
+  expect(disclosure.parentElement).toBe(row)
+  expect(compactRow.parentElement).toBe(row)
+  expect(compactRow).not.toContainElement(disclosure)
+  expect(compactRow.nextElementSibling).toBe(disclosure)
+  expect(within(identity).getByText(name)).toBeVisible()
+  expect(within(compactRow).getByRole('switch', { name: `Builds on ${name}` })).toBeEnabled()
+  expect(within(compactRow).getByRole('group', { name: `Build allowance for ${name}` })).toBeVisible()
+  expect(within(disclosure).getByText(/Setup required · Job execution is not installed/)).toBeVisible()
+  expect(within(disclosure).getByText('Remote execution disabled on Main')).toBeVisible()
+
+  await user.click(summary)
+  expect(disclosure).not.toHaveAttribute('open')
+  expect(within(identity).getByText(name)).toBeVisible()
+})
 it('explains the preferred computer before fallback priority order', async () => {
   computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
   await ready()
