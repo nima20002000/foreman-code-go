@@ -3,7 +3,7 @@ import { createCurrentBoardMock } from './currentBoard'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures, getMockWorkspaceCreationDefaults } from './settingsExperienceHandlers'
 import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
-import { ApiErrorResponseSchema, SessionControlStateSchema, unavailableSessionControls, CreateMessageRequestSchema,
+import { ApiErrorResponseSchema, SessionControlStateSchema, unavailableSessionControls,
   SaveHarnessDefaultsRequestSchema, type HarnessQualificationListSchema } from '@foreman-code/contracts'
 import type { z } from 'zod'
 import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@foreman-code/contracts/wave25'
@@ -24,21 +24,17 @@ import {
   getMockAgentDefaults,
   getMockHarnessCatalog,
   getMockHarnessDefaults,
-  getMockMessages,
   getMockScenarioRevision,
   getMockScenarioState,
   getMockWorkflowDefaults,
   resetMockFixtures as resetExistingMockFixtures,
   serializeAgent,
-  serializeConversation,
   shouldFailMutation,
   updateMockWorkflow,
   updateMockAgentDefaults,
   updateMockHarnessDefaults,
   updateMockManagedHarnessDefaults,
   updateMockWorkflowDefaults,
-  appendMockMessage,
-  type MockFailureMode,
 } from './scenarios'
 
 const currentAuthoringMocks = new Map<string, ReturnType<typeof createCurrentBoardMock>>()
@@ -109,15 +105,6 @@ const mockQualification = (harness: 'codex' | 'opencode'): z.infer<typeof Harnes
   suiteRevision: 'mock', checks: [], failureReason: null, startedAt: null, checkedAt: null,
 })
 const operatorMessages = new Map<string, Array<Record<string, unknown>>>()
-
-function isFailureMode(value: string | null): value is MockFailureMode {
-  return value === 'none' || value === 'graph-save' || value === 'user-message' || value === 'all'
-}
-
-function explicitFailureMode(request: Request): string | null {
-  const value = request.headers.get('x-mock-fail-mode') ?? new URL(request.url).searchParams.get('fail')
-  return isFailureMode(value) ? value : null
-}
 
 async function readJson(request: Request): Promise<unknown> {
   try {
@@ -583,17 +570,6 @@ export const handlers: RequestHandler[] = [
     if (!fixture) return fixtureNotFound('workspace', workspaceId)
     return HttpResponse.json({ agents: (currentAuthoringMocks.get(workspaceId)?.agents ?? fixture.agents).map(serializeAgent) })
   }),
-  http.get('/api/workspaces/:workspaceId/agents/:agentId', ({ params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const workspaceId = String(params.workspaceId)
-    const fixture = getMockFixture(workspaceId)
-    if (!fixture) return fixtureNotFound('workspace', workspaceId)
-    const agent = (currentAuthoringMocks.get(workspaceId)?.agents ?? fixture.agents).find((item) => item.id === String(params.agentId))
-    return agent
-      ? HttpResponse.json({ agent: serializeAgent(agent) })
-      : fixtureNotFound('agent', String(params.agentId))
-  }),
   http.get('/api/workspaces/:workspaceId/workflows/:workflowId', ({ params }) => {
     const failure = readFailure()
     if (failure) return failure
@@ -607,63 +583,6 @@ export const handlers: RequestHandler[] = [
     apiError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Use the current V3 draft/save service.', 409)),
   http.put('/api/workspaces/:workspaceId/graph', () =>
     apiError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Use the current V3 draft/save service.', 409)),
-  http.get('/api/workspaces/:workspaceId/conversations', ({ params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const workspaceId = String(params.workspaceId)
-    const fixture = getMockFixture(workspaceId)
-    if (!fixture) return fixtureNotFound('workspace', workspaceId)
-    return HttpResponse.json({
-      conversations: fixture.conversations.map(serializeConversation),
-    })
-  }),
-  http.get('/api/workspaces/:workspaceId/conversations/:conversationId', ({ params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const workspaceId = String(params.workspaceId)
-    const fixture = getMockFixture(workspaceId)
-    if (!fixture) return fixtureNotFound('workspace', workspaceId)
-    const conversationId = String(params.conversationId)
-    const conversation = fixture.conversations.find((item) => item.id === conversationId)
-    return conversation
-      ? HttpResponse.json({ conversation: serializeConversation(conversation), messages: getMockMessages(conversationId) })
-      : fixtureNotFound('conversation', conversationId)
-  }),
-  http.get('/api/workspaces/:workspaceId/conversations/:conversationId/messages', ({ params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const workspaceId = String(params.workspaceId)
-    const fixture = getMockFixture(workspaceId)
-    if (!fixture) return fixtureNotFound('workspace', workspaceId)
-    const conversationId = String(params.conversationId)
-    if (!fixture.conversations.some((item) => item.id === conversationId)) return fixtureNotFound('conversation', conversationId)
-    return HttpResponse.json({ messages: getMockMessages(conversationId) })
-  }),
-  http.post('/api/workspaces/:workspaceId/conversations/:conversationId/messages', async ({ request, params }) => {
-    const failure = readFailure()
-    if (failure) return failure
-    const body = await readJson(request)
-    const parsed = CreateMessageRequestSchema.safeParse(body)
-    const workspaceId = String(params.workspaceId)
-    const conversationId = String(params.conversationId)
-    const fixture = getMockFixture(workspaceId)
-    if (!fixture) return fixtureNotFound('workspace', workspaceId)
-    if (!parsed.success || parsed.data.workspaceId !== workspaceId || parsed.data.conversationId !== conversationId || parsed.data.role !== 'user') {
-      return apiError('INVALID_MESSAGE', 'Only a user message for the requested conversation can be sent.', 400)
-    }
-    if (!fixture.conversations.some((item) => item.id === conversationId)) return fixtureNotFound('conversation', conversationId)
-    if (shouldFailMutation('user-message', explicitFailureMode(request))) {
-      return apiError('MOCK_USER_MESSAGE_FAILED', 'The selected mock mode rejects user messages.', 503)
-    }
-    const message = appendMockMessage(workspaceId, {
-      conversationId,
-      role: 'user',
-      content: parsed.data.content,
-      createdAt: '2026-01-01T00:00:01.000Z',
-      updatedAt: '2026-01-01T00:00:01.000Z',
-    })
-    return HttpResponse.json({ message }, { status: 201 })
-  }),
   http.get('/api/workspaces/:workspaceId/resources', ({ params }) => {
     const failure = readFailure()
     if (failure) return failure

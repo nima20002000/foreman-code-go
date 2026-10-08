@@ -1350,15 +1350,6 @@ export const ListAgentsResponseSchema = z
   .strict();
 export type ListAgentsResponse = z.infer<typeof ListAgentsResponseSchema>;
 
-export const GetAgentRequestSchema = z
-  .object({ workspaceId: IdSchema, agentId: IdSchema })
-  .strict();
-export type GetAgentRequest = z.infer<typeof GetAgentRequestSchema>;
-export const GetAgentResponseSchema = z
-  .object({ agent: AgentSchema })
-  .strict();
-export type GetAgentResponse = z.infer<typeof GetAgentResponseSchema>;
-
 export const GetWorkflowRequestSchema = z
   .object({ workspaceId: IdSchema, workflowId: IdSchema })
   .strict();
@@ -1411,52 +1402,6 @@ export const ReadWorkflowDefinitionRequestSchema = GetWorkflowRequestSchema;
 export const ReadWorkflowDefinitionResponseSchema = GetWorkflowResponseSchema;
 export const SaveWorkflowDefinitionRequestSchema = SaveWorkflowRequestSchema;
 export const SaveWorkflowDefinitionResponseSchema = SaveWorkflowResponseSchema;
-
-export const ListConversationsRequestSchema = WorkspaceDetailsRequestSchema;
-export type ListConversationsRequest = WorkspaceDetailsRequest;
-export const ListConversationsResponseSchema = z
-  .object({ conversations: z.array(ConversationSchema) })
-  .strict();
-export type ListConversationsResponse = z.infer<typeof ListConversationsResponseSchema>;
-export const ConversationsResponseSchema = ListConversationsResponseSchema;
-export type ConversationsResponse = ListConversationsResponse;
-
-export const GetConversationRequestSchema = z
-  .object({ workspaceId: IdSchema, conversationId: IdSchema })
-  .strict();
-export type GetConversationRequest = z.infer<typeof GetConversationRequestSchema>;
-export const GetConversationResponseSchema = z
-  .object({
-    conversation: ConversationSchema,
-    messages: z.array(MessageSchema),
-  })
-  .strict();
-export type GetConversationResponse = z.infer<typeof GetConversationResponseSchema>;
-
-export const ListMessagesRequestSchema = z
-  .object({ workspaceId: IdSchema, conversationId: IdSchema })
-  .strict();
-export type ListMessagesRequest = z.infer<typeof ListMessagesRequestSchema>;
-export const ListMessagesResponseSchema = z
-  .object({ messages: z.array(MessageSchema) })
-  .strict();
-export type ListMessagesResponse = z.infer<typeof ListMessagesResponseSchema>;
-export const MessagesResponseSchema = ListMessagesResponseSchema;
-export type MessagesResponse = ListMessagesResponse;
-
-export const CreateMessageRequestSchema = z
-  .object({
-    workspaceId: IdSchema,
-    conversationId: IdSchema,
-    role: MessageRoleSchema,
-    content: z.string(),
-  })
-  .strict();
-export type CreateMessageRequest = z.infer<typeof CreateMessageRequestSchema>;
-export const CreateMessageResponseSchema = z
-  .object({ message: MessageSchema })
-  .strict();
-export type CreateMessageResponse = z.infer<typeof CreateMessageResponseSchema>;
 
 export const CreateConversationRequestSchema = z.discriminatedUnion("scope", [
   z.object({

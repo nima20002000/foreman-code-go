@@ -301,20 +301,11 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('dialog', { name: 'Human approval inbox' })).toBeVisible()
   })
 
-  it('hides the Browsers entry point and preserves its deep link', async () => {
-    const user = userEvent.setup()
+  it('has no Browsers destination', async () => {
     const { router } = renderRoute('/workspaces/workspace-1/browsers')
-
-    expect(await screen.findByRole('heading', { name: 'Browsers', level: 1 })).toBeVisible()
-    expect(screen.getByText('Coming soon')).toBeVisible()
-    expect(await screen.findByTestId('workspace-entry-workspace-1')).toHaveAttribute('aria-current', 'location')
-    expect(screen.queryByRole('link', { name: 'Workspace settings' })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
-
-    await user.click(screen.getByRole('button', { name: 'Back' }))
-    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings'))
-    expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
-    expect(screen.queryByRole('link', { name: /Browsers/ })).not.toBeInTheDocument()
+    await waitFor(() => expect(router.state.status).toBe('idle'))
+    expect(router.state.matches.map((match) => match.routeId)).not.toContain('/workspaces/$workspaceId/browsers')
+    expect(screen.queryByRole('heading', { name: 'Browsers' })).not.toBeInTheDocument()
   })
 
   it('opens the approved Main folder browser without navigating away from Settings', async () => {

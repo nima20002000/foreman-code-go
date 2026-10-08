@@ -13,7 +13,6 @@ import { SavedWorkspaceDetailsSchema, type SavedWorkspaceDetails } from '@forema
 import { DomainError } from '../errors.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
-import { saveAgentConfiguration } from './agentConfiguration.js'
 
 function requireWorkspaceRead(principal: ManagementPrincipal, workspaceId: string): void {
   for (const action of ['workspaces:read', 'workflows:read', 'agents:read', 'runs:read'] as const) {
@@ -76,30 +75,6 @@ export class PostgresWorkspaceRepository {
       [workspaceId],
     )
     return result.rows.map((row) => AgentSchema.parse(row.record))
-  }
-
-  async getAgent(workspaceId: string, agentId: string): Promise<Agent | undefined> {
-    const result = await this.pool.query<{ record: unknown }>(
-      'select record from agents where workspace_id = $1 and id = $2',
-      [workspaceId, agentId],
-    )
-    return result.rows[0] ? AgentSchema.parse(result.rows[0].record) : undefined
-  }
-
-  async saveAgent(workspaceId: string, agentId: string, input: Agent): Promise<Agent> {
-    if (input.id !== agentId) throw new DomainError('INVALID_AGENT', 'The agent ID does not match the requested agent.', 400)
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
-      const agent = await saveAgentConfiguration(client, workspaceId, input, true)
-      await client.query('commit')
-      return agent
-    } catch (error) {
-      await client.query('rollback')
-      throw error
-    } finally {
-      client.release()
-    }
   }
 
   async getDetails(workspaceId: string, principal?: ManagementPrincipal): Promise<SavedWorkspaceDetails | undefined> {

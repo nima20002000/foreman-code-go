@@ -10,7 +10,7 @@ import './appNavigationTrail.css'
 type Crumb = { label: string; to: string; search?: Record<string, unknown> }
 const sectionNames: Record<string, string> = {
   workflows: 'Workflows', settings: 'Settings', files: 'Project files', agents: 'Agents',
-  tasks: 'Tasks', runs: 'Runs', terminal: 'Terminal', browsers: 'Browsers', approvals: 'Approvals', location: 'Location',
+  tasks: 'Tasks', runs: 'Runs', terminal: 'Terminal', approvals: 'Approvals', location: 'Location',
   harnesses: 'Harnesses', computers: 'Computers', skills: 'Skills', workspaces: 'Workspaces', general: 'General',
 }
 
@@ -44,7 +44,6 @@ export function AppNavigationTrail({ activeWorkflowId }: { activeWorkflowId?: st
         { label: segments[4] === 'runs' || location.search.runId || location.search.selectedRunId ? 'Run graph' : 'Board', to: location.pathname })
     } else {
       const section = segments[2]
-      if (section === 'browsers') crumbs.push({ label: 'Settings', to: `${workspacePath}/settings` })
       crumbs.push({ label: section ? sectionNames[section] ?? 'Workspace' : 'Board', to: section ? `${workspacePath}/${section}` : workspacePath })
       if (segments[3]) crumbs.push({ label: sectionNames[segments[3]] ?? 'Details', to: location.pathname })
     }

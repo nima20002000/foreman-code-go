@@ -25,7 +25,7 @@ function mount(path: string, editor?: { pending?: boolean; uncertain?: boolean }
     <AppNavigationTrail /><Outlet />
   </UnsavedChangesProvider></AppNavigationHistoryProvider> })
   const paths = ['/workspaces', '/settings/general', '/settings', '/settings/harnesses', '/workspaces/$workspaceId',
-    '/workspaces/$workspaceId/files', '/workspaces/$workspaceId/browsers', '/workspaces/$workspaceId/settings',
+    '/workspaces/$workspaceId/files', '/workspaces/$workspaceId/settings',
     '/workspaces/$workspaceId/workflows', '/workspaces/$workspaceId/workflows/$workflowId/draft',
     '/workspaces/$workspaceId/workflows/$workflowId/runs/$runId/graph/$workflowVersionId/$executionSemanticsVersion']
   // Browser POP owns blocker handling; memory history only blocks push/replace.
@@ -71,13 +71,6 @@ it('shows General in the breadcrumb and returns to Settings from a direct link',
   expect(within(breadcrumbs).getByRole('link', { name: 'Go to Settings' })).toHaveAttribute('href', '/settings')
   await user.click(screen.getByRole('button', { name: 'Back' }))
   await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
-})
-
-it('uses settings as the real Browsers parent for a direct deep link', async () => {
-  const { router } = mount('/workspaces/workspace-1/browsers')
-  const user = userEvent.setup()
-  await user.click(await screen.findByRole('button', { name: 'Back' }))
-  await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings'))
 })
 
 it.each(['/sign-in', '/outside-app', '/settings/general'])('does not revisit an unobserved predecessor %s', async predecessor => {

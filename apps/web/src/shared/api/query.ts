@@ -8,9 +8,6 @@ import {
   type UseQueryOptions,
 } from '@tanstack/react-query'
 import type {
-  CreateMessageRequest,
-  CreateMessageResponse,
-  GetConversationResponse,
   GetHarnessDefaultsResponse,
   SaveHarnessDefaultsRequest,
   SaveHarnessDefaultsResponse,
@@ -23,17 +20,12 @@ import type {
 import {
   apiClient,
   ApiError,
-  getConversation,
   getRun,
-  getAgent,
   getWorkflow,
   getWorkspaceDetails,
   listAgents,
-  listConversations,
-  listMessages,
   listVisibleResources,
   saveHarnessDefaults,
-  sendUserMessage,
   listManagedWorkspaces, createManagedWorkspace, updateManagedWorkspace, archiveManagedWorkspace,
   getManagedWorkspace, validateWorkspaceLocation, setWorkspaceLocation,
   createManagedWorkflow, updateManagedWorkflow, archiveManagedWorkflow,
@@ -58,17 +50,10 @@ export const queryKeys = {
   workspace: (workspaceId: string) => ['workbench', 'workspace', workspaceId] as const,
   workspaceDetails: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'details'] as const,
   agents: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'agents'] as const,
-  agent: (workspaceId: string, agentId: string) =>
-    ['workbench', 'workspace', workspaceId, 'agent', agentId] as const,
   workflow: (workspaceId: string, workflowId: string) =>
     ['workbench', 'workspace', workspaceId, 'workflow', workflowId] as const,
   run: (workspaceId: string, runId: string) =>
     ['workbench', 'workspace', workspaceId, 'run', runId] as const,
-  conversations: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'conversations'] as const,
-  conversation: (workspaceId: string, conversationId: string) =>
-    ['workbench', 'workspace', workspaceId, 'conversation', conversationId] as const,
-  messages: (workspaceId: string, conversationId: string) =>
-    ['workbench', 'workspace', workspaceId, 'conversation', conversationId, 'messages'] as const,
   resources: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'resources'] as const,
   managedWorkspaces: ['workbench', 'management', 'workspaces'] as const,
   workspaceStorageFolders: ['workbench', 'management', 'workspace-storage-folders'] as const,
@@ -415,18 +400,6 @@ export function useAgentsQuery(workspaceId: string, options?: QueryOptions<Await
   })
 }
 
-export function useAgentQuery(
-  workspaceId: string,
-  agentId: string,
-  options?: QueryOptions<Awaited<ReturnType<typeof getAgent>>>,
-) {
-  return useQuery({
-    ...options,
-    queryKey: queryKeys.agent(workspaceId, agentId),
-    queryFn: ({ signal }) => getAgent({ workspaceId, agentId }, { signal }),
-  })
-}
-
 export function useWorkflowQuery(
   workspaceId: string,
   workflowId: string,
@@ -461,41 +434,6 @@ export function useRunQuery(
   })
 }
 
-export function useConversationsQuery(
-  workspaceId: string,
-  options?: QueryOptions<Awaited<ReturnType<typeof listConversations>>>,
-) {
-  return useQuery({
-    ...options,
-    queryKey: queryKeys.conversations(workspaceId),
-    queryFn: ({ signal }) => listConversations({ workspaceId }, { signal }),
-  })
-}
-
-export function useConversationQuery(
-  workspaceId: string,
-  conversationId: string,
-  options?: QueryOptions<GetConversationResponse>,
-) {
-  return useQuery({
-    ...options,
-    queryKey: queryKeys.conversation(workspaceId, conversationId),
-    queryFn: ({ signal }) => getConversation({ workspaceId, conversationId }, { signal }),
-  })
-}
-
-export function useMessagesQuery(
-  workspaceId: string,
-  conversationId: string,
-  options?: QueryOptions<Awaited<ReturnType<typeof listMessages>>>,
-) {
-  return useQuery({
-    ...options,
-    queryKey: queryKeys.messages(workspaceId, conversationId),
-    queryFn: ({ signal }) => listMessages({ workspaceId, conversationId }, { signal }),
-  })
-}
-
 export function useVisibleResourcesQuery(
   workspaceId: string,
   options?: QueryOptions<Awaited<ReturnType<typeof listVisibleResources>>>,
@@ -504,19 +442,6 @@ export function useVisibleResourcesQuery(
     ...options,
     queryKey: queryKeys.resources(workspaceId),
     queryFn: ({ signal }) => listVisibleResources({ workspaceId }, { signal }),
-  })
-}
-
-type UserMessageInput = Omit<CreateMessageRequest, 'role'>
-type UserMessageMutationOptions = Omit<
-  UseMutationOptions<CreateMessageResponse, Error, UserMessageInput>,
-  'mutationFn'
->
-
-export function useUserMessageMutation(options?: UserMessageMutationOptions) {
-  return useMutation({
-    ...options,
-    mutationFn: (input) => sendUserMessage(input),
   })
 }
 

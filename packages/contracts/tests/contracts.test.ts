@@ -6,7 +6,6 @@ import {
   ApiErrorResponseSchema,
   BrowserWaitSchema,
   ConversationSchema,
-  CreateMessageRequestSchema,
   ExecutionConditionSchema,
   HarnessSummarySchema,
   HarnessExecutionRequestSchema,
@@ -291,14 +290,6 @@ describe("neutral product contracts", () => {
     expect(
       SaveWorkflowRequestSchema.safeParse({ workspaceId: "workspace-2", workflow }).success,
     ).toBe(false);
-    expect(
-      CreateMessageRequestSchema.safeParse({
-        workspaceId: "workspace-1",
-        conversationId: "conversation-1",
-        role: "user",
-        content: "Hello",
-      }).success,
-    ).toBe(true);
     expect(MessageSchema.safeParse({ id: "message-1", conversationId: "conversation-1", role: "user" }).success).toBe(
       false,
     );

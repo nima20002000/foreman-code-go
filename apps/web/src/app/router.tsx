@@ -16,7 +16,6 @@ import { ComputersSettingsRouteEntry, ComputerDetailsSettingsRouteEntry } from '
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
 import {
   AgentsRouteEntry,
-  BrowsersSettingsRouteEntry,
   ComingSoonRouteEntry,
   GlobalComingSoonRouteEntry,
   GlobalSettingsRouteEntry,
@@ -124,11 +123,6 @@ const tasksRoute = comingSoonRoute('/workspaces/$workspaceId/tasks', 'tasks', 'T
 const runsRoute = comingSoonRoute('/workspaces/$workspaceId/runs', 'runs', 'Runs')
 const terminalRoute = comingSoonRoute('/workspaces/$workspaceId/terminal', 'terminal', 'Terminal')
 const filesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspaces/$workspaceId/files', component: ProjectFilesRouteEntry })
-const browsersRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/workspaces/$workspaceId/browsers',
-  component: BrowsersSettingsRouteEntry,
-})
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workspaces/$workspaceId/settings',
@@ -221,7 +215,6 @@ export const routeTree = rootRoute.addChildren([
   jobsRedirectRoute,
   jobDetailsRedirectRoute,
   agentsRoute,
-  browsersRoute,
   tasksRoute,
   runsRoute,
   terminalRoute,

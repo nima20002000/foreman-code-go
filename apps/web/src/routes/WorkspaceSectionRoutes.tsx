@@ -10,7 +10,7 @@ import { WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '..
 import { useApprovalInboxStore } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
 import { WorkspaceDetailPage } from '../features/workspaces/WorkspaceDetailPage'
-import { Badge, Card, EmptyState, Icon, PageHeader, SettingsSection, type IconName } from '../shared/ui/nocturne'
+import { Badge, Card, EmptyState, Icon, PageHeader, type IconName } from '../shared/ui/nocturne'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 import {
   WorkspaceDirectory,
@@ -296,17 +296,6 @@ export function WorkspaceApprovalsRouteEntry() {
     void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, search: workflowId ? { workflowId } : {}, replace: true })
   }, [navigate, workflowId, workspaceId])
   return null
-}
-
-export function BrowsersSettingsRouteEntry() {
-  const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/browsers' })
-  return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
-    <SettingsDetailPage eyebrow={`Workspace · ${workspaceId}`} title="Browsers"
-      description="Browser profiles this workspace's agents are allowed to drive.">
-      <SettingsSection title="Browsers" description="Coming soon">
-        <p>Browser profile management is planned but is not implemented yet.</p>
-      </SettingsSection>
-    </SettingsDetailPage> }} />
 }
 
 export function WorkspaceLocationSettingsRouteEntry() {

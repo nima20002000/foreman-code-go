@@ -233,7 +233,6 @@ let agentDefaults: AgentDefaults = clone(DEFAULT_AGENT_DEFAULTS)
 let agentDefaultsRevision = 0
 let workflowDefaults: WorkflowDefaults = { approvalHandler: DEFAULT_WORKFLOW_APPROVAL_HANDLER }
 let workflowDefaultsRevision = 0
-let messageSequence = 0
 
 function clone<T>(value: T): T {
   return structuredClone(value)
@@ -383,10 +382,6 @@ export function getMockScenarioRevision(): number {
 }
 
 /** API serialization keeps the agent identity required by the shared contract. */
-export function serializeConversation(value: ConversationWithAgent): Conversation {
-  return value
-}
-
 /** API serialization keeps the current active run identity from the shared contract. */
 export function serializeAgent(value: AgentWithActiveRun): Agent {
   return value
@@ -408,7 +403,6 @@ export function setMockScenario(
   state = { scenarioId, failureMode }
   fixture = applyScenario(scenarioId)
   scenarioRevision += 1
-  messageSequence = 0
   return getMockScenarioState()
 }
 
@@ -421,7 +415,6 @@ export function resetMockFixtures(): void {
   agentDefaultsRevision = 0
   workflowDefaults = { approvalHandler: DEFAULT_WORKFLOW_APPROVAL_HANDLER }
   workflowDefaultsRevision = 0
-  messageSequence = 0
 }
 
 export function setMockFailureMode(failureMode: MockFailureMode): MockScenarioState {
@@ -500,18 +493,6 @@ export function updateMockWorkflowDefaults(next: WorkflowDefaults, expectedRevis
   workflowDefaults = clone(next)
   workflowDefaultsRevision += 1
   return getMockWorkflowDefaults()
-}
-
-export function appendMockMessage(workspaceId: string, next: Omit<Message, 'id'>): Message {
-  if (!isKnownWorkspaceId(workspaceId)) throw new Error(`Unknown mock workspace: ${workspaceId}`)
-  const message = { ...clone(next), id: `message-user-${++messageSequence}` }
-  const conversationMessages = fixture.messages[message.conversationId] ?? []
-  fixture.messages[message.conversationId] = [...conversationMessages, message]
-  return clone(message)
-}
-
-export function getMockMessages(conversationId: string): Message[] {
-  return clone(fixture.messages[conversationId] ?? [])
 }
 
 export { ApiErrorResponseSchema, ScenarioIdSchema }
