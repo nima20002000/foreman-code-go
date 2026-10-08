@@ -21,6 +21,7 @@ import { allocateInstalledWorkerClaude } from '../src/modules/conversations/inst
 import { workerConversationCallbacks } from '../src/modules/conversations/workerCallbacks.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { identity, openPrivateRoot } from '../src/modules/sources/privateFilesystem.js'
+import { CLAUDE_PROFILE_CHECK_REVISION } from '../src/modules/harnesses/claudeSdk/profileRevision.js'
 
 const journals: RemoteOperationJournal[] = []
 const directories: string[] = []
@@ -79,7 +80,7 @@ describe('installed worker Claude metadata and saved profile admission', () => {
     // Recorded Main proof only. This tests pre-input admission; no SDK query or CLI is run.
     const proof: HostHarnessProfileEvidence = { target: override.target, instanceRevision: override.instanceRevision,
       configurationFingerprint: override.configurationFingerprint, driverId: 'claude', driverRevision: '1',
-      protocolRevision: target.installation.protocolRevision, suiteRevision: 'claude-profile-check-v1',
+      protocolRevision: target.installation.protocolRevision, suiteRevision: CLAUDE_PROFILE_CHECK_REVISION,
       environmentGeneration: target.installation.environmentGeneration,
       connectionGeneration: target.installation.connectionGeneration, authenticated: true, compatible: true,
       qualified: true, checkedAt: '2026-10-05T00:00:00.000Z', claudeProof: { pin: {
@@ -170,7 +171,7 @@ describe('installed worker Claude metadata and saved profile admission', () => {
     // This record exercises admission matching, not native qualification.
     const proof: HostHarnessProfileEvidence = { target: value.target, instanceRevision: value.instanceRevision,
       configurationFingerprint: value.configurationFingerprint, driverId: 'claude', driverRevision: '1',
-      protocolRevision: target.installation.protocolRevision, suiteRevision: 'claude-profile-check-v1',
+      protocolRevision: target.installation.protocolRevision, suiteRevision: CLAUDE_PROFILE_CHECK_REVISION,
       environmentGeneration: target.installation.environmentGeneration,
       connectionGeneration: target.installation.connectionGeneration,
       authenticated: true, compatible: true, qualified: true, checkedAt: new Date().toISOString(),
@@ -183,6 +184,8 @@ describe('installed worker Claude metadata and saved profile admission', () => {
         installationFingerprint: value.target.installationFingerprint } }
     expect(installedClaudeProfilePin(value, binding, proof)).toEqual(pin)
     for (const change of [
+      (record: HostHarnessProfileEvidence) => { record.suiteRevision = 'claude-profile-check-v1' },
+      (record: HostHarnessProfileEvidence) => { record.suiteRevision = 'claude-profile-check-v2' },
       (record: HostHarnessProfileEvidence) => { record.qualified = false },
       (record: HostHarnessProfileEvidence) => { record.connectionGeneration = 'another-channel' },
       (record: HostHarnessProfileEvidence) => { record.claudeProof!.pin.sdkIntegrity = 'changed' },

@@ -87,6 +87,7 @@ import { productionClaudeMetadata } from './modules/harnesses/claudeSdk/producti
 import { initializeNativeDefaults } from './modules/harnesses/initializeDefaults.js'
 import { qualifyClaudeNativeProfile } from './modules/harnesses/claudeSdk/nativeProfileQualification.js'
 import { installedClaudeProfilePin } from './modules/harnesses/claudeSdk/installedProfilePin.js'
+import { CLAUDE_PROFILE_CHECK_REVISION } from './modules/harnesses/claudeSdk/profileRevision.js'
 import { discoverLauncher } from './modules/harnesses/hostDiscovery.js'
 import { passiveDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
 import { runCommand } from './modules/harnesses/process.js'
@@ -675,7 +676,7 @@ export function buildProductionApp(
           const pin = installedClaudeProfilePin(value, registry, proof)
           harnessRegistry.installations.assertCurrent(registry)
           return { registry, pin, applicationInstallationId: value.target.applicationInstallationId,
-            suiteRevision: 'claude-profile-check-v1' }
+            suiteRevision: CLAUDE_PROFILE_CHECK_REVISION }
         }
         const current = infrastructure?.claudeCurrentProfile ?? (infrastructure?.mode === 'replay' ? undefined : claudeDiscovery.current)
         if (!current) throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Claude replay requires its current installed profile metadata port.', 500)

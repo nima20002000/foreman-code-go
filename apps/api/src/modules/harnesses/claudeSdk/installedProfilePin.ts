@@ -5,6 +5,7 @@ import { DomainError } from '../../errors.js'
 import type { RegistryHarnessSelection } from '../installationRegistry.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { withAdvancedDefaults } from '@foreman-code/contracts'
+import { CLAUDE_PROFILE_CHECK_REVISION } from './profileRevision.js'
 
 /** A saved native proof applies only while the paired host reports the same installed SDK and executable. */
 export function installedClaudeProfilePin(value: HostHarnessOverride, binding: RegistryHarnessSelection,
@@ -24,7 +25,7 @@ export function installedClaudeProfilePin(value: HostHarnessOverride, binding: R
     || !proof?.qualified || proof.authenticated !== true || proof.compatible !== true
     || !pin || !installation.claudeSdk || !isDeepStrictEqual(proof.target, value.target)
     || proof.instanceRevision !== value.instanceRevision || proof.configurationFingerprint !== value.configurationFingerprint
-    || proof.suiteRevision !== 'claude-profile-check-v1' || proof.driverId !== 'claude'
+    || proof.suiteRevision !== CLAUDE_PROFILE_CHECK_REVISION || proof.driverId !== 'claude'
     || proof.driverRevision !== installation.driverRevision || proof.protocolRevision !== installation.protocolRevision
     || proof.environmentGeneration !== installation.environmentGeneration
     || proof.connectionGeneration !== installation.connectionGeneration

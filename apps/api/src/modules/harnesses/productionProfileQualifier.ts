@@ -11,6 +11,7 @@ import type { NativeHarnessFactories } from './runtimeFactory.js'
 import { harnessProfile } from './qualification/profiles.js'
 import { qualificationError } from './qualificationErrors.js'
 import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productionCredentials.js'
+import { CLAUDE_PROFILE_CHECK_REVISION } from './claudeSdk/profileRevision.js'
 
 /** Explicit profile checks enter through real role-isolated adapters. A saved
  * config, filesystem inventory, worker heartbeat or fixture never grants trust. */
@@ -26,6 +27,8 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The saved configuration fingerprint is invalid.', 409)
     }
     requireClaudeProductionCredentialDelivery(value.configuration)
+    const suiteRevision = value.driverId === 'claude'
+      ? CLAUDE_PROFILE_CHECK_REVISION : `${value.driverId}-profile-check-v1`
     if (value.target.hostRef.kind === 'device') {
       const endpoint = this.endpoint()
       if (!endpoint.capabilities(value.target.hostRef.deviceId).some((item) => item.namespace === 'host-harness-check-v1' && item.mainCanRequest)) {
@@ -40,7 +43,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       if (commandInputHash(proof.target) !== commandInputHash(value.target) || proof.instanceRevision !== value.instanceRevision
         || proof.configurationFingerprint !== value.configurationFingerprint || proof.driverId !== value.driverId
         || proof.driverRevision !== binding.installation.driverRevision || proof.protocolRevision !== binding.installation.protocolRevision
-        || proof.suiteRevision !== `${value.driverId}-profile-check-v1`
+        || proof.suiteRevision !== suiteRevision
         || proof.environmentGeneration !== binding.installation.environmentGeneration
         || proof.connectionGeneration !== binding.installation.connectionGeneration) {
         throw new DomainError('HARNESS_PROFILE_EVIDENCE_MISMATCH', 'Worker qualification did not match the exact authorized installation context.', 409)
@@ -93,7 +96,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
     return HostHarnessProfileEvidenceSchema.parse({ target: value.target, instanceRevision: value.instanceRevision,
       configurationFingerprint: value.configurationFingerprint, driverId: value.driverId,
       driverRevision: binding.installation.driverRevision, protocolRevision: binding.installation.protocolRevision,
-      suiteRevision: `${value.driverId}-profile-check-v1`, environmentGeneration: binding.installation.environmentGeneration,
+      suiteRevision, environmentGeneration: binding.installation.environmentGeneration,
       connectionGeneration: binding.installation.connectionGeneration, authenticated, compatible, qualified, ...(failure ? { failure } : {}),
       checkedAt: new Date().toISOString() })
   }

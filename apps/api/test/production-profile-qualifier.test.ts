@@ -1,7 +1,7 @@
 import { FixtureServer, configuration as openCodeConfiguration, manager as openCodeManager, json } from './opencode-fixtures.js'
 import { describe, expect, it, vi } from 'vitest'
 import { withAdvancedDefaults } from '@foreman-code/contracts'
-import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
+import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { commandInputHash } from '../src/modules/commands/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
@@ -12,6 +12,8 @@ import { ProductionHostHarnessProfileQualifier } from '../src/modules/harnesses/
 import { HostHarnessInstanceProfileChecks } from '../src/modules/harnesses/instanceSettings/profileChecks.js'
 import { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSettings/service.js'
 import { fixtureProtocol } from './fixtures/codex-test-helpers.js'
+import { CLAUDE_PROFILE_CHECK_REVISION } from '../src/modules/harnesses/claudeSdk/profileRevision.js'
+import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.js'
 
 function fixture() {
   const configuration = withAdvancedDefaults({ harness: 'codex', model: 'selected-model', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'priority' })
@@ -130,4 +132,32 @@ it('returns a failed host-profile result with the observed OpenCode version and 
     failure: { code: 'OPENCODE_CONTRACT_UNSUPPORTED' } })
   expect(result.failure?.message).toContain('OpenCode 2.0.0')
   expect(result.failure?.message).toContain('/question/{requestID}/reject')
+})
+
+it('accepts the current Worker Claude qualification revision and rejects older proofs', async () => {
+  const f = fixture()
+  const configuration = withAdvancedDefaults({ harness: 'claude', model: 'recorded-model', authMode: 'subscription',
+    configDirectory: '/recorded/profile', permissionMode: 'default', sandbox: 'danger-full-access',
+    tools: ['Write'], permissionRules: [], instructions: '', mcpServers: {} })
+  const value: HostHarnessOverride = { ...f.value, driverId: 'claude', configuration,
+    configurationFingerprint: commandInputHash(configuration), target: { ...f.value.target,
+      hostRef: { kind: 'device', mainId: f.value.instanceId, deviceId: f.value.instanceId } } }
+  const installation = { driverRevision: 'driver', protocolRevision: 'protocol',
+    environmentGeneration: 'environment', connectionGeneration: 'connection' }
+  const proof: HostHarnessProfileEvidence = { ...installation, target: value.target,
+    instanceRevision: value.instanceRevision, configurationFingerprint: value.configurationFingerprint,
+    driverId: 'claude', suiteRevision: CLAUDE_PROFILE_CHECK_REVISION, authenticated: true, compatible: true,
+    qualified: true, checkedAt: new Date().toISOString() }
+  const registry = { pinOverride: () => ({ installation }), installations: { assertCurrent: f.current } }
+  const endpoint = { capabilities: () => [{ namespace: 'host-harness-check-v1', mainCanRequest: true }],
+    request: vi.fn(async () => ({ payload: proof })) }
+  const qualifier = new ProductionHostHarnessProfileQualifier(registry as never, {} as never,
+    () => endpoint as never, '/recorded-workspace', undefined,
+    new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
+  const input = { checkId: f.value.instanceId, signal: f.signal.signal }
+  expect(await qualifier.qualify(value, input)).toEqual(proof)
+  for (const revision of ['claude-profile-check-v1', 'claude-profile-check-v2']) {
+    proof.suiteRevision = revision
+    await expect(qualifier.qualify(value, input)).rejects.toMatchObject({ code: 'HARNESS_PROFILE_EVIDENCE_MISMATCH' })
+  }
 })
