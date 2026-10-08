@@ -229,29 +229,12 @@ export class PostgresSourceService implements SourceAdmissionPort {
     await this.transaction(async sql => authorizeSource(sql, principal, 'sources:approve', input.workspaceId))
     const configured = await this.transaction(async sql => WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
       'select record from workspaces where id=$1', [input.workspaceId])).rows[0]?.record ?? { id: input.workspaceId, name: '-' }).repository)
-    const signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
-    let commit = input.snapshot?.commit ?? input.commit
-    let repository: { repository: string; clone: string } | undefined
-    if (configured) {
-      const name = `${configured.owner}/${configured.name}`
-      if (input.snapshot) {
-        const clone = await ensureCommit(this.git, name, input.snapshot.baseCommit, signal)
-        await importAgentSnapshot(this.git, clone, input.snapshot, signal)
-        repository = { repository: name, clone }
-      } else if (commit) repository = { repository: name, clone: await ensureCommit(this.git, name, commit, signal) }
-      else {
-        const clone = this.git.cloneDirectory(name)
-        await ensureClone(this.git, name, signal)
-        const fetched = await this.git.git(['fetch', '--no-tags', 'origin', configured.defaultBranch], { cwd: clone, signal })
-        const head = fetched.code === 0 ? await this.git.git(['rev-parse', 'FETCH_HEAD^{commit}'], { cwd: clone, signal }) : fetched
-        if (head.code !== 0) throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', `Main could not fetch ${name}@${configured.defaultBranch}. Sign GitHub in on Main.`, 409)
-        commit = head.stdout.trim()
-        repository = { repository: name, clone }
-      }
-    } else if (input.snapshot) {
-      throw new DomainError('SOURCE_REPOSITORY_REQUIRED', 'Set the workspace GitHub repository before running CI on an Agent\'s files.', 409)
-    }
-    const payload = { workspaceId: input.workspaceId, commandId: input.commandId, ...(commit ? { commit } : {}) }
+    let repository = configured ? { repository: `${configured.owner}/${configured.name}`,
+      clone: this.git.cloneDirectory(`${configured.owner}/${configured.name}`) } : undefined
+    const payload = { workspaceId: input.workspaceId, commandId: input.commandId,
+      ...(input.commit ? { commit: input.commit } : {}),
+      ...(input.snapshot ? { snapshot: { commit: input.snapshot.commit, baseCommit: input.snapshot.baseCommit,
+        bundleDigest: sourceSha256(input.snapshot.bundle) } } : {}) }
     const captured = await this.commands.execute({ principal, source: 'mcp',
       operation: 'source.project.capture', commandId: input.commandId, targetKey: input.workspaceId,
       payload, dedicatedConnection: true,
@@ -262,6 +245,24 @@ export class PostgresSourceService implements SourceAdmissionPort {
         await this.host(sql)
       },
       perform: async () => {
+        const signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
+        let commit = input.snapshot?.commit ?? input.commit
+        if (configured) {
+          const name = `${configured.owner}/${configured.name}`
+          if (input.snapshot) {
+            const clone = await ensureCommit(this.git, name, input.snapshot.baseCommit, signal)
+            await importAgentSnapshot(this.git, clone, input.snapshot, signal)
+            repository = { repository: name, clone }
+          } else if (commit) repository = { repository: name, clone: await ensureCommit(this.git, name, commit, signal) }
+          else {
+            const clone = this.git.cloneDirectory(name)
+            await ensureClone(this.git, name, signal)
+            commit = await this.fetchDefaultBranch(clone, name, configured.defaultBranch, signal)
+            repository = { repository: name, clone }
+          }
+        } else if (input.snapshot) {
+          throw new DomainError('SOURCE_REPOSITORY_REQUIRED', 'Set the workspace GitHub repository before running CI on an Agent\'s files.', 409)
+        }
         const location = await this.transaction(async sql => {
           await this.workspace(sql, input.workspaceId)
           const row = (await sql.query<{ location_revision: string }>(
@@ -284,6 +285,29 @@ export class PostgresSourceService implements SourceAdmissionPort {
       },
     })
     return (await this.approve(principal, 'mcp', captured.value, repository)).value
+  }
+  private async fetchDefaultBranch(clone: string, repository: string, branch: string, signal: AbortSignal) {
+    const ref = `refs/foreman/ci/fetch/${randomUUID()}`
+    let commit: string
+    let cleanupFailed: boolean
+    try {
+      const fetched = await this.git.git(['fetch', '--no-tags', 'origin', `refs/heads/${branch}:${ref}`],
+        { cwd: clone, signal })
+      const head = fetched.code === 0
+        ? await this.git.git(['rev-parse', '--verify', `${ref}^{commit}`], { cwd: clone, signal }) : fetched
+      if (head.code !== 0) {
+        throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE',
+          `Main could not fetch ${repository}@${branch}. Sign GitHub in on Main.`, 409)
+      }
+      commit = head.stdout.trim()
+    } finally {
+      const removed = await this.git.git(['update-ref', '-d', ref], { cwd: clone, signal })
+      cleanupFailed = removed.code !== 0
+    }
+    if (cleanupFailed) {
+      throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', 'Main could not remove its temporary fetch ref.', 409)
+    }
+    return commit
   }
   async resolveRootBinding(sql: Sql, principal: ManagementPrincipal,
     input: { workspaceId: string; rootId: string; bindingRevision: number; source: ApprovedSourcePin }): Promise<SourceRootRecord> {
