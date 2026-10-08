@@ -18,6 +18,7 @@ export class ReviewerDispatcher {
   private readonly workerId = `review-worker-${randomUUID()}`
   private readonly stopping = new AbortController()
   private readonly active = new Map<string, Promise<unknown>>()
+  private readonly directDispatches = new Set<Promise<ReviewJob | undefined>>()
   private shutdownTask: Promise<void> | undefined
 
   constructor(
@@ -53,7 +54,7 @@ export class ReviewerDispatcher {
     for (const agentId of await this.coordination.reviewJobAgents()) {
       if (this.stopping.signal.aborted) break
       if (this.active.has(agentId)) continue
-      const task = this.dispatchNext(agentId, this.workerId).catch(error => {
+      const task = this.dispatchReview(agentId, this.workerId).catch(error => {
         if (this.stopping.signal.aborted && error instanceof DomainError && error.code === 'ENGINE_RESTART') return
         onError(error)
       })
@@ -65,19 +66,32 @@ export class ReviewerDispatcher {
   shutdown(): Promise<void> {
     this.stopping.abort(new DomainError('ENGINE_RESTART',
       'Reviewer observation is stopping for application restart.', 409))
-    this.shutdownTask ??= Promise.allSettled(this.active.values()).then((results) => {
-      const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+    this.shutdownTask ??= Promise.allSettled([...this.active.values(), ...this.directDispatches]).then((results) => {
+      const errors = results.flatMap(result => {
+        if (result.status === 'fulfilled') return []
+        const error: unknown = result.reason
+        if (error instanceof DomainError && error.code === 'ENGINE_RESTART') return []
+        return [error]
+      })
       if (errors.length) throw new AggregateError(errors, 'Reviewer shutdown was incomplete.')
     })
     return this.shutdownTask
   }
 
-  async dispatchNext(reviewerAgentId: string, workerId: string): Promise<ReviewJob | undefined> {
+  dispatchNext(reviewerAgentId: string, workerId: string): Promise<ReviewJob | undefined> {
+    const task = this.dispatchReview(reviewerAgentId, workerId)
+      .finally(() => { this.directDispatches.delete(task) })
+    this.directDispatches.add(task)
+    return task
+  }
+
+  private async dispatchReview(reviewerAgentId: string, workerId: string): Promise<ReviewJob | undefined> {
     if (this.stopping.signal.aborted) return undefined
     const available = await this.coordination.nextReviewJob(reviewerAgentId)
     if (!available) return undefined
     // Old queued jobs are not grandfathered in. Cleanup may only stop existing work.
     if (!available.cleanup) await this.coordination.assertReviewConnection(available)
+    if (this.stopping.signal.aborted) return undefined
     const jobToken = `review-lease-${randomUUID()}`
     let job: ReviewJob
     try {
@@ -420,7 +434,7 @@ export class ReviewerDispatcher {
       const error = safe.error(rawError)
       if (isLeaseLost(rawError) || guard.signal.aborted) throw error
       await guard.check()
-      if (job.cleanup) return this.coordination.transitionReviewJob(job.id, jobToken, 'failed', { releaseLease: true })
+      if (job.cleanup) return await this.coordination.transitionReviewJob(job.id, jobToken, 'failed', { releaseLease: true })
       const busy = error instanceof DomainError && error.code === 'SESSION_LANE_BUSY'
       const causeCode = error instanceof DomainError ? error.code
         : error instanceof HarnessExecutionError ? error.result.error?.code : undefined
@@ -434,7 +448,7 @@ export class ReviewerDispatcher {
       if (mayHaveSubmitted) state = 'uncertain'
       else if (nativeBoundaryMissing) state = 'failed'
       else if (busy) state = 'blocked_busy'
-      return this.coordination.transitionReviewJob(job.id, jobToken, state, {
+      return await this.coordination.transitionReviewJob(job.id, jobToken, state, {
           releaseLease: true,
           error: nativeBoundaryMissing ? {
             code: 'REVIEW_NATIVE_CLOSURE_UNCONFIRMED',

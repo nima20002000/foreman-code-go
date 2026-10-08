@@ -757,6 +757,37 @@ test('a transient reviewer attachment failure delays its next attempt', async ()
   assert.equal(f.counts().started, 0)
 })
 
+for (const cleanup of [false, true]) {
+  test(`persists ${cleanup ? 'cleanup' : 'attachment'} failure before releasing the reviewer session`, async () => {
+    const f = fixture()
+    await enqueue(f)
+    if (cleanup) {
+      f.coordination.job = { ...f.coordination.job!, state: 'failed', cleanup: {
+        nativeState: 'pending', credentialState: 'pending', interruptState: 'not_sent',
+      } }
+      f.runtime.recoverReviewCleanup = async () => { throw new Error('transport unavailable') }
+    } else {
+      f.runtime.attachOwnedSession = async () => { throw new Error('transport unavailable') }
+    }
+    let committed = false
+    const releasedAfterCommit: boolean[] = []
+    const transition = f.coordination.transitionReviewJob.bind(f.coordination)
+    f.coordination.transitionReviewJob = async (...args) => {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      const result = await transition(...args)
+      committed = true
+      return result
+    }
+    f.runtime.releaseReviewSession = async () => { releasedAfterCommit.push(committed) }
+
+    const result = await f.dispatcher.dispatchNext('reviewer', 'worker')
+
+    assert.equal(result?.state, cleanup ? 'failed' : 'blocked_disconnected')
+    assert.deepEqual(releasedAfterCommit, [true])
+    assert.equal(f.counts().started, 0)
+  })
+}
+
 test('fresh review preserves the unresolved previous review pair at attachment and preflight', async () => {
   const f = fixture(); await enqueue(f)
   f.coordination.lane = { ...f.coordination.lane, observedStatus: 'uncertain',
@@ -917,6 +948,36 @@ test('shutdown releases reviewer observation without reporting a runtime failure
   assert.equal(f.coordination.lane.currentTurnOrMessageId, 'native-turn')
   assert.equal(f.counts().canceled, 0)
   assert.equal(f.counts().responded, 0)
+})
+
+test('shutdown joins a direct dispatch read before releasing its database', async () => {
+  const f = fixture()
+  await enqueue(f)
+  let began!: () => void
+  let release!: () => void
+  const reading = new Promise<void>(resolve => { began = resolve })
+  const held = new Promise<void>(resolve => { release = resolve })
+  const next = f.coordination.nextReviewJob.bind(f.coordination)
+  let databaseOpen = true
+  f.coordination.nextReviewJob = async () => {
+    began()
+    await held
+    assert.equal(databaseOpen, true)
+    return next()
+  }
+  const dispatch = f.dispatcher.dispatchNext('reviewer', 'worker').catch(error => error)
+  await reading
+  const closing = f.dispatcher.shutdown().then(() => { databaseOpen = false })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  release()
+
+  const result = await dispatch
+  await closing
+
+  assert.equal(result, undefined)
+  assert.equal(databaseOpen, false)
+  assert.equal(f.coordination.job?.leaseToken, undefined)
+  assert.equal(f.counts().started, 0)
 })
 
 test('a captured writer preserves the restart cancellation reason while refusing further evidence', async () => {
