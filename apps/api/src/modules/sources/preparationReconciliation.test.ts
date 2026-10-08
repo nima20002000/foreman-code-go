@@ -5,12 +5,16 @@ import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import { SourcePreparationReconcileInputSchema } from '@foreman-code/contracts/source-admission'
-import { PrivateSourceMaterializer, reconcileSourcePreparation } from './materialization.js'
+import { PrivateSourceMaterializer, preparationChildrenClosed, reconcileSourcePreparation, withClaimLock } from './materialization.js'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { sourceBindingHash } from './bindingHash.js'
 import { sourceMaterializationClaimName } from './quotaClaims.js'
 import { InstalledSourceExecutionHosts, type SourceAttemptAuthority, type RemoteSourceMaterializationHost } from './executionHosts.js'
+vi.mock('node:fs/promises', async importOriginal => {
+  const original = await importOriginal<typeof import('node:fs/promises')>()
+  return { ...original, readdir: vi.fn(original.readdir) }
+})
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))) })
 async function fixture(copy = true) {
@@ -88,6 +92,76 @@ it('does not accept an empty task set while an original namespace child is still
     const closure = await reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)
     expect(closure.childrenClosed).toBe(true)
   })
+})
+it.each(['exited', 'live'] as const)('checks process closure after denied descriptor reads (%s process)', async state => {
+  const f = await fixture(false)
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  const closed = new Promise<void>(resolve => child.once('close', () => resolve()))
+  await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
+  const descriptors = `/proc/${child.pid}/fd`
+  const denied = Object.assign(new Error('Descriptor inspection denied'), { code: 'EACCES' })
+  const original = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+  const inspect = vi.mocked(readdir).mockImplementation(async (...args) => {
+    if (String(args[0]) === descriptors) {
+      if (state === 'exited') {
+        child.kill('SIGKILL')
+        await closed
+      }
+      throw denied
+    }
+    return original.readdir(...args)
+  })
+  try {
+    if (state === 'exited') {
+      await expect(preparationChildrenClosed(f.directory)).resolves.toBe(true)
+    } else {
+      await expect(preparationChildrenClosed(f.directory)).rejects.toMatchObject({
+        code: 'source-reconciliation-unconfirmed', cause: denied,
+      })
+    }
+  } finally {
+    inspect.mockImplementation(original.readdir)
+    child.kill('SIGKILL')
+    await closed
+  }
+})
+it.each(['release', 'deadline'] as const)('waits for a contended preparation lock until %s', async outcome => {
+  const f = await fixture()
+  const root = await openPrivateRoot(f.directory)
+  let release!: () => void
+  let entered!: () => void
+  const held = new Promise<void>(resolve => { entered = resolve })
+  const released = new Promise<void>(resolve => { release = resolve })
+  const holder = withClaimLock(root, async () => { entered(); await released })
+  await held
+  if (outcome === 'deadline') f.owner.identity.expiresAt = new Date(Date.now() + 500).toISOString()
+  const pending = reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)
+  const settled = pending.then(() => 'closed', error => error)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    expect(await Promise.race([settled, new Promise<'waiting'>(resolve => {
+      timer = setTimeout(() => resolve('waiting'), 250)
+    })])).toBe('waiting')
+    expect(await readdir(f.directory)).toContain(f.claimName)
+    if (outcome === 'deadline') {
+      await expect(pending).rejects.toMatchObject({ name: 'TimeoutError' })
+      expect(await readdir(f.directory)).toContain(f.claimName)
+      expect(f.nativeClosed).not.toHaveBeenCalled()
+      return
+    }
+    release()
+    await holder
+    const closure = await pending
+    expect(closure).toMatchObject({ childrenClosed: true, claimReleased: true, evidencePreserved: true })
+    expect(await readFile(join(f.directory, f.owner.record!.receipt.materializationId, 'tree/source.txt')))
+      .toEqual(f.bytes)
+  } finally {
+    if (timer) clearTimeout(timer)
+    release()
+    await holder
+    await settled
+    await root.close()
+  }
 })
 it('preserves uncertain native ownership and rejects missing admission closure, changed roots and caller closure flags', async () => {
   const f = await fixture(); f.nativeClosed.mockResolvedValue(false)
