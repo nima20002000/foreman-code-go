@@ -3,7 +3,17 @@ import { PassThrough } from 'node:stream'
 import { expect, it, vi } from 'vitest'
 import { GitHubLoginRunner, type GitHubLoginPorts } from './githubLogin.js'
 
-function fixture(installed = true, options: { unreadable?: boolean; setupFails?: boolean; logoutKeepsAccount?: boolean; logoutFails?: boolean; nextAccount?: string; unreadableAfterLogout?: boolean; logoutWait?: Promise<void> } = {}) {
+function fixture(installed = true, options: {
+  unreadable?: boolean
+  setupFails?: boolean
+  logoutKeepsAccount?: boolean
+  logoutFails?: boolean
+  nextAccount?: string
+  unreadableAfterLogout?: boolean
+  logoutWait?: Promise<void>
+  textStatus?: boolean
+  otherHost?: boolean
+} = {}) {
   let user: string | null = null
   const children: { stdout: PassThrough; stderr: PassThrough; stdin: PassThrough; emitter: EventEmitter; kill: ReturnType<typeof vi.fn>; args: string[] }[] = []
   const runs: string[] = []
@@ -24,10 +34,17 @@ function fixture(installed = true, options: { unreadable?: boolean; setupFails?:
       run: async (_binary, args) => {
         runs.push(args.join(' '))
         if (args[1] === 'status' && options.unreadable) return { code: null, stdout: '', stderr: '' }
+        if (args[1] === 'status' && args.includes('--json') && options.textStatus) {
+          return { code: 1, stdout: '', stderr: 'unknown flag: --json' }
+        }
         if (args[1] === 'setup-git' && options.setupFails) return { code: 1, stdout: '', stderr: 'cannot write git config' }
-        if (args[1] === 'status' && !args.includes('--json')) return user
-          ? { code: 0, stdout: '', stderr: `✓ Logged in to github.com account ${user} (keyring)\n - Active account: true` }
-          : { code: 1, stdout: '', stderr: 'You are not logged into any GitHub hosts.' }
+        if (args[1] === 'status' && !args.includes('--json')) {
+          if (user) return { code: 0, stdout: '',
+            stderr: `✓ Logged in to github.com account ${user} (keyring)\n - Active account: true` }
+          const stderr = options.otherHost
+            ? 'You are not logged into any accounts on github.com' : 'You are not logged into any GitHub hosts.'
+          return { code: 1, stdout: '', stderr }
+        }
         if (args[1] === 'status') return user ? { code: 0, stderr: '', stdout: JSON.stringify({ hosts: { 'github.com': [{ login: user, active: true, state: 'success' }] } }) }
           : { code: 1, stdout: '', stderr: 'You are not logged into any GitHub hosts.' }
         if (args[1] === 'logout' && options.logoutWait) await options.logoutWait
@@ -91,6 +108,14 @@ it('checks the account after logout and refuses success when credentials remain'
   f.signIn('owner')
   await expect(f.runner.handle({ operation: 'logout' })).rejects.toMatchObject({ code: 'GITHUB_LOGOUT_FAILED' })
   expect(f.runs.filter(value => value.startsWith('auth status'))).toHaveLength(2)
+})
+
+it('verifies logout on older GitHub CLI releases while another host remains configured', async () => {
+  const f = fixture(true, { textStatus: true, otherHost: true })
+  f.signIn('owner')
+  expect(await f.runner.handle({ operation: 'logout' })).toMatchObject({ state: 'signed-out', account: null })
+  expect(f.runs).toContain('auth logout --hostname github.com --user owner')
+  expect(f.runs.filter(value => value === 'auth status --active --hostname github.com')).toHaveLength(2)
 })
 
 it('keeps a newer login when the replaced request fails before offering its code', async () => {

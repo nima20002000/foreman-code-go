@@ -111,3 +111,12 @@ it('supports a single account on old GitHub CLI releases without active or JSON 
   } })
   expect(result.accounts.find(value => value.tool === 'github')).toMatchObject({ signedIn: true, account: 'old-owner' })
 })
+
+it.each([true, false])('reports GitHub signed-out with another host configured and active support %s', async supportsActive => {
+  const result = await probeComputerAccounts({ ...ports(['gh'], {}), run: async (_binary, args) => {
+    if (args.includes('--json')) return { code: 1, stdout: '', stderr: 'unknown flag: --json' }
+    if (!supportsActive && args.includes('--active')) return { code: 1, stdout: '', stderr: 'unknown flag: --active' }
+    return { code: 1, stdout: '', stderr: 'You are not logged into any accounts on github.com' }
+  } })
+  expect(result.accounts.find(value => value.tool === 'github')).toMatchObject({ signedIn: false, account: null })
+})

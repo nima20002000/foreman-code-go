@@ -85,6 +85,7 @@ const githubStatusSchema = z.object({
     active: z.boolean(), login: z.string().min(1).max(320), state: z.enum(['success', 'error', 'timeout']),
   }))),
 })
+const githubSignedOut = /You are not logged into (?:any GitHub hosts|any accounts on github\.com)/iu
 
 export async function probeGitHubAccount(ports: AccountProbePorts, signal = AbortSignal.timeout(20_000)): Promise<ComputerAccount> {
   const binary = await ports.find('gh')
@@ -101,7 +102,7 @@ export async function probeGitHubAccount(ports: AccountProbePorts, signal = Abor
       if (active.length !== 1) return unknown('github')
       return { ...unknown('github'), signedIn: active[0]!.state === 'success' ? true : null, account: active[0]!.login }
     }
-    if (result.code === 1 && /You are not logged into any GitHub hosts/iu.test(result.stderr)) {
+    if (result.code === 1 && githubSignedOut.test(result.stderr)) {
       return { ...unknown('github'), signedIn: false }
     }
     return unknown('github')
@@ -109,7 +110,7 @@ export async function probeGitHubAccount(ports: AccountProbePorts, signal = Abor
   result = await ports.run(binary, args, signal)
   if (unsupported('active')) result = await ports.run(binary, ['auth', 'status', '--hostname', 'github.com'], signal)
   const output = plain(`${result.stdout}\n${result.stderr}`)
-  if (result.code === 1 && /You are not logged into any GitHub hosts/iu.test(output)) {
+  if (result.code === 1 && githubSignedOut.test(output)) {
     return { ...unknown('github'), signedIn: false }
   }
   const accounts = [...output.matchAll(/Logged in to github\.com account (\S+)([\s\S]*?)(?=Logged in to github\.com account|$)/gu)]

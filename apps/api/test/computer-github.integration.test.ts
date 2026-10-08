@@ -15,7 +15,7 @@ import { ComputerGitHubService } from '../src/modules/computers/github.js'
 import { GitHubLoginRunner } from '../src/modules/computers/githubLogin.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 
-it.skipIf(!postgresEnabled)('persists GitHub changes and retries Git setup through authenticated MCP with denied callers', async () => {
+it.skipIf(!postgresEnabled).each(['structured', 'text'])('verifies GitHub accounts through MCP with %s status', async format => {
   const database = await agent3Database()
   const credentialPath = join(database.directory, 'github-account.json')
   await writeFile(credentialPath, JSON.stringify('previous-owner'))
@@ -27,7 +27,15 @@ it.skipIf(!postgresEnabled)('persists GitHub changes and retries Git setup throu
     environment: {}, find: async name => name === 'gh' ? '/fixture/gh' : null, readText: async () => null,
     run: async (_binary, args) => {
       if (args[1] === 'status') {
+        if (format === 'text' && args.includes('--json')) {
+          return { code: 1, stdout: '', stderr: 'unknown flag: --json' }
+        }
         const user = JSON.parse(await readFile(credentialPath, 'utf8')) as string | null
+        if (format === 'text') {
+          return user
+            ? { code: 0, stdout: '', stderr: `Logged in to github.com account ${user} (keyring)\n - Active account: true` }
+            : { code: 1, stdout: '', stderr: 'You are not logged into any accounts on github.com' }
+        }
         return { code: 0, stderr: '', stdout: JSON.stringify({ hosts: { 'github.com': user
           ? [{ login: user, active: true, state: 'success' }] : [] } }) }
       }
