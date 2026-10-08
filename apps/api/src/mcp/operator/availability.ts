@@ -1,4 +1,5 @@
 import { type ManagementAction, type ManagementScope, type OperatorToolName } from '@foreman-code/contracts/management'
+import { placementChoiceRequirements } from '../../modules/placement/choicesService.js'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/access/policy.js'
 import { OPERATOR_TOOL_ACTIONS } from './catalog.js'
 import { retiredExecutionTool } from './retiredExecutionTools.js'
@@ -125,6 +126,7 @@ export const TELEMETRY_READ_ACTIONS: readonly ManagementAction[] = ['devices:met
 
 export function operatorToolRequirements(name: OperatorToolName, resource?: AuthorizedResource): Requirement[] {
   void resource
+  if (name === 'workflow_node_placement_choices') return [...placementChoiceRequirements]
   if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') return TELEMETRY_READ_ACTIONS.map(action => ({ action, scope: action === 'devices:metrics:read' ? 'global' : 'resource' }))
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
@@ -133,7 +135,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['operator_chat_list', 'operator_chat_history_get', 'operator_chat_activity_get'].includes(name)) scope = 'global'
   if (['workflow_create','workspace_get','workspace_update','workspace_archive','workspace_location_validate','workspace_location_set','agent_get'].includes(name)) scope = 'workspace'
   if (name === 'execution_readiness_get' || name === 'harness_registry_get') scope = 'global'
-  if (name === 'computer_activity_list' || name === 'computer_accounts_list' || name.startsWith('computer_github_') || name === 'worker_execution_settings_get' || name.startsWith('build_computer_')) scope = 'global'
+  if (name === 'computer_activity_list' || name === 'computer_accounts_list' || name.startsWith('computer_github_') || name === 'worker_execution_settings_get' || name.startsWith('build_computer')) scope = 'global'
   if (name.startsWith('workspace_root_')) scope = 'workspace'
   if (name.startsWith('source_')) scope = 'workspace'
   if (name.startsWith('device_connection_')) scope = 'global'
@@ -228,6 +230,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'].includes(name) && !service.devices) return false
   if (name.startsWith('run_') && !service.runs) return false
   if (name === 'run_node_placement_get' && !service.runPlacements) return false
+  if (name === 'workflow_node_placement_choices' && !service.placementChoices) return false
   if (name.startsWith('run_subagent') && !service.runs?.subagents) return false
   if (name.startsWith('workflow_') && !service.workflows) return false
   if (name === 'execution_readiness_get' && !service.executionReadiness) return false
@@ -244,7 +247,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (name === 'computer_activity_list' && !service.computerActivity) return false
   if (name === 'computer_accounts_list' && !service.computerAccounts) return false
   if (name.startsWith('computer_github_') && !service.computerGitHub) return false
-  if (name.startsWith('build_computer_') && !service.buildComputers) return false
+  if (name.startsWith('build_computer') && !service.buildComputers) return false
   if (name === 'worker_execution_settings_get' && !service.workerExecution) return false
   if (['agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update'].includes(name) && !service.settings) return false
   const extended = extensions[name]

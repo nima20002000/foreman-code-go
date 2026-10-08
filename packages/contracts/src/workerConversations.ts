@@ -52,9 +52,10 @@ export type WorkerConversationConfiguration = z.infer<typeof WorkerConversationC
 
 export const WorkerConversationTurnSchema = z.object({
   correlationId: id, inputHash: digest,
-  status: z.enum(['reserved', 'submitted', 'completed', 'uncertain']),
+  status: z.enum(['reserved', 'submitted', 'completed', 'uncertain', 'rejected']),
   nativeTurnId: id.nullable(), nativeSubmission: NativeMessageSubmissionSchema.optional(),
   sessionMode: SessionModeSchema.optional(),
+  creationOperationId: id.optional(),
   result: z.lazy(() => ExecutionResultSchema).optional(),
 }).strict()
 export const WorkerOpenCodeFileRootSchema = z.object({
@@ -80,9 +81,11 @@ export const WorkerConversationReceiptSchema = z.object({
   connection: DeviceSessionBindingSchema,
   revision: z.number().int().positive(),
   closed: z.boolean(), closing: z.boolean(),
-  creation: z.object({ operationId: id, inputHash: digest }).strict().optional(),
+  creation: z.object({ operationId: id, inputHash: digest, status: z.literal('rejected').optional() }).strict().optional(),
   session: z.lazy(() => NativeSessionReferenceSchema).optional(),
   nativeOwner: RemoteNativeIdentitySchema.optional(),
+  ownerTransitions: z.array(z.object({ previous: RemoteNativeIdentitySchema, next: RemoteNativeIdentitySchema })
+    .strict()).max(1000).optional(),
   applicationAccessChange: z.object({ operationId: id, inputHash: digest,
     previous: z.enum(['scoped', 'none']), next: z.enum(['scoped', 'none']),
     state: z.enum(['reserved', 'applied']) }).strict().optional(),

@@ -446,10 +446,18 @@ export const GraphDraftRevertAppliedResultSchema = z.object({
 
 export const HarnessDefaultsUpdateInputSchema = z.object({
   ...RevisionMutationFields,
-  defaults: ManagementHarnessDefaultsSchema.safeExtend({ claude: ClaudeFullAccessConfigurationSchema.optional() }),
+  defaults: ManagementHarnessDefaultsSchema.describe('Unchanged incomplete presets may be retained. New, edited or explicitly selected Claude presets require Full access and supported app MCP connections.'),
   /** Explicitly select a preset even when its template values did not change. */
   configure: AgentHarnessSchema.array().max(3).optional(),
-}).strict();
+}).strict().superRefine((input, context) => {
+  if (!input.configure?.includes('claude') || !input.defaults.claude) return;
+  const result = ClaudeFullAccessConfigurationSchema.safeParse(input.defaults.claude);
+  if (!result.success) {
+    for (const issue of result.error.issues) {
+      context.addIssue({ ...issue, path: ['defaults', 'claude', ...issue.path] });
+    }
+  }
+});
 export const HarnessConfigurationCheckInputSchema = z.object({
   configuration: HarnessConfigurationSchema,
 }).strict();
@@ -597,8 +605,8 @@ export const OperatorToolNameSchema = z.enum([
   ...DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES,
   "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list", "source_preparation_get", "source_preparation_reconcile",
   "job_runtime_profile_list","job_runtime_profile_save","job_runtime_qualification_request","job_runtime_qualification_run","job_runtime_qualification_get","build_computer_prepare","build_computer_prepare_get",
-  "job_choices_get","job_workflow_execution_get","job_definition_list","job_definition_get","job_definition_version_get","job_definition_save","job_validate","job_start","job_queue_get","job_queue_list","job_queue_cancel","job_get","job_list","job_cancel","job_cancellation_recovery_propose","job_cancellation_recovery_get","job_logs_read","job_artifacts_list","job_artifact_read",
-  "build_computer_get", "build_computer_update", "computer_activity_list", "computer_accounts_list", "computer_github_login_start", "computer_github_login_status", "computer_github_logout", "computer_drive_connect_start", "computer_drive_connect_status", "computer_drive_disconnect",
+  "job_choices_get","job_workflow_execution_get","job_definition_list","job_definition_get","job_definition_version_get","job_definition_save","job_validate","job_launch_validate","job_start","job_queue_get","job_queue_list","job_queue_cancel","job_get","job_list","job_cancel","job_cancellation_recovery_propose","job_cancellation_recovery_get","job_logs_read","job_artifacts_list","job_artifact_read",
+  "build_computer_get", "build_computer_update", "build_computers_update", "computer_activity_list", "computer_accounts_list", "computer_github_login_start", "computer_github_login_status", "computer_github_logout", "computer_github_setup_git", "computer_drive_connect_start", "computer_drive_connect_complete", "computer_drive_connect_status", "computer_drive_connect_cancel", "computer_drive_disconnect",
   "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
   "device_setup_code_create",
   "device_setup_options_get",
@@ -663,7 +671,7 @@ export const OperatorToolNameSchema = z.enum([
   "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive", "workflow_batch_archive",
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_draft_layout", "graph_draft_revert_applied", "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1", "run_history_get_v1",
-  "run_events_list", "run_handoffs_get_v1", "run_activities_get_v1", "run_node_placement_get", "run_start", "run_stop",
+  "run_events_list", "run_handoffs_get_v1", "run_activities_get_v1", "run_node_placement_get", "workflow_node_placement_choices", "run_start", "run_stop",
   "run_subagents_list_v1", "run_subagent_get_v1", "run_subagent_messages_list_v1", "run_subagent_tools_list_v1",
   "run_subagent_input_v1", "run_subagent_interrupt_v1", "run_subagent_respond_v1",
   "interaction_list", "interaction_get", "interaction_respond",

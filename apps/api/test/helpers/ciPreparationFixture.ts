@@ -73,6 +73,7 @@ export function preparationProfile(id: string, name: string, deviceId: string, r
 type Stage = 'source' | 'root' | 'profile' | 'refresh' | 'capture' | 'qualify'
 export async function ciPreparationFixture(options: {
   prepareFails?: boolean; disabled?: boolean; statusDrops?: number; loseRefreshAck?: boolean
+  refreshGate?: Promise<void>
   pause?(stage: Stage): Promise<void>
 } = {}) {
   const data = ciFixture()
@@ -132,6 +133,7 @@ export async function ciPreparationFixture(options: {
     },
     refresh: async (input: { operationId: string; prepared: PreparedCiRuntime }) => {
       calls.refresh.push(input)
+      await options.refreshGate
       refreshRecord = { operationId: input.operationId, commit: input.prepared.commit, ok: true, log: 'exit=0' }
       return { unit: 'refresh', workerUnit: 'worker.service' }
     },
@@ -257,5 +259,6 @@ export async function ciPreparationFixture(options: {
     throw new Error('Preparation did not settle.')
   }
   return { ...data, app, call, settle, calls, profiles, sources, profileService, pool, ciRuntime,
-    createProvisioner, memory, principals, commands, endpoint, disable: () => { disabled = true } }
+    createProvisioner, memory, principals, commands, endpoint, disable: () => { disabled = true },
+    workerState: () => worker.handle({ operation: 'status' }) }
 }

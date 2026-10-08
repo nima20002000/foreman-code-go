@@ -1,5 +1,13 @@
 import type { ExecutionResult } from '@foreman-code/contracts'
 
+export function isDefiniteCompactionRejection(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  return 'certainty' in error && error.certainty === 'definite'
+    || 'deliveryState' in error && error.deliveryState === 'not-delivered'
+    || 'method' in error && error.method === 'thread/compact/start'
+      && 'uncertain' in error && error.uncertain === false
+}
+
 export class HarnessExecutionError extends Error {
   readonly result: ExecutionResult
 

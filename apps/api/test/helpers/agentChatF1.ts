@@ -105,6 +105,20 @@ export class F1Store {
       this.sessionControls.set(conversationId, JSON.parse(String(values[1])) as SessionControlState)
       return result([], 1)
     }
+    if (sql.startsWith('with target as materialized') && sql.includes('update conversation_session_controls')) {
+      const conversationId = String(values[0])
+      const previous = this.sessionControls.get(conversationId)
+      if (!previous || this.row.id !== conversationId || this.row.active_request_id !== values[1]
+        || this.row.native_session_id !== values[2] || this.row.deleted_at
+        || previous.profileKey !== values[3]) return result()
+      const applied = JSON.parse(String(values[4])) as Pick<SessionControlState, 'appliedMode'>
+      const matchesDesired = previous.desiredMode === applied.appliedMode
+        && JSON.stringify(previous.desired) === JSON.stringify(previous.applied)
+      const next = { ...previous, ...applied, revision: previous.revision + 1,
+        applicability: matchesDesired ? 'applied' as const : previous.applicability }
+      this.sessionControls.set(conversationId, next)
+      return result([], 1)
+    }
     if (sql.startsWith('select record from conversation_session_defaults')) return result()
     if (sql.startsWith('insert into conversation_session_controls(conversation_id,record)')) {
       const conversationId = String(values[0])

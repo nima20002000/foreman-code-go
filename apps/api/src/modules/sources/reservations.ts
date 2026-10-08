@@ -7,8 +7,17 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 import { isDeepStrictEqual } from 'node:util'
 import { DomainError } from '../errors.js'
 import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
+import type { SourceOperationOwner, SourceReservationReclamation } from '@foreman-code/contracts/source-operations'
 
-export type SourceReservation = { reservationId: string; scopeId: string; ownerKind: 'capture' | 'transfer' | 'materialization'; ownerId: string; reservedBytes: number }
+export type SourceReservation = { reservationId: string; scopeId: string; ownerKind: 'capture' | 'transfer' | 'materialization'; ownerId: string; reservedBytes: number;
+  preparation?: SourceOperationOwner; reclamation?: SourceReservationReclamation }
+export async function requireUnreclaimedSourceOperation(sql: GraphSqlClient, operationId: string): Promise<void> {
+  const fenced = await sql.query(`select 1 from source_storage_reservations
+    where owner_kind='materialization' and owner_id=$1 and (record ? 'reclamation' or state='reclaimed')`, [operationId])
+  if (fenced.rowCount) {
+    throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original source reservation is being reclaimed.', 409)
+  }
+}
 export const SOURCE_AGGREGATE_LIMITS = Object.freeze({ bytes: 1024 * 1024 * 1024, preparing: 4, materializations: 2 })
 export function verificationSourceStorageBytes(profile: JobVerificationProfile): number {
   const fingerprint = profile.measurement?.fingerprint
@@ -65,8 +74,23 @@ export class PostgresSourceReservations {
     const existing = (await sql.query<{ record: SourceReservation; state: string }>(
       'select record,state from source_storage_reservations where owner_kind=$1 and owner_id=$2 for update', [request.ownerKind, request.ownerId])).rows[0]
     if (existing) {
-      if (!isDeepStrictEqual({ ...existing.record, reservationId: undefined }, { ...request, reservationId: undefined }) || existing.state === 'reclaimed')
+      if (existing.record.reclamation) {
+        throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original source reservation is being reclaimed.', 409)
+      }
+      const { preparation: existingPreparation, ...existingRequest } = existing.record
+      const { preparation: requestedPreparation, ...requested } = request
+      if (!isDeepStrictEqual({ ...existingRequest, reservationId: undefined }, { ...requested, reservationId: undefined })
+        || existingPreparation && requestedPreparation && !isDeepStrictEqual(
+          { ...existingPreparation, identity: { ...existingPreparation.identity, expiresAt: null } },
+          { ...requestedPreparation, identity: { ...requestedPreparation.identity, expiresAt: null } })
+        || existing.state === 'reclaimed')
         throw new DomainError('SOURCE_RESERVATION_CONFLICT', 'The source reservation identity or retained bytes changed.', 409)
+      if (!existingPreparation && requestedPreparation) {
+        const record = { ...existing.record, preparation: requestedPreparation }
+        await sql.query('update source_storage_reservations set record=$2::jsonb where reservation_id=$1',
+          [record.reservationId, JSON.stringify(record)])
+        return record
+      }
       return existing.record
     }
     const totals = (await sql.query<{ bytes: string; verification_bytes: string; preparing: string; materializations: string }>(`select

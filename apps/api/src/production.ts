@@ -50,6 +50,8 @@ import { EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
 import { RunPlacementReadService } from './modules/placement/readService.js'
+import { NodePlacementChoicesService } from './modules/placement/choicesService.js'
+import { ProductionPlacementChoiceDiscovery } from './modules/placement/choiceDiscovery.js'
 import { readRemoteObservations } from './modules/runs/remote/persistence.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
@@ -1378,6 +1380,12 @@ export function buildProductionApp(
     // Reads and lifecycle mutations share the same canonical V3 journal.
     runGraph: new RunGraphReadService(database.pool, { qualifiedReads: true }),
     runPlacements: new RunPlacementReadService(database.pool, readRemoteObservations),
+    placementChoices: new NodePlacementChoicesService(database.pool, new ProductionPlacementChoiceDiscovery(
+      database.pool, () => {
+        if (!jobRuntime) throw new DomainError('PLACEMENT_CHOICES_UNAVAILABLE', 'Computer choices are not initialized.', 503)
+        return { roots: jobRuntime.policies, sources: jobRuntime.sources, profiles: hostSettings, registry: harnessRegistry }
+      },
+    )),
   }
   const detection = new McpDetectionService({
     async inspect(input) {
@@ -1708,10 +1716,13 @@ export function buildProductionApp(
         () => deviceRuntime.endpointForDomains(), commands)
       registerComputerAccountsRoutes(app, runtimeServices.computerAccounts)
       runtimeServices.computerGitHub = new ComputerGitHubService(database.pool, machine.installationId,
-        () => deviceRuntime.endpointForDomains(), commands)
+        () => deviceRuntime.endpointForDomains(), commands, {
+          accountChanged: target => runtimeServices.computerAccounts!.invalidate(target),
+        })
       registerComputerGitHubRoutes(app, runtimeServices.computerGitHub)
       runtimeServices.computerDrive = new ComputerDriveService(database.pool, machine.installationId,
-        () => deviceRuntime.endpointForDomains(), commands)
+        () => deviceRuntime.endpointForDomains(), commands,
+        { changed: target => runtimeServices.computerAccounts!.invalidate(target) })
       registerComputerDriveRoutes(app, runtimeServices.computerDrive)
       runtimeServices.buildComputers = jobRuntime.buildComputers
       registerBuildComputerRoutes(app, jobRuntime.buildComputers)
@@ -1812,6 +1823,7 @@ export function buildProductionApp(
     if (reconciliation) return reconciliation
     reconciliation = (async () => {
       if (jobRuntime) await jobRuntime.reconcileFailedCaptures(report)
+      if (jobRuntime) await jobRuntime.reconcileMaterializationReservations(report)
       if (jobRuntime) await closeCompletedWorkflowSources(database.pool, jobRuntime.sources, report)
       if (jobRuntime) await jobRuntime.sources.releaseUnusedSnapshots(report)
       await localNativeOutputMcp?.cleanupClosed()

@@ -1,19 +1,22 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { copyFile, readFile, writeFile, chmod } from 'node:fs/promises'
+import { copyFile, readFile, readdir, writeFile, chmod } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import type { SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import { InstalledVerificationRuntimeCaptureInputSchema, InstalledVerificationRuntimeConfigurationSchema,
-  type InstalledVerificationRuntimeCaptureInput } from './installedVerificationConfiguration.js'
+  type InstalledVerificationRuntimeCaptureInput, type InstalledVerificationRuntimeConfiguration }
+  from './installedVerificationConfiguration.js'
 import type { JobResourceRequest, PreparedCiRuntime } from '@foreman-code/contracts'
+import { InstalledJobRuntimeConfigurationRecordSchema } from './installedRuntimeHost.js'
 
 const run = promisify(execFile)
 
 /** The next protected runtime: the current installation with the prepared image, seed, qualification source and root. */
 export function nextCaptureInput(current: unknown, prepared: PreparedCiRuntime, input: {
   root: SourceRootRecord; manifest: SourceManifest; seedReceiptPath: string; resources: JobResourceRequest
+  toolSources?: InstalledVerificationRuntimeCaptureInput['toolSources']
 }): InstalledVerificationRuntimeCaptureInput {
   const configuration = InstalledVerificationRuntimeConfigurationSchema.parse(current)
   const { bootId: _boot, runtimeBinarySha256: _runtime, ociBinarySha256: _oci, configurationDigest: _configuration,
@@ -26,8 +29,13 @@ export function nextCaptureInput(current: unknown, prepared: PreparedCiRuntime, 
       imageManifestDigest: prepared.imageManifestDigest, sourceCommit: prepared.commit },
     seedReceiptPath: input.seedReceiptPath,
     qualificationSource: { directory: prepared.qualificationSource, manifest: input.manifest },
-    toolSources: [{ kind: 'codex', executable: prepared.unitCodex.executable,
-      sourceExecutable: prepared.unitCodex.sourceExecutable, version: prepared.unitCodex.version }],
+    toolSources: input.toolSources ?? [
+      ...configuration.machine.tools.filter(tool => tool.kind !== 'codex').map(tool => ({
+        kind: tool.kind, executable: tool.executable, sourceExecutable: tool.executable, version: tool.version,
+      })),
+      { kind: 'codex', executable: prepared.unitCodex.executable,
+        sourceExecutable: prepared.unitCodex.sourceExecutable, version: prepared.unitCodex.version },
+    ],
   })
 }
 
@@ -37,7 +45,9 @@ export async function scheduleCiRuntimeRefresh(input: {
   operationId: string
   stateDirectory: string; prepared: PreparedCiRuntime; root: SourceRootRecord; manifest: SourceManifest
   resources: JobResourceRequest; environment?: NodeJS.ProcessEnv
+  drain(): Promise<void>
 }): Promise<{ unit: string; workerUnit: string }> {
+  await input.drain()
   const environment = input.environment ?? process.env
   const configurationPath = join(input.stateDirectory, 'job-runtime.json')
   const currentBytes = await readFile(configurationPath)
@@ -46,8 +56,10 @@ export async function scheduleCiRuntimeRefresh(input: {
   const seedReceiptPath = join(base, `installed-seed-receipt-${short}.json`)
   await copyFile(input.prepared.seedReceiptPath, seedReceiptPath)
   await chmod(seedReceiptPath, 0o600)
-  const captureInput = nextCaptureInput(JSON.parse(currentBytes.toString('utf8')), input.prepared,
-    { root: input.root, manifest: input.manifest, seedReceiptPath, resources: input.resources })
+  const configuration = InstalledVerificationRuntimeConfigurationSchema.parse(JSON.parse(currentBytes.toString('utf8')))
+  const toolSources = await recaptureCiTools(configuration.machine.tools, input.prepared, base, environment)
+  const captureInput = nextCaptureInput(configuration, input.prepared,
+    { root: input.root, manifest: input.manifest, seedReceiptPath, resources: input.resources, toolSources })
   const refreshPath = join(base, `reviewed-refresh-${short}.json`)
   await writeFile(refreshPath, JSON.stringify({ expectedConfigurationSha256: createHash('sha256').update(currentBytes).digest('hex'),
     captureInput }), { mode: 0o600 })
@@ -91,4 +103,43 @@ export async function currentCiRuntimePaths(stateDirectory: string): Promise<str
   if (!text) return []
   const configuration = JSON.parse(text) as { qualificationSource?: { directory?: unknown } }
   return typeof configuration.qualificationSource?.directory === 'string' ? [configuration.qualificationSource.directory] : []
+}
+
+/** Protected previous configurations remain recovery inputs after a refresh. */
+export async function retainedCiRuntimeImages(stateDirectory: string): Promise<string[]> {
+  const images: string[] = []
+  for (const name of await readdir(stateDirectory)) {
+    if (!/^job-runtime(?:-[a-f0-9]{64})?\.json$/u.test(name)) continue
+    const configuration = InstalledJobRuntimeConfigurationRecordSchema.parse(
+      JSON.parse(await readFile(join(stateDirectory, name), 'utf8')))
+    images.push(configuration.schemaVersion === 2 ? configuration.machine.imageDigest : configuration.pins.imageDigest)
+  }
+  return images
+}
+
+export async function recaptureCiTools(
+  tools: InstalledVerificationRuntimeConfiguration['machine']['tools'],
+  prepared: PreparedCiRuntime, directory: string, environment: NodeJS.ProcessEnv,
+): Promise<InstalledVerificationRuntimeCaptureInput['toolSources']> {
+  const sources: InstalledVerificationRuntimeCaptureInput['toolSources'] = [{ kind: 'codex',
+    executable: prepared.unitCodex.executable, sourceExecutable: prepared.unitCodex.sourceExecutable,
+    version: prepared.unitCodex.version }]
+  const container = (await run('podman', ['--remote=false', 'create', prepared.imageId, 'true'],
+    { env: environment })).stdout.trim()
+  try {
+    for (const tool of tools.filter(tool => tool.kind !== 'codex')) {
+      const sourceExecutable = join(directory, `ci-tool-${tool.kind}-${prepared.commit.slice(0, 12)}`)
+      await run('podman', ['--remote=false', 'cp', `${container}:${tool.executable}`, sourceExecutable], { env: environment })
+      await chmod(sourceExecutable, 0o700)
+      const result = await run('podman', ['--remote=false', 'run', '--rm', '--pull=never', '--network=none', '--read-only',
+        '--cap-drop=all', '--security-opt=no-new-privileges', '--cpus=1', '--memory=512m', '--pids-limit=64',
+        `--entrypoint=${tool.executable}`, prepared.imageId, '--version'], { env: environment })
+      let version = result.stdout.trim()
+      if (tool.kind === 'postgresql') version = /PostgreSQL\)\s+(\S+)/u.exec(version)?.[1] ?? version
+      sources.push({ kind: tool.kind, executable: tool.executable, sourceExecutable, version })
+    }
+  } finally {
+    await run('podman', ['--remote=false', 'rm', container], { env: environment })
+  }
+  return sources
 }

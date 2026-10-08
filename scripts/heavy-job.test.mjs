@@ -275,13 +275,17 @@ for (const pgidRecorded of [false, true]) test(`detached worker retains a dead r
 test('a coordinator crash at spawn leaves acquiring provenance in every marker', { timeout: 6000 }, async () => {
   const f = fixture()
   try {
-    const scriptPath = join(f.first, 'scripts/heavy-job.mjs')
-    const script = readFileSync(scriptPath, 'utf8')
-    const spawnLine = "    child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment, detached: true })"
-    assert.ok(script.includes(spawnLine))
-    writeFileSync(scriptPath, script.replace(spawnLine, "    process.kill(process.pid, 'SIGKILL')\n" + spawnLine))
-    const result = await run(f.first, ['--', process.execPath, '-e', 'process.exit(0)'])
-    assert.equal(result.child.signalCode, 'SIGKILL', result.output)
+    const crashHook = join(f.home, 'crash-at-spawn.mjs')
+    writeFileSync(crashHook, `
+      import childProcess from 'node:child_process'
+      import { syncBuiltinESMExports } from 'node:module'
+      childProcess.spawn = () => { process.kill(process.pid, 'SIGKILL') }
+      syncBuiltinESMExports()
+    `)
+    const result = spawnSync(process.execPath,
+      ['--import', crashHook, 'scripts/heavy-job.mjs', '--', process.execPath, '-e', 'process.exit(0)'],
+      { cwd: f.first, env: jobEnv(f.first), encoding: 'utf8', timeout: 4000 })
+    assert.equal(result.signal, 'SIGKILL', result.stderr || result.error?.message)
     const ticket = join(f.state, 'queue', readdirSync(join(f.state, 'queue'))[0])
     const active = join(f.state, 'active', 'owner.json')
     const temp = join(f.tempRoot, readdirSync(f.tempRoot)[0], 'owner.json')
@@ -290,7 +294,6 @@ test('a coordinator crash at spawn leaves acquiring provenance in every marker',
       assert.equal(record.phase, 'acquiring')
       assert.equal(record.pgid, null)
     }
-    copyFileSync(source, scriptPath)
     mockProc(f, `function readFileSync(path, ...args) { if (path === '/proc/99999998/environ') throw Object.assign(new Error('fixture denied'), { code: 'EACCES' }); return actualReadFileSync(path, ...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? ['99999998'] : actualReaddirSync(path, ...args) }`)
     const next = await probe(f)
     assert.match(next.output, /queued .*waiting/)

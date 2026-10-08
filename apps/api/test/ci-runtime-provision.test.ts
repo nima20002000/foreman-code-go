@@ -4,6 +4,26 @@ import { ciPreparationFixture as fixture, qualifiedPreparationProfile, dexter, o
   from './helpers/ciPreparationFixture.js'
 
 describe('build computer CI runtime preparation over the authenticated MCP endpoint', () => {
+  it('reports draining through MCP and delays qualification until the Worker finishes its active work', async () => {
+    let finish!: () => void
+    const refreshGate = new Promise<void>(resolve => { finish = resolve })
+    const f = await fixture({ refreshGate })
+    try {
+      await f.call('build_computer_prepare', { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'prepare-drain' })
+      for (let attempt = 0; attempt < 500 && !f.calls.refresh.length; attempt++) {
+        await new Promise(resolve => setImmediate(resolve))
+      }
+      expect(f.calls.refresh).toHaveLength(1)
+      expect(await f.workerState()).toMatchObject({ state: 'refreshing', stage: 'draining', commit })
+      const status = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId, profileId: 'p-unit' })
+      expect(BuildComputerPrepareStatusSchema.parse(status.structuredContent).state).toBe('refreshing')
+      expect(f.calls.qualified).toEqual([])
+      finish()
+      expect(await f.settle('p-unit')).toMatchObject({ state: 'qualified', commit })
+      expect(f.profiles.get('p-unit')).toMatchObject({ revision: 4, status: 'qualified', sourceCommit: commit })
+    } finally { finish(); await f.app.close() }
+  })
+
   it('prepares the computer, moves its profiles to the new image and root, refreshes it and requalifies them', async () => {
     const f = await fixture()
     try {
@@ -51,6 +71,32 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.audits).toContainEqual({ principalId: f.readonly.id, action: 'build_computer_prepare', outcome: 'denied' })
     } finally { await f.app.close() }
   })
+
+  it('lets a reader follow preparation and retained profiles while denying a repeat start', async () => {
+    const f = await fixture()
+    try {
+      await f.call('build_computer_prepare', { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'prepare-readback' })
+      await f.settle('p-unit')
+      const retained = structuredClone(f.profiles.get('p-unit'))
+      const read = await f.call('build_computer_prepare_get', {
+        workspaceId: f.workspaceId, profileId: 'p-unit',
+      }, 'reader')
+      expect(read.isError).not.toBe(true)
+      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toMatchObject({
+        state: 'qualified', commit, profiles: expect.arrayContaining([
+          { profileId: 'p-unit', revision: 4, status: 'qualified' },
+        ]),
+      })
+      const preparedCount = f.calls.prepare.length
+      const denied = await f.call('build_computer_prepare', {
+        workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'reader-repeat',
+      }, 'reader')
+      expect(denied.isError).toBe(true)
+      expect(f.calls.prepare).toHaveLength(preparedCount)
+      expect(f.profiles.get('p-unit')).toEqual(retained)
+    } finally { await f.app.close() }
+  })
+
 })
 
 describe('runtime preparation ownership and recovery', () => {

@@ -61,17 +61,21 @@ export class IsolatedOpenCodeFixture extends FixtureServer {
     try {
       await new Promise<void>((resolve, reject) => {
         let output = ''
+        let stderr = ''
         const finish = (error?: unknown) => {
           signal.removeEventListener('abort', aborted)
           child.stdout.removeListener('data', data)
+          child.stderr.removeListener('data', diagnostics)
           child.removeListener('error', failed)
-          child.removeListener('exit', exited)
+          child.removeListener('close', exited)
           if (error) reject(error)
           else resolve()
         }
         const aborted = () => finish(signal.reason)
         const failed = (error: Error) => finish(error)
-        const exited = () => finish(new Error('The isolated fixture exited before verifying its vault.'))
+        const diagnostics = (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4096) }
+        const exited = (code: number | null, exitSignal: NodeJS.Signals | null) => finish(new Error(
+          `The isolated fixture exited before verifying its vault (exit=${code}, signal=${exitSignal}): ${stderr}`))
         const data = (chunk: Buffer) => {
           output += chunk.toString()
           isolation.observe(output)
@@ -81,8 +85,9 @@ export class IsolatedOpenCodeFixture extends FixtureServer {
         }
         signal.addEventListener('abort', aborted, { once: true })
         child.once('error', failed)
-        child.once('exit', exited)
+        child.once('close', exited)
         child.stdout.on('data', data)
+        child.stderr.on('data', diagnostics)
         if (signal.aborted) aborted()
       })
       child.stdout.resume()

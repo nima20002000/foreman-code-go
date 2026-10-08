@@ -5,6 +5,7 @@ import {
   JobAvailableCapacitySchema,
   JobBuildQueueConfigurationSchema,
   JobAdmissionResultSchema,
+  JobLaunchValidationInputSchema, JobLaunchValidationSchema,
 } from './jobAdmission.js'
 import { AutoJobDefinitionSpecSchema, jobPolicyRequirements, AcceptedJobSpecSchema } from './jobs.js'
 import { verificationFixture, verificationId, verificationTime, verificationDigest } from '../tests/helpers/jobVerification.js'
@@ -20,6 +21,17 @@ describe('pending Job admission', () => {
       .success).toBe(false)
     expect(JobQueuedStartSchema.safeParse({ commandId: 'start', definitionId: 'definition', expectedRevision: 1,
       runtimePreparation }).success).toBe(false)
+  })
+  it('validates the launch revision and placement separately from current readiness', () => {
+    const { build } = verificationFixture()
+    const input = { definitionId: 'build', expectedRevision: 1,
+      placementOverride: { kind: 'explicit', target: build.target } }
+    expect(JobLaunchValidationInputSchema.parse(input)).toEqual(input)
+    expect(JobLaunchValidationInputSchema.safeParse({ ...input, expectedRevision: 0 }).success).toBe(false)
+    expect(JobLaunchValidationSchema.parse({ valid: false, canQueue: true,
+      reasons: ['offline'], sideEffects: false })).toMatchObject({ valid: false, canQueue: true })
+    expect(JobLaunchValidationSchema.safeParse({ valid: false, reasons: ['offline'], sideEffects: false }).success)
+      .toBe(false)
   })
   it('reads a retained concrete execution without fabricating a queue ticket or widening accepted placement', () => {
     const { acceptedBuild, ticket } = verificationFixture()

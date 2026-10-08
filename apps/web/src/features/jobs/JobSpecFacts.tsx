@@ -1,5 +1,5 @@
 import { isAutoJobSpecRecord, type JobDefinitionSpecRecord, type JobAcceptedSpecRecord } from '@foreman-code/contracts/job-verification'
-import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
+import type { JobPlacementIntent, JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { CodeBlock } from '../../shared/ui/nocturne'
 import { jobNetworkLabel, queueLabel } from './model'
 
@@ -18,7 +18,12 @@ export function JobQueueFacts({ ticket }: { ticket: JobQueueTicket }) {
   }
   return <dl className="job-facts">
     <dt>Queue status</dt><dd>{queueLabel(ticket)}</dd>
-    <dt>Computer</dt><dd>{computer}</dd>
+    {ticket.placement.kind === 'prefer' && <>
+      <dt>Preferred computer</dt><dd>{ticket.placement.hostRef.kind === 'device'
+        ? ticket.placement.hostRef.deviceId : `Main computer (${ticket.placement.hostRef.mainId})`}</dd>
+      <dt>Fallback policy</dt><dd>Then try eligible computers in build priority order.</dd>
+    </>}
+    <dt>{ticket.state === 'accepted' ? 'Accepted computer' : 'Computer assignment'}</dt><dd>{computer}</dd>
     {ticket.selectedComputer && <>
       <dt>Reserved root</dt><dd>{ticket.selectedComputer.target.destination.canonicalProjectRoot}</dd>
       <dt>Root binding</dt><dd>{ticket.selectedComputer.rootId} · revision {ticket.selectedComputer.bindingRevision}</dd>
@@ -38,9 +43,15 @@ export function JobQueueFacts({ ticket }: { ticket: JobQueueTicket }) {
   </dl>
 }
 
-export function JobSpecFacts({ spec }: { spec: JobDefinitionSpecRecord | JobAcceptedSpecRecord }) {
+export function JobSpecFacts({ spec, placementOverride }: {
+  spec: JobDefinitionSpecRecord | JobAcceptedSpecRecord
+  placementOverride?: JobPlacementIntent
+}) {
   const policy = spec.policy
-  const target = isAutoJobSpecRecord(spec) ? undefined : spec.target
+  let target = isAutoJobSpecRecord(spec) ? undefined : spec.target
+  if (placementOverride) {
+    target = placementOverride.kind === 'explicit' ? placementOverride.target : undefined
+  }
   return <div className="job-spec">
     <h3>Exact command</h3><CodeBlock code={JSON.stringify(spec.argv)} language="json" />
     <dl className="job-facts">

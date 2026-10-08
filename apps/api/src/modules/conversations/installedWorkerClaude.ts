@@ -5,7 +5,6 @@ import type { DeviceApplicationResult } from '@foreman-code/contracts/device-app
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import type { WorkerConversationBinding, WorkerConversationConfiguration,
   WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
-import type { NativeSessionReference } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { inspectInstalledClaude } from '../harnesses/installedClaudeInspection.js'
 import { compileClaudeConfiguration } from '../harnesses/claudeSdk/configuration.js'
@@ -15,14 +14,14 @@ import { loadInstalledClaudeSdk, loadOfficialClaudeSdk } from '../harnesses/clau
 import { allocateClaudeNativeHarness } from '../harnesses/claudeSdk/composition.js'
 import { claudeProductionMcpInspector } from '../harnesses/claudeSdk/productionMcpInspector.js'
 import { appMcpServerName, isSupportedAppMcpServerName } from '../harnesses/appMcpLauncher.js'
-import type { NativeProcessRegistry, NativeLaunchObservation } from '../harnesses/recovery/processRegistry.js'
+import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { createUnboundWorkerMcpEndpoint } from '../runs/remote/workerMcpEndpoint.js'
 import { installedConversationDirectory } from './installedConversationDirectory.js'
 import { createInstalledClaudeConversationProfile } from './installedClaudeConversationProfile.js'
 import { createWorkerClaudeAuthority } from './workerClaudeAuthority.js'
 import { prepareWorkerConversationMcp } from './workerMcpAccess.js'
-import { workerConversationProcessDigest } from './workerNativeOwner.js'
+import { createWorkerClaudeOwner } from './workerClaudeOwner.js'
 import type { workerConversationCallbacks } from './workerCallbacks.js'
 import type { WorkerConversationAllocation } from './workerHost.js'
 import { createWorkerClaudeFiles } from './workerClaudeFiles.js'
@@ -118,8 +117,11 @@ export async function allocateInstalledWorkerClaude(input: {
   }
   const callbackConfiguration = { ...compiled.configuration, mcpServers: { ...compiled.configuration.mcpServers,
     ...(mcp && configured?.type === 'http' ? { [serverName]: { ...configured, url: mcp.endpoint } } : {}) } }
+  const nativeOwner = createWorkerClaudeOwner({ binding, owner, registry: input.registry, journal: input.journal,
+    current: input.current })
   const authority = createWorkerClaudeAuthority({ configuration: callbackConfiguration,
     version: original.accepted.currentBinding.pin.cliVersion, signal: input.signal, source: input.source,
+    beginOwnerChange: nativeOwner.beginOwnerChange, refreshOwner: nativeOwner.refreshOwner,
     callbackJournal: input.journal.claudeCallbackJournal(binding), request: input.callbacks.claudeAuthority })
   const runner = createClaudeSdkRunner({ loadClient: async () => {
     await before(input.signal)
@@ -190,7 +192,6 @@ export async function allocateInstalledWorkerClaude(input: {
   }
   const inspect = claudeProductionMcpInspector({ manager: () => manager, start: inspectionStart,
     workingDirectory: binding.workingDirectory, cliVersion: original.accepted.currentBinding.pin.cliVersion })
-  let launch: NativeLaunchObservation | undefined
   return { manager, start,
     recoverClaudeAuthority: authority.recover,
     inspector: { async inspect(request) {
@@ -207,16 +208,7 @@ export async function allocateInstalledWorkerClaude(input: {
         correlationId: `inspection:${binding.owner.conversationId}`, instructionsDelivered: true,
       })
     },
-    async nativeOwner(session: NativeSessionReference) {
-      const rows = input.registry.snapshot().launches.filter(value => value.owner === owner && value.lifecycle === 'active')
-      let current = rows.length === 1 ? rows[0] : undefined
-      if (launch) current = rows.find(value => value.launchId === launch!.launchId)
-      if (!current?.guardian || !current.provider || !current.boundary || launch && !isDeepStrictEqual(current, launch)) {
-        throw new DomainError('WORKER_CONVERSATION_UNAVAILABLE', 'The original Claude process is unavailable or changed.', 409)
-      }
-      launch ??= current
-      return { sessionId: session.nativeSessionId, processIdentityDigest: workerConversationProcessDigest(binding, current) }
-    },
+    nativeOwner: nativeOwner.nativeOwner,
     async close() {
       await manager.dispose?.()
       authority.bridge.close()

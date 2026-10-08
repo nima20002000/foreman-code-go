@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import type { JobInitiatingAgent } from '@foreman-code/contracts/jobs'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { intersectGrants } from '../access/operatorDelegation.js'
@@ -18,7 +19,12 @@ export const CI_PREPARATION_ACTIONS: ManagementAction[] = [
 ]
 export interface CiAuthority {
   resolve(caller: ManagementPrincipal, workspaceId: string | undefined, actions: ManagementAction[]):
-    Promise<{ principal: ManagementPrincipal; workspaceId: string; executionId?: string | undefined }>
+    Promise<{
+      principal: ManagementPrincipal
+      workspaceId: string
+      executionId?: string | undefined
+      initiatingAgent?: JobInitiatingAgent | undefined
+    }>
 }
 
 export class RunCiAuthority implements CiAuthority {
@@ -31,6 +37,7 @@ export class RunCiAuthority implements CiAuthority {
       let principalId = caller.id
       let workspaceId = requestedWorkspace
       let executionId: string | undefined
+      let initiatingAgent: JobInitiatingAgent | undefined
       if (caller.audience === 'worker') {
         await assertWave25WorkerBinding(sql, caller.id)
         const binding = (await sql.query<{ workspace_id: string; workflow_id: string; run_id: string;
@@ -49,6 +56,12 @@ export class RunCiAuthority implements CiAuthority {
         workspaceId = binding.workspace_id
         principalId = binding.authorization_principal_id
         executionId = binding.execution_id ?? undefined
+        if (executionId) initiatingAgent = {
+          workflowId: binding.workflow_id,
+          runId: binding.run_id,
+          agentId: caller.agentId!,
+          executionId,
+        }
       }
       if (!workspaceId) throw new DomainError('INVALID_REQUEST', 'Operator CI requires workspaceId.', 400)
       const accepted = (await currentOperatorAuthority(sql, principalId)).principal
@@ -61,7 +74,7 @@ export class RunCiAuthority implements CiAuthority {
         : accepted.expiresAt }
       for (const action of actions) requireAuthorization(principal, action, { workspaceId })
       await sql.query('commit')
-      return { principal, workspaceId, executionId }
+      return { principal, workspaceId, executionId, initiatingAgent }
     } catch (error) {
       await sql.query('rollback')
       throw error

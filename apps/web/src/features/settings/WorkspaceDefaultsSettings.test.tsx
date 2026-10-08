@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -31,8 +31,11 @@ describe('Workspace defaults',()=>{
     await user.click(screen.getByRole('button',{name:'Save workspace defaults'}))
     await waitFor(()=>expect(screen.getByRole('button',{name:'Save workspace defaults'})).toBeDisabled())
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
-    expect(screen.getByText('Changes are saved to the server.')).toBeVisible()
-    expect(screen.getByText('Workspace defaults saved')).toBeVisible()
+    const settings = within(screen.getByRole('region', { name: 'Workspace defaults' }))
+    expect(settings.getByText('Changes are saved to the server.')).toBeVisible()
+    const notifications = within(screen.getByRole('list', { name: 'Notifications' }))
+    expect(notifications.getByText('Workspace defaults saved')).toBeVisible()
+    expect(notifications.getByText('Changes are saved to the server.')).toBeVisible()
     expect(location.parentElement).toHaveTextContent('/projects')
     expect(name).toHaveValue('New project');expect(description).toHaveValue('A shared project workspace.')
     expect(screen.queryByLabelText(/Root path|Sandbox|Runner/)).not.toBeInTheDocument()

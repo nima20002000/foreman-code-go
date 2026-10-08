@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, renderHook, screen, waitFor, within } from '@testing-library/react'
-import { telemetrySelectorKey, type TelemetryReadResult, type TelemetrySelector } from '@foreman-code/contracts/resource-telemetry'
+import { TelemetryReadResultSchema, telemetrySelectorKey, type TelemetryReadResult, type TelemetrySelector } from '@foreman-code/contracts/resource-telemetry'
 import { resourceTelemetryFixtures as fixtures, telemetryComputerFixture, telemetryOwnedFixture, telemetrySelectionRaceFixture } from '@foreman-code/contracts/resource-telemetry-fixtures'
 import { delay, http, HttpResponse } from 'msw'
 import type { ReactNode } from 'react'
@@ -165,6 +165,40 @@ describe('useResourceTelemetryQuery', () => {
     await delay(400)
     expect(result.current.data?.selectorKey).toBe(keyOf(a2!.selector))
     expect(result.current.data?.result.kind).toBe('no-sample')
+  })
+
+  it('ignores a delayed sample from a replaced Worker installation', async () => {
+    fresh()
+    const old = { ...telemetryOwnedFixture, host: { ...telemetryOwnedFixture.host,
+      hostRef: { kind: 'device' as const, mainId: telemetryOwnedFixture.mainId,
+        deviceId: telemetryOwnedFixture.host.deviceId },
+      applicationInstallationId: 'old-worker', keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 } }
+    const replacement = { ...old, host: { ...old.host, applicationInstallationId: 'replacement-worker',
+      bootId: '44444444-4444-4444-8444-444444444444', connectionGeneration: 2 } }
+    const sample = forSelector(fixtures.freshZero!, old)
+    if (sample.kind !== 'sample') throw new Error('Expected a captured Worker sample')
+    sample.sample.identity = { mainId: old.mainId, host: old.host }
+    const oldSample = TelemetryReadResultSchema.parse(sample)
+    const gate = { release: () => {} }
+    const pending = new Promise<void>(resolve => { gate.release = resolve })
+    let oldRequested = false
+    server.use(http.post(route, async ({ request }) => {
+      const selector = await request.json() as TelemetrySelector
+      if (keyOf(selector) === keyOf(old)) {
+        oldRequested = true
+        await pending
+        return HttpResponse.json(oldSample)
+      }
+      return HttpResponse.json(noSample(replacement))
+    }))
+    const { result, rerender } = renderHook(({ selector }) => useResourceTelemetryQuery(selector),
+      { wrapper, initialProps: { selector: old } })
+    await waitFor(() => expect(oldRequested).toBe(true))
+    rerender({ selector: replacement })
+    await waitFor(() => expect(result.current.data?.result.kind).toBe('no-sample'))
+    await act(async () => { gate.release(); await pending })
+    expect(result.current.data?.selectorKey).toBe(keyOf(replacement))
+    expect(result.current.data?.result).toEqual(noSample(replacement))
   })
 
   it('keeps two nodes of the same Agent on separate selector keys and readings', async () => {

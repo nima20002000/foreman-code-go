@@ -62,6 +62,46 @@ describe.skipIf(!url)('Main qualification admission PostgreSQL and authenticated
     address=await app.listen({host:'127.0.0.1',port:0})
   },60000)
   afterAll(async()=>{await Promise.allSettled(clients.map(c=>c.close()));await app?.close();await pool?.end();if(admin){await dropFixtureSchema(admin, schema);await admin.end()}})
+  it('reads stored profile states consistently over HTTP and authenticated MCP and denies an ungranted caller', async () => {
+    const client = new Client({ name: 'profile-state-tests', version: '1' })
+    clients.push(client)
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    }))
+    const deniedToken = randomUUID()
+    await pool.query('insert into management_principals values($1,$2,$3,null,$4,$5::jsonb,$6,null,null)', [
+      'runtime-denied', 'No runtime access', 'operator',
+      createHash('sha256').update(deniedToken).digest('hex'), '[]', principal.expiresAt,
+    ])
+    const deniedClient = new Client({ name: 'denied-profile-state-tests', version: '1' })
+    clients.push(deniedClient)
+    await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      requestInit: { headers: { Authorization: `Bearer ${deniedToken}` } },
+    }))
+    const previous = (await pool.query<{ record: unknown }>(
+      'select record from job_runtime_profiles where id=$1', [profile.id],
+    )).rows[0]!.record
+    try {
+      for (const status of ['unqualified', 'qualified', 'failed', 'recovery-required'] as const) {
+        const stored = { ...profile, status }
+        await pool.query('update job_runtime_profiles set record=$2::jsonb where id=$1', [profile.id, JSON.stringify(stored)])
+        const read = await client.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId: profile.workspaceId } })
+        expect(read.isError).not.toBe(true)
+        const response = await app.inject({ url: `/api/management/workspaces/${profile.workspaceId}/jobs/runtime-profiles`,
+          headers: { authorization: `Bearer ${token}` } })
+        expect(response.statusCode).toBe(200)
+        expect(read.structuredContent).toEqual(response.json())
+        expect(response.json().profiles[0]).toMatchObject({ profile: stored, ready: false, sideEffects: false })
+        expect((await pool.query('select record from job_runtime_profiles where id=$1', [profile.id])).rows[0].record)
+          .toEqual(stored)
+      }
+      const denied = await deniedClient.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId: profile.workspaceId } })
+      expect(denied.isError).toBe(true)
+    } finally {
+      await pool.query('update job_runtime_profiles set record=$2::jsonb where id=$1', [profile.id, JSON.stringify(previous)])
+    }
+  })
+
   it('commits one exact lease, reads it over HTTP/MCP, denies foreign scope and enforces immutable storage',async()=>{
     const sql=await pool.connect()
     const input={candidate:{approvalId:uuid,qualificationId:uuid,operationId:uuid,fingerprint} as JobQualificationCandidate,runCommandId:'actual-command',runPrincipalId:principal.id,

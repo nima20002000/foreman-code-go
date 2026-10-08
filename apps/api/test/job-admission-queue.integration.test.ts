@@ -3,7 +3,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import type { JobDefinitionRecord } from '@foreman-code/contracts/job-verification'
-import { JobPendingAdmissionSchema, JobQueueTicketSchema, JobQueuePageSchema } from '@foreman-code/contracts/job-admission'
+import { JobPendingAdmissionSchema, JobQueueTicketSchema, JobQueuePageSchema,
+  JobLaunchValidationSchema } from '@foreman-code/contracts/job-admission'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -64,6 +65,66 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     return (await service.listQueue(reader.principal, f.workspaceId))
       .sort((a, b) => Number(BigInt(a.enqueueSequence) - BigInt(b.enqueueSequence)))
   }
+  it('persists Agent CI origin separately from graph membership and reads it through authenticated MCP', async () => {
+    const f = await fixture()
+    const scopedReader = await access.issue({ name: 'CI origin reader', audience: 'operator',
+      expiresAt: new Date(Date.now() + 300000), grants: [{
+        actions: ['jobs:read', 'capabilities:read'], scope: { workspaceIds: [f.workspaceId] },
+      }] })
+    const definition = await f.save()
+    const input = command(definition)
+    const initiatingAgent = { workflowId: 'workflow-origin', runId: 'run-origin',
+      agentId: 'agent-origin', executionId: 'execution-origin' }
+    const admission = await f.jobs.enqueue(f.principal, 'mcp', f.workspaceId, input, { initiatingAgent })
+    const id = admissionTicketId(admission)
+    await expect(f.jobs.enqueue(f.principal, 'mcp', f.workspaceId, input,
+      { initiatingAgent: { ...initiatingAgent, executionId: 'another-execution' } }))
+      .rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
+    f.online()
+    await f.jobs.wakeQueue()
+    await f.jobs.closeQueue()
+    const restarted = f.createService()
+    services.push(restarted)
+    const ticket = await restarted.getQueueTicket(scopedReader.principal, f.workspaceId, id)
+    expect(ticket).toMatchObject({ state: 'accepted', workflow: null, initiatingAgent })
+    const execution = await restarted.getExecution(scopedReader.principal, f.workspaceId, ticket.executionId)
+    expect(execution).toMatchObject({ workflow: null, initiatingAgent })
+    const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { jobs: restarted, commands: f.commands } as unknown as OperatorServices } })
+    apps.push(app)
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const client = new Client({ name: 'ci-origin-tests', version: '1' })
+    clients.push(client)
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+      { requestInit: { headers: { authorization: `Bearer ${scopedReader.token}` } } }))
+    const listed = await client.callTool({ name: 'job_queue_list', arguments: {
+      workspaceId: f.workspaceId, initiatingExecutionId: initiatingAgent.executionId,
+    } })
+    expect(JobQueuePageSchema.parse(listed.structuredContent).tickets).toEqual([ticket])
+    const unrelated = await client.callTool({ name: 'job_queue_list', arguments: {
+      workspaceId: f.workspaceId, initiatingExecutionId: 'another-execution',
+    } })
+    expect(JobQueuePageSchema.parse(unrelated.structuredContent).tickets).toEqual([])
+    const read = await client.callTool({ name: 'job_get', arguments: {
+      workspaceId: f.workspaceId, executionId: execution.id,
+    } })
+    expect(read.structuredContent).toEqual({ execution })
+    const denied = await client.callTool({ name: 'job_queue_list', arguments: {
+      workspaceId: 'foreign-workspace', initiatingExecutionId: initiatingAgent.executionId,
+    } })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    const writerClient = new Client({ name: 'ci-origin-writer-tests', version: '1' })
+    clients.push(writerClient)
+    await writerClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+      { requestInit: { headers: { authorization: `Bearer ${writer.token}` } } }))
+    expect((await writerClient.listTools()).tools.map(tool => tool.name)).toContain('job_start')
+    const forged = await writerClient.callTool({ name: 'job_start', arguments: {
+      workspaceId: f.workspaceId, ...input, commandId: randomUUID(), initiatingAgent,
+    } })
+    expect(forged.isError).toBe(true)
+    expect(await restarted.listQueue(scopedReader.principal, f.workspaceId)).toEqual([ticket])
+  })
   it('serializes five concurrent requests on one heavy slot and advances only after closure and publication', async () => {
     const f = await fixture()
     const definition = await f.save()
@@ -608,6 +669,21 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       expect.objectContaining({ name: 'job_queue_cancel', actions: ['jobs:cancel'] }),
     ]))
     const input = { workspaceId: f.workspaceId, ...command(definition) }
+    const launch = { workspaceId: f.workspaceId, definitionId: definition.id, expectedRevision: definition.revision }
+    expect(tools).toContain('job_launch_validate')
+    expect(readerTools).not.toContain('job_launch_validate')
+    const checked = await client.callTool({ name: 'job_launch_validate', arguments: launch })
+    expect(checked.isError).not.toBe(true)
+    expect(JobLaunchValidationSchema.parse(checked.structuredContent))
+      .toMatchObject({ valid: false, canQueue: true, reasons: ['offline'] })
+    expect((await readOnly.callTool({ name: 'job_launch_validate', arguments: launch })).isError).toBe(true)
+    expect(await ordered(f)).toHaveLength(0)
+    const httpCheck = await app.inject({ method: 'POST',
+      url: `/api/management/workspaces/${f.workspaceId}/jobs/launch/validate`,
+      headers: { authorization: `Bearer ${writer.token}` },
+      payload: { definitionId: definition.id, expectedRevision: definition.revision } })
+    expect(httpCheck.statusCode).toBe(200)
+    expect(httpCheck.json()).toEqual(checked.structuredContent)
     const denied = await readOnly.callTool({ name: 'job_start', arguments: input })
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
@@ -652,6 +728,12 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect(deniedHttp.json().error.code).toBe('ACCESS_DENIED')
     const overrideInput = { ...input, commandId: randomUUID(),
       placementOverride: { kind: 'explicit', target: f.computers[0]!.candidate.spec.target } }
+    const overrideCheck = await client.callTool({ name: 'job_launch_validate', arguments: {
+      ...launch, placementOverride: overrideInput.placementOverride,
+    } })
+    expect(overrideCheck.isError).not.toBe(true)
+    expect(JobLaunchValidationSchema.parse(overrideCheck.structuredContent))
+      .toMatchObject({ valid: false, canQueue: true })
     expect((await readOnly.callTool({ name: 'job_start', arguments: overrideInput })).isError).toBe(true)
     const override = await client.callTool({ name: 'job_start', arguments: overrideInput })
     expect(override.isError).not.toBe(true)
