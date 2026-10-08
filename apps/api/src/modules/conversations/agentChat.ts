@@ -463,8 +463,15 @@ export class AgentChatService {
     if (!loaded) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
     const resident = this.runtimes.get(loaded.row.id)
     resident?.manager.setSessionControlPrincipal?.(livePrincipal.id)
-    if (!loaded.row.active_request_id && !loaded.row.pending_interaction && resident?.session) {
-      const pending = await resident.manager.pending(resident.session)
+    if (!loaded.row.active_request_id && !loaded.row.pending_interaction && resident?.session
+      && !resident.retiring && !resident.disposal) {
+      let pending: Awaited<ReturnType<NativeHarnessSessionManager['pending']>>
+      try {
+        pending = await resident.manager.pending(resident.session)
+      } catch (error) {
+        if (!(error instanceof DomainError && error.code === 'NATIVE_MANAGER_DISPOSED'
+          && (resident.retiring || resident.disposal || this.runtimes.get(loaded.row.id) !== resident))) throw error
+      }
       if (pending && isSessionNativeInteraction(pending)) {
         await this.repository.pending(loaded.row.id, null, pending)
         loaded = await this.repository.state(loaded.row.id, { recoverOverflow: true })

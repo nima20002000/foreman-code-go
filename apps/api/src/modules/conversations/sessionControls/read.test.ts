@@ -103,6 +103,25 @@ it('propagates transport failures while the native owner is still current', asyn
   await expect(f.store.read(f.binding)).rejects.toBe(failure)
 })
 
+it.each(providers)('reads persisted $harness controls when its admitted owner is disposed during discovery', async ({ harness }) => {
+  const f = await fixture(harness)
+  let owner: NativeHarnessSessionManager | undefined = f.manager
+  const binding = { ...f.binding, get manager() { return owner } }
+  vi.mocked(f.manager.sessionControlCapabilities!).mockImplementation(async () => {
+    owner = undefined
+    throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The admitted native allocation is disposed.', 409)
+  })
+  expect(await f.store.read(binding)).toMatchObject({ desiredMode: 'plan', capabilities: f.capabilities,
+    nativeStatus: 'resume-required', nativeSessionId: 'native', context: { stale: true } })
+})
+
+it('propagates disposal errors without confirmed owner retirement', async () => {
+  const f = await fixture()
+  const failure = new DomainError('NATIVE_MANAGER_DISPOSED', 'The native allocation is disposed.', 409)
+  vi.mocked(f.manager.sessionControlCapabilities!).mockRejectedValue(failure)
+  await expect(f.store.read(f.binding)).rejects.toBe(failure)
+})
+
 it('does not hide native identity errors even if the owner retires during the read', async () => {
   const f = await fixture()
   let owner: NativeHarnessSessionManager | undefined = f.manager

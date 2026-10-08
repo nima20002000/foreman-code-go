@@ -23,7 +23,8 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { agentChatCorrelation, agentChatKey, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
-import { HarnessExecutionError, NativeTurnNotActiveError } from '../src/modules/harnesses/errors.js'
+import { HarnessExecutionError, NativeDeliveryError, NativeTurnNotActiveError } from '../src/modules/harnesses/errors.js'
+import { DomainError } from '../src/modules/errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -241,6 +242,96 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       expect(persisted?.native_session_id).toBe(done.conversation?.nativeSession?.nativeSessionId)
     } finally {
       await client.close()
+      await app.close()
+      await service.shutdown()
+    }
+  })
+
+  it('reads saved Agent controls while a native owner retires during the pending-interaction read', async () => {
+    const { service } = makeService()
+    const workspaceId = fixture.scope.workspaceId
+    const app = buildApp({ logger: false,
+      readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { agentChat: service,
+        commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    const client = new Client({ name: 'retiring-chat-reader', version: '1' })
+    const deniedClient = new Client({ name: 'denied-retiring-chat-reader', version: '1' })
+    let finishCleanup!: () => void
+    let releasePendingRead = () => {}
+    const cleanup = new Promise<void>(resolve => { finishCleanup = resolve })
+    try {
+      await service.send(writer, workspaceId, request(codexNode, 'Complete a native turn', null))
+      const done = await settled(service, () => service.read(writer, workspaceId, query(codexNode)))
+      const conversationId = done.conversation!.id
+      const native = FakeNative.all[0]!
+      const capabilities = { ...unavailableSessionControls('fixture'), model: 'fixture-model',
+        plan: { supported: true, reason: null } }
+      Object.assign(native, { sessionControlCapabilities: async () => capabilities })
+      const discovered = await service.readSessionControls(writer, workspaceId, conversationId)
+      const saved = await service.changeSessionControls(writer, workspaceId, conversationId, {
+        kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: discovered.revision,
+      })
+      let pendingStarted!: () => void
+      const pendingRead = new Promise<void>(resolve => { pendingStarted = resolve })
+      let ownerRetired!: () => void
+      const retirement = new Promise<void>(resolve => { ownerRetired = resolve; releasePendingRead = resolve })
+      let firstPending = true
+      let disposed = false
+      const disposedError = new DomainError('NATIVE_MANAGER_DISPOSED', 'The native allocation is disposed.', 409)
+      const pending = vi.fn(async () => {
+        if (firstPending) {
+          firstPending = false
+          pendingStarted()
+          await retirement
+          throw disposedError
+        }
+        if (disposed) throw disposedError
+        return undefined
+      })
+      Object.assign(native, { pending, dispose: async () => {
+        disposed = true
+        ownerRetired()
+        await cleanup
+      } })
+      vi.spyOn(native, 'startTurn').mockImplementation(async function* () {
+        await Promise.reject(new NativeDeliveryError('turn_submission', 'not_sent', new Error('Native submission rejected')))
+        yield* []
+      })
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      const url = `/api/workspaces/${workspaceId}/agent-chat/conversations/${conversationId}/session-controls`
+      const httpRead = app.inject({ method: 'GET', url,
+        headers: { authorization: `Bearer ${readOnlyToken}` } }).then(response => response)
+      await pendingRead
+      await service.send(writer, workspaceId, request(codexNode, 'Rejected before native submission', conversationId))
+      const http = await httpRead
+      expect(http.statusCode).toBe(200)
+      expect(SessionControlStateSchema.parse(http.json())).toMatchObject({ desiredMode: 'plan',
+        revision: saved.revision, capabilities, nativeSessionId: saved.nativeSessionId, nativeStatus: 'resume-required' })
+      const callsAfterRetirement = pending.mock.calls.length
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { authProvider: { token: async () => readOnlyToken } }))
+      const target = { workspaceId, conversationId }
+      const mcp = await client.callTool({ name: 'agent_chat_controls_get', arguments: target })
+      expect(mcp.isError).not.toBe(true)
+      expect(SessionControlStateSchema.parse(mcp.structuredContent)).toMatchObject({ desiredMode: 'plan',
+        capabilities, nativeSessionId: saved.nativeSessionId, nativeStatus: 'resume-required' })
+      const denied = await access.issue({ name: 'denied retiring-chat reader', audience: 'operator', grants: [],
+        expiresAt: new Date(Date.now() + 600000) })
+      expect((await app.inject({ method: 'GET', url,
+        headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
+      await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { authProvider: { token: async () => denied.token } }))
+      await expectMcpAccessDenied(deniedClient.callTool({ name: 'agent_chat_controls_get', arguments: target }))
+      expect(pending).toHaveBeenCalledTimes(callsAfterRetirement)
+      const persisted = await pool.query<{ record: unknown }>(
+        'select record from conversation_session_controls where conversation_id=$1', [conversationId])
+      expect(SessionControlStateSchema.parse(persisted.rows[0]!.record)).toMatchObject({ desiredMode: 'plan', capabilities })
+      expect(native.prompts).toHaveLength(1)
+      expect(native.created).toHaveLength(1)
+    } finally {
+      releasePendingRead()
+      finishCleanup()
+      await Promise.all([client.close(), deniedClient.close()])
       await app.close()
       await service.shutdown()
     }

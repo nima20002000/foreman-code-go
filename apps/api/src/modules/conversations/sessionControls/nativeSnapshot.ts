@@ -12,7 +12,9 @@ export function isNativeReadUnavailable(error: unknown, session: NativeSessionRe
     opencode: 'OPENCODE_SESSION_CONTEXT_MISSING',
   }[session.harness]
   if (error instanceof HarnessExecutionError) return error.result.error?.code === unavailableCode
-  if (error instanceof DomainError) return false
+  if (error instanceof DomainError) {
+    return error.code === 'NATIVE_MANAGER_DISPOSED' && owner.binding.manager !== owner.manager
+  }
   return owner.binding.manager !== owner.manager
 }
 
