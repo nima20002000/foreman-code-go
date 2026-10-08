@@ -148,6 +148,6 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
         ? 'The saved specification is unchanged.' : 'The saved source or specification has changed; review it below.'}
     </Alert>}
     <p>Start placement applies to this request. The saved definition stays unchanged. Workflow-node queuing and start estimates are unavailable.</p>
-    <JobSpecFacts spec={definition.spec} />
+    <JobSpecFacts spec={definition.spec} placementOverride={(start.variables ?? launchRequest).placementOverride} />
   </Dialog>
 }

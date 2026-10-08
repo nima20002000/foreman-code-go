@@ -15,6 +15,74 @@ beforeEach(() => {
   server.use(http.get(`${root}/choices`, () => HttpResponse.json({ sources: [], policies: [], targets: [] })))
 })
 
+it.each([
+  { savedDefinition: autoDefinition, savedPlacement: 'auto', finalPlacement: 'explicit' },
+  { savedDefinition: autoDefinition, savedPlacement: 'auto', finalPlacement: 'auto' },
+  { savedDefinition: definition, savedPlacement: 'fixed', finalPlacement: 'explicit' },
+  { savedDefinition: definition, savedPlacement: 'fixed', finalPlacement: 'auto' },
+])('reviews and starts $finalPlacement placement from saved $savedPlacement placement', async ({
+  savedDefinition, finalPlacement,
+}) => {
+  const validations: unknown[] = []
+  const starts: unknown[] = []
+  const target = { ...definition.spec.target, labelAtAcceptance: 'Build worker',
+    destination: { ...definition.spec.target.destination, canonicalProjectRoot: '/worker/build',
+      directoryIdentityHash: 'c'.repeat(64) } }
+  const original = structuredClone(savedDefinition)
+  let ticket = queueTicket
+  server.use(
+    http.get(`${root}/choices`, () => HttpResponse.json({ sources: [], policies: [], targets: [
+      { id: 'worker-root', label: 'Build worker', target, ready: true, reasons: [] },
+    ] })),
+    http.post(`${root}/launch/validate`, async ({ request }) => {
+      validations.push(await request.json())
+      return HttpResponse.json({ valid: true, canQueue: true, reasons: [], sideEffects: false })
+    }),
+    http.post(`${root}/executions`, async ({ request }) => {
+      const input = await request.json() as Parameters<typeof import('./client').jobsClient.start>[1]
+      starts.push(input)
+      ticket = { ...queueTicket, commandId: input.commandId, definition: savedDefinition,
+        placement: input.placementOverride!, placementOverride: input.placementOverride! }
+      return HttpResponse.json({ admission: { kind: 'pending-admission', ticket } })
+    }),
+    http.get(`${root}/queue/:id`, () => HttpResponse.json({ ticket })),
+  )
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <JobLaunch workspaceId={savedDefinition.workspaceId} definition={savedDefinition}
+      onClose={vi.fn()} onAccepted={vi.fn()} />
+  </QueryClientProvider>)
+  const fact = (label: string) => screen.getByText(label, { selector: 'dt' }).nextElementSibling
+  const savedComputer = savedDefinition === autoDefinition
+    ? 'Auto · highest-priority eligible computer' : 'Qualified PC'
+  await screen.findByRole('option', { name: 'Build worker' })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Start job' })).toBeEnabled())
+  expect(fact('Computer')).toHaveTextContent(savedComputer)
+  const placement = screen.getByRole('combobox', { name: 'Start placement' })
+  await userEvent.selectOptions(placement, 'worker-root')
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Start job' })).toBeEnabled())
+  expect(fact('Computer')).toHaveTextContent('Build worker')
+  expect(fact('Validated root')).toHaveTextContent('/worker/build')
+  await userEvent.click(screen.getByText('Identities, limits and digests'))
+  expect(fact('Root identity')).toHaveTextContent(target.destination.directoryIdentityHash)
+  expect(validations.at(-1)).toMatchObject({ placementOverride: { kind: 'explicit', target } })
+  await userEvent.selectOptions(placement, 'auto')
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Start job' })).toBeEnabled())
+  expect(fact('Computer')).toHaveTextContent('Auto · highest-priority eligible computer')
+  expect(fact('Validated root')).toHaveTextContent('Resolved at Start')
+  expect(fact('Host identity')).toHaveTextContent('Resolved at Start')
+  expect(validations.at(-1)).toMatchObject({ placementOverride: { kind: 'auto' } })
+  await userEvent.selectOptions(placement, 'saved')
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Start job' })).toBeEnabled())
+  expect(fact('Computer')).toHaveTextContent(savedComputer)
+  expect(validations.at(-1)).toEqual({ definitionId: savedDefinition.id, expectedRevision: savedDefinition.revision })
+  await userEvent.selectOptions(placement, finalPlacement === 'explicit' ? 'worker-root' : 'auto')
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Start job' })).toBeEnabled())
+  await userEvent.click(screen.getByRole('button', { name: 'Start job' }))
+  await waitFor(() => expect(starts).toHaveLength(1))
+  expect(starts[0]).toEqual({ commandId: expect.any(String), ...validations.at(-1) as object })
+  expect(savedDefinition).toEqual(original)
+})
+
 it('queues a saved request despite temporary computer readiness problems', async () => {
   const starts = vi.fn()
   server.use(
@@ -165,9 +233,11 @@ it('launches a saved ordinary-suite revision and reads its accepted verification
 
 it('sends a Start placement override and retains it across an uncertain retry without editing the definition', async () => {
   const bodies: Array<Parameters<typeof import('./client').jobsClient.start>[1]> = []
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  let target = definition.spec.target
   server.use(
     http.get(`${root}/choices`, () => HttpResponse.json({ sources: [], policies: [], targets: [
-      { id: 'selected-root', label: 'Build computer', target: definition.spec.target, ready: true, reasons: [] },
+      { id: 'selected-root', label: 'Build computer', target, ready: true, reasons: [] },
     ] })),
     http.post(`${root}/launch/validate`, () => HttpResponse.json({ valid: true, canQueue: true, reasons: [], sideEffects: false })),
     http.post(`${root}/executions`, async ({ request }) => {
@@ -176,7 +246,7 @@ it('sends a Start placement override and retains it across an uncertain retry wi
     }),
   )
   const original = structuredClone(definition)
-  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+  render(<QueryClientProvider client={cache}>
     <JobLaunch workspaceId={definition.workspaceId} definition={definition} onClose={vi.fn()} onAccepted={vi.fn()} />
   </QueryClientProvider>)
   await screen.findByRole('option', { name: 'Build computer' })
@@ -187,6 +257,15 @@ it('sends a Start placement override and retains it across an uncertain retry wi
   await userEvent.click(screen.getByRole('button', { name: 'Start job' }))
   await screen.findByText('Start not confirmed')
   expect(placement).toBeDisabled()
+  target = { ...target, labelAtAcceptance: 'Updated computer',
+    destination: { ...target.destination, canonicalProjectRoot: '/updated/root',
+      directoryIdentityHash: 'd'.repeat(64) } }
+  await act(async () => { await cache.refetchQueries({ queryKey: ['jobs', definition.workspaceId, 'choices'] }) })
+  const fact = (label: string) => screen.getByText(label, { selector: 'dt' }).nextElementSibling
+  expect(fact('Computer')).toHaveTextContent(definition.spec.target.labelAtAcceptance!)
+  expect(fact('Validated root')).toHaveTextContent(definition.spec.target.destination.canonicalProjectRoot)
+  await userEvent.click(screen.getByText('Identities, limits and digests'))
+  expect(fact('Root identity')).toHaveTextContent(definition.spec.target.destination.directoryIdentityHash)
   await userEvent.click(screen.getByRole('button', { name: 'Retry same start request' }))
   await waitFor(() => expect(bodies).toHaveLength(2))
   expect(bodies[0]).toMatchObject({ definitionId: definition.id, expectedRevision: definition.revision,
