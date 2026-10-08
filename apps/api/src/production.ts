@@ -11,7 +11,6 @@ import { registerComputerMaintenanceRoutes } from './routes/computerMaintenance.
 import { FleetMaintenanceService } from './modules/computers/fleet.js'
 import { ComputerMaintenance, claudeUserMcpServers, installedPlugins, systemMaintenancePorts } from './modules/computers/maintenance.js'
 import { ComputerGitHubService } from './modules/computers/github.js'
-import { registerComputerGitHubRoutes } from './routes/computerGitHub.js'
 import { COMPUTER_MAINTENANCE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
 import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_SYNC_NAMESPACE, COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
 import { ComputerSyncService } from './modules/computers/sync.js'
@@ -1434,7 +1433,6 @@ export function buildProductionApp(
     ...(config.browserOrigin ? { browserOrigin: config.browserOrigin } : {}),
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
-    harnessCompatibility,
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
     operator: { access, services: runtimeServices },
     appMcp: { access, interactions: Object.assign(new PostgresAppInteractionService(database.pool, repository, commands, interactions), {
@@ -1748,7 +1746,6 @@ export function buildProductionApp(
         () => deviceRuntime.endpointForDomains(), commands, {
           accountChanged: target => runtimeServices.computerAccounts!.invalidate(target),
         })
-      registerComputerGitHubRoutes(app, runtimeServices.computerGitHub)
       runtimeServices.computerSync = new ComputerSyncService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands)
       registerComputerSyncRoutes(app, runtimeServices.computerSync)

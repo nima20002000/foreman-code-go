@@ -130,10 +130,6 @@ it('saves Claude templates through authenticated MCP while unavailable API-key d
     const listInput = { hostRef: target.hostRef, applicationInstallationId: mainId }
     const listed = HostHarnessOverrideListSchema.parse((await denied.callTool({ name: 'harness_instances_list', arguments: listInput })).structuredContent)
     expect.soft(listed.overrides[0]).toMatchObject({ revision: 1, configuration: harness, qualification: 'unqualified' })
-    const http = await production.app.inject({ method: 'POST', url: '/api/management/harness-instances/read',
-      headers: { authorization: `Bearer ${reader.token}` }, payload: listInput })
-    expect(http.statusCode).toBe(200)
-    expect(HostHarnessOverrideListSchema.parse(http.json())).toEqual(listed)
     const checked = await allowed.callTool({ name: 'harness_instance_check', arguments: {
       commandId: randomUUID(), instanceId: saved.value.instanceId, expectedRevision: 1, target,
     } })

@@ -1,4 +1,3 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { HostHarnessOverrideListInputSchema, HostHarnessOverrideListSchema, HostHarnessOverrideSaveSchema, HostHarnessOverrideSaveResultSchema, HostHarnessInstanceCheckInputSchema, HostHarnessInstanceCheckResultSchema } from '@foreman-code/contracts/harness-registry'
@@ -42,16 +41,6 @@ export async function unavailableHostHarnessToolCall(context: OperatorRequestCon
   return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(error, 'Host harness settings failed.') }
 }
 
-export function registerHostHarnessOverrideRoutes(app: FastifyInstance, service: HostHarnessOverrideService,
-  authenticate: (request: FastifyRequest) => Promise<ManagementPrincipal>): void {
-  // POST read accepts the canonical nested host reference without ad-hoc query encodings.
-  app.post('/api/management/harness-instances/read', async request => HostHarnessOverrideListSchema.parse(
-    await service.list(await authenticate(request), HostHarnessOverrideListInputSchema.parse(request.body))))
-  app.post('/api/management/harness-instances/check', async request => HostHarnessInstanceCheckResultSchema.parse(
-    await service.check(await authenticate(request), 'http', HostHarnessInstanceCheckInputSchema.parse(request.body))))
-  app.post('/api/management/harness-instances/save', async request => HostHarnessOverrideSaveResultSchema.parse(
-    await service.save(await authenticate(request), 'http', HostHarnessOverrideSaveSchema.parse(request.body))))
-}
 export function registerHostHarnessOverrideTools(server: McpServer, service: HostHarnessOverrideService, principal: ManagementPrincipal): void {
   const invoke = async (name: HostHarnessToolName, operation: () => Promise<unknown>) => {
     try {

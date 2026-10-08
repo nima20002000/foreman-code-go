@@ -263,9 +263,8 @@ it('starts, follows and ends GitHub sign-in on Main and a paired computer, denyi
     const done = GitHubLoginStateSchema.parse((await client.callTool({ name: 'computer_github_login_status',
       arguments: { target, loginId: started.loginId } })).structuredContent)
     expect(done).toMatchObject({ state: 'signed-in', account: 'octo-owner' })
-    const http = await f.app.inject({ method: 'POST', url: '/api/management/computers/github/logout',
-      headers: { authorization: 'Bearer owner' }, payload: { target } })
-    expect(GitHubLoginStateSchema.parse(http.json()).state).toBe('signed-out')
+    const logout = await client.callTool({ name: 'computer_github_logout', arguments: { target } })
+    expect(GitHubLoginStateSchema.parse(logout.structuredContent).state).toBe('signed-out')
     expect(f.githubCalls.map(call => [call.where, call.request.operation])).toEqual([
       ['main', 'login-start'], ['device', 'login-status'], ['device', 'logout']])
     const stale = await client.callTool({ name: 'computer_github_login_start',
@@ -274,12 +273,11 @@ it('starts, follows and ends GitHub sign-in on Main and a paired computer, denyi
     const reader = await f.connect('settings-reader')
     expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_github_login_start')
     expect((await reader.callTool({ name: 'computer_github_login_start', arguments: { target } })).isError).toBe(true)
-    expect((await f.app.inject({ method: 'POST', url: '/api/management/computers/github/login',
-      headers: { authorization: 'Bearer settings-reader' }, payload: { target } })).statusCode).toBe(403)
     expect(f.githubCalls).toHaveLength(3)
     expect(f.audited.mock.calls.map(call => [call[2], call[4]])).toEqual([
       ['computer_github_login_start', 'succeeded'], ['computer_github_logout', 'succeeded']])
-    expect(f.audit).toHaveBeenCalledWith('settings-reader', 'http', 'computer_github_login_start', `device:${deviceId}`)
+    expect(f.audit).toHaveBeenCalledWith('settings-reader', 'mcp', 'computer_github_login_start',
+      'mcp:computer_github_login_start')
   } finally { await f.close() }
 })
 

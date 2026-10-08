@@ -141,10 +141,6 @@ it('saves one order through authenticated MCP, replays it and reads persisted se
       expect((await readOnly.callTool({ name: 'build_computer_get', arguments: { target: status.preference.target } }))
         .structuredContent).toEqual(status)
     }
-    const http = await f.app.inject({ method: 'POST', url: '/api/management/settings/build-computers/batch-update',
-      headers: { authorization: 'Bearer owner' }, payload: command })
-    expect(http.statusCode).toBe(200)
-    expect(http.json()).toEqual(saved)
     expect(f.audits).toContainEqual({ principal: 'owner', source: 'mcp', action: 'build.computers.update', outcome: 'succeeded' })
     expect(f.audits).toContainEqual({ principal: 'reader', source: 'mcp', action: 'build_computers_update', outcome: 'denied' })
   } finally { await f.close() }
