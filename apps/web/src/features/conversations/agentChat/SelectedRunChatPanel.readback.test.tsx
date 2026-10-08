@@ -19,10 +19,10 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-it('keeps scheduled Run chat connected while the surrounding view refreshes', async () => {
+it.each(['manual', 'schedule'] as const)('keeps %s Run chat connected while the surrounding view refreshes', async (trigger) => {
   const fixture = installSelectedHandlers()
   server.use(http.get(summariesRoute, () => HttpResponse.json({
-    items: [{ ...summary('run-a'), trigger: 'schedule' }], pageInfo: { nextCursor: null },
+    items: [{ ...summary('run-a'), trigger }], pageInfo: { nextCursor: null },
   })))
   const mounted = await mountSelected()
   await screen.findByText('Reply execution-run-a')
@@ -36,11 +36,11 @@ it('keeps scheduled Run chat connected while the surrounding view refreshes', as
   expect(screen.getByText('Reply execution-run-a')).toBeVisible()
   const updated = structuredClone(fixture.states.get('run-a')!)
   updated.revision++
-  updated.messages.push({ id: 'scheduled-readback', conversationId: updated.conversation!.id,
-    role: 'assistant', content: 'Scheduled conversation readback.', nativeMessageComplete: true })
+  updated.messages.push({ id: 'conversation-readback', conversationId: updated.conversation!.id,
+    role: 'assistant', content: 'Conversation readback.', nativeMessageComplete: true })
   fixture.states.set('run-a', updated)
   await act(async () => stream.snapshot(updated))
-  await screen.findByText('Scheduled conversation readback.')
+  await screen.findByText('Conversation readback.')
   expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
   expect(AgentChatTestSource.instances).toHaveLength(1)
 })
