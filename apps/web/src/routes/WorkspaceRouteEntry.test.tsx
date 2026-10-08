@@ -20,6 +20,7 @@ import { bindMockInstallation } from '../shared/mocks/handlers'
 import { savedClaudeConfiguration } from '../features/settings/claudeSettings.fixtures'
 import { savedPlacementFixture } from '../features/node-placement/fixtures'
 import { createCurrentBoardMock } from '../shared/mocks/currentBoard'
+import canvasStyles from '../shared/ui/nocturne/canvas.css?inline'
 
 function readyWorkspace() {
   const fixture = getMockFixture('workspace-1')
@@ -160,7 +161,9 @@ describe('WorkspaceRouteEntry integration', () => {
     expect(await screen.findByRole('dialog', { name: `${title} settings` })).toBeVisible()
   })
 
-  it('opens a reloaded Claude Agent settings panel while cross-computer choices are unavailable', async () => {
+  it('opens an unselected reloaded Claude Agent settings panel while cross-computer choices are unavailable', async () => {
+    // Apply the canvas CSS so userEvent checks the same pointer access as the browser.
+    render(<style>{canvasStyles}</style>)
     vi.stubGlobal('navigator', { ...navigator, locks: {
       request: async (_name: string, work: () => Promise<unknown>) => work(),
     } })
@@ -195,6 +198,7 @@ describe('WorkspaceRouteEntry integration', () => {
     const node = await within(board).findByRole('button', { name: /^Main coordinator,/ })
     const title = 'Main coordinator'
     expect(node).toHaveAccessibleName(/Claude/)
+    expect(node).toHaveAttribute('aria-pressed', 'false')
     await userEvent.click(screen.getByRole('button', { name: `Open ${title} settings` }))
     const dialog = await screen.findByRole('dialog', { name: `${title} settings` })
     expect(dialog).toBeVisible()

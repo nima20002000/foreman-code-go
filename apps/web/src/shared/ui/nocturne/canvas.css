@@ -296,7 +296,7 @@
   white-space: nowrap;
 }
 
-/* Rim actions: Chat, Settings, Info on the upper-right rim, revealed on hover, focus or selection. */
+/* Rim actions stay visible and clickable before the Agent is selected. */
 .n-agent-actions { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
 .n-agent-actions::before { content: ''; position: absolute; left: 132px; top: -34px; width: 130px; height: 150px; border-radius: 40% 60% 60% 30%; }
 .n-agent-action {
@@ -311,29 +311,19 @@
   background: var(--surface-raised);
   color: var(--agent-hue);
   cursor: pointer;
-  opacity: 0;
-  transform: translateY(6px) scale(.9);
-  transition: opacity 140ms ease, transform 140ms ease, background 140ms ease, border-color 140ms ease;
+  pointer-events: auto;
+  transition: background 140ms ease, border-color 140ms ease;
 }
 .n-agent-action--chat { left: 146px; top: -29px; }
-.n-agent-action--settings { left: 194px; top: 10px; transition-delay: 30ms; }
-.n-agent-action--info { left: 218px; top: 66px; transition-delay: 60ms; }
+.n-agent-action--settings { left: 194px; top: 10px; }
+.n-agent-action--info { left: 218px; top: 66px; }
 .n-agent-action:hover { border-color: var(--agent-hue); background: color-mix(in srgb, var(--agent-hue) 10%, var(--surface-raised)); }
 .n-agent-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .n-agent-action[aria-expanded='true'] { border-color: var(--agent-hue); background: var(--agent-hue); color: var(--on-harness); }
 .n-agent:hover .n-agent-actions::before,
 .n-agent[data-selected] .n-agent-actions::before,
-.n-agent[data-open] .n-agent-actions::before,
-.n-agent:hover .n-agent-action,
-.n-agent:focus-within .n-agent-action,
-.n-agent[data-selected] .n-agent-action,
-.n-agent[data-open] .n-agent-action { pointer-events: auto; }
-.n-agent-action { pointer-events: none; }
+.n-agent[data-open] .n-agent-actions::before { pointer-events: auto; }
 .is-connecting .n-agent-actions { display: none; }
-.n-agent:hover .n-agent-action,
-.n-agent:focus-within .n-agent-action,
-.n-agent[data-selected] .n-agent-action,
-.n-agent[data-open] .n-agent-action { opacity: 1; transform: none; }
 .n-agent[data-pending] .n-agent-action--settings::after {
   content: '';
   position: absolute;
