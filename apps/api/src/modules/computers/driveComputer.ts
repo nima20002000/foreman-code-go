@@ -110,10 +110,12 @@ export class DriveComputer {
     await this.ports.writePrivate(this.config, remote(folder))
     await this.ports.mkdir(this.mountPath)
     await this.ports.mkdir(join(this.ports.home, '.config', 'systemd', 'user'))
+    // Drive change polling keeps listings current, so directory and attribute caches can be long-lived. A short
+    // cache made every refresh wait on the Drive API, freezing file managers that open the user's home folder.
     await this.ports.writePrivate(join(this.ports.home, '.config', 'systemd', 'user', UNIT), [
       '[Unit]', 'Description=Foreman Code Google Drive', 'After=network-online.target', '',
       '[Service]', 'Type=notify',
-      `ExecStart="${await this.binary()}" mount ${DRIVE_REMOTE}: "${this.mountPath}" --vfs-cache-mode full --dir-cache-time 30s --poll-interval 15s`,
+      `ExecStart="${await this.binary()}" mount ${DRIVE_REMOTE}: "${this.mountPath}" --vfs-cache-mode full --dir-cache-time 1000h --poll-interval 15s --attr-timeout 60s`,
       `ExecStop=/bin/fusermount3 -uz "${this.mountPath}"`, 'Restart=on-failure', 'RestartSec=10', '',
       '[Install]', 'WantedBy=default.target', ''].join('\n'))
     await this.systemctl(['daemon-reload'])
