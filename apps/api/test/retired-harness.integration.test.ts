@@ -175,7 +175,7 @@ it('reads saved OpenCode Agent and Run facts through HTTP and MCP without rewrit
     const graphUrl = `/api/workspaces/${args.workspaceId}/workflows/${f.f.run.workflowId}/runs/${f.f.run.id}/graph/v1`
     for (const kind of ['snapshot', 'current', 'events'] as const) {
       const input = kind === 'events' ? { ...graphArgs, afterSequence: '0' } : graphArgs
-      const query = `workflowVersionId=${f.f.version.id}${kind === 'events' ? '&afterSequence=0' : ''}`
+      const query = `workflowVersionId=${f.f.version.id}&executionSemanticsVersion=3${kind === 'events' ? '&afterSequence=0' : ''}`
       const httpRead = await f.app.inject({ method: 'GET', url: `${graphUrl}/${kind}?${query}`,
         headers: { authorization: `Bearer ${f.writer.token}` } })
       expect(httpRead.statusCode, httpRead.body).toBe(200)
@@ -200,6 +200,8 @@ it.each(['physical Agent mismatch', 'duplicate configuration pins'] as const)('r
   const f = await currentOperatorIntegration({ agentManagement: true, graphReads: true })
   try {
     const workspaceId = f.f.scope.workspaceId
+    let runId = f.f.run.id
+    let workflowVersionId = f.f.version.id
     const configuration = f.f.configurations[0]!
     if (corruption === 'physical Agent mismatch') {
       const foreignAgentId = randomUUID()
@@ -213,20 +215,35 @@ it.each(['physical Agent mismatch', 'duplicate configuration pins'] as const)('r
         [configuration.id, foreignAgentId, malformed.version, JSON.stringify(malformed)])
     } else {
       const pins = Object.fromEntries(Object.keys(f.f.version.agentConfigurationVersionIds).map(id => [id, configuration.id]))
-      const version = { ...f.f.version, agentConfigurationVersionIds: pins }
+      const version = { ...f.f.version, id: randomUUID(), version: f.f.version.version + 1,
+        agentConfigurationVersionIds: pins }
       version.contentHash = `sha256:${createHash('sha256').update(canonicalGraphJson({
         definition: version.definition, configurations: pins, entryNodeId: version.entryNodeId,
       })).digest('hex')}`
-      await f.db.pool.query('update workflow_versions set record=$2::jsonb where id=$1', [version.id, JSON.stringify(version)])
-      await f.db.pool.query('update runs set record=$2::jsonb where id=$1',
-        [f.f.run.id, JSON.stringify({ ...f.f.run, agentConfigurationVersionIds: pins })])
+      const run = { ...f.f.run, id: randomUUID(), workflowVersionId: version.id, agentConfigurationVersionIds: pins }
+      // Seed malformed saved facts as new rows; existing version and Run pins remain immutable.
+      await f.db.pool.query(`insert into workflow_versions
+        (id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record)
+        values($1,$2,$3,$4,$5,3,$6::jsonb)`,
+      [version.id, workspaceId, version.workflowId, version.version, version.entryNodeId, JSON.stringify(version)])
+      await f.db.pool.query(`insert into runs
+        (id,workspace_id,workflow_id,workflow_version_id,execution_state,record,runner_id,working_directory,location_revision)
+        values($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`,
+      [run.id, workspaceId, run.workflowId, version.id, run.executionState, JSON.stringify(run),
+        run.executionLocation!.runnerId, run.executionLocation!.rootPath, run.executionLocation!.locationRevision])
+      await f.db.pool.query(`insert into run_graph_heads(run_id,protocol_version,history_coverage)
+        values($1,1,'from_snapshot')`, [run.id])
+      runId = run.id
+      workflowVersionId = version.id
     }
-    const before = (await f.db.pool.query('select agent_id,version,record from agent_configuration_versions where id=$1',
-      [configuration.id])).rows[0]
-    const runArgs = { workspaceId, runId: f.f.run.id }
+    const snapshots = async () => (await f.db.pool.query(`select c.agent_id,c.record as configuration,
+      v.record as version,r.record as run from agent_configuration_versions c,workflow_versions v,runs r
+      where c.id=$1 and v.id=$2 and r.id=$3`, [configuration.id, workflowVersionId, runId])).rows[0]
+    const before = await snapshots()
+    const runArgs = { workspaceId, runId }
     for (const [name, suffix] of [['run_get', ''], [RUN_INSPECTION_TOOLS.record, '/record']] as const) {
       const http = await f.app.inject({ method: 'GET',
-        url: `/api/management/workspaces/${workspaceId}/runs/${f.f.run.id}${suffix}`,
+        url: `/api/management/workspaces/${workspaceId}/runs/${runId}${suffix}`,
         headers: { authorization: `Bearer ${f.writer.token}` } })
       expect(http.statusCode).toBe(409)
       expect(http.json()).toMatchObject({ error: { code: 'AGENT_CONFIGURATION_UNAVAILABLE' } })
@@ -235,15 +252,14 @@ it.each(['physical Agent mismatch', 'duplicate configuration pins'] as const)('r
       expect(JSON.stringify(mcp.content)).toContain('AGENT_CONFIGURATION_UNAVAILABLE')
     }
     const graph = await f.client.callTool({ name: CANONICAL_RUN_GRAPH_MCP_TOOLS.snapshot,
-      arguments: { protocolVersion: 1, scope: f.f.scope } })
+      arguments: { protocolVersion: 1, scope: { ...f.f.scope, runId, workflowVersionId } } })
     expect(graph.isError).toBe(true)
     expect(JSON.stringify(graph.content)).toContain('GRAPH_INVARIANT_VIOLATION')
     const graphHttp = await f.app.inject({ method: 'GET',
-      url: `/api/workspaces/${workspaceId}/workflows/${f.f.run.workflowId}/runs/${f.f.run.id}/graph/v1/snapshot?workflowVersionId=${f.f.version.id}`,
+      url: `/api/workspaces/${workspaceId}/workflows/${f.f.run.workflowId}/runs/${runId}/graph/v1/snapshot?workflowVersionId=${workflowVersionId}&executionSemanticsVersion=3`,
       headers: { authorization: `Bearer ${f.writer.token}` } })
     expect(graphHttp.statusCode).toBe(409)
     expect(graphHttp.json()).toMatchObject({ error: { code: 'GRAPH_INVARIANT_VIOLATION' } })
-    expect((await f.db.pool.query('select agent_id,version,record from agent_configuration_versions where id=$1',
-      [configuration.id])).rows[0]).toEqual(before)
+    expect(await snapshots()).toEqual(before)
   } finally { await f.close() }
 }, 60_000)
