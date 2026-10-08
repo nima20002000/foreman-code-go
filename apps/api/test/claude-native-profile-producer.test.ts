@@ -62,6 +62,19 @@ it('does not turn initialization/model metadata into basic, auth or full-access 
   expect(f.close).toHaveBeenCalled()
 })
 
+it('loads the explicitly selected installed SDK during profile qualification', async () => {
+  const f = await fixture([{ value: 'unit-model', supportedEffortLevels: ['medium'] }])
+  const sdkEntrypoint = '/installed/claude/sdk.mjs'
+  const loadClient = vi.fn(async (_profile: string, _recovery: unknown, _binary: string, selected?: string) => {
+    if (selected !== sdkEntrypoint) throw new Error('The selected installed SDK was not used')
+    return f.input.loadClient()
+  })
+  const result = await qualifyClaudeNativeProfile({ ...f.input, sdkEntrypoint, loadClient })
+  expect(result).toMatchObject({ qualified: false, failure: { code: 'CLAUDE_NATIVE_RECEIPT_UNQUALIFIED' } })
+  expect(f.offered).toHaveBeenCalledOnce()
+  expect(f.close).toHaveBeenCalled()
+})
+
 it('rejects an unavailable accepted effort before offering any model input', async () => {
   const f = await fixture([{ value: 'unit-model', supportedEffortLevels: ['high'] }])
   const result = await qualifyClaudeNativeProfile(f.input)

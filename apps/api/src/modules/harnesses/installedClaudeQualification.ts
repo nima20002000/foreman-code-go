@@ -92,7 +92,8 @@ export function createInstalledClaudeQualifier(input: {
     const recovery = input.registry.reserveLaunch(`claude-profile-check:${request.checkId}`)
     return runOwnedClaudeOperation(async () => {
       return await qualifyClaudeNativeProfile({ value, checkId: request.checkId, binding, pin: current.pin,
-        directory: join(input.stateDirectory, 'claude-native-qualification'), recovery, signal, assertCurrent })
+        directory: join(input.stateDirectory, 'claude-native-qualification'), recovery, signal, assertCurrent,
+        sdkEntrypoint: original.sdk.entrypoint })
     }, async () => {
       await input.registry.abandonReservedLaunch(recovery)
       if (!await input.registry.closeOwner(recovery.owner)) throw new DomainError(

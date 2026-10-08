@@ -24,7 +24,7 @@ const exists = async (path: string) => readFile(path).then(() => true, () => fal
 export async function qualifyClaudeNativeProfile(input: {
   value: HostHarnessOverride; checkId: string; binding: RegistryHarnessSelection; pin: ClaudeQualificationPin
   directory: string; recovery: NativeProcessRecovery; signal: AbortSignal
-  assertCurrent(): Promise<void>; loadClient?: typeof loadOfficialClaudeSdk
+  assertCurrent(): Promise<void>; sdkEntrypoint?: string; loadClient?: typeof loadOfficialClaudeSdk
 }) {
   if (input.value.configuration.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude qualification requires a Claude profile.', 409)
   const configuration = ClaudeFullAccessConfigurationSchema.parse(input.value.configuration)
@@ -48,7 +48,8 @@ export async function qualifyClaudeNativeProfile(input: {
   const hooks: Array<{ sessionId: string; toolUseId: string; tool: string; file?: string; command?: string; denied: boolean }> = []
   evidence.hooks = hooks
   let observedTools: string[] = [], faultAfterResult = false, expectedFault = false
-  const client = await (input.loadClient ?? loadOfficialClaudeSdk)(configuration.configDirectory, input.recovery, binary)
+  const client = await (input.loadClient ?? loadOfficialClaudeSdk)(
+    configuration.configDirectory, input.recovery, binary, input.sdkEntrypoint)
   const faultClient: ClaudeSdkClient = { ...client, async query(query) {
     const actual = await client.query(query)
     return { ...actual, [Symbol.asyncIterator]() {
