@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest'
-import { CommandAttempt } from './commandAttempt'
+import { CommandAttempt, commandWasRejected } from './commandAttempt'
 import { collectManagementPages } from './managementPaging'
 import { assertSession, beginSessionChange, finishSessionChange, sessionGeneration, sessionSignal } from './sessionBoundary'
 
@@ -27,4 +27,24 @@ it('F27 switching aborts old requests and rejects late responses', () => {
   beginSessionChange()
   expect(signal.aborted).toBe(true)
   expect(() => assertSession(generation)).toThrow('Operator access changed')
+})
+it.each([
+  [{ code: 'ACCESS_DENIED', status: 403 }, true],
+  [{ code: 'REVISION_CONFLICT', status: 409 }, true],
+  [{ code: 'INVALID_REQUEST' }, true],
+  [{ code: 'INVALID_RESPONSE', status: 400 }, false],
+  [{ code: 'HTTP_ERROR', status: 403 }, false],
+  [{ code: 'TIMEOUT', status: 408 }, false],
+  [{ code: 'BUSY', status: 429 }, false],
+  [{ code: 'NETWORK_ERROR', status: 0 }, false],
+  [{ code: 'INTERNAL', status: 500 }, false],
+] as const)('classifies a command failure and retains ambiguous retries (%j)', (error, rejected) => {
+  const attempt = new CommandAttempt<{ name: string }>()
+  const input = attempt.input({ name: 'Build settings' })
+  attempt.failed(error)
+  expect(commandWasRejected(error)).toBe(rejected)
+  expect(attempt.unresolved).toBe(!rejected)
+  const next = attempt.input({ name: 'Build settings' })
+  if (rejected) expect(next.commandId).not.toBe(input.commandId)
+  else expect(next).toEqual(input)
 })

@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { expect, it } from 'vitest'
-import type { BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
+import type { BuildComputerBatchUpdate, BuildComputerBatchResult } from '@foreman-code/contracts/build-computers'
 import { server } from '../../mocks/server'
 import { computerKey } from '../../shared/api/computerActivity'
 import { ComputerRows } from './ComputerRows'
@@ -50,11 +50,13 @@ it('optimistically reorders with keyboard controls and persists higher priority 
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
   let release!: () => void
   const held = new Promise<void>(resolve => { release = resolve })
-  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
-    const input = await request.json() as BuildComputerUpdate
-    f.writes.push(input)
+  server.use(http.post('*/api/management/settings/build-computers/batch-update', async ({ request }) => {
+    const input = await request.json() as BuildComputerBatchUpdate
+    f.batches.push(input)
     await held
-    return HttpResponse.json(f.update(input))
+    const changes = input.updates.map(change => ({ ...change, commandId: input.commandId }))
+    f.writes.push(...changes)
+    return HttpResponse.json({ computers: changes.map(f.update) })
   }))
   await ready()
   const button = screen.getByRole('button', { name: `Move ${deviceName} up` })
@@ -72,17 +74,17 @@ it('optimistically reorders with keyboard controls and persists higher priority 
   expect(f.statuses.get(computerKey(deviceTarget))?.preference.buildRole).toBe('primary')
   expect(screen.getByRole('combobox', { name: `Build role for ${deviceName}` })).toHaveValue('primary')
 })
-it('reorders by dragging and reuses command IDs after an uncertain response', async () => {
+it('reorders by dragging and reuses the whole command after an uncertain response', async () => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
-  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
-    const input = await request.json() as BuildComputerUpdate
-    f.writes.push(input)
-    if (f.writes.length === 1) {
-      f.update(input)
+  let saved: BuildComputerBatchResult | undefined
+  server.use(http.post('*/api/management/settings/build-computers/batch-update', async ({ request }) => {
+    const input = await request.json() as BuildComputerBatchUpdate
+    f.batches.push(input)
+    if (f.batches.length === 1) {
+      saved = { computers: input.updates.map(change => f.update({ ...change, commandId: input.commandId })) }
       return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Try again' } }, { status: 503 })
     }
-    if (f.writes.length === 2) return HttpResponse.json(f.statuses.get(computerKey(input.target)))
-    return HttpResponse.json(f.update(input))
+    return HttpResponse.json(saved)
   }))
   await ready()
   const handle = within(rows()[1]!).getByTitle('Drag to reorder')
@@ -91,30 +93,32 @@ it('reorders by dragging and reuses command IDs after an uncertain response', as
   fireEvent.drop(rows()[0]!)
   await waitFor(() => expect(rows()[0]).toHaveAccessibleName(deviceName))
   await ready()
-  expect(f.writes).toHaveLength(3)
-  expect(f.writes[0]?.commandId).toBe(f.writes[1]?.commandId)
+  expect(f.batches).toHaveLength(2)
+  expect(f.batches[0]).toEqual(f.batches[1])
 })
-it('rolls back optimistic order and completed writes when another computer conflicts', async () => {
+it('restores optimistic order without changing any computer when one revision conflicts', async () => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
-  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
-    const input = await request.json() as BuildComputerUpdate
-    f.writes.push(input)
-    if (f.writes.length === 2) return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Changed elsewhere' } }, { status: 409 })
-    return HttpResponse.json(f.update(input))
-  }))
   await ready()
+  const before = structuredClone([...f.statuses.values()])
+  const conflicting = f.statuses.get(computerKey(mainTarget))!
+  f.statuses.set(computerKey(mainTarget), { ...conflicting,
+    preference: { ...conflicting.preference, revision: conflicting.preference.revision + 1 } })
   await userEvent.setup().click(screen.getByRole('button', { name: `Move ${deviceName} up` }))
-  expect(await screen.findByText('Settings changed elsewhere. Order restored; try again.')).toBeVisible()
+  expect(await screen.findByText('Settings changed elsewhere. No changes were saved; try again.')).toBeVisible()
   await ready()
   expect(rows()[0]).toHaveAccessibleName('Main PC')
-  expect(f.writes).toHaveLength(3)
-  expect(f.writes[2]).toMatchObject({ target: deviceTarget, expectedRevision: 2, buildPriority: 50 })
-  expect(f.statuses.get(computerKey(deviceTarget))?.preference.buildPriority).toBe(50)
+  expect(f.batches).toHaveLength(1)
+  expect(f.writes).toHaveLength(0)
+  for (const status of before) {
+    expect(f.statuses.get(computerKey(status.preference.target))?.preference).toMatchObject({
+      buildPriority: status.preference.buildPriority, buildRole: status.preference.buildRole,
+    })
+  }
 })
 it('restores row controls when a save is denied', async () => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
   await ready()
-  server.use(http.post('*/api/management/settings/build-computers/update', () => HttpResponse.json({
+  server.use(http.post('*/api/management/settings/build-computers/batch-update', () => HttpResponse.json({
     error: { code: 'ACCESS_DENIED', message: 'Settings permission is required.' },
   }, { status: 403 })))
   await userEvent.setup().click(screen.getByRole('switch', { name: 'Builds on Main PC' }))
@@ -123,20 +127,21 @@ it('restores row controls when a save is denied', async () => {
   expect(f.statuses.get(computerKey(mainTarget))?.preference.buildEnabled).toBe(true)
 })
 
-it('reports a failed compensation and refreshes persisted priorities instead of hiding partial saves', async () => {
+it('sends one batch and no compensation writes when the reorder is rejected', async () => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
-  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
-    const input = await request.json() as BuildComputerUpdate
-    f.writes.push(input)
-    if (f.writes.length > 1) return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Changed elsewhere' } }, { status: 409 })
-    return HttpResponse.json(f.update(input))
+  const before = structuredClone([...f.statuses.values()])
+  server.use(http.post('*/api/management/settings/build-computers/batch-update', async ({ request }) => {
+    f.batches.push(await request.json() as BuildComputerBatchUpdate)
+    return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Changed elsewhere' } }, { status: 409 })
   }))
   await ready()
   await userEvent.setup().click(screen.getByRole('button', { name: `Move ${deviceName} up` }))
-  expect(await screen.findByText('Some changes could not be restored. Refresh to see the saved order.')).toBeVisible()
+  expect(await screen.findByText('Settings changed elsewhere. No changes were saved; try again.')).toBeVisible()
   await ready()
-  expect(f.writes).toHaveLength(3)
-  expect(f.statuses.get(computerKey(deviceTarget))?.preference).toMatchObject({ buildPriority: 100, revision: 2 })
+  expect(f.batches).toHaveLength(1)
+  expect(f.batches[0]?.updates).toHaveLength(2)
+  expect([...f.statuses.values()]).toEqual(before)
+  expect(f.writes).toHaveLength(0)
 })
 
 it('shows which accounts each computer is signed in to without listing offline computers as signed out', async () => {

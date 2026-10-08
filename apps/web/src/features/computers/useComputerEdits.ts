@@ -1,23 +1,22 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import type { BuildComputerStatus, BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
-import { buildComputerKeys, updateBuildComputer } from '../../shared/api/buildComputers'
+import { useIsMutating, useMutation, useQueryClient } from '@tanstack/react-query'
+import type { BuildComputerStatus, BuildComputerChange, BuildComputerBatchUpdate } from '@foreman-code/contracts/build-computers'
+import { buildComputerKeys, updateBuildComputers } from '../../shared/api/buildComputers'
 import { ApiError } from '../../shared/api/client'
+import { assertSession, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'
+import { retainBuildComputerCommand, settleBuildComputerCommand, useBuildComputerCommand } from '../../shared/api/buildComputerCommands'
+import { commandWasRejected } from '../../shared/api/commandAttempt'
+import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 
-interface ComputerEdit {
-  before: BuildComputerStatus
-  input: BuildComputerUpdate
-  restoreCommandId: string
-}
-export type ComputerPreferencePatch = Partial<Pick<BuildComputerUpdate,
+export type ComputerPreferencePatch = Partial<Pick<BuildComputerChange,
   'buildEnabled' | 'buildPriority' | 'buildRole' | 'buildAllowancePercent'>>
-export function preferenceEdit(status: BuildComputerStatus, patch: ComputerPreferencePatch): ComputerEdit {
+export function preferenceEdit(status: BuildComputerStatus, patch: ComputerPreferencePatch): BuildComputerChange {
   const preference = status.preference
-  return { before: status, restoreCommandId: crypto.randomUUID(), input: {
+  return {
     target: preference.target, buildEnabled: patch.buildEnabled ?? preference.buildEnabled,
     buildPriority: patch.buildPriority ?? preference.buildPriority, buildRole: patch.buildRole ?? preference.buildRole,
     buildAllowancePercent: patch.buildAllowancePercent ?? preference.buildAllowancePercent,
-    expectedRevision: preference.revision, commandId: crypto.randomUUID(),
-  } }
+    expectedRevision: preference.revision,
+  }
 }
 export function reorderEdits(statuses: readonly BuildComputerStatus[], from: number, to: number) {
   const ordered = [...statuses]
@@ -29,62 +28,80 @@ export function reorderEdits(statuses: readonly BuildComputerStatus[], from: num
   return ordered.map((status, index) => {
     const priority = ordered.length === 1 ? 100 : Math.round(100 * (ordered.length - 1 - index) / (ordered.length - 1))
     return preferenceEdit(status, { buildPriority: priority, ...(status === moved ? { buildRole: role } : {}) })
-  }).filter(value => value.input.buildPriority !== value.before.preference.buildPriority
-    || value.input.buildRole !== value.before.preference.buildRole)
-}
-
-async function saveWithRetry(input: BuildComputerUpdate) {
-  try {
-    return await updateBuildComputer(input)
-  } catch (error) {
-    if (error instanceof ApiError && (error.code === 'NETWORK_ERROR' || error.status >= 500)) {
-      return updateBuildComputer(input)
-    }
-    throw error
-  }
-}
-async function saveEdits(edits: ComputerEdit[]) {
-  const saved: { edit: ComputerEdit; status: BuildComputerStatus }[] = []
-  try {
-    for (const edit of edits) saved.push({ edit, status: await saveWithRetry(edit.input) })
-    return saved.map(value => value.status)
-  } catch (error) {
-    // The single-computer API is revisioned. Restore completed writes if a later row conflicts.
-    for (const value of saved.reverse()) {
-      const restore = preferenceEdit(value.status, value.edit.before.preference).input
-      try {
-        await saveWithRetry({ ...restore, commandId: value.edit.restoreCommandId,
-          expectedRevision: value.status.preference.revision })
-      } catch (restoreError) {
-        throw new Error('Some changes could not be restored. Refresh to see the saved order.', { cause: restoreError })
-      }
-    }
-    throw error
-  }
-}
-export function useComputerEdits() {
-  const cache = useQueryClient()
-  return useMutation({ mutationFn: saveEdits, retry: false,
-    onMutate: async edits => {
-      await cache.cancelQueries({ queryKey: buildComputerKeys.root })
-      for (const { before, input } of edits) {
-        cache.setQueryData(buildComputerKeys.computer(input.target), { ...before,
-          preference: { ...before.preference, buildEnabled: input.buildEnabled, buildPriority: input.buildPriority,
-            buildRole: input.buildRole ?? before.preference.buildRole,
-            buildAllowancePercent: input.buildAllowancePercent ?? before.preference.buildAllowancePercent } })
-      }
-    },
-    onSuccess: statuses => {
-      for (const status of statuses) cache.setQueryData(buildComputerKeys.computer(status.preference.target), status)
-    },
-    onError: (_error, edits) => {
-      for (const edit of edits) cache.setQueryData(buildComputerKeys.computer(edit.input.target), edit.before)
-    },
-    onSettled: () => cache.invalidateQueries({ queryKey: buildComputerKeys.root }),
   })
 }
+
+interface SaveAttempt {
+  input: BuildComputerBatchUpdate
+  generation: number
+  key: string
+  recovering: boolean
+}
+async function saveWithRetry(attempt: SaveAttempt) {
+  try {
+    return await updateBuildComputers(attempt.input, attempt.generation)
+  } catch (error) {
+    assertSession(attempt.generation)
+    if (error instanceof ApiError && (error.code === 'NETWORK_ERROR' || error.status >= 500)) {
+      attempt.recovering = true
+      return updateBuildComputers(attempt.input, attempt.generation)
+    }
+    throw error
+  }
+}
+export function useComputerEdits(mainId: string) {
+  const cache = useQueryClient()
+  const generation = sessionGeneration()
+  const journal = useBuildComputerCommand(mainId)
+  const mutationKey = ['build-computer-save', generation, mainId]
+  const busy = useIsMutating({ mutationKey }) > 0
+  const active = (attempt: SaveAttempt) => attempt.generation === sessionGeneration() && !sessionIsSwitching()
+  const save = useMutation({ mutationKey, mutationFn: saveWithRetry, retry: false, networkMode: 'always',
+    onMutate: async attempt => {
+      assertSession(attempt.generation)
+      retainBuildComputerCommand(attempt.key, attempt.input)
+      await cache.cancelQueries({ queryKey: ['build-computers', attempt.generation] })
+      assertSession(attempt.generation)
+      return { retained: true }
+    },
+    onSuccess: (statuses, attempt) => {
+      if (!active(attempt)) return
+      for (const status of statuses) {
+        cache.setQueryData(buildComputerKeys.computer(status.preference.target, attempt.generation), status)
+      }
+      settleBuildComputerCommand(attempt.key, attempt.input.commandId)
+    },
+    onError: (error, attempt, context) => {
+      if (!context?.retained || !active(attempt) || !commandWasRejected(error)) return
+      // Lost responses followed by denied access cannot disprove an earlier commit.
+      if (attempt.recovering && !(ApiError.is(error) && error.code === 'REVISION_CONFLICT')) return
+      settleBuildComputerCommand(attempt.key, attempt.input.commandId)
+    },
+    onSettled: (_data, _error, attempt) => {
+      if (active(attempt)) return cache.invalidateQueries({ queryKey: ['build-computers', attempt.generation] })
+    },
+  })
+  const retry = () => {
+    if (busy || !journal.pending || generation !== sessionGeneration() || sessionIsSwitching()) return
+    save.mutate({ input: journal.pending, key: journal.key, generation, recovering: true })
+  }
+  useUnsavedChanges({ scope: 'surface', label: 'computer build settings', dirty: false, busy,
+    uncertain: Boolean(journal.pending), saveDisabled: busy || !journal.pending,
+    save: retry, discard: () => { throw new Error('Retry the original save before leaving.') },
+  })
+  return { ...save, isPending: busy, uncertain: Boolean(journal.pending) && !busy,
+    locked: busy || Boolean(journal.pending) || !journal.ready || Boolean(journal.error) || sessionIsSwitching(),
+    storageError: journal.error, retry, retryStorage: journal.reload,
+    mutate: (edits: BuildComputerChange[]) => {
+      if (busy || journal.pending || !journal.ready || journal.error || !edits.length
+        || generation !== sessionGeneration() || sessionIsSwitching()) return
+      save.mutate({ input: { commandId: crypto.randomUUID(), updates: edits },
+        key: journal.key, generation, recovering: false })
+    },
+  }
+}
 export function computerEditError(error: unknown) {
-  if (error instanceof ApiError && error.status === 409) return 'Settings changed elsewhere. Order restored; try again.'
+  if (error instanceof ApiError && error.status === 409) return 'Settings changed elsewhere. No changes were saved; try again.'
   if (error instanceof Error) return error.message
   return 'Changes could not be saved. Try again.'
 }
