@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { expect, it } from 'vitest'
 import { removeFixtureDirectory } from './helpers/testResources.js'
+import { compileApiFixture } from './helpers/compiledApiFixture.js'
 
 it('keeps source development commands usable after successful and failed production deployment', async () => {
   const script = new URL('../../../scripts/local-production-runtime.mjs', import.meta.url).href
@@ -73,7 +74,7 @@ it('keeps source development commands usable after successful and failed product
 
 it('loads the compiled API using only its deployed production dependencies', async () => {
   const script = new URL('../../../scripts/local-production-runtime.mjs', import.meta.url).href
-  const { deployProductionApi } = await import(script)
+  const { deployProductionApi, copyVerificationRuntime } = await import(script)
   const execute = promisify(execFile)
   const repository = fileURLToPath(new URL('../../../', import.meta.url))
   const directory = await mkdtemp(join(tmpdir(), 'production-runtime-dependencies-'))
@@ -84,6 +85,7 @@ it('loads the compiled API using only its deployed production dependencies', asy
     cwd: source, env: process.env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
   })
   try {
+    const compiledApi = await compileApiFixture(directory)
     await mkdir(join(source, 'scripts'), { recursive: true })
     for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc']) {
       await cp(join(repository, name), join(source, name))
@@ -92,10 +94,12 @@ it('loads the compiled API using only its deployed production dependencies', asy
     for (const project of ['apps/api', 'packages/contracts']) {
       await mkdir(join(source, project), { recursive: true })
       await cp(join(repository, project, 'package.json'), join(source, project, 'package.json'))
-      await cp(join(repository, project, 'dist'), join(source, project, 'dist'), { recursive: true })
+      const compiled = project === 'apps/api' ? compiledApi : join(repository, project, 'dist')
+      await cp(compiled, join(source, project, 'dist'), { recursive: true })
     }
     await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
     await deployProductionApi(run, destination)
+    await copyVerificationRuntime(repository, release)
     await mkdir(join(release, 'apps/worker/src'), { recursive: true })
     for (const name of ['service.mjs', 'diagnostics.mjs', 'harnessPath.mjs']) {
       await cp(join(repository, 'apps/worker/src', name), join(release, 'apps/worker/src', name))

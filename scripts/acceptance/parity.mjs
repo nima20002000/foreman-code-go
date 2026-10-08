@@ -36,7 +36,11 @@ export async function parity({ apiUrl, workspaceId, workflowIds, runId, access, 
       const advertised = await denied.client.listTools()
       check(!advertised.tools.some((tool) => tool.name === name), 'MCP_DENIED_TOOL_ADVERTISED')
       try {
-        await denied.client.callTool({ name, arguments: args })
+        const result = await denied.client.callTool({ name, arguments: args })
+        const text = result.content?.find((part) => part.type === 'text')?.text
+        check(result.isError === true && typeof text === 'string', 'MCP_DENIAL_FAILED')
+        check(JSON.parse(text).error?.code === 'ACCESS_DENIED', 'MCP_DENIAL_FAILED')
+        return
       } catch (error) {
         if (!(error instanceof ProtocolError) || error.code !== ProtocolErrorCode.InvalidParams) throw error
         return

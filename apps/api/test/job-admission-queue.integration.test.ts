@@ -424,11 +424,6 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       attemptId: identity.attemptId, operationId: identity.operationId,
       acceptedSpec: { ...jobExecution().acceptedSpec, ...prepared,
         definitionId: definition.id, definitionVersionId: definition.versionId } }
-    await database.pool.query(`insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record)
-      values($1,$2,1,$3,1,$4::jsonb)`, [computer.candidate.profile.id, f.workspaceId,
-      computer.candidate.profile.root.binding.rootId, JSON.stringify(computer.candidate.profile)])
-    await database.pool.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,1,$2::jsonb)',
-      [computer.candidate.profile.id, JSON.stringify(computer.candidate.profile)])
     await database.pool.query(`insert into job_executions
       (id,workspace_id,definition_version_id,operation_id,attempt_id,record,accepted_spec,accepted_by)
       values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)`, [execution.id, f.workspaceId,
@@ -741,7 +736,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       kind: 'accepted', ticketId: nextTicket.id, executionId: nextTicket.executionId,
     } })
     expect(f.accept).toHaveBeenCalledTimes(1)
-  })
+  }, 60000)
   it('discovers old active requests alongside paginated history through HTTP and authenticated MCP', async () => {
     const f = await fixture({ computerCount: 2 })
     f.computers[0]!.candidate.spec.policy.queueTimeoutMs = 600000

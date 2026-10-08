@@ -5,6 +5,7 @@ import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
 import { deferred, postgresEnabled, readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { graphParity } from './helpers/wave25R1GraphParity.js'
+import { ApprovalTransportFaults } from './helpers/eng06ApprovalFaults.js'
 
 const closes: Array<() => Promise<void>> = []
 afterEach(async () => { while (closes.length) await closes.pop()!(); vi.restoreAllMocks() })
@@ -105,10 +106,12 @@ describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durabl
   }, 60000)
 
   it('closes a cold waiting sibling without replaying its accepted predecessor', async () => {
-    const f = await checkpointRuntimeFixture(2, 1, { recoverNativeProcesses: async (executionId, signal) => {
-      signal.throwIfAborted()
-      return f.provider.closedSessions.has(`native-${executionId}`)
-    } })
+    const faults = new ApprovalTransportFaults()
+    const f = await checkpointRuntimeFixture(2, 1, {
+      recoverNativeProcesses: (executionId, signal) => faults.recoverNativeProcesses(executionId, signal),
+    })
+    const connection = f.provider.connection.bind(f.provider)
+    vi.spyOn(f.provider, 'connection').mockImplementation(() => faults.wrap(connection()))
     closes.push(f.close)
     await f.engine.start(f.f.run.id)
     const [first, sibling] = await f.pending()
@@ -117,6 +120,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durabl
     const accepted = (await readCurrentExecutions(f.runs, f.f.run.id)).find((item) => item.id === first.executionId)!
     expect(accepted.result?.outcome).toBe('succeeded')
     const exact = await f.runs.getExecution(sibling.executionId!)
+    faults.killOnRestart = true
     await f.engine.shutdown()
     const next = f.compose()
     await next.engine.resume(f.f.run.id)

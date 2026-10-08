@@ -17,7 +17,8 @@ import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
 import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
 import { br3002Cuts, br3002Assistant, br3002Notify } from './helpers/wave25Br3002Review.js'
 import { br1002At } from './helpers/wave25Br1002Cuts.js'
-import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { agent3Database, deferred, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { OPENCODE_RECONCILIATION_EVENT } from '../src/modules/harnesses/opencodeReconciliation.js'
 
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('current durable approval orchestration', () => {
@@ -72,6 +73,19 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       operator: { access: f.access, services: { commands, interactions: new OperatorInteractionService(f.service) } as never } })
     const clients: Client[] = []
     const cuts = br3002Cuts(f)
+    const beforeHistory = deferred()
+    const afterHistory = deferred()
+    const publishHistory = deferred()
+    const finishHistory = deferred()
+    const appendHistory = f.coordination.appendReviewNativeHistory.bind(f.coordination)
+    const historySpy = vi.spyOn(f.coordination, 'appendReviewNativeHistory').mockImplementation(async (...args) => {
+      if (!args[1].some((event) => event.type === OPENCODE_RECONCILIATION_EVENT)) return appendHistory(...args)
+      beforeHistory.resolve()
+      await publishHistory.promise
+      await appendHistory(...args)
+      afterHistory.resolve()
+      await finishHistory.promise
+    })
     let dispatch: Promise<unknown> | undefined
     try {
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -86,10 +100,12 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       const denied = await f.credentials.issueForExecution(f.requester.id)
       const worker = await connect('/mcp', denied.environment.variables.GRAPHQL_MCP_TOKEN!)
       // Neither role lists interaction_respond; a direct call is refused before the decision service.
-      for (const client of [worker, operator]) {
+      for (const [client, code] of [[worker, 'ROLE_NOT_ALLOWED'], [operator, 'ACCESS_DENIED']] as const) {
         const refused = await client.callTool({ name: 'interaction_respond', arguments: br1002Response(f.interaction) })
         expect(refused.isError).toBe(true)
-        expect(JSON.stringify(refused.content)).toContain('ROLE_NOT_ALLOWED')
+        const body = refused.content.find((item) => item.type === 'text')
+        expect(body?.type).toBe('text')
+        expect(JSON.parse(body!.text as string)).toMatchObject({ error: { code } })
       }
       expect(f.counts().responses).toBe(0)
       dispatch = f.native.reviewers.dispatchNext(f.reviewerId, 'current-mcp-proof')
@@ -110,11 +126,11 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       br3002Notify(f.server, message, true)
       await br1002At(cuts.assistant.promise, dispatch)
       cuts.continueAssistant.resolve()
-      await br1002At(cuts.beforeMarker.promise, dispatch)
+      await br1002At(beforeHistory.promise, dispatch)
       expect(f.counts().responses).toBe(0)
-      cuts.enterMarker.resolve()
-      await br1002At(cuts.afterMarker.promise, dispatch)
-      cuts.finishMarker.resolve()
+      publishHistory.resolve()
+      await br1002At(afterHistory.promise, dispatch)
+      finishHistory.resolve()
       await dispatch
       expect((await f.service.recover({ limit: 10 })).errors).toEqual([])
       expect(await f.repository.get(input.interactionId)).toMatchObject({ deliveryState: 'delivered' })
@@ -126,7 +142,17 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       expect((await f.db.pool.query<{ state: string }>(
         'select state from interaction_graph_resumes where interaction_id=$1', [input.interactionId])).rows[0]?.state).toBe('resumed')
       expect((await f.runs.get(f.run.id))?.outcome).toBe('pending')
-    } finally { cuts.release(); cuts.restore(); await Promise.allSettled(clients.map((c) => c.close())); await app.close(); await f.close(); await dispatch?.catch(() => undefined) }
+    } finally {
+      cuts.release()
+      publishHistory.resolve()
+      finishHistory.resolve()
+      await dispatch?.catch(() => undefined)
+      cuts.restore()
+      historySpy.mockRestore()
+      await Promise.allSettled(clients.map((client) => client.close()))
+      await app.close()
+      await f.close()
+    }
   }, 60000)
 
   it.each(['transitive', 'unconnected', 'same_agent_other_node'] as const)('rejects %s approval topology during current Save before it can grant reviewer authority', async (topology) => {

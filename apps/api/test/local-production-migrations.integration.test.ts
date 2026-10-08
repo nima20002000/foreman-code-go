@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { loadConfig } from '../src/config.js'
 import { createDatabase } from '../src/infrastructure/database.js'
@@ -10,6 +10,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
+import { compileApiFixture } from './helpers/compiledApiFixture.js'
 
 it.skipIf(!postgresEnabled)('migrates under DDL contention without changing the API request deadline', async () => {
   const fixture = await currentDatabase({ beforeMigration: 2026100401 })
@@ -25,10 +26,11 @@ it.skipIf(!postgresEnabled)('migrates under DDL contention without changing the 
   const holder = await fixture.pool.connect()
   let command: Promise<{ success: true } | { success: false; error: Error }> | undefined
   try {
+    const compiledApi = await compileApiFixture(fixture.directory)
     await holder.query('begin')
     await holder.query('lock table application_migrations in access exclusive mode')
     const pid = (await holder.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
-    command = promisify(execFile)(process.execPath, [fileURLToPath(new URL('../dist/cli/migrate.js', import.meta.url))], {
+    command = promisify(execFile)(process.execPath, [join(compiledApi, 'cli/migrate.js')], {
       env: environment, timeout: 15_000, maxBuffer: 1024 * 1024,
     }).then(() => ({ success: true as const }), (error: Error) => ({ success: false as const, error }))
     const deadline = Date.now() + 5_000
@@ -57,4 +59,4 @@ it.skipIf(!postgresEnabled)('migrates under DDL contention without changing the 
     await dropFixtureSchema(fixture.pool, checkpointSchema)
     await fixture.close()
   }
-}, 30_000)
+}, 120_000)

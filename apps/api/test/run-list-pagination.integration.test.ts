@@ -121,7 +121,10 @@ describe('chronological Run list pagination', () => {
       const denied = await reader(f, [{ actions: ['capabilities:read'], scope: {} }])
       expect((await f.app.inject({ method: 'GET', url: listUrl(input),
         headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
-      await expect(denied.client.callTool({ name: 'run_list', arguments: input })).rejects.toMatchObject({ code: -32602 })
+      const refused = await denied.client.callTool({ name: 'run_list', arguments: input })
+      expect(refused.isError).toBe(true)
+      const body = refused.content.find((item) => item.type === 'text')
+      expect(JSON.parse(body!.text as string)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
       await f.db.pool.query('update management_principals set grants=$2::jsonb where id=$1',
         [r.principal.id, JSON.stringify([{ actions: ['runs:read'], scope: { workspaceIds: ['another-workspace'] } }])])
       await expect(f.services.runs.list(r.principal, input)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
