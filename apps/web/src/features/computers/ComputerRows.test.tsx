@@ -197,3 +197,84 @@ it('connects Google Drive on a computer through a Google sign-in link and shows 
   await waitFor(() => expect(within(dialog).getByText('owner@gmail.com')).toBeInTheDocument(), { timeout: 8000 })
   expect(within(dialog).getByText('/home/owner/Foreman Code Drive')).toBeInTheDocument()
 }, 15_000)
+
+it('shows Main build readiness, failure reasons and the remote execution warning', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  f.statuses.set(computerKey(mainTarget), { ...f.statuses.get(computerKey(mainTarget))!,
+    state: 'busy', reasons: ['More available memory is required before another build can start.'],
+    remoteExecutionEnabled: false })
+  await ready()
+  const main = rows()[0]!
+  expect(within(main).getByText('Build status')).toBeVisible()
+  await userEvent.setup().click(within(main).getByText('Build status'))
+  expect(within(main).getByText(/Busy · More available memory is required/)).toBeVisible()
+  expect(within(main).getByText('Remote execution disabled on Main')).toBeVisible()
+})
+it('explains the preferred computer before fallback priority order', async () => {
+  computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  await ready()
+  expect(screen.getByText('Auto placement · Preferred computer first · Fallback: Primary before Backup, then top priority')).toBeVisible()
+})
+
+it('reads later account pages and explains direct priorities for more than 100 paired computers', async () => {
+  const devices = Array.from({ length: 101 }, (_, index) => ({ ...registration,
+    deviceId: `22222222-2222-4222-8222-${String(index + 1).padStart(12, '0')}`,
+    workerInstallationId: `33333333-3333-4333-8333-${String(index + 1).padStart(12, '0')}` }))
+  const last = devices.at(-1)!
+  const cursor = devices[99]!.deviceId
+  const lastTarget = { ...deviceTarget, hostRef: { kind: 'device' as const, mainId, deviceId: last.deviceId },
+    applicationInstallationId: last.workerInstallationId }
+  const requests: (string | null)[] = []
+  const priorities = new Map<string, number>()
+  const writes: BuildComputerUpdate[] = []
+  const statusFor = (target: BuildComputerUpdate['target']) => ({
+    preference: { target, revision: priorities.has(computerKey(target)) ? 2 : 1,
+      buildEnabled: true, buildPriority: priorities.get(computerKey(target)) ?? 50,
+      buildRole: 'primary', buildAllowancePercent: 100 }, state: 'ready', reasons: [], remoteExecutionEnabled: true,
+  })
+  computersFixture(<ComputerRows mainId={mainId} devices={devices} />, [
+    http.post('*/api/management/settings/build-computers/read', async ({ request }) => {
+      const { target } = await request.json() as BuildComputerUpdate
+      return HttpResponse.json(statusFor(target))
+    }),
+    http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
+      const input = await request.json() as BuildComputerUpdate
+      writes.push(input)
+      priorities.set(computerKey(input.target), input.buildPriority)
+      return HttpResponse.json(statusFor(input.target))
+    }),
+    http.get('*/api/management/computers/accounts', ({ request }) => {
+      const after = new URL(request.url).searchParams.get('cursor')
+      requests.push(after)
+      return HttpResponse.json(after ? { computers: [{ target: lastTarget, accounts: {
+        observedAt: new Date().toISOString(), accounts: [{ tool: 'github', installed: true, signedIn: true,
+          account: 'last-worker', details: [] }] } }], nextCursor: null } : { computers: [], nextCursor: cursor })
+    }),
+  ])
+  const accountButton = await screen.findByTitle('GitHub: last-worker', {}, { timeout: 15000 })
+  expect(accountButton).toHaveAccessibleName('GitHub: last-worker. Manage GitHub')
+  expect(accountButton).toBeVisible()
+  expect(requests).toEqual([null, cursor])
+  expect(screen.getByText(/With more than 101 computers, set priorities directly/)).toBeVisible()
+  const fields = await waitFor(() => {
+    const values = screen.getAllByDisplayValue('50')
+    expect(values).toHaveLength(102)
+    return values
+  }, { timeout: 15000 })
+  expect(fields[0]).toHaveAccessibleName(/^Build priority for/)
+  const moves = document.querySelectorAll<HTMLButtonElement>('button[aria-label^="Move "]')
+  expect(moves).toHaveLength(204)
+  expect([...moves].every(button => button.disabled)).toBe(true)
+  const lastRow = accountButton.closest('li')!
+  const priority = within(lastRow).getByRole('spinbutton', { name: /^Build priority for/ })
+  fireEvent.change(priority, { target: { value: '60' } })
+  fireEvent.blur(priority)
+  await waitFor(() => expect(writes).toHaveLength(1), { timeout: 5000 })
+  expect(writes[0]).toMatchObject({ target: lastTarget, buildPriority: 60, expectedRevision: 1 })
+  expect(priorities.get(computerKey(lastTarget))).toBe(60)
+  await waitFor(() => {
+    const saved = within(lastRow).getByRole('spinbutton', { name: /^Build priority for/ })
+    expect(saved).toHaveValue(60)
+    expect(saved).toBeEnabled()
+  }, { timeout: 5000 })
+}, 30000)
