@@ -16,14 +16,15 @@ const waiting: GitHubLoginState = {
 const signedOut: GitHubLoginState = { ...waiting, loginId: null, state: 'signed-out', code: null,
   verificationUrl: null, expiresAt: null }
 function fixture(state = waiting, signedIn = false) {
-  act(() => useComputerUi.getState().openGitHub(`${mainId}:main`))
-  return computersFixture(<GitHubSignInDialog target={mainTarget} name="Main" account={{
+  const result = computersFixture(<GitHubSignInDialog target={mainTarget} name="Main" account={{
     tool: 'github', installed: true, signedIn, account: signedIn ? 'owner' : null, details: [],
   }} />, [
     http.post('*/api/management/computers/github/login', () => HttpResponse.json(state)),
     http.post('*/api/management/computers/github/login/status', () => HttpResponse.json(state)),
     http.post('*/api/management/computers/github/logout', () => HttpResponse.json(signedOut)),
   ])
+  act(() => useComputerUi.getState().openGitHub(`${mainId}:main`))
+  return result
 }
 afterEach(() => { vi.restoreAllMocks(); act(() => useComputerUi.getState().closeGitHub()) })
 
