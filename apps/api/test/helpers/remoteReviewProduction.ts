@@ -156,7 +156,8 @@ export async function remoteReviewProduction(options: {
     await writeFile(mainConfiguration, JSON.stringify({ config, infrastructure }), { mode: 0o600 })
     let main: ChildProcess | undefined
     let mainFailure = ''
-    const failures: Array<{ code: string; runId: string | null; phase?: unknown; errorType?: unknown; errorLocation?: unknown }> = []
+    const failures: Array<{ code: string; runId: string | null; namespace?: unknown;
+      phase?: unknown; errorType?: unknown; errorLocation?: unknown }> = []
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
       if (!main || main.exitCode !== null || main.signalCode !== null) return
@@ -184,7 +185,7 @@ export async function remoteReviewProduction(options: {
           try { parsed = JSON.parse(line) } catch { continue }
           if (!parsed || typeof parsed !== 'object') continue
           const event = parsed as { level?: unknown; code?: unknown; errorCode?: unknown; stackFrames?: unknown;
-            runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown }; msg?: unknown;
+            namespace?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown; type?: unknown }; msg?: unknown;
             phase?: unknown; errorType?: unknown; errorLocation?: unknown }
           const code = event.err?.code ?? event.code ?? event.errorCode
             ?? (event.msg === 'Device extension request failed' ? 'DEVICE_EXTENSION_FAILED' : undefined)
@@ -192,7 +193,9 @@ export async function remoteReviewProduction(options: {
           if (!['warn', 'error', 'fatal'].includes(String(event.level)) || typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(code)) continue
           const frames = Array.isArray(event.stackFrames)
             ? event.stackFrames.filter((frame): frame is string => typeof frame === 'string').slice(0, 2) : []
-          failures.push({ code, phase: event.phase, errorType: event.errorType,
+          failures.push({ code, phase: event.phase, errorType: event.errorType ?? event.err?.type,
+            namespace: typeof event.namespace === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(event.namespace)
+              ? event.namespace : undefined,
             errorLocation: event.errorLocation ?? (frames.length ? frames.map(frame => frame.trim()).join(' ') : undefined)
               ?? (typeof event.err?.stack === 'string'
               ? event.err.stack.split('\n').slice(1, 3).map(line => line.trim()).join(' ') : undefined),
@@ -454,9 +457,11 @@ export async function remoteReviewProduction(options: {
             && /^[A-Z][A-Z0-9_]{1,127}$/.test(message.code) ? message.code : undefined
           const detail = 'message' in message ? String(message.message) : 'Main reconciliation failed.'
           const reason = 'details' in message ? JSON.stringify(message.details) : ''
-          const error = new Error(`${code ? `${code}: ` : ''}${detail}${reason ? ` (${reason})` : ''}`)
+          const nativeFailures = JSON.stringify(failures.slice(-8))
+          const error = new Error(`${code ? `${code}: ` : ''}${detail}${reason ? ` (${reason})` : ''}\nNative failure codes: ${nativeFailures}`)
           if ('stack' in message && typeof message.stack === 'string') error.stack = message.stack
           if (reason) error.stack = `${error.stack}\nDetails: ${reason}`
+          error.stack = `${error.stack}\nNative failure codes: ${nativeFailures}`
           finish(error)
         }
       }
