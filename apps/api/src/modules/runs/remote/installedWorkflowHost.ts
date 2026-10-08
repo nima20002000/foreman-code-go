@@ -488,8 +488,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           } else await workerExecutionAuthorizer(forBinding(actual.context.binding))(actual.intent,actual.placement,'start')
           installations.assertCurrent(selection)}
         const outputContext: InstalledWorkflowNativeOutputContext = {
-          intent: structuredClone(actual.intent), placement: structuredClone(actual.placement),
-          binding: Object.freeze(structuredClone(actual.context.binding)),
+          get intent() { return structuredClone(actual.intent) },
+          placement: structuredClone(actual.placement),
+          get binding() { return Object.freeze(structuredClone(actual.context.binding)) },
           materialization: structuredClone(actual.capture.facts.executionPlacement.materialization),
           applicationAccess: () => {
             if (!actual.applicationAccess || actual.launchDisabled || closing) unavailable('original_main_lease_required')
