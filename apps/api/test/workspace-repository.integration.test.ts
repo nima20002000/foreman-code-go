@@ -45,4 +45,36 @@ describe('repository settings through authenticated MCP', () => {
       await f.close()
     }
   }, 30_000)
+
+  it('rejects path segments in structured repository fields through HTTP and MCP', async () => {
+    const f = await workspaceMcpFixture()
+    try {
+      const created = await callWorkspaceTool(f.owner.client, 'workspace_create',
+        contracts.ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Repository validation' })
+      const workspaceId = created.value.workspace.id
+      const repository = { provider: 'github', owner: 'octo-owner', name: 'website', defaultBranch: 'main' }
+      for (const invalid of [
+        { ...repository, name: 'website/extra' },
+        { ...repository, name: 'website/tree/main' },
+        { ...repository, owner: 'https://github.com/octo-owner' },
+      ]) {
+        const input = { workspaceId, expectedRevision: created.value.revision, repository: invalid }
+        expect((await f.owner.client.callTool({ name: 'workspace_update', arguments: {
+          ...input, commandId: randomUUID(),
+        } })).isError).toBe(true)
+        const response = await fetch(new URL(`/api/management/workspaces/${workspaceId}`, f.address), {
+          method: 'PATCH',
+          headers: { authorization: `Bearer ${f.owner.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ ...input, commandId: randomUUID() }),
+        })
+        expect(response.status).toBe(400)
+        const readback = await callWorkspaceTool(f.owner.client, 'workspace_get',
+          contracts.ManagedWorkspaceSchema, { workspaceId })
+        expect(readback.workspace.repository).toBeUndefined()
+        expect(readback.revision).toBe(created.value.revision)
+      }
+    } finally {
+      await f.close()
+    }
+  }, 30_000)
 })

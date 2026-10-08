@@ -17,8 +17,13 @@ function repositoryFields(repository: WorkspaceRepository | undefined): Reposito
 
 function repositoryInput(fields: RepositoryFields | null) {
   if (!fields) return null
-  const [owner, name] = fields.slug.trim().replace(/^https:\/\/github\.com\//u, '').replace(/\.git$/u, '').split('/')
-  return { provider: 'github', owner, name, defaultBranch: fields.branch.trim() }
+  const match = /^(?:https:\/\/github\.com\/)?([^/]+)\/([^/]+)\/?$/u.exec(fields.slug.trim())
+  return {
+    provider: 'github',
+    owner: match?.[1],
+    name: match?.[2]?.replace(/\.git$/u, ''),
+    defaultBranch: fields.branch.trim(),
+  }
 }
 
 /** Agents in this workspace's Runs each get their own worktree and branch of this GitHub repository. */
@@ -67,7 +72,8 @@ export function WorkspaceRepositoryForm({ workspaceId, revision, repository }: {
     <div className="workspace-repository-fields">
       <TextField label="Repository" placeholder="owner/name" value={fields.slug} disabled={locked}
         onChange={event => form.setDraft({ ...fields, slug: event.target.value })}
-        error={fields.slug && !parsed.success ? 'Use owner/name' : undefined} />
+        error={fields.slug && !parsed.success
+          ? 'Use owner/name or a GitHub repository URL without extra path segments.' : undefined} />
       <TextField label="Base branch" value={fields.branch} disabled={locked}
         onChange={event => form.setDraft({ ...fields, branch: event.target.value })} />
     </div>
