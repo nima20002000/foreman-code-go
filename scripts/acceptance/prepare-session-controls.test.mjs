@@ -18,7 +18,7 @@ function fixture() {
     const nativeHost = hostKind === 'main' ? mainId : randomUUID()
     const configuration = harness === 'claude' ? { harness, model: 'claude-haiku-4-5-20251001',
       authMode: 'subscription', configDirectory: '/owned/recorded-profile', permissionMode: 'default',
-      sandbox: 'read-only', tools: [], permissionRules: [], instructions: '', mcpServers: {} }
+      sandbox: 'danger-full-access', tools: ['Write'], permissionRules: [], instructions: '', mcpServers: {} }
       : structuredClone(contracts.DEFAULT_HARNESS_DEFAULTS[harness])
     const nativeProfile = randomUUID()
     const selector = profileContracts.HarnessProfileSelectionSchema.parse({ instanceId: nativeProfile,
@@ -53,6 +53,7 @@ function fixture() {
       return { value: structuredClone(defaults), replayed: false }
     }
     if (name === 'operator_chat_create') {
+      contracts.CreateOperatorConversationRequestSchema.required({ commandId: true }).parse(args)
       const conversation = { id: randomUUID(), agentId: 'application-operator', scope: 'application',
         operatorConfigurationVersionId: defaults.versionId, title: args.title, status: 'open', createdAt, updatedAt: createdAt }
       conversations.set(conversation.id, { conversation, messages: [], turnState: 'idle',
@@ -113,7 +114,9 @@ test('creates twelve distinct empty chats through the product tools and restores
   const futureIds = matrix.rows.filter(row => row.role === 'operator').map(row => row.futureDefaultsConversationId)
   assert.equal(new Set(futureIds).size, 6)
   assert.ok(futureIds.every(id => !matrix.rows.some(row => row.conversationId === id)))
-  assert.equal(f.calls.filter(call => call.name === 'operator_chat_create').length, 12)
+  const creates = f.calls.filter(call => call.name === 'operator_chat_create')
+  assert.equal(creates.length, 12)
+  assert.equal(new Set(creates.map(call => call.args.commandId)).size, 12)
   assert.equal(f.calls.filter(call => call.name === 'operator_chat_get').length, 6)
   assert.equal(matrix.mcpTokenEnv, f.input.mcpTokenEnv)
   assert.deepEqual(matrix.expectedIdentity, f.input.expectedIdentity)

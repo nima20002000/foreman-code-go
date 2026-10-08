@@ -46,9 +46,11 @@ export async function prepareSessionControlMatrix(input, { contracts, agentChat,
       changed = true
       assert.deepEqual(current.value, value)
       const created = contracts.CreateOperatorConversationResponseSchema.parse(await tool('operator_chat_create', {
+        commandId: randomUUID(),
         title: `Session controls · ${subject.harness} · ${subject.hostKind}`,
       })).conversation
       const future = contracts.CreateOperatorConversationResponseSchema.parse(await tool('operator_chat_create', {
+        commandId: randomUUID(),
         title: `Future controls · ${subject.harness} · ${subject.hostKind}`,
       })).conversation
       assert.equal(future.operatorConfigurationVersionId, created.operatorConfigurationVersionId,
