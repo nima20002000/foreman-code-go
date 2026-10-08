@@ -569,7 +569,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
             </div> : null}
             <footer className="operator-chat-controls">
               {attachmentReceiptPending && !pending.command ? <Button size="sm" onClick={attachmentReceipts.reconcile}>Check previous message</Button> : null}
-              {pendingHandoff ? <p className="operator-chat-handoff" role="status">{attachments.hasAttachments ? 'Files stay in this chat. Start a new chat to attach files.' : <>Your next message starts {settings!.harness === 'opencode' ? 'an OpenCode' : 'a Codex'} chat with prior conversation context.</>}</p> : null}
+              {pendingHandoff ? <p className="operator-chat-handoff" role="status">{attachments.hasAttachments ? 'Files stay in this chat. Start a new chat to attach files.' : <>Your next message starts {settings!.harness === 'claude' ? 'a Claude' : 'a Codex'} chat with prior conversation context.</>}</p> : null}
               {preferences.query.isError ? <Alert tone={preferencesDenied ? 'danger' : 'warning'} title={preferencesDenied ? 'Operator settings access unavailable' : 'Could not refresh Operator settings'}
                 action={<Button size="sm" onClick={() => void preferences.query.refetch()}>Retry settings</Button>}>
                 {preferencesDenied ? 'Check your browser enrollment and permissions.' : preferences.query.data ? 'Last saved settings are still available.' : preferences.query.error.message}

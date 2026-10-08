@@ -4,7 +4,7 @@ import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 /** Device channel namespace: Main asks a paired computer for maintenance status and starts maintenance tasks. */
 export const COMPUTER_MAINTENANCE_NAMESPACE = 'computer-maintenance-v1'
 
-/** Harnesses kept installed and current on every computer. OpenCode is being removed and is not managed. */
+/** Harnesses kept installed and current on every computer: Codex and Claude. */
 export const MaintainedHarnessSchema = z.enum(['codex', 'claude'])
 export type MaintainedHarness = z.infer<typeof MaintainedHarnessSchema>
 

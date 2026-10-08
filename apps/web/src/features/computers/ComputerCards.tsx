@@ -17,7 +17,7 @@ import { ComputerUtilization } from './ComputerUtilization'
 import { useComputerActivityFreshness } from './useComputerActivityFreshness'
 import './computerCards.css'
 
-/** Harnesses this app runs. OpenCode is being removed and is not offered. */
+/** Harnesses this app runs: Codex and Claude. */
 const HARNESSES = [{ tool: 'codex', label: 'Codex' }, { tool: 'claude', label: 'Claude' }] as const
 
 type Card = { target: DeviceProvisioningTarget; build: BuildComputerStatus | undefined; buildError: boolean }
