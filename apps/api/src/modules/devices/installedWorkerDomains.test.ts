@@ -147,7 +147,9 @@ describe('actual installed worker mount availability, no physical acceptance', (
     expect(mounted.sourceAvailable).toBe(false)
     expect(mounted.rsyncAvailable).toBe(false)
     expect(mounted.rsyncMissing).toContain('canonical acknowledgement')
-    expect(mounted.extensions.map(extension => extension.namespace).sort()).toEqual(['agent-snapshot-v1', 'computer-accounts-v1', 'computer-drive-v2', 'computer-github-v1', 'harness-discovery-v1'])
+    expect(mounted.extensions.map(extension => extension.namespace).sort()).toEqual([
+      'agent-snapshot-v1', 'computer-accounts-v1', 'computer-github-v1', 'computer-sync-v1', 'harness-discovery-v1',
+    ])
     await mounted.close(); await mounted.close()
   })
   it('advertises the actual Job input client on the existing channel only with an explicit Job installation',async()=>{

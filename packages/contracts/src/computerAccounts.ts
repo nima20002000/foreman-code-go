@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 
 export const COMPUTER_ACCOUNTS_NAMESPACE = 'computer-accounts-v1'
-export const ComputerAccountToolSchema = z.enum(['codex', 'claude', 'opencode', 'github', 'drive'])
+export const ComputerAccountToolSchema = z.enum(['codex', 'claude', 'opencode', 'github'])
 /** Identity facts only: never tokens, keys or credential paths. */
 export const ComputerAccountSchema = z.object({
   tool: ComputerAccountToolSchema,
@@ -59,40 +59,4 @@ export const ComputerGitHubStatusInputSchema = ComputerGitHubInputSchema.extend(
 export type GitHubLoginRequest = z.infer<typeof GitHubLoginRequestSchema>
 export type GitHubLoginState = z.infer<typeof GitHubLoginStateSchema>
 
-export const COMPUTER_DRIVE_NAMESPACE = 'computer-drive-v2'
-/** The rclone remote and user service the app manages on each computer. */
-export const DRIVE_REMOTE = 'foreman-drive'
-export const DRIVE_MOUNT_DIRECTORY = 'Foreman Code Drive'
-/** The one Drive folder the app's remote is rooted at; the mount shows only this folder. */
-export const DRIVE_APP_FOLDER = 'Foreman Code'
-/** Requests Main sends to one computer. The OAuth token is written to that computer's rclone config and never stored by Main. */
-export const DriveComputerRequestSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.literal('status') }).strict(),
-  z.object({ operation: z.literal('install') }).strict(),
-  z.object({ operation: z.literal('intent'), operationId: z.uuid() }).strict(),
-  z.object({ operation: z.literal('connect'), operationId: z.uuid(), token: z.string().min(2).max(8192) }).strict(),
-  z.object({ operation: z.literal('disconnect'), operationId: z.uuid() }).strict(),
-])
-export const DriveComputerStateSchema = z.object({
-  installed: z.boolean(), connected: z.boolean(), account: z.string().max(320).nullable(),
-  mountPath: z.string().startsWith('/').max(1024).nullable(), mounted: z.boolean(), message: z.string().max(500).nullable(),
-}).strict()
-export const DriveLoginStateSchema = z.object({
-  loginId: z.uuid().nullable(),
-  state: z.enum(['waiting', 'connecting', 'connected', 'disconnected', 'failed', 'expired', 'cancelled']),
-  /** Reserved for a browser-accessible sign-in URL; remote authorization uses the command below. */
-  authorizationUrl: z.url().nullable(),
-  authorizationCommand: z.string().max(1024).nullable(),
-  expiresAt: z.string().datetime().nullable(),
-  account: z.string().max(320).nullable(),
-  mountPath: z.string().max(1024).nullable(),
-  message: z.string().max(500).nullable(),
-}).strict()
-export const ComputerDriveInputSchema = ComputerGitHubInputSchema
-export const ComputerDriveStatusInputSchema = ComputerGitHubStatusInputSchema
-export const ComputerDriveCompleteInputSchema = ComputerDriveStatusInputSchema.extend({
-  token: z.string().min(2).max(8192),
-}).strict()
-export type DriveComputerRequest = z.infer<typeof DriveComputerRequestSchema>
-export type DriveComputerState = z.infer<typeof DriveComputerStateSchema>
-export type DriveLoginState = z.infer<typeof DriveLoginStateSchema>
+export * from './computerSync.js'

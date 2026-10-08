@@ -4,8 +4,7 @@ import { access, readFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { driveRemoteSetting } from './driveComputer.js'
-import { ComputerAccountsSchema, DRIVE_MOUNT_DIRECTORY, DRIVE_REMOTE, type ComputerAccount, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
+import { ComputerAccountsSchema, type ComputerAccount, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 
 export interface AccountProbePorts {
   /** Absolute executable path, or null when the tool is not installed. */
@@ -20,9 +19,9 @@ const plain = (value: string) => value.replace(ansi, '')
 
 /** Passive sign-in facts for this computer. Reads identity only; tokens never leave the probe. */
 export async function probeComputerAccounts(ports: AccountProbePorts = systemPorts(), signal = AbortSignal.timeout(20_000)): Promise<ComputerAccounts> {
-  const accounts = await Promise.all([codex(ports), claude(ports, signal), opencode(ports, signal), probeGitHubAccount(ports, signal), drive(ports, signal)]
+  const accounts = await Promise.all([codex(ports), claude(ports, signal), opencode(ports, signal), probeGitHubAccount(ports, signal)]
     .map(probe => probe.catch((): null => null)))
-  const tools = ['codex', 'claude', 'opencode', 'github', 'drive'] as const
+  const tools = ['codex', 'claude', 'opencode', 'github'] as const
   return ComputerAccountsSchema.parse({ observedAt: new Date().toISOString(),
     accounts: accounts.map((value, index) => value ?? unknown(tools[index]!)) })
 }
@@ -123,34 +122,6 @@ export async function probeGitHubAccount(ports: AccountProbePorts, signal = Abor
 
 function parseJson(value: string): unknown {
   try { return JSON.parse(value) } catch { return null }
-}
-
-async function drive(ports: AccountProbePorts, signal: AbortSignal): Promise<ComputerAccount> {
-  const binary = await ports.find('rclone')
-  if (!binary) return missing('drive')
-  const remotes = plain((await ports.run(binary, ['listremotes', '--long'], signal)).stdout).split('\n')
-    // `--long` adds a remote's description after its type.
-    .map(line => /^(\S+):\s+drive(?:\s|$)/u.exec(line.trim())?.[1]).filter((name): name is string => Boolean(name))
-  if (!remotes.length) return { tool: 'drive', installed: true, signedIn: false, account: null, details: [] }
-  const remote = remotes.includes(DRIVE_REMOTE) ? DRIVE_REMOTE : remotes[0]!
-  const info = await ports.run(binary, ['config', 'userinfo', `${remote}:`, '--json'], signal)
-  let email: string | null = null
-  try { const parsed = JSON.parse(info.stdout) as { Email?: unknown }; if (typeof parsed.Email === 'string') email = parsed.Email.slice(0, 320) }
-  catch { email = null }
-  // Drive cannot report its account through rclone; the app keeps it as the remote's description.
-  if (!email && remote === DRIVE_REMOTE) {
-    const location = await ports.run(binary, ['config', 'file'], signal)
-    const configPath = location.stdout.trim().split('\n').at(-1)?.trim()
-    if (location.code === 0 && configPath?.startsWith('/')) {
-      email = driveRemoteSetting(await ports.readText(configPath) ?? '', 'description')?.slice(0, 320) ?? null
-    }
-  }
-  // The app's own remote is mounted at ~/Foreman Code Drive; Agents on this computer share files there.
-  const mountPath = join(ports.environment.HOME ?? homedir(), DRIVE_MOUNT_DIRECTORY)
-  const mounted = (await ports.readText('/proc/self/mountinfo') ?? '').split('\n')
-    .some(line => line.split(' ')[4]?.replaceAll('\\040', ' ') === mountPath)
-  return { tool: 'drive', installed: true, signedIn: info.code === 0 || email ? true : null, account: email,
-    details: [`${remote}:`, ...(mounted ? [`mount:${mountPath}`] : [])] }
 }
 
 /** `binaries` holds installer-selected executables (for example a Worker's configured Codex) checked before PATH. */

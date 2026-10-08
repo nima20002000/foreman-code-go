@@ -33,9 +33,8 @@ export const AppContextSchema = z.object({
   }).strict(),
   /** This Agent's own git worktree and branch of the workspace repository, when the workspace has one. */
   worktree: z.object({ repository: z.string(), branch: z.string(), baseCommit: z.string(), path: z.string() }).strict().optional(),
-  /** The workspace's shared Google Drive folder as mounted on this Agent's computer. Every Agent on a computer with Drive
-   * connected sees the same files there; create it if missing. Writing needs the harness to allow that folder. */
-  sharedFiles: z.object({ provider: z.literal('google-drive'), path: z.string() }).strict().optional(),
+  /** Local synced workspace files; harness writable-directory settings still apply. */
+  sharedFiles: z.object({ provider: z.literal('syncthing'), path: z.string() }).strict().optional(),
 }).strict()
 
 export const InteractionGetInputSchema = AppInteractionGetInputSchema

@@ -46,8 +46,9 @@ import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '
 import { InstalledWorkflowRecovery } from '../runs/remote/installedWorkflowRecovery.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
-import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_DRIVE_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccountsRequestSchema, GitHubLoginRequestSchema } from '@foreman-code/contracts/computer-accounts'
-import { DriveComputer } from '../computers/driveComputer.js'
+import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccountsRequestSchema, GitHubLoginRequestSchema } from '@foreman-code/contracts/computer-accounts'
+import { createComputerSyncExtension } from '../computers/syncExtension.js'
+import { SyncthingComputer } from '../computers/syncthingComputer.js'
 import { GitHubLoginRunner } from '../computers/githubLogin.js'
 import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotRequestSchema, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
 import { snapshotAgentWorktree } from '../sources/agentSnapshot.js'
@@ -370,15 +371,8 @@ export async function createInstalledWorkerDomains(input: {
       return { payload: AgentSnapshotResultSchema.parse({ commit: snapshot.commit, bundleBase64: snapshot.bundle.toString('base64') }) }
     },
   })
-  const drive = new DriveComputer()
-  extensions.push({ namespace: COMPUTER_DRIVE_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 16_384, maxBinaryBytes: 0,
-    async handle(payload, context) {
-      if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
-        throw new DomainError('COMPUTER_DRIVE_STALE', 'Google Drive requires the actual authenticated worker channel.', 409)
-      }
-      return { payload: await drive.handle(payload) }
-    },
-  })
+  const sync = new SyncthingComputer()
+  extensions.push(createComputerSyncExtension(sync, current))
   const githubLogin = new GitHubLoginRunner()
   lifetime.signal.addEventListener('abort', () => githubLogin.close(), { once: true })
   extensions.push({ namespace: COMPUTER_GITHUB_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 16_384, maxBinaryBytes: 0,

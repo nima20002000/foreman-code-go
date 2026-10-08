@@ -12,13 +12,12 @@ import { useComputerUi } from './computerUiStore'
 const unavailable = () => HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Computer did not answer' } }, { status: 503 })
 afterEach(() => {
   onlineManager.setOnline(true)
-  useComputerUi.setState({ github: undefined, drive: undefined })
+  useComputerUi.setState({ github: undefined, sync: undefined })
   vi.useRealTimers()
 })
 
 it.each([
   { tool: 'github' as const, name: 'GitHub', connect: 'Connect GitHub' },
-  { tool: 'drive' as const, name: 'Google Drive', connect: 'Connect Google Drive' },
 ])('preserves unavailable $name state for an offline Worker and recovers after account retry', async provider => {
   let starts = 0
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />, [
@@ -50,8 +49,8 @@ it.each([
   expect(within(screen.getByRole('dialog')).getByRole('button', { name: provider.connect })).toBeEnabled()
 })
 
-it.each(['github', 'drive'] as const)('keeps an unreadable %s login unknown when the tool is installed', async tool => {
-  const name = tool === 'github' ? 'GitHub' : 'Google Drive'
+it.each(['github'] as const)('keeps an unreadable %s login unknown when the tool is installed', async tool => {
+  const name = 'GitHub'
   computersFixture(<ComputerAccountControls target={deviceTarget} name={deviceName} retrying={false}
     onRetry={() => {}} accounts={{ observedAt: new Date().toISOString(), accounts: [{
       tool, installed: true, signedIn: null, account: null, details: ['Sign-in could not be read'],
@@ -67,7 +66,6 @@ it('keeps management and a targeted retry available after the first account read
     http.get('*/api/management/computers/accounts', unavailable),
   ])
   const button = await screen.findByRole('button', { name: 'GitHub: account state unavailable. Manage GitHub' })
-  expect(screen.getByRole('button', { name: 'Google Drive: account state unavailable. Manage Google Drive' })).toBeEnabled()
   await userEvent.click(button)
   expect(await screen.findByRole('dialog', { name: 'GitHub on Main PC' })).toBeVisible()
   await userEvent.click(screen.getByRole('button', { name: 'Retry accounts' }))
@@ -106,7 +104,7 @@ it.each([
   expect(within(oldRow).getByText('Offline')).toBeVisible()
   await userEvent.click(within(oldRow).getByRole('button', { name: /Manage GitHub/ }))
   expect(await screen.findByRole('dialog', { name: `GitHub on ${deviceName}` })).toBeVisible()
-  act(() => useComputerUi.getState().openDrive(`${mainId}:${registration.deviceId}`))
+  act(() => useComputerUi.getState().openSync(`${mainId}:${registration.deviceId}`))
   f.rendered.rerender(<QueryClientProvider client={f.client}>
     <ComputerRows mainId={mainId} devices={[{ ...registration, ...patch }]} />
   </QueryClientProvider>)
