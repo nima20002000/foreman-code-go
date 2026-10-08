@@ -27,6 +27,8 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
       grants: [{ actions: ['settings:read', 'settings:update', 'capabilities:read'], scope: {} }] })
     const reader = await access.issue({ name: 'Sync reader', audience: 'operator', expiresAt: new Date(Date.now() + 3600000),
       grants: [{ actions: ['settings:read', 'capabilities:read'], scope: {} }] })
+    const updateOnly = await access.issue({ name: 'Sync updater', audience: 'operator', expiresAt: new Date(Date.now() + 3600000),
+      grants: [{ actions: ['settings:update'], scope: {} }] })
     const registration = { mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
       authorizationRevision: 1, status: 'paired', publicKeyFingerprint: 'a'.repeat(64), scopes: ['connect', 'heartbeat'] }
     await database.pool.query(`insert into device_registrations
@@ -64,7 +66,7 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
         { requestInit: { headers: { authorization: `Bearer ${bearer}` } } }))
       return client
     }
-    return { sync, createService, app, connect, target, writer, reader, workspaceId, main, worker, registration,
+    return { sync, createService, app, connect, target, writer, reader, updateOnly, workspaceId, main, worker, registration,
       close: async () => { await Promise.all(clients.map(client => client.close())); await app.close();
         await main.close(); await worker.close() } }
   }
@@ -117,6 +119,24 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
         [f.registration.deviceId, JSON.stringify(f.registration)])
       await expect(f.sync.read(f.reader.principal, 'mcp', { target: f.target })).rejects.toThrow()
       expect((await database.pool.query('select * from computer_sync_preferences where workspace_id=$1', [f.workspaceId])).rows).toEqual([])
+    } finally { await f.close() }
+  })
+
+  it('returns a successful save to update-only callers while keeping status reads separately granted', async () => {
+    const f = await fixture()
+    try {
+      const updater = await f.connect(f.updateOnly.token)
+      const reader = await f.connect(f.reader.token)
+      const saved = await updater.callTool({ name: 'computer_sync_update', arguments: {
+        target: f.target, workspaceId: f.workspaceId, enabled: false, expectedRevision: 0, commandId: randomUUID(),
+      } })
+      expect(saved.isError).not.toBe(true)
+      expect(ComputerSyncStatusSchema.parse(saved.structuredContent).folders
+        .find(folder => folder.workspaceId === f.workspaceId)).toMatchObject({ enabled: false, revision: 1 })
+      expect((await updater.callTool({ name: 'computer_sync_status', arguments: { target: f.target } })).isError).toBe(true)
+      const persisted = await reader.callTool({ name: 'computer_sync_status', arguments: { target: f.target } })
+      expect(ComputerSyncStatusSchema.parse(persisted.structuredContent).folders
+        .find(folder => folder.workspaceId === f.workspaceId)).toMatchObject({ enabled: false, revision: 1 })
     } finally { await f.close() }
   })
 })

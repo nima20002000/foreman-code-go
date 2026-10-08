@@ -26,8 +26,13 @@ export class ComputerSyncService {
   }
 
   async read(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown): Promise<ComputerSyncStatus> {
+    return this.readAuthorized(principal, source, 'settings:read', raw)
+  }
+
+  private async readAuthorized(principal: ManagementPrincipal, source: 'http' | 'mcp',
+    action: 'settings:read' | 'settings:update', raw: unknown): Promise<ComputerSyncStatus> {
     const { target } = ComputerSyncReadInputSchema.parse(raw)
-    await this.authorize(principal, source, 'settings:read', target)
+    await this.authorize(principal, source, action, target)
     let state: SyncComputerState
     let unavailable = false
     try { state = SyncComputerStateSchema.parse(await this.computer(target, { operation: 'status' })) } catch (error) {
@@ -41,7 +46,7 @@ export class ComputerSyncService {
       ...await this.repository.preference(this.pool, workspace.id, target),
       status: state.folders.find(folder => folder.workspaceId === workspace.id) ?? null,
     })))
-    await this.authorize(principal, source, 'settings:read', target)
+    await this.authorize(principal, source, action, target)
     return ComputerSyncStatusSchema.parse({ target, installed: unavailable ? null : state.installed,
       running: unavailable ? null : state.running,
       message: state.message, folders })
@@ -74,7 +79,7 @@ export class ComputerSyncService {
     try { await this.reconcile() } catch (error) {
       message = error instanceof Error ? error.message.slice(0, 500) : 'Sync setup will retry when this computer reconnects.'
     }
-    const status = await this.read(principal, source, { target: input.target })
+    const status = await this.readAuthorized(principal, source, 'settings:update', { target: input.target })
     return { ...status, message: message ?? status.message }
   }
 

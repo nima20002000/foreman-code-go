@@ -28,7 +28,7 @@ export const SyncComputerRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('identity') }).strict(),
   z.object({ operation: z.literal('status') }).strict(),
   z.object({ operation: z.literal('configure'), workspaceId: IdSchema,
-    enabled: z.boolean(), peers: z.array(SyncPeerSchema).max(100) }).strict(),
+    enabled: z.boolean(), peers: z.array(SyncPeerSchema) }).strict(),
 ])
 export const SyncChannelRequestSchema = z.object({
   target: DeviceProvisioningTargetSchema, request: SyncComputerRequestSchema,

@@ -32,7 +32,9 @@ async function fixture() {
   const writer: ManagementPrincipal = { id: 'writer', name: 'Writer', audience: 'operator', expiresAt: '2099-01-01T00:00:00Z',
     revokedAt: null, grants: [{ actions: ['settings:read', 'settings:update', 'capabilities:read'], scope: {} }] }
   const reader: ManagementPrincipal = { ...writer, id: 'reader', grants: [{ actions: ['settings:read'], scope: {} }] }
-  const principals = new Map([['writer', writer], ['reader', reader]])
+  const updateOnly: ManagementPrincipal = { ...writer, id: 'update-only',
+    grants: [{ actions: ['settings:update'], scope: {} }] }
+  const principals = new Map([['writer', writer], ['reader', reader], ['update-only', updateOnly]])
   const preferences = new Map<string, { target: DeviceProvisioningTarget; revision: string; enabled: boolean }>()
   const workspaces = [{ id: 'workspace-a', name: 'Client/Web', active: true }, { id: 'workspace-b', name: 'Client-Web', active: true }]
   const hosts = [{ workspace_id: 'workspace-a', host: targets[1]!.hostRef,
@@ -138,6 +140,7 @@ it('supports authenticated MCP discovery, denied callers and persisted readback 
   }
   const writer = await connect('writer')
   const reader = await connect('reader')
+  const updateOnly = await connect('update-only')
   expect((await writer.listTools()).tools.map(tool => tool.name)).toContain('computer_sync_update')
   expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_sync_update')
   const input = { target: f.targets[1], workspaceId: 'workspace-a', enabled: false, expectedRevision: 0, commandId: randomUUID() }
@@ -149,10 +152,19 @@ it('supports authenticated MCP discovery, denied callers and persisted readback 
   expect(ComputerSyncStatusSchema.parse(saved.structuredContent).folders[0]).toMatchObject({ enabled: false, revision: 1 })
   const persisted = await reader.callTool({ name: 'computer_sync_status', arguments: { target: f.targets[1] } })
   expect(ComputerSyncStatusSchema.parse(persisted.structuredContent).folders[0]).toMatchObject({ enabled: false, revision: 1 })
+  const enabled = await updateOnly.callTool({ name: 'computer_sync_update', arguments: {
+    ...input, expectedRevision: 1, enabled: true, commandId: randomUUID(),
+  } })
+  expect(enabled.isError).not.toBe(true)
+  expect(ComputerSyncStatusSchema.parse(enabled.structuredContent).folders[0]).toMatchObject({ enabled: true, revision: 2 })
+  expect((await updateOnly.callTool({ name: 'computer_sync_status', arguments: { target: f.targets[1] } })).isError).toBe(true)
+  const enabledReadback = await reader.callTool({ name: 'computer_sync_status', arguments: { target: f.targets[1] } })
+  expect(ComputerSyncStatusSchema.parse(enabledReadback.structuredContent).folders[0])
+    .toMatchObject({ enabled: true, revision: 2 })
   f.principals.set('writer', { ...f.writer, grants: [] })
-  await expect(f.service.update(f.writer, 'mcp', { ...input, expectedRevision: 1, enabled: true,
+  await expect(f.service.update(f.writer, 'mcp', { ...input, expectedRevision: 2, enabled: false,
     commandId: randomUUID() })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
-  expect(f.preferences.values().next().value?.enabled).toBe(false)
+  expect(f.preferences.values().next().value?.enabled).toBe(true)
 })
 
 it('removes sharing after archive or Main disable and never gives a replacement installation the old folder', async () => {

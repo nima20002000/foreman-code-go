@@ -42,6 +42,19 @@ it('keeps workspace identities separate, replaces membership and disconnects wit
   expect(f.directories.has(`/main/shared/${sharedFolderId('workspace-a')}`)).toBe(true)
 })
 
+it('shares a workspace with more than 100 participating computers', async () => {
+  const f = await fixture()
+  const peers = Array.from({ length: 101 }, (_, index) => {
+    const suffix = index.toString(2).padStart(7, '0').replaceAll('0', 'D').replaceAll('1', 'E')
+    return { deviceId: [...Array<string>(7).fill('DDDDDDD'), suffix].join('-'), address: `100.64.1.${index + 1}` }
+  })
+  await f.computer.handle({ operation: 'configure', workspaceId: 'large-workspace', enabled: true, peers })
+  const folders = await f.rest('GET', '/rest/config/folders') as { devices: { deviceID: string }[] }[]
+  expect(folders[0]!.devices).toEqual([
+    { deviceID: f.identity.deviceId }, ...peers.map(value => ({ deviceID: value.deviceId })),
+  ])
+})
+
 it('reports connectivity, syncing, errors and conflicts and retains prior configuration after failed updates', async () => {
   const f = await fixture()
   await f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: true, peers: [peer] })
