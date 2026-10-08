@@ -72,12 +72,12 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       appMcp: { access: f.access, interactions: new PostgresAppInteractionService(f.db.pool, f.repository, commands, f.service) },
       operator: { access: f.access, services: { commands, interactions: new OperatorInteractionService(f.service) } as never } })
     const clients: Client[] = []
+    const appendHistory = f.coordination.appendReviewNativeHistory.bind(f.coordination)
     const cuts = br3002Cuts(f)
     const beforeHistory = deferred()
     const afterHistory = deferred()
     const publishHistory = deferred()
     const finishHistory = deferred()
-    const appendHistory = f.coordination.appendReviewNativeHistory.bind(f.coordination)
     const historySpy = vi.spyOn(f.coordination, 'appendReviewNativeHistory').mockImplementation(async (...args) => {
       if (!args[1].some((event) => event.type === OPENCODE_RECONCILIATION_EVENT)) return appendHistory(...args)
       beforeHistory.resolve()
