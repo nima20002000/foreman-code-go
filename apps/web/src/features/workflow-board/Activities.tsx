@@ -149,8 +149,9 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
     }
     lastSequence.current = latest
   }, [latest, scopedItems])
-  const refresh = () => {
+  const refresh = async () => {
     if (!visit.isCurrent()) return
+    const expired = [feed.error, older.error].some((error) => ApiError.is(error) && error.status === 410)
     refreshGeneration.current++
     olderRequest.current?.controller.abort()
     olderRequest.current?.finish()
@@ -158,7 +159,12 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
     older.reset()
     setNewCount(0)
     lastSequence.current = undefined
-    void cache.resetQueries({ queryKey: key, exact: true })
+    if (expired) {
+      await cache.resetQueries({ queryKey: key, exact: true })
+    } else {
+      await cache.cancelQueries({ queryKey: key, exact: true })
+      if (visit.isCurrent()) await cache.refetchQueries({ queryKey: key, exact: true })
+    }
   }
   const loadOlder = () => {
     const cursor = feed.data?.olderCursor
