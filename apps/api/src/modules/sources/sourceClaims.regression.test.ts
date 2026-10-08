@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { chmod, mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises'
+import { chmod, link, lstat, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { measureRetainedMaterialization, measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
@@ -151,6 +151,26 @@ it('holds a kernel lock across validated claim deletion, including other process
     await expect(promisify(execFile)('/usr/bin/flock', ['--exclusive', '--nonblock', f.root, '/usr/bin/true'])).rejects.toMatchObject({ code: 1 })
   } finally { resume.resolve(); await release }
   await promisify(execFile)('/usr/bin/flock', ['--exclusive', '--nonblock', f.root, '/usr/bin/true'])
+})
+
+it('measures shared working and reference trees once per hard-linked inode after dependency-link cleanup', async () => {
+  const f = await fixture()
+  const receipt = await f.materializer().prepare({ ...f, sharedWritableTree: true })
+  const cwd = await f.materializer().resolve(receipt, { binding: f.binding, attempt: f.attempt })
+  const reference = join(f.root, receipt.materializationId)
+  const claim = await claimPath(f.root, receipt)
+  const packagePath = join(cwd, 'package.js')
+  await writeFile(packagePath, Buffer.alloc(32 * 1024, 1))
+  await link(packagePath, join(reference, 'package.js'))
+  await symlink('/missing/dependency-cache', join(cwd, 'node_modules'))
+  await releaseMaterializationClaim(receipt, async () => 'released')
+  const file = await lstat(packagePath)
+  const duplicateBytes = Math.max(4096, file.size, file.blocks * 512)
+  const separateBytes = await measureRetainedSourceDirectory(f.root, receipt.materializationId)
+    + await measureRetainedSourceDirectory(f.root, receipt.sharedTree!.id)
+  expect(await measureRetainedMaterialization(receipt)).toBe(separateBytes - duplicateBytes)
+  expect(await readFile(join(cwd, 'src/app.ts'))).toEqual(f.bytes)
+  await expect(readFile(claim)).rejects.toMatchObject({ code: 'ENOENT' })
 })
 
 async function inFreshProcess(receipt: unknown, loseAcknowledgement = false) {
