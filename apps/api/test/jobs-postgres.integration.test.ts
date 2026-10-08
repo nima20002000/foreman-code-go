@@ -90,6 +90,64 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
     expect(result.process.exitCode).toBe(7);expect(result.process.outcome).toBe('build_failed');expect(result.transport).toBe('connected')
     await queue.complete(execution.id)
   })
+  it.each([
+    { phase: 'terminal', transport: 'offline' },
+    { phase: 'terminal', transport: 'unknown' },
+    { phase: 'running', transport: 'offline' },
+    { phase: 'running', transport: 'unknown' },
+  ] as const)('preserves $phase process facts with $transport transport through authenticated HTTP/MCP reads', async ({ phase, transport }) => {
+    const definition = await queue.save(queue.computers[0]!.candidate.spec)
+    const admission = await jobs.enqueue(writer.principal, 'http', workspaceId, {
+      commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision,
+    })
+    if (admission.kind === 'retained-execution') throw new Error('Expected a new queued Job')
+    await jobs.wakeQueue()
+    const ticketId = admission.kind === 'accepted' ? admission.ticketId : admission.ticket.id
+    const ticket = await jobs.getQueueTicket(writer.principal, workspaceId, ticketId)
+    const execution = await jobs.getExecution(writer.principal, workspaceId, ticket.executionId)
+    try {
+      const finishedAt = phase === 'terminal' ? new Date().toISOString() : null
+      const observed = await worker.settleProcess(workspaceId, execution.id, {
+        attemptId: execution.attemptId, owner: execution.owner,
+      }, {
+        process: { phase, outcome: phase === 'terminal' ? 'succeeded' : null,
+          exitCode: phase === 'terminal' ? 0 : null, signal: null, processStopped: phase === 'terminal' },
+        startedAt: execution.createdAt, finishedAt,
+      })
+      const persisted = { ...observed, transport }
+      await jobs.repository.putExecution(database.pool, persisted)
+      const url = `${root()}/executions/${execution.id}`
+      const input = { workspaceId, executionId: execution.id }
+      const client = await connect(reader.token)
+      for (let read = 0; read < 2; read++) {
+        const http = await app.inject({ method: 'GET', url,
+          headers: { authorization: `Bearer ${reader.token}` } })
+        expect(http.statusCode).toBe(200)
+        expect(http.json()).toEqual({ execution: persisted })
+        const mcp = await client.callTool({ name: 'job_get', arguments: input })
+        expect(mcp.isError).not.toBe(true)
+        expect(mcp.structuredContent).toEqual({ execution: persisted })
+      }
+      const denied = await access.issue({ name: 'Job reader outside this workspace', audience: 'operator',
+        expiresAt: new Date(Date.now() + 3600000), grants: [
+          { actions: ['jobs:read'], scope: { workspaceIds: ['foreign-workspace'] } },
+        ] })
+      const deniedHttp = await app.inject({ method: 'GET', url,
+        headers: { authorization: `Bearer ${denied.token}` } })
+      expect(deniedHttp.statusCode).toBe(403)
+      const deniedMcp = await (await connect(denied.token)).callTool({ name: 'job_get', arguments: input })
+      expect(deniedMcp.isError).toBe(true)
+      expect(JSON.stringify(deniedMcp.content)).toContain('ACCESS_DENIED')
+      const restarted = queue.createService()
+      try {
+        expect(await restarted.getExecution(reader.principal, workspaceId, execution.id)).toEqual(persisted)
+      } finally {
+        await restarted.closeQueue()
+      }
+    } finally {
+      await queue.complete(execution.id)
+    }
+  })
   it('retains a timed-out source attempt through queued HTTP/MCP retries and resumes only its original identity',async()=>{
     const saved=await app.inject({method:'POST',url:`${root()}/definitions`,headers:{authorization:`Bearer ${writer.token}`},payload:{commandId:randomUUID(),expectedRevision:null,name:'Retained preparation',spec:queue.computers[0]!.candidate.spec}})
     expect(saved.statusCode).toBe(200)
