@@ -1,7 +1,7 @@
 import { recoverPersistedClaudeCompaction } from '../../harnesses/claudeSdk/recoverCompaction.js'
 import { randomUUID } from 'node:crypto'
 import { mergeContextSnapshot } from './context.js'
-import { readNativeCapabilities, readNativeSnapshot } from './nativeSnapshot.js'
+import { isNativeSessionUnloaded, readNativeCapabilities, readNativeSnapshot } from './nativeSnapshot.js'
 import type pg from 'pg'
 import {
   CompactionStateSchema, SessionControlRequestSchema, SessionControlStateSchema, SessionPreferencesSchema,
@@ -67,7 +67,7 @@ export class SessionControlStore {
       }
     }
     const loaded = await readNativeCapabilities(binding)
-    const manager = loaded ? binding.manager : undefined
+    let manager = loaded ? binding.manager : undefined
     const capabilities = loaded?.capabilities
       ?? binding.pendingCapabilities ?? unavailableSessionControls(binding.profileKey)
     const defaultsRow = await this.pool.query<{ record: unknown }>(`select record from conversation_session_defaults
@@ -111,16 +111,22 @@ export class SessionControlStore {
         message: 'Compaction stopped before native dispatch. You can try again.', observedAt: new Date().toISOString() }
       await this.save(state)
     }
-    const reconciliationManager = manager
-    if (state.compaction && compactionBlocksSend(state.compaction) && session && reconciliationManager?.reconcileCompaction) {
+    if (state.compaction && compactionBlocksSend(state.compaction) && session && manager?.reconcileCompaction) {
       if (state.compaction.nativeSessionId !== session.nativeSessionId) {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The compaction belongs to a different native session.', 409)
       }
-      const reconciled = CompactionStateSchema.parse(await reconciliationManager.reconcileCompaction(session, state.compaction))
-      if (reconciled.requestId !== state.compaction.requestId || reconciled.nativeSessionId !== session.nativeSessionId) {
+      let reconciled: SessionControlState['compaction'] = null
+      try {
+        reconciled = CompactionStateSchema.parse(await manager.reconcileCompaction(session, state.compaction))
+      } catch (error) {
+        if (!isNativeSessionUnloaded(error, session)) throw error
+        manager = undefined
+      }
+      if (reconciled && (reconciled.requestId !== state.compaction.requestId
+        || reconciled.nativeSessionId !== session.nativeSessionId)) {
         throw new DomainError('SESSION_CONTROL_TARGET_CHANGED', 'The native compaction result belongs to a different request or session.', 409)
       }
-      if (JSON.stringify(reconciled) !== JSON.stringify(state.compaction)) {
+      if (reconciled && JSON.stringify(reconciled) !== JSON.stringify(state.compaction)) {
         state.compaction = { ...state.compaction, ...reconciled, principalId: state.compaction.principalId }
         await this.save(state)
       }
@@ -143,7 +149,7 @@ export class SessionControlStore {
         await this.save(state)
       }
     }
-    const native = loaded ? readNativeSnapshot(binding) : null
+    const native = manager ? readNativeSnapshot(binding) : null
     const applied = native?.applied
     if (applied && JSON.stringify(applied) !== JSON.stringify(state.applied)) {
       state.applied = applied

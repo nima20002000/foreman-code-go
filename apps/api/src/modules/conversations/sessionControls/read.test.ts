@@ -94,6 +94,46 @@ it.each(['appliedSessionPreferences', 'contextSnapshot'] as const)(
   },
 )
 
+it.each(providers)('recovers saved compaction when the $harness runtime unloads during reconciliation',
+  async ({ harness, code }) => {
+    const f = await fixture(harness)
+    const compaction = {
+      requestId: 'pending-compaction', nativeSessionId: 'native', nativeOperationId: 'native-operation',
+      dispatchPhase: 'dispatched' as const, status: 'uncertain' as const, beforeTokens: 1000,
+      message: 'Compaction is unconfirmed.', observedAt: '2026-10-08T00:00:00.000Z',
+    }
+    f.records.set('conversation', { ...f.records.get('conversation')!, compaction })
+    f.manager.reconcileCompaction = vi.fn(async () => {
+      throw new HarnessExecutionError(code, 'Native runtime unloaded')
+    })
+    const recoverCompaction = vi.fn(async () => compaction)
+    const read = await f.store.read({ ...f.binding, recoverCompaction })
+    expect(read).toMatchObject({ desiredMode: 'plan', capabilities: f.capabilities,
+      nativeStatus: 'resume-required', compaction, context: { stale: true } })
+    expect(recoverCompaction).toHaveBeenCalledWith(compaction)
+    expect(f.manager.appliedSessionPreferences).toHaveBeenCalledTimes(1)
+    expect(f.manager.contextSnapshot).toHaveBeenCalledTimes(1)
+    await expect(f.store.assertSendAllowed('conversation')).rejects.toMatchObject({
+      code: 'SESSION_COMPACT_UNCONFIRMED',
+    })
+  },
+)
+
+it('propagates unrelated compaction reconciliation errors', async () => {
+  const f = await fixture()
+  const compaction = {
+    requestId: 'pending-compaction', nativeSessionId: 'native', nativeOperationId: 'native-operation',
+    dispatchPhase: 'dispatched' as const, status: 'uncertain' as const, beforeTokens: 1000,
+    message: 'Compaction is unconfirmed.', observedAt: '2026-10-08T00:00:00.000Z',
+  }
+  f.records.set('conversation', { ...f.records.get('conversation')!, compaction })
+  const failure = new HarnessExecutionError('CODEX_THREAD_IDENTITY_MISMATCH', 'Wrong native session')
+  f.manager.reconcileCompaction = vi.fn(async () => { throw failure })
+  const recoverCompaction = vi.fn(async () => compaction)
+  await expect(f.store.read({ ...f.binding, recoverCompaction })).rejects.toBe(failure)
+  expect(recoverCompaction).not.toHaveBeenCalled()
+})
+
 it('does not reuse capabilities from a different configuration', async () => {
   const f = await fixture()
   const read = await f.store.read({ ...f.binding, manager: undefined, profileKey: 'other-profile' })

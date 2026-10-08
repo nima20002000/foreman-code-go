@@ -2,7 +2,7 @@ import type { SessionControlBinding } from './store.js'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
 
-function isUnloaded(error: unknown, session: NativeSessionReference) {
+export function isNativeSessionUnloaded(error: unknown, session: NativeSessionReference) {
   const unavailableCode = {
     codex: 'CODEX_SESSION_UNAVAILABLE',
     claude: 'CLAUDE_SESSION_UNAVAILABLE',
@@ -17,7 +17,7 @@ export async function readNativeCapabilities(binding: SessionControlBinding) {
   try {
     return { capabilities: await manager.sessionControlCapabilities?.(session) }
   } catch (error) {
-    if (isUnloaded(error, session)) return null
+    if (isNativeSessionUnloaded(error, session)) return null
     throw error
   }
 }
@@ -31,7 +31,7 @@ export function readNativeSnapshot(binding: SessionControlBinding) {
       context: manager.contextSnapshot?.(session) ?? null,
     }
   } catch (error) {
-    if (isUnloaded(error, session)) return null
+    if (isNativeSessionUnloaded(error, session)) return null
     throw error
   }
 }
