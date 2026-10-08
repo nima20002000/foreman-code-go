@@ -47,12 +47,12 @@ function configuration(value: WorkflowSchedule): ScheduleConfiguration {
   }
 }
 function sameRecurrence(current: WorkflowSchedule, settings: ScheduleConfiguration): boolean {
-  const saved = normalizeConfiguration(configuration(current))
+  const saved = normalizeConfiguration(scheduleConfigurationToUtc(configuration(current)))
   if (saved.mode === 'interval' && settings.mode === 'interval') {
     // Interval timezone is display metadata; elapsed recurrence uses the UTC anchor.
     return saved.every === settings.every && saved.unit === settings.unit && saved.anchorAt === settings.anchorAt
   }
-  return isDeepStrictEqual(saved, settings)
+  return isDeepStrictEqual({ ...saved, enabled: settings.enabled }, settings)
 }
 function checkRevision(slot: ScheduleSlot | null, expected: number): void {
   const currentRevision = slot?.value?.revision ?? 0
@@ -129,11 +129,12 @@ export class WorkflowScheduleService {
         const now = this.clock().toISOString()
         const settings = parseRequest(() => scheduleConfigurationToUtc(input.schedule))
         const current = slot?.value
+        const unchanged = current && sameRecurrence(current, settings)
+        if (!unchanged) parseRequest(() => parseScheduleSaveInput(input, now))
         let nextOccurrenceAt: string | null
-        if (current?.enabled && settings.enabled && sameRecurrence(current, settings)) {
+        if (current?.enabled && settings.enabled && unchanged) {
           nextOccurrenceAt = current.nextOccurrenceAt
         } else {
-          parseRequest(() => parseScheduleSaveInput(input, now))
           nextOccurrenceAt = nextOccurrences(settings, now, 1)[0] ?? null
         }
         const value = WorkflowScheduleSchema.parse({ ...settings,
@@ -175,7 +176,6 @@ export class WorkflowScheduleService {
           nextOccurrenceAt = null
         } else if (!current.enabled) {
           const settings = { ...configuration(current), enabled }
-          parseRequest(() => parseScheduleSaveInput({ ...input, schedule: settings }, now))
           nextOccurrenceAt = nextOccurrences(settings, now, 1)[0] ?? null
         }
         const value = WorkflowScheduleSchema.parse({ ...current, enabled, revision: nextRevision(slot),

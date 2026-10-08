@@ -200,15 +200,18 @@ describe.skipIf(!postgresEnabled)('SCH-03 PostgreSQL persistence and authenticat
       .rejects.toMatchObject({ code: 'INVALID_REQUEST' })
   })
 
-  it('supports disable after Once elapsed but refuses to re-enable a past Once', async () => {
+  it('supports disable and re-enable after unchanged Once settings have elapsed', async () => {
     await service.save(writer.principal, 'http', request(once))
     now = '2030-01-09T00:00:00.000Z'
     const input = command(1)
     const disabled = await service.disable(writer.principal, 'http', input)
     expect(disabled.value).toMatchObject({ enabled: false, nextOccurrenceAt: null, revision: 2 })
     expect(await service.disable(writer.principal, 'mcp', input)).toEqual({ value: disabled.value, replayed: true })
-    await expect(service.enable(writer.principal, 'mcp', command(2))).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
-    expect((await service.get(reader.principal, scope)).schedule?.revision).toBe(2)
+    const enabled = await service.enable(writer.principal, 'mcp', command(2))
+    expect(enabled.value).toMatchObject({ enabled: true, nextOccurrenceAt: null, revision: 3 })
+    expect((await service.get(reader.principal, scope)).schedule).toEqual(enabled.value)
+    await expect(service.save(writer.principal, 'mcp', request({ ...once, time: '11:00' }, 3)))
+      .rejects.toMatchObject({ code: 'INVALID_REQUEST' })
   })
 
   it('clear retains command/occurrence history and monotonic saved revisions', async () => {
