@@ -52,9 +52,6 @@ importers:
       '@openai/codex':
         specifier: 0.154.0
         version: 0.154.0
-      '@opencode-ai/sdk':
-        specifier: 1.18.31
-        version: 1.18.31
       '@xmldom/xmldom':
         specifier: 0.9.12
         version: 0.9.12
@@ -1134,9 +1131,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [win32]
-
-  '@opencode-ai/sdk@1.18.31':
-    resolution: {integrity: sha512-Raouthf8Lhe9edjvYeeSK7SgvdoU6bBjH9qV3f70dHoa6h+z0X2TMz/e22/wKp/StlFUZ4kIRpYYxFnY8/k01w==}
 
   '@oxc-project/types@0.149.0':
     resolution: {integrity: sha512-Efcc+iF0j3Bf67YjEqIqWXbX5XddXoK/Mw4K1/JuXwRCZ8N16VR7iT23nlCc9XrveFVh/E5Rqs2StT0V8v9LdA==}
@@ -4198,10 +4192,6 @@ snapshots:
 
   '@openai/codex@0.154.0-win32-x64':
     optional: true
-
-  '@opencode-ai/sdk@1.18.31':
-    dependencies:
-      cross-spawn: 7.0.6
 
   '@oxc-project/types@0.149.0': {}
 

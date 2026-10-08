@@ -31,7 +31,6 @@
     "@modelcontextprotocol/sdk": "1.29.0",
     "@modelcontextprotocol/server": "2.0.0",
     "@openai/codex": "0.154.0",
-    "@opencode-ai/sdk": "1.18.31",
     "@xmldom/xmldom": "0.9.12",
     "fastify": "5.12.4",
     "hono": "4.11.4",

@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { isDeepStrictEqual } from 'node:util'
 import { Readable } from 'node:stream'
 import { FileWithRevisionSchema, fileStateAt, type FilePage, type FileScope, type MessageAttachmentRef,
   type RunFileProvenance, type TemporaryFileScope } from '@foreman-code/contracts/files'
@@ -100,7 +99,6 @@ export class MemoryBytes {
 }
 export class MemoryTools implements FileToolRepository {
   readonly sessions = new Map<string, FileToolSession>()
-  readonly revokedSessions = new Map<string, FileToolSession>()
   readonly artifacts = new Map<string, FileToolArtifact>()
   readonly copies = new Map<string, CopyReceipt>()
   readonly links = new Map<string, PublicationLink>()
@@ -112,19 +110,7 @@ export class MemoryTools implements FileToolRepository {
     return value && Date.parse(value.expiresAt) > Date.parse(now) ? clone(value) : undefined
   }
   async revokeSession(hash: string) {
-    const session = this.sessions.get(hash)
-    if (session) this.revokedSessions.set(hash, session)
     this.sessions.delete(hash)
-  }
-  async revokeAcceptedSessions(context: FileToolContext) {
-    let found = false
-    for (const [hash, session] of [...this.sessions, ...this.revokedSessions]) {
-      if (session.transport === 'opencode' && isDeepStrictEqual(session.context, context)) {
-        found = true
-        await this.revokeSession(hash)
-      }
-    }
-    return found
   }
   async createArtifact(value: FileToolArtifact) { this.artifacts.set(value.artifactId, clone(value)) }
   async artifact(binding: string, id: string) {
