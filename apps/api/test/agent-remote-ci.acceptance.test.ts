@@ -127,7 +127,8 @@ it('real Codex medium runs current files on Dexter, reads logs and artifacts and
       if (result.executions.some(value => value.result)) break
       await delay(1000)
     }
-    const execution = result?.executions.find(value => value.agentId === agentId)!
+    const execution = result?.executions.find(value => value.agentId === agentId)
+    if (!execution) throw new Error('The remote build Agent execution was not recorded.')
     expect(execution.result?.outcome).toBe('succeeded')
     const placement = RunPlacementGetResultSchema.parse(await call(writer, 'run_node_placement_get', {
       workspaceId: input.workspaceId, workflowId: graph.id, runId, nodeId,
