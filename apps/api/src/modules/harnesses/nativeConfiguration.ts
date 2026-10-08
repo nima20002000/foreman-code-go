@@ -15,7 +15,7 @@ import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productio
 export class NativeConfigurationService {
   private readonly catalogCache = new QualificationCache<ReturnType<typeof HarnessOptionsResultSchema.parse>>(300_000, 128, Date.now, true)
   private readonly configurationChecks = new QualificationCache<Awaited<ReturnType<NativeConfigurationService['inspectConfiguration']>>>()
-  invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear(); this.identities.clear() }
+  invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear(); this.identities.clear(); this.claude?.invalidate?.() }
   // Resolving the installed binary's identity costs over a second; settings reads reuse it briefly.
   private readonly identities = new Map<string, { at: number; value: Promise<string> }>()
   private identity(harness: 'codex'): Promise<string> {

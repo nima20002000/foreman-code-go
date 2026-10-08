@@ -8,6 +8,8 @@ import type { HarnessQualification } from '@foreman-code/contracts'
 export interface ClaudeNativeConfigurationPort {
   qualify(configuration: ClaudeHarnessConfiguration, workingDirectory: string, signal: AbortSignal): Promise<HarnessQualification>
   discover(workingDirectory: string, signal: AbortSignal): Promise<Omit<HarnessOptions, 'harness' | 'settings' | 'restrictions' | 'checkedAt'>>
+  /** Drops reused discovery results so the next read observes the installation again. */
+  invalidate?(): void
 }
 export function claudeSettingSupport(): HarnessOptions['settings'] {
   return [
@@ -25,6 +27,7 @@ export class ClaudeCheckedNativeConfigurationPort implements ClaudeNativeConfigu
   constructor(private readonly source: {
     accepted(configuration: ClaudeHarnessConfiguration, workingDirectory: string, signal: AbortSignal): Promise<ClaudePolicyQualification>
     discover: ClaudeNativeConfigurationPort['discover']
+    invalidate?(): void
   }) {}
   async qualify(raw: ClaudeHarnessConfiguration, workingDirectory: string, signal: AbortSignal): Promise<HarnessQualification> {
     signal.throwIfAborted()
@@ -42,4 +45,5 @@ export class ClaudeCheckedNativeConfigurationPort implements ClaudeNativeConfigu
         ...(!capabilities.history ? ['Native history'] : []), ...(!capabilities.fork ? ['Native fork'] : [])] }
   }
   discover(workingDirectory: string, signal: AbortSignal) { return this.source.discover(workingDirectory, signal) }
+  invalidate(): void { this.source.invalidate?.() }
 }

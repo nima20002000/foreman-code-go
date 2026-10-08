@@ -1,3 +1,4 @@
+import { readClaudePlugins, claudeCliResult } from './claudePlugins.js'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { access, readFile, statfs } from 'node:fs/promises'
@@ -6,7 +7,7 @@ import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import {
   MaintenanceStatusSchema, MaintenanceTaskSchema, type MaintainedHarness, type MaintenanceStatus, type MaintenanceTask,
-  type MaintenanceTaskStart, type SyncedMcpServer,
+  type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
 } from '@foreman-code/contracts/computer-maintenance'
 
 export interface MaintenancePorts {
@@ -26,10 +27,12 @@ const PACKAGES: Record<MaintainedHarness, string> = { codex: '@openai/codex', cl
 const LABELS: Record<MaintainedHarness, string> = { codex: 'Codex', claude: 'Claude' }
 const LATEST_MS = 60 * 60_000
 const LONG_MS = 20 * 60_000
-const APT = ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt-get', '-y', '-q',
+const APT = ['env', 'LC_ALL=C', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt-get', '-y', '-q',
   '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold']
 
 function tail(text: string, limit = 8000) { return text.length > limit ? text.slice(-limit) : text }
+type Step = (binary: string, args: string[], label: string, options?: { timeoutMs?: number; allowFailure?: boolean })
+  => Promise<{ code: number | null; stdout: string; stderr: string }>
 function versionOf(output: string): string | null {
   return output.match(/\d+\.\d+\.\d+(?:[-+][\w.-]+)?/u)?.[0] ?? null
 }
@@ -56,7 +59,7 @@ export class ComputerMaintenance {
     return MaintenanceStatusSchema.parse({
       harnesses: (['codex', 'claude'] as const).map((harness, index) => ({ harness, installed: versions[index] !== undefined,
         version: versions[index] ?? null, latest: latest[harness] ?? null })),
-      system: { packageUpdates, rebootRequired, sudo, disk },
+      system: { packageUpdates: packageUpdates?.pending ?? null, rebootRequired, sudo, disk },
       tasks: [...this.tasks].reverse(), observedAt: this.ports.now().toISOString(),
     })
   }
@@ -82,19 +85,25 @@ export class ComputerMaintenance {
 
   private async perform(request: MaintenanceTaskStart, task: MaintenanceTask): Promise<string> {
     const signal = AbortSignal.timeout(LONG_MS)
-    const step = async (binary: string, args: string[], label: string) => {
-      const result = await this.ports.run(binary, args, { signal, timeoutMs: LONG_MS })
+    const step: Step = async (binary, args, label, options = {}) => {
+      const result = await this.ports.run(binary, args, { signal, timeoutMs: options.timeoutMs ?? LONG_MS })
       task.outputTail = tail(`${task.outputTail}\n$ ${label}\n${result.stdout}${result.stderr}`)
-      if (result.code !== 0) throw new Error(`${label} failed${result.code === null ? '' : ` (exit ${result.code})`}.`)
+      if (result.code !== 0 && !options.allowFailure) throw new Error(`${label} failed${result.code === null ? '' : ` (exit ${result.code})`}.`)
       return result
     }
     switch (request.kind) {
       case 'update-harnesses': {
         const changes: string[] = []
+        this.latest = undefined
+        const latest = await this.latestVersions(signal)
         for (const harness of request.harnesses) {
           const before = await this.installedVersion(harness, signal)
           await this.installLatest(harness, step)
           const after = await this.installedVersion(harness, signal)
+          if (!after || !latest[harness]) throw new Error(`${LABELS[harness]} update could not be verified.`)
+          if (after !== latest[harness]) {
+            throw new Error(`${LABELS[harness]} is still ${after}; latest published version is ${latest[harness]}.`)
+          }
           changes.push(`${LABELS[harness]} ${before ?? 'not installed'} → ${after ?? 'unknown'}`)
         }
         this.latest = undefined
@@ -103,10 +112,17 @@ export class ComputerMaintenance {
       case 'update-system': {
         await this.requireSudo(signal)
         await step('sudo', ['-n', ...APT, 'update'], 'apt-get update')
-        const upgrade = await step('sudo', ['-n', ...APT, 'upgrade'], 'apt-get upgrade')
-        const upgraded = upgrade.stdout.match(/(\d+) upgraded/u)?.[1] ?? '0'
+        const upgrade = await step('sudo', ['-n', ...APT, '--with-new-pkgs', 'upgrade'], 'apt-get upgrade --with-new-pkgs')
+        const upgraded = upgrade.stdout.match(/(\d+) upgraded/u)?.[1]
+        if (!upgraded) throw new Error('The package upgrade result could not be read; check pending updates before retrying.')
+        const remaining = await this.packageUpdates(signal)
+        if (!remaining) throw new Error(`${upgraded} packages upgraded, but remaining updates could not be verified.`)
+        if (remaining.installable > 0) {
+          throw new Error(`${upgraded} packages upgraded; ${remaining.installable} installable updates remain.`)
+        }
         const reboot = await this.ports.exists('/var/run/reboot-required')
-        return `${upgraded} packages upgraded${reboot ? ' · restart needed' : ''}`
+        const pending = remaining.pending ? ` · ${remaining.pending} updates pending (deferred or held by APT)` : ' · no pending updates'
+        return `${upgraded} packages upgraded${pending}${reboot ? ' · restart needed' : ''}`
       }
       case 'restart': {
         await this.requireSudo(signal)
@@ -121,11 +137,24 @@ export class ComputerMaintenance {
         }
         return results.join(' · ') || 'Nothing to sync'
       }
-      case 'sync-plugins': return this.syncPlugins(request.plugins, step, signal)
+      case 'sync-plugins': {
+        const results: string[] = []
+        const failures: string[] = []
+        const sync = [
+          { name: 'Codex', run: () => this.syncPlugins(request.plugins, request.marketplaces, step, signal) },
+          { name: 'Claude', run: () => this.syncClaudePlugins(request, step, signal) },
+        ]
+        for (const harness of sync) {
+          try { results.push(`${harness.name}: ${await harness.run()}`) }
+          catch (error) { failures.push(`${harness.name}: ${error instanceof Error ? error.message : 'Plugin sync failed.'}`) }
+        }
+        if (failures.length) throw new Error([...results, ...failures].join(' · '))
+        return results.join(' · ')
+      }
     }
   }
 
-  private async installLatest(harness: MaintainedHarness, step: (binary: string, args: string[], label: string) => Promise<unknown>) {
+  private async installLatest(harness: MaintainedHarness, step: Step) {
     const home = this.ports.environment.HOME ?? homedir()
     if (harness === 'claude') {
       const claude = await this.ports.find('claude')
@@ -139,8 +168,7 @@ export class ComputerMaintenance {
     await step(npm, ['install', '--global', '--prefix', join(home, '.local'), `${PACKAGES.codex}@latest`], 'npm install @openai/codex@latest')
   }
 
-  private async syncMcp(harness: MaintainedHarness, servers: readonly SyncedMcpServer[],
-    step: (binary: string, args: string[], label: string) => Promise<{ stdout: string }>, signal: AbortSignal): Promise<string> {
+  private async syncMcp(harness: MaintainedHarness, servers: readonly SyncedMcpServer[], step: Step, signal: AbortSignal): Promise<string> {
     const binary = await this.ports.find(harness)
     if (!binary) return 'not installed, skipped'
     const existing = new Set(await this.mcpNames(harness, binary, signal))
@@ -148,9 +176,17 @@ export class ComputerMaintenance {
     for (const server of servers) {
       if (existing.has(server.name)) continue
       if (harness === 'codex') {
-        await step(binary, server.transport === 'http'
+        const label = `codex mcp add ${server.name}`
+        // Codex saves the server, then waits for a browser sign-in on OAuth servers. That sign-in
+        // belongs to the person at that computer, so a saved server counts as added.
+        const result = await step(binary, server.transport === 'http'
           ? ['mcp', 'add', server.name, '--url', server.url, ...(server.bearerTokenEnvVar ? ['--bearer-token-env-var', server.bearerTokenEnvVar] : [])]
-          : ['mcp', 'add', server.name, '--', server.command, ...server.args], `codex mcp add ${server.name}`)
+          : ['mcp', 'add', server.name, '--', server.command, ...server.args], label, { timeoutMs: 30_000, allowFailure: true })
+        if (result.code !== 0) {
+          if (!(await this.mcpNames(harness, binary, signal)).includes(server.name)) throw new Error(`${label} failed.`)
+          added.push(`${server.name} (sign in on this computer)`)
+          continue
+        }
       } else {
         const definition = server.transport === 'http' ? { type: 'http', url: server.url } : { type: 'stdio', command: server.command, args: server.args }
         await step(binary, ['mcp', 'add-json', '--scope', 'user', server.name, JSON.stringify(definition)], `claude mcp add-json ${server.name}`)
@@ -169,18 +205,69 @@ export class ComputerMaintenance {
     return Object.keys(await claudeUserMcpServers(this.ports))
   }
 
-  private async syncPlugins(plugins: readonly string[], step: (binary: string, args: string[], label: string) => Promise<unknown>,
-    signal: AbortSignal): Promise<string> {
+  private async syncPlugins(plugins: readonly string[], marketplaces: readonly SyncedMarketplace[], step: Step, signal: AbortSignal): Promise<string> {
+    if (!plugins.length) return 'Nothing to sync'
     const codex = await this.ports.find('codex')
     if (!codex) throw new Error('Codex is not installed on this computer.')
     const installed = new Set(await installedPlugins(this.ports, codex, signal))
-    const added: string[] = []
-    for (const plugin of plugins) {
-      if (installed.has(plugin)) continue
-      await step(codex, ['plugin', 'add', plugin], `codex plugin add ${plugin}`)
-      added.push(plugin)
+    const missing = plugins.filter(plugin => !installed.has(plugin))
+    const known = new Set(missing.length ? (await pluginMarketplaces(this.ports, codex, signal)).map(marketplace => marketplace.name) : [])
+    const added: string[] = [], failed: string[] = []
+    for (const marketplace of marketplaces) {
+      if (known.has(marketplace.name) || !missing.some(plugin => plugin.endsWith(`@${marketplace.name}`))) continue
+      const result = await step(codex, ['plugin', 'marketplace', 'add', marketplace.source], `codex plugin marketplace add ${marketplace.source}`, { allowFailure: true })
+      if (result.code === 0) known.add(marketplace.name)
     }
-    return added.length ? `Installed ${added.join(', ')}` : 'Already in sync'
+    // One plugin that cannot install does not keep the others from installing.
+    for (const plugin of missing) {
+      const result = await step(codex, ['plugin', 'add', plugin], `codex plugin add ${plugin}`, { allowFailure: true })
+      ;(result.code === 0 ? added : failed).push(plugin)
+    }
+    const summary = [added.length ? `Installed ${added.join(', ')}` : '', failed.length ? `Could not install ${failed.join(', ')}` : ''].filter(Boolean).join(' · ')
+    if (failed.length) throw new Error(summary)
+    return summary || 'Already in sync'
+  }
+
+  private async syncClaudePlugins(
+    request: Extract<MaintenanceTaskStart, { kind: 'sync-plugins' }>, step: Step, signal: AbortSignal,
+  ): Promise<string> {
+    if (!request.claudePlugins.length) return 'Nothing to sync'
+    const claude = await this.ports.find('claude')
+    if (!claude) throw new Error('Claude Code is not installed on this computer.')
+    const catalog = await readClaudePlugins(this.ports, signal)
+    const installed = new Map(catalog.plugins.filter(item => item.installed).map(item => [item.pluginId, item]))
+    const known = new Set(catalog.marketplaces.map(item => item.name))
+    const failed: string[] = []
+    for (const marketplace of request.claudeMarketplaces) {
+      if (known.has(marketplace.name)) continue
+      const result = await step(claude, ['plugin', 'marketplace', 'add', marketplace.source, '--json'],
+        `claude plugin marketplace add ${marketplace.source}`, { allowFailure: true })
+      if (result.code === 0 && claudeCliResult(result.stdout)?.outcome === 'ok') known.add(marketplace.name)
+      else failed.push(`marketplace ${marketplace.name}`)
+    }
+    for (const plugin of request.claudePlugins) {
+      const existing = installed.get(plugin.pluginId)
+      const actions: string[] = []
+      if (!existing) actions.push('install')
+      if (!plugin.enabled) actions.push('disable')
+      else if (existing && !existing.enabled) actions.push('enable')
+      for (const action of actions) {
+        const result = await step(claude, ['plugin', action, plugin.pluginId, '--scope', 'user', '--json'],
+          `claude plugin ${action} ${plugin.pluginId}`, { allowFailure: true })
+        if (result.code !== 0 || claudeCliResult(result.stdout)?.outcome !== 'ok') {
+          failed.push(plugin.pluginId)
+          break
+        }
+      }
+    }
+    const readback = await readClaudePlugins(this.ports, signal)
+    for (const expected of request.claudePlugins) {
+      if (!readback.plugins.some(item => item.pluginId === expected.pluginId && item.installed && item.enabled === expected.enabled)) {
+        failed.push(expected.pluginId)
+      }
+    }
+    if (failed.length) throw new Error(`Could not sync ${[...new Set(failed)].join(', ')}`)
+    return `${request.claudePlugins.length} plugins in sync`
   }
 
   private async installedVersion(harness: MaintainedHarness, signal: AbortSignal): Promise<string | null | undefined> {
@@ -206,11 +293,15 @@ export class ComputerMaintenance {
     return value
   }
 
-  private async packageUpdates(signal: AbortSignal): Promise<number | null> {
+  private async packageUpdates(signal: AbortSignal): Promise<{ pending: number; installable: number } | null> {
     const apt = await this.ports.find('apt-get')
     if (!apt) return null
-    const result = await this.ports.run(apt, ['-s', '-o', 'Debug::NoLocking=1', 'upgrade'], { signal, timeoutMs: 60_000 }).catch(() => null)
-    return result?.code === 0 ? result.stdout.split('\n').filter(line => line.startsWith('Inst ')).length : null
+    const result = await this.ports.run(apt, ['-s', '-o', 'Debug::NoLocking=1', '--with-new-pkgs', 'upgrade'],
+      { signal, timeoutMs: 60_000 }).catch(() => null)
+    if (result?.code !== 0) return null
+    const counts = result.stdout.match(/(\d+) upgraded, (\d+) newly installed, \d+ to remove and (\d+) not upgraded\./u)
+    if (!counts) return null
+    return { pending: Number(counts[1]) + Number(counts[3]), installable: Number(counts[1]) + Number(counts[2]) }
   }
 
   private async sudo(signal: AbortSignal): Promise<boolean> {
@@ -240,6 +331,15 @@ export async function installedPlugins(ports: Pick<MaintenancePorts, 'run'>, cod
   return (value.installed ?? []).flatMap(entry => typeof entry.pluginId === 'string' && entry.installed !== false ? [entry.pluginId] : [])
 }
 
+/** Configured plugin marketplaces; only Git sources can be added on another computer. */
+export async function pluginMarketplaces(ports: Pick<MaintenancePorts, 'run'>, codex: string, signal: AbortSignal): Promise<{ name: string; gitSource: string | null }[]> {
+  const listed = await ports.run(codex, ['plugin', 'marketplace', 'list', '--json'], { signal, timeoutMs: 60_000 })
+  if (listed.code !== 0) throw new Error('Codex could not list its plugin marketplaces.')
+  const value = JSON.parse(listed.stdout) as { marketplaces?: { name?: unknown; marketplaceSource?: { sourceType?: unknown; source?: unknown } }[] }
+  return (value.marketplaces ?? []).flatMap(entry => typeof entry.name !== 'string' ? [] : [{ name: entry.name,
+    gitSource: entry.marketplaceSource?.sourceType === 'git' && typeof entry.marketplaceSource.source === 'string' ? entry.marketplaceSource.source : null }])
+}
+
 export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.env,
   binaries: Readonly<Partial<Record<string, string>>> = {}): MaintenancePorts {
   const home = environment.HOME ?? homedir()
@@ -259,7 +359,7 @@ export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.
     },
     run: (binary, args, options) => new Promise(resolve => {
       execFile(binary, args, { signal: options.signal, timeout: options.timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8',
-        env: { ...environment, PATH: path, NO_COLOR: '1', CI: '1' } }, (error, stdout, stderr) => {
+        env: { ...environment, PATH: path, NO_COLOR: '1', CI: '1', LC_ALL: 'C' } }, (error, stdout, stderr) => {
         const code = error && typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : error ? null : 0
         resolve({ code, stdout, stderr })
       })

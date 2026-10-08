@@ -23,6 +23,7 @@ import { registerAgentTools } from './tools/agents.js'
 import { registerExtendedOperatorTools } from './tools/extensions.js'
 import { registerContextTools } from './tools/context.js'
 import { registerHarnessTools } from './tools/harnesses.js'
+import { registerClaudePluginTools } from './tools/claudePlugins.js'
 import { registerHarnessMcpTools } from './tools/harnessMcp.js'
 import { registerRunGraphTools } from './tools/runGraph.js'
 import { registerRunInspectionTools } from './tools/runInspection.js'
@@ -65,6 +66,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerContextTools(server, context)
   registerHarnessTools(server, context)
   registerHarnessMcpTools(server, context)
+  registerClaudePluginTools(server, context)
   registerSettingsTools(server, context)
   registerAgentChatTools(server, context)
   registerSessionControlTools(server, context)

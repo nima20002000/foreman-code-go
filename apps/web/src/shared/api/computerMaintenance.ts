@@ -23,8 +23,13 @@ export function useComputerMaintenance() {
 export function useStartMaintenance() {
   const client = useQueryClient()
   return useMutation({ retry: false,
-    mutationFn: (input: Omit<ComputerMaintenanceStartInput, 'commandId'>) => apiClient.request('/api/management/computers/maintenance/start',
-      ComputerMaintenanceStartResultSchema, { method: 'POST', body: ComputerMaintenanceStartInputSchema.parse({ ...input, commandId: crypto.randomUUID() }) }),
+    mutationFn: (input: Omit<ComputerMaintenanceStartInput, 'commandId'> | Omit<ComputerMaintenanceStartInput, 'commandId'>[]) => {
+      const requests = Array.isArray(input) ? input : [input]
+      return Promise.all(requests.map(request => apiClient.request('/api/management/computers/maintenance/start',
+        ComputerMaintenanceStartResultSchema, {
+          method: 'POST', body: ComputerMaintenanceStartInputSchema.parse({ ...request, commandId: crypto.randomUUID() }),
+        })))
+    },
     onSettled: () => client.invalidateQueries({ queryKey: key() }),
   })
 }

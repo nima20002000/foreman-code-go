@@ -1,0 +1,59 @@
+import { z } from 'zod'
+
+const PluginId = z.string().min(3).max(240).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/)
+const CommandId = z.string().uuid()
+const Revision = z.string().regex(/^[a-f0-9]{64}$/)
+
+/** One Claude Code plugin from the user's configured marketplaces. Native Claude Code is the source of truth. */
+export const ClaudePluginSummarySchema = z.object({
+  pluginId: PluginId, name: z.string(), marketplaceName: z.string(), description: z.string().nullable(),
+  version: z.string().nullable(), installed: z.boolean(), enabled: z.boolean(), installCount: z.number().int().nonnegative().nullable(),
+}).strict()
+export type ClaudePluginSummary = z.infer<typeof ClaudePluginSummarySchema>
+
+export const ClaudePluginMarketplaceSchema = z.object({ name: z.string(), source: z.string().nullable() }).strict()
+export type ClaudePluginMarketplace = z.infer<typeof ClaudePluginMarketplaceSchema>
+
+export const ClaudePluginListInputSchema = z.object({
+  view: z.enum(['installed', 'available']).default('installed'), query: z.string().trim().max(100).default(''),
+  refresh: z.preprocess(value => value === 'true' ? true : value, z.boolean().optional()),
+  offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(48).default(24),
+}).strict()
+export type ClaudePluginListInput = z.infer<typeof ClaudePluginListInputSchema>
+export const ClaudePluginListResultSchema = z.object({
+  items: z.array(ClaudePluginSummarySchema), total: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative().nullable(),
+  marketplaces: z.array(ClaudePluginMarketplaceSchema).max(100), checkedAt: z.string().datetime({ offset: true }),
+  revision: Revision,
+}).strict()
+export type ClaudePluginListResult = z.infer<typeof ClaudePluginListResultSchema>
+
+export const ClaudePluginActionSchema = z.enum(['install', 'uninstall', 'enable', 'disable'])
+export type ClaudePluginAction = z.infer<typeof ClaudePluginActionSchema>
+export const ClaudePluginChangeInputSchema = z.object({
+  pluginId: PluginId, action: ClaudePluginActionSchema, commandId: CommandId, expectedRevision: Revision,
+  /** sha256 of a marketplace-declared install command that Claude Code showed in a previous result. */
+  acceptCommand: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).strict()
+export type ClaudePluginChangeInput = z.infer<typeof ClaudePluginChangeInputSchema>
+export const ClaudePluginChangeResultSchema = z.object({
+  pluginId: PluginId, action: ClaudePluginActionSchema,
+  /** command_review: the plugin installs by running a marketplace-declared command; read it, then retry with acceptCommand. */
+  status: z.enum(['applied', 'command_review', 'uncertain']), message: z.string().max(2000),
+  command: z.object({ text: z.string().max(4000), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
+  plugin: ClaudePluginSummarySchema.nullable(),
+}).strict()
+export type ClaudePluginChangeResult = z.infer<typeof ClaudePluginChangeResultSchema>
+
+export const ClaudePluginMarketplaceAddInputSchema = z.object({
+  /** owner/repo, a Git or HTTPS URL. Local paths stay machine-specific and are not accepted here. */
+  source: z.string().trim().min(3).max(500).refine(value =>
+    /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+$/.test(value) || /^(https:\/\/|ssh:\/\/|git@[A-Za-z0-9.-]+:)/.test(value),
+    'Use owner/repo or a Git URL.'),
+  commandId: CommandId, expectedRevision: Revision,
+}).strict()
+export type ClaudePluginMarketplaceAddInput = z.infer<typeof ClaudePluginMarketplaceAddInputSchema>
+export const ClaudePluginMarketplaceAddResultSchema = z.object({
+  marketplaces: z.array(ClaudePluginMarketplaceSchema).max(100),
+  status: z.enum(['applied', 'uncertain']), message: z.string().max(2000),
+}).strict()
+export type ClaudePluginMarketplaceAddResult = z.infer<typeof ClaudePluginMarketplaceAddResultSchema>

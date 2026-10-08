@@ -59,7 +59,7 @@ it('shows versions, OS updates, restart need and disk, and starts maintenance on
   ])
   const main = await screen.findByRole('article', { name: 'Main PC' })
   expect(await within(main).findByText('Codex 0.160.0 · 0.161.0 available')).toBeVisible()
-  expect(within(main).getByText('3 updates')).toBeVisible()
+  expect(within(main).getByText('3 pending updates')).toBeVisible()
   expect(within(main).getByText('Restart needed')).toBeVisible()
   expect(within(main).getByText('41 GB free of 193 GB')).toBeVisible()
   expect(within(main).getByRole('status')).toHaveTextContent('System update: 4 packages upgraded')
@@ -78,4 +78,17 @@ it('shows versions, OS updates, restart need and disk, and starts maintenance on
     expect.objectContaining({ task: { kind: 'update-system' } }),
   ])
   expect((started[3] as { targets?: unknown }).targets).toBeUndefined()
+})
+
+it('reports unavailable computers from both update requests instead of silently succeeding', async () => {
+  computersFixture(<ComputerCards mainId={mainTarget.hostRef.mainId} devices={[registration]} />, [
+    http.post('*/api/management/computers/maintenance/start', async ({ request }) => {
+      const input = await request.json() as { task: { kind: string } }
+      return HttpResponse.json({ computers: [{ target: deviceTarget, task: null,
+        error: input.task.kind === 'update-harnesses' ? 'Harness update unavailable.' : 'System update unavailable.' }] })
+    }),
+  ])
+  await userEvent.click(await screen.findByRole('button', { name: 'Update computers' }))
+  expect(await screen.findByText(`${deviceName}: Harness update unavailable.`)).toBeVisible()
+  expect(await screen.findByText(`${deviceName}: System update unavailable.`)).toBeVisible()
 })

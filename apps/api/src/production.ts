@@ -10,7 +10,7 @@ import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
 import { registerComputerMaintenanceRoutes } from './routes/computerMaintenance.js'
 import { FleetMaintenanceService } from './modules/computers/fleet.js'
-import { ComputerMaintenance, claudeUserMcpServers, installedPlugins, systemMaintenancePorts } from './modules/computers/maintenance.js'
+import { ComputerMaintenance, claudeUserMcpServers, installedPlugins, pluginMarketplaces, systemMaintenancePorts } from './modules/computers/maintenance.js'
 import { ComputerGitHubService } from './modules/computers/github.js'
 import { COMPUTER_MAINTENANCE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
 import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_SYNC_NAMESPACE, COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
@@ -171,6 +171,8 @@ import { registerFileRetentionRoutes } from './routes/fileRetention.js'
 import { createOperatorExtensions } from './mcp/operator/extensions.js'
 import { NativeConfigurationService } from './modules/harnesses/nativeConfiguration.js'
 import { HarnessMcpSettingsService } from './modules/harnesses/mcpSettings.js'
+import { ClaudePluginSettingsService } from './modules/harnesses/claudePlugins.js'
+import { readClaudePlugins } from './modules/computers/claudePlugins.js'
 import { CodexPluginSettingsService } from './modules/harnesses/codexPluginSettings.js'
 import { NativeCodexPlugins } from './modules/harnesses/codexPlugins.js'
 import { workspaceStorageRoot } from './modules/workspaces/storage.js'
@@ -747,7 +749,9 @@ export function buildProductionApp(
     config.harnesses.codexBinary, config.harnesses.workspaceRoot, nativeFactories, claudeMetadata,
   )
   const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint)
+  const maintenancePorts = systemMaintenancePorts(process.env, { codex: config.harnesses.codexBinary })
   const harnessSettings = {
+    claudePlugins: new ClaudePluginSettingsService(maintenancePorts, commands),
     directories: new HarnessDirectoryBrowser([projectRoot], database.pool),
     plugins: new CodexPluginSettingsService(database.pool, infrastructure?.auxiliary?.plugins ?? new NativeCodexPlugins(config.harnesses.codexBinary, config.harnesses.workspaceRoot,
       processRegistry.scope('settings:plugins:codex')), () => processRegistry.closeOwner('settings:plugins:codex')),
@@ -1664,12 +1668,17 @@ export function buildProductionApp(
       runtimeServices.computerAccounts = new ComputerAccountsService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands)
       registerComputerAccountsRoutes(app, runtimeServices.computerAccounts)
-      const maintenancePorts = systemMaintenancePorts(process.env, { codex: config.harnesses.codexBinary })
       runtimeServices.computerMaintenance = new FleetMaintenanceService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands, new ComputerMaintenance(maintenancePorts), {
           codexUserMcpServers: () => harnessSettings.mcp.userServers('codex'),
           claudeUserMcpServers: () => claudeUserMcpServers(maintenancePorts),
-          codexPlugins: () => installedPlugins(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(120_000)),
+          claudePlugins: async () => await maintenancePorts.find('claude')
+            ? readClaudePlugins(maintenancePorts, AbortSignal.timeout(120_000)) : { plugins: [], marketplaces: [] },
+          codexPlugins: async () => await maintenancePorts.find('codex')
+            ? installedPlugins(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(120_000)) : [],
+          codexMarketplaces: async () => await maintenancePorts.find('codex')
+            ? (await pluginMarketplaces(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(60_000)))
+              .flatMap(marketplace => marketplace.gitSource ? [{ name: marketplace.name, source: marketplace.gitSource }] : []) : [],
         })
       registerComputerMaintenanceRoutes(app, runtimeServices.computerMaintenance)
       // Keep harnesses current and Main's MCP servers and plugins on every computer. Never under the test runners.
@@ -1763,8 +1772,8 @@ export function buildProductionApp(
       // Reconcile chat turns interrupted by the previous process; never blocks startup.
       void agentChat.recover().catch((error: unknown) => app.log.error({ err: error }, 'agent chat recovery failed'))
       // Fill the settings status and model caches in the background so first reads do not wait on native checks.
-      void Promise.allSettled([harnessCatalog.warmup(), nativeConfigurations.options('codex'),
-        harnessSettings.mcp.warmup(['codex']), harnessSettings.plugins.warmup()])
+      void Promise.allSettled([harnessCatalog.warmup(), nativeConfigurations.options('codex'), nativeConfigurations.options('claude'),
+        harnessSettings.mcp.warmup(['codex']), harnessSettings.plugins.warmup(), harnessSettings.claudePlugins.warmup()])
     })
     // On failure the startup caller closes the app. Only the shared shutdown
     // barrier may release the owner, after any already-admitted work drains.

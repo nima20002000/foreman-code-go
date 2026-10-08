@@ -4,6 +4,7 @@ import type { RunGraphReadApi } from '../../modules/run-graph/readService.js'
 import type { OperatorExtensions } from './extensions.js'
 import type { HarnessMcpSettingsService } from '../../modules/harnesses/mcpSettings.js'
 import type { HarnessDirectoryBrowser } from '../../modules/harnesses/directoryBrowser.js'
+import type { ClaudePluginSettingsService } from '../../modules/harnesses/claudePlugins.js'
 import type { CodexPluginSettingsService } from '../../modules/harnesses/codexPluginSettings.js'
 import type { OperatorChatService } from '../../modules/conversations/operatorChat.js'
 import type { AgentChatService } from '../../modules/conversations/agentChat.js'
@@ -51,7 +52,7 @@ export interface OperatorServices {
   operatorChat?: Pick<OperatorChatService, 'readSessionControls' | 'changeSessionControls' | 'setup' | 'create' | 'list' | 'get' | 'history' | 'activityPage' | 'send' | 'handoffHistory' | 'cancel' | 'respond'>
   agentChat?: AgentChatService
   fileRetention?: FileRetentionService
-  harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService }
+  harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService; claudePlugins?: ClaudePluginSettingsService }
   extensions?: OperatorExtensions
   workerToolsMcpImplemented?: boolean
   workspaces: WorkspaceManagementService

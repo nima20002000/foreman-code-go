@@ -142,7 +142,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name.startsWith('agent_chat_')) scope = 'resource'
   if (name.startsWith('operator_chat_controls_')) scope = 'global'
   if (name === 'operator_get_capabilities') scope = 'caller'
-  if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'harness_mcp_change_reconcile', 'codex_plugins_list', 'codex_plugin_get', 'codex_plugin_change', 'codex_plugin_reconcile'].includes(name)) scope = 'global'
+  if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'harness_mcp_change_reconcile', 'codex_plugins_list', 'codex_plugin_get', 'codex_plugin_change', 'codex_plugin_reconcile', 'claude_plugins_list', 'claude_plugin_change', 'claude_plugin_marketplace_add'].includes(name)) scope = 'global'
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
   const result: Requirement[] = [{action:entry.action,scope}]
   if (name === 'interaction_respond') result.push({ action: 'interactions:read', scope: 'resource' })
@@ -169,7 +169,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name === 'skill_users_update') result.push({action:'skills:read',scope:'workspace'})
   if (name === 'workspace_folders_list') result.push({action:'harnesses:read',scope:'global'})
   if (['workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) result.push({action:'workspace_locations:read',scope:'global'})
-  if (['harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_reconcile', 'codex_plugin_change', 'codex_plugin_reconcile'].includes(name)) result.push({action:'harnesses:read',scope:'global'})
+  if (['harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_reconcile', 'codex_plugin_change', 'codex_plugin_reconcile', 'claude_plugin_change', 'claude_plugin_marketplace_add'].includes(name)) result.push({action:'harnesses:read',scope:'global'})
   if (['run_start','harness_mcp_detection_get','workspace_location_provision','run_resume','run_retry'].includes(name)) result.push({action:'workspace_locations:read',scope:'workspace'})
   if (name === 'run_node_placement_get') result.push({action:'workspace_locations:read',scope:'workspace'})
   if (name === 'workspace_location_provision') result.push({action:'workspace_locations:update',scope:'workspace'})
@@ -240,6 +240,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (['workspace_storage_folders_list', 'workspace_storage_folder_delete'].includes(name) && !service.workspaces?.storageFolders) return false
   if (['harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'harness_mcp_change_reconcile'].includes(name) && !service.harnessSettings) return false
   if (['codex_plugins_list', 'codex_plugin_get', 'codex_plugin_change', 'codex_plugin_reconcile'].includes(name) && !service.harnessSettings?.plugins) return false
+  if (['claude_plugins_list', 'claude_plugin_change', 'claude_plugin_marketplace_add'].includes(name) && !service.harnessSettings?.claudePlugins) return false
   if (name.startsWith('interaction_') && !service.interactions) return false
   if (name === 'computer_activity_list' && !service.computerActivity) return false
   if (name === 'computer_accounts_list' && !service.computerAccounts) return false

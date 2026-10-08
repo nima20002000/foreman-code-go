@@ -4,7 +4,7 @@ import {
   COMPUTER_MAINTENANCE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema,
   ComputerMaintenanceStartResultSchema, MaintenanceReplySchema, SyncedMcpServerSchema,
   type ComputerMaintenanceList, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
-  type MaintenanceStatus, type MaintenanceTask, type MaintenanceTaskStart, type SyncedMcpServer,
+  type MaintenanceStatus, type MaintenanceTask, type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
 } from '@foreman-code/contracts/computer-maintenance'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -13,6 +13,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import type { ClaudePluginCatalog } from './claudePlugins.js'
 import type { ComputerMaintenance } from './maintenance.js'
 
 export interface MaintenanceEndpoint {
@@ -24,9 +25,12 @@ export interface FleetSources {
   codexUserMcpServers(): Promise<Record<string, unknown>>
   claudeUserMcpServers(): Promise<Record<string, unknown>>
   codexPlugins(): Promise<string[]>
+  codexMarketplaces(): Promise<SyncedMarketplace[]>
+  claudePlugins(): Promise<ClaudePluginCatalog>
 }
 
 const CACHE_MS = 20_000
+const RUNNING_CACHE_MS = 3_000
 const RETIRED_APP_SERVERS = ['graphql-app', 'graphql-operator', 'graphql-worker']
 
 /** Server definitions safe to copy: no inline secret values. Servers needing a login are set up per computer later. */
@@ -52,7 +56,7 @@ export function syncableServers(entries: Record<string, unknown>): SyncedMcpServ
 
 /** Main's view of every computer's maintenance, and the one place that starts maintenance across them. */
 export class FleetMaintenanceService {
-  private readonly cache = new Map<string, { at: number; value: Promise<MaintenanceStatus | null> }>()
+  private readonly cache = new Map<string, { at: number; running?: boolean; value: Promise<MaintenanceStatus | null> }>()
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
@@ -108,15 +112,19 @@ export class FleetMaintenanceService {
   /** Background upkeep: current harnesses everywhere, then Main's MCP servers and plugins on every paired computer. */
   async keepCurrent(): Promise<void> {
     const targets = await this.allTargets()
-    const sync = await Promise.all([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
+    const sync = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     await Promise.all(targets.map(async target => {
       const status = await this.status(target, true)
       if (!status) return
       const behind = status.harnesses.filter(entry => entry.latest && entry.version !== entry.latest).map(entry => entry.harness)
       if (behind.length) await this.startOn(target, { kind: 'update-harnesses', harnesses: behind }).catch(() => undefined)
       if (target.hostRef.kind === 'main') return
-      for (const task of sync) await this.startOn(target, task).catch(() => undefined)
+      for (const task of sync) {
+        if (task.status === 'fulfilled') await this.startOn(target, task.value)
+      }
     }))
+    const failures = sync.filter(result => result.status === 'rejected').map(result => result.reason as unknown)
+    if (failures.length) throw new AggregateError(failures, 'Some fleet settings could not be read.')
   }
 
   private async taskFor(task: ComputerMaintenanceStartInput['task']): Promise<MaintenanceTaskStart> {
@@ -124,7 +132,15 @@ export class FleetMaintenanceService {
       const [codex, claude] = await Promise.all([this.sources.codexUserMcpServers().catch(() => ({})), this.sources.claudeUserMcpServers().catch(() => ({}))])
       return { kind: 'sync-mcp', servers: { codex: syncableServers(codex), claude: syncableServers(claude) } }
     }
-    if (task.kind === 'sync-plugins') return { kind: 'sync-plugins', plugins: await this.sources.codexPlugins().catch(() => []) }
+    if (task.kind === 'sync-plugins') {
+      const [plugins, marketplaces, claude] = await Promise.all([
+        this.sources.codexPlugins(), this.sources.codexMarketplaces(), this.sources.claudePlugins(),
+      ])
+      return { kind: 'sync-plugins', plugins, marketplaces,
+        claudePlugins: claude.plugins.filter(plugin => plugin.installed).map(({ pluginId, enabled }) => ({ pluginId, enabled })),
+        claudeMarketplaces: claude.marketplaces.flatMap(item => item.source ? [{ name: item.name, source: item.source }] : []),
+      }
+    }
     return task
   }
 
@@ -138,13 +154,16 @@ export class FleetMaintenanceService {
   private status(target: DeviceProvisioningTarget, refresh: boolean): Promise<MaintenanceStatus | null> {
     const key = this.key(target)
     const cached = this.cache.get(key)
-    if (!refresh && cached && this.now() - cached.at < CACHE_MS) return cached.value
+    // A running task's progress is read again within seconds; settled status is reused longer.
+    if (!refresh && cached && this.now() - cached.at < (cached.running ? RUNNING_CACHE_MS : CACHE_MS)) return cached.value
     const value = (async () => {
       if (target.hostRef.kind === 'main') return this.local.status(AbortSignal.timeout(90_000))
       const reply = MaintenanceReplySchema.parse((await this.request(target.hostRef.deviceId, { operation: 'status' })).payload)
       return reply.operation === 'status' ? reply.status : null
     })().catch((): null => null)
-    this.cache.set(key, { at: this.now(), value })
+    const entry: { at: number; running?: boolean; value: Promise<MaintenanceStatus | null> } = { at: this.now(), value }
+    this.cache.set(key, entry)
+    void value.then(status => { entry.running = status?.tasks.some(task => task.state === 'running') ?? false })
     return value
   }
 
