@@ -1,7 +1,10 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
+import { getManagedHarnessCatalog } from '../api/client'
+import { getMockHarnessDefaults, updateMockHarnessDefaults } from '../mocks/scenarios'
+import { savedClaudeConfiguration } from '../../features/settings/claudeSettings.fixtures'
 
 import { renderWithRouter } from '../../test/renderWithRouter'
 import {
@@ -12,6 +15,20 @@ import {
 import { WorkspaceShell } from './WorkspaceShell'
 
 describe('WorkspaceShell', () => {
+  it.each([false, true])('keeps OpenCode out of the complete sidebar with collapsed navigation: %s', async collapsed => {
+    updateMockHarnessDefaults({ ...getMockHarnessDefaults(), claude: savedClaudeConfiguration })
+    const catalog = await getManagedHarnessCatalog()
+    expect(catalog.map(entry => entry.harness)).toEqual(['codex', 'claude'])
+    act(() => useNavigationUiStore.getState().setCollapsed(collapsed))
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    const sidebar = await screen.findByRole('complementary', { name: 'Primary navigation' })
+    expect(await within(sidebar).findByRole('link', { name: /^Codex:/ })).toBeVisible()
+    expect(await within(sidebar).findByRole('link', { name: /^Claude:/ })).toBeVisible()
+    expect(within(sidebar).queryByRole('link', { name: /OpenCode/i })).not.toBeInTheDocument()
+    expect(within(sidebar).queryByRole('button', { name: /OpenCode/i })).not.toBeInTheDocument()
+    expect(sidebar).not.toHaveTextContent(/OpenCode/i)
+  })
+
   it.each([false, true])('keeps the product name accessible with collapsed navigation: %s', async collapsed => {
     const previous = useNavigationUiStore.getState().collapsed
     useNavigationUiStore.getState().setCollapsed(collapsed)

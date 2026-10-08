@@ -48,12 +48,11 @@ const { startConfiguredWorker } = await import(factoryPath)
 function fixture(options: {
   suiteRevision?: string
   binding?: DeviceSessionBinding
-  harness?: 'codex'
   assertResident?: Parameters<typeof createInstalledCodexQualificationReader>[0]['assertResident']
 } = {}) {
-  const harness = options.harness ?? 'codex'
+  const harness = 'codex'
   const suiteRevision = options.suiteRevision ?? `${harness}-live-4`
-  const version = harness === 'codex' ? '0.132.0' : '1.18.31'
+  const version = '0.132.0'
   const binding = options.binding ?? {
     mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
     keyRevision: 2, authorizationRevision: 3, connectionGeneration: 4, connectionEpoch: randomUUID(),
@@ -112,14 +111,13 @@ function fixture(options: {
   const readerInput = { intent: facts.intent, placement: facts.placement, trustedCurrentBinding: () => live,
     inspect, readFacts, suiteRevision, signal: controller.signal,
     ...(options.assertResident ? { assertResident: options.assertResident } : {}) }
-  const reader = harness === 'codex' ? createInstalledCodexQualificationReader(readerInput)
-    : createInstalledCodexQualificationReader(readerInput)
+  const reader = createInstalledCodexQualificationReader(readerInput)
   return { facts, inspection, reader, inspect, readFacts, controller, binding, setLive: (value: typeof live) => { live = value } }
 }
 
 describe('actual Main and installed Codex qualification read capability', () => {
-  it.each(['codex', 'opencode'] as const)('uses Main’s saved %s settings, prompts and skills without an offline copy', async harness => {
-    const f = fixture({ harness })
+  it('uses Main’s saved Codex settings, prompts and skills without an offline copy', async () => {
+    const f = fixture()
     f.facts.configuration.prompt = { system: 'Instructions saved on Main.' }
     f.facts.configuration.instructionDelivery = 'native-v1'
     f.facts.configuration.assignedSkills = [{ skillId: 'shared-skill', version: '2' }]

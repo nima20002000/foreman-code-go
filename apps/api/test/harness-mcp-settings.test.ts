@@ -95,7 +95,7 @@ describe('native MCP settings reads', () => {
       const read = vi.fn().mockResolvedValue(snapshot)
       const adapter = { read, apply: vi.fn() }
       const service = new HarnessMcpSettingsService({} as never, {} as never,
-        { codex: adapter, opencode: adapter }, () => undefined)
+        { codex: adapter }, () => undefined)
       const first = await service.list(principal, 'codex')
       expect(await service.list(principal, 'codex')).toEqual(first)
       expect(read).toHaveBeenCalledTimes(1)
@@ -116,7 +116,7 @@ describe('native MCP settings reads', () => {
       const read = vi.fn().mockResolvedValueOnce(snapshot)
         .mockImplementationOnce(() => new Promise<NativeMcpSnapshot>((resolve) => { release = () => resolve(snapshot) }))
       const adapter = { read, apply: vi.fn() }
-      const service = new HarnessMcpSettingsService({} as never, {} as never, { codex: adapter, opencode: adapter }, () => undefined)
+      const service = new HarnessMcpSettingsService({} as never, {} as never, { codex: adapter }, () => undefined)
       const first = await service.list(principal, 'codex')
       const now = Date.now()
       vi.spyOn(Date, 'now').mockReturnValue(now + 301_000)

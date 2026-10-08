@@ -9,7 +9,7 @@ import { HarnessCompatibilityService } from '../src/modules/harnesses/compatibil
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
-it('reads supported diagnostics through authenticated HTTP and MCP and denies callers without harness access', async () => {
+it('reads only supported (Codex and Claude) diagnostics through authenticated MCP and denies callers without harness access', async () => {
   const database = await currentDatabase()
   const access = new PostgresAccessService(database.pool)
   const inspect = vi.fn()
@@ -17,7 +17,7 @@ it('reads supported diagnostics through authenticated HTTP and MCP and denies ca
     probe: { inspect, probe: vi.fn(), assertUnchanged: vi.fn() },
     cache: { load: async () => null, save: async () => {} },
   })
-  const app = buildApp({ logger: false, harnessCompatibility: compatibility,
+  const app = buildApp({ logger: false,
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services: { harnessCompatibility: compatibility,
       commands: new PostgresCommandCoordinator(database.pool) } as unknown as OperatorServices },
@@ -40,16 +40,9 @@ it('reads supported diagnostics through authenticated HTTP and MCP and denies ca
     const client = await connect(owner.token)
     const expected = HarnessCompatibilityListSchema.parse(compatibility.read(owner.principal))
     expect(expected.harnesses.map(report => report.harness)).toEqual(['codex'])
-    const response = await app.inject({ method: 'GET', url: '/api/management/harnesses/compatibility',
-      headers: { authorization: `Bearer ${owner.token}` } })
-    expect(response.statusCode, response.body).toBe(200)
-    expect(HarnessCompatibilityListSchema.parse(response.json())).toEqual(expected)
     const result = await client.callTool({ name: 'harness_compatibility_list', arguments: {} })
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
     expect(HarnessCompatibilityListSchema.parse(result.structuredContent)).toEqual(expected)
-    const deniedResponse = await app.inject({ method: 'GET', url: '/api/management/harnesses/compatibility',
-      headers: { authorization: `Bearer ${denied.token}` } })
-    expect(deniedResponse.statusCode).toBe(403)
     const deniedClient = await connect(denied.token)
     await expectMcpAccessDenied(deniedClient.callTool({ name: 'harness_compatibility_list', arguments: {} }))
     expect(inspect).not.toHaveBeenCalled()

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type HarnessConfiguration } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, HarnessDefaultsSchema, type HarnessConfiguration } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { HarnessCatalogService } from '../src/modules/harnesses/catalog.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -14,7 +14,10 @@ function fixture(ready = () => true) {
     supportsCancellation: true, supportsWorkingDirectory: true, supportsStartupPrompt: true,
     supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [] }))
   const settings = { getManagedHarnessDefaults: async () => ({ revision: 3,
-    defaults: { codex: DEFAULT_HARNESS_DEFAULTS.codex, opencode: DEFAULT_HARNESS_DEFAULTS.opencode } }) } as unknown as PostgresSettingsRepository
+    defaults: HarnessDefaultsSchema.parse({ ...DEFAULT_HARNESS_DEFAULTS, claude: {
+      harness: 'claude', model: 'fixture', authMode: 'subscription', configDirectory: '/unit/claude-profile',
+      permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: '', mcpServers: {},
+    } }) }) } as unknown as PostgresSettingsRepository
   const catalog = new HarnessCatalogService({ qualify }, settings, {} as PostgresCommandCoordinator, '/unit/qualification')
   return { catalog, qualify }
 }

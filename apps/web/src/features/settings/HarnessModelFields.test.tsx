@@ -4,10 +4,11 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type HarnessConfiguration } from '@foreman-code/contracts'
 import { HarnessBasicFields } from './HarnessBasicFields'
+import { savedClaudeConfiguration } from './claudeSettings.fixtures'
 
 vi.mock('../../shared/api/harnessSettings', () => ({
   useNativeHarnessOptions: (harness: 'codex' | 'claude') => ({ data: { models: [
-    { id: DEFAULT_HARNESS_DEFAULTS[harness].model, name: 'Current native model', reasoningEfforts: ['medium', 'high'], variants: [''], serviceTiers: ['standard', 'priority'] },
+    { id: { codex: DEFAULT_HARNESS_DEFAULTS.codex.model, claude: savedClaudeConfiguration.model }[harness], name: 'Current native model', reasoningEfforts: ['medium', 'high'], variants: [''], serviceTiers: ['standard', 'priority'] },
     { id: 'long-model', name: 'A long native model label that remains searchable and selectable', reasoningEfforts: ['medium'], variants: ['balanced'], serviceTiers: ['standard'] },
   ], nativeAgents: ['build', 'plan'] }, isSuccess: true, isPending: false, isError: false, error: null }),
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),

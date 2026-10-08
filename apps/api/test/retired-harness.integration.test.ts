@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
-import { AgentCreateInputSchema, ManagedAgentDetailSchema } from '@foreman-code/contracts/management'
+import { DEFAULT_HARNESS_DEFAULTS, HarnessDefaultsSchema } from '@foreman-code/contracts'
+import { AgentCreateInputSchema, ManagedAgentDetailSchema, HarnessCatalogSchema, HarnessCatalogResultSchema } from '@foreman-code/contracts/management'
 import {
   SavedRunDetailsSchema, RUN_INSPECTION_TOOLS, CANONICAL_RUN_GRAPH_MCP_TOOLS,
   RunRecordDetailSchema, RunExecutionsPageSchema, RunVersionDetailSchema,
@@ -9,6 +9,7 @@ import {
   canonicalGraphJson, SavedWorkflowVersionSchema, SavedRunVersionSnapshotSchema,
 } from '@foreman-code/contracts/wave25'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
+import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
@@ -72,6 +73,35 @@ it('rejects OpenCode creation through authenticated HTTP and MCP without persist
   } finally {
     await f.close()
   }
+}, 60_000)
+
+it('discovers only configured Codex and Claude through HTTP and MCP with persisted defaults and denied callers', async () => {
+  const f = await currentOperatorIntegration()
+  try {
+    const settings = new PostgresSettingsRepository(f.db.pool)
+    const presets = HarnessDefaultsSchema.parse({ ...DEFAULT_HARNESS_DEFAULTS, claude: {
+      harness: 'claude', model: 'fixture-claude-model', authMode: 'subscription', configDirectory: f.db.directory,
+      permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: '', mcpServers: {},
+    } })
+    await settings.saveHarnessDefaults(presets)
+    const before = await settings.getManagedHarnessDefaults()
+    const mcp = await f.client.callTool({ name: 'harness_list', arguments: {} })
+    expect(mcp.isError, JSON.stringify(mcp.content)).not.toBe(true)
+    const items = HarnessCatalogResultSchema.parse(mcp.structuredContent).items
+    expect(items.map(entry => entry.harness)).toEqual(['codex', 'claude'])
+    const http = await f.app.inject({ method: 'GET', url: '/api/management/harnesses',
+      headers: { authorization: `Bearer ${f.writer.token}` } })
+    expect(http.statusCode, http.body).toBe(200)
+    expect(HarnessCatalogSchema.parse(http.json())).toEqual(items)
+    const denied = await f.access.issue({ name: 'Caller without harness discovery access', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['settings:read'], scope: {} }] })
+    const deniedClient = await f.connect(denied.token)
+    await expectMcpAccessDenied(deniedClient.callTool({ name: 'harness_list', arguments: {} }))
+    const forbidden = await f.app.inject({ method: 'GET', url: '/api/management/harnesses',
+      headers: { authorization: `Bearer ${denied.token}` } })
+    expect(forbidden.statusCode).toBe(403)
+    expect(await settings.getManagedHarnessDefaults()).toEqual(before)
+  } finally { await f.close() }
 }, 60_000)
 
 it('reads saved OpenCode Agent and Run facts through HTTP and MCP without rewriting them', async () => {

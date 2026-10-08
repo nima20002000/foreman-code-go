@@ -5,7 +5,7 @@ import { AgentIdentity } from '../agents/AgentIdentity'
 import { AgentSettingsForm } from '../graph/AgentSettingsForm'
 import { HarnessBasicFields } from './HarnessBasicFields'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
-import { HostHarnessConfigurationFields } from './HostHarnessConfigurationFields'
+import { HarnessSectionFields } from './HarnessSectionFields'
 import { OperatorAccessPicker } from '../operator-chat/OperatorAccessPicker'
 import { createHarnessEditor, prepareHarnessEditor } from './harnessEditor'
 import { agentNodeFacts, agentSettingRows } from '../graph/signalEdge'
@@ -32,12 +32,11 @@ it('preserves saved OpenCode agent facts without mounting an editor or offering 
   expect(agent).toEqual(original)
 })
 
-it.each(['basic', 'configuration', 'host', 'access'] as const)('reads a retired %s configuration without controls or discovery requests', (surface) => {
+it.each(['basic', 'configuration', 'access'] as const)('reads a retired %s configuration without controls or discovery requests', (surface) => {
   const editor = createHarnessEditor(configuration)
   const onChange = vi.fn()
   if (surface === 'basic') render(<HarnessBasicFields value={configuration} onChange={onChange} />)
   if (surface === 'configuration') render(<HarnessConfigurationFields editor={editor} onChange={onChange} />)
-  if (surface === 'host') render(<HostHarnessConfigurationFields editor={editor} onChange={onChange} />)
   if (surface === 'access') render(<OperatorAccessPicker value={configuration} disabled={false} onChange={onChange} />)
   expect(screen.getByRole('status')).toHaveTextContent(retiredHarnessLabel)
   expect(screen.queryByRole('button')).not.toBeInTheDocument()
@@ -45,6 +44,16 @@ it.each(['basic', 'configuration', 'host', 'access'] as const)('reads a retired 
   expect(onChange).not.toHaveBeenCalled()
   expect(editor.configuration).toEqual(configuration)
 })
+
+it.each(['model', 'permissions', 'session', 'tools', 'connections', 'workspace'] as const)(
+  'does not mount controls or native discovery for a retired %s section', (section) => {
+    const editor = createHarnessEditor(configuration)
+    const onChange = vi.fn()
+    const { container } = render(<HarnessSectionFields editor={editor} section={section} onChange={onChange} />)
+    expect(container).toBeEmptyDOMElement()
+    expect(onChange).not.toHaveBeenCalled()
+    expect(editor.configuration).toEqual(configuration)
+  })
 
 it('lists only Codex and Claude for new choices and rejects preparing a retired configuration', () => {
   expect(AgentHarnessSchema.options).toEqual(['codex', 'claude'])

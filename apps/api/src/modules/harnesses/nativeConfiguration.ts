@@ -18,7 +18,7 @@ export class NativeConfigurationService {
   invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear(); this.identities.clear() }
   // Resolving the installed binary's identity costs over a second; settings reads reuse it briefly.
   private readonly identities = new Map<string, { at: number; value: Promise<string> }>()
-  private identity(harness: 'codex' | 'opencode'): Promise<string> {
+  private identity(harness: 'codex'): Promise<string> {
     const known = this.identities.get(harness)
     if (known && Date.now() - known.at < 60_000) return known.value
     const value = this.factories.cacheIdentity(harness, this.directory)
