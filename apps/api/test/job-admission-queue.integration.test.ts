@@ -66,6 +66,10 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
   }
   it('persists Agent CI origin separately from graph membership and reads it through authenticated MCP', async () => {
     const f = await fixture()
+    const scopedReader = await access.issue({ name: 'CI origin reader', audience: 'operator',
+      expiresAt: new Date(Date.now() + 300000), grants: [{
+        actions: ['jobs:read', 'capabilities:read'], scope: { workspaceIds: [f.workspaceId] },
+      }] })
     const definition = await f.save()
     const input = command(definition)
     const initiatingAgent = { workflowId: 'workflow-origin', runId: 'run-origin',
@@ -80,9 +84,9 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     await f.jobs.closeQueue()
     const restarted = f.createService()
     services.push(restarted)
-    const ticket = await restarted.getQueueTicket(reader.principal, f.workspaceId, id)
+    const ticket = await restarted.getQueueTicket(scopedReader.principal, f.workspaceId, id)
     expect(ticket).toMatchObject({ state: 'accepted', workflow: null, initiatingAgent })
-    const execution = await restarted.getExecution(reader.principal, f.workspaceId, ticket.executionId)
+    const execution = await restarted.getExecution(scopedReader.principal, f.workspaceId, ticket.executionId)
     expect(execution).toMatchObject({ workflow: null, initiatingAgent })
     const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: { jobs: restarted, commands: f.commands } as unknown as OperatorServices } })
@@ -91,7 +95,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const client = new Client({ name: 'ci-origin-tests', version: '1' })
     clients.push(client)
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
-      { requestInit: { headers: { authorization: `Bearer ${reader.token}` } } }))
+      { requestInit: { headers: { authorization: `Bearer ${scopedReader.token}` } } }))
     const listed = await client.callTool({ name: 'job_queue_list', arguments: {
       workspaceId: f.workspaceId, initiatingExecutionId: initiatingAgent.executionId,
     } })
@@ -108,10 +112,17 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       workspaceId: 'foreign-workspace', initiatingExecutionId: initiatingAgent.executionId,
     } })
     expect(denied.isError).toBe(true)
-    const forged = await client.callTool({ name: 'job_start', arguments: {
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    const writerClient = new Client({ name: 'ci-origin-writer-tests', version: '1' })
+    clients.push(writerClient)
+    await writerClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+      { requestInit: { headers: { authorization: `Bearer ${writer.token}` } } }))
+    expect((await writerClient.listTools()).tools.map(tool => tool.name)).toContain('job_start')
+    const forged = await writerClient.callTool({ name: 'job_start', arguments: {
       workspaceId: f.workspaceId, ...input, commandId: randomUUID(), initiatingAgent,
     } })
     expect(forged.isError).toBe(true)
+    expect(await restarted.listQueue(scopedReader.principal, f.workspaceId)).toEqual([ticket])
   })
   it('serializes five concurrent requests on one heavy slot and advances only after closure and publication', async () => {
     const f = await fixture()
