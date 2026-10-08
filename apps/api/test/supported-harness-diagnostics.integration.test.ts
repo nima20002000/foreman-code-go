@@ -4,6 +4,7 @@ import { HarnessCompatibilityListSchema } from '@foreman-code/contracts'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { HarnessCompatibilityService } from '../src/modules/harnesses/compatibility/service.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
@@ -18,7 +19,8 @@ it('reads supported diagnostics through authenticated HTTP and MCP and denies ca
   })
   const app = buildApp({ logger: false, harnessCompatibility: compatibility,
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    operator: { access, services: { harnessCompatibility: compatibility } as unknown as OperatorServices },
+    operator: { access, services: { harnessCompatibility: compatibility,
+      commands: new PostgresCommandCoordinator(database.pool) } as unknown as OperatorServices },
   })
   const clients: Client[] = []
   try {

@@ -6,6 +6,7 @@ import { JOB_VERIFICATION_APPROVAL_LIFETIME_MS } from '@foreman-code/contracts/j
 import { JobRuntimeProfileListRecordSchema, JobRuntimeQualificationReadRecordSchema }
   from '@foreman-code/contracts/job-verification-runtime'
 import { buildApp } from '../src/app.js'
+import { registerJobRuntimeProfileRoutes } from '../src/routes/jobRuntimeProfiles.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { jobDigest } from '../src/modules/jobs/service.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
@@ -21,6 +22,7 @@ it('preserves retired qualification profiles through HTTP and MCP and reports th
       jobRuntimeProfiles: f.profiles } as unknown as OperatorServices },
   })
   const clients: Client[] = []
+  registerJobRuntimeProfileRoutes(app, f.profiles)
   try {
     const profile = await f.profiles.save(f.writer.principal, 'http', workspaceId, {
       commandId: randomUUID(), expectedRevision: null, name: 'Historical native tool profile',

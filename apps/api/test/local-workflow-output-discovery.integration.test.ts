@@ -59,9 +59,12 @@ it.runIf(Boolean(process.env.TEST_DATABASE_URL))(
       const outputs = Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES)
       const tools = (await worker.listTools()).tools.map(tool => tool.name)
       for (const output of outputs) expect(tools).not.toContain(output)
-      await expect(worker.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
-        arguments: { commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' } }))
-        .rejects.toMatchObject({ code: -32602 })
+      const denied = await worker.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
+        arguments: { commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' } })
+      expect(denied.isError).toBe(true)
+      const failure = denied.content.find(value => value.type === 'text')
+      if (failure?.type !== 'text') throw new Error('The retired tool denial needs an MCP error body')
+      expect(JSON.parse(failure.text)).toMatchObject({ error: { code: 'TOOL_NOT_ENABLED' } })
       expect((await db.pool.query('select * from local_workflow_native_outputs')).rows).toEqual([])
       const unrelated = await access.issue({ name: 'Unbound read-only worker', audience: 'worker', agentId: execution.agentId,
         expiresAt: new Date(Date.now() + 300_000), grants: [{ actions: ['interactions:read'],

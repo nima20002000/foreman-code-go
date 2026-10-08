@@ -282,7 +282,10 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     await pool.query('update run_subagents set record=$2::jsonb where id=$1', [child.id, JSON.stringify(child)])
     const send = vi.fn(async () => {}), interrupt = vi.fn(async () => {})
     const lease: SubagentControlLease = { generation: 'lease-1', nativeTurnId: null, matches: value => value.id === child.id && value.profile.harnessInstanceId === child.profile.harnessInstanceId,
-      assertCurrent: () => {}, sendInput: send, interrupt }
+      assertCurrent: () => {}, sendInput: send, interrupt, capabilities: {
+        sendInput: child.capabilities.sendInput, interrupt: child.capabilities.interrupt,
+        executionResume: child.capabilities.executionResume, inputTiming: child.capabilities.inputTiming,
+      } }
     const service = new RunSubagentService(pool, () => lease)
     const command = { ...f.input, subagentId: child.id, commandId: randomUUID(), expectedRevision: child.revision, text: 'follow up' }
     return { ...f, service, child, send, interrupt, lease, command }
