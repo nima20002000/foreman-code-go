@@ -74,12 +74,13 @@ export function AgentChatTranscript({
           {turn.error ? <p className="agent-chat-note">{turn.error.message}</p> : null}
           {!readOnly && turn.delivery === 'queued' ? <><Button size="sm" disabled={!!cancelReason} title={cancelReason} onClick={() => onCancel(turn.requestId)}>Cancel queued message</Button>
             {cancelReason ? <p className="agent-chat-note">{cancelReason}</p> : null}</> : null}
-          {!readOnly && turn.delivery === 'unknown' ? <><p className="agent-chat-note">Delivery is unknown. No automatic resend. Read the original text before explicitly sending it as a new message.</p>
+          {turn.delivery === 'unknown' ? <>
+            {!readOnly ? <p className="agent-chat-note">Delivery is unknown. No automatic resend. Read the original text before explicitly sending it as a new message.</p> : null}
             {content !== undefined ? <><p className="conversation-message-content">{content}</p>
-              <Button size="sm" disabled={!!resendUnavailable(content)} title={resendUnavailable(content)}
+              {!readOnly ? <Button size="sm" disabled={!!resendUnavailable(content)} title={resendUnavailable(content)}
                 onClick={() => onSendAgain(content,
                   original?.kind === 'send' ? original.input.attachments : undefined,
-                  original?.kind === 'send' ? original.input.sessionMode : undefined)}>Send again as new message</Button></> : null}
+                  original?.kind === 'send' ? original.input.sessionMode : undefined)}>Send again as new message</Button> : null}</> : null}
           </> : null}
         </div>
       })}

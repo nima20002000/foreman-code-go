@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { agentChatFixtures, type AgentChatState } from '@foreman-code/contracts/agent-chat'
@@ -7,6 +7,7 @@ import { useConversationDraftStore } from '../conversationDraftStore'
 import { agentChatContextKey } from './model'
 import { providerFixture } from './f7.testSupport'
 import { installChatSource, mountChat } from './testSupport'
+import { compactAgentChatResult } from './commandRecords'
 
 const clients: ReturnType<typeof mountChat>['client'][] = []
 beforeEach(() => installChatSource())
@@ -17,6 +18,28 @@ afterEach(() => {
 const mount = async (state: AgentChatState) => {
   const mounted = mountChat(state); clients.push(mounted.client); await mounted.ready(); return mounted
 }
+
+it('keeps locally retained text readable for a retired chat outside the current history page', async () => {
+  const state = structuredClone(agentChatFixtures.unknownDelivery)
+  state.conversation!.harness = 'opencode'
+  state.capabilities.harness = 'opencode'
+  state.messages = []
+  const turn = state.turns[0]!
+  const mounted = await mount(state)
+  const mutation = mounted.client.getMutationCache().build(mounted.client, {
+    mutationKey: ['agent-chat', 0, agentChatContextKey(state.context), 'command'],
+    mutationFn: async (_input: unknown) => compactAgentChatResult({ state, turn, replayed: false }),
+  })
+  await act(async () => {
+    await mutation.execute({ kind: 'send', clearDraft: true,
+      input: { requestId: turn.requestId, content: 'Retained historical message' } })
+  })
+  const history = screen.getByRole('region', { name: 'Messages outside the current history page' })
+  expect(await within(history).findByText('Retained historical message')).toBeVisible()
+  expect(within(history).queryByRole('button', { name: 'Send again as new message' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
+  expect(mounted.mock.calls.filter(call => call.method === 'POST')).toEqual([])
+})
 
 describe('G7 contextual notices and first-message availability (React + MSW, not native execution)', () => {
 
