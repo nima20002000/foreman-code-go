@@ -18,6 +18,7 @@ import { prepareAgentWorktree, prepareSharedWorkingTree, verifySharedWorkingTree
 import { systemGitWorktreePorts, type GitWorktreePorts, type WorktreeRequest } from './gitWorktree.js'
 import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
+import { processIdentity } from '../harnesses/recovery/linuxIdentity.js'
 
 const equal = isDeepStrictEqual
 /** Preserve the claim API while sharing Main's joined directory-lock implementation. */
@@ -488,7 +489,13 @@ export async function preparationChildrenClosed(namespace: string, signal?: Abor
     } catch (error) {
       if (error instanceof SourceError) throw error
       signal?.throwIfAborted()
-      if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+      const code = (error as NodeJS.ErrnoException).code ?? ''
+      if (code === 'EACCES') {
+        // procfs can deny descriptor reads after a process exits but before it is reaped.
+        const current = processIdentity(Number(pid))
+        if (!current || ['Z', 'X'].includes(current.state)) continue
+      }
+      if (!['ENOENT', 'ESRCH'].includes(code)) {
         throw new SourceError('source-reconciliation-unconfirmed', `Process ${pid} could not be inspected.`, { cause: error })
       }
     }
@@ -615,6 +622,6 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
       await reauthorize()
       cleanupSignal.throwIfAborted()
       return proof
-    }, { nonBlocking: true, signal: cleanupSignal })
+    }, { signal: cleanupSignal })
   } finally { await root.close() }
 }
