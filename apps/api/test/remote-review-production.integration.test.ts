@@ -42,6 +42,8 @@ async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void
     console.error('Remote reviewer retention', (await fixture.db.pool.query(`select receipt->'intent'->>'executionId' as execution_id,
       receipt->>'phase' as phase,receipt->'retainedReviewer'->>'expiresAt' as retained_until,
       receipt->'terminal'->>'kind' as terminal,clock_timestamp() as observed_at from remote_execution_receipts`)).rows)
+    console.error('Remote source reservations', (await fixture.db.pool.query(
+      'select owner_id,state,reserved_bytes from source_storage_reservations order by reservation_id')).rows)
     const activity = (await fixture.provider.calls()).filter(call => call.method === undefined
       || call.method === 'turn/start' || call.method === 'turn/interrupt').slice(-30)
     console.error('Remote review provider activity', activity.map(call => ({
@@ -493,7 +495,7 @@ describe('production remote review and native recovery through authenticated MCP
         return SourcePreparationSchema.parse(await fixture.value('source_preparation_get', {
           workspaceId: started.run.workspaceId, operationId: original.intent.operationId,
         }))
-      }, value => value.reservationState === 'retained', 'source cleanup recognizing the original entry closure')
+      }, value => value.reservationState === 'reclaimed', 'source reclamation after the original entry closure')
       expect(released.materializationId).toBe(preparation.materializationId)
       expect((await fixture.db.pool.query<{ state: string }>(
         'select state from source_execution_materializations where operation_id=$1',

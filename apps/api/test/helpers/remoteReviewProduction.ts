@@ -157,7 +157,7 @@ export async function remoteReviewProduction(options: {
     let main: ChildProcess | undefined
     let mainFailure = ''
     const failures: Array<{ code: string; runId: string | null; namespace?: unknown;
-      phase?: unknown; errorType?: unknown; errorLocation?: unknown }> = []
+      phase?: unknown; errorType?: unknown; errorLocation?: unknown; errorDetail?: string | undefined }> = []
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
       if (!main || main.exitCode !== null || main.signalCode !== null) return
@@ -193,7 +193,12 @@ export async function remoteReviewProduction(options: {
           if (!['warn', 'error', 'fatal'].includes(String(event.level)) || typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(code)) continue
           const frames = Array.isArray(event.stackFrames)
             ? event.stackFrames.filter((frame): frame is string => typeof frame === 'string').slice(0, 2) : []
+          const sourceMessage = event.err?.message
+          const errorDetail = code === 'source-reconciliation-unconfirmed' && typeof sourceMessage === 'string'
+            && /^Process \d+ (?:still |could not be inspected|exceeded )/.test(sourceMessage)
+            ? sourceMessage.slice(0, 200) : undefined
           failures.push({ code, phase: event.phase, errorType: event.errorType ?? event.err?.type,
+            errorDetail,
             namespace: typeof event.namespace === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(event.namespace)
               ? event.namespace : undefined,
             errorLocation: event.errorLocation ?? (frames.length ? frames.map(frame => frame.trim()).join(' ') : undefined)

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -215,6 +217,47 @@ it('leaves a live computer selection and its reservation untouched', async () =>
   expect((await f.pool.query('select state,record from source_storage_reservations where reservation_id=$1',
     [orphan.reservation.reservationId])).rows[0]).toEqual({ state: 'owned', record: orphan.reservation })
   expect(await readFile(join(f.namespace, orphan.receipt.materializationId, 'tree', 'source.txt'))).toBeDefined()
+}, 60_000)
+
+it('reclaims an original copy while another root on the same filesystem has a live producer', async () => {
+  fixture = await setup()
+  const f = fixture
+  const orphan = await f.orphan('owned')
+  const policyId = randomUUID()
+  const namespace = join(f.runtime, 'source-materializations', policyId)
+  await mkdir(namespace, { mode: 0o700 })
+  const directory = await openPrivateRoot(namespace)
+  const filesystem = await identity(directory)
+  await directory.close()
+  const otherRoot = SourceRootRecordSchema.parse({ ...f.root,
+    selection: { ...f.root.selection, rootPolicyId: policyId },
+    binding: { ...f.root.binding, rootId: randomUUID(), canonicalPath: namespace, filesystem } })
+  await f.pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
+    values($1,$2,$3,1)`, [otherRoot.binding.rootId, f.workspaceId, randomUUID()])
+  await f.pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
+    values($1,1,$2,$3,$4::jsonb)`, [otherRoot.binding.rootId, f.workspaceId, f.manifest.snapshotId,
+    JSON.stringify(otherRoot)])
+  const producer = spawn(process.execPath, ['-e',
+    "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)"],
+  { cwd: namespace, stdio: ['ignore', 'pipe', 'pipe'] })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      producer.once('error', reject)
+      producer.stdout.once('data', () => resolve())
+    })
+    expect(await f.cleanup.reconcile()).toBe(1)
+    expect(producer.exitCode).toBeNull()
+    expect((await f.pool.query('select state from source_storage_reservations where reservation_id=$1',
+      [orphan.reservation.reservationId])).rows[0]!.state).toBe('reclaimed')
+    await expect(readFile(join(f.namespace, orphan.receipt.materializationId, 'tree', 'source.txt')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+  } finally {
+    if (producer.exitCode === null && producer.signalCode === null) {
+      const exited = once(producer, 'exit')
+      producer.kill('SIGTERM')
+      await exited
+    }
+  }
 }, 60_000)
 
 it('keeps an offline uncertain reservation charged and retries automatically', async () => {
