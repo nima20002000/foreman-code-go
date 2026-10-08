@@ -375,6 +375,9 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
         if (request.send) setAskSend({ id: created.id, content: request.content })
       }).catch(() => undefined).finally(() => { creating.current = false })
   }, [accessDenied, create, enabled, open, request])
+  // Runs after every render on purpose: askReady is a ref the composer sets without a re-render, so a
+  // dependency list would miss the moment the chat becomes ready. The guard makes it send at most once.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!askSend || askSend.id !== selectedId || !askReady.current) return
     setAskSend(undefined)

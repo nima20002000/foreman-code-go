@@ -204,7 +204,7 @@ describe('actual Main and installed Codex qualification read capability', () => 
 })
 
 it('reads a renewed execution owner without admitting a different operation or configuration', async () => {
-  const f = fixture({ harness: 'codex' })
+  const f = fixture()
   const originalIntent = structuredClone(f.facts.intent)
   const reader = createInstalledCodexQualificationReader({ intent: originalIntent,
     placement: f.facts.placement, trustedCurrentBinding: () => f.binding,

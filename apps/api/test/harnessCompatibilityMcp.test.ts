@@ -20,7 +20,7 @@ function principal(actions = ['harnesses:read', 'harnesses:update']): Management
 }
 
 async function fixture(identity = principal(), extraServices: Partial<OperatorServices> = {}) {
-  const inspect = vi.fn(async (harness: 'codex' | 'opencode') => ({
+  const inspect = vi.fn(async (harness: 'codex') => ({
     executable: '/fake/cli', identity: harness, version: '99.0.0',
   }))
   const recordAudit = vi.fn(async () => undefined)
@@ -65,7 +65,7 @@ describe('compatibility through authenticated MCP', () => {
     }
     const status = HarnessCompatibilityListSchema.parse((await client.callTool(listCall)).structuredContent)
     expect(status.canRetry).toBe(true)
-    expect(status.harnesses).toHaveLength(2)
+    expect(status.harnesses.map(report => report.harness)).toEqual(['codex'])
     expect(inspect).not.toHaveBeenCalled()
   })
 
