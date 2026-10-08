@@ -30,10 +30,12 @@ export function codexInputDeliveryEvidence(pending: PendingNativeInteraction, op
     && event.payload.turnId === pending.turn.nativeTurnId)
   let consumed: boolean
   if (pending.nativeRequestType === 'item/tool/requestUserInput') {
-    consumed = completed.some(event => {
+    const outputs = completed.flatMap(event => {
       const item = event.payload.item
-      if (!isObject(item) || item.type !== 'functionCallOutput' || item.id !== request.itemId
-        || item.name !== 'request_user_input') return false
+      return isObject(item) && item.type === 'functionCallOutput' && item.id === request.itemId
+        && item.name === 'request_user_input' ? [item] : []
+    })
+    consumed = outputs.some(item => {
       let output = item.output
       if (Array.isArray(output) && output.length === 1 && isObject(output[0])
         && output[0].type === 'input_text') output = output[0].text
@@ -41,6 +43,26 @@ export function codexInputDeliveryEvidence(pending: PendingNativeInteraction, op
       try { return canonicalGraphJson(JSON.parse(output)) === canonicalGraphJson(nativeResponse) }
       catch { return false }
     })
+    // Blocking questions without a timer can only continue after an answer.
+    // Without a tool output, require a resolved submission,
+    // a subsequent assistant reply and successful completion of that same turn.
+    if (!consumed && outputs.length === 0 && option.input?.kind === 'questions' && request.isBlocking === true
+      && request.autoResolutionMs == null && pending.turn.nativeTurnId) {
+      const replied = completed.some(event => isObject(event.payload.item)
+        && event.payload.item.type === 'agentMessage')
+      consumed = replied && events.some(event => {
+        if (event.connectionId !== submitted.connectionId || event.sequence <= resolved.sequence
+          || event.payload.threadId !== pending.session.nativeSessionId) return false
+        if (event.type === 'turn.completed') {
+          return event.payload.status === 'completed' && event.payload.turnId === pending.turn.nativeTurnId
+        }
+        const thread = event.payload.thread
+        return event.type === 'thread.reconciled' && isObject(thread)
+          && thread.id === pending.session.nativeSessionId && Array.isArray(thread.turns)
+          && thread.turns.some(turn => isObject(turn) && turn.id === pending.turn.nativeTurnId
+            && turn.status === 'completed')
+      })
+    }
   } else {
     const started = events.filter(event => event.connectionId === submitted.connectionId
       && event.sequence < reserved.sequence && event.type === 'item.started'

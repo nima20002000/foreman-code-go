@@ -990,7 +990,9 @@ export class OperatorChatService {
       if (state) await this.receipts().reconcileStoredResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
         runtime.session!, receipt!, state)
     }
-    if ((!this.responding.has(id) || this.closing) && history.responseDeliveries?.length) {
+    // Message acknowledgements are journaled by the response before history settles them.
+    const canReconcileResponses = !this.responding.has(id) || this.closing || receipt === undefined
+    if (canReconcileResponses && history.responseDeliveries?.length) {
       const state = await this.repository.get(id)
       for (const proof of history.responseDeliveries) {
         const identity = proof.nativeIdentity ?? (history.nativeTurnId ? { kind: 'turn' as const, nativeTurnId: history.nativeTurnId } : undefined)

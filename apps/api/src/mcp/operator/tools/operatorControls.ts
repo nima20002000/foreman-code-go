@@ -26,7 +26,10 @@ export function registerOperatorControlTools(server: McpServer, context: Operato
       + 'optionId plus active model requestId from operator_chat_get. For a standalone session request with no active '
       + 'model request, use nativeRequestId as requestId. For questions and forms, supply response matching '
       + 'the option input schema. Check responseAvailability.available and its message first. Reuse commandId and '
-      + 'identical input after response loss. An uncertain response is never resent. Requires operator_chat:respond and operator_chat:read.',
+      + 'identical input after response loss. An uncertain response is never resent. '
+      + 'Read operator_chat_get activitySnapshot for the saved decision and providerAcknowledged: '
+      + 'a recorded answer alone is not delivery confirmation; native consumption may confirm it later. '
+      + 'Requires operator_chat:respond and operator_chat:read.',
     inputSchema: z.object({ conversationId: z.string().min(1), request: RespondOperatorInteractionRequestSchema }).strict(),
     outputSchema: CancelOperatorTurnResponseSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
