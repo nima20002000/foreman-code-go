@@ -21,7 +21,7 @@ export async function hasRetainedRemoteReviewerSource(sql: GraphSqlClient, execu
       and r.receipt->'retainedReviewer' is not null and r.receipt->'terminal' is null
       and r.receipt#>>'{native,sessionId}'=$2 and s.reference->>'nativeSessionId'=$2
       and r.receipt#>'{retainedReviewer,result}'=$4::jsonb
-      and c.closed_at is null and c.detached_at is null
+      and c.closed_at is null and (c.detached_at is null or c.detached_reference=s.reference)
       and (c.expected_reference is null or c.expected_reference=s.reference)
       and not exists(select 1 from execution_native_closures newer
         where newer.execution_id=c.execution_id and newer.generation>c.generation)
@@ -30,6 +30,17 @@ export async function hasRetainedRemoteReviewerSource(sql: GraphSqlClient, execu
 }
 
 export async function readRetainedRemoteReviewer(sql: GraphSqlClient, execution: HarnessExecution) {
+  const retained = await readRemoteReviewer(sql, execution, 'live')
+  if (!retained) return undefined
+  return { generation: retained.generation, principalId: retained.principalId, session: retained.session }
+}
+
+/** A saved candidate grants no review access until authenticated Worker attachment refreshes its lease. */
+export function readRecoverableRemoteReviewer(sql: GraphSqlClient, execution: HarnessExecution) {
+  return readRemoteReviewer(sql, execution, 'recovery')
+}
+
+async function readRemoteReviewer(sql: GraphSqlClient, execution: HarnessExecution, purpose: 'live' | 'recovery') {
   const placement = await readExecutionPlacement(sql, execution.id)
   if (placement?.hostRef.kind !== 'device') return undefined
   const row = (await sql.query<{ receipt: unknown }>(`select r.receipt from remote_execution_receipts r
@@ -46,13 +57,17 @@ export async function readRetainedRemoteReviewer(sql: GraphSqlClient, execution:
     || !sameWorkflowValue(execution.result, receipt.retainedReviewer.result)
     || !policy.session || policy.session.nativeSessionId !== execution.nativeSessionId)
     throw new DomainError('REMOTE_REVIEWER_DENIED', 'The retained reviewer result does not match its execution.', 409)
-  const lifetime = (await sql.query<{ generation: string; live: boolean; reference: unknown }>(`select c.generation::text,
-    c.closed_at is null and c.detached_at is null and clock_timestamp()<$2::timestamptz
+  const lifetime = (await sql.query<{ generation: string; live: boolean; detached: boolean; reference: unknown }>(`select
+    c.generation::text,c.detached_at is not null as detached,
+    c.closed_at is null and not c.closed_without_session
+      and (c.expected_reference is null or c.expected_reference=s.reference)
+      and (c.detached_at is null or ($3::boolean and c.detached_reference=s.reference))
+      and ($3::boolean or clock_timestamp()<$2::timestamptz)
       and not exists(select 1 from execution_native_closures p where p.execution_id=c.execution_id
         and p.generation<c.generation and p.closed_at is null and p.detached_at is null) as live,
       s.reference from execution_native_closures c join execution_native_sessions s using(execution_id)
       where c.execution_id=$1 order by c.generation desc limit 1 for share of c,s`,
-  [execution.id, receipt.retainedReviewer.expiresAt])).rows[0]
+  [execution.id, receipt.retainedReviewer.expiresAt, purpose === 'recovery'])).rows[0]
   if (!lifetime?.live || !sameWorkflowValue(NativeSessionReferenceSchema.parse(lifetime.reference), policy.session))
     return undefined
   const terminal = await sql.query(`select 1 from workflow_native_proofs where execution_id=$1 and run_id=$2
@@ -70,7 +85,7 @@ export async function readRetainedRemoteReviewer(sql: GraphSqlClient, execution:
   const principalId = credentials[0]!.principal_id
   await requireReviewerCredential(sql, principalId, { agentId: execution.agentId,
     workspaceId: policy.run.workspaceId, workflowId: policy.run.workflowId, runId: policy.run.id })
-  return { generation: lifetime.generation, principalId, session: policy.session }
+  return { generation: lifetime.generation, principalId, session: policy.session, detached: lifetime.detached }
 }
 
 /** Completion and credential retention commit together so terminal cleanup cannot revoke the original token. */

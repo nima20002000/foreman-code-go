@@ -489,12 +489,13 @@ export async function remoteReviewProduction(options: {
         [command.executionId, command.operationId, command.owner.grantId, command.owner.epoch])
         if (changed.rowCount !== 1) throw new Error('The original response grant changed before retry.')
       },
-      async restartMain() {
+      async restartMain(options: { mode?: 'crash' | 'graceful'; afterShutdown?: () => Promise<void> } = {}) {
         const previousWorkerState = workerStateRevision
         ready = false
-        await stopMain('SIGKILL')
+        await stopMain(options.mode === 'graceful' ? 'SIGTERM' : 'SIGKILL')
         await waitForRemoteReview(async () => workerStateRevision,
-          value => value > previousWorkerState, 'Worker observing the crashed Main connection')
+          value => value > previousWorkerState, 'Worker observing the stopped Main connection')
+        await options.afterShutdown?.()
         await startMain()
         await waitForRemoteReview(async () => ready, value => value, 'Worker reconnect after Main restart')
       },

@@ -60,7 +60,7 @@ import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.j
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
 import { workflowExecutionRequest } from '../runs/workflowExecutionRequest.js'
-import { readRetainedRemoteReviewer } from './retainedRemoteReviewer.js'
+import { readRecoverableRemoteReviewer, readRetainedRemoteReviewer } from './retainedRemoteReviewer.js'
 import { reviewPreflightIdentity } from './reviewPolicy.js'
 import type { RepeatReviewerBindings } from './repeatReviewer.js'
 import { assertSameRepeatExecution, assertSameReviewJob, repeatPhysicalSettlementPending,
@@ -1001,7 +1001,11 @@ export class ApprovalExecutionCoordinator {
   private async recoverRetainedReviewerOwned(execution: HarnessExecution, owner: RunOwnership,
     parentSignal?: AbortSignal, job?: ReviewJob): Promise<boolean> {
     const existing = this.ownedSessions.get(execution.id)
-    if (existing) return existing.manager.retainsReviewerSession
+    if (existing) {
+      if (existing.failed) throw new DomainError('REVIEWER_AUTHORITY_LOST',
+        'The original remote reviewer recovery did not complete.', 409)
+      return existing.manager.retainsReviewerSession
+    }
     if (execution.state !== 'completed' || execution.result?.outcome !== 'succeeded' || !execution.nativeSessionId)
       return false
     const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
@@ -1014,7 +1018,7 @@ export class ApprovalExecutionCoordinator {
     const run = await this.runs.get(execution.runId, owner)
     if (!run || !['running', 'waiting'].includes(run.executionState) || !this.workflowClosures
       || !this.credentials?.recoverRemote) return false
-    const retained = await owner.oneShotConnection().transaction(sql => readRetainedRemoteReviewer(sql, execution))
+    const retained = await owner.oneShotConnection().transaction(sql => readRecoverableRemoteReviewer(sql, execution))
     if (!retained) return false
     const resolved = this.resolveManager(context, owner)
     resolved.beginStart?.()
@@ -1033,7 +1037,7 @@ export class ApprovalExecutionCoordinator {
       }
       owner.assertOwned()
       signal.throwIfAborted()
-      const current = await owner.oneShotConnection().transaction(sql => readRetainedRemoteReviewer(sql, execution))
+      const current = await owner.oneShotConnection().transaction(sql => readRecoverableRemoteReviewer(sql, execution))
       if (!isDeepStrictEqual(current, retained)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
         'The retained reviewer changed while its original writer lease expired.', 409)
       const jobs = job ? [job] : (await owner.oneShotConnection().query<{ record: unknown }>(`select record
@@ -1052,6 +1056,10 @@ export class ApprovalExecutionCoordinator {
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
         workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
         runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input })
+      if (retained.detached) {
+        owned.closureRegistration = this.workflowClosures.begin(execution)
+        owned.closureGeneration = await owned.closureRegistration
+      }
       const session = await this.openingSession(owned, resolved.manager.attachSession(native.session,
         { request, ...identity }, signal))
       this.assertSessionIdentity(native.session, session)
@@ -1064,7 +1072,8 @@ export class ApprovalExecutionCoordinator {
       this.managerCredentials.set(owned.manager, credential)
       await owner.oneShotConnection().transaction(async sql => {
         const current = await readRetainedRemoteReviewer(sql, execution)
-        if (!isDeepStrictEqual(current, retained)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
+        const expected = { generation: owned.closureGeneration, principalId: retained.principalId, session: retained.session }
+        if (!isDeepStrictEqual(current, expected)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
           'The retained reviewer no longer matches its original terminal and process lease.', 409)
       })
       resolved.markResident?.()
