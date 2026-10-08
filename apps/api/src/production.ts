@@ -1825,7 +1825,7 @@ export function buildProductionApp(
       // Reconcile chat turns interrupted by the previous process; never blocks startup.
       void agentChat.recover().catch((error: unknown) => app.log.error({ err: error }, 'agent chat recovery failed'))
       // Fill the settings status and model caches in the background so first reads do not wait on native checks.
-      void Promise.allSettled([harnessCatalog.warmup(), nativeConfigurations.options('codex'),
+      void Promise.allSettled([harnessCatalog.warmup(), nativeConfigurations.options('codex'), nativeConfigurations.options('claude'),
         harnessSettings.mcp.warmup(['codex']), harnessSettings.plugins.warmup()])
     })
     // On failure the startup caller closes the app. Only the shared shutdown

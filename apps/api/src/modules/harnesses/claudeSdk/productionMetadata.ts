@@ -24,63 +24,78 @@ export function productionClaudeMetadata(input: {
 }) {
   type Metadata = Awaited<ReturnType<typeof discoverClaudeMetadata>>
   const pending = new Map<string, { value: Promise<Metadata>; controller: AbortController; readers: number }>()
-  return new ClaudeCheckedNativeConfigurationPort({
-    async discover(workingDirectory, signal) {
-      signal.throwIfAborted()
-      const configuration = (await input.defaults()).claude ?? { harness: 'claude' as const, model: 'default', authMode: 'subscription' as const,
-        configDirectory: detectedClaudeProfilePath(), permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
-        tools: [], permissionRules: [], instructions: '', mcpServers: {} }
-      if (configuration.authMode !== 'subscription') throw new DomainError('CLAUDE_API_KEY_DISCOVERY_UNAVAILABLE',
-        'API-key metadata requires its explicitly provisioned host credential; a subscription login cannot authenticate this choice.', 409)
-      const binding = input.registry.pinAccepted({ id: `claude-metadata:${commandInputHash(configuration)}`, agentId: 'owned-catalog', harness: configuration })
-      const binary = binding.installation.launcher.resolvedLauncher
-      if (!binary) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The installed Claude SDK executable is unavailable.', 409)
+  // Options depend only on the selected default profile and its exact installation, which are part of the key.
+  // A result is reused for five minutes, then served while one background read refreshes it.
+  const results = new Map<string, { at: number; value: Metadata; refreshing: boolean }>()
+  const discover = async (workingDirectory: string, signal: AbortSignal, refresh = false): Promise<Metadata> => {
+    signal.throwIfAborted()
+    const configuration = (await input.defaults()).claude ?? { harness: 'claude' as const, model: 'default', authMode: 'subscription' as const,
+      configDirectory: detectedClaudeProfilePath(), permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
+      tools: [], permissionRules: [], instructions: '', mcpServers: {} }
+    if (configuration.authMode !== 'subscription') throw new DomainError('CLAUDE_API_KEY_DISCOVERY_UNAVAILABLE',
+      'API-key metadata requires its explicitly provisioned host credential; a subscription login cannot authenticate this choice.', 409)
+    const binding = input.registry.pinAccepted({ id: `claude-metadata:${commandInputHash(configuration)}`, agentId: 'owned-catalog', harness: configuration })
+    const binary = binding.installation.launcher.resolvedLauncher
+    if (!binary) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The installed Claude SDK executable is unavailable.', 409)
+    signal.throwIfAborted()
+    input.registry.installations.assertCurrent(binding)
+    const key = commandInputHash({ configuration, workingDirectory, selection: binding.selection,
+      inventoryRevision: binding.inventoryRevision, installation: binding.installation })
+    const cached = results.get(key)
+    if (cached) {
+      if (Date.now() - cached.at >= 300_000 && !cached.refreshing) {
+        cached.refreshing = true
+        void discover(workingDirectory, AbortSignal.timeout(60_000), true).catch(() => { if (results.get(key) === cached) results.delete(key) })
+          .finally(() => { cached.refreshing = false })
+      }
+      if (!refresh) return structuredClone(cached.value)
+    }
+    let operation = pending.get(key)
+    if (operation?.controller.signal.aborted) operation = undefined
+    if (!operation) {
+      const controller = new AbortController()
+      const value = Promise.resolve().then(async () => {
+        const version = await input.factories.observeClaudeVersion(binding, workingDirectory, controller.signal)
+        controller.signal.throwIfAborted()
+        const recovery = input.processes.reserveLaunch(`claude-metadata:${randomUUID()}`)
+        const close = async () => {
+          await input.processes.abandonReservedLaunch(recovery)
+          if (!await input.processes.closeOwner(recovery.owner)) throw new Error('Claude metadata process closure is unconfirmed.')
+        }
+        try {
+          const result = await discoverClaudeMetadata({ binary, model: configuration.model, profilePath: configuration.configDirectory, workingDirectory, recovery, signal: controller.signal })
+          input.registry.installations.assertCurrent(binding)
+          return { ...result, providerVersion: version.version }
+        } finally { await close() }
+      }).finally(() => { if (pending.get(key) === operation) pending.delete(key) })
+      operation = { value, controller, readers: 0 }
+      pending.set(key, operation)
+    }
+    operation.readers++
+    let abort!: () => void
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      abort = () => reject(signal.reason)
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+    })
+    try {
+      const result = await Promise.race([operation.value, interrupted])
       signal.throwIfAborted()
       input.registry.installations.assertCurrent(binding)
-      const key = commandInputHash({ configuration, workingDirectory, selection: binding.selection,
-        inventoryRevision: binding.inventoryRevision, installation: binding.installation })
-      let operation = pending.get(key)
-      if (operation?.controller.signal.aborted) operation = undefined
-      if (!operation) {
-        const controller = new AbortController()
-        const value = Promise.resolve().then(async () => {
-          const version = await input.factories.observeClaudeVersion(binding, workingDirectory, controller.signal)
-          controller.signal.throwIfAborted()
-          const recovery = input.processes.reserveLaunch(`claude-metadata:${randomUUID()}`)
-          const close = async () => {
-            await input.processes.abandonReservedLaunch(recovery)
-            if (!await input.processes.closeOwner(recovery.owner)) throw new Error('Claude metadata process closure is unconfirmed.')
-          }
-          try {
-            const result = await discoverClaudeMetadata({ binary, model: configuration.model, profilePath: configuration.configDirectory, workingDirectory, recovery, signal: controller.signal })
-            input.registry.installations.assertCurrent(binding)
-            return { ...result, providerVersion: version.version }
-          } finally { await close() }
-        }).finally(() => { if (pending.get(key) === operation) pending.delete(key) })
-        operation = { value, controller, readers: 0 }
-        pending.set(key, operation)
+      if (results.size >= 16 && !results.has(key)) results.delete(results.keys().next().value!)
+      results.set(key, { at: Date.now(), value: result, refreshing: false })
+      return structuredClone(result)
+    } finally {
+      signal.removeEventListener('abort', abort)
+      operation.readers--
+      if (!operation.readers && pending.get(key) === operation) {
+        operation.controller.abort(signal.reason)
+        await operation.value // The last caller retains owned cleanup/failure fencing.
       }
-      operation.readers++
-      let abort!: () => void
-      const interrupted = new Promise<never>((_resolve, reject) => {
-        abort = () => reject(signal.reason)
-        signal.addEventListener('abort', abort, { once: true })
-        if (signal.aborted) abort()
-      })
-      try {
-        const result = await Promise.race([operation.value, interrupted])
-        signal.throwIfAborted()
-        input.registry.installations.assertCurrent(binding)
-        return structuredClone(result)
-      } finally {
-        signal.removeEventListener('abort', abort)
-        operation.readers--
-        if (!operation.readers && pending.get(key) === operation) {
-          operation.controller.abort(signal.reason)
-          await operation.value // The last caller retains owned cleanup/failure fencing.
-        }
-      }
-    },
+    }
+  }
+  return new ClaudeCheckedNativeConfigurationPort({
+    discover: (workingDirectory, signal) => discover(workingDirectory, signal),
     async accepted(configuration, _directory, signal) {
       const binding = input.registry.pinAccepted({ id: `claude-configuration:${commandInputHash(configuration)}`, agentId: 'configuration-inspection', harness: configuration })
       const host = binding.selection.hostRef
@@ -94,5 +109,6 @@ export function productionClaudeMetadata(input: {
       }
       throw new DomainError('CLAUDE_PROFILE_SELECTION_REQUIRED', 'Check the saved Claude host profile before using this configuration.', 409)
     },
+    invalidate() { results.clear() },
   })
 }

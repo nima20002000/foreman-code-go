@@ -37,7 +37,7 @@ function delayed() {
   return finish
 }
 
-it('shares identical pending production discoveries but rechecks each selection and refreshes sequential reads', async () => {
+it('shares identical pending production discoveries, reuses the result for the same profile, and refreshes on request', async () => {
   const f = fixture(), finish = delayed()
   const service = new NativeConfigurationService('unused', 'unused', '/workspace', undefined, f.port)
   try {
@@ -51,10 +51,41 @@ it('shares identical pending production discoveries but rechecks each selection 
     expect(results[1]).toMatchObject({ providerVersion: 'native-version', models: metadata.models })
     expect(f.factories.observeClaudeVersion).toHaveBeenCalledOnce()
     expect(f.processes.closeOwner).toHaveBeenCalledOnce()
+    expect(await service.options('claude')).toMatchObject({ providerVersion: 'native-version', models: metadata.models })
+    expect(discoverClaudeMetadata).toHaveBeenCalledOnce()
+    expect(f.defaults).toHaveBeenCalledTimes(3)
     vi.mocked(discoverClaudeMetadata).mockResolvedValueOnce({ ...metadata, authenticated: false })
-    expect(await service.options('claude')).toMatchObject({ authenticated: false })
+    expect(await service.refreshOptions('claude')).toMatchObject({ authenticated: false })
     expect(discoverClaudeMetadata).toHaveBeenCalledTimes(2)
   } finally { await service.shutdownChecks() }
+})
+
+it('discovers again when the default profile changes, and rejects a cached result for a stale host', async () => {
+  const f = fixture()
+  vi.mocked(discoverClaudeMetadata).mockResolvedValueOnce(metadata)
+  await f.port.discover('/workspace', AbortSignal.timeout(3000))
+  f.defaults.mockResolvedValue({ ...DEFAULT_HARNESS_DEFAULTS, claude: { ...configuration, model: 'other-model' } })
+  vi.mocked(discoverClaudeMetadata).mockResolvedValueOnce({ ...metadata, models: [{ ...metadata.models[0]!, id: 'other-model' }] })
+  expect(await f.port.discover('/workspace', AbortSignal.timeout(3000))).toMatchObject({ models: [{ id: 'other-model' }] })
+  expect(vi.mocked(discoverClaudeMetadata).mock.calls[1]![0]).toMatchObject({ model: 'other-model' })
+  f.registry.installations.assertCurrent.mockImplementation(() => { throw new Error('stale selected host') })
+  await expect(f.port.discover('/workspace', AbortSignal.timeout(3000))).rejects.toThrow('stale selected host')
+  expect(discoverClaudeMetadata).toHaveBeenCalledTimes(2)
+})
+
+it('serves an expired result immediately while one background discovery refreshes it', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  try {
+    const f = fixture(), finish = (vi.mocked(discoverClaudeMetadata).mockResolvedValueOnce(metadata), delayed())
+    await f.port.discover('/workspace', AbortSignal.timeout(3000))
+    vi.setSystemTime(Date.now() + 300_000)
+    expect(await f.port.discover('/workspace', AbortSignal.timeout(3000))).toMatchObject({ authenticated: true })
+    expect(await f.port.discover('/workspace', AbortSignal.timeout(3000))).toMatchObject({ authenticated: true })
+    await vi.waitFor(() => expect(discoverClaudeMetadata).toHaveBeenCalledTimes(2))
+    finish({ ...metadata, authenticated: false })
+    await vi.waitFor(async () => expect(await f.port.discover('/workspace', AbortSignal.timeout(3000))).toMatchObject({ authenticated: false }))
+    expect(discoverClaudeMetadata).toHaveBeenCalledTimes(2)
+  } finally { vi.useRealTimers() }
 })
 
 it.each(['profile', 'installation', 'host', 'inventory', 'directory'] as const)('does not share overlapping discoveries when the %s changes', async change => {
