@@ -43,6 +43,7 @@ interface QueuePreparationPorts {
     prepared: PreparedJobSpecRecord, ticket: JobQueueTicket): Promise<JobExecutionRecord>
   wake(execution: JobExecutionRecord): Promise<void>
   closePreparation?(ticket: JobQueueTicket): Promise<void>
+  prepareRuntime?(ticket: JobQueueTicket): Promise<void>
 }
 
 /** Claims capacity in queue order, then prepares on the original attempt outside SQL locks. */
@@ -58,6 +59,7 @@ export class JobQueuePreparation {
     if (!order) return tasks
     const claimed: { ticket: JobQueueTicket; owner: JobOwnership }[] = []
     const cleanups: { ticket: JobQueueTicket; owner: JobOwnership }[] = []
+    const waiting: JobQueueTicket[] = []
     let recoveries: JobExecutionRecord[]
     const barriers: { id: string; hosts: string[]; claims: number }[] = []
     try {
@@ -112,7 +114,12 @@ export class JobQueuePreparation {
               await this.finish(sql, ticket, 'timed_out')
               return null
             }
-            return this.claim(sql, principal, ticket, owner, barriers)
+            const claimed = await this.claim(sql, principal, ticket, owner, barriers)
+            if (!claimed && ticket.runtimePreparation) {
+              const blocked = await this.repository.queueTicket(sql, ticket.workspaceId, ticket.id)
+              if (blocked.waitingReasons.includes('dependencies_changed')) waiting.push(blocked)
+            }
+            return claimed
           })
           if (ticket) {
             if (ticket.state === 'terminal') cleanups.push({ ticket, owner })
@@ -140,6 +147,9 @@ export class JobQueuePreparation {
     }
     for (const execution of recoveries) {
       tasks.push(this.track(execution.id, () => this.ports.wake(execution)))
+    }
+    for (const ticket of waiting) {
+      tasks.push(this.track(`runtime:${ticket.id}`, () => this.ports.prepareRuntime?.(ticket) ?? Promise.resolve()))
     }
     return tasks
   }

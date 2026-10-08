@@ -195,13 +195,15 @@ it('sends one batch and no compensation writes when the reorder is rejected', as
 
 it('shows which accounts each computer is signed in to without listing offline computers as signed out', async () => {
   computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
-  const main = await screen.findByRole('group', { name: 'Accounts' })
+  await screen.findByLabelText('Codex: coder@example.com')
+  const main = within(rows()[0]!).getByRole('group', { name: 'Accounts' })
   expect(within(main).getByLabelText('Codex: coder@example.com')).toBeInTheDocument()
   expect(within(main).getByRole('button', { name: 'GitHub: octo-owner. Manage GitHub' })).toBeInTheDocument()
   expect(within(main).getByLabelText('OpenCode: OpenCode Go')).toBeInTheDocument()
   expect(within(main).getByLabelText('Claude: signed out')).toBeInTheDocument()
   expect(within(main).getByRole('button', { name: 'Google Drive: not installed. Manage Google Drive' })).toBeInTheDocument()
-  expect(screen.getAllByRole('group', { name: 'Accounts' })).toHaveLength(1)
+  expect(screen.getAllByRole('group', { name: 'Accounts' })).toHaveLength(2)
+  expect(screen.getByText('Account state unavailable')).toBeVisible()
 })
 
 it('connects GitHub on a computer with a one-time code and shows the signed-in account', async () => {
@@ -260,6 +262,14 @@ it('connects Google Drive on a computer through remote authorization and shows t
   expect(within(dialog).getByText('/home/owner/Foreman Code Drive')).toBeInTheDocument()
 }, 15_000)
 
+it('explains Main runtime setup limits and the supported local installation and Operator path', async () => {
+  computersFixture(<ComputerRows mainId={mainId} devices={[]} />)
+  const setup = screen.getByRole('region', { name: 'Main runtime setup' })
+  expect(within(setup).getByText(/Automatic runtime preparation is unavailable on Main/)).toBeVisible()
+  expect(within(setup).getByText(/A person must install or repair the protected CI runtime locally/)).toBeVisible()
+  expect(within(setup).getByText(/ask Operator to capture the installed runtime/)).toBeVisible()
+  expect(within(setup).queryByRole('button', { name: 'Prepare automatically' })).not.toBeInTheDocument()
+})
 it('shows Main build readiness, failure reasons and the remote execution warning', async () => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
   f.statuses.set(computerKey(mainTarget), { ...f.statuses.get(computerKey(mainTarget))!,

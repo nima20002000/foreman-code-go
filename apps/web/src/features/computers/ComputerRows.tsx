@@ -1,15 +1,15 @@
 import { useRef } from 'react'
 import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Monitor, Minus, Plus } from 'lucide-react'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
-import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
+import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import type { BuildComputerStatus } from '@foreman-code/contracts/build-computers'
 import { computerDisplayName, type ComputerActivity } from '@foreman-code/contracts/computer-activity'
 import { useBuildComputers } from '../../shared/api/buildComputers'
 import { computerKey, useComputerActivity } from '../../shared/api/computerActivity'
 import { useComputerAccounts } from '../../shared/api/computerAccounts'
-import { ComputerAccountChips } from './ComputerAccounts'
-import { GitHubSignInDialog } from './GitHubSignIn'
-import { DriveConnectDialog } from './DriveConnect'
+import { MainRuntimeSetup } from '../runtime-qualification/MainRuntimeSetup'
+import { ComputerAccountControls } from './ComputerAccounts'
+import { useComputerActivityFreshness } from './useComputerActivityFreshness'
 import { Alert, Button, IconButton, LoadingState, Switch, Select, TextField } from '../../shared/ui/nocturne'
 import { BuildComputerDiagnostics } from '../settings/BuildComputerParticipation'
 import { computerState } from './computerState'
@@ -30,8 +30,7 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
   const reads = useBuildComputers(targets)
   const activity = useComputerActivity()
   const accounts = useComputerAccounts()
-  const openGitHub = useComputerUi(state => state.openGitHub)
-  const openDrive = useComputerUi(state => state.openDrive)
+  const activityFresh = useComputerActivityFreshness(activity.dataUpdatedAt, activity.fetchStatus)
   const save = useComputerEdits(mainId)
   const dragSnapshot = useRef<BuildComputerStatus[]>([])
   const drag = useComputerUi(state => state.drag)
@@ -74,7 +73,7 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
       {rows.map(({ target, read }, index) => {
         const key = computerKey(target)
         const observed = activity.data?.mainId === mainId && !activity.isError
-          ? activity.data.computers.find(computer => computerKey(computer.target) === key) : undefined
+          ? activity.data.computers.find(computer => sameDeviceProvisioningTarget(computer.target, target)) : undefined
         return <li key={key} className="computer-priority-row" aria-label={observed?.name ?? computerName(target)}
           data-dragging={draggedKey === key || undefined}
           onDragOver={event => { if (canReorder && draggedKey) event.preventDefault() }}
@@ -104,19 +103,17 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
                 <IconButton label={`Move ${computerName(target)} down`} variant="ghost" size="sm"
                   disabled={!canReorder || index === rows.length - 1} onClick={() => move(key, computerKey(rows[index + 1]!.target))}><ArrowDown size={12} /></IconButton></div>
             </div>
-            <ComputerRowIdentity target={target} computer={observed} complete={activity.data?.activityComplete ?? false} />
+            <ComputerRowIdentity target={target} computer={observed} fresh={activityFresh} complete={activity.data?.activityComplete ?? false} />
             {read.isPending && <LoadingState label="Loading build settings…" />}
             {read.isError && <Button size="sm" onClick={() => void read.refetch()}>Retry build settings</Button>}
             {read.data && !read.isError && <ComputerControls status={read.data} name={computerName(target)}
               disabled={save.locked} directPriority={rows.length > 101}
               onEdit={patch => save.mutate([preferenceEdit(read.data!, patch)])} />}
-            <ComputerAccountChips accounts={accounts.data?.computers.find(computer => computerKey(computer.target) === key)?.accounts}
-              onGitHub={() => openGitHub(key)} onDrive={() => openDrive(key)} />
-            <GitHubSignInDialog target={target} name={computerName(target)} account={accounts.data?.computers
-              .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'github')} />
-            <DriveConnectDialog target={target} name={computerName(target)} account={accounts.data?.computers
-              .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'drive')} />
-            <ComputerUtilization target={target} online={observed?.online ?? false} />
+            <ComputerAccountControls key={JSON.stringify(target)} target={target} name={computerName(target)}
+              accounts={accounts.isError ? undefined : accounts.data?.computers
+                .find(computer => sameDeviceProvisioningTarget(computer.target, target))?.accounts}
+              onRetry={() => void accounts.refetch()} retrying={accounts.isFetching} />
+            <ComputerUtilization target={target} online={activityFresh && (observed?.online ?? false)} />
             {target.hostRef.kind === 'device' && onSelectComputer && <IconButton label={`Open ${computerName(target)}`}
               variant="ghost" size="sm" onClick={() => {
                 if (target.hostRef.kind === 'device') onSelectComputer(target.hostRef.deviceId)
@@ -134,23 +131,27 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
         {onSelectComputer && <Button size="sm" variant="ghost" onClick={() => onSelectComputer(device.deviceId)}>Open</Button>}
       </li>)}
     </ul>
+    <MainRuntimeSetup />
     {!devices.some(device => device.status === 'paired') && <p className="computer-list-caption">Add a computer to share builds and agents.</p>}
   </>
 }
 function computerName(target: DeviceProvisioningTarget) {
   return computerDisplayName(target.hostRef)
 }
-function ComputerRowIdentity({ target, computer, complete }: {
-  target: DeviceProvisioningTarget; computer: ComputerActivity | undefined; complete: boolean
+function ComputerRowIdentity({ target, computer, complete, fresh }: {
+  target: DeviceProvisioningTarget; computer: ComputerActivity | undefined; complete: boolean; fresh: boolean
 }) {
   const open = useComputerUi(state => state.openActivity)
   const presenceLabel = computer && (computer.online ? 'Online' : 'Offline')
+  const state = computerState(computer, complete)
+  const lastObserved = computer && !fresh
   return <button className="computer-row-identity" onClick={() => open(computerKey(target))} disabled={!computer}
     aria-label={`Activity on ${computerName(target)}`}>
     <Monitor size={20} aria-hidden="true" />
     <span><strong>{computer?.name ?? computerName(target)}</strong>
-      <span className="computer-live-state"><span className="computer-presence-dot" data-online={computer?.online}
-        title={presenceLabel ?? 'Presence unavailable'} aria-hidden="true" />{computerState(computer, complete)}</span>
+      <span className="computer-live-state"><span className="computer-presence-dot" data-online={fresh ? computer?.online : undefined}
+        title={lastObserved ? `Last observed: ${presenceLabel}` : presenceLabel ?? 'Presence unavailable'}
+        aria-hidden="true" />{lastObserved ? `Last observed: ${state}` : state}</span>
     </span>
   </button>
 }

@@ -14,7 +14,10 @@ export const CI_CAPABILITY_DETAIL = 'ci_run captures tracked files at the reques
   + 'ci_get returns queue reasons, selected computer, process, publication, digest-verified summary and a 32 KiB log tail. '
   + 'Agent-triggered tickets retain initiatingAgent (workflow, Run, Agent and execution), separate from graph job membership. '
   + 'Agents are restricted to their active Run workspace and its accepted grants. Qualification matches dependency inputs; '
-  + 'changed dependencies wait for a qualified offline seed. No CI approval step is required.'
+  + 'changed dependencies trigger persisted runtime preparation from the queue on enabled build computers. '
+  + 'Preparation requires the original caller’s job_artifacts:read and profile/source write grants; no grants are added. '
+  + 'The original ticket resolves its image from a reviewed qualified profile and retains its other policy and resource limits. '
+  + 'No CI approval step is required.'
 type CiTool = 'ci_run' | 'ci_get'
 interface CiContext {
   principal: ManagementPrincipal
@@ -50,7 +53,7 @@ export function registerCiTools(server: McpServer, context: CiContext) {
     description: CI_CAPABILITY_DETAIL,
     inputSchema: operator ? OperatorCiRunInputSchema : CiRunInputSchema,
     outputSchema: CiRunOutputSchema,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, input => invoke('ci_run', () => ci.run(context.principal, input)))
   if (available('ci_get')) server.registerTool('ci_get', {
     description: CI_CAPABILITY_DETAIL,

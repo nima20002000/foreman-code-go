@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { createRequire } from 'node:module'
-import { lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
+import { pipeline } from 'node:stream/promises'
+import { buildCiRuntimeContext, parseCiLock } from '../../../../worker/artifacts/ci-runtime/context.mjs'
 
 const run = promisify(execFile)
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
@@ -21,7 +22,7 @@ export interface PreparedCiRuntime {
 }
 export async function prepareCiRuntime({ repository, commit, installer, review, keepImages = [], keepPaths = [], environment = process.env, log = () => {} }: {
   repository: string; commit: string; installer: string; review: CiRuntimeReview
-  /** Image ids the current protected runtime still uses; every other CI image is removed first. */
+  /** Image ids referenced by protected configurations and retained execution records. */
   keepImages?: readonly string[]
   /** Installer paths the current protected runtime still uses (its qualification source). */
   keepPaths?: readonly string[]
@@ -47,13 +48,12 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   if (head !== commit) throw new Error('The prepared checkout is not at the requested commit.')
 
   log('prune-images')
-  // Files first: a full quota also blocks podman from writing its own image metadata.
-  await pruneInstaller(installer, repository, short, keepPaths, env)
+  // Other preparations and recovery records may still own older installer files.
   await pruneCiImages(keepImages, env)
   // 1. The build stage fetches the frozen lockfile's packages with network into its own store.
   const buildContext = join(installer, `build-context-${short}`)
   await rm(buildContext, { recursive: true, force: true })
-  await sh(process.execPath, [join(source, 'scripts/build-ci-runtime-context.mjs'), buildContext], { cwd: source })
+  await buildCiRuntimeContext({ repository: source, commit, output: buildContext })
   const buildTag = `localhost/foreman-code-ci-build:${short}`
   log('fetch-packages')
   // Host networking needs no rootless network helper; only this package-fetch stage has network.
@@ -71,7 +71,7 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
 
   // 2. Registry release evidence for the strict 48-hour policy, and the Codex binary the unit suite needs.
   log('seed-receipt')
-  const unitCodex = await codexBinary(source, seed, env)
+  const unitCodex = await codexBinary(buildTag, seedRoot, env)
   // pnpm records each project that installed from the store as a symlink; they are not package content.
   for (const version of await readdir(join(seed, 'pnpm-store'))) {
     await rm(join(seed, 'pnpm-store', version, 'projects'), { recursive: true, force: true })
@@ -79,15 +79,14 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   const receipt = await createSeedReceipt({ repository: source, seed, review })
   const receiptPath = join(seedRoot, 'seed-receipt.json')
   await writeFile(receiptPath, JSON.stringify(receipt), { mode: 0o600 })
-  const offlineSeedPath = join(seedRoot, 'offline-seed.json')
-  await writeFile(offlineSeedPath, JSON.stringify({ directory: seed, receiptPath,
+  const offlineSeed = { directory: seed, receiptPath,
     unitCodex: { path: unitCodex.path, binarySha256: unitCodex.sha256, version: unitCodex.version,
-      review: receipt.review } }), { mode: 0o600 })
+      review: receipt.review } }
 
   // 3. The verification image runs Jobs without network.
   const context = join(installer, `context-${short}`)
   await rm(context, { recursive: true, force: true })
-  await sh(process.execPath, [join(source, 'scripts/build-ci-runtime-context.mjs'), context, offlineSeedPath], { cwd: source })
+  await buildCiRuntimeContext({ repository: source, commit, output: context, offlineSeed })
   const tag = `localhost/foreman-code-verification:${short}`
   log('build-image')
   // The image's own pnpm check runs through the verification policy, which needs a finite memory reservation.
@@ -98,14 +97,8 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   await podman(['rmi', buildTag], env).catch(() => undefined)
 
   // 4. The exact tracked tree Main approved for this commit, which qualification verifies byte for byte.
-  const qualificationSource = join(installer, `qualification-source-${short}`)
-  if (!await exists(qualificationSource)) {
-    await mkdir(qualificationSource, { mode: 0o700 })
-    const archive = spawn('git', ['-C', repository, 'archive', '--format=tar', commit], { env })
-    const extract = spawn('/bin/sh', ['-c', 'umask 077 && exec tar -x -C "$1"', 'sh', qualificationSource], { env })
-    archive.stdout.pipe(extract.stdin)
-    await Promise.all([closed(archive, 'git archive'), closed(extract, 'tar')])
-  }
+  const qualificationSource = await extractQualificationSource(repository, commit,
+    join(installer, `qualification-source-${short}`), env)
   // The image holds the seed and context; keep only their receipts and drop the multi-gigabyte build inputs.
   const seedReceiptPath = join(installer, `seed-receipt-${short}.json`), contextReceiptPath = join(installer, `context-receipt-${short}.json`)
   await writeFile(seedReceiptPath, await readFile(join(context, 'seed-receipt.json')), { mode: 0o600 })
@@ -113,7 +106,9 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   // The refresh captures the unit suite's Codex from this copy; the checkout it came from is removed.
   const codex = join(installer, `codex-${short}`)
   await writeFile(codex, await readFile(unitCodex.path), { mode: 0o700 })
-  for (const path of [context, buildContext, seedRoot]) await rm(path, { recursive: true, force: true })
+  for (const path of [context, buildContext, seedRoot]) {
+    if (!keepPaths.includes(path)) await rm(path, { recursive: true, force: true })
+  }
   await run('git', ['-C', repository, 'worktree', 'remove', '--force', source], { env }).catch(() => undefined)
   return { commit, imageId: `sha256:${image.Id.replace(/^sha256:/u, '')}`, imageManifestDigest: image.Digest,
     seedReceiptPath, contextReceiptPath,
@@ -121,24 +116,42 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
       version: unitCodex.version, binarySha256: unitCodex.sha256 } }
 }
 
-async function codexBinary(source: string, seed: string, env: NodeJS.ProcessEnv) {
-  // The unit suite builds the Worker artifact with the exact locked Codex release.
-  const corepack = { ...env, COREPACK_HOME: join(seed, 'corepack-cache'), COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' }
-  await run('corepack', ['pnpm', 'install', '--frozen-lockfile', '--offline', '--ignore-scripts', '--store-dir', join(seed, 'pnpm-store')],
-    { cwd: source, env: corepack, maxBuffer: 64 * 1024 * 1024 })
-  const apiRequire = createRequire(join(source, 'apps/api/package.json'))
-  const launcher = apiRequire.resolve('@openai/codex/bin/codex.js')
-  const native = createRequire(launcher).resolve('@openai/codex-linux-x64/package.json')
-  const path = await realpath(join(dirname(native), 'vendor/x86_64-unknown-linux-musl/bin/codex'))
-  const version = (await run(path, ['--version'], { env })).stdout.trim()
-  return { path, version, sha256: hash(await readFile(path)) }
+export async function codexBinary(image: string, output: string, env: NodeJS.ProcessEnv) {
+  // No host paths or credentials are mounted into the package/tool execution boundary.
+  const script = `
+    const { cpSync, readFileSync } = require('node:fs');
+    const { execFileSync } = require('node:child_process');
+    const { createRequire } = require('node:module');
+    const { dirname, join } = require('node:path');
+    cpSync('/opt/graphql-ci/source-lock', '/tmp/source', { recursive: true });
+    cpSync('/opt/graphql-ci/pnpm-store', '/tmp/store', { recursive: true });
+    cpSync('/opt/graphql-ci/corepack-cache', '/tmp/corepack', { recursive: true });
+    execFileSync('/usr/local/bin/node', ['/usr/local/lib/node_modules/corepack/dist/corepack.js',
+      'pnpm', 'install', '--offline', '--frozen-lockfile', '--ignore-scripts', '--store-dir', '/tmp/store'],
+      { cwd: '/tmp/source', env: { ...process.env, COREPACK_HOME: '/tmp/corepack', COREPACK_ENABLE_NETWORK: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+    const api = createRequire('/tmp/source/apps/api/package.json');
+    const launcher = api.resolve('@openai/codex/bin/codex.js');
+    const native = createRequire(launcher).resolve('@openai/codex-linux-x64/package.json');
+    const binary = join(dirname(native), 'vendor/x86_64-unknown-linux-musl/bin/codex');
+    const version = execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim();
+    process.stdout.write(JSON.stringify({ version, binary: readFileSync(binary).toString('base64') }));
+  `
+  const result = JSON.parse(await podmanOut(['run', '--rm', '--pull=never', '--network=none', '--read-only',
+    '--cap-drop=all', '--security-opt=no-new-privileges', '--cpus=2', '--memory=2g', '--pids-limit=256',
+    '--tmpfs=/tmp:rw,exec,nosuid,nodev,size=8g', '--entrypoint=node', image, '-e', script], env)) as {
+    version: string; binary: string
+  }
+  if (!result.version || typeof result.binary !== 'string') throw new Error('The isolated Codex capture is incomplete.')
+  const bytes = Buffer.from(result.binary, 'base64')
+  const path = join(output, 'unit-codex')
+  await writeFile(path, bytes, { mode: 0o700 })
+  return { path, version: result.version, sha256: hash(bytes) }
 }
 
 /** Same receipt the CI image policy verifies: every locked release with its registry publish time. */
 export async function createSeedReceipt({ repository, seed, review }: { repository: string; seed: string; review: CiRuntimeReview }) {
-  const require = createRequire(join(repository, 'apps/worker/package.json'))
-  const { parse } = require('yaml') as { parse(text: string): { packages?: Record<string, { resolution: { integrity: string } }> } }
-  const lock = parse(await readFile(join(repository, 'pnpm-lock.yaml'), 'utf8'))
+  const lock = parseCiLock(await readFile(join(repository, 'pnpm-lock.yaml'), 'utf8'))
   const packages = Object.entries(lock.packages ?? {}).map(([key, value]) => {
     const at = key.lastIndexOf('@')
     return { name: key.slice(0, at), version: key.slice(at + 1), integrity: value.resolution.integrity }
@@ -210,32 +223,32 @@ const closed = (child: ChildProcess, name: string) => new Promise<void>((resolve
   child.once('close', code => code === 0 ? resolve() : reject(new Error(`${name} exited ${code}`)))
 })
 
-/** Removes CI images the protected runtime no longer uses, so storage quota never fills with old builds. */
-/** Earlier commits' preparation outputs, except what the current protected runtime still uses. */
-async function pruneInstaller(installer: string, repository: string, short: string, keepPaths: readonly string[], env: NodeJS.ProcessEnv) {
-  const kept = new Set(keepPaths)
-  for (const name of await readdir(installer).catch(() => [] as string[])) {
-    const match = /^(?:source|seed|context|build-context|qualification-source|seed-receipt|context-receipt|codex)-([0-9a-f]{12})(?:\.json)?$/u.exec(name)
-    if (!match || match[1] === short || kept.has(join(installer, name))) continue
-    await rm(join(installer, name), { recursive: true, force: true })
-  }
-  await run('git', ['-C', repository, 'worktree', 'prune'], { env }).catch(() => undefined)
-}
-
 export async function pruneCiImages(keep: readonly string[], env: NodeJS.ProcessEnv) {
   const kept = new Set(keep.map(id => id.replace(/^sha256:/u, '')))
-  // Interrupted builds leave buildah working containers that pin their layers.
-  const external = JSON.parse(await podmanOut(['ps', '--all', '--external', '--format', 'json'], env).catch(() => '[]')) as { Id: string; Names?: string[] }[]
-  for (const container of external) {
-    if ((container.Names ?? []).some(name => /-working-container(?:-\d+)?$/u.test(name))) {
-      await podman(['rm', '--storage', '--force', container.Id], env).catch(() => undefined)
-    }
-  }
   const listed = JSON.parse(await podmanOut(['images', '--format', 'json'], env)) as { Id: string; Names?: string[] }[]
   for (const image of listed) {
     if (kept.has(image.Id.replace(/^sha256:/u, ''))) continue
     if (!(image.Names ?? []).some(name => /foreman-code-(?:verification|ci-build)/u.test(name))) continue
-    await podman(['rmi', '-f', image.Id], env).catch(() => undefined)
+    // Podman refuses removal while any execution or Buildah container references the image.
+    await podman(['rmi', image.Id], env).catch(error => {
+      if (!/in use|used by|associated|container|multiple tags/iu.test(String(error.stderr ?? error.message))) throw error
+    })
   }
-  await podman(['image', 'prune', '-f'], env).catch(() => undefined)
+}
+
+export async function extractQualificationSource(repository: string, commit: string, qualificationSource: string, env: NodeJS.ProcessEnv) {
+  const directory = await mkdtemp(`${qualificationSource}-`)
+  const archive = spawn('git', ['-C', repository, 'archive', '--format=tar', commit], { env })
+  const extract = spawn('/bin/sh', ['-c', 'umask 077 && exec tar -x -C "$1"', 'sh', directory], { env })
+  const tasks = [pipeline(archive.stdout, extract.stdin), closed(archive, 'git archive'), closed(extract, 'tar')]
+  try {
+    await Promise.all(tasks)
+    return directory
+  } catch (error) {
+    archive.kill()
+    extract.kill()
+    await Promise.allSettled(tasks)
+    await rm(directory, { recursive: true, force: true })
+    throw error
+  }
 }

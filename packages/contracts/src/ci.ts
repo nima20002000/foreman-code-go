@@ -39,15 +39,16 @@ export const PreparedCiRuntimeSchema = z.object({
     binarySha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
 }).strict()
 export const CiRuntimeRequestSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.literal('prepare'), repository: z.string().min(3).max(140), commit: CommitSchema,
+  z.object({ operation: z.literal('prepare'), operationId: z.uuid(), repository: z.string().min(3).max(140), commit: CommitSchema,
     review: z.object({ reviewedByPrincipalId: IdSchema, decisionDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
     keepImages: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).max(8) }).strict(),
   z.object({ operation: z.literal('status') }).strict(),
   /** `resources` are the verification profile's: the refreshed runtime reserves exactly what the profile requests. */
-  z.object({ operation: z.literal('refresh'), commit: CommitSchema, root: SourceRootRecordSchema, manifest: SourceManifestSchema,
+  z.object({ operation: z.literal('refresh'), operationId: z.uuid(), commit: CommitSchema, root: SourceRootRecordSchema, manifest: SourceManifestSchema,
     resources: JobResourceRequestSchema }).strict(),
 ])
 export const CiRuntimeWorkerStateSchema = z.object({
+  operationId: z.uuid().nullable(),
   state: z.enum(['idle', 'preparing', 'prepared', 'failed', 'refreshing']),
   commit: CommitSchema.nullable(), stage: z.string().max(80).nullable(), prepared: PreparedCiRuntimeSchema.nullable(),
   message: z.string().max(2000).nullable(), updatedAt: z.string().datetime(),
