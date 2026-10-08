@@ -55,6 +55,7 @@ export function jobEligibilityReason(code: string): JobComputerEligibility['reas
     return 'authorization_revoked'
   }
   if (code === 'BUILD_COMPUTER_DISABLED') return 'disabled'
+  if (code === 'SOURCE_CAPACITY' || code === 'SOURCE_DISK_CAPACITY') return 'busy'
   if (code === 'WORKER_EXECUTION_DISABLED') return 'remote_execution_disabled'
   if (code === 'JOB_ROOT_PIN_CONFLICT' || code === 'SOURCE_ROOT_NOT_FOUND') return 'root_changed'
   if (code === 'JOB_SOURCE_PIN_CONFLICT') return 'source_unavailable'
@@ -198,12 +199,12 @@ export class JobComputerSelection {
         selectedHost: buildComputerKey(buildComputerTarget(spec.target)), exceedsMaximum: false }
     }
     const request = jobPlacementRequest(definition.spec, options)
-    const { enrolled, reasons } = await this.candidates(sql, principal, definition.workspaceId,
+    const { enrolled, placementCandidates, reasons } = await this.candidates(sql, principal, definition.workspaceId,
       request, options.placementOverride)
     const compatibleTargetCount = new Set(enrolled.map(candidate => buildComputerKey(candidate.preference.target))).size
     const exceedsMaximum = this.exceedsMaximum(enrolled)
     const waitingHosts: string[] = []
-    for (const candidate of orderForPlacement(enrolled, options.placementOverride)) {
+    for (const candidate of orderForPlacement(placementCandidates, options.placementOverride)) {
       if (!this.fitsEmptyComputer(candidate)) {
         reasons.push('request_exceeds_maximum')
         continue
@@ -265,16 +266,23 @@ export class JobComputerSelection {
       }
       const preference = await this.settings.preference(sql, buildComputerTarget(candidate.spec.target))
       enrolled.push({ ...candidate, preference })
-      if (!preference.buildEnabled) reasons.push('disabled')
+    }
+    const readyHosts = new Set(enrolled.filter(candidate => candidate.ready)
+      .map(candidate => buildComputerKey(candidate.preference.target)))
+    const placementCandidates = enrolled.filter(candidate => candidate.ready
+      || !readyHosts.has(buildComputerKey(candidate.preference.target)))
+    for (const candidate of placementCandidates) {
+      if (!candidate.preference.buildEnabled) reasons.push('disabled')
       reasons.push(...candidate.reasons)
     }
-    return { enrolled, reasons }
+    return { enrolled, placementCandidates, reasons }
   }
 
   async validateRequest(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
     request: JobDefinitionSpecRecord, placementOverride?: JobPlacementIntent) {
-    const { enrolled, reasons } = await this.candidates(sql, principal, workspaceId, request, placementOverride)
-    for (const candidate of orderForPlacement(enrolled, placementOverride)) {
+    const { enrolled, placementCandidates, reasons } = await this.candidates(sql, principal, workspaceId,
+      request, placementOverride)
+    for (const candidate of orderForPlacement(placementCandidates, placementOverride)) {
       try {
         this.workerExecution.requireEnabled(candidate.spec.target.hostRef)
       } catch (error) {
@@ -290,7 +298,7 @@ export class JobComputerSelection {
       if (capacity.fits) return { valid: true, canQueue: true, reasons: [], sideEffects: false as const }
       reasons.push(capacity.reason)
     }
-    const configuredCandidate = enrolled.some(candidate => candidate.reasons.every(jobCanWait))
+    const configuredCandidate = placementCandidates.some(candidate => candidate.reasons.every(jobCanWait))
     const canQueue = (configuredCandidate || reasons.every(jobCanWait)) && !this.exceedsMaximum(enrolled)
     return { valid: false, canQueue,
       reasons: [...new Set(reasons.length ? reasons : ['setup_required'])], sideEffects: false as const }
