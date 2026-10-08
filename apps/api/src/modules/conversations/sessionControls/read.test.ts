@@ -3,6 +3,7 @@ import {
   SessionPreferencesSchema, unavailableSessionControls, type NativeSessionReference, type SessionControlState,
 } from '@foreman-code/contracts'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
+import { DomainError } from '../../errors.js'
 import type { NativeHarnessSessionManager } from '../../harnesses/port.js'
 import { memorySessionControlPool } from '../../../../test/support/sessionControls.js'
 import { SessionControlStore, type SessionControlBinding } from './store.js'
@@ -81,6 +82,49 @@ it('does not hide unrelated provider failures as an unloaded session', async () 
   const failure = new HarnessExecutionError('CODEX_THREAD_IDENTITY_MISMATCH', 'Wrong native session')
   vi.mocked(f.manager.sessionControlCapabilities!).mockRejectedValue(failure)
   await expect(f.store.read(f.binding)).rejects.toBe(failure)
+})
+
+it.each(providers)('reads saved controls when the $harness owner retires during capability discovery', async ({ harness }) => {
+  const f = await fixture(harness)
+  let owner: NativeHarnessSessionManager | undefined = f.manager
+  const binding = { ...f.binding, get manager() { return owner } }
+  vi.mocked(f.manager.sessionControlCapabilities!).mockImplementation(async () => {
+    owner = undefined
+    throw new Error('Native transport aborted when its owner closed')
+  })
+  expect(await f.store.read(binding)).toMatchObject({ desiredMode: 'plan', capabilities: f.capabilities,
+    nativeStatus: 'resume-required', nativeSessionId: 'native', context: { stale: true } })
+})
+
+it('propagates transport failures while the native owner is still current', async () => {
+  const f = await fixture()
+  const failure = new Error('Native transport unavailable')
+  vi.mocked(f.manager.sessionControlCapabilities!).mockRejectedValue(failure)
+  await expect(f.store.read(f.binding)).rejects.toBe(failure)
+})
+
+it('does not hide native identity errors even if the owner retires during the read', async () => {
+  const f = await fixture()
+  let owner: NativeHarnessSessionManager | undefined = f.manager
+  const binding = { ...f.binding, get manager() { return owner } }
+  const failure = new HarnessExecutionError('CODEX_THREAD_IDENTITY_MISMATCH', 'Wrong native session')
+  vi.mocked(f.manager.sessionControlCapabilities!).mockImplementation(async () => {
+    owner = undefined
+    throw failure
+  })
+  await expect(f.store.read(binding)).rejects.toBe(failure)
+})
+
+it('preserves authorization rejection even if the native owner retires during the read', async () => {
+  const f = await fixture()
+  let owner: NativeHarnessSessionManager | undefined = f.manager
+  const binding = { ...f.binding, get manager() { return owner } }
+  const failure = new DomainError('ACCESS_DENIED', 'Read permission was removed', 403)
+  vi.mocked(f.manager.sessionControlCapabilities!).mockImplementation(async () => {
+    owner = undefined
+    throw failure
+  })
+  await expect(f.store.read(binding)).rejects.toBe(failure)
 })
 
 it.each(['appliedSessionPreferences', 'contextSnapshot'] as const)(

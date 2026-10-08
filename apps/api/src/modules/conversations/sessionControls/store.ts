@@ -1,7 +1,7 @@
 import { recoverPersistedClaudeCompaction } from '../../harnesses/claudeSdk/recoverCompaction.js'
 import { randomUUID } from 'node:crypto'
 import { mergeContextSnapshot } from './context.js'
-import { isNativeSessionUnloaded, readNativeCapabilities, readNativeSnapshot } from './nativeSnapshot.js'
+import { isNativeReadUnavailable, readNativeCapabilities, readNativeSnapshot } from './nativeSnapshot.js'
 import type pg from 'pg'
 import {
   CompactionStateSchema, SessionControlRequestSchema, SessionControlStateSchema, SessionPreferencesSchema,
@@ -119,7 +119,7 @@ export class SessionControlStore {
       try {
         reconciled = CompactionStateSchema.parse(await manager.reconcileCompaction(session, state.compaction))
       } catch (error) {
-        if (!isNativeSessionUnloaded(error, session)) throw error
+        if (!isNativeReadUnavailable(error, session, { binding, manager })) throw error
         manager = undefined
       }
       if (reconciled && (reconciled.requestId !== state.compaction.requestId
