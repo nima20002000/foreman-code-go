@@ -179,14 +179,14 @@ export function createClaudeNativeSessionManager(options: {
   let sessionPreferences: SessionPreferences | undefined
   let disposed = false
   const now = options.now ?? (() => new Date().toISOString())
-  function queryOptions(start: NativeSessionStart) {
+  function queryOptions(start: NativeSessionStart, preferences = SessionPreferencesSchema.parse({})) {
     const environment = { ...(options.sdkOptions.env as Record<string, string> | undefined),
       ...start.environment?.variables }
     if (Object.keys(environment).some(isDatabaseCredentialVariable)) {
       throw new HarnessExecutionError('CLAUDE_ENVIRONMENT_INVALID',
         'The Claude environment cannot contain database credentials.')
     }
-    const scoped = claudeSessionEnvironment(appMcpTokenEnvironment(environment), SessionPreferencesSchema.parse({}))
+    const scoped = claudeSessionEnvironment(appMcpTokenEnvironment(environment), preferences)
     const instructions = agentInstructionBundle(sessionStartConfiguration(start))
     if (!instructions) return { ...options.sdkOptions, env: scoped }
     const base = options.sdkOptions.systemPrompt
@@ -387,10 +387,8 @@ export function createClaudeNativeSessionManager(options: {
       runtime.generation = randomUUID()
       const start = runtime.start
       runtime.sdk = await options.runner.open({ scope: options.scope,
-        options: { ...options.sdkOptions, model: profile?.id ?? options.sdkOptions.model,
-          mcpServers: runtime.credentialServers ?? options.sdkOptions.mcpServers,
-          env: claudeSessionEnvironment({ ...(options.sdkOptions.env as Record<string, string> | undefined),
-            ...start.environment?.variables }, preferences) },
+        options: { ...queryOptions(start, preferences), model: profile?.id ?? options.sdkOptions.model,
+          mcpServers: runtime.credentialServers ?? options.sdkOptions.mcpServers },
         ...(runtime.session ? { resume: { ...options.scope, nativeSessionId: runtime.session.nativeSessionId } } : {}),
         ...(startup.signal ? { signal: startup.signal } : {}), onObservation: observation => observed(runtime, observation),
         ...(options.cancelPendingRequests ? { cancelPendingRequests: () => {

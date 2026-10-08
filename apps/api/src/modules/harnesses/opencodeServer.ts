@@ -1,6 +1,6 @@
 import { isWorkflowStart, sessionStartConfiguration, sessionStartDirectory, sessionStartCorrelation } from './sessionStart.js'
 import { openCodeCompactionResult, openCodeContextSnapshot, openCodeSessionAgent } from './opencodeSessionControls.js'
-import type { CompactionState, ContextSnapshot, SessionMode, SessionControlCapabilities } from '@foreman-code/contracts'
+import type { CompactionState, ContextSnapshot, SessionControlCapabilities } from '@foreman-code/contracts'
 import type { NativeCompactInput } from './port.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
@@ -609,11 +609,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (input.sessionMode === 'plan' && !(await this.sessionControlCapabilities(session)).plan.supported) {
       throw new OpenCodeNativeDeliveryError('OPENCODE_PLAN_UNAVAILABLE', 'No permitted Plan primary agent is available.', 'definite')
     }
-    const submitted = async (id: string) => {
-      await input.onSettingsApplied?.()
-      await input.onSubmitted?.(id)
-    }
-    yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal), submitted, input.sessionMode)
+    yield* this.watchTurn(session, input.clientCorrelationId, input.prompt, this.signal(signal), input)
   }
 
   /** Explicit nonmutating recovery seam: this method never submits prompt_async. */
@@ -622,7 +618,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async *watchTurn(session: NativeSessionReference, correlationId: string, prompt: string | undefined, signal: AbortSignal,
-    onSubmitted?: (nativeTurnId: string) => Promise<void>, sessionMode?: SessionMode): AsyncIterable<NativeHarnessEvent> {
+    submission?: Pick<NativeTurnInput, 'onSubmitted' | 'onSettingsApplied' | 'sessionMode'>): AsyncIterable<NativeHarnessEvent> {
     const state = this.requireSession(session)
     if (state.compaction && ['accepted', 'running', 'uncertain'].includes(state.compaction.status)) throw new HarnessExecutionError('OPENCODE_COMPACT_PENDING', 'Recover compaction before sending another turn.')
     if (state.observationOnly && prompt !== undefined) throw new HarnessExecutionError(
@@ -721,7 +717,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ messageID, model: { providerID, modelID: model.join('/') },
               variant: state.configuration.variant,
-              agent: openCodeSessionAgent(sessionMode, state.configuration.nativeAgent), parts: [
+              agent: openCodeSessionAgent(submission?.sessionMode, state.configuration.nativeAgent), parts: [
                 { type: 'text', text: turn.files ? `${prompt ?? ''}\n\n${turn.files.inputs.promptSuffix}` : prompt },
                 ...(turn.files?.inputs.imageParts ?? []),
               ],
@@ -729,8 +725,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             }),
           }, signal)
           nativeAcknowledged = true
-          await onSubmitted?.(messageID)
+          await submission?.onSubmitted?.(messageID)
           await turn.files?.bridge.acknowledge(signal)
+          await submission?.onSettingsApplied?.()
         } catch (error) {
           // A file/listener/adoption failure AFTER native acceptance is not a
           // rejected prompt, even if the secondary error claims definite delivery.
