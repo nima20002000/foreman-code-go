@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createStore } from 'zustand/vanilla'
+import { ManagedWorkspaceSchema, type ManagedWorkspace } from '@foreman-code/contracts/management'
 import { GraphEditReadResultV3Schema, sameExecutableWorkflow,
   type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@foreman-code/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
@@ -42,7 +43,7 @@ vi.mock('../../workflow-board/startPreflight', async (original) => ({
   ...await original<typeof import('../../workflow-board/startPreflight')>(),
   useBoardStartPreflight: (draft: ReturnType<typeof repairFixture>['draft']) => ({ data: {
     workflow: { workflow: draft.graph, revision: draft.revision, currentVersionId: draft.baseWorkflowVersionId },
-    workspace: { locationRevision: 1, locationValidation: { status: 'ready' } },
+    workspace: startWorkspace,
     capabilities: { runtimeAdmission: true, persistedReadback: true },
     version: { id: draft.baseWorkflowVersionId, definition: draft.graph,
       agentConfigurationVersionIds: Object.fromEntries(draft.graph.nodes.map(nativeNode).map(({ agentId }) => [agentId, `configuration-${agentId}`])) },
@@ -62,6 +63,7 @@ vi.mock('../../../shared/api/query', async (original) => {
 const key = nextDraftKey('workspace', 'workflow'), clients: QueryClient[] = []
 const empty: GraphEditReadResultV3 = { intent: null, current: [], canStop: false, affectedSetChanged: false }
 const now = '2026-09-24T00:00:00Z'
+let startWorkspace: ManagedWorkspace
 const edit = () => useGraphDraftStore.getState().nextDrafts[key]!
 const saveButton = () => screen.getByRole('button', { name: /^Save changes$/ })
 const recoveryName = /^(?:Stop affected Runs and save|Reconcile Save)$/
@@ -111,8 +113,7 @@ function expectNoSavedStart() {
 function mount(initialContext?: ReturnType<typeof repairFixture>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   clients.push(client)
-  client.setQueryData(queryKeys.managedWorkspace('workspace'), { workspace: { id: 'workspace', name: 'Fixture' },
-    locationRevision: 1, locationValidation: { status: 'ready', checkedAt: now } })
+  client.setQueryData(queryKeys.managedWorkspace('workspace'), startWorkspace)
   return render(<QueryClientProvider client={client}><NextDraftEditor workspaceId="workspace" workflowId="workflow"
     initialContext={initialContext} /></QueryClientProvider>)
 }
@@ -162,6 +163,14 @@ async function createWorker(user: ReturnType<typeof userEvent.setup>) {
   return node
 }
 beforeEach(() => {
+  startWorkspace = ManagedWorkspaceSchema.parse({
+    workspace: { id: 'workspace', name: 'Fixture' },
+    revision: 1,
+    archivedAt: null,
+    executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
+    locationRevision: 1,
+    locationValidation: { status: 'ready', checkedAt: now },
+  })
   useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); bindMockInstallation(); sessionStorage.clear()
   useGraphDraftStore.getState().installNextDraft(key, repairFixture(1))
   vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: () => Promise<unknown>) => work() } })
@@ -181,6 +190,16 @@ afterEach(() => {
 })
 
 describe('NIM-2644 mounted frontend recovery through the real edit-intent hook', () => {
+  it('keeps Start blocked when a ready workspace has no execution location', async () => {
+    startWorkspace.executionLocation = null
+    mount()
+    await screen.findByRole('region', { name: 'Workflow authoring' })
+    expect(nextDraftDirty(edit())).toBe(false)
+    expect(savedStartButton()).toBeDisabled()
+    expect(savedStartButton()).toHaveAttribute('title', 'The workspace, workflow or execution folder is unavailable.')
+    expect(boardStartClient.start).not.toHaveBeenCalled()
+  })
+
   it('reloads a clean retained form with remote node names without a new executable version', async () => {
     const first = mount()
     const original = structuredClone(edit().context)
