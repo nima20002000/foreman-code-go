@@ -1,3 +1,4 @@
+import { registerClaudePluginRoutes } from './claudePlugins.js'
 import type { FastifyInstance } from 'fastify'
 import { pluginHttpRead } from './pluginReadCancellation.js'
 import {
@@ -19,6 +20,7 @@ import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } f
 import { ClaudeSetupOptionsSchema } from '@foreman-code/contracts/claude'
 
 export function registerHarnessSettingsRoutes(app: FastifyInstance, services: OperatorServices): void {
+  registerClaudePluginRoutes(app, services)
   app.get('/api/management/harnesses/claude/setup-options', async (request) =>
     ClaudeSetupOptionsSchema.parse(services.harnesses.claudeSetupOptions(requirePrincipal(request))))
   app.get('/api/management/harnesses/:harness/execution-readiness', async (request) => {

@@ -11,6 +11,7 @@ export * from "./extensions.js";
 export * from "./harnessSettings.js";
 export * from './workerExecution.js'
 export * from "./codexPlugins.js";
+export * from "./claudePlugins.js";
 export * from "./settingsExperience.js";
 export * from './generalSettings.js';
 
@@ -626,6 +627,7 @@ export const OperatorToolNameSchema = z.enum([
   "workspace_defaults_update",
   "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_managed_request", "harness_mcp_change_get", "harness_mcp_change_reconcile", "codex_plugin_change", "codex_plugin_reconcile",
   "codex_plugins_list", "codex_plugin_get",
+  "claude_plugins_list", "claude_plugin_change", "claude_plugin_marketplace_add",
   "harness_configuration_check",
   "execution_readiness_get",
   "claude_setup_options_get",

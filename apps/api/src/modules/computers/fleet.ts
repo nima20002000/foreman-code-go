@@ -13,6 +13,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import type { ClaudePluginCatalog } from './claudePlugins.js'
 import type { ComputerMaintenance } from './maintenance.js'
 
 export interface MaintenanceEndpoint {
@@ -25,6 +26,7 @@ export interface FleetSources {
   claudeUserMcpServers(): Promise<Record<string, unknown>>
   codexPlugins(): Promise<string[]>
   codexMarketplaces(): Promise<SyncedMarketplace[]>
+  claudePlugins(): Promise<ClaudePluginCatalog>
 }
 
 const CACHE_MS = 20_000
@@ -110,15 +112,19 @@ export class FleetMaintenanceService {
   /** Background upkeep: current harnesses everywhere, then Main's MCP servers and plugins on every paired computer. */
   async keepCurrent(): Promise<void> {
     const targets = await this.allTargets()
-    const sync = await Promise.all([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
+    const sync = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     await Promise.all(targets.map(async target => {
       const status = await this.status(target, true)
       if (!status) return
       const behind = status.harnesses.filter(entry => entry.latest && entry.version !== entry.latest).map(entry => entry.harness)
       if (behind.length) await this.startOn(target, { kind: 'update-harnesses', harnesses: behind }).catch(() => undefined)
       if (target.hostRef.kind === 'main') return
-      for (const task of sync) await this.startOn(target, task).catch(() => undefined)
+      for (const task of sync) {
+        if (task.status === 'fulfilled') await this.startOn(target, task.value)
+      }
     }))
+    const failures = sync.filter(result => result.status === 'rejected').map(result => result.reason as unknown)
+    if (failures.length) throw new AggregateError(failures, 'Some fleet settings could not be read.')
   }
 
   private async taskFor(task: ComputerMaintenanceStartInput['task']): Promise<MaintenanceTaskStart> {
@@ -127,8 +133,13 @@ export class FleetMaintenanceService {
       return { kind: 'sync-mcp', servers: { codex: syncableServers(codex), claude: syncableServers(claude) } }
     }
     if (task.kind === 'sync-plugins') {
-      const [plugins, marketplaces] = await Promise.all([this.sources.codexPlugins().catch(() => []), this.sources.codexMarketplaces().catch(() => [])])
-      return { kind: 'sync-plugins', plugins, marketplaces }
+      const [plugins, marketplaces, claude] = await Promise.all([
+        this.sources.codexPlugins(), this.sources.codexMarketplaces(), this.sources.claudePlugins(),
+      ])
+      return { kind: 'sync-plugins', plugins, marketplaces,
+        claudePlugins: claude.plugins.filter(plugin => plugin.installed).map(({ pluginId, enabled }) => ({ pluginId, enabled })),
+        claudeMarketplaces: claude.marketplaces.flatMap(item => item.source ? [{ name: item.name, source: item.source }] : []),
+      }
     }
     return task
   }

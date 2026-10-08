@@ -31,7 +31,9 @@ export const MaintenanceTaskStartSchema = z.discriminatedUnion('kind', [
     claude: z.array(SyncedMcpServerSchema).max(100) }).strict() }).strict(),
   z.object({ kind: z.literal('sync-plugins'), plugins: z.array(z.string().regex(/^[^\s@]+@[^\s@]+$/u)).max(200),
     /** Main's Git plugin marketplaces; a computer adds the ones it lacks before installing plugins from them. */
-    marketplaces: z.array(SyncedMarketplaceSchema).max(50) }).strict(),
+    marketplaces: z.array(SyncedMarketplaceSchema).max(50),
+    claudePlugins: z.array(z.object({ pluginId: z.string().regex(/^[^\s@]+@[^\s@]+$/u), enabled: z.boolean() }).strict()).max(200),
+    claudeMarketplaces: z.array(SyncedMarketplaceSchema).max(50) }).strict(),
 ])
 export type MaintenanceTaskStart = z.infer<typeof MaintenanceTaskStartSchema>
 

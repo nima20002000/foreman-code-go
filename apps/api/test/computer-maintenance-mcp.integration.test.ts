@@ -56,6 +56,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     }), commands, local, {
       codexUserMcpServers: async () => ({ linear: { url: 'https://mcp.linear.app/mcp' }, private: { command: 'x', env: { TOKEN: 'secret' } }, 'foreman-code': { command: 'app' } }),
       claudeUserMcpServers: async () => ({ docs: { type: 'http', url: 'https://docs.example/mcp' } }),
+      claudePlugins: async () => ({ plugins: [], marketplaces: [] }),
       codexPlugins: async () => ['pdf@openai'],
       codexMarketplaces: async () => [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }],
     })
@@ -91,7 +92,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
       claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] } })
     await operator.callTool({ name: 'computers_maintenance_start', arguments: { commandId: randomUUID(), task: { kind: 'sync-plugins' } } })
     expect(deviceStarts.at(-1)).toEqual({ kind: 'sync-plugins', plugins: ['pdf@openai'],
-      marketplaces: [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }] })
+      marketplaces: [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }], claudePlugins: [], claudeMarketplaces: [] })
 
     const restartAll = await operator.callTool({ name: 'computers_maintenance_start', arguments: { commandId: randomUUID(), task: { kind: 'restart' } } })
     expect(restartAll.isError).toBe(true)
@@ -116,7 +117,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     let clock = 0
     const local = { status: async () => ({ ...status('0.161.0'), tasks: [structuredClone(running)] }) } as unknown as ComputerMaintenance
     const fleet = new FleetMaintenanceService(database.pool, mainId, () => undefined, new PostgresCommandCoordinator(database.pool), local,
-      { codexUserMcpServers: async () => ({}), claudeUserMcpServers: async () => ({}), codexPlugins: async () => [], codexMarketplaces: async () => [] }, () => clock)
+      { codexUserMcpServers: async () => ({}), claudeUserMcpServers: async () => ({}), claudePlugins: async () => ({ plugins: [], marketplaces: [] }), codexPlugins: async () => [], codexMarketplaces: async () => [] }, () => clock)
     const main = async () => (await fleet.list(principal)).computers.find(computer => computer.target.hostRef.kind === 'main')!.status!.tasks[0]!
     expect(await main()).toMatchObject({ state: 'running' })
     Object.assign(running, { state: 'succeeded', summary: 'Codex: Added linear', finishedAt: new Date().toISOString() })
@@ -126,4 +127,29 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     clock = 8_000
     expect(await main()).toMatchObject({ summary: 'Codex: Added linear' })
   })
+  it('keeps harness updates and MCP sync working when plugin discovery fails', async () => {
+    const mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    const starts: MaintenanceTaskStart[] = []
+    const local = {
+      status: async () => status('0.150.0'),
+      start: (input: MaintenanceTaskStart) => { starts.push(input); return task(input) },
+    } as unknown as ComputerMaintenance
+    const service = new FleetMaintenanceService(database.pool, mainId, () => ({
+      capabilities: () => [{ namespace: COMPUTER_MAINTENANCE_NAMESPACE, mainCanRequest: true }],
+      request: async (_deviceId, _namespace, payload) => {
+        const request = MaintenanceRequestSchema.parse(payload)
+        if (request.operation === 'status') return { payload: { operation: 'status', status: status('0.150.0') } }
+        starts.push(request.task)
+        return { payload: { operation: 'start', task: task(request.task) } }
+      },
+    }), new PostgresCommandCoordinator(database.pool), local, {
+      codexUserMcpServers: async () => ({}), claudeUserMcpServers: async () => ({}),
+      codexPlugins: async () => { throw new Error('Codex plugin catalog unavailable') },
+      codexMarketplaces: async () => [], claudePlugins: async () => ({ plugins: [], marketplaces: [] }),
+    })
+    await expect(service.keepCurrent()).rejects.toThrow('Some fleet settings could not be read.')
+    expect(starts.map(input => input.kind)).toEqual(expect.arrayContaining(['update-harnesses', 'sync-mcp']))
+    expect(starts.some(input => input.kind === 'sync-plugins')).toBe(false)
+  })
+
 })

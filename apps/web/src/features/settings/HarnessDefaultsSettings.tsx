@@ -5,6 +5,7 @@ import { useManagedHarnessCatalogQuery } from '../../shared/api/query'
 import { askOperator } from '../operator-chat/operatorChatStore'
 import { SettingsChoice, SettingsOverview } from './SettingsCards'
 import { harnessNames, harnessSummary } from './settingsPresentation'
+import { ClaudePluginSummary } from './ClaudePluginSummary'
 import { CodexPluginManager } from './CodexPluginManager'
 import { HarnessMcpManager } from './HarnessMcpManager'
 import { OperatorMcpStatus } from './OperatorMcpStatus'
@@ -40,22 +41,22 @@ function ProviderCard({ harness, value, revision, readiness, onOpen }: {
       <span className="settings-choice-links">
         {harness === 'codex' ? <>
           <Button size="sm" variant="ghost" onClick={() => onOpen('connections')}>Connections</Button>
-          <Button size="sm" variant="ghost" onClick={() => onOpen('plugins')}>Plugins</Button>
         </> : null}
+        <Button size="sm" variant="ghost" onClick={() => onOpen('plugins')}>Plugins</Button>
       </span>
     </>} />
 }
 
-/**
- * Harness presets are summary cards; the Operator agent edits them through MCP. Native connection approval and
- * Codex plugin installs stay human actions, opened from the card in a dialog.
- */
+/** Harness presets and plugin changes are managed by the Operator. */
 export function HarnessDefaultsSettings({ selectedHarness, section, onOpen }: {
   selectedHarness?: AgentHarness | undefined; section?: HarnessSettingsSection | undefined
   onOpen?(next: { harness: Harness; section: 'connections' | 'plugins' } | undefined): void
 }) {
   const { incoming, query } = useProviderDefaults()
-  const dialog = selectedHarness === 'codex' && (section === 'connections' || section === 'plugins') ? section : undefined
+  let dialog: 'plugins' | 'connections' | undefined
+  if (section === 'plugins' && (selectedHarness === 'codex' || selectedHarness === 'claude')) dialog = 'plugins'
+  if (section === 'connections' && selectedHarness === 'codex') dialog = 'connections'
+  const dialogName = selectedHarness === 'claude' ? 'Claude' : 'Codex'
   if (query.isError || (query.isSuccess && !incoming)) return <ErrorState title="Harness defaults are unavailable"
     description={query.error?.message ?? 'The server returned an incomplete provider catalog.'} onRetry={() => void query.refetch()} />
   if (!incoming) return <LoadingState label="Loading harness defaults…" />
@@ -69,10 +70,12 @@ export function HarnessDefaultsSettings({ selectedHarness, section, onOpen }: {
         readiness={readiness(harness)} onOpen={(next) => onOpen?.({ harness, section: next })} />)}
     </SettingsOverview>
     <Dialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) onOpen?.(undefined) }} size="lg"
-      title={dialog === 'plugins' ? 'Codex plugins' : 'Codex connections'}
-      description={dialog === 'plugins' ? 'Plugins add skills, hooks and tools to Codex. Installing one is your decision.'
+      title={dialog === 'plugins' ? `${dialogName} plugins` : 'Codex connections'}
+      description={dialog === 'plugins' ? `Plugins add skills, hooks and tools to ${dialogName}. Ask the Operator to manage them.`
         : 'Native MCP connections. Changes the Operator prepares wait here for your approval.'}>
-      {dialog === 'plugins' ? <CodexPluginManager /> : dialog === 'connections' ? <HarnessMcpManager harness="codex" /> : null}
+      {dialog === 'plugins' && selectedHarness === 'claude' ? <ClaudePluginSummary onClose={() => onOpen?.(undefined)} /> : null}
+      {dialog === 'plugins' && selectedHarness === 'codex' ? <CodexPluginManager /> : null}
+      {dialog === 'connections' ? <HarnessMcpManager harness="codex" /> : null}
     </Dialog>
   </>
 }

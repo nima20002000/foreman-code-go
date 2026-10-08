@@ -112,17 +112,17 @@ describe('computer maintenance', () => {
       claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] } })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Added search · Claude: not installed, skipped' })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['mcp', 'add', 'search', '--', 'npx', 'search-mcp'] })
-    maintenance.start({ kind: 'sync-plugins', plugins: ['pdf@openai', 'documents@openai'], marketplaces: [] })
-    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Installed documents@openai' })
+    maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['pdf@openai', 'documents@openai'], marketplaces: [] })
+    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Installed documents@openai · Claude: Nothing to sync' })
   })
 
   it('adds a missing Git marketplace before its plugins, and one plugin that cannot install does not stop the others', async () => {
     const fake = ports()
     const maintenance = new ComputerMaintenance(fake.value)
-    maintenance.start({ kind: 'sync-plugins', plugins: ['skill-creator@claude-plugins-official', 'lost@elsewhere', 'pdf@openai'],
+    maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['skill-creator@claude-plugins-official', 'lost@elsewhere', 'pdf@openai'],
       marketplaces: [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
-      summary: 'Installed skill-creator@claude-plugins-official, pdf@openai · Could not install lost@elsewhere' })
+      summary: 'Claude: Nothing to sync · Codex: Installed skill-creator@claude-plugins-official, pdf@openai · Could not install lost@elsewhere' })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['plugin', 'marketplace', 'add', 'https://github.com/anthropics/claude-plugins-official.git'] })
   })
 })

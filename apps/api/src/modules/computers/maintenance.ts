@@ -1,3 +1,4 @@
+import { readClaudePlugins, claudeCliResult } from './claudePlugins.js'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { access, readFile, statfs } from 'node:fs/promises'
@@ -123,7 +124,20 @@ export class ComputerMaintenance {
         }
         return results.join(' · ') || 'Nothing to sync'
       }
-      case 'sync-plugins': return this.syncPlugins(request.plugins, request.marketplaces, step, signal)
+      case 'sync-plugins': {
+        const results: string[] = []
+        const failures: string[] = []
+        const sync = [
+          { name: 'Codex', run: () => this.syncPlugins(request.plugins, request.marketplaces, step, signal) },
+          { name: 'Claude', run: () => this.syncClaudePlugins(request, step, signal) },
+        ]
+        for (const harness of sync) {
+          try { results.push(`${harness.name}: ${await harness.run()}`) }
+          catch (error) { failures.push(`${harness.name}: ${error instanceof Error ? error.message : 'Plugin sync failed.'}`) }
+        }
+        if (failures.length) throw new Error([...results, ...failures].join(' · '))
+        return results.join(' · ')
+      }
     }
   }
 
@@ -179,6 +193,7 @@ export class ComputerMaintenance {
   }
 
   private async syncPlugins(plugins: readonly string[], marketplaces: readonly SyncedMarketplace[], step: Step, signal: AbortSignal): Promise<string> {
+    if (!plugins.length) return 'Nothing to sync'
     const codex = await this.ports.find('codex')
     if (!codex) throw new Error('Codex is not installed on this computer.')
     const installed = new Set(await installedPlugins(this.ports, codex, signal))
@@ -198,6 +213,48 @@ export class ComputerMaintenance {
     const summary = [added.length ? `Installed ${added.join(', ')}` : '', failed.length ? `Could not install ${failed.join(', ')}` : ''].filter(Boolean).join(' · ')
     if (failed.length) throw new Error(summary)
     return summary || 'Already in sync'
+  }
+
+  private async syncClaudePlugins(
+    request: Extract<MaintenanceTaskStart, { kind: 'sync-plugins' }>, step: Step, signal: AbortSignal,
+  ): Promise<string> {
+    if (!request.claudePlugins.length) return 'Nothing to sync'
+    const claude = await this.ports.find('claude')
+    if (!claude) throw new Error('Claude Code is not installed on this computer.')
+    const catalog = await readClaudePlugins(this.ports, signal)
+    const installed = new Map(catalog.plugins.filter(item => item.installed).map(item => [item.pluginId, item]))
+    const known = new Set(catalog.marketplaces.map(item => item.name))
+    const failed: string[] = []
+    for (const marketplace of request.claudeMarketplaces) {
+      if (known.has(marketplace.name)) continue
+      const result = await step(claude, ['plugin', 'marketplace', 'add', marketplace.source, '--json'],
+        `claude plugin marketplace add ${marketplace.source}`, { allowFailure: true })
+      if (result.code === 0 && claudeCliResult(result.stdout)?.outcome === 'ok') known.add(marketplace.name)
+      else failed.push(`marketplace ${marketplace.name}`)
+    }
+    for (const plugin of request.claudePlugins) {
+      const existing = installed.get(plugin.pluginId)
+      const actions: string[] = []
+      if (!existing) actions.push('install')
+      if (!plugin.enabled) actions.push('disable')
+      else if (existing && !existing.enabled) actions.push('enable')
+      for (const action of actions) {
+        const result = await step(claude, ['plugin', action, plugin.pluginId, '--scope', 'user', '--json'],
+          `claude plugin ${action} ${plugin.pluginId}`, { allowFailure: true })
+        if (result.code !== 0 || claudeCliResult(result.stdout)?.outcome !== 'ok') {
+          failed.push(plugin.pluginId)
+          break
+        }
+      }
+    }
+    const readback = await readClaudePlugins(this.ports, signal)
+    for (const expected of request.claudePlugins) {
+      if (!readback.plugins.some(item => item.pluginId === expected.pluginId && item.installed && item.enabled === expected.enabled)) {
+        failed.push(expected.pluginId)
+      }
+    }
+    if (failed.length) throw new Error(`Could not sync ${[...new Set(failed)].join(', ')}`)
+    return `${request.claudePlugins.length} plugins in sync`
   }
 
   private async installedVersion(harness: MaintainedHarness, signal: AbortSignal): Promise<string | null | undefined> {

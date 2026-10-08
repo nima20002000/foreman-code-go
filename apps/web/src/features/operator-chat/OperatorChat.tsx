@@ -363,7 +363,6 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const request = useOperatorChatStore((state) => state.request)
   const [askSend, setAskSend] = useState<{ id: string; content: string }>()
   const submitRef = useRef<((content: string) => Promise<void>) | undefined>(undefined)
-  const askReady = useRef(false)
   useEffect(() => {
     if (!enabled || !open || !request || accessDenied || creating.current) return
     useOperatorChatStore.getState().takeRequest(request.id)
@@ -374,12 +373,6 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
         if (request.send) setAskSend({ id: created.id, content: request.content })
       }).catch(() => undefined).finally(() => { creating.current = false })
   }, [accessDenied, create, enabled, open, request])
-  useEffect(() => {
-    if (!askSend || askSend.id !== selectedId || !askReady.current) return
-    setAskSend(undefined)
-    void submitRef.current?.(askSend.content)
-  })
-  if (!enabled || sessionIsSwitching()) return null
   const settings = preferencesDenied ? undefined : preferences.settings
   const pendingHandoff = Boolean(settings && conversation?.settings && settings.harness !== conversation.settings.harness
     && (conversation.messages.length > 0 || conversation.hasEarlierMessages))
@@ -474,8 +467,14 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     void list.refetch()
   }
   submitRef.current = submit
-  askReady.current = setupReady && settingsReady && conversation?.conversation.id === selectedId && !active && !archived
+  const askReady = setupReady && settingsReady && conversation?.conversation.id === selectedId && !active && !archived
     && !pending.command && !pending.error && !attachmentReceiptPending
+  useEffect(() => {
+    if (!askSend || askSend.id !== selectedId || !askReady) return
+    setAskSend(undefined)
+    void submitRef.current?.(askSend.content)
+  }, [askReady, askSend, selectedId])
+  if (!enabled || sessionIsSwitching()) return null
   return <div className="operator-chat-root">
     {open || closing ? <section ref={panelRef} style={size} id={panelId} className="operator-chat" data-state={open ? 'open' : 'closing'} role="dialog" aria-modal={false} aria-label="Operator chat" aria-hidden={closing} inert={closing}
       onKeyDown={(event) => {
