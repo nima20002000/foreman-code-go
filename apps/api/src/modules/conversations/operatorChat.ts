@@ -104,7 +104,7 @@ export interface NativeManagerResolver {
 export interface OperatorChatAuthority {
   current(principalId: string): Promise<ManagementPrincipal>
   assertConfiguration(configuration: OperatorConfigurationVersion): void
-  setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup>
+  setup(manager: NativeHarnessSessionManager, signal: AbortSignal): Promise<OperatorChatSetup>
   /** Installation inspection has read authority and no accepted native turn. */
   setupConfiguration?(principal: ManagementPrincipal, configuration: OperatorConfigurationVersion, signal: AbortSignal): Promise<OperatorChatSetup>
   prepare(manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion, conversationId: string,
@@ -252,7 +252,7 @@ export class OperatorChatService {
       const id = `operator-setup:${randomUUID()}`
       const manager = this.managers(selected, id)
       try {
-        const result = await this.authority.setup(manager, signal, selected)
+        const result = await this.authority.setup(manager, signal)
         return { ...result, ...(selected.id === 'application-operator-inspection' ? {} : { configurationVersionId: selected.id }) }
       } finally { try { await manager.dispose?.() } finally { this.managers.release?.(id) } }
     })()
@@ -550,7 +550,7 @@ export class OperatorChatService {
     if (controlPrincipalId) existing?.manager.setSessionControlPrincipal?.(controlPrincipalId)
     const fileOnly = fileInputs && configuration.harness.harness === 'claude'
     if (existing?.session) {
-      if (!fileOnly && (await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
+      if (!fileOnly && (await this.authority.setup(existing.manager, signal)).status !== 'configured') {
         throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the Foreman Code MCP connection in the selected harness before chatting.', 409)
       }
       existing.configuration = configuration; return existing

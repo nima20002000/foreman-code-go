@@ -143,14 +143,9 @@ class RejectedSessionCreation extends Error {
     super('Native session creation was definitely rejected and its owner was disposed.', { cause: rejection })
   }
 }
-function definiteNonCreation(error: unknown, row: AgentConversationRow): boolean {
-  if (error instanceof NativeDeliveryError) {
-    return error.operation === 'session_creation' && error.delivery === 'not_sent'
-  }
-  if (error && typeof error === 'object' && ('uncertain' in error && error.uncertain === true
-    || 'certainty' in error && error.certainty === 'uncertain')) return false
-
-  return false
+function definiteNonCreation(error: unknown): boolean {
+  return error instanceof NativeDeliveryError
+    && error.operation === 'session_creation' && error.delivery === 'not_sent'
 }
 const EPHEMERAL_SESSION_LOST = 'This ephemeral Codex session is no longer live and cannot be resumed after the API restarts. Start a separate conversation.'
 function nativeErrorCode(error: unknown): string | undefined {
@@ -1024,7 +1019,7 @@ export class AgentChatService {
         }
       } catch (error) {
         // Binding/activation failure after successful creation must never authorize a replacement.
-        if (!runtime.session && (!creationRequested || definiteNonCreation(error, row))) {
+        if (!runtime.session && (!creationRequested || definiteNonCreation(error))) {
           if (!await this.repository.recordNonSubmission(row.id, row.active_request_id!, 'session_creation', failure(error))) {
             throw new Error('Non-creation ownership was lost.', { cause: error })
           }
@@ -1406,7 +1401,7 @@ export class AgentChatService {
     try {
       session = runtime.session ?? await runtime.manager.reconcileSessionCreation?.(input, this.lifetime.signal, source)
     } catch (error) {
-      if (!definiteNonCreation(error, row)) throw error
+      if (!definiteNonCreation(error)) throw error
       if (!await this.repository.recordNonSubmission(row.id, requestId, 'session_creation', failure(error))) {
         throw new Error('Non-creation ownership was lost.', { cause: error })
       }

@@ -55,7 +55,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     return result
   }
 
-  async setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup> {
+  async setup(manager: NativeHarnessSessionManager, signal: AbortSignal): Promise<OperatorChatSetup> {
     const result = { harness: manager.harness, endpoint: this.endpoint, checkedAt: new Date().toISOString() }
     if (!this.inspectorFor) this.invalidSetup()
     const context = manager.mcpInspectionContext ? await manager.mcpInspectionContext(signal)
@@ -85,7 +85,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     const principal = await this.current(principalId)
     requireAuthorization(principal, 'operator_chat:write')
     signal.throwIfAborted()
-    if ((await this.setup(manager, signal, configuration)).status !== 'configured') this.invalidSetup()
+    if ((await this.setup(manager, signal)).status !== 'configured') this.invalidSetup()
     const cached = this.credentials.get(conversationId)
     if (cached) {
       if (cached.ownerId !== principalId) throw new DomainError('ACCESS_DENIED', 'A native credential cannot change owners.', 403)

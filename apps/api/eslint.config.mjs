@@ -29,8 +29,6 @@ export default tseslint.config(
     // These validators reject control characters in file names on purpose.
     files: [
       'src/modules/harnesses/codexFiles/bytes.ts',
-      'src/modules/harnesses/opencodeFiles/attachments.ts',
-      'src/modules/harnesses/opencodeFiles/host.ts',
     ],
     rules: { 'no-control-regex': 'off' },
   },
