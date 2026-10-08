@@ -13,10 +13,10 @@ because it permits execution on another computer; neither HTTP nor Operator MCP
 can change the deployment environment. Normal placement, permissions, source and
 runtime qualification checks still apply when the setting is enabled.
 
-Settings > Computers shows the active value on Main. Authenticated readers with
-global `settings:read` can read the same value through
-`GET /api/management/settings/worker-execution` or Operator MCP's
-`worker_execution_settings_get`. Both return `{ enabled, managedBy: 'startup' }`.
+Settings > Computers shows the active value on the Main card ("Worker execution").
+Authenticated readers with global `settings:read` can read the same value through
+Operator MCP's `worker_execution_settings_get`, which returns
+`{ enabled, managedBy: 'startup' }`.
 
 `apps/worker` is a worker-only composition. It loads W07 identity/pairing and
 starts the W07 connection supervisor. It does not import API startup, PostgreSQL,

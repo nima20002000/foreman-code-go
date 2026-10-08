@@ -118,6 +118,8 @@ function ComputerCard({ card, observed, fresh, accounts, maintenance, onMaintain
         {card.build?.state === 'setup-required' ? <Badge tone="warning">Setup needed</Badge> : null}</dd></div>
       <div><dt>Activity</dt><dd>{!observed ? '—' : `${count(observed.agents.length, 'agent')} running · ${count(workflows, 'workflow')}`
         + (observed.jobs.length ? ` · ${count(observed.jobs.length, 'job')}` : '')}</dd></div>
+      {card.target.hostRef.kind === 'main' && card.build ? <div><dt>Worker execution</dt><dd>
+        {card.build.remoteExecutionEnabled ? 'On' : 'Off'} <small className="computer-card-note">set when Main starts</small></dd></div> : null}
       <div><dt>System</dt><dd><SystemState status={maintenance} busy={maintaining} onMaintain={onMaintain} agents={observed?.agents.length ?? 0} /></dd></div>
       <div><dt>Disk</dt><dd>{maintenance?.system.disk ? `${bytes(maintenance.system.disk.freeBytes)} free of ${bytes(maintenance.system.disk.totalBytes)}` : '—'}</dd></div>
     </dl>

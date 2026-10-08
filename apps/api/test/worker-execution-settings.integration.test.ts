@@ -12,7 +12,7 @@ import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 
 let database: Awaited<ReturnType<typeof currentDatabase>>
 const resources: Array<() => Promise<void>> = []
-const settingsPath = '/api/management/settings/worker-execution'
+const retiredHttpPath = '/api/management/settings/worker-execution'
 const startupCases = [
   { label: 'absent', environment: {}, enabled: false },
   { label: 'zero', environment: { FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: '0' }, enabled: false },
@@ -64,19 +64,14 @@ async function settingsApp(environment: NodeJS.ProcessEnv = {}) {
 }
 
 it.each(startupCases)(
-  'reads startup status with the environment setting $label through HTTP and authenticated MCP',
+  'reads startup status with the environment setting $label through authenticated MCP only',
   async ({ environment, enabled }) => {
     const { app, access, issue, connect } = await settingsApp(environment)
     const grants: ManagementGrant[] = [{ actions: ['settings:read', 'capabilities:read'], scope: {} }]
     const reader = await issue('Settings reader', grants)
     const expected = { enabled, managedBy: 'startup' }
-    const response = await app.inject({
-      method: 'GET',
-      url: settingsPath,
-      headers: { authorization: `Bearer ${reader.token}` },
-    })
-    expect(response.statusCode).toBe(200)
-    expect(WorkerExecutionSettingsSchema.parse(response.json())).toEqual(expected)
+    // The web app shows this on the Main computer card from build status; the HTTP read is retired.
+    expect((await app.inject({ method: 'GET', url: retiredHttpPath, headers: { authorization: `Bearer ${reader.token}` } })).statusCode).toBe(404)
 
     const client = await connect(reader.token)
     const tools = (await client.listTools()).tools
@@ -112,7 +107,7 @@ it.each(startupCases)(
     for (const method of ['POST', 'PATCH'] as const) {
       const response = await app.inject({
         method,
-        url: settingsPath,
+        url: retiredHttpPath,
         headers: { authorization: `Bearer ${reader.token}` },
         payload: { enabled: !enabled },
       })
@@ -130,13 +125,6 @@ it.each(startupCases)(
     const persistedReader = await restarted.access.authenticate(reader.token)
     expect(persistedReader.id).toBe(reader.principal.id)
     expect(persistedReader.grants).toEqual(reader.principal.grants)
-    const response = await restarted.app.inject({
-      method: 'GET',
-      url: settingsPath,
-      headers: { authorization: `Bearer ${reader.token}` },
-    })
-    expect(response.statusCode).toBe(200)
-    expect(WorkerExecutionSettingsSchema.parse(response.json())).toEqual(expected)
     const freshClient = await restarted.connect(reader.token)
     const readback = await freshClient.callTool({ name: 'worker_execution_settings_get', arguments: {} })
     expect(WorkerExecutionSettingsSchema.parse(readback.structuredContent)).toEqual(expected)
@@ -146,13 +134,9 @@ it.each(startupCases)(
 )
 
 it.each(['0', '1'])(
-  'allows local reads and denies missing MCP credentials, unrelated grants and workspace-scoped grants with startup status %s',
+  'denies missing MCP credentials, unrelated grants and workspace-scoped grants with startup status %s',
   async (enabled) => {
     const { app, issue, connect } = await settingsApp({ FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: enabled })
-    const local = await app.inject({ method: 'GET', url: settingsPath })
-    expect(local.statusCode).toBe(200)
-    expect(WorkerExecutionSettingsSchema.parse(local.json()).enabled).toBe(enabled === '1')
-    expect((await app.inject({ method: 'GET', url: settingsPath, headers: { authorization: 'Bearer invalid' } })).statusCode).toBe(401)
     const anonymousMcp = await app.inject({
       method: 'POST',
       url: '/mcp',
@@ -165,13 +149,6 @@ it.each(['0', '1'])(
     ]
     for (const grants of deniedGrants) {
       const denied = await issue('Denied settings reader', grants)
-      const response = await app.inject({
-        method: 'GET',
-        url: settingsPath,
-        headers: { authorization: `Bearer ${denied.token}` },
-      })
-      expect(response.statusCode).toBe(403)
-      expect(response.json()).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
       const client = await connect(denied.token)
       const tools = (await client.listTools()).tools.map(tool => tool.name)
       expect(tools).not.toContain('worker_execution_settings_get')
