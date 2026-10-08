@@ -9,7 +9,7 @@ import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
 import type { OperatorRequestContext } from '../types.js'
 
-export const DEVICE_OPERATOR_TOOLS = ['computer_activity_list', 'computer_accounts_list', 'computer_github_login_start', 'computer_github_login_status', 'computer_github_logout', 'computer_drive_connect_start', 'computer_drive_connect_status', 'computer_drive_disconnect', 'build_computer_get', 'build_computer_update', 'build_computers_update', 'device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get',
+export const DEVICE_OPERATOR_TOOLS = ['computer_activity_list', 'computer_accounts_list', 'computer_github_login_start', 'computer_github_login_status', 'computer_github_logout', 'computer_github_setup_git', 'computer_drive_connect_start', 'computer_drive_connect_status', 'computer_drive_disconnect', 'build_computer_get', 'build_computer_update', 'build_computers_update', 'device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get',
   'device_connection_host_discover', 'device_connection_read', 'device_connection_inspect', 'device_connection_check', 'device_connection_configure'] as const
 export function registerDeviceOperatorTools(server: McpServer, context: OperatorRequestContext): void {
   const service = context.services.devices

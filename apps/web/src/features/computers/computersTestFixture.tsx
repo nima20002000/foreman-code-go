@@ -21,7 +21,7 @@ export const deviceTarget = { hostRef: { kind: 'device' as const, mainId, device
   applicationInstallationId: registration.workerInstallationId, keyRevision: 1, authorizationRevision: 1 }
 
 export function computersFixture(children: React.ReactNode, handlers: HttpHandler[] = []) {
-  useComputerUi.setState({ activity: undefined, draggedKey: undefined })
+  useComputerUi.setState({ activity: undefined, draggedKey: undefined, github: undefined, drive: undefined })
   const statuses = new Map<string, BuildComputerStatus>([mainTarget, deviceTarget].map((target, index) => [
     computerKey(target), { preference: { target, revision: 1, buildEnabled: true, buildPriority: 100 - index * 50,
       buildRole: index ? 'backup' : 'primary', buildAllowancePercent: 60 },

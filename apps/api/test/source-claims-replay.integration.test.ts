@@ -1,6 +1,6 @@
 import { createFixtureDatabase, dropFixtureDatabase, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { link, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
@@ -20,7 +20,7 @@ import { closeCompletedWorkflowSources } from '../src/modules/sources/workflowCl
 
 // Owned closure-only SQL fixture. This exercises the unchanged confirmClosed
 // transaction and retention accounting; it does not qualify native closure proof.
-it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable release replay after %s and keeps retained bytes charged', async failure => {
+it.each(['lost-acknowledgement', 'database-failure'] as const)('closes linked worktrees after %s', async failure => {
   const database = `source_claims_test_${randomUUID().replaceAll('-', '')}`
   const adminUrl = process.env.TEST_DATABASE_URL!
   const admin = new pg.Pool({ connectionString: adminUrl })
@@ -49,6 +49,22 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
       snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
     const attempt = { placementHash: 'a'.repeat(64), executionId: randomUUID(), attemptId: randomUUID(), keyRevision: null, authorizationRevision: null }
     const receipt = await new PrivateSourceMaterializer({ async read() { return bytes } }, async () => {}).prepare({ manifest, binding, attempt })
+    const tree = join(root, receipt.materializationId, 'tree')
+    const dependencies = join(root, 'dependency-cache')
+    await mkdir(dependencies)
+    const dependency = join(dependencies, 'package.js')
+    await writeFile(dependency, Buffer.alloc(128 * 1024, 1))
+    const beforeLinks = await measureRetainedSourceDirectory(root, receipt.materializationId, filesystem)
+    const beforeTree = await lstat(tree)
+    const beforeParent = await lstat(join(root, receipt.materializationId))
+    await symlink(dependencies, join(tree, 'node_modules'))
+    await symlink('missing-package', join(tree, 'missing-link'))
+    await link(join(tree, 'app.ts'), join(tree, 'app-copy.ts'))
+    const afterTree = await lstat(tree)
+    const links = await Promise.all(['node_modules', 'missing-link'].map(name => lstat(join(tree, name))))
+    const linkBytes = links.reduce((sum, stat) => sum + Math.max(4096, stat.size, stat.blocks * 512), 0)
+    const expectedBytes = beforeLinks + linkBytes
+      + Math.max(4096, afterTree.blocks * 512) - Math.max(4096, beforeTree.blocks * 512)
     const reservation = { reservationId: randomUUID(), scopeId: `main:${filesystem.device}:${filesystem.mountId}`, ownerKind: 'materialization', ownerId: randomUUID(), reservedBytes: 100_000 }
     const record = SourceMaterializationRecordSchema.parse({ receipt, rootPolicyId: randomUUID(), rootPolicyRevision: '1', operationId: reservation.ownerId,
       reservationId: reservation.reservationId, sourceBindingHash: attempt.placementHash, finalDispatchBindingHash: null, state: 'prepared' })
@@ -90,10 +106,18 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('finishes durable
     await recovered.confirmClosed(record)
     expect((await pool.query('select state from source_execution_materializations')).rows[0].state).toBe('closed')
     const retainedBytes = await measureRetainedSourceDirectory(root, receipt.materializationId, filesystem) + 16 * 1024
+    const [releasedClaim, afterParent] = await Promise.all([
+      lstat(join(root, receipt.materializationId, 'released-claim.json')),
+      lstat(join(root, receipt.materializationId)),
+    ])
+    const claimBytes = Math.max(4096, releasedClaim.size, releasedClaim.blocks * 512)
+    const parentGrowth = Math.max(4096, afterParent.blocks * 512) - Math.max(4096, beforeParent.blocks * 512)
+    expect(retainedBytes).toBe(expectedBytes + claimBytes + parentGrowth + 16 * 1024)
     expect(retainedBytes).toBeLessThan(reservation.reservedBytes)
     expect((await pool.query('select state,reserved_bytes from source_storage_reservations')).rows[0]).toEqual({ state: 'retained', reserved_bytes: String(retainedBytes) })
     expect(Number((await pool.query("select sum(reserved_bytes) as charged from source_storage_reservations where state<>'reclaimed'")).rows[0].charged)).toBe(retainedBytes)
     expect(await readFile(join(root, receipt.materializationId, 'tree/app.ts'))).toEqual(bytes)
+    expect(await readFile(dependency)).toEqual(Buffer.alloc(128 * 1024, 1))
     await pool.query(`insert into source_preparation_reconciliations values ($1,'closed')`, [record.operationId])
     await pool.query('update source_storage_reservations set reserved_bytes=$1', [reservation.reservedBytes])
     await closeCompletedWorkflowSources(pool, recovered, report)
