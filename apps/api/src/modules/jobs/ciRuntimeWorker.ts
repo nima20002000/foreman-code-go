@@ -12,7 +12,7 @@ export interface CiRuntimeWorkerPorts {
   /** This build computer's managed runtime root; the installer workspace lives inside it. */
   managedRuntimeRoot(): Promise<string>
   prepare: typeof prepareCiRuntime
-  refresh: typeof scheduleCiRuntimeRefresh
+  refresh(input: Omit<Parameters<typeof scheduleCiRuntimeRefresh>[0], 'drain'>): ReturnType<typeof scheduleCiRuntimeRefresh>
   lastRefresh: typeof lastCiRuntimeRefresh
   /** Paths the current protected runtime configuration references. */
   currentRuntimePaths(stateDirectory: string): Promise<string[]>
@@ -80,9 +80,15 @@ export class CiRuntimeWorker {
     if (!prepared || prepared.commit !== request.commit) {
       throw new DomainError('CI_RUNTIME_NOT_PREPARED', 'Prepare this commit on the computer before refreshing its runtime.', 409)
     }
-    await this.ports.refresh({ stateDirectory: this.stateDirectory, prepared, root: request.root, manifest: request.manifest,
-      resources: request.resources })
-    return this.set({ ...this.state!, state: 'refreshing', stage: 'restart' })
+    this.set({ ...this.state!, state: 'refreshing', stage: 'draining' })
+    try {
+      await this.ports.refresh({ stateDirectory: this.stateDirectory, prepared, root: request.root, manifest: request.manifest,
+        resources: request.resources })
+      return this.set({ ...this.state!, stage: 'restart' })
+    } catch (error) {
+      this.set({ ...this.state!, state: 'failed', message: error instanceof Error ? error.message : String(error) })
+      throw error
+    }
   }
 
   private set(value: Omit<CiRuntimeWorkerState, 'updatedAt'>) {

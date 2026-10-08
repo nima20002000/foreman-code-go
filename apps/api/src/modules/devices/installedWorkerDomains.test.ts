@@ -1,10 +1,10 @@
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
-import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
+import { createInstalledWorkerDomains, createWorkerRuntimeDrain } from './installedWorkerDomains.js'
 import { ApprovedRootAllowlistSchema } from '@foreman-code/contracts/workspace-root-policies'
 import { extensionDescriptors } from './deviceApplicationChannel.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
@@ -12,6 +12,9 @@ import { afterEach } from 'vitest'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { TelemetryCollectedBatchSchema } from '@foreman-code/contracts/resource-telemetry'
 import { resourceTelemetryExtension } from '../resource-telemetry/ingestion/ports.js'
+import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
+import { qualifyApprovedRootAllowlist } from '../sources/rootAttestation.js'
+import { identity, openPrivateRoot } from '../sources/privateFilesystem.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -19,6 +22,88 @@ afterEach(async () => {
 })
 
 describe('actual installed worker mount availability, no physical acceptance', () => {
+  it('drains active Jobs and Agent sessions before refresh while preserving status and controls', async () => {
+    let finishJob!: () => void
+    const job = new Promise<void>(resolve => { finishJob = resolve })
+    let agentOpen = true
+    let jobOutcome = 'running'
+    let scheduled = false
+    const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal, active: () => [],
+      drainJobs: async () => { await job; jobOutcome = 'succeeded' },
+      drainQualifications: async () => {}, quiescent: async () => !agentOpen })
+    const refresh = drain.run().then(() => { scheduled = true })
+    expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).toThrow('waiting for active work')
+    expect(() => drain.assertAdmission('execution-v1', { method: 'conversation.open' })).toThrow()
+    expect(() => drain.assertAdmission('job-runtime-qualification-v1', { operation: 'start' })).toThrow()
+    expect(() => drain.assertAdmission('harness-discovery-v1', {})).toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'job-status' })).not.toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'conversation.close' })).not.toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'conversation.respond' })).not.toThrow()
+    expect(scheduled).toBe(false)
+    expect(jobOutcome).toBe('running')
+    finishJob()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(jobOutcome).toBe('succeeded')
+    expect(scheduled).toBe(false)
+    agentOpen = false
+    await refresh
+    expect(scheduled).toBe(true)
+    expect(jobOutcome).toBe('succeeded')
+    drain.resume()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).not.toThrow()
+  })
+
+  it('recovers an unused source reservation from protected journals without native runtime selections', async () => {
+    const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-source-cleanup-'))
+    roots.push(stateDirectory)
+    const project = join(stateDirectory, 'project')
+    const rootPolicyId = randomUUID()
+    const namespace = join(stateDirectory, 'source-materializations', rootPolicyId)
+    await mkdir(project, { mode: 0o700 })
+    await mkdir(namespace, { recursive: true, mode: 0o700 })
+    for (const name of ['workflow-operations.json', 'job-runtime-operations.json']) {
+      const journal = await RemoteOperationJournal.open(join(stateDirectory, name), { initializeNewInstallation: true })
+      await journal.close()
+    }
+    const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(), deviceId: randomUUID(),
+      workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, endpoint: 'wss://unconnected.example/device/connect',
+      mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: new Date(Date.now() + 60_000).toISOString() })
+    const approved = await qualifyApprovedRootAllowlist({ schemaVersion: 1,
+      hostRef: { kind: 'device', mainId: pairing.mainId, deviceId: pairing.deviceId },
+      applicationInstallationId: pairing.workerInstallationId, configurationRevision: '1',
+      bases: [{ baseId: randomUUID(), canonicalPath: project, accessModes: ['read-write'] }],
+      managedRuntimeRoot: stateDirectory })
+    const directory = await openPrivateRoot(namespace)
+    const filesystem = await identity(directory)
+    await directory.close()
+    const source = { approvedSourceId: randomUUID(), snapshotId: randomUUID(), manifestDigest: 'c'.repeat(64) }
+    const root = SourceRootRecordSchema.parse({ version: 1, source,
+      selection: { hostRef: approved.hostRef, rootPolicyId, rootPolicyRevision: '1', locationRevision: '1' },
+      binding: { version: 1, mainId: pairing.mainId, deviceId: pairing.deviceId,
+        workerInstallationId: pairing.workerInstallationId, workspaceId: randomUUID(), rootId: randomUUID(),
+        bindingRevision: 1, locationRevision: 1, canonicalPath: namespace, filesystem, accessMode: 'exclusive-write',
+        snapshotId: source.snapshotId, manifestDigest: source.manifestDigest },
+      registration: { workerInstallationId: pairing.workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+      ownerPrincipalId: 'source-owner', authorizedByPrincipalId: 'source-owner', attestationId: randomUUID(),
+      attestationDigest: 'd'.repeat(64), boundAt: new Date().toISOString() })
+    const grant = { reservationId: randomUUID(), reclamationId: randomUUID(), operationId: randomUUID(),
+      scopeId: 'original-filesystem', expiresAt: pairing.expiresAt, roots: [root], owner: null }
+    const binding = { mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
+      keyRevision: 1, authorizationRevision: 1, bootId: bootIdentity(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
+    const mounted = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId: binding.bootId,
+      configuration: null, approvedRoots: async () => approved, codexSuiteRevision: 'fixture-suite',
+      connection: () => ({ currentBinding: () => binding, captureRequest: () => ({ binding,
+        request: async () => ({ payload: { version: 1, operation: 'sources.reclamation-authorize', grant } }) }) }) })
+    try {
+      const extension = mounted.extensions.find(value => value.namespace === 'source-operations-v1')!
+      expect(await extension.handle!({ version: 1, operation: 'sources.reclaim-reservation',
+        reservationId: grant.reservationId, reclamationId: grant.reclamationId },
+      { binding, signal: AbortSignal.timeout(10_000) }))
+        .toMatchObject({ payload: { reclaimed: true, operationId: grant.operationId, closures: [] } })
+    } finally {
+      await mounted.close()
+    }
+  }, 30_000)
   it('mounts the guarded native profile-check endpoint for an installed workflow configuration', async () => {
     const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-profile-check-'))
     const journal = await RemoteOperationJournal.open(join(stateDirectory, 'workflow-operations.json'),
@@ -62,7 +147,7 @@ describe('actual installed worker mount availability, no physical acceptance', (
     expect(mounted.sourceAvailable).toBe(false)
     expect(mounted.rsyncAvailable).toBe(false)
     expect(mounted.rsyncMissing).toContain('canonical acknowledgement')
-    expect(mounted.extensions.map(extension => extension.namespace).sort()).toEqual(['agent-snapshot-v1', 'computer-accounts-v1', 'computer-drive-v1', 'computer-github-v1', 'harness-discovery-v1'])
+    expect(mounted.extensions.map(extension => extension.namespace).sort()).toEqual(['agent-snapshot-v1', 'computer-accounts-v1', 'computer-drive-v2', 'computer-github-v1', 'harness-discovery-v1'])
     await mounted.close(); await mounted.close()
   })
   it('advertises the actual Job input client on the existing channel only with an explicit Job installation',async()=>{

@@ -25,6 +25,12 @@ export const ComputerAccountsEntrySchema = z.object({
 }).strict()
 export const ComputerAccountsListSchema = z.object({
   computers: z.array(ComputerAccountsEntrySchema).max(101),
+  /** Continue after this paired device; Main appears only on the first page. */
+  nextCursor: z.uuid().nullable().optional(),
+}).strict()
+export const ComputerAccountsListInputSchema = z.object({
+  refresh: z.boolean().optional(),
+  cursor: z.uuid().optional(),
 }).strict()
 export type ComputerAccountTool = z.infer<typeof ComputerAccountToolSchema>
 export type ComputerAccount = z.infer<typeof ComputerAccountSchema>
@@ -37,10 +43,11 @@ export const GitHubLoginRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('login-start') }).strict(),
   z.object({ operation: z.literal('login-status'), loginId: z.uuid() }).strict(),
   z.object({ operation: z.literal('logout') }).strict(),
+  z.object({ operation: z.literal('setup-git'), loginId: z.uuid() }).strict(),
 ])
 export const GitHubLoginStateSchema = z.object({
   loginId: z.uuid().nullable(),
-  state: z.enum(['waiting', 'signed-in', 'signed-out', 'failed', 'expired']),
+  state: z.enum(['waiting', 'signed-in', 'signed-out', 'git-setup-failed', 'failed', 'expired']),
   code: z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/).nullable(),
   verificationUrl: z.url().nullable(),
   expiresAt: z.string().datetime().nullable(),
@@ -52,7 +59,7 @@ export const ComputerGitHubStatusInputSchema = ComputerGitHubInputSchema.extend(
 export type GitHubLoginRequest = z.infer<typeof GitHubLoginRequestSchema>
 export type GitHubLoginState = z.infer<typeof GitHubLoginStateSchema>
 
-export const COMPUTER_DRIVE_NAMESPACE = 'computer-drive-v1'
+export const COMPUTER_DRIVE_NAMESPACE = 'computer-drive-v2'
 /** The rclone remote and user service the app manages on each computer. */
 export const DRIVE_REMOTE = 'foreman-drive'
 export const DRIVE_MOUNT_DIRECTORY = 'Foreman Code Drive'
@@ -62,8 +69,9 @@ export const DRIVE_APP_FOLDER = 'Foreman Code'
 export const DriveComputerRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status') }).strict(),
   z.object({ operation: z.literal('install') }).strict(),
-  z.object({ operation: z.literal('connect'), token: z.string().min(2).max(8192) }).strict(),
-  z.object({ operation: z.literal('disconnect') }).strict(),
+  z.object({ operation: z.literal('intent'), operationId: z.uuid() }).strict(),
+  z.object({ operation: z.literal('connect'), operationId: z.uuid(), token: z.string().min(2).max(8192) }).strict(),
+  z.object({ operation: z.literal('disconnect'), operationId: z.uuid() }).strict(),
 ])
 export const DriveComputerStateSchema = z.object({
   installed: z.boolean(), connected: z.boolean(), account: z.string().max(320).nullable(),
@@ -71,9 +79,10 @@ export const DriveComputerStateSchema = z.object({
 }).strict()
 export const DriveLoginStateSchema = z.object({
   loginId: z.uuid().nullable(),
-  state: z.enum(['waiting', 'connecting', 'connected', 'disconnected', 'failed', 'expired']),
-  /** Google sign-in through rclone on Main: open it in a browser on Main. */
+  state: z.enum(['waiting', 'connecting', 'connected', 'disconnected', 'failed', 'expired', 'cancelled']),
+  /** Reserved for a browser-accessible sign-in URL; remote authorization uses the command below. */
   authorizationUrl: z.url().nullable(),
+  authorizationCommand: z.string().max(1024).nullable(),
   expiresAt: z.string().datetime().nullable(),
   account: z.string().max(320).nullable(),
   mountPath: z.string().max(1024).nullable(),
@@ -81,6 +90,9 @@ export const DriveLoginStateSchema = z.object({
 }).strict()
 export const ComputerDriveInputSchema = ComputerGitHubInputSchema
 export const ComputerDriveStatusInputSchema = ComputerGitHubStatusInputSchema
+export const ComputerDriveCompleteInputSchema = ComputerDriveStatusInputSchema.extend({
+  token: z.string().min(2).max(8192),
+}).strict()
 export type DriveComputerRequest = z.infer<typeof DriveComputerRequestSchema>
 export type DriveComputerState = z.infer<typeof DriveComputerStateSchema>
 export type DriveLoginState = z.infer<typeof DriveLoginStateSchema>

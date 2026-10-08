@@ -34,6 +34,13 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   const currentRef = useRef(current)
   currentRef.current = current
   const locationKey = JSON.stringify(['board-location-dialog', workspaceId, workflowId])
+  const panelKey = JSON.stringify(['selected-run-panel-hidden', workspaceId, workflowId])
+  const panelHidden = useInspectionPresentation((state) => !!state.open[panelKey])
+  const panelTrigger = useRef<HTMLButtonElement>(null)
+  const setPanelHidden = (hidden: boolean) => {
+    useInspectionPresentation.getState().setOpen(panelKey, hidden)
+    if (hidden) panelTrigger.current?.focus()
+  }
   const locationOpen = useInspectionPresentation((state) => !!state.open[locationKey])
   const setLocationOpen = useCallback((open: boolean) => {
     if (!open || currentRef.current) useInspectionPresentation.getState().setOpen(locationKey, open)
@@ -60,7 +67,8 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   useEffect(() => () => {
     useInspectionPresentation.getState().setOpen(runsKey, false)
     useInspectionPresentation.getState().setOpen(locationKey, false)
-  }, [runsKey, locationKey])
+    useInspectionPresentation.getState().setOpen(panelKey, false)
+  }, [runsKey, locationKey, panelKey])
   useEffect(() => {
     // The preserved editor owns a window-level undo/redo listener. inert only
     // blocks its DOM, not that listener. Leave text inputs and dialogs alone.
@@ -87,8 +95,10 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   return <WorkflowBoardContext.Provider value={value}>
     <div ref={toolbar} className="unified-workflow-board" data-testid="unified-workflow-board" style={{ flexDirection: 'column' }}>
       {!current ? <header className="board-topbar" aria-label="Board toolbar"
-        style={{ position: 'static', flex: '0 0 auto', justifyContent: 'flex-end', padding: 'var(--space-2)', boxSizing: 'border-box', minWidth: 0 }}>
+        style={{ position: 'static', flex: '0 0 auto', flexWrap: 'wrap', justifyContent: 'flex-end', padding: 'var(--space-2)', boxSizing: 'border-box', minWidth: 0 }}>
         <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={selectedRun} />
+        <Button ref={panelTrigger} size="sm" variant="ghost" aria-expanded={!panelHidden}
+          aria-label="Open Selected Run panel" onClick={() => setPanelHidden(false)}>Selected Run</Button>
       </header> : null}
       <RunBoardSlot selection={boardSelection}>
         <div className="workflow-board-authoring" onClickCapture={authoringEvent} onKeyDownCapture={authoringEvent} onSubmitCapture={authoringEvent}>
@@ -110,9 +120,13 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
           </Dialog>
         </div>
       </RunBoardSlot>
-      {selectedRun.active && (selectedRun.invalid || selectedRun.identity.runId !== null)
+      {selectedRun.active && !panelHidden && (selectedRun.invalid || selectedRun.identity.runId !== null)
         ? <aside className="board-side-panel board-historical-chat" aria-label="Agent chat">
-          <header><h2>Selected Run</h2></header>
+          <header><h2>Selected Run</h2>
+            <IconButton size="sm" variant="ghost" label="Close Selected Run panel" onClick={() => setPanelHidden(true)}>
+              <Icon name="close" size={14} />
+            </IconButton>
+          </header>
           <div className="board-historical-chat-content">
             <section aria-label="Run-wide Activities"><Activities selection={selectedRun} /></section>
             <h2>Agent chat</h2>

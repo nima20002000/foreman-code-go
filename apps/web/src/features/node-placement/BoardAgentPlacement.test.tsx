@@ -64,6 +64,33 @@ it('keeps computer selection on the clicked node when two nodes share one Agent'
   view.unmount(); query.clear(); read.mockRestore(); useGraphDraftStore.getState().dropNextDraft(key)
 })
 
+it('applies inherited Main by removing only the selected node placement from the draft', async () => {
+  const context = fixture()
+  const key = 'placement-clear-test'
+  context.draft.graph.nodes = context.draft.graph.nodes.map(node => ({ ...node, placement }))
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  const read = vi.spyOn(client, 'readPlacementChoices').mockImplementation(async scope => ({ ...scope,
+    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
+  function Board() {
+    const edit = useGraphDraftStore(state => state.nextDrafts[key])!
+    return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
+  }
+  const query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(<QueryClientProvider client={query}><Board /></QueryClientProvider>)
+  await screen.findByRole('option', { name: 'Laptop' })
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Computer' }), 'inherited')
+  expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).placement).toEqual(placement)
+  await userEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+  const applied = useGraphDraftStore.getState().nextDrafts[key]!
+  expect(applied.graph.nodes[0]).not.toHaveProperty('placement')
+  expect(nativeNode(applied.graph.nodes[1]).placement).toEqual(placement)
+  expect(nativeNode(applied.context.draft.graph.nodes[0]).placement).toEqual(placement)
+  view.unmount()
+  query.clear()
+  read.mockRestore()
+  useGraphDraftStore.getState().dropNextDraft(key)
+})
+
 it('keeps unrelated Agent edits when placement choices are denied for a saved placed node', async () => {
   const context = fixture(), key = 'placement-denied-retains-edits'
   context.draft.graph = { ...context.draft.graph, nodes: context.draft.graph.nodes.map((node, index) => index ? node : { ...nativeNode(node)!, placement }) }
@@ -87,4 +114,39 @@ it('keeps unrelated Agent edits when placement choices are denied for a saved pl
   expect(form).toMatchObject({ name: 'Renamed!' })
   expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Renamed!')
   view.unmount(); query.clear(); read.mockRestore(); useGraphDraftStore.getState().dropNextDraft(key)
+})
+
+it.each([403, 404, 503])('retains and clears a saved placement after choices discovery returns %s', async (status) => {
+  const context = fixture()
+  const key = `placement-discovery-failure-${status}`
+  context.draft.graph.nodes = context.draft.graph.nodes.map(node => ({ ...node, placement }))
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  const read = vi.spyOn(client, 'readPlacementChoices').mockRejectedValue(
+    new ApiError({ code: 'CHOICES_UNAVAILABLE', message: 'Choices unavailable' }, status),
+  )
+  function Board() {
+    const edit = useGraphDraftStore(state => state.nextDrafts[key])!
+    return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
+  }
+  const query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(<QueryClientProvider client={query}><Board /></QueryClientProvider>)
+  try {
+    await screen.findByText('Computer choices are unavailable.')
+    const computer = screen.getByRole('combobox', { name: 'Computer' })
+    expect(computer).toHaveValue('retained')
+    expect(screen.getByText(placement.projectRoot)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save agent settings' })).toBeDisabled()
+    await userEvent.selectOptions(computer, 'inherited')
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).placement).toEqual(placement)
+    await userEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    const applied = useGraphDraftStore.getState().nextDrafts[key]!
+    expect(applied.graph.nodes[0]).not.toHaveProperty('placement')
+    expect(nativeNode(applied.graph.nodes[1]).placement).toEqual(placement)
+    expect(nativeNode(applied.context.draft.graph.nodes[0]).placement).toEqual(placement)
+  } finally {
+    view.unmount()
+    query.clear()
+    read.mockRestore()
+    useGraphDraftStore.getState().dropNextDraft(key)
+  }
 })

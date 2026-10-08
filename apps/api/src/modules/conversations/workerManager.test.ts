@@ -346,3 +346,44 @@ it('retains recovered callback admission until native settlement and rechecks re
     ])
   } finally { await manager.dispose(); await bridge.close() }
 })
+
+
+it.each(['recorded', 'missing', 'foreign-session', 'broken-chain'] as const)(
+  'accepts a replacement owner only with a valid persisted transition: %s', async variant => {
+    const f = workerConversationFixture('operator', 'claude')
+    const previous = f.nativeOwner
+    const next = { ...previous, processIdentityDigest: 'c'.repeat(64) }
+    let record: WorkerConversationReceipt = { binding: f.binding, connection: f.connection,
+      revision: 1, closed: false, closing: false, session: f.session, nativeOwner: previous,
+      turns: [], compactions: [], desiredPreferences: null, appliedPreferences: null }
+    const older = structuredClone(record)
+    let readOlder = false
+    const bridge = new MainWorkerConversationBridge()
+    const manager = new WorkerConversationManager({ binding: f.binding, configuration: f.configuration, bridge,
+      current: async () => {}, channel: { binding: f.connection, request: async payload => {
+        const request = WorkerConversationRpcRequestSchema.parse(payload)
+        if (request.method === 'conversation.preferences') {
+          const transition = variant === 'broken-chain' ? { ...previous, processIdentityDigest: 'd'.repeat(64) } : previous
+          record = { ...record, revision: 2, nativeOwner: next,
+            ...(variant === 'missing' ? {} : { ownerTransitions: [{ previous: transition, next }] }),
+            ...(variant === 'foreign-session' ? { session: { ...f.session, nativeSessionId: 'foreign' } } : {}),
+            appliedPreferences: request.preferences, desiredPreferences: request.preferences }
+        }
+        if (request.method === 'conversation.controls-read') return { payload: { receipt: readOlder ? older : record,
+          capabilities: unavailableSessionControls('recorded'), context: null, preferences: record.appliedPreferences } }
+        return { payload: { receipt: record } }
+      } } })
+    try {
+      await manager.attachSession(f.session, { kind: 'operator', configuration: f.configuration as
+        Extract<NativeSessionStart, { kind: 'operator' }>['configuration'],
+        correlationId: 'recorded', workingDirectory: f.binding.workingDirectory })
+      const applying = manager.applySessionPreferences(f.session, SessionPreferencesSchema.parse({ autoCompact: 'off' }))
+      if (variant === 'recorded') {
+        await applying
+        readOlder = true
+        await expect(manager.sessionControlCapabilities(f.session)).resolves.toBeTruthy()
+        expect(manager.appliedSessionPreferences(f.session)?.autoCompact).toBe('off')
+      } else await expect(applying).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_CONFLICT' })
+    } finally { await manager.dispose() }
+  },
+)

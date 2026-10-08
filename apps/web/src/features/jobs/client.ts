@@ -4,6 +4,7 @@ import { JobLogPageSchema, JobArtifactSchema, JobValidationSchema } from '@forem
 import { JobDefinitionRecordSchema, JobDefinitionSaveRecordSchema, JobDefinitionSpecRecordSchema, JobExecutionRecordSchema, JobAuthoringChoicesRecordSchema, type JobDefinitionSaveRecord, type JobDefinitionSpecRecord } from '@foreman-code/contracts/job-verification'
 import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
   JobQueueTicketSchema, JobQueueListInputSchema, JobQueuePageSchema,
+  JobLaunchValidationInputSchema, JobLaunchValidationSchema,
   type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 
@@ -41,6 +42,10 @@ export const jobsClient = {
   validate(workspaceId: string, spec: JobDefinitionSpecRecord) {
     return apiClient.request(`${root(workspaceId)}/validate`, JobValidationSchema, { method: 'POST', body: { spec: JobDefinitionSpecRecordSchema.parse(spec) } })
   },
+  validateLaunch(workspaceId: string, input: z.infer<typeof JobLaunchValidationInputSchema>, options?: RequestOptions) {
+    return apiClient.request(`${root(workspaceId)}/launch/validate`, JobLaunchValidationSchema,
+      { ...options, method: 'POST', body: JobLaunchValidationInputSchema.parse(input) })
+  },
   async start(workspaceId: string, input: z.infer<typeof JobQueuedStartSchema>) {
     const { admission } = await apiClient.request(`${root(workspaceId)}/executions`,
       z.object({ admission: JobAdmissionResultSchema }),
@@ -63,8 +68,10 @@ export const jobsClient = {
     const input = JobQueueListInputSchema.parse(pageInput)
     const query = new URLSearchParams({ historyLimit: String(input.historyLimit) })
     if (input.historyBeforeSequence) query.set('historyBeforeSequence', input.historyBeforeSequence)
+    if (input.initiatingExecutionId) query.set('initiatingExecutionId', input.initiatingExecutionId)
     const page = await apiClient.request(`${root(workspaceId)}/queue?${query}`, JobQueuePageSchema, options)
-    if (page.tickets.some(ticket => ticket.workspaceId !== workspaceId)) mismatch()
+    if (page.tickets.some(ticket => ticket.workspaceId !== workspaceId
+      || input.initiatingExecutionId && ticket.initiatingAgent?.executionId !== input.initiatingExecutionId)) mismatch()
     return page
   },
   async queueTicket(workspaceId: string, id: string, options?: RequestOptions) {

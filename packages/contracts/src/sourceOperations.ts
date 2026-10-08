@@ -67,9 +67,23 @@ export const SourceOperationOwnerSchema = z.object({ identity: SourcePreparation
   preparationNativeSession: z.lazy(() => NativeSessionReferenceSchema).nullable().optional(),
   physicalClosureConfirmed: z.boolean(), activeNativeSession: SourceActiveNativeSessionSchema.nullish(), preparationClosed: z.literal(true).optional() }).strict()
 export type SourceOperationOwner = z.infer<typeof SourceOperationOwnerSchema>
+export const SourceReservationReclamationRequestSchema = z.object({ version: z.literal(1),
+  operation: z.enum(['sources.reclaim-reservation', 'sources.reclamation-authorize']),
+  reservationId: z.uuid(), reclamationId: z.uuid() }).strict()
+export const SourceReservationReclamationSchema = z.object({ reservationId: z.uuid(), reclamationId: z.uuid(),
+  operationId: IdSchema, scopeId: z.string().min(1), expiresAt: z.string().datetime(),
+  roots: z.array(SourceRootRecordSchema).min(1).max(1024),
+  owner: SourceOperationOwnerSchema.nullable() }).strict()
+export type SourceReservationReclamation = z.infer<typeof SourceReservationReclamationSchema>
+export const SourceReservationReclamationAuthorityResponseSchema = z.object({ version: z.literal(1),
+  operation: z.literal('sources.reclamation-authorize'), grant: SourceReservationReclamationSchema }).strict()
+export const SourceReservationReclamationResponseSchema = z.object({ version: z.literal(1),
+  operation: z.literal('sources.reclaim-reservation'), reservationId: z.uuid(), reclamationId: z.uuid(),
+  operationId: IdSchema, reclaimed: z.literal(true), closures: z.array(SourcePreparationClosureSchema).max(1024) }).strict()
 export const PrivateSourceRepositoryResultSchema = z.object({ workTree: z.string().startsWith('/'), gitDirectory: z.string().startsWith('/'),
   generatedCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), sourceCommit: z.string().nullable() }).strict()
 export const SourceOperationResponseSchema = z.discriminatedUnion('operation', [
+  SourceReservationReclamationResponseSchema,
   z.object({ version: z.literal(1), operation: z.literal('sources.prepare'), receipt: MaterializationReceiptSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.verify'), workTree: z.string().startsWith('/'),
     canonicalCwd: z.string().startsWith('/'), directoryIdentityHash: SourceHashSchema,

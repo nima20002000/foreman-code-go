@@ -19,14 +19,14 @@ function controller() {
 }
 afterEach(() => { cleanup(); useConversationDraftStore.getState().clearAllDrafts() })
 for (const role of ['Operator', 'node'] as const) describe(`${role} composer native commands`, () => {
-  function mount() {
+  function mount(sendDisabled = false) {
     const controls = controller()
     const send = vi.fn()
     const attachment = <button type="button">Ready attachment</button>
     if (role === 'Operator') render(<OperatorComposer conversationId="chat" sessionControls={controls}
-      onNewChat={vi.fn()} onSubmit={send} attachmentControl={attachment} hasAttachments />)
+      onNewChat={vi.fn()} onSubmit={send} attachmentControl={attachment} hasAttachments sendDisabled={sendDisabled} />)
     else render(<ConversationComposer conversationId="chat" sessionControls={controls}
-      onSubmit={send} attachmentControl={attachment} hasAttachments />)
+      onSubmit={send} attachmentControl={attachment} hasAttachments sendDisabled={sendDisabled} />)
     return { controls, send, input: screen.getByRole('textbox', { name: 'Message' }) }
   }
   it('uses a native operation for bare commands and keeps attachments outside message submission', async () => {
@@ -49,6 +49,17 @@ for (const role of ['Operator', 'node'] as const) describe(`${role} composer nat
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(send).toHaveBeenLastCalledWith('Explain /compact')
   })
+  it('submits a Plan task from the send button after Tab completion', () => {
+    const { controls, send, input } = mount()
+    fireEvent.change(input, { target: { value: '/p' } })
+    fireEvent.keyDown(input, { key: 'Tab' })
+    expect(input).toHaveValue('/plan')
+    expect(controls.command).not.toHaveBeenCalled()
+    fireEvent.change(input, { target: { value: '/plan Inspect files' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(send).toHaveBeenCalledExactlyOnceWith('/plan Inspect files', 'plan')
+    expect(controls.command).not.toHaveBeenCalled()
+  })
   it('preserves the draft on command failure and does not submit while composing IME input', async () => {
     const { controls, send, input } = mount()
     vi.mocked(controls.command).mockRejectedValue(new Error('Compaction is unconfirmed.'))
@@ -59,6 +70,35 @@ for (const role of ['Operator', 'node'] as const) describe(`${role} composer nat
     expect(await screen.findByRole('alert')).toHaveTextContent('Compaction is unconfirmed.')
     expect(input).toHaveValue('/compact')
     expect(send).not.toHaveBeenCalled()
+  })
+  it.each(['/plan', '/plan off', '/compact'])('routes %s from the send button only to controls', async content => {
+    const { controls, send, input } = mount(true)
+    fireEvent.change(input, { target: { value: content } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(controls.command).toHaveBeenCalledExactlyOnceWith(content, 'chat'))
+    expect(send).not.toHaveBeenCalled()
+  })
+  it.each(['/plan', '/compact'])('autocompletes %s while ordinary messages are blocked', async content => {
+    const { controls, send, input } = mount(true)
+    fireEvent.change(input, { target: { value: content.slice(0, 2) } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(controls.command).toHaveBeenCalledExactlyOnceWith(content, 'chat'))
+    expect(send).not.toHaveBeenCalled()
+  })
+  it.each(['ctrlKey', 'altKey', 'metaKey', 'shiftKey'])('does not submit autocomplete on %s + Enter', modifier => {
+    const { controls, send, input } = mount()
+    fireEvent.change(input, { target: { value: '/p' } })
+    fireEvent.keyDown(input, { key: 'Enter', [modifier]: true })
+    expect(input).toHaveValue('/p')
+    expect(controls.command).not.toHaveBeenCalled()
+    expect(send).not.toHaveBeenCalled()
+  })
+  it('leaves Shift + Tab to backward focus navigation', () => {
+    const { controls, input } = mount()
+    fireEvent.change(input, { target: { value: '/p' } })
+    expect(fireEvent.keyDown(input, { key: 'Tab', shiftKey: true })).toBe(true)
+    expect(input).toHaveValue('/p')
+    expect(controls.command).not.toHaveBeenCalled()
   })
 })
 it('shows unknown context honestly and the popover invokes the compact operation', async () => {
@@ -142,4 +182,54 @@ it('refreshes the budget from persisted readback and ignores an untouched blur',
   fireEvent.change(input, { target: { value: '180000' } })
   fireEvent.blur(input)
   expect(controls.change).not.toHaveBeenCalled()
+})
+
+it('saves the edited budget as defaults without a competing blur write', () => {
+  const controls = controller()
+  controls.state = { ...state, capabilities: { ...state.capabilities, modelCapacity: 200000,
+    autoCompactBudget: { supported: true, reason: null } } }
+  render(<SessionControls controls={controls} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
+  const input = screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })
+  fireEvent.change(input, { target: { value: '150000' } })
+  const save = screen.getByRole('button', { name: 'Save as default for future chats' })
+  fireEvent.mouseDown(save)
+  fireEvent.blur(input, { relatedTarget: save })
+  fireEvent.click(save)
+  expect(controls.change).toHaveBeenCalledExactlyOnceWith({ kind: 'save-default',
+    preferences: { ...state.desired, autoCompactTokens: 150000 } })
+})
+
+it('keeps an unsaved budget through polling and resets it when the chat changes', () => {
+  const controls = controller()
+  controls.state = { ...state, capabilities: { ...state.capabilities, modelCapacity: 200000,
+    autoCompactBudget: { supported: true, reason: null } } }
+  const view = render(<SessionControls controls={controls} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-compaction budget' }), { target: { value: '150000' } })
+  controls.state = { ...controls.state!, revision: 2, desired: { ...state.desired, autoCompactTokens: 180000 } }
+  view.rerender(<SessionControls controls={controls} />)
+  expect(screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })).toHaveValue(150000)
+  controls.state = { ...controls.state!, conversationId: 'other-chat', desired: { ...state.desired, autoCompactTokens: 190000 } }
+  view.rerender(<SessionControls controls={controls} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
+  expect(screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })).toHaveValue(190000)
+})
+
+it('resets an unsaved budget when switching nodes before either conversation exists', () => {
+  const controls = Object.assign(controller(), { scope: 'first-node' })
+  controls.state = { ...state, conversationId: null,
+    capabilities: { ...state.capabilities, modelCapacity: 200000,
+      autoCompactBudget: { supported: true, reason: null } } }
+  const view = render(<SessionControls controls={controls} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-compaction budget' }), {
+    target: { value: '150000' },
+  })
+  controls.scope = 'second-node'
+  view.rerender(<SessionControls controls={controls} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Context unknown' }))
+  expect(screen.getByRole('spinbutton', { name: 'Auto-compaction budget' })).toHaveValue(null)
+  fireEvent.click(screen.getByRole('button', { name: 'Save as default for future chats' }))
+  expect(controls.change).toHaveBeenCalledExactlyOnceWith({ kind: 'save-default', preferences: state.desired })
 })

@@ -30,7 +30,7 @@ function writable(record: WorkerConversationReceipt) {
   if (record.applicationAccessChange?.state === 'reserved') conflict('The native App MCP access change needs recovery.')
 }
 function unsettled(record: WorkerConversationReceipt) {
-  return record.turns.some(turn => turn.status !== 'completed')
+  return record.turns.some(turn => !['completed', 'rejected'].includes(turn.status))
     || record.compactions.some(control => ['accepted', 'running', 'uncertain'].includes(control.state.status))
 }
 
@@ -143,7 +143,7 @@ export class WorkerConversationJournal {
     return this.change(binding, record => {
       writable(record)
       if (binding.harness !== 'opencode' || record.session?.nativeSessionId !== nativeSessionId
-        || !record.turns.some(turn => turn.correlationId === correlationId && turn.status !== 'completed')) {
+        || !record.turns.some(turn => turn.correlationId === correlationId && !['completed', 'rejected'].includes(turn.status))) {
         conflict('The file directory requires its admitted native conversation turn.')
       }
       const roots = record.openCodeFileRoots ??= []
@@ -233,7 +233,7 @@ export class WorkerConversationJournal {
   reserveCreation(binding: WorkerConversationBinding, operationId: string, inputHash: string) {
     return this.change(binding, record => {
       writable(record)
-      if (record.creation) {
+      if (record.creation && (record.creation.status !== 'rejected' || record.creation.operationId === operationId)) {
         if (record.creation.operationId !== operationId || record.creation.inputHash !== inputHash) {
           conflict('Native creation has already been reserved for another request.')
         }
@@ -241,6 +241,30 @@ export class WorkerConversationJournal {
       }
       if (record.session) conflict('This conversation already has a native session.')
       record.creation = { operationId, inputHash }
+      return { dispatch: true, record }
+    })
+  }
+
+  reserveInitialTurn(binding: WorkerConversationBinding, operationId: string, creationHash: string,
+    correlationId: string, inputHash: string, mode: SessionMode) {
+    return this.change(binding, record => {
+      writable(record)
+      const original = record.turns.find(turn => turn.correlationId === correlationId)
+      if (original) {
+        if (original.inputHash !== inputHash || original.sessionMode !== mode
+          || original.creationOperationId && original.creationOperationId !== operationId) {
+          conflict('The original initial turn input changed.')
+        }
+        return { dispatch: false, record }
+      }
+      const creationPending = record.creation && record.creation.status !== 'rejected'
+      if (creationPending || record.session || unsettled(record)) {
+        conflict('Native creation has already been reserved for another request.')
+      }
+      if (record.turns.length >= 1000) conflict('The conversation turn journal is full.')
+      record.creation = { operationId, inputHash: creationHash }
+      record.turns.push({ correlationId, inputHash, status: 'reserved', nativeTurnId: null,
+        sessionMode: mode, creationOperationId: operationId })
       return { dispatch: true, record }
     })
   }
@@ -269,23 +293,33 @@ export class WorkerConversationJournal {
   }
 
   recoveredOwner(binding: WorkerConversationBinding, connection: DeviceSessionBinding,
-    previous: RemoteNativeIdentity, next: RemoteNativeIdentity, targetBinding?: WorkerConversationBinding) {
+    previous: RemoteNativeIdentity, next: RemoteNativeIdentity,
+    options?: { targetBinding?: WorkerConversationBinding; pendingCorrelationId?: string }) {
     return this.change(binding, record => {
       if (record.closed || record.closing) conflict('The native conversation is closing or closed.')
       const change = record.applicationAccessChange
+      const targetBinding = options?.targetBinding
       if (targetBinding) {
         if (!change || change.state !== 'reserved' || change.previous !== binding.appMcpAccess
           || change.next !== targetBinding.appMcpAccess || !sameConversationForAppAccess(binding, targetBinding)) {
           conflict('The original App MCP access change was not reserved.')
         }
       } else if (change?.state === 'reserved') conflict('The native App MCP access change needs recovery.')
-      if (unsettled(record) || !record.session || !isDeepStrictEqual(record.nativeOwner, previous)
+      const pending = record.turns.find(turn => turn.correlationId === options?.pendingCorrelationId)
+      const replacingBeforeInput = pending?.status === 'reserved' && !pending.nativeTurnId && !pending.nativeSubmission
+      const otherPending = record.turns.some(turn => !['completed', 'rejected'].includes(turn.status)
+        && (!replacingBeforeInput || turn !== pending))
+        || record.compactions.some(control => ['accepted', 'running', 'uncertain'].includes(control.state.status))
+      if (otherPending || !record.session || !isDeepStrictEqual(record.nativeOwner, previous)
         || previous.sessionId !== record.session.nativeSessionId || next.sessionId !== previous.sessionId) {
         conflict('The recovered process does not own the settled conversation session.')
       }
       for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) {
         if (record.connection[field] !== connection[field]) conflict('The original paired worker authority changed.')
       }
+      const transitions = record.ownerTransitions ??= []
+      if (transitions.length >= 1000) conflict('The conversation owner journal is full.')
+      transitions.push({ previous, next })
       record.nativeOwner = next
       record.connection = connection
       if (targetBinding) {
@@ -319,6 +353,7 @@ export class WorkerConversationJournal {
     return this.change(binding, record => {
       const turn = record.turns.find(value => value.correlationId === correlationId)
       if (!turn || !record.session) conflict('The native input has no conversation reservation.')
+      if (turn.status === 'rejected') conflict('The rejected native input cannot be submitted.')
       if (identity.nativeTurnId) {
         if (turn.nativeTurnId && turn.nativeTurnId !== identity.nativeTurnId) conflict('The native turn identity changed.')
         turn.nativeTurnId = identity.nativeTurnId
@@ -331,7 +366,27 @@ export class WorkerConversationJournal {
         }
         turn.nativeSubmission = identity.nativeSubmission
       }
-      if (turn.status !== 'completed') turn.status = 'submitted'
+      if (!['completed', 'rejected'].includes(turn.status)) turn.status = 'submitted'
+      return record
+    })
+  }
+
+  rejectTurn(binding: WorkerConversationBinding, correlationId: string, result: ExecutionResult,
+    creationOperationId?: string) {
+    return this.change(binding, record => {
+      const turn = record.turns.find(value => value.correlationId === correlationId)
+      if (!turn || result.outcome !== 'failed') conflict('The rejected input has no failed turn reservation.')
+      if (turn.status === 'completed' || turn.status === 'rejected') return record
+      if (turn.nativeTurnId || turn.nativeSubmission || turn.status !== 'reserved') {
+        turn.status = 'uncertain'
+        return record
+      }
+      if (creationOperationId && !record.session) {
+        if (record.creation?.operationId !== creationOperationId) conflict('The rejected creation request changed.')
+        record.creation.status = 'rejected'
+      }
+      turn.status = 'rejected'
+      turn.result = result
       return record
     })
   }
@@ -340,11 +395,12 @@ export class WorkerConversationJournal {
     return this.change(binding, record => {
       const turn = record.turns.find(value => value.correlationId === correlationId)
       if (!turn) conflict('The native turn has no conversation reservation.')
+      if (turn.status === 'rejected') return record
       if (turn.result && result && !isDeepStrictEqual(turn.result, result)) conflict('The native turn result changed.')
       if (result) {
         turn.result = result
         turn.status = 'completed'
-      } else if (turn.status !== 'completed') turn.status = 'uncertain'
+      } else if (!['completed', 'rejected'].includes(turn.status)) turn.status = 'uncertain'
       return record
     })
   }
@@ -378,8 +434,8 @@ export class WorkerConversationJournal {
         || control.state.nativeOperationId && state.nativeOperationId !== control.state.nativeOperationId) {
         conflict('The original native compaction outcome changed.')
       }
-      control.state = state
-      return state
+      control.state = { ...state, dispatchPhase: state.dispatchPhase ?? control.state.dispatchPhase }
+      return control.state
     })
   }
 

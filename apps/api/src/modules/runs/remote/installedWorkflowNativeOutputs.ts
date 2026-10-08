@@ -44,6 +44,10 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
   captureRequest: InstalledWorkflowHostOptions['captureRequest']
 }): InstalledNativeOutputProviders {
   const { context } = input
+  // Storage and transfers retain the launch identity while relay authorization follows the live resident.
+  const artifactBinding = { intent: structuredClone(context.intent), placement: structuredClone(context.placement),
+    root: { rootId: context.materialization.receipt.binding.rootId,
+      rootBindingRevision: context.materialization.receipt.binding.bindingRevision } }
   const rootDirectory = join(input.stateDirectory, 'native-output-bytes')
   const budgetDirectory = join(input.stateDirectory, 'native-output-budget')
   const limits = { maxDiskBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
@@ -74,11 +78,16 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
     return capture
   }
   const request = async (payload: unknown, signal?: AbortSignal) => {
+    const intent = structuredClone(context.intent)
     await context.assertCurrent(undefined, signal)
+    if (!isDeepStrictEqual(intent, context.intent)) throw unavailable()
     const capture = captureRequest(WORKER_MCP_EXTENSION.namespace)
     const result = await capture.request(payload, signal ? { signal } : undefined)
     if (result.bytes !== undefined) throw unavailable()
     await context.assertCurrent(undefined, signal)
+    if (!isDeepStrictEqual(capture.binding, context.binding) || !isDeepStrictEqual(intent, context.intent)) {
+      throw unavailable()
+    }
     return result.payload
   }
   const envelope = () => ({ version: 1, intent: context.intent, placement: context.placement,
@@ -134,7 +143,7 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
       return response.scope
     },
     storage: (prepared, pin) => {
-      const owner = { intent: context.intent, binding: context.binding, session: pin.session,
+      const owner = { intent: artifactBinding.intent, binding: context.binding, session: pin.session,
         nativeTurnId: pin.nativeTurnId, runtimeGeneration: pin.runtimeGeneration }
       if (!qualified || !sameCodexNativeOutputSandbox(prepared.effectiveSandbox, prepared.expectedSandbox)
         || !sameCodexNativeOutputSandbox(prepared.effectiveSandbox, qualified.expectedSandbox)) throw unavailable()
@@ -155,9 +164,7 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
         },
       }
     },
-    artifacts: { binding: { intent: context.intent, placement: context.placement,
-      root: { rootId: context.materialization.receipt.binding.rootId,
-        rootBindingRevision: context.materialization.receipt.binding.bindingRevision } },
+    artifacts: { binding: artifactBinding,
       main: {
         admit: (declaration, signal) => call('files.admit_transferred_result', declaration, TransferIntentSchema, signal),
         publish: async (publication, signal) => {

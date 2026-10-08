@@ -22,7 +22,7 @@ import type { PrivateSourceSnapshotStore } from './store.js'
 import { authorizeSource } from './authority.js'
 import { assertAcceptedSourceRelativeCwd } from './agentSourceAuthority.js'
 import { sourceBindingHash } from './bindingHash.js'
-import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
+import { PostgresSourceReservations, requireUnreclaimedSourceOperation, type SourceReservation } from './reservations.js'
 import type { RegisteredSourceRootPort, SourceAdmissionPort, SourceClosureProofPort } from './admissionPorts.js'
 import type { MaterializationAttempt } from './ports.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
@@ -238,29 +238,12 @@ export class PostgresSourceService implements SourceAdmissionPort {
     await this.transaction(async sql => authorizeSource(sql, principal, 'sources:approve', input.workspaceId))
     const configured = await this.transaction(async sql => WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
       'select record from workspaces where id=$1', [input.workspaceId])).rows[0]?.record ?? { id: input.workspaceId, name: '-' }).repository)
-    const signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
-    let commit = input.snapshot?.commit ?? input.commit
-    let repository: { repository: string; clone: string } | undefined
-    if (configured) {
-      const name = `${configured.owner}/${configured.name}`
-      if (input.snapshot) {
-        const clone = await ensureCommit(this.git, name, input.snapshot.baseCommit, signal)
-        await importAgentSnapshot(this.git, clone, input.snapshot, signal)
-        repository = { repository: name, clone }
-      } else if (commit) repository = { repository: name, clone: await ensureCommit(this.git, name, commit, signal) }
-      else {
-        const clone = this.git.cloneDirectory(name)
-        await ensureClone(this.git, name, signal)
-        const fetched = await this.git.git(['fetch', '--no-tags', 'origin', configured.defaultBranch], { cwd: clone, signal })
-        const head = fetched.code === 0 ? await this.git.git(['rev-parse', 'FETCH_HEAD^{commit}'], { cwd: clone, signal }) : fetched
-        if (head.code !== 0) throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', `Main could not fetch ${name}@${configured.defaultBranch}. Sign GitHub in on Main.`, 409)
-        commit = head.stdout.trim()
-        repository = { repository: name, clone }
-      }
-    } else if (input.snapshot) {
-      throw new DomainError('SOURCE_REPOSITORY_REQUIRED', 'Set the workspace GitHub repository before running CI on an Agent\'s files.', 409)
-    }
-    const payload = { workspaceId: input.workspaceId, commandId: input.commandId, ...(commit ? { commit } : {}) }
+    let repository = configured ? { repository: `${configured.owner}/${configured.name}`,
+      clone: this.git.cloneDirectory(`${configured.owner}/${configured.name}`) } : undefined
+    const payload = { workspaceId: input.workspaceId, commandId: input.commandId,
+      ...(input.commit ? { commit: input.commit } : {}),
+      ...(input.snapshot ? { snapshot: { commit: input.snapshot.commit, baseCommit: input.snapshot.baseCommit,
+        bundleDigest: sourceSha256(input.snapshot.bundle) } } : {}) }
     const captured = await this.commands.execute({ principal, source: 'mcp',
       operation: 'source.project.capture', commandId: input.commandId, targetKey: input.workspaceId,
       payload, dedicatedConnection: true,
@@ -271,6 +254,24 @@ export class PostgresSourceService implements SourceAdmissionPort {
         await this.host(sql)
       },
       perform: async () => {
+        const signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
+        let commit = input.snapshot?.commit ?? input.commit
+        if (configured) {
+          const name = `${configured.owner}/${configured.name}`
+          if (input.snapshot) {
+            const clone = await ensureCommit(this.git, name, input.snapshot.baseCommit, signal)
+            await importAgentSnapshot(this.git, clone, input.snapshot, signal)
+            repository = { repository: name, clone }
+          } else if (commit) repository = { repository: name, clone: await ensureCommit(this.git, name, commit, signal) }
+          else {
+            const clone = this.git.cloneDirectory(name)
+            await ensureClone(this.git, name, signal)
+            commit = await this.fetchDefaultBranch(clone, name, configured.defaultBranch, signal)
+            repository = { repository: name, clone }
+          }
+        } else if (input.snapshot) {
+          throw new DomainError('SOURCE_REPOSITORY_REQUIRED', 'Set the workspace GitHub repository before running CI on an Agent\'s files.', 409)
+        }
         const location = await this.transaction(async sql => {
           await this.workspace(sql, input.workspaceId)
           const row = (await sql.query<{ location_revision: string }>(
@@ -293,6 +294,29 @@ export class PostgresSourceService implements SourceAdmissionPort {
       },
     })
     return (await this.approve(principal, 'mcp', captured.value, repository)).value
+  }
+  private async fetchDefaultBranch(clone: string, repository: string, branch: string, signal: AbortSignal) {
+    const ref = `refs/foreman/ci/fetch/${randomUUID()}`
+    let commit: string
+    let cleanupFailed: boolean
+    try {
+      const fetched = await this.git.git(['fetch', '--no-tags', 'origin', `refs/heads/${branch}:${ref}`],
+        { cwd: clone, signal })
+      const head = fetched.code === 0
+        ? await this.git.git(['rev-parse', '--verify', `${ref}^{commit}`], { cwd: clone, signal }) : fetched
+      if (head.code !== 0) {
+        throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE',
+          `Main could not fetch ${repository}@${branch}. Sign GitHub in on Main.`, 409)
+      }
+      commit = head.stdout.trim()
+    } finally {
+      const removed = await this.git.git(['update-ref', '-d', ref], { cwd: clone, signal })
+      cleanupFailed = removed.code !== 0
+    }
+    if (cleanupFailed) {
+      throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', 'Main could not remove its temporary fetch ref.', 409)
+    }
+    return commit
   }
   async resolveRootBinding(sql: Sql, principal: ManagementPrincipal,
     input: { workspaceId: string; rootId: string; bindingRevision: number; source: ApprovedSourcePin }): Promise<SourceRootRecord> {
@@ -383,6 +407,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
   async prepareExecution(input: { principal: ManagementPrincipal; workspaceId: string; rootId: string; bindingRevision: number;
     source: ApprovedSourcePin; attempt: MaterializationAttempt; operationId: string }): Promise<SourceMaterializationRecord> {
     const state = await this.transaction(async sql => {
+      await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${input.operationId}`])
+      await requireUnreclaimedSourceOperation(sql, input.operationId)
       const root = await this.resolveRootBinding(sql, input.principal, input)
       const source = await this.resolveApprovedSource(sql, input.principal, input.workspaceId, input.source)
       if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [input.operationId])).rowCount)
@@ -401,11 +427,17 @@ export class PostgresSourceService implements SourceAdmissionPort {
       }
       const reservedBytes = source.manifest.totalBytes * 3 + (source.manifest.git?.metadata?.byteSize ?? 0)
         + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024
-      const reservation = await this.reservations.reserve(sql, {
-        scopeId: this.scope(root.binding.deviceId, root.binding.workerInstallationId, root.binding.filesystem),
-        ownerKind: 'materialization', ownerId: input.operationId, reservedBytes })
       const workflow = await sql.query('select 1 from execution_dispatch_intents where execution_id=$1 and attempt_id=$2 and operation_id=$3',
         [input.attempt.executionId, input.attempt.attemptId, input.operationId])
+      // Worker I/O can outlive admission; keep its cleanup identity with the capacity it owns.
+      const reservation = await this.reservations.reserve(sql, {
+        scopeId: this.scope(root.binding.deviceId, root.binding.workerInstallationId, root.binding.filesystem),
+        ownerKind: 'materialization', ownerId: input.operationId,
+        reservedBytes,
+        preparation: { identity: { operationId: input.operationId, ownerPrincipalId: input.principal.id,
+          expiresAt: input.principal.expiresAt }, root, attempt: input.attempt, source: root.source, record: null,
+        physicalClosureConfirmed: false, ...(workflow.rowCount === 1 ? { preparationKind: 'workflow' as const } : {}) },
+      })
       const sharedWritableTree = root.binding.accessMode === 'exclusive-write' && workflow.rowCount === 1
       return { root, source, record: null, reservation, sharedWritableTree,
         worktree: sharedWritableTree ? await agentWorktree(sql, input.attempt.executionId, source.manifest) : undefined }
@@ -423,6 +455,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
     const record = SourceMaterializationRecordSchema.parse({ receipt, rootPolicyId: state.root.selection.rootPolicyId,
       rootPolicyRevision: state.root.selection.rootPolicyRevision, operationId: input.operationId, reservationId: state.reservation!.reservationId, sourceBindingHash: input.attempt.placementHash, finalDispatchBindingHash: null, state: 'prepared' })
     const committed = await this.transaction(async sql => {
+      await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${input.operationId}`])
+      await requireUnreclaimedSourceOperation(sql, input.operationId)
       await this.resolveRootBinding(sql, input.principal, input)
       await this.executions.authorize(sql, input.principal, { ...input, root: state.root })
       await sql.query(`insert into source_execution_materializations(materialization_id,workspace_id,execution_id,attempt_id,operation_id,root_id,binding_revision,reservation_id,record,state)

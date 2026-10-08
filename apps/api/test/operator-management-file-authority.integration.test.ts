@@ -148,6 +148,7 @@ const { WorkspaceManagementService } = await import('../src/modules/workspaces/m
 const { AgentManagementService } = await import('../src/modules/workspaces/agents.js')
 const { HarnessCatalogService } = await import('../src/modules/harnesses/catalog.js')
 const { PostgresSettingsRepository } = await import('../src/modules/settings/postgres.js')
+const nativeProcess = await import('../src/modules/harnesses/process.js')
 
 const connectionString = process.env.TEST_DATABASE_URL
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
@@ -268,6 +269,17 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     address = `http://127.0.0.1:${port}`
     managementEndpoint = new URL('/mcp', address).toString()
     f = await fileRuntimeFixture()
+    const runCommand = nativeProcess.runCommand
+    vi.spyOn(nativeProcess, 'runCommand').mockImplementation(async (...args) => {
+      const result = await runCommand(...args)
+      const [binary, command] = args
+      if (binary === f.binary && command[0] === 'mcp' && command[1] === 'get'
+        && result.exitCode !== 0 && result.stderr.trim() !== `Error: No MCP server named '${command[2]}' found.`) {
+        console.error('Fixture MCP inspection failed:', { exitCode: result.exitCode,
+          stderr: result.stderr.slice(-4096) })
+      }
+      return result
+    })
     // Outside /tmp: Codex workspace-write treats /tmp as writable, so the file host must not live there.
     vault = await privateFixtureDirectory('.af02-vault-')
     runtimeHome = await privateFixtureDirectory('.af02-runtime-')

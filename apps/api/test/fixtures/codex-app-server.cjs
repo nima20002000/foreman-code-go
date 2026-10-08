@@ -266,11 +266,13 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   } else if (message.method === 'thread/compact/start') {
     const owner = loadThread(params.threadId)
     if (!owner) { fail(message.id); return }
+    if (flag('reject-compact')) { fail(message.id); return }
     const turnNumber = owner.turns.length + 1
     const compact = turn(`compact-${turnNumber}`, 'completed')
     compact.items.push({ id: `boundary-${turnNumber}`, type: 'contextCompaction' })
     owner.turns.push(compact)
     store(owner)
+    if (flag('disconnect-compact')) process.exit(0)
     result(message.id, {})
     if (!flag('drop-compact-events')) {
       send({ method: 'turn/started', params: { threadId: owner.id, turn: { ...compact, status: 'inProgress' } } })

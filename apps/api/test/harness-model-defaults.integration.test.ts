@@ -47,6 +47,7 @@ it('persists detected defaults once, preserves explicit pins and exposes the exa
     expect(harnesses.defaults.codex).toMatchObject({ model: 'codex-latest', reasoningEffort: 'medium', sandbox: 'read-only' })
     expect(harnesses.defaults.opencode).toMatchObject({ model: 'connected/latest', variant: 'medium' })
     expect(harnesses.defaults.claude).toMatchObject({ model: 'claude-latest', effort: 'medium', authMode: 'subscription', sandbox: 'read-only' })
+    expect(harnesses.unavailable).toEqual(['claude'])
     const initialized = await f.repository.getAgentDefaults()
     expect(initialized.value.operator.harness).toMatchObject({ model: 'codex-latest', reasoningEffort: 'medium', sandbox: 'danger-full-access' })
     await initializeNativeDefaults({ pool: f.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
