@@ -488,8 +488,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           } else await workerExecutionAuthorizer(forBinding(actual.context.binding))(actual.intent,actual.placement,'start')
           installations.assertCurrent(selection)}
         const outputContext: InstalledWorkflowNativeOutputContext = {
-          intent: structuredClone(actual.intent), placement: structuredClone(actual.placement),
-          binding: Object.freeze(structuredClone(actual.context.binding)),
+          get intent() { return structuredClone(actual.intent) },
+          placement: structuredClone(actual.placement),
+          get binding() { return Object.freeze(structuredClone(actual.context.binding)) },
           materialization: structuredClone(actual.capture.facts.executionPlacement.materialization),
           applicationAccess: () => {
             if (!actual.applicationAccess || actual.launchDisabled || closing) unavailable('original_main_lease_required')
@@ -1108,5 +1109,15 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     await releaseSettled(terminal.intent)
     return true
   }
-  return {kind:'configured' as const,extensions,nativeOwnerFor,preparationClosed,close}
+  const reservationClosed = async (operationId: string): Promise<boolean> => {
+    if ([...operations.values()].some(owned => owned.intent.operationId === operationId)) return false
+    if ([...construction.values()].some(pending => pending.intent.operationId === operationId)) return false
+    const status = await (await journal()).status(operationId)
+    if (status.status === 'unknown') return !recovery.readEntry(operationId)
+    const receipt = status.receipt
+    return Boolean(receipt.terminal && (receipt.terminal.kind === 'not_started' || hasPositiveRemoteEntryClosure(receipt))
+      && !registry.snapshot().launches.some(launch => launch.owner === `execution:${receipt.intent.executionId}`
+        && launch.lifecycle !== 'closed'))
+  }
+  return {kind:'configured' as const,extensions,nativeOwnerFor,preparationClosed,reservationClosed,close}
 }

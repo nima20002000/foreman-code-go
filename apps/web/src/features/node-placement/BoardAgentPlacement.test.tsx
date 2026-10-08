@@ -64,6 +64,33 @@ it('keeps computer selection on the clicked node when two nodes share one Agent'
   view.unmount(); query.clear(); read.mockRestore(); useGraphDraftStore.getState().dropNextDraft(key)
 })
 
+it('applies inherited Main by removing only the selected node placement from the draft', async () => {
+  const context = fixture()
+  const key = 'placement-clear-test'
+  context.draft.graph.nodes = context.draft.graph.nodes.map(node => ({ ...node, placement }))
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  const read = vi.spyOn(client, 'readPlacementChoices').mockImplementation(async scope => ({ ...scope,
+    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
+  function Board() {
+    const edit = useGraphDraftStore(state => state.nextDrafts[key])!
+    return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
+  }
+  const query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(<QueryClientProvider client={query}><Board /></QueryClientProvider>)
+  await screen.findByRole('option', { name: 'Laptop' })
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Computer' }), 'inherited')
+  expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).placement).toEqual(placement)
+  await userEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+  const applied = useGraphDraftStore.getState().nextDrafts[key]!
+  expect(applied.graph.nodes[0]).not.toHaveProperty('placement')
+  expect(nativeNode(applied.graph.nodes[1]).placement).toEqual(placement)
+  expect(nativeNode(applied.context.draft.graph.nodes[0]).placement).toEqual(placement)
+  view.unmount()
+  query.clear()
+  read.mockRestore()
+  useGraphDraftStore.getState().dropNextDraft(key)
+})
+
 it('keeps unrelated Agent edits when placement choices are denied for a saved placed node', async () => {
   const context = fixture(), key = 'placement-denied-retains-edits'
   context.draft.graph = { ...context.draft.graph, nodes: context.draft.graph.nodes.map((node, index) => index ? node : { ...nativeNode(node)!, placement }) }

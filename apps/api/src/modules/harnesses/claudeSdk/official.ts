@@ -9,15 +9,19 @@ import { HarnessExecutionError } from '../errors.js'
 import { createClaudeSdkRunner } from './runner.js'
 import type { Options, SDKUserMessage, McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import type { ClaudeSdkClient } from './port.js'
+import { DomainError } from '../../errors.js'
 
 
 export const CLAUDE_CLI_CANDIDATE_VERSION = '2.1.284'
 export const CLAUDE_SDK_CANDIDATE_VERSION = '0.3.284'
 
 /** Native history helpers read the SDK process profile, not query's child env. */
-function assertHelperProfile(profilePath: string): void {
+export function assertClaudeHelperProfile(profilePath: string): void {
   const processProfile = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-  if (resolve(profilePath) !== resolve(processProfile)) throw new Error('Claude native history helper cannot safely select a different process-local profile')
+  if (resolve(profilePath) !== resolve(processProfile)) {
+    throw new DomainError('CLAUDE_PROFILE_DIRECTORY_MISMATCH',
+      'Claude native history, resume and fork cannot use a different process-local profile. Select this host process’s CLAUDE_CONFIG_DIR (or its default ~/.claude profile) before running diagnostics.', 409)
+  }
 }
 
 export function assertClaudeSdkContract(sdk: unknown, version: string): void {
@@ -50,11 +54,11 @@ export async function loadOfficialClaudeSdk(profilePath: string, recovery: Nativ
   return {
     sdkVersion: manifest.version,
     ...ownedClaudeSdkQueries({ sdk, recovery, binary }),
-    getSessionInfo: async (id, options) => { assertHelperProfile(profilePath); return sdk.getSessionInfo(id, options) },
-    getSessionMessages: async (id, options) => { assertHelperProfile(profilePath); return sdk.getSessionMessages(id, options) },
-    listSubagents: async (id, options) => { assertHelperProfile(profilePath); return sdk.listSubagents(id, options) },
-    getSubagentMessages: async (id, agentId, options) => { assertHelperProfile(profilePath); return sdk.getSubagentMessages(id, agentId, options) },
-    forkSession: async (id, options) => { assertHelperProfile(profilePath); return sdk.forkSession(id, options) },
+    getSessionInfo: async (id, options) => { assertClaudeHelperProfile(profilePath); return sdk.getSessionInfo(id, options) },
+    getSessionMessages: async (id, options) => { assertClaudeHelperProfile(profilePath); return sdk.getSessionMessages(id, options) },
+    listSubagents: async (id, options) => { assertClaudeHelperProfile(profilePath); return sdk.listSubagents(id, options) },
+    getSubagentMessages: async (id, agentId, options) => { assertClaudeHelperProfile(profilePath); return sdk.getSubagentMessages(id, agentId, options) },
+    forkSession: async (id, options) => { assertClaudeHelperProfile(profilePath); return sdk.forkSession(id, options) },
   }
 }
 

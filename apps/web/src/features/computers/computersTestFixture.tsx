@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from '@testing-library/react'
 import { http, HttpResponse, type HttpHandler } from 'msw'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
-import type { BuildComputerStatus, BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
+import type { BuildComputerStatus, BuildComputerUpdate, BuildComputerBatchUpdate } from '@foreman-code/contracts/build-computers'
 import type { ComputerActivityList } from '@foreman-code/contracts/computer-activity'
 import type { ComputerAccountsList } from '@foreman-code/contracts/computer-accounts'
 import { server } from '../../mocks/server'
@@ -41,6 +41,7 @@ export function computersFixture(children: React.ReactNode, handlers: HttpHandle
     { target: deviceTarget, accounts: null },
   ] }
   const writes: BuildComputerUpdate[] = []
+  const batches: BuildComputerBatchUpdate[] = []
   const update = (input: BuildComputerUpdate) => {
     const before = statuses.get(computerKey(input.target))!
     const preference = { ...before.preference, revision: before.preference.revision + 1,
@@ -61,11 +62,21 @@ export function computersFixture(children: React.ReactNode, handlers: HttpHandle
       writes.push(input)
       return HttpResponse.json(update(input))
     }),
+    http.post('*/api/management/settings/build-computers/batch-update', async ({ request }) => {
+      const input = await request.json() as BuildComputerBatchUpdate
+      batches.push(input)
+      if (input.updates.some(change => statuses.get(computerKey(change.target))?.preference.revision !== change.expectedRevision)) {
+        return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Changed elsewhere' } }, { status: 409 })
+      }
+      const changes = input.updates.map(change => ({ ...change, commandId: input.commandId }))
+      writes.push(...changes)
+      return HttpResponse.json({ computers: changes.map(update) })
+    }),
     http.get('*/api/management/computers/activity', () => HttpResponse.json(activity)),
     http.get('*/api/management/computers/accounts', () => HttpResponse.json(accounts)),
     http.post('*/api/management/resource-telemetry/selector', () => HttpResponse.json({ kind: 'unavailable' })),
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   const rendered = render(<QueryClientProvider client={client}>{children}</QueryClientProvider>)
-  return { client, rendered, statuses, activity, writes, update }
+  return { client, rendered, statuses, activity, writes, batches, update }
 }

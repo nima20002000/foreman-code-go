@@ -1,6 +1,7 @@
 /** Current shared V3 boundary. Native/MCP/graph protocol versions are independent. */
 export * from './json.js'
 export * from './workflow.js'
+export * from './workflowExecutionLocation.js'
 export * from './protocol.js'
 export {
   PublicGraphProjectionSchema, PublicGraphDeltaSchema,

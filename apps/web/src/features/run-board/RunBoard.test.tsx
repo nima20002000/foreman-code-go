@@ -1,5 +1,10 @@
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { URL } from 'node:url'
+import { webcrypto } from 'node:crypto'
+import { RunExecutionDetailSchema } from '@foreman-code/contracts/wave25'
+import * as inspectionClient from '../workflow-board/runDetailsClient'
+import { digestCurrentValue } from '../workflow-board/runDetailsClient'
+import { definition, execution as jobExecution, verificationExecution, logPage } from '../jobs/fixtures'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider, useLocation } from '@tanstack/react-router'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -80,7 +85,7 @@ function withoutCancellation() {
   })
   return completed
 }
-const savedNode = (name: string) => screen.findByRole('img', { name: `${name}, saved agent, read only` })
+const savedNode = (name: string) => screen.findByRole('group', { name: `${name}, saved agent, read only` })
 const noGraph = () => expect(screen.queryByTestId('run-board-canvas')).not.toBeInTheDocument()
 const denied = (status: number) => HttpResponse.json({ error: { code: 'DENIED', message: 'Unavailable' } }, { status })
 
@@ -108,6 +113,32 @@ afterEach(async () => {
   expect(unexpected).toEqual([])
 })
 
+const inspectionRoute = '*/api/management/workspaces/:workspaceId/runs/:runId/executions'
+async function inspectorApi(kind: 'agent' | 'job' = 'agent') {
+  vi.stubGlobal('crypto', webcrypto)
+  const nodeId = kind === 'agent' ? 'node-x' : 'build'
+  const identity = kind === 'agent' ? { workflowNodeId: nodeId, agentId: 'agent-x',
+    agentConfigurationVersionId: 'config-x-old', worktree: { repository: 'octo/site', branch: 'foreman/coder' } }
+    : { kind: 'job', workflowNodeId: nodeId, jobDefinitionId: definition.id, jobDefinitionVersionId: definition.versionId }
+  const input = { executionSemanticsVersion: 3, runInput: {}, occurrence: null, entry: null, predecessors: [] }
+  const detail = RunExecutionDetailSchema.parse({
+    run: { ...scope, runId: 'run-a', workflowVersionId: 'version-a', executionSemanticsVersion: 3,
+      executionState: 'running', outcome: 'pending', createdAt: runA.capturedAt, cleanupPending: false },
+    execution: { ...identity, executionId: 'node-execution', attempt: 1, state: 'running',
+      createdAt: runA.capturedAt, acceptedResultAvailable: false },
+    acceptedInput: { value: input, digest: await digestCurrentValue(input) }, acceptedResult: { status: 'not_accepted' },
+  })
+  server.use(http.get(inspectionRoute, () => HttpResponse.json({ run: detail.run, items: [detail.execution], pageInfo: { nextCursor: null } })),
+    http.get(`${inspectionRoute}/:executionId`, () => HttpResponse.json(detail)),
+    http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/nodes/:nodeId/placement', ({ params }) =>
+      HttpResponse.json({ ...scope, runId: String(params.runId), nodeId: String(params.nodeId),
+        readback: { evidence: 'legacy_missing', originalMainInstallationId: null } })),
+    http.get('*/api/management/workspaces/:workspaceId/jobs/queue', () => HttpResponse.json({ tickets: [], nextHistoryCursor: null })),
+    http.get('*/api/workspaces/:workspaceId/agent-chat/workflows/:workflowId/runs/:runId/nodes/:nodeId', () =>
+      HttpResponse.json({ kind: 'unavailable', target: { ...scope, runId: 'run-a', workflowNodeId: nodeId }, reason: 'execution_missing' })))
+  return detail
+}
+
 describe('selected saved Run board (real Router, Query, HTTP/MSW and canvas)', () => {
   it('shows removed agent Y, the old name, exact layout/sizes and every saved edge in A; B has no Y', async () => {
     const { container } = await mount()
@@ -126,8 +157,8 @@ describe('selected saved Run board (real Router, Query, HTTP/MSW and canvas)', (
 
     await select('run-b')
     expect(await savedNode('X in B')).toHaveStyle({ transform: 'translate(100px,300px)' })
-    expect(screen.queryByRole('img', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('img', { name: 'X before rename, saved agent, read only' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'X before rename, saved agent, read only' })).not.toBeInTheDocument()
     await waitFor(() => expect(container.querySelectorAll('.react-flow__edge')).toHaveLength(1))
     expect(container.querySelector('.react-flow__edge')).toHaveAttribute('data-id', 'edge-xz')
   })
@@ -160,7 +191,7 @@ describe('selected saved Run board (real Router, Query, HTTP/MSW and canvas)', (
     a.release()
     await waitFor(() => expect(completed).toContain('run-a'))
     expect(latest!.isCurrent(firstA)).toBe(false)
-    expect(screen.queryByRole('img', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveAttribute('data-run-id', 'run-b')
     expect(await savedNode('X in B')).toBeInTheDocument()
   })
@@ -187,7 +218,7 @@ describe('selected saved Run board (real Router, Query, HTTP/MSW and canvas)', (
     second.release()
     await savedNode('Y')
     expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveAttribute('data-generation', latest!.generation.id)
-    expect(screen.queryByRole('img', { name: 'X in B, saved agent, read only' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'X in B, saved agent, read only' })).not.toBeInTheDocument()
   })
 
   it('renders one short unavailable line for a legacy Run, never today’s graph', async () => {
@@ -288,4 +319,93 @@ describe('selected saved Run board (real Router, Query, HTTP/MSW and canvas)', (
     await mount(); await screen.findByText('No nodes')
     noGraph()
   })
+})
+
+it('opens accepted branch and execution facts from an Agent on the standard selected-Run board', async () => {
+  await inspectorApi()
+  const { router } = await mount()
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect X before rename' }))
+  const inspector = await screen.findByRole('region', { name: 'Run node inspector: X before rename' })
+  expect(await within(inspector).findByText('foreman/coder')).toBeInTheDocument()
+  expect(router.history.location.search).toContain('runNodeId=node-x')
+  expect(screen.queryByRole('button', { name: /Save|Start|Request cancellation/ })).toBeNull()
+})
+
+it('opens job-node logs, artifacts and verification through the persisted relationship without historical editing controls', async () => {
+  const detail = await inspectorApi('job')
+  const snapshot = { ...runA, nodes: [{ kind: 'job', id: 'build', name: 'Build',
+    jobDefinitionId: definition.id, jobDefinitionRevision: definition.revision, jobDefinitionVersionId: definition.versionId,
+    position: { x: 0, y: 0 }, size: { width: 200, height: 160 } }], edges: [] }
+  const workflow = { workflowId: scope.workflowId, runId: 'run-a', nodeId: 'build', nodeExecutionId: 'node-execution' }
+  const jobsRoot = '*/api/management/workspaces/:workspaceId/jobs/executions/:id'
+  server.use(http.get(snapshotRoute, () => HttpResponse.json({ snapshot })),
+    http.get('*/api/management/workspaces/:workspaceId/jobs/workflow-executions/:runId/:nodeExecutionId', () =>
+      HttpResponse.json({ reference: { kind: 'job', ...scope, workflowVersionId: 'version-a', ...workflow,
+        jobExecutionId: jobExecution.id, occurrenceId: null, occurrenceIndex: 0 } })),
+    http.get(jobsRoot, () => HttpResponse.json({ execution: { ...verificationExecution, workspaceId: scope.workspaceId,
+      workflow, process: { phase: 'running', outcome: null, exitCode: null, signal: null, processStopped: false } } })),
+    http.get(`${jobsRoot}/logs`, () => HttpResponse.json(logPage)),
+    http.get(`${jobsRoot}/artifacts`, () => HttpResponse.json({ artifacts: [] })))
+  const { router } = await mount()
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect Build' }))
+  await userEvent.click(await screen.findByRole('button', { name: /Attempt 1 · node-execution/ }))
+  expect(await screen.findByRole('region', { name: 'Job logs' })).toBeInTheDocument()
+  expect(await screen.findByRole('region', { name: 'Job artifacts' })).toBeInTheDocument()
+  expect(await screen.findByRole('region', { name: 'Verification result' })).toBeInTheDocument()
+  expect(router.history.location.search).toContain('runExchangeKey')
+  expect(screen.queryByRole('button', { name: /Save|Start|Request cancellation|Review rerun/ })).toBeNull()
+  expect(detail.execution.executionId).not.toBe(jobExecution.id)
+})
+
+it('fences delayed inspector reads across Run A, Run B and a new Run A visit', async () => {
+  const detail = await inspectorApi()
+  const actual = inspectionClient.readRunExecutions
+  const completed: string[] = []
+  vi.spyOn(inspectionClient, 'readRunExecutions').mockImplementation(async (scope, filters, cursor) => {
+    const value = await actual(scope, filters, cursor)
+    completed.push(scope.runId)
+    return value
+  })
+  const gates = [deferred<void>(), deferred<void>(), deferred<void>()]
+  let reads = 0
+  server.use(http.get(inspectionRoute, async ({ params }) => {
+    const index = reads++
+    if (index < gates.length) await gates[index]!.promise
+    const runId = String(params.runId)
+    return HttpResponse.json({ run: { ...detail.run, runId, workflowVersionId: runId === 'run-b' ? 'version-b' : 'version-a' },
+      items: [{ ...detail.execution, agentConfigurationVersionId: runId === 'run-b' ? 'config-x-b' : 'config-x-old' }],
+      pageInfo: { nextCursor: null } })
+  }))
+  releases.push(...gates.map(gate => () => gate.resolve()))
+  await mount()
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect X before rename' }))
+  await waitFor(() => expect(reads).toBe(1))
+  await select('run-b')
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect X in B' }))
+  await waitFor(() => expect(reads).toBe(2))
+  await select('run-a')
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect X before rename' }))
+  await waitFor(() => expect(reads).toBe(3))
+  await act(async () => { gates[0]!.resolve(); gates[1]!.resolve() })
+  await waitFor(() => expect(completed).toHaveLength(2))
+  expect(screen.queryByText('foreman/coder')).toBeNull()
+  expect(screen.getByText('Reading node executions…')).toBeInTheDocument()
+  await act(async () => gates[2]!.resolve())
+  expect(await screen.findByText('foreman/coder')).toBeInTheDocument()
+})
+
+it('withdraws inspector branch facts after delayed permission loss', async () => {
+  await inspectorApi()
+  const { client } = await mount()
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect X before rename' }))
+  await screen.findByText('foreman/coder')
+  const gate = deferred<void>()
+  releases.push(() => gate.resolve())
+  server.use(http.get(inspectionRoute, async () => { await gate.promise; return denied(403) }))
+  let refresh!: Promise<void>
+  act(() => { refresh = client.refetchQueries({ queryKey: ['saved-run-inspection'] }) })
+  await act(async () => { gate.resolve(); await refresh })
+  await screen.findByText('No access')
+  expect(screen.queryByText('foreman/coder')).toBeNull()
+  expect(screen.queryByRole('button', { name: /Attempt 1/ })).toBeNull()
 })

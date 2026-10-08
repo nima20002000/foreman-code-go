@@ -207,11 +207,13 @@ export class RemoteExecutionHost {
     if (frame.method === 'get-application-access') throw new Error('Application lease recovery requires the installed physical owner')
     if (frame.method === 'history') {
       const result = await this.read(frame.intent.operationId, 'history', frame.correlationId) as {
-        history: NativeHistory; status: Awaited<ReturnType<RemoteOperationJournal['status']>>
+        history: NativeHistory; context: ContextSnapshot | null;
+        status: Awaited<ReturnType<RemoteOperationJournal['status']>>
       }
       const after = result.status.status === 'known' && frame.correlationId
         ? result.status.receipt.reviewTurns?.find(turn => turn.assignment.correlationId === frame.correlationId)?.afterSequence : undefined
-      return { ...pageNativeHistory(result.history, frame.afterSequence ?? after, frame.metadata), status: result.status }
+      return { ...pageNativeHistory(result.history, frame.afterSequence ?? after, frame.metadata),
+        context: result.context, status: result.status }
     }
     return this.read(frame.intent.operationId, frame.method)
   }

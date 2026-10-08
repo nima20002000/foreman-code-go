@@ -1708,10 +1708,13 @@ export function buildProductionApp(
         () => deviceRuntime.endpointForDomains(), commands)
       registerComputerAccountsRoutes(app, runtimeServices.computerAccounts)
       runtimeServices.computerGitHub = new ComputerGitHubService(database.pool, machine.installationId,
-        () => deviceRuntime.endpointForDomains(), commands)
+        () => deviceRuntime.endpointForDomains(), commands, {
+          accountChanged: target => runtimeServices.computerAccounts!.invalidate(target),
+        })
       registerComputerGitHubRoutes(app, runtimeServices.computerGitHub)
       runtimeServices.computerDrive = new ComputerDriveService(database.pool, machine.installationId,
-        () => deviceRuntime.endpointForDomains(), commands)
+        () => deviceRuntime.endpointForDomains(), commands,
+        { changed: target => runtimeServices.computerAccounts!.invalidate(target) })
       registerComputerDriveRoutes(app, runtimeServices.computerDrive)
       runtimeServices.buildComputers = jobRuntime.buildComputers
       registerBuildComputerRoutes(app, jobRuntime.buildComputers)
@@ -1810,6 +1813,7 @@ export function buildProductionApp(
     if (reconciliation) return reconciliation
     reconciliation = (async () => {
       if (jobRuntime) await jobRuntime.reconcileFailedCaptures(report)
+      if (jobRuntime) await jobRuntime.reconcileMaterializationReservations(report)
       if (jobRuntime) await closeCompletedWorkflowSources(database.pool, jobRuntime.sources, report)
       if (jobRuntime) await jobRuntime.sources.releaseUnusedSnapshots(report)
       await localNativeOutputMcp?.cleanupClosed()

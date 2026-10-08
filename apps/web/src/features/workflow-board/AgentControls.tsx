@@ -21,7 +21,10 @@ function installAgent(draftKey: string, instanceId: string, agent: Agent, nodeId
     if (nodeId && !node) throw new Error('This Agent node is no longer in the draft.')
     const id = node?.id ?? `node-${crypto.randomUUID()}`
     const kept = node ? { ...node } : undefined
-    if (kept) delete kept.graphqlTools
+    if (kept) {
+      delete kept.graphqlTools
+      delete kept.placement
+    }
     const nextNode = kept ? { ...kept, name: agent.name, initialPrompt: prompt, ...(graphqlTools ? { graphqlTools } : {}), ...(placement ? { placement } : {}) } : {
       id, agentId: agent.id, name: agent.name,
       position: { x: 80 + graph.nodes.length % 4 * 320, y: 100 + Math.floor(graph.nodes.length / 4) * 300 },

@@ -9,6 +9,7 @@ import { latestNativeModel, nativeModelDefaults } from './modelDefaults.js'
 import { DomainError } from '../errors.js'
 import { detectedClaudeProfilePath } from './claudeSdk/productionMetadata.js'
 import { UNAVAILABLE_HARNESS_DEFAULTS_KEY } from '../settings/postgres.js'
+import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const missingModel = (value: unknown) => typeof object(value).model !== 'string' || !String(object(value).model).trim()
@@ -25,6 +26,9 @@ export async function initializeNativeDefaults(input: {
   const priorHarnesses = object(prior.get('harness-defaults'))
   const required = new Set<AgentHarness>((['codex', 'opencode', 'claude'] as const).filter(harness => missingModel(priorHarnesses[harness])))
   for (const harness of UnavailableHarnessDefaultsSchema.parse(prior.get(UNAVAILABLE_HARNESS_DEFAULTS_KEY) ?? [])) {
+    // A discovered Claude model cannot resolve an unsupported access choice.
+    if (harness === 'claude' && !missingModel(priorHarnesses.claude)
+      && !ClaudeFullAccessConfigurationSchema.safeParse(priorHarnesses.claude).success) continue
     required.add(harness)
   }
   const priorAgents = object(prior.get('agent-defaults-v1'))
@@ -76,6 +80,9 @@ export async function initializeNativeDefaults(input: {
       unavailable.delete(harness)
     }
     const defaults = HarnessDefaultsSchema.parse(next)
+    if (defaults.claude && !ClaudeFullAccessConfigurationSchema.safeParse(defaults.claude).success) {
+      unavailable.add('claude')
+    }
     const save = async (key: string, value: unknown, versioned: boolean) => {
       const revision = Number(rows.get(key)?.revision ?? 0) + 1
       const versionId = versioned ? `${key}-v${revision}-${randomUUID()}` : null
@@ -102,7 +109,7 @@ export async function initializeNativeDefaults(input: {
       const template = agents[role]
       const harness = (configuration.harness ?? template.harness.harness) as AgentHarness
       const model = defaults[harness]
-      if (!model || !available.has(harness)) continue
+      if (!model || !available.has(harness) || unavailable.has(harness)) continue
       const base = template.harness.harness === harness ? template.harness : role === 'operator' ? operatorHarnessDefaults(model) : model
       agents[role] = { ...template, ...saved, harness: nativeModelDefaults({ ...base, ...configuration } as typeof base, available.get(harness)!) } as never
       changed = true

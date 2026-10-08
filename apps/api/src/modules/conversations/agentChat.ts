@@ -190,17 +190,6 @@ export class AgentChatService {
   private shutdownAttempt: Promise<void> | undefined
   private readonly activity: PostgresOperatorActivityRepository
   private readonly sessionControls: SessionControlStore
-  private async nativeTurnSettings(id: string, mode?: import('@foreman-code/contracts').SessionMode) {
-    const settings = await this.sessionControls.turnSettings(id, mode)
-    return {
-      ...settings,
-      onSettingsApplied: async () => {
-        // Reconciliation can own the control queue while awaiting the native manager.
-        // The settings store revision-checks this callback's write.
-        if (settings.sessionMode) await this.sessionControls.appliedMode(id, settings.sessionMode)
-      },
-    }
-  }
 
   private readonly commands: AgentChatCommands
   private readonly lifetime = new AbortController()
@@ -712,8 +701,7 @@ export class AgentChatService {
     this.assertOpen()
     const parsed = SendAgentChatMessageRequestSchema.parse(value)
     const planTask = parseSessionCommand(parsed.content).kind === 'plan-task' || parsed.sessionMode === 'plan'
-    const input = planTask ? { ...parsed, sessionMode: 'plan' as const,
-      intent: parsed.intent === 'steer' ? 'next_turn' as const : parsed.intent } : parsed
+    const input = planTask ? { ...parsed, sessionMode: 'plan' as const } : parsed
     const context: AgentChatContext = { workspaceId, ...input.context }
     this.authorize(principal, 'agent_chat:write', context)
     this.authorize(principal, 'agent_chat:read', context)
@@ -1109,7 +1097,9 @@ export class AgentChatService {
         if (!runtime.manager.startInitialTurn || fresh.record.origin.kind !== 'fresh') throw new DomainError('AGENT_INITIAL_TURN_UNAVAILABLE', 'No admitted initial native lifecycle is available.', 409)
         initialOffered = true // A failure after offer is not a definite prompt rejection/create failure.
         initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(this.startInput(fresh, configuration, correlationId, false), {
-          ...await this.nativeTurnSettings(id, selectedMode),
+          ...await this.sessionControls.turnSettings(id, {
+            requestId: turn.requestId, nativeSessionId: null,
+          }, selectedMode),
           prompt: prompt.text, clientCorrelationId: correlationId,
           onSessionObserved: async (observed) => {
             await this.control(id, async () => {
@@ -1163,7 +1153,9 @@ export class AgentChatService {
       finishPreparation()
       runtime.observer = { requestId: turn.requestId, controller: observer }
       for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(observedSession, {
-        ...await this.nativeTurnSettings(id, selectedMode),
+        ...await this.sessionControls.turnSettings(id, {
+          requestId: turn.requestId, nativeSessionId: observedSession.nativeSessionId,
+        }, selectedMode),
         prompt: prompt.text, clientCorrelationId: correlationId,
         onMessageSubmitted: async (receipt) => {
           submitted = true

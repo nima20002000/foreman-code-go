@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 import { CurrentManagedWorkflowSchema, CurrentWorkflowCapabilitiesSchema, CurrentWorkflowVersionDetailSchema,
   CURRENT_WORKFLOW_ROUTES, RunStartV3InputSchema, sameExecutableWorkflow, sameWorkflowValue,
+  workflowRequiresWorkspaceDirectory,
   type GraphDraftV3, type RunStartV3Input } from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../shared/api/client'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
@@ -42,7 +43,12 @@ export function boardStartPins(displayed: GraphDraftV3, facts: BoardStartPreflig
     throw new Error(`Current workflow Start is unavailable on this deployment${capabilities.reasons.length ? `: ${capabilities.reasons.join(', ')}` : '.'}`)
   }
   if (!version || !displayed.baseWorkflowVersionId) throw new Error('Save the workflow before starting a Run.')
-  if (workflow.archivedAt || workspace.archivedAt || workspace.locationValidation.status !== 'ready') throw new Error('The workspace, workflow or execution folder is unavailable.')
+  const folderUnavailable = workflowRequiresWorkspaceDirectory(version.definition)
+    && workspace.locationValidation.status !== 'ready'
+  const locationUnavailable = !workspace.executionLocation || workspace.locationValidation.status === 'restricted'
+  if (workflow.archivedAt || workspace.archivedAt || locationUnavailable || folderUnavailable) {
+    throw new Error('The workspace, workflow or execution folder is unavailable.')
+  }
   if (displayed.publishedRevision !== displayed.revision || displayed.revision !== workflow.revision
     || version.id !== displayed.baseWorkflowVersionId || version.id !== workflow.currentVersionId
     || !sameExecutableWorkflow(version.definition, displayed.graph)) {

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import type { SourceReservationReclamation } from '@foreman-code/contracts/source-operations'
+import { releaseMaterializationClaim } from './materialization.js'
 import { mkdtemp, mkdir, rm, readFile, rename, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -54,13 +56,95 @@ async function fixture() {
   const preparationNativeClosed = vi.fn(async () => true)
   const preparationTransfersClosed = vi.fn(async () => {})
   const preparationReconciled = vi.fn(async () => {})
+  const currentReclamation = vi.fn(async (): Promise<SourceReservationReclamation> => {
+    throw new Error('No reservation cleanup in this fixture')
+  })
+  const reclamationNativeClosed = vi.fn(async () => true)
   const service = new SourceOperationWorkerService({ authenticate: async () => {}, approvedRoots: readRoots, currentOwner,
     transfers: { resolveVerifiedReceipt: async () => receipt, openVerified: open }, transferContext: async () => transferContext,
-    nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled })
+    nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled,
+    currentReclamation, reclamationNativeClosed })
   const context = { binding, signal: new AbortController().signal }
   return { directory, runtime, namespace, data, bytes, manifest, root, owner, request, receipt, context, service, currentOwner,
-    readRoots, open, nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled }
+    readRoots, open, nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled,
+    currentReclamation, reclamationNativeClosed }
 }
+
+it('finds and removes an abandoned Worker materialization without Main preparation metadata', async () => {
+  const f = await fixture()
+  const prepared = await f.service.handle(f.request, f.context)
+  if (prepared.operation !== 'sources.prepare') throw new Error('Expected source preparation')
+  const grant: SourceReservationReclamation = { reservationId: randomUUID(), reclamationId: randomUUID(),
+    operationId: f.owner.identity.operationId, expiresAt: f.owner.identity.expiresAt,
+    roots: [f.root], owner: null, scopeId: 'original-device-filesystem' }
+  f.currentReclamation.mockResolvedValue(grant)
+  const request = { version: 1, operation: 'sources.reclaim-reservation',
+    reservationId: grant.reservationId, reclamationId: grant.reclamationId }
+  f.reclamationNativeClosed.mockResolvedValue(false)
+  await expect(f.service.handle(request, f.context)).rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
+  expect(await readFile(join(f.namespace, prepared.receipt.materializationId, 'tree', 'src/source.ts'))).toEqual(f.bytes)
+  f.reclamationNativeClosed.mockResolvedValue(true)
+  expect(await f.service.handle(request, f.context)).toMatchObject({ reclaimed: true, operationId: grant.operationId })
+  await expect(readFile(join(f.namespace, prepared.receipt.materializationId, 'tree', 'src/source.ts')))
+    .rejects.toMatchObject({ code: 'ENOENT' })
+  expect(await f.service.handle(request, f.context)).toMatchObject({ reclaimed: true })
+})
+
+it('does not release a Worker reservation when Main cleanup authority is unavailable or changes', async () => {
+  const f = await fixture()
+  const request = { version: 1, operation: 'sources.reclaim-reservation',
+    reservationId: randomUUID(), reclamationId: randomUUID() }
+  await expect(f.service.handle(request, f.context)).rejects.toThrow('No reservation cleanup in this fixture')
+  f.currentReclamation.mockResolvedValue({ reservationId: request.reservationId, reclamationId: randomUUID(),
+    operationId: f.owner.identity.operationId, expiresAt: f.owner.identity.expiresAt,
+    roots: [f.root], owner: null, scopeId: 'original-device-filesystem' })
+  await expect(f.service.handle(request, f.context)).rejects.toMatchObject({ code: 'SOURCE_OPERATION_AUTHORITY_CONFLICT' })
+  expect(f.reclamationNativeClosed).not.toHaveBeenCalled()
+})
+
+it.each(['missing', 'saved'] as const)('removes a released copy with %s Main preparation metadata', async metadata => {
+  const f = await fixture()
+  const prepared = await f.service.handle(f.request, f.context)
+  if (prepared.operation !== 'sources.prepare') throw new Error('Expected source preparation')
+  await releaseMaterializationClaim(prepared.receipt, async () => 'released')
+  const grant: SourceReservationReclamation = { reservationId: randomUUID(), reclamationId: randomUUID(),
+    operationId: f.owner.identity.operationId, expiresAt: f.owner.identity.expiresAt,
+    roots: [f.root], owner: metadata === 'saved' ? f.owner : null, scopeId: 'original-device-filesystem' }
+  f.currentReclamation.mockResolvedValue(grant)
+  expect(await f.service.handle({ version: 1, operation: 'sources.reclaim-reservation',
+    reservationId: grant.reservationId, reclamationId: grant.reclamationId }, f.context))
+    .toMatchObject({ reclaimed: true, closures: [{ materializationId: prepared.receipt.materializationId }] })
+  await expect(readFile(join(f.namespace, prepared.receipt.materializationId, 'tree', 'src/source.ts')))
+    .rejects.toMatchObject({ code: 'ENOENT' })
+})
+
+it('leaves an in-flight Worker preparation alone', async () => {
+  const f = await fixture()
+  let entered!: () => void
+  let resume!: () => void
+  const opened = new Promise<void>(resolve => { entered = resolve })
+  const paused = new Promise<void>(resolve => { resume = resolve })
+  f.open.mockImplementation(async () => {
+    entered()
+    await paused
+    return Readable.from([f.data])
+  })
+  const preparation = f.service.handle(f.request, f.context)
+  await opened
+  const grant: SourceReservationReclamation = { reservationId: randomUUID(), reclamationId: randomUUID(),
+    operationId: f.owner.identity.operationId, expiresAt: f.owner.identity.expiresAt,
+    roots: [f.root], owner: f.owner, scopeId: 'original-device-filesystem' }
+  f.currentReclamation.mockResolvedValue(grant)
+  try {
+    await expect(f.service.handle({ version: 1, operation: 'sources.reclaim-reservation',
+      reservationId: grant.reservationId, reclamationId: grant.reclamationId }, f.context))
+      .rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
+    expect(f.reclamationNativeClosed).not.toHaveBeenCalled()
+  } finally {
+    resume()
+    await preparation
+  }
+})
 
 it('confirms preparation cleanup only after native closure and transfer reservations are released', async () => {
   const f = await fixture()

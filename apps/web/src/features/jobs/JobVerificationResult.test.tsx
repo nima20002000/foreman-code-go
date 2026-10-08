@@ -1,12 +1,13 @@
 import { Blob } from 'node:buffer'
 import { webcrypto } from 'node:crypto'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { JobArtifact } from '@foreman-code/contracts/jobs'
 import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { server } from '../../mocks/server'
+import { jobKeys } from './query'
 import { JobResult } from './JobResult'
 import { verificationExecution, verificationReport } from './fixtures'
 
@@ -37,9 +38,11 @@ async function responses(report: unknown = verificationReport, execution: JobExe
   )
 }
 function mount() {
-  return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })}>
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
+  const view = render(<QueryClientProvider client={client}>
     <JobResult workspaceId={verificationExecution.workspaceId} executionId={verificationExecution.id} />
   </QueryClientProvider>)
+  return { ...view, client }
 }
 
 it('reads immutable summary bytes and shows a complete verification pass with suite and case counts', async () => {
@@ -107,3 +110,15 @@ it('hides the summary when authenticated artifact content is denied', async () =
   expect(await screen.findByText('Verification report unavailable')).toBeInTheDocument()
   expect(screen.queryByText('8 passed · 0 failed · 0 skipped · 8 total')).toBeNull()
 })
+
+it.each(['expired', 'tombstoned'] as const)('withdraws a cached report when its artifact becomes %s', async state => {
+  await responses()
+  const { client } = mount()
+  await screen.findByText('Verification: passed', {}, { timeout: 3000 })
+  const key = jobKeys.artifacts(verificationExecution.workspaceId, verificationExecution.id)
+  const artifacts = client.getQueryData<JobArtifact[]>(key)!
+  await act(async () => { client.setQueryData(key, artifacts.map(artifact => ({ ...artifact, state }))) })
+  await screen.findByText(state === 'expired'
+    ? 'The verification summary has expired.' : 'The verification summary is unavailable.', {}, { timeout: 3000 })
+  expect(screen.queryByText('8 passed · 0 failed · 0 skipped · 8 total')).toBeNull()
+}, 10000)
