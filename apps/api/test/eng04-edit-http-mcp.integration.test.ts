@@ -43,8 +43,9 @@ describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit pa
     const published = CurrentEditReadResultSchema.parse(graphRpcValue(completed.result))
     expect(published.intent?.state).toBe('saved')
     expect(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)).result)).toEqual(published)
-    const read = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { action: 'read_edits',
+    const read = await t.call(CURRENT_WORKFLOW_TOOLS.editRead, { action: 'read_edits',
       workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId })
+    expect(read.result?.isError, JSON.stringify(read.result)).not.toBe(true)
     expect(CurrentEditReadResultSchema.parse(graphRpcValue(read.result))).toEqual(published)
     const managed = await t.call('workflow_get', { workspaceId: stage.workspaceId,
       workflowId: stage.workflowId }, reader.token)
