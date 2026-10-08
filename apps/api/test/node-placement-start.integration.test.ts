@@ -136,6 +136,61 @@ async function advanceMainSourceBinding(f: Fixture) {
 }
 
 describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
+  it('clears explicit placement through MCP Save and readback, then resolves inherited Main at Start', async () => {
+    const f = await fixture()
+    try {
+      agentWorkflowNode(f.saveInput.graph.nodes[0]).placement = f.placement.local
+      const original = await f.save('mcp')
+      const graph = structuredClone(original.version.definition)
+      const clearedNode = agentWorkflowNode(graph.nodes[1])
+      delete clearedNode.placement
+      const input = { ...f.saveInput, commandId: randomUUID(), expectedRevision: original.revision,
+        expectedWorkflowVersionId: original.currentVersionId, graph }
+      const reader = await f.base.access.issue({ name: 'Placement reader', audience: 'operator',
+        expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['workflows:read', 'graph:read'],
+          scope: { workspaceIds: [input.workspaceId], workflowIds: [input.workflowId] } }] })
+      const denied = await f.connect(reader.token)
+      expect(toolError(await denied.callTool({ name: 'workflow_save_v3', arguments: input })))
+        .toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+      const result = await f.client.callTool({ name: 'workflow_save_v3', arguments: input })
+      expect(result.isError).not.toBe(true)
+      const saved = CurrentWorkflowSaveResultSchema.parse(result.structuredContent).value
+      expect(agentWorkflowNode(saved.version.definition.nodes[1])).not.toHaveProperty('placement')
+      const scope = { workspaceId: input.workspaceId, workflowId: input.workflowId }
+      const read = await f.client.callTool({ name: 'workflow_saved_get_v3', arguments: scope })
+      expect(read.isError).not.toBe(true)
+      expect(CurrentWorkflowReadResultSchema.parse(read.structuredContent).version).toEqual(saved.version)
+      const retry = await f.client.callTool({ name: 'workflow_save_v3', arguments: input })
+      expect(CurrentWorkflowSaveResultSchema.parse(retry.structuredContent))
+        .toEqual({ value: saved, replayed: true })
+      const historical = await f.client.callTool({ name: 'workflow_saved_get_v3', arguments: {
+        ...scope, workflowVersionId: original.version.id,
+      } })
+      expect(CurrentWorkflowReadResultSchema.parse(historical.structuredContent).version).toEqual(original.version)
+      const accepted = await f.start('mcp', startInput(f, saved))
+      const placement = await f.client.callTool({ name: 'run_node_placement_get', arguments: {
+        ...scope, runId: accepted.run.id, nodeId: clearedNode.id,
+      } })
+      expect(placement.isError).not.toBe(true)
+      expect(RunPlacementGetResultSchema.parse(placement.structuredContent).readback)
+        .toMatchObject({ evidence: 'accepted', placement: { labelAtAcceptance: 'Main',
+          hostRef: f.placement.local.hostRef } })
+    } finally { await f.close() }
+  })
+
+  it('starts a fully placed workflow without probing the original workspace directory', async () => {
+    const f = await fixture()
+    try {
+      agentWorkflowNode(f.saveInput.graph.nodes[0]).placement = f.placement.local
+      const saved = await f.save('mcp')
+      const directory = vi.spyOn(f.base.locations, 'snapshot').mockRejectedValue(
+        new DomainError('LOCATION_UNAVAILABLE', 'Workspace directory unavailable.', 409))
+      const accepted = await f.start('mcp', startInput(f, saved))
+      expect(accepted.run.workflowVersionId).toBe(saved.version.id)
+      expect(directory).not.toHaveBeenCalled()
+    } finally { await f.close() }
+  })
+
   it('persists implicit Main placement for an artifact producer through authenticated MCP and denies a reader', async () => {
     const f = await fixture()
     try {

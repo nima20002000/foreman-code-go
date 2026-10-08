@@ -9,7 +9,7 @@ it('shows Main as the default without inventing or applying a saved placement', 
   const change = vi.fn()
   const view = render(<NodePlacementField options={[{ label: 'Laptop', placement: saved }]} onChange={change} />)
   expect(screen.getByRole('option', { name: 'Main (default)' })).toBeInTheDocument()
-  expect(screen.getByRole('combobox', { name: 'Computer' })).toHaveValue('retained')
+  expect(screen.getByRole('combobox', { name: 'Computer' })).toHaveValue('inherited')
   expect(screen.getByText(/This Agent will use Main when the workflow starts/)).toBeInTheDocument()
   expect(change).not.toHaveBeenCalled()
   view.rerender(<NodePlacementField value={saved} stage="draft"
@@ -25,6 +25,12 @@ it('retains removed placement and never silently selects the main computer', asy
   expect(change).not.toHaveBeenCalled()
   await userEvent.selectOptions(screen.getByRole('combobox'), '0')
   expect(change.mock.calls[0]?.[0].hostRef.kind).toBe('main')
+})
+it('lets an explicit or unavailable placement return to inherited Main', async () => {
+  const change = vi.fn()
+  render(<NodePlacementField value={saved} options={[]} onChange={change} />)
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Computer' }), 'inherited')
+  expect(change).toHaveBeenCalledExactlyOnceWith(undefined)
 })
 it('shows restricted or incompatible choices without allowing selection', () => {
   render(<NodePlacementField value={saved} options={[{ label: 'Laptop', placement: saved, unavailableReason: 'Root access restricted' }]} onChange={vi.fn()} />)
