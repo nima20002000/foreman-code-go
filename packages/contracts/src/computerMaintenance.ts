@@ -20,13 +20,18 @@ export const SyncedMcpServerSchema = z.discriminatedUnion('transport', [
 ])
 export type SyncedMcpServer = z.infer<typeof SyncedMcpServerSchema>
 
+export const SyncedMarketplaceSchema = z.object({ name: z.string().regex(/^[^\s@]+$/u).max(100), source: z.string().min(1).max(500) }).strict()
+export type SyncedMarketplace = z.infer<typeof SyncedMarketplaceSchema>
+
 export const MaintenanceTaskStartSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('update-harnesses'), harnesses: z.array(MaintainedHarnessSchema).min(1).max(2) }).strict(),
   z.object({ kind: z.literal('update-system') }).strict(),
   z.object({ kind: z.literal('restart') }).strict(),
   z.object({ kind: z.literal('sync-mcp'), servers: z.object({ codex: z.array(SyncedMcpServerSchema).max(100),
     claude: z.array(SyncedMcpServerSchema).max(100) }).strict() }).strict(),
-  z.object({ kind: z.literal('sync-plugins'), plugins: z.array(z.string().regex(/^[^\s@]+@[^\s@]+$/u)).max(200) }).strict(),
+  z.object({ kind: z.literal('sync-plugins'), plugins: z.array(z.string().regex(/^[^\s@]+@[^\s@]+$/u)).max(200),
+    /** Main's Git plugin marketplaces; a computer adds the ones it lacks before installing plugins from them. */
+    marketplaces: z.array(SyncedMarketplaceSchema).max(50) }).strict(),
 ])
 export type MaintenanceTaskStart = z.infer<typeof MaintenanceTaskStartSchema>
 

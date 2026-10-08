@@ -6,7 +6,7 @@ import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import {
   MaintenanceStatusSchema, MaintenanceTaskSchema, type MaintainedHarness, type MaintenanceStatus, type MaintenanceTask,
-  type MaintenanceTaskStart, type SyncedMcpServer,
+  type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
 } from '@foreman-code/contracts/computer-maintenance'
 
 export interface MaintenancePorts {
@@ -123,7 +123,7 @@ export class ComputerMaintenance {
         }
         return results.join(' · ') || 'Nothing to sync'
       }
-      case 'sync-plugins': return this.syncPlugins(request.plugins, step, signal)
+      case 'sync-plugins': return this.syncPlugins(request.plugins, request.marketplaces, step, signal)
     }
   }
 
@@ -178,17 +178,26 @@ export class ComputerMaintenance {
     return Object.keys(await claudeUserMcpServers(this.ports))
   }
 
-  private async syncPlugins(plugins: readonly string[], step: Step, signal: AbortSignal): Promise<string> {
+  private async syncPlugins(plugins: readonly string[], marketplaces: readonly SyncedMarketplace[], step: Step, signal: AbortSignal): Promise<string> {
     const codex = await this.ports.find('codex')
     if (!codex) throw new Error('Codex is not installed on this computer.')
     const installed = new Set(await installedPlugins(this.ports, codex, signal))
-    const added: string[] = []
-    for (const plugin of plugins) {
-      if (installed.has(plugin)) continue
-      await step(codex, ['plugin', 'add', plugin], `codex plugin add ${plugin}`)
-      added.push(plugin)
+    const missing = plugins.filter(plugin => !installed.has(plugin))
+    const known = new Set(missing.length ? (await pluginMarketplaces(this.ports, codex, signal)).map(marketplace => marketplace.name) : [])
+    const added: string[] = [], failed: string[] = []
+    for (const marketplace of marketplaces) {
+      if (known.has(marketplace.name) || !missing.some(plugin => plugin.endsWith(`@${marketplace.name}`))) continue
+      const result = await step(codex, ['plugin', 'marketplace', 'add', marketplace.source], `codex plugin marketplace add ${marketplace.source}`, { allowFailure: true })
+      if (result.code === 0) known.add(marketplace.name)
     }
-    return added.length ? `Installed ${added.join(', ')}` : 'Already in sync'
+    // One plugin that cannot install does not keep the others from installing.
+    for (const plugin of missing) {
+      const result = await step(codex, ['plugin', 'add', plugin], `codex plugin add ${plugin}`, { allowFailure: true })
+      ;(result.code === 0 ? added : failed).push(plugin)
+    }
+    const summary = [added.length ? `Installed ${added.join(', ')}` : '', failed.length ? `Could not install ${failed.join(', ')}` : ''].filter(Boolean).join(' · ')
+    if (failed.length) throw new Error(summary)
+    return summary || 'Already in sync'
   }
 
   private async installedVersion(harness: MaintainedHarness, signal: AbortSignal): Promise<string | null | undefined> {
@@ -246,6 +255,15 @@ export async function installedPlugins(ports: Pick<MaintenancePorts, 'run'>, cod
   if (listed.code !== 0) throw new Error('Codex could not list its plugins.')
   const value = JSON.parse(listed.stdout) as { installed?: { pluginId?: unknown; installed?: unknown }[] }
   return (value.installed ?? []).flatMap(entry => typeof entry.pluginId === 'string' && entry.installed !== false ? [entry.pluginId] : [])
+}
+
+/** Configured plugin marketplaces; only Git sources can be added on another computer. */
+export async function pluginMarketplaces(ports: Pick<MaintenancePorts, 'run'>, codex: string, signal: AbortSignal): Promise<{ name: string; gitSource: string | null }[]> {
+  const listed = await ports.run(codex, ['plugin', 'marketplace', 'list', '--json'], { signal, timeoutMs: 60_000 })
+  if (listed.code !== 0) throw new Error('Codex could not list its plugin marketplaces.')
+  const value = JSON.parse(listed.stdout) as { marketplaces?: { name?: unknown; marketplaceSource?: { sourceType?: unknown; source?: unknown } }[] }
+  return (value.marketplaces ?? []).flatMap(entry => typeof entry.name !== 'string' ? [] : [{ name: entry.name,
+    gitSource: entry.marketplaceSource?.sourceType === 'git' && typeof entry.marketplaceSource.source === 'string' ? entry.marketplaceSource.source : null }])
 }
 
 export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.env,

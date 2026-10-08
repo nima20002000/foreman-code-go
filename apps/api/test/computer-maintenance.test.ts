@@ -4,7 +4,8 @@ import { syncableServers } from '../src/modules/computers/fleet.js'
 
 type Run = { binary: string; args: string[] }
 function ports(overrides: { versions?: Record<string, string | null>; sudo?: boolean; apt?: string; files?: Record<string, string>;
-  codexMcp?: string[]; oauthMcp?: string[]; plugins?: string[]; fail?: (run: Run) => boolean } = {}) {
+  codexMcp?: string[]; oauthMcp?: string[]; plugins?: string[]; marketplaces?: string[]; fail?: (run: Run) => boolean } = {}) {
+  const marketplaces = [...overrides.marketplaces ?? ['openai']], plugins = [...overrides.plugins ?? []]
   const codexMcp = [...overrides.codexMcp ?? []]
   const runs: Run[] = []
   const later: Array<() => void> = []
@@ -29,7 +30,16 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
         // Codex saves an OAuth server, then fails when nobody completes the browser sign-in.
         if (overrides.oauthMcp?.includes(args[2]!)) return { code: 1, stdout: 'Added global MCP server.\nDetected OAuth support.', stderr: 'timed out waiting for OAuth callback' }
       }
-      if (name === 'codex' && args[0] === 'plugin' && args[1] === 'list') return { code: 0, stdout: JSON.stringify({ installed: (overrides.plugins ?? []).map(pluginId => ({ pluginId, installed: true })) }), stderr: '' }
+      if (name === 'codex' && args[0] === 'plugin' && args[1] === 'list') return { code: 0, stdout: JSON.stringify({ installed: plugins.map(pluginId => ({ pluginId, installed: true })) }), stderr: '' }
+      if (name === 'codex' && args[0] === 'plugin' && args[1] === 'marketplace') {
+        if (args[2] === 'list') return { code: 0, stdout: JSON.stringify({ marketplaces: marketplaces.map(name => ({ name, marketplaceSource: { sourceType: 'git', source: name } })) }), stderr: '' }
+        marketplaces.push(args[3]!.split('/').at(-1)!.replace(/\.git$/u, ''))
+        return { code: 0, stdout: '', stderr: '' }
+      }
+      if (name === 'codex' && args[0] === 'plugin' && args[1] === 'add') {
+        if (!marketplaces.includes(args[2]!.split('@')[1]!)) return { code: 1, stdout: '', stderr: 'plugin was not found in marketplace' }
+        plugins.push(args[2]!)
+      }
       return { code: 0, stdout: '', stderr: '' }
     },
     exists: async path => path === '/var/run/reboot-required' && Boolean(overrides.files?.[path]),
@@ -102,8 +112,18 @@ describe('computer maintenance', () => {
       claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] } })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Added search · Claude: not installed, skipped' })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['mcp', 'add', 'search', '--', 'npx', 'search-mcp'] })
-    maintenance.start({ kind: 'sync-plugins', plugins: ['pdf@openai', 'documents@openai'] })
+    maintenance.start({ kind: 'sync-plugins', plugins: ['pdf@openai', 'documents@openai'], marketplaces: [] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Installed documents@openai' })
+  })
+
+  it('adds a missing Git marketplace before its plugins, and one plugin that cannot install does not stop the others', async () => {
+    const fake = ports()
+    const maintenance = new ComputerMaintenance(fake.value)
+    maintenance.start({ kind: 'sync-plugins', plugins: ['skill-creator@claude-plugins-official', 'lost@elsewhere', 'pdf@openai'],
+      marketplaces: [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }] })
+    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
+      summary: 'Installed skill-creator@claude-plugins-official, pdf@openai · Could not install lost@elsewhere' })
+    expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['plugin', 'marketplace', 'add', 'https://github.com/anthropics/claude-plugins-official.git'] })
   })
 })
 

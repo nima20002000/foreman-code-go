@@ -4,7 +4,7 @@ import {
   COMPUTER_MAINTENANCE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema,
   ComputerMaintenanceStartResultSchema, MaintenanceReplySchema, SyncedMcpServerSchema,
   type ComputerMaintenanceList, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
-  type MaintenanceStatus, type MaintenanceTask, type MaintenanceTaskStart, type SyncedMcpServer,
+  type MaintenanceStatus, type MaintenanceTask, type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
 } from '@foreman-code/contracts/computer-maintenance'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -24,6 +24,7 @@ export interface FleetSources {
   codexUserMcpServers(): Promise<Record<string, unknown>>
   claudeUserMcpServers(): Promise<Record<string, unknown>>
   codexPlugins(): Promise<string[]>
+  codexMarketplaces(): Promise<SyncedMarketplace[]>
 }
 
 const CACHE_MS = 20_000
@@ -125,7 +126,10 @@ export class FleetMaintenanceService {
       const [codex, claude] = await Promise.all([this.sources.codexUserMcpServers().catch(() => ({})), this.sources.claudeUserMcpServers().catch(() => ({}))])
       return { kind: 'sync-mcp', servers: { codex: syncableServers(codex), claude: syncableServers(claude) } }
     }
-    if (task.kind === 'sync-plugins') return { kind: 'sync-plugins', plugins: await this.sources.codexPlugins().catch(() => []) }
+    if (task.kind === 'sync-plugins') {
+      const [plugins, marketplaces] = await Promise.all([this.sources.codexPlugins().catch(() => []), this.sources.codexMarketplaces().catch(() => [])])
+      return { kind: 'sync-plugins', plugins, marketplaces }
+    }
     return task
   }
 

@@ -57,6 +57,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
       codexUserMcpServers: async () => ({ linear: { url: 'https://mcp.linear.app/mcp' }, private: { command: 'x', env: { TOKEN: 'secret' } }, 'foreman-code': { command: 'app' } }),
       claudeUserMcpServers: async () => ({ docs: { type: 'http', url: 'https://docs.example/mcp' } }),
       codexPlugins: async () => ['pdf@openai'],
+      codexMarketplaces: async () => [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }],
     })
     const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: { computerMaintenance, commands } as unknown as OperatorServices } })
@@ -89,7 +90,8 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
       codex: [{ transport: 'http', name: 'linear', url: 'https://mcp.linear.app/mcp', bearerTokenEnvVar: null }],
       claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] } })
     await operator.callTool({ name: 'computers_maintenance_start', arguments: { commandId: randomUUID(), task: { kind: 'sync-plugins' } } })
-    expect(deviceStarts.at(-1)).toEqual({ kind: 'sync-plugins', plugins: ['pdf@openai'] })
+    expect(deviceStarts.at(-1)).toEqual({ kind: 'sync-plugins', plugins: ['pdf@openai'],
+      marketplaces: [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }] })
 
     const restartAll = await operator.callTool({ name: 'computers_maintenance_start', arguments: { commandId: randomUUID(), task: { kind: 'restart' } } })
     expect(restartAll.isError).toBe(true)
@@ -114,7 +116,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     let clock = 0
     const local = { status: async () => ({ ...status('0.161.0'), tasks: [structuredClone(running)] }) } as unknown as ComputerMaintenance
     const fleet = new FleetMaintenanceService(database.pool, mainId, () => undefined, new PostgresCommandCoordinator(database.pool), local,
-      { codexUserMcpServers: async () => ({}), claudeUserMcpServers: async () => ({}), codexPlugins: async () => [] }, () => clock)
+      { codexUserMcpServers: async () => ({}), claudeUserMcpServers: async () => ({}), codexPlugins: async () => [], codexMarketplaces: async () => [] }, () => clock)
     const main = async () => (await fleet.list(principal)).computers.find(computer => computer.target.hostRef.kind === 'main')!.status!.tasks[0]!
     expect(await main()).toMatchObject({ state: 'running' })
     Object.assign(running, { state: 'succeeded', summary: 'Codex: Added linear', finishedAt: new Date().toISOString() })

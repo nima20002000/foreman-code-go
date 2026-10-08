@@ -9,7 +9,7 @@ import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
 import { registerComputerMaintenanceRoutes } from './routes/computerMaintenance.js'
 import { FleetMaintenanceService } from './modules/computers/fleet.js'
-import { ComputerMaintenance, claudeUserMcpServers, installedPlugins, systemMaintenancePorts } from './modules/computers/maintenance.js'
+import { ComputerMaintenance, claudeUserMcpServers, installedPlugins, pluginMarketplaces, systemMaintenancePorts } from './modules/computers/maintenance.js'
 import { ComputerGitHubService } from './modules/computers/github.js'
 import { COMPUTER_MAINTENANCE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
 import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_SYNC_NAMESPACE, COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
@@ -1732,6 +1732,8 @@ export function buildProductionApp(
           codexUserMcpServers: () => harnessSettings.mcp.userServers('codex'),
           claudeUserMcpServers: () => claudeUserMcpServers(maintenancePorts),
           codexPlugins: () => installedPlugins(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(120_000)),
+          codexMarketplaces: async () => (await pluginMarketplaces(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(60_000)))
+            .flatMap(marketplace => marketplace.gitSource ? [{ name: marketplace.name, source: marketplace.gitSource }] : []),
         })
       registerComputerMaintenanceRoutes(app, runtimeServices.computerMaintenance)
       // Keep harnesses current and Main's MCP servers and plugins on every computer. Never under the test runners.
