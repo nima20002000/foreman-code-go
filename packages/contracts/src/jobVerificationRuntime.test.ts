@@ -64,4 +64,32 @@ describe('verification profile qualification contracts', () => {
         suites: [{ ...measurement.suites[0], suite }] }).success).toBe(false)
     }
   })
+  it('qualifies native acceptance with Codex and Claude and rejects a retired binary', () => {
+    const measurement = verificationMeasurementFixture()
+    const tools = [
+      { kind: 'postgresql', executable: '/tools/postgres', version: '17.6', binarySha256: verificationDigest },
+      { kind: 'codex', executable: '/tools/codex', version: 'codex-fixture', binarySha256: verificationDigest },
+      { kind: 'claude', executable: '/tools/claude', version: 'claude-fixture', binarySha256: verificationDigest },
+    ]
+    const native = {
+      ...measurement,
+      fingerprint: { ...measurement.fingerprint, tools },
+      checks: [
+        ...measurement.checks,
+        ...['postgres-isolation', 'native-containment', 'credential-redaction']
+          .map(id => ({ id, passed: true, evidenceDigest: verificationDigest })),
+      ],
+      suites: [{ ...measurement.suites[0], suite: 'native-acceptance' }],
+    }
+    expect(JobVerificationRuntimeMeasurementSchema.parse(native)).toEqual(native)
+    for (const harness of ['codex', 'claude']) {
+      expect(JobVerificationRuntimeMeasurementSchema.safeParse({
+        ...native, fingerprint: { ...native.fingerprint, tools: tools.filter(tool => tool.kind !== harness) },
+      }).success).toBe(false)
+    }
+    expect(JobVerificationRuntimeMeasurementSchema.safeParse({
+      ...native, fingerprint: { ...native.fingerprint,
+        tools: tools.map(tool => tool.kind === 'claude' ? { ...tool, kind: 'opencode' } : tool) },
+    }).success).toBe(false)
+  })
 })

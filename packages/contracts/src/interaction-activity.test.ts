@@ -8,10 +8,10 @@ const control = {
   choice: { optionId: 'allow', semantic: 'approve_once' },
 }
 describe('accepted native response identity', () => {
-  it.each(['codex', 'opencode'])('requires an observed %s turn', (harness) => {
-    expect(AcceptedChatResponseControlSchema.safeParse({ ...control, native: { ...control.native, harness } }).success).toBe(true)
-    expect(AcceptedChatResponseControlSchema.safeParse({ ...control, native: { ...control.native, harness, turnId: undefined } }).success).toBe(false)
-    expect(AcceptedChatResponseControlSchema.safeParse({ ...control, native: { ...control.native, harness, turnId: undefined, messageId: 'message', generation: 'callback' } }).success).toBe(false)
+  it('requires an observed Codex turn', () => {
+    expect(AcceptedChatResponseControlSchema.safeParse(control).success).toBe(true)
+    expect(AcceptedChatResponseControlSchema.safeParse({ ...control, native: { ...control.native, turnId: undefined } }).success).toBe(false)
+    expect(AcceptedChatResponseControlSchema.safeParse({ ...control, native: { ...control.native, turnId: undefined, messageId: 'message', generation: 'callback' } }).success).toBe(false)
   })
   it('retains Claude message and callback generation without inventing a turn', () => {
     const native = { ...control.native, harness: 'claude', turnId: undefined, messageId: 'actual-message', generation: 'actual-callback' }

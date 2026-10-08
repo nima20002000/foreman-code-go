@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 
 export const COMPUTER_ACCOUNTS_NAMESPACE = 'computer-accounts-v1'
-export const ComputerAccountToolSchema = z.enum(['codex', 'claude', 'opencode', 'github'])
+export const ComputerAccountToolSchema = z.enum(['codex', 'claude', 'github'])
 /** Identity facts only: never tokens, keys or credential paths. */
 export const ComputerAccountSchema = z.object({
   tool: ComputerAccountToolSchema,

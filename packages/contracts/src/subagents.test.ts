@@ -12,8 +12,6 @@ describe('native child contracts and evidence gates', () => {
     expect(capabilities.historyReadback.support).not.toBe('unsupported')
   })
   it('separates protocol evidence from app qualification and exact version evidence', () => {
-    expect(subagentCapabilities('opencode-task')).toMatchObject({ sendInput: { support: 'supported', qualification: 'unverified' }, inputTiming: 'idle', toolCalls: { support: 'unverified' } })
-    expect(subagentCapabilities('opencode-task').sendInput.qualification).toBe('unverified')
     expect(subagentCapabilities('claude-agent').toolCalls.qualification).toBe('unverified')
     expect(SubagentCapabilitiesSchema.safeParse({}).success).toBe(false)
   })

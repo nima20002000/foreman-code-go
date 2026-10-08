@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { NativeSessionReferenceSchema, NativeHarnessEventSchema, PendingNativeInteractionSchema,
-  ExecutionResultSchema, AgentHarnessSchema, ApprovalResponseSemanticSchema } from './index.js'
+  ExecutionResultSchema, RecordedAgentHarnessSchema, ApprovalResponseSemanticSchema } from './index.js'
 import { NativeMessageSubmissionSchema } from './claude.js'
 import { PlacementDigestSchema, DispatchIntentSchema } from './nodePlacement.js'
 import { RemoteOperationReceiptSchema, WorkflowArtifactValidationFailureSchema,
@@ -48,7 +48,7 @@ export const RemoteNativeHistorySchema = z.object({ nativeSubmission: z.lazy(() 
   pendingInteraction: z.lazy(() => PendingNativeInteractionSchema).optional(), terminalResult: z.lazy(() => ExecutionResultSchema).optional(),
   terminalTurn: z.object({ correlationId: z.string(), providerId: z.string(), result: z.lazy(() => ExecutionResultSchema) }).strict().optional(),
   interactionDeliveries: z.array(z.object({ nativeRequestId: z.string(), state: z.enum(['pending','submitting','submitted','uncertain']), selectedOptionId: z.string().optional() }).strict()).max(128).optional(),
-  responseDeliveries: z.array(z.object({ source: z.enum(['provider_acknowledgement','provider_history']), harness: z.lazy(() => AgentHarnessSchema),
+  responseDeliveries: z.array(z.object({ source: z.enum(['provider_acknowledgement','provider_history']), harness: z.lazy(() => RecordedAgentHarnessSchema),
     providerVersion: z.string(), nativeSessionId: z.string(), nativeRequestId: z.string(), nativeRequestType: z.string(), optionId: z.string(),
     semantic: z.lazy(() => ApprovalResponseSemanticSchema), responseDigest: z.string().regex(/^[a-f0-9]{64}$/).optional()
   }).strict()).max(128).optional(), canceledRequestIds: z.array(z.string()).max(128).optional(),

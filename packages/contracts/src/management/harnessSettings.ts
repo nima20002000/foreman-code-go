@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 // This module deliberately has no runtime import from management/index.ts.
-const Harness = z.enum(['codex', 'opencode'])
+const Harness = z.enum(['codex'])
 const Name = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/, 'Use letters, numbers, hyphens or underscores.')
 const CommandId = z.string().trim().min(8).max(200)
 const Revision = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -59,11 +59,11 @@ export type HarnessMcpList = z.infer<typeof HarnessMcpListResultSchema>
 export const HarnessMcpPlanInputSchema = z.object({ harness: Harness, commandId: CommandId, expectedRevision: Revision, change: HarnessMcpChangeSchema }).strict()
 export type HarnessMcpPlanInput = z.infer<typeof HarnessMcpPlanInputSchema>
 export const HarnessMcpPlanSchema = z.object({
-  id: z.string().uuid(), harness: Harness, revision: Revision, change: HarnessMcpChangeSchema,
+  id: z.string().uuid(), harness: z.enum(['codex', 'opencode']), revision: Revision, change: HarnessMcpChangeSchema,
   managedPreset: HarnessMcpPlanPresetSchema.nullable().optional(),
   requestedBy: z.string(), status: z.enum(['pending', 'submitting', 'applied', 'rejected', 'failed', 'uncertain', 'reconciled']),
   createdAt: z.string().datetime({ offset: true }), expiresAt: z.string().datetime({ offset: true }),
-  error: z.string().nullable(),
+  error: z.string().nullable(), retirementMessage: z.string().optional(),
 }).strict()
 export type HarnessMcpPlan = z.infer<typeof HarnessMcpPlanSchema>
 export const HarnessMcpPlanResultSchema = z.object({ value: HarnessMcpPlanSchema, replayed: z.boolean() }).strict()

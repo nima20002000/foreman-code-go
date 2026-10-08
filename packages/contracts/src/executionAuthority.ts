@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema } from './index.js'
 import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema, HostHarnessInstallationSchema } from './harnessRegistry.js'
-import { HarnessQualificationSchema } from './harnessQualification.js'
+import { RecordedHarnessQualificationSchema } from './harnessQualification.js'
 import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema } from './nodePlacement.js'
 import { RemoteReviewerRequestSchema } from './remoteExecution.js'
 import { DEVICE_APPLICATION_JSON_BYTES } from './deviceApplication.js'
@@ -23,5 +23,5 @@ export const ExecutionFactsRequestSchema = z.object({ method: z.literal('read-fa
 export const ExecutionFactsResultSchema = z.object({ version: z.literal(1), intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema,
   executionPlacement: NativeExecutionPlacementSchema, configuration: z.lazy(() => AgentConfigurationVersionSchema),
   harness: z.object({ override: HostHarnessOverrideSchema, profileProof: HostHarnessProfileEvidenceSchema,
-    installation: HostHarnessInstallationSchema, qualification: HarnessQualificationSchema }).strict(),
+    installation: HostHarnessInstallationSchema, qualification: RecordedHarnessQualificationSchema }).strict(),
 }).strict()

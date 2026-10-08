@@ -6,7 +6,8 @@ describe('Settings experience contracts', () => {
   it('parses direct links and rejects unsupported agent section selections', () => {
     expect(AgentSettingsSearchSchema.parse({ role: 'coder', section: 'tools' })).toEqual({ role: 'coder', section: 'tools' })
     expect(AgentSettingsSearchSchema.parse({ role: 'unknown', section: 'connections' })).toEqual({ role: undefined, section: undefined })
-    expect(HarnessSettingsSearchSchema.parse({ harness: 'opencode', section: 'workspace' })).toEqual({ harness: 'opencode', section: 'workspace' })
+    expect(HarnessSettingsSearchSchema.parse({ harness: 'claude', section: 'workspace' })).toEqual({ harness: 'claude', section: 'workspace' })
+    expect(HarnessSettingsSearchSchema.parse({ harness: 'opencode', section: 'workspace' })).toEqual({ harness: undefined, section: 'workspace' })
   })
   it('workspace suggestions cannot carry runner or filesystem authority', () => {
     expect(WorkspaceDefaultsSchema.safeParse({ suggestedName: 'Workspace', description: '', rootPath: '/tmp' }).success).toBe(false)

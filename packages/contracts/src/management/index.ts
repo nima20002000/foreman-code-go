@@ -18,7 +18,6 @@ import {
   AgentHarnessSchema,
   AgentDefaultsSchema,
   CodexHarnessConfigurationSchema,
-  OpenCodeHarnessConfigurationSchema,
   HarnessQualificationSchema,
   HarnessConfigurationSchema,
   SupportedHarnessConfigurationSchema,
@@ -49,17 +48,12 @@ export const LocalHumanAccessSchema = z.object({
   }).strict(),
 }).strict();
 
-// Native automatic handling is supported by the server. The shared schema
-// still enforces agreement between autoApprove and Advanced permission handling.
-export const ManagementOpenCodeHarnessConfigurationSchema = OpenCodeHarnessConfigurationSchema;
 export const ManagementHarnessConfigurationSchema = z.discriminatedUnion("harness", [
   CodexHarnessConfigurationSchema,
-  ManagementOpenCodeHarnessConfigurationSchema,
   ClaudeHarnessConfigurationSchema,
 ]);
 export const ManagementHarnessDefaultsSchema = z.object({
   codex: CodexHarnessConfigurationSchema,
-  opencode: ManagementOpenCodeHarnessConfigurationSchema,
   claude: ClaudeHarnessConfigurationSchema.optional(),
 }).strict();
 
@@ -239,7 +233,7 @@ const AgentAddOperationSchema = z.object({
   nodeName: z.string().trim().min(1).max(200).optional(),
   productRole: z.enum(["orchestrator", "coder"]).optional(),
   /** Omit to copy the role template. A different harness requires an explicit configuration. */
-  harness: z.enum(["codex", "opencode", "claude"]).optional(),
+  harness: z.enum(["codex", "claude"]).optional(),
   configuration: ManagementHarnessConfigurationSchema.optional(),
   prompt: AgentSchema.shape.prompt,
   assignedSkills: AgentSchema.shape.assignedSkills,
@@ -459,7 +453,7 @@ export const HarnessDefaultsUpdateInputSchema = z.object({
   }
 });
 export const HarnessConfigurationCheckInputSchema = z.object({
-  configuration: HarnessConfigurationSchema,
+  configuration: SupportedHarnessConfigurationSchema,
 }).strict();
 export const HarnessConfigurationCheckResultSchema = z.object({
   configuration: HarnessConfigurationSchema,
@@ -467,10 +461,10 @@ export const HarnessConfigurationCheckResultSchema = z.object({
   checkedAt: TimestampSchema,
 }).strict();
 
-export const HarnessGetInputSchema = z.object({ harness: z.enum(["codex", "opencode", "claude"]) }).strict();
+export const HarnessGetInputSchema = z.object({ harness: z.enum(["codex", "claude"]) }).strict();
 export const UnavailableHarnessDefaultsSchema = HarnessGetInputSchema.shape.harness.array().max(3);
 export const HarnessCatalogEntrySchema = z.object({
-  harness: z.enum(["codex", "opencode", "claude"]),
+  harness: z.enum(["codex", "claude"]),
   defaults: ManagementHarnessConfigurationSchema,
   defaultsRevision: ExpectedRevisionSchema,
   capability: HarnessQualificationSchema.nullable(),
@@ -629,7 +623,6 @@ export const OperatorToolNameSchema = z.enum([
   "claude_setup_options_get",
   "harness_options_get",
   "harness_options_refresh",
-  "opencode_models_cache_update",
   "harness_mcp_detection_get",
   "agent_create",
   "agent_update",

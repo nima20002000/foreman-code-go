@@ -2,17 +2,14 @@ import type { ClaudeHarnessConfiguration } from './claude.js';
 import {
   AgentEffortSchema,
   DEFAULT_CODEX_ADVANCED_CONFIGURATION,
-  DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   SupportedHarnessConfigurationSchema,
   type AgentEffort,
   type CodexHarnessConfiguration,
   type HarnessConfiguration,
-  type OpenCodeHarnessConfiguration,
 } from './index.js';
 
 /** Legacy absence is supported. Never mutate the shared defaults or a saved snapshot. */
 export function withAdvancedDefaults(value: CodexHarnessConfiguration): CodexHarnessConfiguration;
-export function withAdvancedDefaults(value: OpenCodeHarnessConfiguration): OpenCodeHarnessConfiguration;
 export function withAdvancedDefaults(value: ClaudeHarnessConfiguration): ClaudeHarnessConfiguration;
 export function withAdvancedDefaults(value: HarnessConfiguration): HarnessConfiguration;
 export function withAdvancedDefaults(value: HarnessConfiguration): HarnessConfiguration {
@@ -20,13 +17,7 @@ export function withAdvancedDefaults(value: HarnessConfiguration): HarnessConfig
   if (value.harness === 'codex') {
     return structuredClone({ ...value, advanced: value.advanced ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION });
   }
-  return structuredClone({
-    ...value,
-    advanced: value.advanced ?? {
-      ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
-      permissionHandling: value.autoApprove ? 'native_auto' : 'graphql_routed',
-    },
-  });
+  return structuredClone(value);
 }
 
 /** Empty editor lines are separators, not paths. All other path characters are significant. */

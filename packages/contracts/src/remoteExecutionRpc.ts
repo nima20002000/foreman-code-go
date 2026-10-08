@@ -8,7 +8,6 @@ import { RemoteOwnerControlSchema, RemoteOwnerReconciliationSchema, RemoteApplic
   RemoteReviewerRequestSchema } from './remoteExecution.js'
 import { DeviceHistoryRequestFields, DeviceJsonContinuationRequestSchema, DeviceJsonContinuationSchema } from './deviceApplication.js'
 export * from './workerConversations.js'
-export * from './workerOpenCodeFiles.js'
 const binding = { intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, executionPlacement: NativeExecutionPlacementSchema.optional() }
 export const RemoteReceiptPageSchema = z.object({
   kind: z.literal('receipt-page'), transferId: z.uuid(), receiptSequence: z.number().int().positive(),

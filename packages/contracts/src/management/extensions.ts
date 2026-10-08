@@ -13,10 +13,7 @@ const Page = { cursor: z.string().trim().min(1).optional(), limit: z.number().in
 const Workspace = { workspaceId: IdSchema };
 const Workflow = { ...Workspace, workflowId: IdSchema };
 const Mutation = { commandId: Command, expectedRevision: Revision };
-const Configuration = SupportedHarnessConfigurationSchema.refine(
-  (value) => value.harness !== "opencode" || !value.autoApprove,
-  "Managed OpenCode requires routed approval",
-);
+const Configuration = SupportedHarnessConfigurationSchema;
 
 export const AgentCreateInputSchema = z.object({
   ...Workspace, commandId: Command, agentId: IdSchema,
@@ -53,11 +50,10 @@ export type AgentCreateInput = z.infer<typeof AgentCreateInputSchema>;
 export type AgentUpdateInput = z.infer<typeof AgentUpdateInputSchema>;
 export type AgentCloneInput = z.infer<typeof AgentCloneInputSchema>;
 
-export const HarnessOptionsInputSchema = z.object({ harness: z.enum(["codex", "opencode", "claude"]) }).strict();
+export const HarnessOptionsInputSchema = z.object({ harness: z.enum(["codex", "claude"]) }).strict();
 export const HarnessOptionsRefreshInputSchema = z.object({
-  harness: z.enum(["codex", "opencode", "claude"]), refresh: z.enum(["catalog", "upstream"]).default("catalog"),
+  harness: z.enum(["codex", "claude"]), refresh: z.enum(["catalog", "upstream"]).default("catalog"),
 }).strict();
-export const OpenCodeModelsRefreshInputSchema = z.object({ harness: z.literal("opencode") }).strict();
 export const HarnessModelOptionSchema = z.object({
   id: IdSchema, providerId: IdSchema.optional(), name: z.string().optional(),
   reasoningEfforts: z.array(z.string()), variants: z.array(z.string()), serviceTiers: z.array(z.string()),
@@ -65,7 +61,7 @@ export const HarnessModelOptionSchema = z.object({
   releasedAt: z.string().optional(), defaultPriority: z.number().finite().optional(),
 }).strict();
 export const HarnessOptionsResultSchema = z.object({
-  harness: z.enum(["codex", "opencode", "claude"]), providerVersion: z.string().min(1),
+  harness: z.enum(["codex", "claude"]), providerVersion: z.string().min(1),
   authenticated: z.boolean(), models: z.array(HarnessModelOptionSchema), nativeAgents: z.array(z.string()),
   settings: z.array(z.object({
     field: z.string(), support: z.enum(["supported", "conditional", "metadata_only", "unsupported"]),
@@ -74,7 +70,7 @@ export const HarnessOptionsResultSchema = z.object({
   restrictions: z.array(z.string()), checkedAt: TimestampSchema,
 }).strict();
 export type HarnessOptions = z.infer<typeof HarnessOptionsResultSchema>;
-export const HarnessMcpDetectionInputSchema = z.object({ ...Workspace, harness: z.enum(["codex", "opencode", "claude"]) }).strict();
+export const HarnessMcpDetectionInputSchema = z.object({ ...Workspace, harness: z.enum(["codex", "claude"]) }).strict();
 export const HarnessMcpDetectionResultSchema = ScopedMcpDetectionSchema;
 export const NativeConfigurationCheckInputSchema = z.object({ configuration: Configuration }).strict();
 export const NativeConfigurationCheckResultSchema = z.object({

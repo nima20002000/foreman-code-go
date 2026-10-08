@@ -64,23 +64,6 @@ describe("management contracts", () => {
     })).toThrow();
   });
 
-  it("accepts supported OpenCode native automatic approval", () => {
-    const parsed = GraphDraftApplyInputSchema.parse({
-      workspaceId: "workspace-1", workflowId: "workflow-1", draftId: "draft-1",
-      commandId: "command-123", expectedRevision: 0,
-      operations: [{
-        type: "agent.configure", agentId: "agent-1", expectedAgentRevision: 0,
-        configuration: {
-          harness: "opencode", model: "opencode-go/deepseek-v4.1-flash", variant: "max",
-          nativeAgent: "build", thinking: false, autoApprove: true,
-        },
-      }],
-    });
-    expect(parsed.operations).toContainEqual(expect.objectContaining({
-      type: "agent.configure", configuration: expect.objectContaining({ autoApprove: true }),
-    }));
-  });
-
   it("supports truthful App MCP capability and scoped interaction tools", () => {
     expect(OperatorCapabilitiesSchema.parse({
       endpoint: "/mcp", audience: "operator", protocol: "2026-07-28", tools: [],

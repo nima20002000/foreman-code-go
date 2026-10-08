@@ -1,17 +1,17 @@
 import { z } from 'zod'
 
 /** Diagnostics only. These types deliberately cannot represent execution authorization. */
-export const CompatibilityHarnessSchema = z.enum(['codex', 'opencode'])
+export const CompatibilityHarnessSchema = z.enum(['codex'])
 export type CompatibilityHarness = z.infer<typeof CompatibilityHarnessSchema>
 export const HarnessReleaseProvenanceSchema = z.object({
   version: z.string().min(1).max(100),
-  repository: z.enum(['openai/codex', 'anomalyco/opencode']),
+  repository: z.enum(['openai/codex']),
   tag: z.string().min(1).max(100),
-  releaseUrl: z.string().url().regex(/^https:\/\/github\.com\/(openai\/codex|anomalyco\/opencode)\/releases\/tag\/[^/?#]+$/),
+  releaseUrl: z.string().url().regex(/^https:\/\/github\.com\/openai\/codex\/releases\/tag\/[^/?#]+$/),
   commit: z.string().regex(/^[a-f0-9]{40}$/),
   recordedAt: z.string().datetime(),
 }).strict().superRefine((value, context) => {
-  const tag = `${value.repository === 'openai/codex' ? 'rust-v' : 'v'}${value.version}`
+  const tag = `rust-v${value.version}`
   if (value.tag !== tag || value.releaseUrl !== `https://github.com/${value.repository}/releases/tag/${tag}`) {
     context.addIssue({ code: 'custom', message: 'Release repository, tag, version and URL must identify the same official release.' })
   }

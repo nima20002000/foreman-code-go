@@ -94,20 +94,22 @@ export function subagentCapabilities(mode: SubagentNativeMode): SubagentCapabili
   const unverified = { support: 'unverified', qualification: 'unverified' } as const
   const observed = { support: 'supported', qualification: 'unverified' } as const
   const codex = mode === 'codex-collab' || mode === 'codex-multi-agent-v2'
-  const opencode = mode === 'opencode-task'
+  if (mode === 'opencode-task') {
+    const retired = { support: 'unsupported', qualification: 'unverified', reasonCode: 'HARNESS_RETIRED' } as const;
+    return { lifecycle: retired, transcript: observed, historyReadback: observed, toolCalls: retired,
+      toolResults: retired, sendInput: retired, inputTiming: 'none', interrupt: retired, executionResume: retired };
+  }
   // Claude's probe did not preserve exact CLI identity; the app candidate remains behind its authority qualification.
-  const observation = codex || opencode ? observed : unverified
+  const observation = codex ? observed : unverified
   let sendInput: SubagentCapabilities['sendInput'] = unverified
   if (codex) {
     sendInput = observed
   } else if (mode === 'claude-agent') {
     sendInput = { ...unverified, support: 'unsupported', reasonCode: 'CLAUDE_DIRECT_INPUT_UNSUPPORTED' }
-  } else if (opencode) {
-    sendInput = observed
   }
   return { lifecycle: observation, transcript: observation, historyReadback: observation,
     toolCalls: codex ? observed : unverified, toolResults: codex ? observed : unverified,
-    sendInput, inputTiming: codex ? 'active-and-idle' : opencode ? 'idle' : 'none',
+    sendInput, inputTiming: codex ? 'active-and-idle' : 'none',
     interrupt: codex ? observed : unverified,
     executionResume: codex ? observed : unverified }
 }

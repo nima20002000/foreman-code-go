@@ -3,17 +3,17 @@ import { z } from 'zod'
 import { HarnessConfigurationSchema, SupportedHarnessConfigurationSchema, type HarnessConfiguration } from './index.js'
 import { DevicePresenceSchema } from './deviceConnection.js'
 import { DeviceSessionBindingSchema } from './deviceConnection.js'
-import { HarnessQualificationSchema } from './harnessQualification.js'
+import { RecordedHarnessQualificationSchema } from './harnessQualification.js'
 import { HarnessHostReferenceSchema, HostHarnessOverrideTargetSchema } from './harnessProfileSelection.js'
 export { HarnessHostReferenceSchema, HostHarnessOverrideTargetSchema, HarnessProfileSelectionSchema, type HarnessProfileSelection } from './harnessProfileSelection.js'
 
 const Identity = z.string().min(1)
-export const HarnessInstanceAvailabilitySchema = z.enum(['available', 'disabled', 'unknown-driver', 'invalid-configuration'])
+export const HarnessInstanceAvailabilitySchema = z.enum(['available', 'disabled', 'unknown-driver', 'invalid-configuration', 'retired'])
 export const ConfiguredHarnessInstanceSchema = z.object({
   instanceId: Identity, instanceRevision: Identity, driverId: Identity, enabled: z.boolean(),
   // Unrecognized configuration stays unavailable; raw unknown data is never exposed to clients.
   configuration: z.lazy(() => HarnessConfigurationSchema).nullable(),
-  availability: HarnessInstanceAvailabilitySchema, driverRevision: Identity.optional(),
+  availability: HarnessInstanceAvailabilitySchema, retirementMessage: z.string().optional(), driverRevision: Identity.optional(),
 }).strict()
 export type ConfiguredHarnessInstanceDto = z.infer<typeof ConfiguredHarnessInstanceSchema>
 export const HarnessTargetEnvironmentSchema = z.object({
@@ -91,7 +91,8 @@ export const HostHarnessOverrideSchema = z.object({
   instanceId: z.uuid(), revision: z.number().int().positive(), instanceRevision: Identity,
   target: HostHarnessOverrideTargetSchema, presetId: Identity, enabled: z.boolean(), driverId: Identity,
   configuration: z.lazy(() => HarnessConfigurationSchema), configurationFingerprint: Identity,
-  qualification: z.enum(['unqualified', 'qualified', 'installation-changed', 'disabled']),
+  qualification: z.enum(['unqualified', 'qualified', 'installation-changed', 'disabled', 'retired']),
+  retirementMessage: z.string().optional(),
 }).strict()
 export type HostHarnessOverride = z.infer<typeof HostHarnessOverrideSchema>
 export const HostHarnessOverrideListInputSchema = z.object({
@@ -111,7 +112,7 @@ export type HostHarnessInstanceCheckInput = z.infer<typeof HostHarnessInstanceCh
 export const CompletedNativeQualificationSchema = z.object({
   purpose: z.literal('explicit-host-qualification'), checkId: z.uuid(), binding: DeviceSessionBindingSchema,
   target: HostHarnessOverrideTargetSchema, binarySha256: z.string().regex(/^[a-f0-9]{64}$/),
-  record: HarnessQualificationSchema,
+  record: RecordedHarnessQualificationSchema,
 }).strict()
 export type CompletedNativeQualification = z.infer<typeof CompletedNativeQualificationSchema>
 

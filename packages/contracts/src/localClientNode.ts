@@ -16,13 +16,13 @@ const browserExecutables = [
   /^\/usr\/lib\/chromium[^/]*\/(?:chrome|chromium)$/,
   /^\/usr\/lib\/firefox\/firefox$/,
 ]
-const agentExecutable = /^(?:codex(?:-code-mode|-linux-sandbox)?|opencode|claude)(?:\.exe)?$/
+const agentExecutable = /^(?:codex(?:-code-mode|-linux-sandbox)?|claude)(?:\.exe)?$/
 
 function agentCommand(executable: string, arguments_: readonly string[]): boolean {
   const commands = [executable, ...arguments_.slice(0, 2)]
   if (commands.some(command => agentExecutable.test(basename(command.replace(/ \(deleted\)$/, ''))))) return true
   return arguments_.slice(0, 3).some(argument =>
-    /(?:^|\/)(?:@openai\/codex|opencode-ai|@anthropic-ai\/claude-code)(?:\/|$)/.test(argument)
+    /(?:^|\/)(?:@openai\/codex|@anthropic-ai\/claude-code)(?:\/|$)/.test(argument)
     || /(?:^|\/)(?:graphql-mcp\.mjs|graphql\/mcp\/launcher\.mjs)$/.test(argument))
 }
 

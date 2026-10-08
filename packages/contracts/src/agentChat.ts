@@ -13,7 +13,7 @@ export const AgentChatDirectoryBindingSchema = z.object({ workflowVersionId: z.s
 export type AgentChatDirectoryBinding = z.infer<typeof AgentChatDirectoryBindingSchema>;
 
 import {
-  AgentHarnessSchema, ExecutionResultSchema, IdSchema, MessageSchema, OperatorActivityCursorSchema,
+  RecordedAgentHarnessSchema, ExecutionResultSchema, IdSchema, MessageSchema, OperatorActivityCursorSchema,
   OperatorActivitySchema, PendingNativeInteractionSchema, TimestampSchema,
 } from "./index.js";
 
@@ -22,7 +22,7 @@ import {
  *
  * Identities stay separate:
  * - conversation: app record (`AgentConversation.id`), stored in the existing conversation tables.
- * - native session: Codex thread / OpenCode session (`nativeSession.nativeSessionId`).
+ * - native session: provider session (`nativeSession.nativeSessionId`).
  * - turn: one delivered chat input (`AgentChatTurn.requestId`, optional provider `nativeTurnId`).
  * - execution / Run: the workflow attempt a conversation may originate from. Chat never writes them.
  */
@@ -59,7 +59,7 @@ export const AgentChatSteerSupportSchema = z.enum([
 export type AgentChatSteerSupport = z.infer<typeof AgentChatSteerSupportSchema>;
 
 export const AgentChatCapabilitiesSchema = z.object({
-  harness: AgentHarnessSchema,
+  harness: RecordedAgentHarnessSchema,
   providerVersion: z.string().trim().min(1).nullable(),
   steer: AgentChatSteerSupportSchema,
   interruptAndSend: z.boolean(),
@@ -107,7 +107,7 @@ export const AgentConversationSchema = z.object({
   agentId: IdSchema,
   /** Accepted configuration pinned at creation; resume never re-injects its startup instructions. */
   agentConfigurationVersionId: IdSchema,
-  harness: AgentHarnessSchema,
+  harness: RecordedAgentHarnessSchema,
   origin: AgentChatOriginSchema,
   /** Null until the first native session is bound, including a definitely rejected, retryable attempt. */
   nativeSession: z.object({
@@ -299,5 +299,5 @@ export const AgentChatStreamEventSchema = z.object({
 export type AgentChatStreamEvent = z.infer<typeof AgentChatStreamEventSchema>;
 
 export {
-  agentChatFixtureContext, agentChatFixtures, codexChatCapabilities, openCodeChatCapabilities, steerUnavailableCapabilities,
+  agentChatFixtureContext, agentChatFixtures, codexChatCapabilities, claudeChatCapabilities, steerUnavailableCapabilities,
 } from "./agentChatFixtures.js";

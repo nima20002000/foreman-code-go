@@ -10,13 +10,13 @@ export const codexChatCapabilities: AgentChatCapabilities = {
   harness: "codex", providerVersion: "0.157.1", steer: "native_expected_turn",
   interruptAndSend: true, queueNextTurn: true, resume: true, unavailable: {},
 };
-export const openCodeChatCapabilities: AgentChatCapabilities = {
-  harness: "opencode", providerVersion: "1.18.31", steer: "cooperative_next_step",
+export const claudeChatCapabilities: AgentChatCapabilities = {
+  harness: "claude", providerVersion: "2.1.128", steer: "unavailable",
   interruptAndSend: true, queueNextTurn: true, resume: true, unavailable: {},
 };
 export const steerUnavailableCapabilities: AgentChatCapabilities = {
-  ...openCodeChatCapabilities, steer: "unavailable",
-  unavailable: { steer: "This OpenCode version cannot add input to a running turn. Queue it or interrupt and send." },
+  ...claudeChatCapabilities, steer: "unavailable",
+  unavailable: { steer: "Claude cannot add input to a running turn. Queue it or interrupt and send." },
 };
 
 const conversation: AgentConversation = {
@@ -94,7 +94,7 @@ export const agentChatFixtures = {
     messages: [userMessage("request-1", "Summarize the repository.")],
   },
   steerUnavailable: {
-    ...base, conversation: { ...conversation, harness: "opencode" }, sessionState: "active", revision: 3,
+    ...base, conversation: { ...conversation, harness: "claude" }, sessionState: "active", revision: 3,
     capabilities: steerUnavailableCapabilities,
     activeTurn: { requestId: "request-1", startedAt: at },
     turns: [turn("request-1", "1", "accepted")],

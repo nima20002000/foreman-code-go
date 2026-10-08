@@ -1,25 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_HARNESS_DEFAULTS, HarnessConfigurationSchema, changeCodexSandbox,
-  legacyEffortForHarness, prepareHarnessConfiguration, withAdvancedDefaults,
+  prepareHarnessConfiguration, withAdvancedDefaults,
 } from '../src/index.js';
+import type { ClaudeHarnessConfiguration } from '../src/claude.js';
 import { GraphDraftOperationSchema } from '../src/management/index.js';
 
 describe('PR12 provider editing contracts', () => {
-  it.each(['codex', 'opencode'] as const)('materializes legacy %s Advanced without changing the source', (harness) => {
-    const legacy = structuredClone(DEFAULT_HARNESS_DEFAULTS[harness]);
+  it('materializes legacy Codex Advanced without changing the source', () => {
+    const legacy = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex);
     delete legacy.advanced;
     const normalized = withAdvancedDefaults(legacy);
-    if (normalized.harness === "claude") throw new Error("Expected original provider fixture");
     expect(normalized.advanced).toBeDefined();
     expect(HarnessConfigurationSchema.safeParse(normalized).success).toBe(true);
     expect(legacy.advanced).toBeUndefined();
   });
-  it('materializes the matching legacy OpenCode permission flag', () => {
-    const legacy = { ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: undefined, autoApprove: true };
-    const normalized = withAdvancedDefaults(legacy);
-    expect(normalized.advanced?.permissionHandling).toBe('native_auto');
-    expect(HarnessConfigurationSchema.safeParse(normalized).success).toBe(true);
+  it('preserves Claude policy without changing the source during editing', () => {
+    const configuration: ClaudeHarnessConfiguration = {
+      harness: 'claude', model: 'custom-model', effort: 'high', authMode: 'subscription',
+      configDirectory: '/profile', permissionMode: 'default', sandbox: 'danger-full-access',
+      tools: ['Read'], permissionRules: [{ tool: 'Read', effect: 'ask' }], instructions: 'Keep this policy.', mcpServers: {},
+    };
+    const normalized = withAdvancedDefaults(configuration);
+    expect(normalized).toEqual(configuration);
+    expect(prepareHarnessConfiguration(configuration)).toEqual(configuration);
+    normalized.permissionRules[0]!.effect = 'deny';
+    expect(configuration.permissionRules[0]!.effect).toBe('ask');
   });
   it.each(['read-only', 'danger-full-access'] as const)('removes workspace-write-only permissions when selecting %s', (sandbox) => {
     const original = withAdvancedDefaults({ ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'workspace-write' });
@@ -37,11 +43,6 @@ describe('PR12 provider editing contracts', () => {
     const saved = prepareHarnessConfiguration(value);
     expect(saved.harness === 'codex' && saved.advanced?.additionalWritableDirectories).toEqual(['/one ', '/two']);
     expect(value.advanced!.additionalWritableDirectories).toEqual(['/one ', '', '/two', '']);
-  });
-  it('keeps a custom variant outside the legacy effort projection', () => {
-    const configuration = { ...DEFAULT_HARNESS_DEFAULTS.opencode, model: 'custom/model', variant: 'thinking-budget-4096' };
-    expect(legacyEffortForHarness(configuration)).toBeUndefined();
-    expect(prepareHarnessConfiguration(configuration)).toMatchObject({ model: 'custom/model', variant: 'thinking-budget-4096' });
   });
   it('accepts draft approval changes, incomplete designation, and explicit creation overrides', () => {
     expect(GraphDraftOperationSchema.parse({ type: 'workflow.set_approval', approval: { handler: 'orchestrator' } })).toMatchObject({ approval: { handler: 'orchestrator' } });

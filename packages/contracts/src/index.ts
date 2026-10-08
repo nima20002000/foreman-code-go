@@ -122,7 +122,11 @@ export const HarnessSummarySchema = z
   .strict();
 export type HarnessSummary = z.infer<typeof HarnessSummarySchema>;
 
-export const AgentHarnessSchema = z.enum(["codex", "opencode", "claude"]);
+export const AgentHarnessSchema = z.enum(["codex", "claude"]);
+/** Persisted facts retain the provider that originally produced them. */
+export const RecordedAgentHarnessSchema = z.enum(["codex", "opencode", "claude"]);
+export type RecordedAgentHarness = z.infer<typeof RecordedAgentHarnessSchema>;
+export const RETIRED_OPENCODE_MESSAGE = "OpenCode is retired and cannot execute. Select Codex or Claude for new work.";
 export type AgentHarness = z.infer<typeof AgentHarnessSchema>;
 export const AgentEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 export type AgentEffort = z.infer<typeof AgentEffortSchema>;
@@ -214,14 +218,14 @@ export const DEFAULT_CODEX_ADVANCED_CONFIGURATION: CodexAdvancedConfiguration = 
   mcpServers: {},
 };
 
-export const OpenCodePermissionRuleSchema = z.object({
+export const RetiredOpenCodePermissionRuleSchema = z.object({
   permission: z.string().trim().min(1),
   pattern: z.string().min(1),
   effect: z.enum(["allow", "ask", "deny"]),
 }).strict();
-export const OpenCodeAdvancedConfigurationSchema = z.object({
+export const RetiredOpenCodeAdvancedConfigurationSchema = z.object({
   apiVersion: z.literal("v1"),
-  permissionRules: z.array(OpenCodePermissionRuleSchema),
+  permissionRules: z.array(RetiredOpenCodePermissionRuleSchema),
   permissionHandling: z.enum(["graphql_routed", "native_auto"]),
   subagentDepth: z.number().int().nonnegative().optional(),
   plugins: z.object({ mode: z.enum(["inherit", "pure"]) }).strict(),
@@ -232,13 +236,7 @@ export const OpenCodeAdvancedConfigurationSchema = z.object({
   configLoading: z.object({ mode: z.literal("native") }).strict(),
   mcp: z.object({ serverEnabled: z.record(z.string().trim().min(1), z.boolean()) }).strict(),
 }).strict();
-export type OpenCodeAdvancedConfiguration = z.infer<typeof OpenCodeAdvancedConfigurationSchema>;
-export const DEFAULT_OPENCODE_ADVANCED_CONFIGURATION: OpenCodeAdvancedConfiguration = {
-  apiVersion: "v1", permissionRules: [], permissionHandling: "graphql_routed",
-  plugins: { mode: "inherit" }, compaction: { auto: true, prune: false },
-  configLoading: { mode: "native" }, mcp: { serverEnabled: {} },
-};
-
+export type RetiredOpenCodeAdvancedConfiguration = z.infer<typeof RetiredOpenCodeAdvancedConfigurationSchema>;
 export const CodexHarnessConfigurationSchema = z
   .object({
     harness: z.literal("codex"),
@@ -257,7 +255,7 @@ export const CodexHarnessConfigurationSchema = z
   });
 export type CodexHarnessConfiguration = z.infer<typeof CodexHarnessConfigurationSchema>;
 
-export const OpenCodeHarnessConfigurationSchema = z
+export const RetiredOpenCodeConfigurationSchema = z
   .object({
     harness: z.literal("opencode"),
     model: z.string().trim().min(1),
@@ -266,7 +264,7 @@ export const OpenCodeHarnessConfigurationSchema = z
     nativeAgent: z.string().trim().min(1),
     thinking: z.boolean(),
     autoApprove: z.boolean(),
-    advanced: OpenCodeAdvancedConfigurationSchema.optional(),
+    advanced: RetiredOpenCodeAdvancedConfigurationSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -274,18 +272,17 @@ export const OpenCodeHarnessConfigurationSchema = z
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["autoApprove"], message: "legacy autoApprove must match Advanced permission handling" });
     }
   });
-export type OpenCodeHarnessConfiguration = z.infer<typeof OpenCodeHarnessConfigurationSchema>;
+export type RetiredOpenCodeConfiguration = z.infer<typeof RetiredOpenCodeConfigurationSchema>;
 
-/** Harness settings stay discriminated because native CLIs expose different capabilities. */
+/** Readback preserves retired provider settings without authorizing execution. */
 export const HarnessConfigurationSchema = z.discriminatedUnion("harness", [
   CodexHarnessConfigurationSchema,
-  OpenCodeHarnessConfigurationSchema,
+  RetiredOpenCodeConfigurationSchema,
   ClaudeHarnessConfigurationSchema,
 ]);
 export type HarnessConfiguration = z.infer<typeof HarnessConfigurationSchema>;
 export const SupportedHarnessConfigurationSchema = z.discriminatedUnion("harness", [
   CodexHarnessConfigurationSchema,
-  OpenCodeHarnessConfigurationSchema,
   ClaudeFullAccessConfigurationSchema,
 ]);
 
@@ -297,7 +294,7 @@ export function projectHarnessEffort(configuration: HarnessConfiguration): Agent
 }
 
 export const HarnessWorkflowCompatibilitySchema = z.object({
-  configuration: HarnessConfigurationSchema,
+  configuration: SupportedHarnessConfigurationSchema,
   workflowApprovalHandler: ApprovalHandlerSchema.optional(),
   designatedOrchestrator: z.boolean().default(false),
 }).strict().superRefine((value, context) => {
@@ -307,10 +304,8 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   if (!value.workflowApprovalHandler) return;
   if (value.workflowApprovalHandler === "native") {
     const configuration = value.configuration;
-    const native = configuration.harness === "opencode"
-      ? configuration.autoApprove || configuration.advanced?.permissionHandling === "native_auto"
-      : configuration.harness === "codex" && (configuration.advanced?.approvalPolicy === "never"
-        || configuration.advanced?.approvalsReviewer === "auto_review");
+    const native = configuration.harness === "codex" && (configuration.advanced?.approvalPolicy === "never"
+      || configuration.advanced?.approvalsReviewer === "auto_review");
     if (!native) context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration"],
       message: "native workflow handling requires explicit native approval settings on each Agent" });
     return;
@@ -323,18 +318,6 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
     && value.configuration.advanced?.approvalsReviewer === "auto_review"
     && value.configuration.advanced.approvalPolicy !== "on-request") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration", "advanced", "approvalPolicy"], message: "Codex automatic review requires on-request approval" });
-  }
-  // Saved records can omit Advanced settings. Both explicit and defaulted
-  // representations must obey the same workflow approval boundary.
-  if (value.configuration.harness === "opencode"
-    && (value.configuration.autoApprove || value.configuration.advanced?.permissionHandling === "native_auto")) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: value.configuration.advanced
-        ? ["configuration", "advanced", "permissionHandling"]
-        : ["configuration", "autoApprove"],
-      message: "native auto approval conflicts with Foreman Code-routed approval",
-    });
   }
 });
 export function validateHarnessWorkflowCompatibility(
@@ -376,7 +359,14 @@ export const VersionedAgentDefaultsSchema = z.object({
 }).strict();
 export const GetAgentDefaultsResponseSchema = VersionedAgentDefaultsSchema;
 export const UpdateAgentDefaultsRequestSchema = z.object({
-  value: AgentDefaultsSchema, expectedRevision: z.number().int().nonnegative(),
+  value: AgentDefaultsSchema.superRefine((value, context) => {
+    for (const role of ["orchestrator", "coder", "operator"] as const) {
+      const result = SupportedHarnessConfigurationSchema.safeParse(value[role].harness);
+      if (!result.success) for (const issue of result.error.issues) {
+        context.addIssue({ ...issue, path: [role, "harness", ...issue.path] });
+      }
+    }
+  }), expectedRevision: z.number().int().nonnegative(),
 }).strict();
 export const UpdateAgentDefaultsResponseSchema = VersionedAgentDefaultsSchema;
 
@@ -393,7 +383,6 @@ export const UpdateWorkflowDefaultsResponseSchema = VersionedWorkflowDefaultsSch
 export const HarnessDefaultsSchema = z
   .object({
     codex: CodexHarnessConfigurationSchema,
-    opencode: OpenCodeHarnessConfigurationSchema,
     /** Absent until an owner selects an actual host-local Claude profile. */
     claude: ClaudeHarnessConfigurationSchema.optional(),
   })
@@ -407,15 +396,6 @@ export const DEFAULT_HARNESS_DEFAULTS: HarnessDefaults = HarnessDefaultsSchema.p
     sandbox: "read-only",
     serviceTier: "standard",
     advanced: DEFAULT_CODEX_ADVANCED_CONFIGURATION,
-  },
-  opencode: {
-    harness: "opencode",
-    model: "opencode-go/deepseek-v4.1-flash",
-    variant: "max",
-    nativeAgent: "build",
-    thinking: false,
-    autoApprove: false,
-    advanced: DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
   },
 });
 
@@ -438,7 +418,6 @@ export const DEFAULT_AGENT_DEFAULTS: AgentDefaults = AgentDefaultsSchema.parse({
 export function operatorHarnessDefaults(base: HarnessConfiguration): HarnessConfiguration {
   if (base.harness === "codex") return changeCodexSandbox(base, "danger-full-access");
   if (base.harness === "claude") return { ...base, sandbox: "danger-full-access" };
-  // OpenCode has native tool permissions, not an OS filesystem sandbox.
   return structuredClone(base);
 }
 
@@ -447,7 +426,7 @@ export const DEFAULT_WORKFLOW_APPROVAL_HANDLER: ApprovalHandler = "orchestrator"
 
 export const HarnessQualificationSchema = z
   .object({
-    harness: AgentHarnessSchema,
+    harness: RecordedAgentHarnessSchema,
     version: z.string().trim().min(1),
     authenticated: z.boolean(),
     ready: z.boolean(),
@@ -554,7 +533,7 @@ export const DurableInteractionSchema = z.object({
   runId: IdSchema,
   executionId: IdSchema,
   requestingAgentId: IdSchema,
-  harness: AgentHarnessSchema,
+  harness: RecordedAgentHarnessSchema,
   providerVersion: z.string().trim().min(1),
   nativeSessionId: IdSchema,
   nativeRequestId: IdSchema,
@@ -618,7 +597,7 @@ export type InteractionRecoveryQuery = z.infer<typeof InteractionRecoveryQuerySc
 
 
 export const NativeSessionReferenceSchema = z.object({
-  harness: AgentHarnessSchema,
+  harness: RecordedAgentHarnessSchema,
   providerVersion: z.string().trim().min(1),
   nativeSessionId: IdSchema,
 }).strict();
@@ -674,7 +653,7 @@ export const NativeCancellationSchema = z.object({
 
 export const NativeSessionLaneSchema = z.object({
   id: IdSchema,
-  harness: AgentHarnessSchema,
+  harness: RecordedAgentHarnessSchema,
   nativeSessionId: IdSchema,
   ownerAgentId: IdSchema,
   leaseOwner: IdSchema.optional(),
@@ -710,7 +689,7 @@ export const ReviewJobSchema = z.object({
   reviewerAgentId: IdSchema,
   attempt: z.number().int().nonnegative(),
   state: z.enum(["pending", "leased", "submitted", "acknowledged", "completed", "blocked_busy", "blocked_disconnected", "uncertain", "failed"]),
-  provider: AgentHarnessSchema,
+  provider: RecordedAgentHarnessSchema,
   nativeSessionId: IdSchema,
   providerTurnOrMessageId: IdSchema.optional(),
   leaseOwner: IdSchema.optional(),
@@ -746,7 +725,7 @@ export const AgentSchema = z
     /** Links this logical Agent projection to its current run summary, if any. */
     activeRunId: IdSchema.optional(),
     harnessSummary: HarnessSummarySchema.optional(),
-    harness: AgentHarnessSchema.optional(),
+    harness: RecordedAgentHarnessSchema.optional(),
     model: z.string().trim().min(1).optional(),
     effort: AgentEffortSchema.optional(),
     fastMode: z.boolean().optional(),
@@ -860,7 +839,7 @@ export const MessageSchema = z
     conversationId: IdSchema,
     requestId: IdSchema.optional(),
     /** Read projection of this message's immutable accepted turn configuration. */
-    acceptedModel: z.object({ harness: AgentHarnessSchema, model: z.string().trim().min(1) }).strict().optional(),
+    acceptedModel: z.object({ harness: RecordedAgentHarnessSchema, model: z.string().trim().min(1) }).strict().optional(),
     activityChannel: z.enum(["assistant", "user", "reasoning"]).optional(),
     activityNative: ActivityNativeIdentitySchema.optional(),
     revision: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
@@ -1484,16 +1463,22 @@ export const OperatorConversationContextSchema = z.object({
 export const OperatorChatSettingsSchema = z.discriminatedUnion("harness", [
   z.object({ harness: z.literal("codex"), model: z.string().trim().min(1), reasoningEffort: AgentEffortSchema,
     serviceTier: z.enum(["standard", "priority"]), showThinking: z.boolean() }).strict(),
+  z.object({ harness: z.literal("claude"), model: z.string().trim().min(1), effort: ClaudeEffortSchema.optional(), showThinking: z.boolean() }).strict(),
+]);
+/** Saved conversation controls remain readable after provider retirement. */
+export const RecordedOperatorChatSettingsSchema = z.union([
+  OperatorChatSettingsSchema,
   z.object({ harness: z.literal("opencode"), model: z.string().trim().min(1), variant: z.string(),
     showThinking: z.boolean() }).strict(),
-  z.object({ harness: z.literal("claude"), model: z.string().trim().min(1), effort: ClaudeEffortSchema.optional(), showThinking: z.boolean() }).strict(),
 ]);
 export type OperatorChatSettings = z.infer<typeof OperatorChatSettingsSchema>;
 export function operatorChatSettings(harness: HarnessConfiguration, showThinking = false): OperatorChatSettings {
-  if (harness.harness === "claude") return { harness: "claude", model: harness.model, ...(harness.effort ? { effort: harness.effort } : {}), showThinking };
-  return harness.harness === "codex"
-    ? { harness: "codex", model: harness.model, reasoningEffort: harness.reasoningEffort, serviceTier: harness.serviceTier, showThinking }
-    : { harness: "opencode", model: harness.model, variant: harness.variant, showThinking: harness.thinking };
+  if (harness.harness === "opencode") throw new Error(RETIRED_OPENCODE_MESSAGE);
+  if (harness.harness === "claude") {
+    return { harness: "claude", model: harness.model, ...(harness.effort ? { effort: harness.effort } : {}), showThinking };
+  }
+  return { harness: "codex", model: harness.model, reasoningEffort: harness.reasoningEffort,
+    serviceTier: harness.serviceTier, showThinking };
 }
 /** Apply chat controls without replacing the accepted execution permissions. */
 export function applyOperatorChatSettings(base: HarnessConfiguration, settings: OperatorChatSettings): HarnessConfiguration {
@@ -1504,21 +1489,21 @@ export function applyOperatorChatSettings(base: HarnessConfiguration, settings: 
     if (settings.effort) configuration.effort = settings.effort;
     return configuration;
   }
-  return HarnessConfigurationSchema.parse(settings.harness === "codex"
-    ? { ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier }
-    : { ...base, model: settings.model, variant: settings.variant, thinking: settings.showThinking });
+  return SupportedHarnessConfigurationSchema.parse({
+    ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier,
+  });
 }
 export const OperatorChatSetupQuerySchema = z.object({
   conversationId: IdSchema.optional(),
   requestId: IdSchema.optional(),
   configurationVersionId: IdSchema.optional(),
-  harness: z.enum(["codex", "opencode", "claude"]).optional(),
+  harness: AgentHarnessSchema.optional(),
   expectedDefaultsRevision: z.coerce.number().int().nonnegative().optional(),
 }).strict().refine((value) => !value.requestId || Boolean(value.conversationId), "A request needs its conversation.");
 export type OperatorChatSetupQuery = z.infer<typeof OperatorChatSetupQuerySchema>;
 export const OperatorChatSetupSchema = z.object({
   routing: z.enum(["automatic", "fixed"]).optional(),
-  harness: z.enum(["codex", "opencode", "claude"]),
+  harness: RecordedAgentHarnessSchema,
   status: z.enum(["configured", "setup_required"]),
   endpoint: z.string().url(),
   checkedAt: TimestampSchema,
@@ -1553,7 +1538,7 @@ export const OperatorConversationStateSchema = z.object({
   activitySnapshot: ActivitySnapshotV1Schema.optional(),
   responseAvailability: NativeInteractionResponseAvailabilitySchema.optional(),
   qualificationKey: z.string().regex(/^[a-f0-9]{64}$/).optional(),  conversation: ConversationSchema,
-  settings: OperatorChatSettingsSchema.optional(),
+  settings: RecordedOperatorChatSettingsSchema.optional(),
   handoff: z.object({ parentConversationId: IdSchema, sourceHarness: z.enum(['codex', 'opencode', 'claude']),
     sourceMessageSequence: z.string().regex(/^[0-9]+$/), omittedMessages: z.number().int().nonnegative() }).strict().optional(),
   hasEarlierMessages: z.boolean().optional(),
@@ -1693,12 +1678,6 @@ export const CODEX_APPROVAL_OPTIONS_FIXTURE = ApprovalResponseOptionSchema.array
   { optionId: "codex-reject", semantic: "reject", label: "Reject", persistence: "request", affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },
   { optionId: "codex-cancel", semantic: "cancel", label: "Cancel turn", persistence: "request", affectsOtherPendingRequests: false, interruptsCurrentTurn: true, mutatesPersistentPolicy: false },
 ]);
-export const OPENCODE_APPROVAL_OPTIONS_FIXTURE = ApprovalResponseOptionSchema.array().parse([
-  { optionId: "opencode-approve-once", semantic: "approve_once", label: "Approve once", persistence: "request", affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },
-  { optionId: "opencode-allow-instance", semantic: "provider_scoped_allow", label: "Allow matching requests in this OpenCode instance", persistence: "provider_instance", scopeSummary: "Matching permission patterns across sessions in this instance", affectsOtherPendingRequests: true, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },
-  { optionId: "opencode-reject", semantic: "reject", label: "Reject", persistence: "request", scopeSummary: "Also rejects pending requests in the same native session", affectsOtherPendingRequests: true, interruptsCurrentTurn: false, mutatesPersistentPolicy: false },
-]);
-
 const FIXTURE_TIME = "2026-09-16T00:00:00.000Z";
 export const NATIVE_INTERACTION_FIXTURES = {
   codex: DurableInteractionSchema.parse({
@@ -1708,15 +1687,6 @@ export const NATIVE_INTERACTION_FIXTURES = {
     nativeRequestType: "item/commandExecution/requestApproval", graphThreadId: "graph-thread-fixture",
     request: { command: ["pnpm", "test"] }, approval: { handler: "orchestrator", designatedOrchestratorAgentId: "agent-orchestrator" },
     responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE, status: "pending", deliveryState: "not_started",
-    createdAt: FIXTURE_TIME, updatedAt: FIXTURE_TIME,
-  }),
-  opencode: DurableInteractionSchema.parse({
-    id: "interaction-opencode", revision: 0, workspaceId: "workspace-fixture", workflowId: "workflow-fixture",
-    runId: "run-fixture", executionId: "execution-opencode", requestingAgentId: "agent-coder", harness: "opencode",
-    providerVersion: "1.18.31", nativeSessionId: "opencode-session-fixture", nativeRequestId: "opencode-request-fixture",
-    nativeRequestType: "permission.asked", graphThreadId: "graph-thread-fixture",
-    request: { permission: "bash", patterns: ["pnpm test"] }, approval: { handler: "orchestrator", designatedOrchestratorAgentId: "agent-orchestrator" },
-    responseOptions: OPENCODE_APPROVAL_OPTIONS_FIXTURE, status: "pending", deliveryState: "not_started",
     createdAt: FIXTURE_TIME, updatedAt: FIXTURE_TIME,
   }),
 } as const;

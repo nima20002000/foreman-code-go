@@ -14,8 +14,6 @@ import { CompactionStateSchema, SessionModeSchema, SessionPreferencesSchema } fr
 import { PairedMcpEndpointSchema } from './mcpDetection.js'
 import { AgentChatDirectoryBindingSchema } from './agentChat.js'
 import { FileMediaTypeSchema, MAX_FILE_BYTES, MessageAttachmentRefsSchema } from './files.js'
-import { WorkerOpenCodeFileIdentitySchema, WorkerOpenCodeFileActionSchema } from './workerOpenCodeFiles.js'
-import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
 
 const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -58,12 +56,6 @@ export const WorkerConversationTurnSchema = z.object({
   creationOperationId: id.optional(),
   result: z.lazy(() => ExecutionResultSchema).optional(),
 }).strict()
-export const WorkerOpenCodeFileRootSchema = z.object({
-  id: z.uuid(), correlationId: id, nativeSessionId: id,
-  directoryId: z.uuid().optional(),
-  filesystem: RootFilesystemIdentitySchema.optional(),
-}).strict()
-export type WorkerOpenCodeFileRoot = z.infer<typeof WorkerOpenCodeFileRootSchema>
 export const WorkerClaudeCallbackIdentitySchema = z.object({
   ownerPrincipalId: id, attemptId: id, nativeSessionId: id, nativeMessageId: id,
   clientCorrelationId: id, generation: id, toolUseId: id,
@@ -94,8 +86,6 @@ export const WorkerConversationReceiptSchema = z.object({
   desiredPreferences: SessionPreferencesSchema.nullable(),
   appliedPreferences: SessionPreferencesSchema.nullable(),
   claudeCallbacks: z.record(digest, WorkerClaudeCallbackRecordSchema).optional(),
-  openCodeFileRoots: z.array(WorkerOpenCodeFileRootSchema).max(1000).optional(),
-  openCodeFileDirectory: z.object({ id: z.uuid(), filesystem: RootFilesystemIdentitySchema.optional() }).strict().optional(),
 }).strict()
 export type WorkerConversationReceipt = z.infer<typeof WorkerConversationReceiptSchema>
 
@@ -249,7 +239,6 @@ export const WorkerConversationProfileFactsSchema = z.object({
   override: z.lazy(() => HostHarnessOverrideSchema),
   profile: z.lazy(() => HostHarnessProfileEvidenceSchema),
   qualification: HarnessQualificationSchema.nullable(),
-  fileSourceHost: z.object({ bootId: id, storageRoot: directory }).strict().optional(),
 }).strict()
 export type WorkerConversationProfileFacts = z.infer<typeof WorkerConversationProfileFactsSchema>
 
@@ -269,8 +258,6 @@ export type WorkerClaudeAuthorityRequest = z.infer<typeof WorkerClaudeAuthorityR
 export const WorkerClaudeCallbackAuthoritySchema = z.object({ ownerPrincipalId: id, attemptId: id }).strict()
 export const WorkerClaudeAuthorizationSchema = z.object({ authorized: z.literal(true) }).strict()
 export const WorkerConversationCallbackSchema = z.discriminatedUnion('method', [
-  z.object({ method: z.literal('conversation.opencode-files'), ...callback,
-    identity: WorkerOpenCodeFileIdentitySchema, action: WorkerOpenCodeFileActionSchema }).strict(),
   z.object({ method: z.literal('conversation.files'), ...callback,
     session: z.lazy(() => NativeSessionReferenceSchema), correlationId: id,
     action: WorkerConversationFileActionSchema }).strict(),

@@ -91,7 +91,7 @@ export const JobVerificationProfileSaveSchema = z.object({
 }).strict()
 
 const ToolIdentity = z.object({
-  kind: z.enum(['postgresql', 'browser', 'codex', 'opencode']),
+  kind: z.enum(['postgresql', 'browser', 'codex', 'claude']),
   executable: z.string().startsWith('/').max(1024),
   version: IdSchema,
   binarySha256: DeviceDigestSchema,
@@ -218,7 +218,7 @@ export const JobVerificationRuntimeMeasurementSchema = z.object({
     if (suite.suite === 'browser') required.push('browser-sandbox')
     if (suite.suite === 'native-acceptance' || suite.suite === 'full-gate-local') {
       required.push('native-containment', 'credential-redaction')
-      if (!['codex', 'opencode'].every(kind => fingerprint.tools.some(tool => tool.kind === kind))) {
+      if (!['codex', 'claude'].every(kind => fingerprint.tools.some(tool => tool.kind === kind))) {
         context.addIssue({ code: 'custom', message: 'Native acceptance requires both pinned harness binaries.' })
       }
     }
