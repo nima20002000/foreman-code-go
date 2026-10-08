@@ -11,7 +11,7 @@ export const AgentFormSchema = z.object({ base: z.string().refine((value) => { t
   placement: SavedNodePlacementSchema.optional(),
   instructions: z.string().optional(), skills: z.array(AssignedSkillSchema).optional(),
   editor: HarnessFormSchema.extend({ drafts: z.object({ codex: HarnessFormSchema.optional(),
-    opencode: HarnessFormSchema.optional(), claude: HarnessFormSchema.optional() }).strict().optional() }),
+    claude: HarnessFormSchema.optional() }).strict().optional() }),
   graphqlTools: z.object({ defaults: GraphqlToolDefaultsSchema.optional(), override: GraphqlToolOverrideSchema.optional() }).strict().optional(),
 }).strict()
 export type AgentForm = z.infer<typeof AgentFormSchema>

@@ -9,7 +9,7 @@ export interface WorkflowNodeCardProps {
   title: string; subtitle: string; statusLabel: string; tone?: Tone; icon?: IconName; selected?: boolean
   working?: boolean; disabled?: boolean; progress?: number; detail?: string; meta?: string
   ariaLabel?: string; onSelect?: (event: MouseEvent<HTMLButtonElement>) => void; className?: string
-  /** Harness identity (codex, opencode, other); drawn as the node's rim color, never as state. */
+  /** Harness identity (codex, claude, other); drawn as the node's rim color, never as state. */
   harness?: string
 }
 export function WorkflowNodeCard({ title, subtitle, statusLabel, tone = 'neutral', icon = 'bot', selected, working, disabled, progress, detail, meta, ariaLabel, onSelect, className, harness }: WorkflowNodeCardProps) {

@@ -20,7 +20,7 @@ beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); clearEditIntentStorage() })
 
 describe('NIM-2642 protected local form and exact-command recovery', () => {
-  for (const harness of ['codex', 'opencode'] as const) it(`retains Claude and ${harness} provider drafts with the exact source revision across reopen`, () => {
+  for (const harness of ['codex'] as const) it(`retains Claude and ${harness} provider drafts with the exact source revision across reopen`, () => {
     const context = fixture(), source = context.agents[0]!
     source.agent = { ...source.agent, harness: 'claude', model: savedClaudeConfiguration.model,
       harnessConfiguration: savedClaudeConfiguration }

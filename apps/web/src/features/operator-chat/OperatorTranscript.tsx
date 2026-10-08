@@ -12,9 +12,8 @@ import type { OperatorTextProjection } from './operatorTextProjection'
 function AcceptedModelMessages(props: ComponentProps<typeof OperatorMessages>) {
   const harnesses = new Set(props.messages.map((message) => message.acceptedModel?.harness))
   const codex = useNativeHarnessOptions('codex', harnesses.has('codex'))
-  const opencode = useNativeHarnessOptions('opencode', harnesses.has('opencode'))
   const claude = useNativeHarnessOptions('claude', harnesses.has('claude'))
-  return <OperatorMessages {...props} modelCatalogs={{ codex: codex.data?.models, opencode: opencode.data?.models, claude: claude.data?.models }} />
+  return <OperatorMessages {...props} modelCatalogs={{ codex: codex.data?.models, claude: claude.data?.models }} />
 }
 
 /** Follow meaningful new output, never the identity of a freshly created React element. */

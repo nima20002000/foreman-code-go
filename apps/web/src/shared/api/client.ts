@@ -420,7 +420,7 @@ export class ApiClient {
     return this.request('/api/management/settings/workflows', ManagedWorkflowDefaultsSchema, options)
   }
 
-  getScopedMcpDetection(workspaceId: string, harness: 'codex' | 'opencode', options?: RequestOptions) {
+  getScopedMcpDetection(workspaceId: string, harness: 'codex', options?: RequestOptions) {
     return this.request(
       `/api/management/workspaces/${toPath(workspaceId)}/harnesses/${harness}/mcp-detection`,
       ScopedMcpDetectionSchema,

@@ -17,9 +17,9 @@ import { useClaudeSetupOptions } from '../../shared/api/harnessSettings'
 
 type Harness = AgentHarness
 type ClaudeSetup = Partial<Pick<ClaudeHarnessConfiguration, 'model' | 'configDirectory' | 'authMode' | 'sandbox' | 'mcpServers'>>
-type DefaultsEditor = { codex: HarnessEditor; opencode: HarnessEditor; claude?: HarnessEditor; claudeSetup?: ClaudeSetup }
+type DefaultsEditor = { codex: HarnessEditor; claude?: HarnessEditor; claudeSetup?: ClaudeSetup }
 function editable(value: HarnessDefaults, harness?: Harness): DefaultsEditor {
-  return { codex: createHarnessEditor(value.codex), opencode: createHarnessEditor(value.opencode),
+  return { codex: createHarnessEditor(value.codex),
     ...(value.claude ? { claude: createHarnessEditor(value.claude) } : harness === 'claude' ? { claudeSetup: {} } : {}) }
 }
 function prepared(value: DefaultsEditor, harness: Harness): HarnessDefaults {
@@ -35,7 +35,6 @@ function prepared(value: DefaultsEditor, harness: Harness): HarnessDefaults {
   }
   return HarnessDefaultsSchema.parse({
     codex: withValidationPath(['codex'], () => prepareHarnessEditor(value.codex)),
-    opencode: withValidationPath(['opencode'], () => prepareHarnessEditor(value.opencode)),
     ...(claude ? { claude } : {}),
   })
 }
@@ -49,10 +48,9 @@ function useProviderDefaults() {
     }
   }
   const codex = catalogQuery.data?.find((entry) => entry.harness === 'codex')
-  const opencode = catalogQuery.data?.find((entry) => entry.harness === 'opencode')
   const claude = catalogQuery.data?.find((entry) => entry.harness === 'claude')
-  const incoming = codex?.defaults.harness === 'codex' && opencode?.defaults.harness === 'opencode' && codex.defaultsRevision === opencode.defaultsRevision && (!claude || (claude.defaults.harness === 'claude' && claude.defaultsRevision === codex.defaultsRevision))
-    ? { value: { codex: codex.defaults, opencode: opencode.defaults, ...(claude?.defaults.harness === 'claude' ? { claude: claude.defaults } : {}) }, revision: codex.defaultsRevision }
+  const incoming = codex?.defaults.harness === 'codex' && (!claude || (claude.defaults.harness === 'claude' && claude.defaultsRevision === codex.defaultsRevision))
+    ? { value: { codex: codex.defaults, ...(claude?.defaults.harness === 'claude' ? { claude: claude.defaults } : {}) }, revision: codex.defaultsRevision }
     : undefined
   return { incoming, query: catalogQuery, unavailable }
 }
@@ -63,7 +61,7 @@ function ProviderCard({ harness, value, onSelect, defaultError }: {
   const summary = value[harness] ? harnessSummary(value[harness]!).filter((item) => item.label !== 'Harness')
     : [{ label: 'Preset', value: 'Not configured' }]
   return <SettingsChoice icon="settings" title={harnessNames[harness]}
-    description={harness === 'codex' ? 'Native app-server' : harness === 'opencode' ? 'Native server' : 'Host-local Claude profile'}
+    description={harness === 'codex' ? 'Native app-server' : 'Host-local Claude profile'}
     summary={defaultError ? [{ label: 'Default model', value: 'Unavailable' }] : summary}
     draftStatus={status} onSelect={onSelect} />
 }
@@ -83,7 +81,7 @@ export function HarnessDefaultsSettings({ selectedHarness, section: selectedSect
     description={query.error?.message ?? 'The server returned an incomplete provider catalog.'} onRetry={() => void query.refetch()} />
   if (!incoming) return <LoadingState label="Loading harness defaults…" />
   return <SettingsOverview title="Harnesses" description="Choose a provider to edit its preset or manage its connections.">
-    {(['codex', 'opencode', 'claude'] as const).map((item) => <ProviderCard key={item} harness={item} value={incoming.value}
+    {(['codex', 'claude'] as const).map((item) => <ProviderCard key={item} harness={item} value={incoming.value}
       defaultError={unavailable[item]} onSelect={() => choose(item)} />)}
   </SettingsOverview>
 }

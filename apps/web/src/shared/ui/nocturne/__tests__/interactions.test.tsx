@@ -49,14 +49,14 @@ afterEach(() => {
 })
 
 describe('Nocturne interactions', () => {
-  const options = [{ value: 'codex', label: 'Codex' }, { value: 'disabled', label: 'Unavailable', disabled: true }, { value: 'opencode', label: 'OpenCode' }]
+  const options = [{ value: 'codex', label: 'Codex' }, { value: 'disabled', label: 'Unavailable', disabled: true }, { value: 'claude', label: 'Claude' }]
   function HarnessPicker() { const [value, setValue] = useState('codex'); return <Combobox label="Harness" options={options} value={value} onValueChange={setValue} /> }
   it('selects filtered options with the keyboard', async () => {
     render(<HarnessPicker />)
     await userEvent.click(screen.getByRole('combobox'))
-    await userEvent.type(screen.getByRole('combobox'), 'open')
+    await userEvent.type(screen.getByRole('combobox'), 'clau')
     await userEvent.keyboard('{Enter}')
-    expect(screen.getByRole('combobox')).toHaveValue('OpenCode')
+    expect(screen.getByRole('combobox')).toHaveValue('Claude')
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
   })
   it('opens again when the already-focused input is clicked', async () => {
@@ -77,7 +77,7 @@ describe('Nocturne interactions', () => {
   it('skips disabled options using ArrowDown', async () => {
     render(<HarnessPicker />)
     await userEvent.click(screen.getByRole('combobox')); await userEvent.keyboard('{ArrowDown}{Enter}')
-    expect(screen.getByRole('combobox')).toHaveValue('OpenCode')
+    expect(screen.getByRole('combobox')).toHaveValue('Claude')
   })
   it('restores the selected label on Escape without changing the value', async () => {
     render(<HarnessPicker />)

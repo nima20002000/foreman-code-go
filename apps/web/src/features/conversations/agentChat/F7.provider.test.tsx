@@ -2,7 +2,6 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { agentChatFixtures, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
-import { agentChatApi } from '../../../shared/api/agentChat'
 import { useConversationDraftStore } from '../conversationDraftStore'
 import { approvalFixture, chatHarnesses, completedFixture, providerFixture, startedFixture } from './f7.testSupport'
 import { mountChat } from './testSupport'
@@ -31,7 +30,7 @@ describe('F7 B-R05 provider wire parity (MSW, no native execution)', () => {
     await screen.findByText('Server recorded: Next turn · Delivered')
     const nativeSession = state.conversation!.nativeSession, conversationId = state.conversation!.id
     write('Queue a second turn')
-    if (harness === 'opencode') expect(screen.getByRole('button', { name: 'Steer' })).toBeDisabled()
+    if (harness === 'claude') expect(screen.getByRole('button', { name: 'Steer' })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: 'Queue message' }))
     await waitFor(() => expect(sent(mounted)).toHaveLength(2))
     const second = sent(mounted)[1]!.body as SendAgentChatMessageRequest
@@ -70,15 +69,6 @@ describe('F7 B-R05 provider wire parity (MSW, no native execution)', () => {
     expect(mounted.mock.calls.some((call) => call.path.includes('/runs/'))).toBe(false)
   })
 
-  it('OpenCode rejects a direct unsupported steer without admitting a receipt', async () => {
-    const state = providerFixture('opencode', agentChatFixtures.active), mounted = mountChat(state); clients.push(mounted.client)
-    await mounted.ready(); write('Do not steer OpenCode')
-    expect(screen.getByRole('button', { name: 'Steer' })).toBeDisabled()
-    const { workspaceId, ...context } = state.context
-    await expect(agentChatApi.send(workspaceId, { requestId: 'unsupported-steer', context, content: 'No side effect', intent: 'steer',
-      expectedConversationId: state.conversation!.id, expectedNativeTurnId: state.activeTurn!.nativeTurnId })).rejects.toMatchObject({ code: 'AGENT_CHAT_STEER_UNAVAILABLE', status: 409 })
-    expect(mounted.mock.getState(state.context)).toEqual(state)
-  })
 
   it.each(chatHarnesses)('%s: a queue head that starts returns AGENT_CHAT_TURN_STARTED, not a steer error', async (harness) => {
     const state = providerFixture(harness, agentChatFixtures.activeWithQueue), mounted = mountChat(state); clients.push(mounted.client)

@@ -1,3 +1,4 @@
+import { savedClaudeConfiguration } from '../../settings/claudeSettings.fixtures'
 // @vitest-environment jsdom
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -24,15 +25,15 @@ async function selectionFixture(harness: typeof chatHarnesses[number], width: nu
   const fixture = await inspectionBoardFixture(`f7-${harness}-${width}`), mock = fixture.mock
   // Both the saved Run's Agent and its DIFFERENT current-draft replacement have coherent
   // harness/configuration facts. No renderer, popover, editor, route or canvas is substituted.
-  if (harness === 'opencode') {
+  if (harness === 'claude') {
     for (let index = 0; index < mock.configurations.length; index++) {
       const previous = mock.configurations[index]!
       mock.configurations[index] = AgentConfigurationVersionSchema.parse({ ...previous, harness: {
-        harness: 'opencode', model: 'synthetic-no-native-call', variant: '', nativeAgent: 'build', thinking: false, autoApprove: false,
+        ...savedClaudeConfiguration,
       } })
     }
     for (const agent of mock.agents) {
-      agent.harness = 'opencode'
+      agent.harness = 'claude'
       agent.harnessConfiguration = mock.configurations.find((configuration) => configuration.agentId === agent.id)!.harness
     }
   }
@@ -110,7 +111,7 @@ describe.each(chatHarnesses)('F7 B-R05 mounted Board: %s', (harness) => {
     chat.setState(startedFixture(chat.getState(runContext), followup.requestId))
     await act(async () => { await mounted.cache.invalidateQueries({ queryKey: agentChatStateKey(runContext) }) })
     await within(dialog).findByText('Server recorded: Next turn · Delivered')
-    if (harness === 'opencode') expect(within(dialog).getByRole('button', { name: 'Steer' })).toBeDisabled()
+    if (harness === 'claude') expect(within(dialog).getByRole('button', { name: 'Steer' })).toBeDisabled()
     await userEvent.click(within(dialog).getByRole('button', { name: 'Stop chat' }))
     await waitFor(() => expect(chat.getState(runContext).activeTurn).toBeNull())
     expect(fixture.mock.runs.get(saved.runId)).toEqual(beforeRun)

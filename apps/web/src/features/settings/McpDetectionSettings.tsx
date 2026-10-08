@@ -36,7 +36,7 @@ function WorkspaceEvidence({ workspaceId, harness }: Props & { workspaceId: stri
       {current.locationValidation.error.message}
     </Alert> : null}
     {ready && location ? <div className="mcp-connection-grid">
-      {(harness ? [harness] : ['codex', 'opencode'] as const).map((provider) => <McpConnectionCard
+      {(harness ? [harness] : ['codex'] as const).map((provider) => <McpConnectionCard
         key={JSON.stringify([workspaceId, provider, location.runnerId, location.rootPath])}
         workspaceId={workspaceId} harness={provider} location={location} />)}
     </div> : status === 'restricted' ? <Alert tone="warning" title="Folder access is restricted" action={retry}>

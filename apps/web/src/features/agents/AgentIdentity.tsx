@@ -1,3 +1,4 @@
+import { retiredHarnessLabel } from '../settings/settingsPresentation'
 import type { Agent } from '@foreman-code/contracts'
 
 export interface AgentIdentityProps {
@@ -18,7 +19,8 @@ export function AgentIdentity({ agent }: AgentIdentityProps) {
         <div>
           <dt>Harness</dt>
           <dd>
-            {agent.harnessSummary
+            {agent.harness === 'opencode' || agent.harnessConfiguration?.harness === 'opencode'
+              ? retiredHarnessLabel : agent.harnessSummary
               ? `${agent.harnessSummary.label ?? 'Harness'} · ${agent.harnessSummary.status}`
               : 'No harness details available'}
           </dd>

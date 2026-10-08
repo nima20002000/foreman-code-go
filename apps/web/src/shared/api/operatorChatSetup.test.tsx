@@ -10,7 +10,7 @@ import { beginSessionChange, finishSessionChange } from './sessionBoundary'
 
 let client: QueryClient
 afterEach(() => { cleanup(); client?.clear() })
-function Setup({ revision = 1, harness = 'codex' }: { revision?: number; harness?: 'codex' | 'opencode' | 'claude' }) {
+function Setup({ revision = 1, harness = 'codex' }: { revision?: number; harness?: 'codex' | 'claude' }) {
   const query = useOperatorChatSetup(true, revision, { harness })
   return <OperatorSetupNotice data={query.data} checking={query.isFetching} failed={query.isError} onRetry={() => void query.refetch()} />
 }
@@ -82,14 +82,14 @@ it('rechecks changed defaults and selected harness instead of inheriting another
   server.use(http.get('/api/operator/setup', ({ request }) => {
     const query = new URL(request.url).searchParams
     targets.push(`${query.get('harness')}:${query.get('expectedDefaultsRevision')}`)
-    return HttpResponse.json(configuredOperatorSetup(query.get('harness') === 'opencode' ? 'opencode' : 'codex'))
+    return HttpResponse.json(configuredOperatorSetup(query.get('harness') === 'claude' ? 'claude' : 'codex'))
   }))
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const ui = (revision: number, harness: 'codex' | 'opencode') => <QueryClientProvider client={client}><Setup revision={revision} harness={harness} /></QueryClientProvider>
+  const ui = (revision: number, harness: 'codex' | 'claude') => <QueryClientProvider client={client}><Setup revision={revision} harness={harness} /></QueryClientProvider>
   const view = render(ui(1, 'codex'))
   await waitFor(() => expect(targets).toEqual(['codex:1']))
   view.rerender(ui(2, 'codex'))
   await waitFor(() => expect(targets).toEqual(['codex:1', 'codex:2']))
-  view.rerender(ui(2, 'opencode'))
-  await waitFor(() => expect(targets).toEqual(['codex:1', 'codex:2', 'opencode:2']))
+  view.rerender(ui(2, 'claude'))
+  await waitFor(() => expect(targets).toEqual(['codex:1', 'codex:2', 'claude:2']))
 })

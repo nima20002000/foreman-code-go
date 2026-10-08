@@ -198,7 +198,7 @@ it('shows which accounts each computer is signed in to without listing offline c
   const main = within(rows()[0]!).getByRole('group', { name: 'Accounts' })
   expect(within(main).getByLabelText('Codex: coder@example.com')).toBeInTheDocument()
   expect(within(main).getByRole('button', { name: 'GitHub: octo-owner. Manage GitHub' })).toBeInTheDocument()
-  expect(within(main).getByLabelText('OpenCode: OpenCode Go')).toBeInTheDocument()
+  expect(within(main).queryByLabelText(/OpenCode/)).not.toBeInTheDocument()
   expect(within(main).getByLabelText('Claude: signed out')).toBeInTheDocument()
   expect(await screen.findByRole('button', { name: 'Sync not installed. Manage shared files on Main PC' })).toBeInTheDocument()
   expect(screen.getAllByRole('group', { name: 'Accounts' })).toHaveLength(2)

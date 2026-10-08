@@ -16,8 +16,9 @@ function scope(computer?: string, onSelectComputer = vi.fn()) {
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()) })
 describe('explicit harness settings computer scope', () => {
   it('validates canonical URL device selection while retaining provider and section', () => {
-    expect(HarnessComputerSearchSchema.parse({ computer: deviceId, harness: 'opencode', section: 'permissions' })).toEqual({ computer: deviceId, harness: 'opencode', section: 'permissions' })
+    expect(HarnessComputerSearchSchema.parse({ computer: deviceId, harness: 'claude', section: 'permissions' })).toEqual({ computer: deviceId, harness: 'claude', section: 'permissions' })
     expect(HarnessComputerSearchSchema.safeParse({ computer: 'browser-invented-host' }).success).toBe(false)
+    expect(HarnessComputerSearchSchema.parse({ harness: 'opencode' }).harness).toBeUndefined()
   })
   it('withdraws a denied selected host and never substitutes global preset editing', async () => {
     server.use(http.get('/api/devices/main', () => HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'Access denied.' } }, { status: 403 })))

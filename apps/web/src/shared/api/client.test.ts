@@ -59,7 +59,7 @@ describe('Phase 1 API boundary', () => {
 
   it('covers the Harness and workspace settings requests used in mock mode', async () => {
     const catalog = await apiClient.getManagedHarnessCatalog()
-    expect(catalog.map((entry) => entry.harness)).toEqual(['codex', 'opencode'])
+    expect(catalog.map((entry) => entry.harness)).toEqual(['codex'])
     expect(catalog.every((entry) => entry.defaultsRevision === 0)).toBe(true)
 
     const checked = await apiClient.request(

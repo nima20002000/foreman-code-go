@@ -69,7 +69,7 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
   const receipt = lastCommand?.data
   const revisionConflict = ApiError.is(lastCommand?.error) && lastCommand.error.code === 'SUBAGENT_REVISION_CONFLICT'
   const unsettled = commandError || Boolean(receipt && ['accepted', 'dispatching', 'uncertain'].includes(receipt.state))
-  const allowed = (action: 'sendInput' | 'interrupt') => Boolean(child && record?.availableActions[action]
+  const allowed = (action: 'sendInput' | 'interrupt') => Boolean(child && child.provider !== 'opencode' && record?.availableActions[action]
     && child.capabilities[action].support === 'supported' && child.capabilities[action].qualification === 'passed')
   const send = (operation: 'input' | 'interrupt') => {
     if (!child || !allowed(operation === 'input' ? 'sendInput' : 'interrupt') || pending || unsettled) return
@@ -85,7 +85,7 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
   const messageItems = messages.data?.pages.flatMap((page) => page.items) ?? []
   const toolItems = tools.data?.pages.flatMap((page) => page.items) ?? []
   const canSend = allowed('sendInput'), canInterrupt = allowed('interrupt')
-  const footer = child && (canSend || canInterrupt || receipt || commandError || pending) ? <div className="run-subagent-steer">
+  const footer = child && child.provider !== 'opencode' && (canSend || canInterrupt || receipt || commandError || pending) ? <div className="run-subagent-steer">
     {canSend && <Textarea label="Message to subagent" value={text} maxLength={SUBAGENT_LIMITS.text} rows={2}
       hint={child.capabilities.inputTiming === 'idle' ? 'Delivered when the subagent is waiting for input.' : undefined}
       disabled={pending || unsettled} onChange={(event) => ui.setState({ text: event.currentTarget.value })}
@@ -120,7 +120,7 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
           {!canSend && !canInterrupt && !record.availableActions.respond
             && <p className="run-subagent-note">Controls are unavailable for this subagent right now.</p>}
         </section>
-        {record.pendingInteraction ? <section aria-label="Subagent request">
+        {child.provider !== 'opencode' && record.pendingInteraction ? <section aria-label="Subagent request">
           <p>This subagent needs your response.</p>
           {record.pendingInteraction.responseOptions.some(option => option.input)
             ? <NativeInteractionResponse key={record.pendingInteraction.turn.nativeRequestId}

@@ -1,3 +1,4 @@
+import { retiredHarnessLabel } from './settingsPresentation'
 import { useId, useState } from 'react'
 import { changeCodexSandbox, type CodexHarnessConfiguration, type HarnessConfiguration } from '@foreman-code/contracts'
 import { Alert, Button, Combobox, ConfirmDialog, Select, Switch } from '../../shared/ui/nocturne'
@@ -8,7 +9,7 @@ import { nativeOptionsWithSaved, selectNativeModel, supportedEfforts } from './h
 import './harnessModelFields.css'
 
 type Props = { value: HarnessConfiguration; onChange(value: HarnessConfiguration): void; issues?: readonly FieldIssue[] }
-export function HarnessBasicFields({ value, onChange, issues = [], includeSandbox = true, qualified = false, checking = false, checkError }: Props & { includeSandbox?: boolean; qualified?: boolean; checking?: boolean; checkError?: string }) {
+function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandbox = true, qualified = false, checking = false, checkError }: Props & { includeSandbox?: boolean; qualified?: boolean; checking?: boolean; checkError?: string }) {
   const query = useNativeHarnessOptions(value.harness)
   const refresh = useRefreshNativeHarness(value.harness)
   const selected = query.data?.models.find((item) => item.id === value.model)
@@ -18,6 +19,7 @@ export function HarnessBasicFields({ value, onChange, issues = [], includeSandbo
   const missingModel = !value.model.trim() ? <Alert tone="warning" title="Default model unavailable">
     Choose a native model before using this preset.
   </Alert> : null
+  if (value.harness === 'opencode') return null
   if (value.harness === 'claude') return <>{missingModel}<ClaudeConfigurationFields value={value} onChange={onChange}
     models={query.data?.models ?? []} qualified={qualified} pending={checking || query.isPending}
     error={checkError ?? (refresh.error ?? query.error)?.message} issues={issues} /></>
@@ -29,9 +31,7 @@ export function HarnessBasicFields({ value, onChange, issues = [], includeSandbo
           onValueChange={(id) => { const model = query.data?.models.find((item) => item.id === id); if (model) onChange(selectNativeModel(value, model)) }} />
         {value.harness === 'codex' ? <Select label="Effort" value={value.reasoningEffort} aria-label="Effort" error={fieldMessage(issues, 'reasoningEffort')}
           options={nativeOptionsWithSaved(supportedEfforts(selected), value.reasoningEffort)}
-          onChange={(event) => onChange({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} />
-          : <Select label="Provider variant" value={value.variant} error={fieldMessage(issues, 'variant')}
-            options={nativeOptionsWithSaved(selected ? ['', ...selected.variants] : [], value.variant)} onChange={(event) => onChange({ ...value, variant: event.target.value })} />}
+          onChange={(event) => onChange({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} /> : null}
       </div>
       <div className="harness-model-toggles"><HarnessModelOptions value={value} onChange={onChange} issues={issues} /></div>
     </div>
@@ -39,16 +39,11 @@ export function HarnessBasicFields({ value, onChange, issues = [], includeSandbo
     {query.isError || refresh.isError ? <Alert live tone="danger" title={(refresh.error ?? query.error)?.message ?? 'Model discovery failed.'}
       action={<Button size="sm" disabled={refresh.isPending} onClick={() => refresh.mutate()}>Retry</Button>} /> : null}
     {value.harness === 'codex' && includeSandbox ? <div className="harness-model-secondary"><HarnessSandboxField value={value} onChange={onChange} issues={issues} /></div> : null}
-    {value.harness === 'opencode' ? <div className="harness-model-secondary">
-      <Select label="Native Agent" value={value.nativeAgent} error={fieldMessage(issues, 'nativeAgent')}
-        options={nativeOptionsWithSaved(query.data?.nativeAgents ?? [], value.nativeAgent)} onChange={(event) => onChange({ ...value, nativeAgent: event.target.value })} />
-    </div> : null}
   </div>
 }
 function HarnessModelOptions({ value, onChange, issues = [] }: Props) {
   const query = useNativeHarnessOptions(value.harness)
   const errorId = useId()
-  if (value.harness === 'opencode') return <Switch label="Show thinking" checked={value.thinking} onChange={(event) => onChange({ ...value, thinking: event.target.checked })} />
   if (value.harness !== 'codex') return null
   const supported = query.data?.models.find((item) => item.id === value.model)?.serviceTiers.includes('priority') === true
   const error = fieldMessage(issues, 'serviceTier') ?? (query.isSuccess && !supported && value.serviceTier === 'priority' ? 'Not offered by this model. Turn Fast mode off.' : undefined)
@@ -78,4 +73,9 @@ export function HarnessSandboxField({ value, onChange, issues = [] }: {
         setFullAccess(false)
       }} />
   </div>
+}
+
+export function HarnessBasicFields(props: Parameters<typeof EditableHarnessBasicFields>[0]) {
+  if (props.value.harness === 'opencode') return <p role="status">{retiredHarnessLabel}</p>
+  return <EditableHarnessBasicFields {...props} />
 }

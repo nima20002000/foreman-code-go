@@ -70,7 +70,7 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
       const role = message?.role ?? 'assistant'
       const assistant = role === 'assistant'
       const model = message?.acceptedModel ?? (requestId ? acceptedModels.get(requestId) : undefined)
-      const author = model ? modelCatalogs?.[model.harness]?.find((entry) => entry.id === model.model)?.name || model.model : 'Assistant'
+      const author = model ? (model.harness === 'opencode' ? undefined : modelCatalogs?.[model.harness])?.find((entry) => entry.id === model.model)?.name || model.model : 'Assistant'
       const active = Boolean(requestId === activeRequestId && (live || message?.nativeMessageComplete === false))
       const priorActivity = requestId ? lastActivity.get(requestId) ?? -1n : -1n
       const boundary = message?.afterActivitySequence === undefined ? undefined : BigInt(message.afterActivitySequence)

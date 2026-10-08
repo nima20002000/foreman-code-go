@@ -1,3 +1,4 @@
+import { savedClaudeConfiguration } from './claudeSettings.fixtures'
 // @vitest-environment jsdom
 import { useState } from 'react'
 import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
@@ -15,7 +16,7 @@ vi.mock('./McpDetectionSettings', () => ({ McpDetectionSettings: () => null }))
 const clients: QueryClient[] = []
 beforeEach(() => {
   vi.clearAllMocks()
-  api.presets.mockReturnValue({ data: { defaults: { ...DEFAULT_HARNESS_DEFAULTS, opencode: { ...DEFAULT_HARNESS_DEFAULTS.opencode, model: 'saved/custom-model' } } }, isPending: false, isError: false })
+  api.presets.mockReturnValue({ data: { defaults: { ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, model: 'saved/custom-model' } } }, isPending: false, isError: false })
 })
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear() })
 function Editor({ initial = createHarnessEditor(DEFAULT_HARNESS_DEFAULTS.codex) }: { initial?: HarnessEditor }) {
@@ -34,20 +35,20 @@ describe('PR17 provider editing recovery', () => {
     await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
     await user.selectOptions(screen.getByLabelText('Sandbox'), 'workspace-write')
     await user.click(screen.getByRole('button', { name: 'Model & speed' }))
-    await user.selectOptions(screen.getByLabelText('Harness'), 'opencode')
+    await user.selectOptions(screen.getByLabelText('Harness'), 'claude')
     expect(screen.getByLabelText('Model')).toHaveValue('saved/custom-model')
-    await user.click(screen.getByLabelText('Show thinking'))
+    await user.clear(screen.getByLabelText('Local Claude profile directory')); await user.type(screen.getByLabelText('Local Claude profile directory'), '/changed/profile')
     await user.selectOptions(screen.getByLabelText('Harness'), 'codex')
     await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
     expect(screen.getByLabelText('Sandbox')).toHaveValue('workspace-write')
     await user.click(screen.getByRole('button', { name: 'Model & speed' }))
-    await user.selectOptions(screen.getByLabelText('Harness'), 'opencode')
-    expect(screen.getByLabelText('Show thinking')).toBeChecked()
+    await user.selectOptions(screen.getByLabelText('Harness'), 'claude')
+    expect(screen.getByLabelText('Local Claude profile directory')).toHaveValue('/changed/profile')
   })
   it('does not silently substitute built-in defaults when saved presets fail', () => {
     api.presets.mockReturnValue({ isPending: false, isError: true, refetch: vi.fn() })
     mount()
-    expect(screen.getByRole('option', { name: 'OpenCode' })).toBeDisabled()
+    expect(screen.getByRole('option', { name: 'Claude' })).toBeDisabled()
     expect(screen.getByText('Your draft is kept. Presets were not replaced.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Use built-in defaults/ })).toBeEnabled()
   })
@@ -64,28 +65,13 @@ describe('PR17 provider editing recovery', () => {
     mount()
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Ready'))
   })
-  it('has visible rule labels and keyboard-usable reorder controls with retained identity', async () => {
-    const initial = structuredClone(DEFAULT_HARNESS_DEFAULTS.opencode)
-    initial.advanced!.permissionRules = [{ permission: 'shell', pattern: '*', effect: 'deny' }, { permission: 'shell', pattern: 'git *', effect: 'ask' }]
-    mount(createHarnessEditor(initial))
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
-    const specific = screen.getByLabelText('Pattern 2')
-    screen.getByRole('button', { name: 'Move permission rule 2 up' }).focus()
-    await user.keyboard('{Enter}')
-    expect(screen.getByLabelText('Pattern 1')).toBe(specific)
-    expect(screen.getByLabelText('Pattern 1')).toHaveValue('git *')
-    expect(screen.getByRole('button', { name: 'Move permission rule 1 up' })).toBeDisabled()
-    expect(screen.getAllByText('Permission').length).toBe(2)
-    expect(screen.getAllByText('Pattern').length).toBe(2)
-    expect(screen.getAllByText('Decision').length).toBe(2)
-  })
+
   it('serializes only the active provider, never its cached editor drafts', () => {
     const codex = createHarnessEditor(DEFAULT_HARNESS_DEFAULTS.codex)
-    const opencode = switchHarnessEditor(codex, 'opencode', DEFAULT_HARNESS_DEFAULTS.opencode)
-    expect(opencode.drafts?.codex).toBeDefined()
-    const prepared = prepareHarnessEditor(opencode)
-    expect(prepared.harness).toBe('opencode')
+    const claude = switchHarnessEditor(codex, 'claude', savedClaudeConfiguration)
+    expect(claude.drafts?.codex).toBeDefined()
+    const prepared = prepareHarnessEditor(claude)
+    expect(prepared.harness).toBe('claude')
     expect(prepared).not.toHaveProperty('drafts')
     expect(prepared).not.toHaveProperty('mcpText')
   })

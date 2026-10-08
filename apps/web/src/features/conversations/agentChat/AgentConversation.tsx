@@ -38,6 +38,7 @@ export function AgentConversation(props: AgentConversationProps) {
 function AgentConversationContent({ context, name, runActivity, onNewConversation, selected }: AgentConversationProps) {
   const chat = useAgentChat(context, selected), state = chat.state
   const conversation = state?.conversation
+  const retired = conversation?.harness === 'opencode' || state?.capabilities.harness === 'opencode'
   const conversationId = conversation?.id
   const sessionControls = useSessionControls(conversationId, context.workspaceId, context, selected?.selection.executionId)
   const resendFileClient = useMemo(() => conversationId ? createFileCardHttpClient({
@@ -48,7 +49,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     workspaceId: conversation.workspaceId, workflowId: conversation.workflowId,
     ...(conversation.origin.kind === 'run_execution' ? { runId: conversation.origin.runId, executionId: conversation.origin.executionId } : {}),
   } } : null)
-  const writeReason = chat.blocked('agent_chat:write')
+  const writeReason = retired ? 'Retired harness (OpenCode): read-only' : chat.blocked('agent_chat:write')
   const drop = useFileDrop({ disabled: !!writeReason || !attachments.canAdd, onFiles: attachments.addFiles })
   const draft = useConversationDraftStore((store) => store.drafts[chat.draftKey] ?? '')
   const composer = useRef<HTMLTextAreaElement>(null), focused = useRef(false)
@@ -118,8 +119,8 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     ?? (state ? intentUnavailable(state, 'steer') : 'Loading this conversation…')
   const interruptReason = commandOnly ? controlReason : writeReason ?? compactReason
     ?? (state ? intentUnavailable(state, 'interrupt_and_send') : 'Loading this conversation…')
-  const cancelReason = chat.blocked('agent_chat:cancel')
-  const responseReason = chat.blocked('agent_chat:respond')
+  const cancelReason = retired ? 'Retired harness (OpenCode): read-only' : chat.blocked('agent_chat:cancel')
+  const responseReason = (retired ? 'Retired harness (OpenCode): read-only' : chat.blocked('agent_chat:respond'))
     ?? (state?.pendingInteraction && (!state.pendingInteraction.turn.nativeRequestId || state.pendingInteraction.session.nativeSessionId !== state.conversation?.nativeSession?.nativeSessionId || state.activeTurn?.nativeTurnId && state.pendingInteraction.turn.nativeTurnId !== state.activeTurn.nativeTurnId) ? 'The original native request is not available.' : undefined)
     ?? (state?.pendingInteraction && !state.responseAvailability?.available ? state.responseAvailability?.message ?? 'Refresh this conversation to check reply availability.' : undefined)
     ?? (state?.responseAvailability && (state.responseAvailability.nativeRequestId !== state.pendingInteraction?.turn.nativeRequestId || state.responseAvailability.nativeSessionId !== state.pendingInteraction?.session.nativeSessionId || state.responseAvailability.nativeRequestType !== state.pendingInteraction?.nativeRequestType) ? 'Refresh this conversation before replying.' : undefined)
@@ -144,16 +145,16 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const sessionMissing = state?.availability.reason === 'native_session_missing' || state?.sessionState === 'unavailable'
   // Do not offer a first-message form for a selection that cannot create a conversation.
   // Existing conversations retain their editable local draft during temporary/unavailable states.
-  const showComposer = !!state && (selected ? !sessionMissing && state.availability.canSend
+  const showComposer = !retired && !!state && (selected ? !sessionMissing && state.availability.canSend
     && (!state.conversation || state.capabilities.resume || busy) : !!state.conversation || state.availability.canSend)
-  const canStop = !!state && (busy || hasQueue) && state.availability.reason !== 'run_active' && !sessionMissing
+  const canStop = !retired && !!state && (busy || hasQueue) && state.availability.reason !== 'run_active' && !sessionMissing
     && (state.capabilities.interruptAndSend || !!state.capabilities.unavailable.interruptAndSend)
   const latestReply = state?.messages.filter((message) => message.role === 'assistant' && message.activityChannel !== 'reasoning' && message.nativeMessageComplete !== false).at(-1)
   const resendFiles = sendAgain && state ? [...state.messages, ...(chat.history.data?.pages.flatMap((batch) => batch.pages.flatMap((page) => page.messages)) ?? [])]
     .flatMap((message) => message.attachments ?? []) : []
   const legacyNotices = <div className="agent-chat-notices">
     {runActivity}
-    <CompactionActivity controls={sessionControls} />
+    {retired ? <p role="status">Retired harness (OpenCode): read-only</p> : <CompactionActivity controls={sessionControls} />}
     {state ? <p className="agent-chat-session-label" role="status">{!state.conversation && !state.availability.canSend
       ? context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
       : state.sessionState === 'idle' && background ? background.label : stateLabels[state.sessionState]}</p> : null}
@@ -188,7 +189,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     {error ? <Alert title={stale ? 'Chat context changed' : notActive ? 'The targeted turn has finished' : 'Command not confirmed'} tone="warning" live>
       <p>{error instanceof Error ? error.message : 'The command could not be confirmed.'}</p>
       {stale ? <p>The latest conversation is being fetched. Your draft is kept; review it before sending again.</p> : null}
-      {notActive ? <><p>Your draft is kept. It has not been sent as a different intent.</p>
+      {!retired && notActive ? <><p>Your draft is kept. It has not been sent as a different intent.</p>
         <Button size="sm" disabled={!!nextReason || empty} title={nextReason} onClick={() => submit('next_turn')}>Send as next turn</Button></> : null}
     </Alert> : null}
     <div id={reasonId} className="agent-chat-reasons">
@@ -202,6 +203,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     </div>
   </div>
   const notices = selected ? <div className="agent-chat-notices">
+    {retired ? <p role="status">Retired harness (OpenCode): read-only</p> : null}
     <p className="agent-chat-session-label" role="status" title={state?.availability.message ?? nextReason}>
       {chat.query.isError ? 'Chat unavailable' : !state ? 'Loading…' : sessionMissing ? 'Session unavailable'
         : !state.availability.canSend ? state.availability.reason === 'run_active' ? 'Run active · read only' : 'Chat unavailable'
@@ -215,7 +217,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     <span id={reasonId} className="n-sr-only">{nextReason ?? 'Continues this chat only; Run results stay unchanged.'}</span>
   </div> : legacyNotices
   return <div className="agent-conversation" data-testid="agent-conversation" data-chat-key={chat.draftKey}>
-    {state ? <AgentChatTranscript key={state.conversation?.id ?? 'none'} state={state} name={name} commands={chat.commands} history={chat.history}
+    {state ? <AgentChatTranscript key={state.conversation?.id ?? 'none'} state={state} name={name} readOnly={retired} commands={chat.commands} history={chat.history}
       notices={notices} cancelReason={cancelReason} responseReason={responseReason} resendReason={nextReason}
       controlResendReason={controlReason}
       onRefresh={chat.refresh} refreshing={chat.query.isFetching} onCancel={chat.cancelQueued} onRespond={chat.respond}
@@ -228,7 +230,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
         hasAttachments={attachments.hasAttachments}
         attachmentControl={<ChatAttachmentControl draft={attachments} disabled={!!writeReason} composerDrop={drop} />} error={chat.localError}
         sendLabel={busy ? 'Queue message' : 'Send message'} onSubmit={(content, mode) => submit('next_turn', content, mode)} /> : null}
-      {(!selected || !sessionMissing) && (state?.activeTurn || canStop) ? <div className="agent-chat-controls" role="group" aria-label="Active turn controls">
+      {!retired && (!selected || !sessionMissing) && (state?.activeTurn || canStop) ? <div className="agent-chat-controls" role="group" aria-label="Active turn controls">
         {selected && planSteerReason ? <p>{planSteerReason}</p> : null}
         {state?.activeTurn && (state.capabilities.steer !== 'unavailable' || state.capabilities.unavailable.steer) ? <Button size="sm" disabled={!!steerReason || empty}
           title={steerReason} aria-describedby={reasonId} onClick={() => submit('steer')}>Steer</Button> : null}

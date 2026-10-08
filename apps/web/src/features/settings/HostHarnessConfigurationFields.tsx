@@ -1,3 +1,4 @@
+import { retiredHarnessLabel } from './settingsPresentation'
 import { useId } from 'react'
 import { CLAUDE_FULL_ACCESS_REQUIRED } from '@foreman-code/contracts/claude'
 import { claudeAccessOptions } from './claudeAccess'
@@ -11,13 +12,14 @@ import { ClaudeMcpConfiguration } from './ClaudeMcpConfiguration'
 import './harnessModelFields.css'
 
 /** Configuration editing is passive. Native catalogs/checks are never queried on the API host. */
-export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
+function EditableHostHarnessConfigurationFields({ editor, onChange, issues }: {
   editor: HarnessEditor; onChange(editor: HarnessEditor): void; issues?: readonly FieldIssue[];
 }) {
   const serviceTierErrorId = useId()
   const serviceTierError = fieldMessage(issues ?? [], 'serviceTier')
   const value = withAdvancedDefaults(editor.configuration)
   const change = (configuration: HarnessConfiguration) => onChange({ ...editor, configuration })
+  if (value.harness === 'opencode') return null
   if (value.harness === 'claude') return <div className="harness-form-stack">
     <TextField className="harness-model-secondary" label="Model" value={value.model} error={fieldMessage(issues ?? [], 'model')}
       onChange={event => change({ ...value, model: event.target.value })} />
@@ -43,19 +45,15 @@ export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
         <TextField label="Model" value={value.model} error={fieldMessage(issues ?? [], 'model')} onChange={event => change({ ...value, model: event.target.value })} />
         {value.harness === 'codex' ? <Select label="Effort" value={value.reasoningEffort} error={fieldMessage(issues ?? [], 'reasoningEffort')}
           options={AgentEffortSchema.options.map(item => ({ value: item, label: item }))}
-          onChange={event => change({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} />
-          : <TextField label="Provider variant" value={value.variant} error={fieldMessage(issues ?? [], 'variant')} onChange={event => change({ ...value, variant: event.target.value })} />}
+          onChange={event => change({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} /> : null}
       </div>
       <div className="harness-model-toggles">
         {value.harness === 'codex' ? <div className="harness-model-toggle"><Switch label="Fast mode" checked={value.serviceTier === 'priority'}
           aria-invalid={serviceTierError ? true : undefined} aria-describedby={serviceTierError ? serviceTierErrorId : undefined}
           onChange={event => change({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' })} />
-          {serviceTierError ? <span className="n-field-error" id={serviceTierErrorId}>{serviceTierError}</span> : null}</div>
-          : <Switch label="Show thinking" checked={value.thinking} onChange={event => change({ ...value, thinking: event.target.checked })} />}
+          {serviceTierError ? <span className="n-field-error" id={serviceTierErrorId}>{serviceTierError}</span> : null}</div> : null}
       </div>
     </div>
-    {value.harness === 'opencode' ? <TextField className="harness-model-secondary" label="Native Agent" value={value.nativeAgent}
-      error={fieldMessage(issues ?? [], 'nativeAgent')} onChange={event => change({ ...value, nativeAgent: event.target.value })} /> : null}
     <h4>Access and approvals</h4>
     <HarnessSectionFields editor={editor} onChange={onChange} section="permissions" issues={issues}
       writableDirectories={value.harness === 'codex' ? <HarnessTokenList label="Additional writable paths on this computer"
@@ -67,8 +65,13 @@ export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
       hint="Environment policy for this host instance. Native login files and credentials are never copied."
       onChange={event => onChange({ ...editor, shellEnvironmentText: event.target.value })} /> : null}
     <Textarea label="Pinned MCP policy · JSON" value={editor.mcpText}
-      error={fieldMessage(issues ?? [], value.harness === 'codex' ? 'advanced.mcpServers' : 'advanced.mcp')}
+      error={fieldMessage(issues ?? [], 'advanced.mcpServers')}
       hint="Pinned native configuration requirements only. Editing does not inspect servers or rewrite target connection files."
       onChange={event => onChange({ ...editor, mcpText: event.target.value })} />
   </div>
+}
+
+export function HostHarnessConfigurationFields(props: Parameters<typeof EditableHostHarnessConfigurationFields>[0]) {
+  if (props.editor.configuration.harness === 'opencode') return <p role="status">{retiredHarnessLabel}</p>
+  return <EditableHostHarnessConfigurationFields {...props} />
 }

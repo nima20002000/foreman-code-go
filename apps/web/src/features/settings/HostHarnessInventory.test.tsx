@@ -51,3 +51,11 @@ describe('host installation evidence', () => {
     expect(screen.getByText(/unknown-instance/)).toBeVisible()
   })
 })
+
+it('keeps a recorded retired installation visible without showing qualification status', () => {
+  const historical = { ...installation, driverId: 'opencode', observedVersion: '1.18.31' }
+  render(<HostHarnessInventory host={{ kind: 'main', mainId }} registry={{ instances: [], installations: [historical] }} />)
+  expect(screen.getByRole('status')).toHaveTextContent('Retired harness (OpenCode): read-only')
+  expect(screen.getByText('1.18.31')).toBeVisible()
+  expect(screen.queryByText('Qualified')).not.toBeInTheDocument()
+})

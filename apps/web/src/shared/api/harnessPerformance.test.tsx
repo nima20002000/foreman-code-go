@@ -52,7 +52,6 @@ it('publishes confirmed defaults in the shared catalog without retaining old rea
   await act(async () => { await mutation.result.current.mutateAsync({ defaults, expectedRevision: 6, commandId: crypto.randomUUID() }) })
   expect(client.getQueryData(queryKeys.managedHarnessCatalog)).toEqual([
     expect.objectContaining({ harness: 'codex', defaultsRevision: 7, capability: { ready: true } }),
-    expect.objectContaining({ harness: 'opencode', defaultsRevision: 7, capability: { ready: true } }),
     expect.objectContaining({ harness: 'claude', defaults: defaults.claude, defaultsRevision: 7, capability: null }),
   ])
   request.mockResolvedValue({ value: { defaults: DEFAULT_HARNESS_DEFAULTS, revision: 6 }, replayed: true })
@@ -81,7 +80,7 @@ it('refreshes affected MCP state without unrelated native options or plans, and 
   const { client, Wrapper } = wrapper()
   const hooks = renderHook(() => ({
     catalog: useManagedHarnessCatalogQuery(), options: useNativeHarnessOptions('claude'), servers: useNativeMcpServers('codex'),
-    plans: useNativeMcpPlans('codex'), otherPlans: useNativeMcpPlans('opencode'), setup: useOperatorChatSetup(true, 6),
+    plans: useNativeMcpPlans('codex'), otherPlans: useNativeMcpPlans('codex'), setup: useOperatorChatSetup(true, 6),
     managed: useApplyManagedMcpChange('codex'),
   }), { wrapper: Wrapper })
   await waitFor(() => expect([hooks.result.current.catalog, hooks.result.current.options, hooks.result.current.servers,

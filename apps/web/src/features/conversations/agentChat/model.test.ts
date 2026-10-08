@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentChatFixtures, openCodeChatCapabilities, type AgentChatState } from '@foreman-code/contracts/agent-chat'
+import { agentChatFixtures, codexChatCapabilities, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { acceptAgentChatState, agentChatContextKey, approvalReplyAvailable, intentUnavailable, mergeChatMessages, stateBelongsToContext } from './model'
 import type { Message } from '@foreman-code/contracts'
 import { approvalState } from './testSupport'
@@ -63,7 +63,7 @@ describe('Agent chat identity and state projection', () => {
     const state: AgentChatState = structuredClone(agentChatFixtures.active)
     delete state.activeTurn!.nativeTurnId
     expect(intentUnavailable(state, 'steer')).toMatch(/native turn identity/)
-    state.capabilities = openCodeChatCapabilities
+    state.capabilities = { ...codexChatCapabilities, steer: 'cooperative_next_step', providerVersion: 'mock' }
     expect(intentUnavailable(state, 'steer')).toBeUndefined()
     state.capabilities = { ...state.capabilities, queueNextTurn: false, unavailable: { queueNextTurn: 'Queue is full.' } }
     expect(intentUnavailable(state, 'next_turn')).toBe('Queue is full.')

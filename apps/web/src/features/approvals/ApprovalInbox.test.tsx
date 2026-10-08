@@ -98,3 +98,13 @@ describe('floating human approval inbox', () => {
   })
 
 })
+
+it('keeps a historical retired request visible without Accept or Reject actions', () => {
+  api.list.mockReturnValue(queue([{ ...humanA, harness: 'opencode' }]))
+  useApprovalInboxStore.getState().openInbox({ workspaceId: base.workspaceId, workflowId: base.workflowId })
+  render(<ApprovalInbox />)
+  expect(screen.getByText('Retired harness (OpenCode): read-only')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
+  expect(userApi.mutate).not.toHaveBeenCalled()
+})

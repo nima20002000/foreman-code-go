@@ -30,23 +30,6 @@ describe('Operator access in agent settings', () => {
     expect(screen.queryByRole('button', { name: 'Add rule' })).not.toBeInTheDocument()
   })
 
-  it('validates and saves OpenCode rules without claiming a filesystem sandbox', () => {
-    const onChange = vi.fn().mockResolvedValue(true)
-    render(<OperatorAccessPicker value={DEFAULT_HARNESS_DEFAULTS.opencode} disabled={false} onChange={onChange} />)
-    expect(screen.getByText(/no filesystem sandbox/)).toBeVisible()
-    expect(screen.queryByRole('combobox', { name: 'Sandbox' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Add rule' }))
-    fireEvent.change(screen.getByRole('combobox', { name: 'Action 1' }), { target: { value: 'deny' } })
-    fireEvent.change(screen.getByRole('textbox', { name: 'Permission 1' }), { target: { value: '' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save access rules' }))
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a permission and pattern')
-    expect(onChange).not.toHaveBeenCalled()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Permission 1' }), { target: { value: 'shell' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save access rules' }))
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ advanced: expect.objectContaining({
-      permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' }], permissionHandling: 'graphql_routed',
-    }) }))
-  })
 
   it('locks access controls during an uncertain or pending settings operation', () => {
     render(<OperatorAccessPicker value={DEFAULT_HARNESS_DEFAULTS.codex} disabled saving saveError="Read back this save first" onChange={vi.fn()} />)

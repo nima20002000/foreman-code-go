@@ -1,4 +1,5 @@
 import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
+import { HarnessConfigurationSchema } from '@foreman-code/contracts'
 import { journalIntent, savedJournal } from './nim2644Journal.fixture'
 import { boardStartClient } from '../../workflow-board/startClient'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
@@ -190,6 +191,25 @@ afterEach(() => {
 })
 
 describe('NIM-2644 mounted frontend recovery through the real edit-intent hook', () => {
+  it('keeps Start blocked for a saved workflow with a retired Agent while preserving its facts', async () => {
+    const context = repairFixture(1)
+    const agent = context.agents[0]!.agent
+    agent.harness = 'opencode'
+    agent.harnessConfiguration = HarnessConfigurationSchema.parse({
+      harness: 'opencode', model: 'provider/historical-model', variant: 'saved-variant',
+      nativeAgent: 'saved-agent', thinking: true, autoApprove: false,
+    })
+    const original = structuredClone(context)
+    useGraphDraftStore.getState().installNextDraft(key, context)
+    mount()
+    await screen.findByRole('region', { name: 'Workflow authoring' })
+    expect(savedStartButton()).toBeDisabled()
+    expect(savedStartButton()).toHaveAttribute('title', 'Retired harness (OpenCode): read-only')
+    await userEvent.click(savedStartButton())
+    expect(boardStartClient.start).not.toHaveBeenCalled()
+    expect(edit().context).toEqual(original)
+  })
+
   it('keeps Start blocked when a ready workspace has no execution location', async () => {
     startWorkspace.executionLocation = null
     mount()

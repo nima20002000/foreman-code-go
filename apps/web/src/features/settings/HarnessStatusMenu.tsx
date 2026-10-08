@@ -29,7 +29,7 @@ function HarnessStatus({ harness, scope, revision, enabled }: { harness: AgentHa
   return <Link to="/settings/harnesses" search={{ harness, section: 'model' }} className="harness-status-link"
     aria-label={`${name}: ${label}`} title={`${name}: ${label}. ${detail}`}>
     <span className={`harness-status-light harness-status-light--${state}`} aria-hidden="true" />
-    <span className="harness-status-initial" aria-hidden="true">{harness === 'codex' ? 'CX' : harness === 'opencode' ? 'OC' : 'CL'}</span>
+    <span className="harness-status-initial" aria-hidden="true">{harness === 'codex' ? 'CX' : 'CL'}</span>
     <span className="harness-status-name">{name}</span>
   </Link>
 }

@@ -465,7 +465,7 @@ export function updateMockHarnessDefaults(next: HarnessDefaults): HarnessDefault
 }
 
 export function getMockHarnessCatalog() {
-  return (['codex', 'opencode'] as const).map((harness) => ({
+  return (['codex', 'claude'] as const).filter(harness => harnessDefaults[harness]).map((harness) => ({
     harness,
     defaults: clone(harnessDefaults[harness]),
     defaultsRevision: harnessDefaultsRevision,

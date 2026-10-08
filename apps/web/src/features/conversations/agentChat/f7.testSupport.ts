@@ -1,18 +1,18 @@
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, OPENCODE_APPROVAL_OPTIONS_FIXTURE } from '@foreman-code/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE } from '@foreman-code/contracts'
 import { agentChatFixtures, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 
-export const chatHarnesses = ['codex', 'opencode'] as const
+export const chatHarnesses = ['codex', 'claude'] as const
 
 /** Explicit wire fixtures for PR #51, not execution of either provider. The shared cooperative
- * OpenCode fixture is a contract possibility, not the capability advertised by this backend. */
+ * Claude fixture is a contract possibility, not the capability advertised by this backend. */
 export function providerFixture(harness: typeof chatHarnesses[number], source: AgentChatState = agentChatFixtures.empty): AgentChatState {
   const state = structuredClone(source)
-  const providerVersion = harness === 'codex' ? '0.157.1' : '1.18.31'
+  const providerVersion = harness === 'codex' ? '0.157.1' : '2.1.128'
   state.capabilities = { harness, providerVersion: state.conversation ? providerVersion : null,
     steer: harness === 'codex' ? 'native_expected_turn' : 'unavailable',
     interruptAndSend: true, queueNextTurn: true, resume: true,
-    unavailable: harness === 'codex' ? {} : { steer: 'OpenCode cannot add input to a running turn with a turn precondition. Queue it for the next turn or interrupt and send.' } }
-  if (harness === 'opencode') {
+    unavailable: harness === 'codex' ? {} : { steer: 'Claude cannot add input to a running turn with a turn precondition. Queue it for the next turn or interrupt and send.' } }
+  if (harness === 'claude') {
     const steerIds = new Set(state.turns.filter((turn) => turn.intent === 'steer').map((turn) => turn.requestId))
     state.turns = state.turns.filter((turn) => !steerIds.has(turn.requestId))
     state.messages = state.messages.filter((message) => !message.requestId || !steerIds.has(message.requestId))
@@ -32,7 +32,7 @@ export function startedFixture(state: AgentChatState, requestId: string): AgentC
   const next = structuredClone(state), turn = next.turns.find((entry) => entry.requestId === requestId)
   if (!next.conversation || !turn || turn.delivery !== 'queued') throw new Error('Expected an admitted queued fixture turn')
   if (next.activeTurn) throw new Error('Settle the active fixture turn before starting another')
-  const harness = next.conversation.harness, providerVersion = harness === 'codex' ? '0.157.1' : '1.18.31'
+  const harness = next.conversation.harness, providerVersion = harness === 'codex' ? '0.157.1' : '2.1.128'
   next.conversation.nativeSession ??= { nativeSessionId: `${harness}-session-fixture`, providerVersion }
   next.capabilities.providerVersion = providerVersion
   next.activeTurn = { requestId, nativeTurnId: `native-${requestId}`, startedAt: turn.createdAt }
@@ -60,9 +60,9 @@ export function approvalFixture(state: AgentChatState): AgentChatState {
   next.sessionState = 'waiting_approval'; next.revision++
   next.pendingInteraction = { session: { ...session, harness },
     turn: { nativeTurnId: next.activeTurn.nativeTurnId, nativeRequestId: `${harness}-approval` },
-    nativeRequestType: harness === 'codex' ? 'item/commandExecution/requestApproval' : 'permission.asked',
+    nativeRequestType: harness === 'codex' ? 'item/commandExecution/requestApproval' : 'can_use_tool',
     request: { command: ['read', 'README.md'] },
-    responseOptions: structuredClone(harness === 'codex' ? CODEX_APPROVAL_OPTIONS_FIXTURE : OPENCODE_APPROVAL_OPTIONS_FIXTURE) }
+    responseOptions: structuredClone(CODEX_APPROVAL_OPTIONS_FIXTURE).map(option => ({ ...option, optionId: option.optionId.replace('codex-', `${harness}-`) })) }
   // This controlled wire scenario explicitly represents an available native callback.
   next.responseAvailability = { nativeSessionId: session.nativeSessionId, nativeRequestId: `${harness}-approval`,
     nativeTurnId: next.activeTurn.nativeTurnId, nativeRequestType: next.pendingInteraction.nativeRequestType,
