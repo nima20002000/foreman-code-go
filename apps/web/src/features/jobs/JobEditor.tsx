@@ -17,7 +17,7 @@ import { ApiError } from '../../shared/api/client'
 import { jobError, jobNetworkLabel, jobReadRetry, jobWriteUncertain } from './model'
 import { jobKeys } from './query'
 import { compactIdentity } from '../../shared/ui/compactIdentity'
-import { autoPolicyKey, editorJson, editorSpec, templateKey } from './jobEditorModel'
+import { autoPolicyKey, editorJson, editorSpec, templateKey, verificationWithLimits } from './jobEditorModel'
 
 export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: string; definition?: JobDefinitionRecord; onClose: () => void }) {
   const choices = useQuery({ queryKey: ['jobs', workspaceId, 'choices'], queryFn: ({ signal }) => jobsClient.choices(workspaceId, { signal }), retry: jobReadRetry })
@@ -41,6 +41,7 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
   const [outputs, setOutputs] = useState(JSON.stringify(definition?.spec.outputs ?? [], null, 2))
   const savedVerification = definition && 'verification' in definition.spec ? definition.spec.verification : undefined
   const [template, setTemplate] = useState(savedVerification ? 'saved' : 'custom')
+  const verificationMode = template !== 'custom'
   // The selected template is an editor snapshot, retained when server choices refresh.
   const [selectedTemplate, setSelectedTemplate] = useState<JobVerificationTemplate>()
   const [verification, setVerification] = useState(savedVerification ? JSON.stringify(savedVerification, null, 2) : '')
@@ -54,9 +55,13 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
   const locked = busy || uncertain
   let spec: JobDefinitionSpecRecord | undefined
   let specProblem = ''
+  let placementLimits = limitsPin
   try {
+    const request = verificationMode
+      ? JobVerificationRequestSchema.parse(editorJson(verification, 'Verification request')) : undefined
+    placementLimits = request?.resources.limits ?? limitsPin
     spec = editorSpec({ auto, target: targetPin, source: sourcePin, policy: policyPin, limits: limitsPin,
-      argv, cwd, inputs, outputs, verification })
+      argv, cwd, inputs, outputs, verification: request })
   } catch (cause) {
     if (cause instanceof ZodError) {
       specProblem = cause.issues.map(issue => {
@@ -72,7 +77,13 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
   const jsonProblem = (text: string) => { try { return Array.isArray(JSON.parse(text)) ? undefined : 'Must be a JSON array.' } catch { return 'Not valid JSON yet.' } }
   const argvProblem = jsonProblem(argv) ?? (JSON.parse(argv).every((item: unknown) => typeof item === 'string' && item) && JSON.parse(argv).length ? undefined : 'Use a non-empty array of non-empty strings.')
   const inputsProblem = jsonProblem(inputs), outputsProblem = jsonProblem(outputs)
-  const missing = [!name.trim() && 'a name', !auto && !targetPin && 'a computer', !sourcePin && 'a source', (!policyPin || auto && !limitsPin) && 'a policy', argvProblem && 'a valid command'].filter(Boolean)
+  const missing = [
+    !name.trim() && 'a name',
+    !auto && !targetPin && 'a computer',
+    !sourcePin && 'a source',
+    (!policyPin || auto && !placementLimits) && 'a policy',
+    argvProblem && 'a valid command',
+  ].filter(Boolean)
   const submit = async () => {
     if (save.variables) { await save.mutateAsync(save.variables); return }
     if (!spec || !name.trim()) { setError(specProblem || 'Enter a job name.'); return }
@@ -83,36 +94,33 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
   const close = useUnsavedChanges({ label: 'job definition', scope: 'surface', dirty, busy, uncertain, error: save.error ? jobError(save.error) : error, save: submit, discard: onClose, saveDisabled: !spec || !name.trim() })
   const changed = () => { if (!uncertain) save.reset(); setDirty(true); setError('') }
   const sources = choices.data?.sources ?? []
-  const policies = (choices.data?.policies ?? []).filter(item => ('schemaVersion' in item) === Boolean(verification))
+  const policies = (choices.data?.policies ?? []).filter(item => ('schemaVersion' in item) === verificationMode)
   const autoPolicies = (choices.data?.autoPolicies ?? []).filter(item =>
-    ('schemaVersion' in item.policy) === Boolean(verification))
+    ('schemaVersion' in item.policy) === verificationMode)
   const templates = choices.data?.verificationTemplates ?? []
   const templateListed = selectedTemplate && templates.some(item => templateKey(item) === template)
   let policyValue = policy
-  if (policy && spec && isAutoJobSpecRecord(spec)) {
-    policyValue = autoPolicyKey({ policy: spec.policy, limits: spec.limits })
+  if (policy && auto && policyPin && placementLimits) {
+    policyValue = autoPolicyKey({ policy: policyPin, limits: placementLimits })
   }
   const policyListed = autoPolicies.some(item => autoPolicyKey(item) === policyValue)
   const selectRequirements = (selected: (typeof autoPolicies)[number] | undefined) => {
     setPolicyPin(selected?.policy)
     setLimitsPin(selected?.limits)
-    if (verification && selected) {
-      let parsed: unknown
+    if (verificationMode && selected) {
       try {
-        parsed = editorJson(verification, 'Verification request')
+        setVerification(verificationWithLimits(verification, selected.limits))
       } catch (cause) {
-        if (cause instanceof Error) { setError(cause.message); return }
+        if (cause instanceof Error) {
+          setError(cause.message)
+          return
+        }
         throw cause
-      }
-      const request = JobVerificationRequestSchema.safeParse(parsed)
-      if (request.success) {
-        setVerification(JSON.stringify({ ...request.data,
-          resources: { ...request.data.resources, limits: selected.limits } }, null, 2))
       }
     }
   }
   let policyPlaceholder = 'Choose runtime requirements'
-  if (definition && (definition.schemaVersion === 2) === Boolean(verification)) {
+  if (definition && (definition.schemaVersion === 2) === verificationMode) {
     policyPlaceholder = 'Keep saved runtime requirements'
   }
   if (selectedTemplate) policyPlaceholder = 'Keep selected template runtime requirements'
@@ -122,7 +130,7 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
     setPolicy('')
     if (value === 'custom') {
       setVerification('')
-      if (verification) {
+      if (verificationMode) {
         const build = definition?.schemaVersion === 1 ? definition.spec : undefined
         setArgv(JSON.stringify(build?.argv ?? ['corepack', 'pnpm', 'build']))
         setOutputs(JSON.stringify(build?.outputs ?? [], null, 2))
@@ -210,7 +218,7 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
           if (selectedTemplate) {
             selected = { policy: selectedTemplate.policy, limits: selectedTemplate.resources.limits }
           } else if (definition && isAutoJobSpecRecord(definition.spec)
-            && (definition.schemaVersion === 2) === Boolean(verification)) {
+            && (definition.schemaVersion === 2) === verificationMode) {
             selected = { policy: definition.spec.policy, limits: definition.spec.limits }
           }
         }
@@ -220,7 +228,7 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
       : <Select label="Qualified isolation and toolchain policy" value={policy} disabled={locked || choices.isError} options={[{ value: '', label: definition ? 'Keep saved policy' : 'Choose a policy' }, ...policies.map(item => ({ value: `${item.isolationPolicyId}:${item.isolationPolicyRevision}:${item.toolchainDigest}`,
       label: `${compactIdentity(item.isolationPolicyId, policies.map(other => other.isolationPolicyId))} · rev ${item.isolationPolicyRevision}${policies.some(other => other.toolchainDigest !== item.toolchainDigest && other.isolationPolicyId === item.isolationPolicyId && other.isolationPolicyRevision === item.isolationPolicyRevision) ? ` · ${compactIdentity(item.toolchainDigest, policies.map(other => other.toolchainDigest))}` : ''}` }))]} onChange={event => { setPolicy(event.target.value); setPolicyPin(choices.data?.policies.find(item => `${item.isolationPolicyId}:${item.isolationPolicyRevision}:${item.toolchainDigest}` === event.target.value) ?? definition?.spec.policy); changed() }} />}
     {policyPin ? <p>Selected policy: network {jobNetworkLabel(policyPin.network)}; execution limit {policyPin.executionTimeoutMs} ms.</p> : null}
-    {verification && <Textarea label="Verification request (JSON)" value={verification} disabled={locked}
+    {verificationMode && <Textarea label="Verification request (JSON)" value={verification} disabled={locked}
       onChange={event => { setVerification(event.target.value); changed() }}
       hint="Auto placement uses the resource limits in this request. Ordinary suites require no provider credentials; test workers must fit the qualified allowance and owner limit." />}
     {choices.isSuccess && !choices.data.targets.some(item => item.ready) && <Alert title="No computer and validated source root" tone="warning">Jobs need an authorized computer with an approved, validated source root that allows exclusive writes. Ask the person managing this workspace to approve and bind the source root.</Alert>}
@@ -233,6 +241,14 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
       <Textarea label="Output policy (JSON array)" value={outputs} disabled={locked} error={outputsProblem} onChange={event => { setOutputs(event.target.value); changed() }} hint={'Each output: {"path":"apps/web/dist/index.html","required":true,"mediaType":"text/html"}'} />
     </details>
     {!save.variables && missing.length > 0 && <p role="status" className="job-needs">To save, add {missing.join(', ')}.</p>}
-    {Boolean(targetPin || sourcePin || policyPin) && <details><summary>{spec ? 'Review exact saved specification' : 'Review selected configuration'}</summary><pre className="job-log-window">{JSON.stringify(spec ?? { target: targetPin, source: sourcePin, policy: policyPin, ...(auto ? { limits: limitsPin } : {}) }, null, 2)}</pre></details>}
+    {Boolean(targetPin || sourcePin || policyPin) && <details>
+      <summary>{spec ? 'Review exact saved specification' : 'Review selected configuration'}</summary>
+      <pre className="job-log-window">{JSON.stringify(spec ?? {
+        target: targetPin,
+        source: sourcePin,
+        policy: policyPin,
+        ...(auto ? { limits: placementLimits } : {}),
+      }, null, 2)}</pre>
+    </details>}
   </Dialog>
 }

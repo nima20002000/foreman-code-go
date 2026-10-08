@@ -85,6 +85,47 @@ it('updates the verification reservation when choosing different Auto policy lim
     verification: { resources: { limits: alternative.limits } } })
 })
 
+it('repairs invalid verification limits when choosing valid Auto policy limits', async () => {
+  const { saved } = mountEditor()
+  await screen.findByRole('option', { name: /another-profile/ })
+  const verification = { ...verificationDefinition.spec.verification,
+    resources: { ...verificationTemplate.resources, limits: { ...requirement.limits, diskBytes: 1 } } }
+  fireEvent.change(verificationField(), { target: { value: JSON.stringify(verification) } })
+  expect(saveButton()).toBeDisabled()
+  await userEvent.selectOptions(policySelect(), screen.getByRole('option', { name: /2 CPU/ }))
+  expect(JSON.parse((verificationField() as HTMLTextAreaElement).value).resources.limits).toEqual(alternative.limits)
+  expect(saveButton()).toBeEnabled()
+  await userEvent.click(saveButton())
+  await waitFor(() => expect(saved).toHaveLength(1))
+  expect(saved[0]?.spec).toMatchObject({ policy: alternative.policy, limits: alternative.limits,
+    verification: { resources: { limits: alternative.limits } } })
+})
+
+it('keeps the edited runtime requirements label while another field is invalid', async () => {
+  mountEditor()
+  await screen.findByRole('option', { name: /another-profile/ })
+  await userEvent.selectOptions(policySelect(), screen.getByRole('option', { name: /1 CPU/ }))
+  const verification = { ...verificationDefinition.spec.verification,
+    resources: { ...verificationTemplate.resources, limits: alternative.limits } }
+  fireEvent.change(verificationField(), { target: { value: JSON.stringify(verification) } })
+  expect(policySelect()).toHaveDisplayValue(/no longer listed/i)
+  fireEvent.change(screen.getByRole('textbox', { name: 'Exact executable and arguments (JSON array)' }),
+    { target: { value: '[' } })
+  expect(saveButton()).toBeDisabled()
+  expect(policySelect()).toHaveDisplayValue(/no longer listed/i)
+})
+
+it('keeps an emptied verification request editable and explains its validation error', async () => {
+  mountEditor()
+  await screen.findByRole('option', { name: /another-profile/ })
+  fireEvent.change(verificationField(), { target: { value: '' } })
+  expect(verificationField()).toHaveValue('')
+  expect(screen.getByText(/Verification request.*valid JSON/i)).toBeInTheDocument()
+  expect(saveButton()).toBeDisabled()
+  fireEvent.change(verificationField(), { target: { value: JSON.stringify(verificationDefinition.spec.verification) } })
+  expect(saveButton()).toBeEnabled()
+})
+
 it('explains malformed verification JSON and invalid resource reservations and recovers after correction', async () => {
   mountEditor()
   await screen.findByRole('option', { name: /another-profile/ })

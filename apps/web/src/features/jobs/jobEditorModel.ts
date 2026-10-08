@@ -4,11 +4,11 @@ import {
 } from '@foreman-code/contracts/jobs'
 import {
   AutoVerificationJobSpecSchema,
-  JobVerificationRequestSchema,
   ResolvedVerificationJobSpecSchema,
   type JobAuthoringChoicesRecord,
   type JobDefinitionSpecRecord,
   type JobVerificationTemplate,
+  type VerificationJobSpec,
 } from '@foreman-code/contracts/job-verification'
 
 export function templateKey(template: JobVerificationTemplate) {
@@ -28,6 +28,22 @@ export function editorJson(text: string, label: string): unknown {
   }
 }
 
+export function verificationWithLimits(
+  text: string,
+  limits: NonNullable<JobAuthoringChoicesRecord['autoPolicies']>[number]['limits'],
+): string {
+  const request = editorJson(text, 'Verification request')
+  if (!request || typeof request !== 'object' || Array.isArray(request) || !('resources' in request)) {
+    throw new Error('Verification request must contain a resources object.')
+  }
+  const resources = request.resources
+  if (!resources || typeof resources !== 'object' || Array.isArray(resources)) {
+    throw new Error('Verification resources must be an object.')
+  }
+  // Replace limits before validation so a policy choice can repair an invalid reservation.
+  return JSON.stringify({ ...request, resources: { ...resources, limits } }, null, 2)
+}
+
 export function editorSpec(input: {
   auto: boolean
   target: JobDefinitionSpecRecord['target'] | undefined
@@ -38,10 +54,9 @@ export function editorSpec(input: {
   cwd: string
   inputs: string
   outputs: string
-  verification: string
+  verification: VerificationJobSpec['verification'] | undefined
 }): JobDefinitionSpecRecord {
   const verification = input.verification
-    ? JobVerificationRequestSchema.parse(editorJson(input.verification, 'Verification request')) : undefined
   const schema = input.auto ? AutoJobDefinitionSpecSchema : ResolvedJobDefinitionSpecSchema
   // Choose the editor's mode so validation reports field errors instead of union alternatives.
   const verificationSchema = input.auto ? AutoVerificationJobSpecSchema : ResolvedVerificationJobSpecSchema
