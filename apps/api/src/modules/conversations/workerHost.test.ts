@@ -484,13 +484,17 @@ it('persists definite non-delivery and admits a later message without replaying 
 it('keeps a possibly delivered message fenced even if an error claims non-delivery', async () => {
   const f = await setup('claude')
   await f.request(f.open)
-  f.manager.startTurn = async function* (_session, input) {
-    await input.onMessageSubmitted?.({ kind: 'message', nativeSessionId: f.session.nativeSessionId,
-      nativeMessageId: 'already-offered', clientCorrelationId: input.clientCorrelationId })
-    throw Object.assign(new Error('Submission acknowledgement failed'), {
-      certainty: 'definite', deliveryState: 'not-delivered',
-    })
-  }
+  f.manager.startTurn = (_session, input) => ({
+    [Symbol.asyncIterator]() {
+      return { next: async () => {
+        await input.onMessageSubmitted?.({ kind: 'message', nativeSessionId: f.session.nativeSessionId,
+          nativeMessageId: 'already-offered', clientCorrelationId: input.clientCorrelationId })
+        throw Object.assign(new Error('Submission acknowledgement failed'), {
+          certainty: 'definite', deliveryState: 'not-delivered',
+        })
+      } }
+    },
+  })
   await f.request({ method: 'conversation.start-turn', session: f.session, prompt: 'Offered', correlationId: 'uncertain' })
   await vi.waitFor(async () => expect((await f.journal.conversations.read(f.binding))?.turns[0]?.status).toBe('uncertain'))
   await expect(f.request({ method: 'conversation.start-turn', session: f.session,
