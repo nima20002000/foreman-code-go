@@ -18,7 +18,12 @@ export function JobQueueFacts({ ticket }: { ticket: JobQueueTicket }) {
   }
   return <dl className="job-facts">
     <dt>Queue status</dt><dd>{queueLabel(ticket)}</dd>
-    <dt>Computer</dt><dd>{computer}</dd>
+    {ticket.placement.kind === 'prefer' && <>
+      <dt>Preferred computer</dt><dd>{ticket.placement.hostRef.kind === 'device'
+        ? ticket.placement.hostRef.deviceId : `Main computer (${ticket.placement.hostRef.mainId})`}</dd>
+      <dt>Fallback policy</dt><dd>Then try eligible computers in build priority order.</dd>
+    </>}
+    <dt>{ticket.state === 'accepted' ? 'Accepted computer' : 'Computer assignment'}</dt><dd>{computer}</dd>
     {ticket.selectedComputer && <>
       <dt>Reserved root</dt><dd>{ticket.selectedComputer.target.destination.canonicalProjectRoot}</dd>
       <dt>Root binding</dt><dd>{ticket.selectedComputer.rootId} · revision {ticket.selectedComputer.bindingRevision}</dd>

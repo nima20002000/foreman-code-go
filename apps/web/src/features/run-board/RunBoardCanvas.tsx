@@ -11,11 +11,12 @@ import './runBoard.css'
 const sides = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const
 const SavedAgent = memo(function SavedAgent({ data }: NodeProps<SavedBoardNode>) {
   return <>
-    {/* AgentNodeView has a button core. This static rendering has one accessible
-        React Flow image wrapper instead of a misleading, focusable no-op button. */}
+    {/* Keep the authoring button inert; inspection has its own accessible action. */}
     <div className="run-board-node-visual" aria-hidden="true" inert>
       <AgentNodeView className="run-board-agent" name={data.snapshot.name} harnessLabel="" statusLabel="Saved" />
     </div>
+    {data.inspect ? <button type="button" className="run-board-inspect nodrag nopan"
+      aria-label={`Inspect ${data.snapshot.name}`} onClick={data.inspect}>Inspect</button> : null}
     {/* Unlike the authoring AgentHandles, every saved target side must resolve. */}
     {sides.flatMap((side) => (['source', 'target'] as const).map((type) =>
       <Handle key={`${type}:${side}`} id={side} type={type} position={side} isConnectable={false}
@@ -36,8 +37,16 @@ const fitViewOptions = { padding: 0.2, minZoom: 0.02, maxZoom: 1 }
 const proOptions = { hideAttribution: true }
 
 /** A private React Flow store, even when mounted beneath an editor's provider. */
-export function RunBoardCanvas({ snapshot }: { snapshot: AvailableRunBoardSnapshot }) {
-  const { nodes, edges } = useMemo(() => projectRunBoard(snapshot), [snapshot])
+export function RunBoardCanvas({ snapshot, onInspectNode }: {
+  snapshot: AvailableRunBoardSnapshot; onInspectNode?: (nodeId: string) => void
+}) {
+  const { nodes, edges } = useMemo(() => {
+    const projected = projectRunBoard(snapshot)
+    if (onInspectNode) for (const node of projected.nodes) {
+      node.data = { ...node.data, inspect: () => onInspectNode(node.id) }
+    }
+    return projected
+  }, [snapshot, onInspectNode])
   return <div className="run-board-canvas" data-testid="run-board-canvas" onKeyDown={(event) => {
     // History keystrokes must not bubble into an ancestor's authoring shortcuts.
     event.stopPropagation()
