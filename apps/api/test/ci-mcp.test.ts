@@ -22,12 +22,14 @@ async function fixture() {
     tools: principal.id === 'disabled-agent' ? ['context_get'] : ['ci_run', 'ci_get'] }),
   canRead: async () => false, canRespond: async () => false } as unknown as AppInteractionService
   registerGraphqlMcp(app, { access, operator: data.services, interactions })
+  const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const request = async (method: string, params: unknown, token = 'worker') => {
-    const response = await app.inject({ method: 'POST', url: '/mcp',
-      headers: { host: 'localhost', authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
-      payload: { jsonrpc: '2.0', id: 1, method, params } })
-    const body = response.body.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? response.body
-    return { status: response.statusCode, ...JSON.parse(body) }
+    const response = await fetch(new URL('/mcp', address), { method: 'POST',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream',
+        'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })
+    const text = await response.text()
+    const body = text.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? text
+    return { status: response.status, ...JSON.parse(body) }
   }
   const call = (name: string, input: unknown, token = 'worker') =>
     request('tools/call', { name, arguments: input }, token)
@@ -119,6 +121,20 @@ describe('CI over the authenticated unified MCP transport', () => {
         hostRef: { kind: 'device', mainId: f.agent.mainId, deviceId: f.agent.deviceId } } })
       const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId: started.ticketId })).result.structuredContent)
       expect(read.queue.definition.spec.source.commit).toBe('c'.repeat(40))
+      const initiatingAgent = { workflowId: 'workflow', runId: 'run', agentId: 'agent', executionId: 'execution-agent' }
+      expect(read.queue).toMatchObject({ workflow: null, initiatingAgent })
+      f.services.ci = f.createCi()
+      const persisted = CiGetOutputSchema.parse((await f.call('ci_get', {
+        workspaceId: f.workspaceId, ticketId: started.ticketId,
+      }, 'operator')).result.structuredContent)
+      expect(persisted.queue.initiatingAgent).toEqual(initiatingAgent)
+      f.complete()
+      const finished = CiGetOutputSchema.parse((await f.call('ci_get', {
+        workspaceId: f.workspaceId, ticketId: started.ticketId,
+      }, 'operator')).result.structuredContent)
+      expect(finished.queue).toMatchObject({ state: 'accepted', workflow: null, initiatingAgent })
+
+
       // An explicit commit is tested as given, still preferring the Agent's computer.
       await f.call('ci_run', { suite: 'unit', commandId: 'agent-ci-commit', commit: 'd'.repeat(40) })
       expect(f.snapshotCalls).toHaveLength(1)

@@ -64,6 +64,55 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     return (await service.listQueue(reader.principal, f.workspaceId))
       .sort((a, b) => Number(BigInt(a.enqueueSequence) - BigInt(b.enqueueSequence)))
   }
+  it('persists Agent CI origin separately from graph membership and reads it through authenticated MCP', async () => {
+    const f = await fixture()
+    const definition = await f.save()
+    const input = command(definition)
+    const initiatingAgent = { workflowId: 'workflow-origin', runId: 'run-origin',
+      agentId: 'agent-origin', executionId: 'execution-origin' }
+    const admission = await f.jobs.enqueue(f.principal, 'mcp', f.workspaceId, input, { initiatingAgent })
+    const id = admissionTicketId(admission)
+    await expect(f.jobs.enqueue(f.principal, 'mcp', f.workspaceId, input,
+      { initiatingAgent: { ...initiatingAgent, executionId: 'another-execution' } }))
+      .rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
+    f.online()
+    await f.jobs.wakeQueue()
+    await f.jobs.closeQueue()
+    const restarted = f.createService()
+    services.push(restarted)
+    const ticket = await restarted.getQueueTicket(reader.principal, f.workspaceId, id)
+    expect(ticket).toMatchObject({ state: 'accepted', workflow: null, initiatingAgent })
+    const execution = await restarted.getExecution(reader.principal, f.workspaceId, ticket.executionId)
+    expect(execution).toMatchObject({ workflow: null, initiatingAgent })
+    const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { jobs: restarted, commands: f.commands } as unknown as OperatorServices } })
+    apps.push(app)
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const client = new Client({ name: 'ci-origin-tests', version: '1' })
+    clients.push(client)
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+      { requestInit: { headers: { authorization: `Bearer ${reader.token}` } } }))
+    const listed = await client.callTool({ name: 'job_queue_list', arguments: {
+      workspaceId: f.workspaceId, initiatingExecutionId: initiatingAgent.executionId,
+    } })
+    expect(JobQueuePageSchema.parse(listed.structuredContent).tickets).toEqual([ticket])
+    const unrelated = await client.callTool({ name: 'job_queue_list', arguments: {
+      workspaceId: f.workspaceId, initiatingExecutionId: 'another-execution',
+    } })
+    expect(JobQueuePageSchema.parse(unrelated.structuredContent).tickets).toEqual([])
+    const read = await client.callTool({ name: 'job_get', arguments: {
+      workspaceId: f.workspaceId, executionId: execution.id,
+    } })
+    expect(read.structuredContent).toEqual({ execution })
+    const denied = await client.callTool({ name: 'job_queue_list', arguments: {
+      workspaceId: 'foreign-workspace', initiatingExecutionId: initiatingAgent.executionId,
+    } })
+    expect(denied.isError).toBe(true)
+    const forged = await client.callTool({ name: 'job_start', arguments: {
+      workspaceId: f.workspaceId, ...input, commandId: randomUUID(), initiatingAgent,
+    } })
+    expect(forged.isError).toBe(true)
+  })
   it('serializes five concurrent requests on one heavy slot and advances only after closure and publication', async () => {
     const f = await fixture()
     const definition = await f.save()

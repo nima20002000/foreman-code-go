@@ -60,7 +60,7 @@ export class CiService {
             commandId: `${commandKey}:enqueue`, definitionId: prepared.value.id,
             expectedRevision: prepared.value.revision,
             ...(agent ? { placementOverride: { kind: 'prefer', hostRef: agent.hostRef } } : {}),
-          })
+          }, { initiatingAgent: scope.initiatingAgent })
           if (admitted.kind === 'retained-execution') {
             throw new DomainError('CI_QUEUE_CONFLICT', 'The CI command belongs to an earlier nonqueued execution.', 409)
           }
