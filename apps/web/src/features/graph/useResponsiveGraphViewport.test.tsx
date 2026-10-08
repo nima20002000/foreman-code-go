@@ -14,9 +14,13 @@ class FakeObserver {
 }
 
 function Harness({ flow, enabled = true }: { flow: unknown; enabled?: boolean }) {
-  const { containerRef, onInit } = useResponsiveGraphViewport({ enabled })
+  const { containerRef, onInit, onMoveStart, onManualMove } = useResponsiveGraphViewport({ enabled })
   useEffect(() => { onInit(flow as never) }, [flow, onInit])
-  return <div ref={containerRef} data-testid="canvas" />
+  return <div ref={containerRef} data-testid="canvas"
+    onWheel={(event) => onMoveStart(event.nativeEvent, { x: 10, y: 20, zoom: 0.5 })}>
+    <button onClick={onManualMove}>Zoom in</button>
+    <button onClick={() => onMoveStart(null, { x: 10, y: 20, zoom: 0.5 })}>Programmatic move</button>
+  </div>
 }
 const settle = () => act(() => { vi.advanceTimersByTime(100) })
 
@@ -48,15 +52,38 @@ describe('responsive graph viewport', () => {
     expect(flow.fitView).not.toHaveBeenCalled()
   })
 
-  it('keeps a user-panned view on height-only changes but refits on width changes', () => {
+  it('keeps a user-panned or zoomed view across height and width changes', () => {
+    const flow = make()
+    const view = render(<Harness flow={flow} />)
+    const ro = FakeObserver.all[0]!
+    act(() => ro.size(800, 600))
+    fireEvent.wheel(view.getByTestId('canvas'))
+    act(() => ro.size(800, 500)); settle()
+    expect(flow.fitView).not.toHaveBeenCalled()
+    act(() => ro.size(390, 500)); settle()
+    expect(flow.fitView).not.toHaveBeenCalled()
+  })
+
+  it('preserves a control-button zoom even if a resize fit is already pending', () => {
+    const flow = make()
+    const view = render(<Harness flow={flow} />)
+    const ro = FakeObserver.all[0]!
+    act(() => ro.size(800, 600))
+    act(() => ro.size(390, 600))
+    fireEvent.click(view.getByRole('button', { name: 'Zoom in' }))
+    settle()
+    expect(flow.fitView).not.toHaveBeenCalled()
+  })
+
+  it('refits after ordinary canvas clicks and programmatic viewport moves', () => {
     const flow = make()
     const view = render(<Harness flow={flow} />)
     const ro = FakeObserver.all[0]!
     act(() => ro.size(800, 600))
     fireEvent.pointerDown(view.getByTestId('canvas'))
-    act(() => ro.size(800, 500)); settle()
-    expect(flow.fitView).not.toHaveBeenCalled()
-    act(() => ro.size(390, 500)); settle()
+    fireEvent.click(view.getByRole('button', { name: 'Programmatic move' }))
+    act(() => ro.size(800, 500))
+    settle()
     expect(flow.fitView).toHaveBeenCalledTimes(1)
   })
 
