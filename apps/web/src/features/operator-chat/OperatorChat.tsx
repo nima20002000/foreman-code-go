@@ -23,7 +23,8 @@ import { subscribeOperatorChat, type OperatorChatConnection } from '../../shared
 import { useAccessFailureLatch } from '../../shared/api/useAccessFailureLatch'
 import { sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { chatStoragePrefix, identityEpoch } from '../../shared/api/protectedChatStorage'
-import { ActionMenu, Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
+import { Alert, Badge, Button, EmptyState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
+import { OperatorHistoryActions } from './OperatorHistoryActions'
 import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
 import { useOperatorSettings } from './useOperatorSettings'
@@ -487,12 +488,9 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
               <span className="operator-chat-title-clip"><span>{item.title ?? 'Conversation'}</span></span>
               <span className={`operator-chat-state-dot${item.needsAttention ? ' needs-attention' : ''}`} aria-label={operatorNavigationStatus(item)} />
             </Button>
-            {!(retired && item.conversationId === selectedId) ? <ActionMenu width={120} label={`Chat options: ${item.title ?? 'Conversation'}`} className="operator-chat-row-menu" items={[
-              { id: 'delete', label: 'Delete', danger: true,
-                disabled: Boolean(item.activeRequestId) || !['idle', 'error'].includes(item.turnState) || remove.isPending,
-                ...(item.activeRequestId ? { description: 'Stop the response before deleting.' } : {}),
-                onSelect: () => remove.mutate({ id: item.conversationId, title: item.title ?? 'Conversation', generation: sessionGeneration() }) },
-            ]} /> : null}
+            <OperatorHistoryActions summary={item} queryKey={detailKey(item.conversationId)}
+              enabled={!accessDenied} removing={remove.isPending}
+              onRemove={() => remove.mutate({ id: item.conversationId, title: item.title ?? 'Conversation', generation: sessionGeneration() })} />
           </div>)}</nav>
           {list.data?.hasMore ? <Button size="sm" variant="ghost" className="operator-chat-load-more" loading={list.isFetching} loadingLabel="Loading…" onClick={loadOlderChats}>Load older chats</Button> : null}
         </aside>

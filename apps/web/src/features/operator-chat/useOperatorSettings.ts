@@ -10,7 +10,8 @@ export function useOperatorSettings(enabled: boolean) {
   const form = useRevisionedForm<AgentDefaults>(query.data, 'operator-chat:defaults')
   const operator = form.draft?.operator
   const catalog = useNativeHarnessOptions('claude', enabled && operator?.harness.harness === 'claude')
-  const settings = operator ? operatorChatSettings(operator.harness, operator.showThinking) : undefined
+  const settings = operator && operator.harness.harness !== 'opencode'
+    ? operatorChatSettings(operator.harness, operator.showThinking) : undefined
   const save = () => {
     // Older failed picker drafts may retain an effort that the current exact
     // model does not expose. Repair only an editable draft, never a frozen retry.

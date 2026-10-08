@@ -580,9 +580,39 @@ it('keeps historical OpenCode messages visible with no composer or response cont
     settings: { harness: 'opencode', model: 'provider/saved-model', variant: 'saved-variant', showThinking: true } })
   api.get.mockResolvedValue(state)
   chat()
-  expect(await screen.findByText('Retired harness (OpenCode): read-only')).toBeVisible()
+  expect((await screen.findAllByText('Retired harness (OpenCode): read-only'))[0]).toBeVisible()
   expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Send message' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /Agent settings:/ })).not.toBeInTheDocument()
+  expect(api.send).not.toHaveBeenCalled()
+})
+
+it('keeps an unselected retired conversation read-only beside a supported conversation', async () => {
+  const supported = operatorState({ turnState: 'idle', activeRequestId: null })
+  const retired = operatorState({ turnState: 'idle', activeRequestId: null,
+    conversation: { ...supported.conversation, id: 'retired-chat', title: 'Historical chat' },
+    settings: { harness: 'opencode', model: 'provider/saved-model', variant: 'saved-variant', showThinking: true } })
+  api.list.mockResolvedValue({ conversations: [summarizeOperatorConversation(supported), summarizeOperatorConversation(retired)] })
+  api.get.mockImplementation(async id => id === 'retired-chat' ? retired : supported)
+  chat()
+  expect(await screen.findByRole('textbox', { name: 'Message' })).toBeVisible()
+  expect(await screen.findByText('Retired harness (OpenCode): read-only')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Chat options: Historical chat' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Chat options: First conversation' }))
+  expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeEnabled()
+  expect(api.remove).not.toHaveBeenCalled()
+})
+
+it('reads a historical chat when the saved Operator defaults also use the retired harness', async () => {
+  server.use(http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 1, versionId: null,
+    value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator,
+      harness: { harness: 'opencode', model: 'provider/saved-model', variant: '', nativeAgent: 'build',
+        thinking: true, autoApprove: false } } } })))
+  api.get.mockResolvedValue(operatorState({ turnState: 'idle', activeRequestId: null,
+    settings: { harness: 'opencode', model: 'provider/saved-model', variant: '', showThinking: true } }))
+  chat()
+  expect((await screen.findAllByText('Retired harness (OpenCode): read-only'))[0]).toBeVisible()
+  expect(screen.getByRole('region', { name: 'Operator transcript' })).toBeVisible()
+  expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
   expect(api.send).not.toHaveBeenCalled()
 })
