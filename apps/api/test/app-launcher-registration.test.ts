@@ -32,7 +32,7 @@ async function fixture() {
 }
 
 it.each(['codex'] as const)(
-  '%s registrations survive a stale metadata writer and recognition in a new process', async harness => {
+  '%s registrations survive a stale metadata writer and recognition in a new process', async () => {
     const { directory, launcher, runtimes } = await fixture()
     const alias = join(directory, 'saved-mcp')
     await symlink(dirname(launcher), alias)
@@ -49,7 +49,7 @@ it.each(['codex'] as const)(
       version: 1, executables: [{ path: process.execPath, realpath: process.execPath }],
     } }, runtimes[1]!)
     expect(isAppLauncher(entry)).toBe(true)
-    expect(await runLauncherProcess({ kind: 'recognize', launcher, harness, entry })).toBe('true')
+    expect(await runLauncherProcess({ kind: 'recognize', launcher,  entry })).toBe('true')
   }, 30_000,
 )
 
@@ -68,7 +68,7 @@ it('merges stale registrations and simultaneous installations through both direc
   ])
   for (const runtime of runtimes) {
     const entry = { command: runtime, args: [savedLauncher], env_vars: [APP_MCP_TOKEN] }
-    expect(await runLauncherProcess({ kind: 'recognize', launcher, harness: 'codex', entry })).toBe('true')
+    expect(await runLauncherProcess({ kind: 'recognize', launcher,  entry })).toBe('true')
   }
   // A caller may hold a snapshot from before the other installations completed.
   await writeLauncherInstallation(launcher, { version: 1, executables: [] })
@@ -100,7 +100,7 @@ it('waits for another process and continues after its lock owner crashes', async
     await exited
     await installation
     const entry = { command: runtimes[0]!, args: [launcher], env_vars: [APP_MCP_TOKEN] }
-    expect(await runLauncherProcess({ kind: 'recognize', launcher, harness: 'codex', entry })).toBe('true')
+    expect(await runLauncherProcess({ kind: 'recognize', launcher,  entry })).toBe('true')
   } finally {
     if (owner.exitCode === null && owner.signalCode === null) {
       const exited = once(owner, 'exit')

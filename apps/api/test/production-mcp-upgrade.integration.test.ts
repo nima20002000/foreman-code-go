@@ -203,7 +203,7 @@ it.each(cases)(
     if (change === 'concurrent-writers') {
       for (const executable of [developmentRuntime, concurrentRuntime]) {
         const installedEntry = nativeConnection({ ...connection, executable })
-        expect(await runLauncherProcess({ kind: 'recognize', launcher: shared, harness, entry: installedEntry }))
+        expect(await runLauncherProcess({ kind: 'recognize', launcher: shared,  entry: installedEntry }))
           .toBe('true')
       }
     }
