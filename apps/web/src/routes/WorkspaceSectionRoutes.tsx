@@ -200,7 +200,7 @@ export function GlobalSettingsRouteEntry() {
               <li>
                 <Card className="settings-card">
                   <Link to="/settings/general" className="settings-card-open">
-                    <SettingsCardBody icon="settings" title="General" description="Application preferences and chat retention" />
+                    <SettingsCardBody icon="settings" title="General" description="Appearance, sync across computers and chat retention" />
                   </Link>
                 </Card>
               </li>

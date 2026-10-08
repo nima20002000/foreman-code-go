@@ -18,6 +18,8 @@ vi.mock('../../shared/api/harnessSettings', () => ({
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useAutomaticHarnessCheck: () => ({ current: false, result: { isFetching: false, isSuccess: false, isError: false } }),
   useHarnessSessionEpoch: () => 0,
+  useNativeMcpPlans: () => ({ data: { items: [] } }),
+  useApplyManagedMcpChange: () => ({ operation: null, start: vi.fn(), retry: vi.fn(), isPending: false }),
   useClaudeSetupOptions: () => ({ data: { graphqlMcp: { type: 'http', url: 'http://127.0.0.1:3999/mcp' } }, isError: false }),
   useNativeMcpServers: () => ({ data: undefined }),
 }))

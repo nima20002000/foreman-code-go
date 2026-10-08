@@ -8,7 +8,8 @@ import { Alert, Button, Dialog, LoadingState, Switch } from '../../shared/ui/noc
 import { useComputerUi } from './computerUiStore'
 
 export function ComputerSyncControls({ target, name }: { target: DeviceProvisioningTarget; name: string }) {
-  const { status, update, change, retry, uncertain, refresh } = useComputerSync(target)
+  const state = useComputerSync(target)
+  const { status, update } = state
   const selected = useComputerUi(state => state.sync)
   const openSync = useComputerUi(state => state.openSync)
   const close = useComputerUi(state => state.closeSync)
@@ -38,6 +39,19 @@ export function ComputerSyncControls({ target, name }: { target: DeviceProvision
       onClick={() => openSync(computerKey(target))}><RefreshCw size={13} aria-hidden="true" />{summary}</Button>
     <Dialog open={open} title={`Shared files on ${name}`} size="md"
       dismissible={!update.isPending} onOpenChange={value => { if (!value) close() }}>
+      <ComputerSyncContent state={state} />
+    </Dialog>
+  </>
+}
+
+export function ComputerSyncPanel({ target }: { target: DeviceProvisioningTarget }) {
+  const state = useComputerSync(target)
+  return <ComputerSyncContent state={state} />
+}
+
+function ComputerSyncContent({ state }: { state: ReturnType<typeof useComputerSync> }) {
+  const { status, update, change, retry, uncertain, refresh } = state
+  return <>
       <p>Syncthing shares local workspace folders over Tailscale. Main connects the computers.
         Turning sync off keeps local files. Turning it off on Main stops sharing that workspace.</p>
       {status.isPending && <LoadingState label="Reading sync status…" />}
@@ -62,6 +76,5 @@ export function ComputerSyncControls({ target, name }: { target: DeviceProvision
         </>}
       </section>)}
       {status.data && !status.data.folders.length && <p>Create a workspace to share files.</p>}
-    </Dialog>
   </>
 }

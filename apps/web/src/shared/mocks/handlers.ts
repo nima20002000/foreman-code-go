@@ -9,6 +9,8 @@ import type { z } from 'zod'
 import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@foreman-code/contracts/wave25'
 import {
   AgentDefaultsUpdateInputSchema,
+  GeneralSettingsUpdateInputSchema,
+  type ManagedGeneralSettings,
   HarnessConfigurationCheckInputSchema,
   HarnessDefaultsUpdateInputSchema,
   WorkflowDefaultsUpdateInputSchema,
@@ -45,6 +47,7 @@ const managedWorkspaceDescriptions = new Map<string, string | undefined>()
 const managedWorkspaceArchives = new Set<string>()
 const managedWorkspaces = new Map<string, ManagedWorkspace>()
 let managedScenarioRevision = getMockScenarioRevision()
+let generalSettings: ManagedGeneralSettings = { value: { theme: 'dark' }, revision: 0, versionId: null }
 
 function syncManagedFixtures() {
   const revision = getMockScenarioRevision()
@@ -58,6 +61,7 @@ function syncManagedFixtures() {
 }
 
 export function resetTestFixtures() {
+  generalSettings = { value: { theme: 'dark' }, revision: 0, versionId: null }
   resetAgentChatFixtures()
   resetExistingMockFixtures()
   resetSettingsExperienceFixtures()
@@ -356,6 +360,15 @@ export const handlers: RequestHandler[] = [
       : apiError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409, { currentRevision: getMockHarnessCatalog()[0]?.defaultsRevision ?? 0 })
   }),
   http.get('/api/management/settings/agents', () => HttpResponse.json(getMockAgentDefaults())),
+  http.get('/api/management/settings/general', () => HttpResponse.json(generalSettings)),
+  http.put('/api/management/settings/general', async ({ request }) => {
+    const input = GeneralSettingsUpdateInputSchema.parse(await request.json())
+    if (input.expectedRevision !== generalSettings.revision) {
+      return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'General settings changed.' } }, { status: 409 })
+    }
+    generalSettings = { value: input.value, revision: generalSettings.revision + 1, versionId: crypto.randomUUID() }
+    return HttpResponse.json({ value: generalSettings, replayed: false })
+  }),
   http.put('/api/management/settings/agents', async ({ request }) => {
     const parsed = AgentDefaultsUpdateInputSchema.safeParse(await readJson(request))
     if (!parsed.success) return apiError('INVALID_AGENT_DEFAULTS', 'Review the Agent defaults.', 400)

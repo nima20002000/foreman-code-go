@@ -12,6 +12,7 @@ export * from "./harnessSettings.js";
 export * from './workerExecution.js'
 export * from "./codexPlugins.js";
 export * from "./settingsExperience.js";
+export * from './generalSettings.js';
 
 import {
   AgentSchema,
@@ -620,6 +621,7 @@ export const OperatorToolNameSchema = z.enum([
   "operator_chat_send", "operator_chat_cancel", "operator_chat_respond", "operator_handoff_history_get",
   "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",
   "workspace_defaults_get",
+  'general_settings_get', 'general_settings_update',
   'worker_execution_settings_get',
   "workspace_defaults_update",
   "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_managed_request", "harness_mcp_change_get",

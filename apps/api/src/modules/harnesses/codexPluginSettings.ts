@@ -13,6 +13,7 @@ import { DomainError } from '../errors.js'
 import type { CodexPluginAdapter, CodexPluginCatalog, CodexPluginMutation } from './codexPlugins.js'
 import { pluginConfigurationHas, unrelatedPluginConfiguration } from './codexPluginCatalog.js'
 import { PluginReadQueue } from './pluginReadQueue.js'
+import { QualificationCache } from './qualificationCache.js'
 import { assertNoUnresolvedMcpWrites, assertNoUnresolvedPluginWrites, lockNativeConfigurationFile, NATIVE_SETTINGS_LOCK } from './nativeSettingsWrites.js'
 
 const operation = 'codex.plugin.change'
@@ -36,6 +37,7 @@ const safeCode = (error: unknown) => error instanceof DomainError ? error.code :
 export class CodexPluginSettingsService {
   private readonly stopping = new AbortController()
   private readonly queue = new PluginReadQueue()
+  private readonly catalogs = new QualificationCache<CodexPluginCatalog>(30_000, 2, Date.now, true)
   constructor(private readonly pool: pg.Pool, private readonly adapter: CodexPluginAdapter,
     private readonly closeProcesses: () => Promise<unknown> = async () => undefined) {}
   private signal(request?: AbortSignal) {
@@ -51,8 +53,12 @@ export class CodexPluginSettingsService {
     requireAuthorization(current, 'harnesses:read')
   }
   private catalog(signal: AbortSignal) {
-    return this.queue.run('catalog', (active) => this.adapter.list(active), signal)
+    // Reads reuse a recent catalog and refresh it in the background; writes read natively and clear it.
+    return this.catalogs.get('catalog', () => this.queue.run('catalog', (active) => this.adapter.list(active), signal))
+      .catch((error: unknown) => { this.catalogs.forget('catalog'); throw error })
   }
+  /** Fill the catalog before Settings opens. */
+  async warmup(): Promise<void> { await this.catalog(this.signal()) }
   async list(principal: ManagementPrincipal, raw: CodexPluginListInput, request?: AbortSignal) {
     requireAuthorization(principal, 'harnesses:read')
     const input = CodexPluginListInputSchema.parse(raw)
@@ -133,6 +139,13 @@ export class CodexPluginSettingsService {
     } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
   }
   change(principal: ManagementPrincipal, raw: CodexPluginChangeInput) {
+    return this.afterWrite(this.changeNative(principal, raw))
+  }
+  private afterWrite<T>(write: Promise<T>): Promise<T> {
+    // Settled, failed or uncertain, a write may have changed native state.
+    return write.finally(() => this.catalogs.clear())
+  }
+  private changeNative(principal: ManagementPrincipal, raw: CodexPluginChangeInput) {
     requireAuthorization(principal, 'harnesses:update')
     requireAuthorization(principal, 'harnesses:read')
     const input = CodexPluginChangeInputSchema.parse(raw)
@@ -214,6 +227,9 @@ export class CodexPluginSettingsService {
       && (recovery.mutationVersion === null || installed.version === recovery.mutationVersion))
   }
   reconcile(principal: ManagementPrincipal, raw: CodexPluginReconcileInput) {
+    return this.afterWrite(this.reconcileNative(principal, raw))
+  }
+  private reconcileNative(principal: ManagementPrincipal, raw: CodexPluginReconcileInput) {
     requireAuthorization(principal, 'harnesses:update')
     requireAuthorization(principal, 'harnesses:read')
     const input = CodexPluginReconcileInputSchema.parse(raw)

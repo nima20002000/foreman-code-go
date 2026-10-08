@@ -1,8 +1,8 @@
 import { createRef, useState } from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
-import { ResourceCard, TrashIconButton } from './ResourceCard'
+import { ResourceActionsMenu, ResourceCard, TrashIconButton } from './ResourceCard'
 
 it('keeps opening and actions separate, including keyboard activation and supplied link attributes', async () => {
   const user = userEvent.setup()
@@ -90,4 +90,27 @@ it('exposes protection and disables deletion with an accessible reason and calle
   expect(screen.getByRole('img', { name: 'Protected folder. In use by a workspace' })).toHaveAttribute('title', 'In use by a workspace')
   await userEvent.click(action)
   expect(remove).not.toHaveBeenCalled()
+})
+
+it('gives every card the same actions menu that opens, closes on Escape and outside presses, and respects disabled', async () => {
+  const user = userEvent.setup()
+  function Harness({ disabled = false }: { disabled?: boolean }) {
+    const [open, setOpen] = useState(false)
+    return <><ResourceCard name="Website" icon="folder" actions={<ResourceActionsMenu name="Website" open={open} onOpenChange={setOpen} disabled={disabled}>
+      <button type="button">Rename</button>
+    </ResourceActionsMenu>} /><p>Outside</p></>
+  }
+  const { unmount } = render(<Harness />)
+  const trigger = screen.getByRole('button', { name: 'Open actions for Website' })
+  await user.click(trigger)
+  expect(trigger).toHaveAttribute('aria-expanded', 'true')
+  expect(within(screen.getByRole('dialog', { name: 'Website actions' })).getByRole('button', { name: 'Rename' })).toBeVisible()
+  await user.keyboard('{Escape}')
+  expect(screen.queryByRole('dialog', { name: 'Website actions' })).not.toBeInTheDocument()
+  await user.click(trigger)
+  await user.click(screen.getByText('Outside'))
+  expect(screen.queryByRole('dialog', { name: 'Website actions' })).not.toBeInTheDocument()
+  unmount()
+  render(<Harness disabled />)
+  expect(screen.getByRole('button', { name: 'Open actions for Website' })).toBeDisabled()
 })

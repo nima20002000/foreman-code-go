@@ -8,12 +8,14 @@ import { ApprovalInbox } from '../features/approvals'
 import { useAgentDefaultsQuery } from '../shared/api/query'
 import { useAccessFailureLatch } from '../shared/api/useAccessFailureLatch'
 import { sessionIsSwitching } from '../shared/api/sessionBoundary'
+import { useSyncedTheme } from '../features/theme/useSyncedTheme'
 
 export function RootShell() {
   return <AppConnectionBoundary><AppNavigationHistoryProvider><UnsavedChangesProvider><LocalShell /></UnsavedChangesProvider></AppNavigationHistoryProvider></AppConnectionBoundary>
 }
 
 function LocalShell() {
+  useSyncedTheme()
   const defaults = useAgentDefaultsQuery()
   // Query retains the last confirmed value during transient refresh failures.
   const denied = useAccessFailureLatch(defaults)

@@ -157,9 +157,24 @@ async function macClient(remoteAddress: string, remotePort: number,
   return !(await Promise.all([...pids].map(pid => agentAncestor(pid, parents)))).some(Boolean)
 }
 
+type ClientSocket = Pick<Socket, 'remoteAddress' | 'remotePort' | 'localAddress' | 'localPort'>
+// A connected socket keeps its endpoints and owning process boundary, so keep-alive
+// requests reuse its attribution instead of re-running `ss` and /proc walks.
+const attributedSockets = new WeakMap<ClientSocket, { endpoints: string; human: Promise<boolean> }>()
+
 /** Attribute the socket and its process ancestry through the OS, never client headers. */
-export async function localHumanClient(socket: Pick<Socket,
-  'remoteAddress' | 'remotePort' | 'localAddress' | 'localPort'>): Promise<boolean> {
+export function localHumanClient(socket: ClientSocket): Promise<boolean> {
+  const endpoints = `${socket.remoteAddress} ${socket.remotePort} ${socket.localAddress} ${socket.localPort}`
+  const known = attributedSockets.get(socket)
+  if (known?.endpoints === endpoints) return known.human
+  const human = attributeClient(socket)
+  attributedSockets.set(socket, { endpoints, human })
+  // Failed attribution is not a decision; the next request inspects again.
+  human.catch(() => { if (attributedSockets.get(socket)?.human === human) attributedSockets.delete(socket) })
+  return human
+}
+
+async function attributeClient(socket: ClientSocket): Promise<boolean> {
   const { remoteAddress, remotePort, localAddress, localPort } = socket
   if (!remoteAddress || !localAddress
     || !loopbackAddresses.has(remoteAddress) || !loopbackAddresses.has(localAddress)

@@ -12,6 +12,8 @@ import { createInstalledCodexQualificationReader, createInstalledHarnessQualific
 import type { InstalledCodexInspection } from '../src/modules/harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
+import { agentInstructionBundle } from '../src/modules/skills/instructions.js'
+import { skillHash } from '../src/modules/skills/catalog.js'
 
 const mount = vi.hoisted(() => ({ revision: '', manifest: {} as unknown,
   bootId: '44444444-4444-4444-8444-444444444444',
@@ -116,6 +118,20 @@ function fixture(options: {
 }
 
 describe('actual Main and installed Codex qualification read capability', () => {
+  it.each(['codex', 'opencode'] as const)('uses Main’s saved %s settings, prompts and skills without an offline copy', async harness => {
+    const f = fixture({ harness })
+    f.facts.configuration.prompt = { system: 'Instructions saved on Main.' }
+    f.facts.configuration.instructionDelivery = 'native-v1'
+    f.facts.configuration.assignedSkills = [{ skillId: 'shared-skill', version: '2' }]
+    f.facts.configuration.resolvedSkills = [{ skillId: 'shared-skill', version: '2', name: 'Shared skill',
+      instructions: 'Skill text saved on Main.', contentHash: skillHash('Skill text saved on Main.') }]
+    const accepted = (await f.reader.capture()).facts.configuration
+    expect(accepted.harness).toEqual(f.facts.harness.override.configuration)
+    expect(agentInstructionBundle(accepted)?.text).toContain('Instructions saved on Main.')
+    expect(agentInstructionBundle(accepted)?.text).toContain('Skill text saved on Main.')
+    f.readFacts.mockRejectedValueOnce(new Error('Main disconnected'))
+    await expect(f.reader.capture()).rejects.toThrow('Main disconnected')
+  })
   it('accepts producer-shaped identity-qualified proof through the shipped worker mount and keeps exact revision checks', async () => {
     const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'graphql-codex-revision-'))
     try {
