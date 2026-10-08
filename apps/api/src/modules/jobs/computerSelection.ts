@@ -70,7 +70,7 @@ export function compatibleJobComputer(candidate: JobComputerCandidate, request: 
     ...('verification' in spec ? { verification: spec.verification } : {}) })
   if (canonical(common(candidate.spec)) !== canonical(common(request))) return false
   if (!isAutoJobSpecRecord(request)) return canonical(candidate.spec) === canonical(request)
-  return matchesRuntimePolicy(request, candidate.profile)
+  return matchesRuntimePolicy(request, candidate.profile, candidate.spec.policy)
     && canonical(jobRuntimeProfileLimits(candidate.profile)) === canonical(request.limits)
 }
 /** Local first: a preferred computer (an Agent's own) leads; the rest keep primary/backup and priority order. */

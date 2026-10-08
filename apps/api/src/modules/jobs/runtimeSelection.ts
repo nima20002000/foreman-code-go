@@ -3,8 +3,9 @@ import type { JobRuntimeProfileRecord } from '@foreman-code/contracts/job-verifi
 import { jobRuntimeProfilePolicy } from '@foreman-code/contracts/job-verification-runtime'
 import { canonical } from './digest.js'
 
-export function matchesRuntimePolicy(spec: JobDefinitionSpecRecord, profile: JobRuntimeProfileRecord): boolean {
-  const policy = jobPolicyRequirementsRecord(jobRuntimeProfilePolicy(profile))
+export function matchesRuntimePolicy(spec: JobDefinitionSpecRecord, profile: JobRuntimeProfileRecord,
+  runtimePolicy = jobRuntimeProfilePolicy(profile)): boolean {
+  const policy = jobPolicyRequirementsRecord(runtimePolicy)
   if ('runtimeSelection' in spec && spec.runtimeSelection === 'qualified-profile' && profile.schemaVersion === 2
     && profile.approvalConfig.review && profile.status !== 'revoked') {
     const { imageDigest: requestedImage, ...requested } = spec.policy
