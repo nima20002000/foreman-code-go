@@ -5,8 +5,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { createTestRoot, removeTestRoot, requireTestServerUrl, testAdminUrl } from './test-resources.mjs'
-import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationReport, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, mergeDurations, options, orderByDuration, parseVitestCases, readDurations, reservedIntegrationShards, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren, vitestCommand, writeDurations } from './test-integration.mjs'
-import { integrationVitestArguments } from './test-integration.mjs'
+import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases,
+  fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationReport,
+  integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, integrationVitestArguments,
+  isIntegrationTestPath, isRegularIntegrationFile, mergeDurations, options, orderByDuration, parseVitestCases,
+  partitionIntegrationFiles, readDurations, reservedIntegrationShards, scheduleFiles, selectFiles, selectExactFiles,
+  signalOwnedChildren, vitestCommand, writeDurations } from './test-integration.mjs'
 
 test('diagnostic case selection preserves file and worker limits and passes the pattern as one argument', () => {
   const file = 'apps/api/test/remote-review-production.integration.test.ts'
