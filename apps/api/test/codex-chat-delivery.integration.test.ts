@@ -81,7 +81,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       ] }] })
     const deniedAccess = await access.issue({ name: 'Other workspace', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ scope: { workspaceIds: ['other-workspace'] },
-        actions: ['agent_chat:read', 'agent_chat:write'] }] })
+        actions: ['agent_chat:read', 'agent_chat:write', 'agent_chat:respond'] }] })
     const readerAccess = await access.issue({ name: 'Delivery reader', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ scope: {}, actions: ['operator_chat:read'] }] })
     writerToken = issued.token
@@ -225,9 +225,9 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         const args = surface === 'agent'
           ? { workspaceId, conversationId: id, requestId: 'answer-control', ...choice }
           : { conversationId: id, request: { commandId: 'answer-control', requestId: 'question-turn', ...choice } }
-        const refused = await (surface === 'agent' ? denied : reader).callTool({ name: tool, arguments: args })
-          .catch(() => ({ isError: true }))
-        assert.equal(refused.isError, true)
+        await expectMcpAccessDenied((surface === 'agent' ? denied : reader).callTool({
+          name: tool, arguments: args,
+        }))
         const accepted = await writer.callTool({ name: tool, arguments: args })
         assert.notEqual(accepted.isError, true, JSON.stringify(accepted))
         const summary = (current: AgentChatState | OperatorConversationState) => {
