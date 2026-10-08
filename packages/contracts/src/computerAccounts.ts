@@ -71,9 +71,10 @@ export const DriveComputerStateSchema = z.object({
 }).strict()
 export const DriveLoginStateSchema = z.object({
   loginId: z.uuid().nullable(),
-  state: z.enum(['waiting', 'connecting', 'connected', 'disconnected', 'failed', 'expired']),
-  /** Google sign-in through rclone on Main: open it in a browser on Main. */
+  state: z.enum(['waiting', 'connecting', 'connected', 'disconnected', 'failed', 'expired', 'cancelled']),
+  /** Reserved for a browser-accessible sign-in URL; remote authorization uses the command below. */
   authorizationUrl: z.url().nullable(),
+  authorizationCommand: z.string().max(1024).nullable(),
   expiresAt: z.string().datetime().nullable(),
   account: z.string().max(320).nullable(),
   mountPath: z.string().max(1024).nullable(),
@@ -81,6 +82,9 @@ export const DriveLoginStateSchema = z.object({
 }).strict()
 export const ComputerDriveInputSchema = ComputerGitHubInputSchema
 export const ComputerDriveStatusInputSchema = ComputerGitHubStatusInputSchema
+export const ComputerDriveCompleteInputSchema = ComputerDriveStatusInputSchema.extend({
+  token: z.string().min(2).max(8192),
+}).strict()
 export type DriveComputerRequest = z.infer<typeof DriveComputerRequestSchema>
 export type DriveComputerState = z.infer<typeof DriveComputerStateSchema>
 export type DriveLoginState = z.infer<typeof DriveLoginStateSchema>

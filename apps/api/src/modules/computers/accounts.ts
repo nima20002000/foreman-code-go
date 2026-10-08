@@ -67,6 +67,10 @@ export class ComputerAccountsService {
     return drive?.details.find(detail => detail.startsWith('mount:'))?.slice('mount:'.length) ?? null
   }
 
+  invalidate(target: DeviceProvisioningTarget): void {
+    this.cache.delete(`${target.applicationInstallationId}:${target.authorizationRevision ?? 0}`)
+  }
+
   private read(target: DeviceProvisioningTarget, refresh: boolean): Promise<ComputerAccounts | null> {
     const key = `${target.applicationInstallationId}:${target.authorizationRevision ?? 0}`
     const cached = this.cache.get(key)

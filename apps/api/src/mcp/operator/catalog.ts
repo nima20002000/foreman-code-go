@@ -37,6 +37,7 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'computer_github_login_status', action: 'settings:update' },
   { name: 'computer_github_logout', action: 'settings:update' },
   { name: 'computer_drive_connect_start', action: 'settings:update' },
+  { name: 'computer_drive_connect_complete', action: 'settings:update' },
   { name: 'computer_drive_connect_status', action: 'settings:update' },
   { name: 'computer_drive_disconnect', action: 'settings:update' },
   { name: 'build_computer_get', action: 'settings:read' },
