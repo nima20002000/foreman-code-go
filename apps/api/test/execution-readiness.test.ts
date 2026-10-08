@@ -43,7 +43,8 @@ describe('execution readiness', () => {
   })
   it('does not qualify a different Operator harness or configuration pin', async () => {
     const inspect = vi.fn(async () => ({ configurationVersionId: 'current-config', defaultsRevision: 4,
-      harness: { harness: 'codex' as const, model: 'unit/model', reasoningEffort: 'medium' as const, sandbox: 'read-only' as const } }))
+      harness: { harness: 'codex' as const, model: 'unit/model', reasoningEffort: 'medium' as const,
+        sandbox: 'read-only' as const, serviceTier: 'standard' as const } }))
     const service = new ExecutionReadinessService(new NativeRollout({}), catalog(), inspect)
     expect(await service.get(principal, 'claude', 'operator-configuration')).toMatchObject({ status: 'blocked',
       reason: { code: 'OPERATOR_CONFIGURATION_CONFLICT' } })
