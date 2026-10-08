@@ -11,16 +11,21 @@ export function SettingsOverview({ title, description, children }: { title: stri
     <div className="settings-choice-grid">{children}</div>
   </section>
 }
-export function SettingsChoice({ title, description, summary, onSelect, draftStatus, icon = 'bot' }: {
+export function SettingsChoice({ title, description, summary, onSelect, draftStatus, icon = 'bot', footer }: {
   title: string; description: string; summary: readonly { label: string; value: string }[];
   onSelect(): void; draftStatus?: string; icon?: 'bot' | 'settings';
+  /** One-click actions shown under the summary, outside the card's open button. */
+  footer?: ReactNode;
 }) {
-  return <button type="button" className="settings-choice" onClick={onSelect} aria-label={`Edit ${title} defaults`}>
-    <span className="settings-choice-heading"><span className="settings-choice-icon"><Icon name={icon} size={21} /></span>
-      <span><strong>{title}</strong><small>{description}</small></span><Icon name="chevron" size={17} /></span>
-    <span className="settings-choice-summary">{summary.map((item) => <span className="settings-summary-row" key={item.label}><span>{item.label}</span><strong title={item.value}>{item.value}</strong></span>)}</span>
-    {draftStatus ? <span className="settings-choice-action"><span className="settings-draft-badge">{draftStatus}</span></span> : null}
-  </button>
+  return <div className="settings-choice">
+    <button type="button" className="settings-choice-open" onClick={onSelect} aria-label={`Edit ${title} defaults`}>
+      <span className="settings-choice-heading"><span className="settings-choice-icon"><Icon name={icon} size={21} /></span>
+        <span><strong>{title}</strong><small>{description}</small></span><Icon name="chevron" size={17} /></span>
+      <span className="settings-choice-summary">{summary.map((item) => <span className="settings-summary-row" key={item.label}><span>{item.label}</span><strong title={item.value}>{item.value}</strong></span>)}</span>
+      {draftStatus ? <span className="settings-choice-action"><span className="settings-draft-badge">{draftStatus}</span></span> : null}
+    </button>
+    {footer ? <div className="settings-choice-footer">{footer}</div> : null}
+  </div>
 }
 
 /** One page heading, one section navigation, one content surface. No card-inside-card editor. */

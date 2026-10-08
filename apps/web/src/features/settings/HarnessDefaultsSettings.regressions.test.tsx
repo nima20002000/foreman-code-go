@@ -23,6 +23,9 @@ vi.mock('../../shared/api/harnessSettings', () => ({
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useAutomaticHarnessCheck: () => ({ current: true, result: { isFetching: false, isSuccess: true, isError: false } }),
   useHarnessSessionEpoch: () => 0,
+  useNativeMcpServers: () => ({ isPending: false, isError: false, data: { revision: 'mcp-revision', presets: { graphql: 'installed', linear: 'missing' } }, refetch: vi.fn() }),
+  useNativeMcpPlans: () => ({ data: { items: [] } }),
+  useApplyManagedMcpChange: () => ({ operation: null, start: vi.fn(), retry: vi.fn(), isPending: false }),
   useClaudeSetupOptions: () => ({ data: {}, isError: false, refetch: vi.fn() }),
 }))
 vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>Folder picker</div> }))

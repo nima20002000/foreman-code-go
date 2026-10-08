@@ -13,6 +13,7 @@ import { useRevisionedForm, useSettingsDraftStatus } from './revisionedForm'
 import { SettingsChoice, SettingsEditorLayout, SettingsOverview } from './SettingsEditorLayout'
 import { harnessNames, harnessSummary } from './settingsPresentation'
 import { CodexPluginManager } from './CodexPluginManager'
+import { OperatorMcpStatus } from './OperatorMcpStatus'
 import { useClaudeSetupOptions } from '../../shared/api/harnessSettings'
 
 type Harness = AgentHarness
@@ -56,8 +57,8 @@ function useProviderDefaults() {
     : undefined
   return { incoming, query: catalogQuery, unavailable }
 }
-function ProviderCard({ harness, value, onSelect, defaultError }: {
-  harness: Harness; value: HarnessDefaults; onSelect(): void; defaultError: string | undefined
+function ProviderCard({ harness, value, revision, onSelect, defaultError }: {
+  harness: Harness; value: HarnessDefaults; revision: number; onSelect(): void; defaultError: string | undefined
 }) {
   const status = useSettingsDraftStatus(`settings:harnesses:${harness}`)
   const summary = value[harness] ? harnessSummary(value[harness]!).filter((item) => item.label !== 'Harness')
@@ -65,7 +66,8 @@ function ProviderCard({ harness, value, onSelect, defaultError }: {
   return <SettingsChoice icon="settings" title={harnessNames[harness]}
     description={harness === 'codex' ? 'Native app-server' : harness === 'opencode' ? 'Native server' : 'Host-local Claude profile'}
     summary={defaultError ? [{ label: 'Default model', value: 'Unavailable' }] : summary}
-    draftStatus={status} onSelect={onSelect} />
+    draftStatus={status} onSelect={onSelect}
+    footer={harness === 'opencode' ? undefined : <OperatorMcpStatus harness={harness} defaults={value} revision={revision} />} />
 }
 export function HarnessDefaultsSettings({ selectedHarness, section: selectedSection, onSelectHarness, onSectionChange }: {
   selectedHarness?: Harness; section?: HarnessSettingsSection;
@@ -83,7 +85,7 @@ export function HarnessDefaultsSettings({ selectedHarness, section: selectedSect
     description={query.error?.message ?? 'The server returned an incomplete provider catalog.'} onRetry={() => void query.refetch()} />
   if (!incoming) return <LoadingState label="Loading harness defaults…" />
   return <SettingsOverview title="Harnesses" description="Choose a provider to edit its preset or manage its connections.">
-    {(['codex', 'opencode', 'claude'] as const).map((item) => <ProviderCard key={item} harness={item} value={incoming.value}
+    {(['codex', 'opencode', 'claude'] as const).map((item) => <ProviderCard key={item} harness={item} value={incoming.value} revision={incoming.revision}
       defaultError={unavailable[item]} onSelect={() => choose(item)} />)}
   </SettingsOverview>
 }
