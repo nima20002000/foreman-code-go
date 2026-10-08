@@ -920,6 +920,23 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           }
           return {payload:await physical.ack(frame)}
         }
+        // A retained process must be observable before its App binding can be restored.
+        let reviewerObservationExpiresAt: string | undefined
+        if (frame.method === 'status' || frame.method === 'reattach') {
+          const original = await log.status(frame.intent.operationId)
+          if (original.status === 'known' && original.receipt.retainedReviewer
+            && !original.receipt.terminal && !original.receipt.stopFence) {
+            const resident = operation(frame.intent)
+            if (!resident.native || resident.session?.nativeSessionId !== original.receipt.native?.sessionId
+              || matchingOriginalRegistryLaunch(registry, resident.native.launch).lifecycle !== 'active') {
+              unavailable('original_reviewer_observation_owner_missing')
+            }
+            const policy = await workerReviewerAuthorizer(forBinding(context.binding))(frame.intent, frame.placement)
+            if (!policy) unavailable('original_reviewer_observation_denied')
+            const renewed = await log.renewReviewer(frame.intent.operationId, policy!)
+            reviewerObservationExpiresAt = renewed.retainedReviewer!.expiresAt
+          }
+        }
         const response=await createRemoteExecutionHandler(host)(frame)
         const value=response&&typeof response==='object'?response as {session?:NativeSessionReference;history?:NativeHistory;status?:unknown}:undefined
         const status=value?.status&&typeof value.status==='object'?value.status as {status?:string;receipt?:unknown}:response as {status?:string;receipt?:unknown}
@@ -929,16 +946,17 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
             const authority = await workerExecutionAuthorizer(forBinding(context.binding))(frame.intent, frame.placement,
               receipt.stopFence ? 'stop' : 'read')
             const cleanupOnly = authority?.cleanupOnly === true
-            if (!cleanupOnly && !receipt.stopFence && !resident.physicalClosure) {
+            if (!reviewerObservationExpiresAt && !cleanupOnly && !receipt.stopFence && !resident.physicalClosure) {
               if (!resident.mcp) unavailable('original_main_lease_required')
               resident.leaseExpiresAt = await resident.mcp!.refreshLease()
-            } else if (!cleanupOnly && !receipt.stopFence && Date.parse(resident.leaseExpiresAt) <= Date.now()) {
+            } else if (!reviewerObservationExpiresAt && !cleanupOnly && !receipt.stopFence
+              && Date.parse(resident.leaseExpiresAt) <= Date.now()) {
               if (!resident.relay) unavailable('original_main_lease_required')
               resident.leaseExpiresAt = await resident.relay!.refresh(signal)
             }
             // Cancellation readback uses cleanup authority; it does not extend the MCP credential.
             const observationExpiresAt = cleanupOnly || receipt.stopFence
-              ? new Date(Date.now() + 60_000).toISOString() : resident.leaseExpiresAt
+              ? new Date(Date.now() + 60_000).toISOString() : reviewerObservationExpiresAt ?? resident.leaseExpiresAt
             const originalHistory = nativeHistoryPageSource(response) ?? value?.history
             const source:WorkflowOriginalNativeSource=value?.session?{type:'session_created',session:value.session}
               :originalHistory?{type:'history',history:originalHistory}:{type:'boundary'}
