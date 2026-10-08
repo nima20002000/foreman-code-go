@@ -24,17 +24,7 @@ export function reviewOwnsPermission(
       && typeof callback.attemptId === 'string' && callback.attemptId.length > 0
   }
   if (session.harness === 'codex') return request.turn.nativeTurnId === providerId
-  if (request.nativeRequestType !== 'permission.asked') return false
-  const permission = object(request.request)
-  const messageId = object(permission.tool).messageID
-  if (permission.id !== request.turn.nativeRequestId || permission.sessionID !== session.nativeSessionId
-    || typeof messageId !== 'string' || messageId !== request.turn.nativeTurnId) return false
-  // Only native message metadata can prove lineage. Permission metadata, a query
-  // correlation echo, or an assistant's text cannot assert its own parent turn.
-  const messages = history.events.filter((event) => event.type === 'message.updated')
-    .map((event) => object(event.payload.info)).filter((info) => info.id === messageId)
-  return messages.length > 0 && messages.every((info) => info.sessionID === session.nativeSessionId
-    && info.role === 'assistant' && info.parentID === providerId)
+  return false
 }
 
 export interface ReviewCleanupAttempt {

@@ -236,6 +236,9 @@ export class OperatorChatService {
       throw new DomainError('OPERATOR_CONFIGURATION_CONFLICT', 'The requested message configuration does not match its Operator harness.', 409)
     }
     const selected = configuration
+    if (selected.harness.harness === 'opencode') {
+      throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
+    }
     const configurationId = `${principal.id}:${selected.id}:${selected.contentHash}`
     if (this.setupCheck?.configurationId === configurationId) return this.setupCheck.promise
     const check = (async () => {

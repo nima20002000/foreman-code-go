@@ -1,6 +1,7 @@
 import { ExecutionResultSchema, type NativeHarnessEvent, type NativeSessionReference } from '@foreman-code/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
+import { NativeDeliveryError } from '../harnesses/errors.js'
 
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -182,4 +183,9 @@ export function reviewTurnEvidence(
   const tracker = new ReviewEvidenceTracker(session, correlationId, knownProviderId)
   tracker.observeHistory(history)
   return tracker.snapshot()
+}
+
+export function definitelyRejected(error: unknown): boolean {
+  return error instanceof NativeDeliveryError
+    && error.operation === 'turn_submission' && error.delivery === 'not_sent'
 }

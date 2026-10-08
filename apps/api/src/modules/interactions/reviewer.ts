@@ -9,7 +9,7 @@ import { pendingReviewCleanup, reviewPreflightIdentity } from './reviewPolicy.js
 import type { ReviewCredentialMaintenance, ReviewerNativeRuntime } from './reviewerRuntime.js'
 import { PostgresInteractionCoordinationRepository } from './coordination.js'
 import { settleReviewCleanup } from './reviewerCleanup.js'
-import { ReviewEvidenceTracker } from './reviewerEvidence.js'
+import { definitelyRejected, ReviewEvidenceTracker } from './reviewerEvidence.js'
 import type { NativeManagerResolutionContext } from './runtimePorts.js'
 import { coordinateSessionManager, isLeaseLost, LeaseGuard, ownedEvents } from './sessionWriter.js'
 import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
@@ -194,6 +194,7 @@ export class ReviewerDispatcher {
       return await writer.withLane(attached.session, job.correlationId, attached.signal ? AbortSignal.any([guard.signal, attached.signal]) : guard.signal, async (manager, lane) => {
         const session = attached.session
         let submitted = recovering
+        let submitting = !recovering
         const tracker = new ReviewEvidenceTracker(session, job.correlationId, job.providerTurnOrMessageId)
         let maintenance: ReviewCredentialMaintenance | undefined
         let workSignal = lane.guard.signal
@@ -329,6 +330,7 @@ export class ReviewerDispatcher {
               if (pending) return await approvalFailure(pending)
             }
           }
+          submitting = false
           // Submitted/unknown work is observation-only. Missing evidence is not permission to resend.
           await check()
           workSignal.throwIfAborted()
@@ -403,6 +405,11 @@ export class ReviewerDispatcher {
                 message: error instanceof Error ? error.message : 'The reviewer session could not begin its turn.' },
               retryAfter: new Date(Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(job.attempt, 4))).toISOString(),
             })
+          }
+          if (submitting && tracker.processedEvents === 0 && !tracker.snapshot().acknowledged
+            && !job.acknowledgedAt && definitelyRejected(rawError)) {
+            return await failReview({ code: 'REVIEW_SUBMISSION_REJECTED',
+              message: 'The provider rejected the review submission. Native process and credential cleanup are still required.' })
           }
           lane.observedStatus = 'uncertain'
           return await transition('uncertain', {
