@@ -35,7 +35,8 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
   const audits: Array<{ principalId: string; action: string; outcome: string }> = []
   const commands = {
     execute: async (input: { principal: ManagementPrincipal; operation: string; commandId: string;
-      targetKey: string; payload: unknown; authorize?(sql: unknown): Promise<void>; perform(sql: unknown): Promise<unknown> }) => {
+      targetKey: string; payload: unknown; authorize?(sql: unknown): Promise<void>;
+      prepare?(): Promise<void>; perform(sql: unknown): Promise<unknown> }) => {
       await input.authorize?.({})
       const key = `${input.principal.id}:${input.operation}:${input.commandId}`
       const digest = jobDigest(input.payload)
@@ -45,6 +46,10 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
           throw new DomainError('COMMAND_ID_CONFLICT', 'Command input changed.', 409)
         }
         return { value: structuredClone(existing.result), replayed: true }
+      }
+      if (input.prepare) {
+        await input.prepare()
+        await input.authorize?.({})
       }
       const value = await input.perform({})
       receipts.set(key, { digest, target: input.targetKey, result: structuredClone(value) })

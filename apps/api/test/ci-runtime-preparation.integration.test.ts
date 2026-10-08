@@ -1,4 +1,5 @@
 import Fastify from 'fastify'
+import pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
@@ -141,5 +142,32 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       expect(fixture.calls.prepare).toHaveLength(1)
       expect(fixture.calls.refresh).toHaveLength(1)
     } finally { release() }
+  })
+
+  it('starts preparation when profile reads share a single-connection application pool', async () => {
+    const f = await setup()
+    const pool = new pg.Pool({ ...database.pool.options, max: 1, connectionTimeoutMillis: 1000 })
+    const commands = new PostgresCommandCoordinator(pool)
+    const profiles = {
+      ...fixture.profileService,
+      list: async (...args: Parameters<typeof fixture.profileService.list>) => {
+        await pool.query('select 1')
+        return fixture.profileService.list(...args)
+      },
+    }
+    const service = new CiRuntimeProvisioner(pool, profiles as never, fixture.sources as never,
+      () => fixture.endpoint, commands, { timing: { pollMs: 0,
+        wait: () => new Promise(resolve => setImmediate(resolve)), now: () => new Date() } })
+    try {
+      const input = { workspaceId: fixture.workspaceId, profileId: 'p-unit', commit, commandId: 'single-connection' }
+      expect(await service.start(f.writer.principal, 'mcp', input)).toMatchObject({ state: 'approving', commit })
+      const done = await f.settle(service)
+      expect(done.state).toBe('qualified')
+      expect(await service.start(f.writer.principal, 'mcp', input)).toEqual(done)
+      expect(fixture.calls.prepare).toHaveLength(1)
+    } finally {
+      await service.close()
+      await pool.end()
+    }
   })
 })

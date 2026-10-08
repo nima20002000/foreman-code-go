@@ -54,6 +54,23 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
 })
 
 describe('runtime preparation ownership and recovery', () => {
+  it('prepares an earlier commit again after another commit replaced its runtime', async () => {
+    const f = await fixture()
+    const newerCommit = 'd'.repeat(40)
+    try {
+      for (const requestedCommit of [commit, newerCommit, commit]) {
+        await f.ciRuntime.prepareForCommit(f.operator, f.workspaceId, 'unit', requestedCommit)
+        expect(await f.settle('p-unit')).toMatchObject({ state: 'qualified', commit: requestedCommit })
+      }
+      expect(f.calls.prepare).toEqual([commit, newerCommit, commit].map(requestedCommit =>
+        expect.objectContaining({ commit: requestedCommit })))
+      expect(f.calls.refresh).toHaveLength(3)
+      expect(f.memory.records.size).toBe(3)
+      await f.ciRuntime.prepareForCommit(f.operator, f.workspaceId, 'unit', commit)
+      expect(f.calls.prepare).toHaveLength(3)
+    } finally { await f.ciRuntime.close(); await f.app.close() }
+  })
+
   it('leaves computers with disabled build participation untouched', async () => {
     const f = await fixture({ disabled: true })
     try {

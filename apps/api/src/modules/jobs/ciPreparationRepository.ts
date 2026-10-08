@@ -26,6 +26,7 @@ export interface CiPreparationRepository {
   create(sql: JobSql, record: CiPreparationRecord): Promise<void>
   get(id: string): Promise<CiPreparationRecord>
   latest(workspaceId: string, deviceId: string): Promise<CiPreparationRecord | undefined>
+  latestForDevice(deviceId: string): Promise<CiPreparationRecord | undefined>
   pending(): Promise<CiPreparationRecord[]>
   save(sql: JobSql, record: CiPreparationRecord): Promise<void>
 }
@@ -62,6 +63,12 @@ export class PostgresCiPreparationRepository implements CiPreparationRepository 
     return (await this.pool.query<{ record: unknown }>(
       'select record from ci_runtime_preparations where active order by created_at,id')).rows
       .map(row => CiPreparationRecordSchema.parse(row.record))
+  }
+
+  async latestForDevice(deviceId: string): Promise<CiPreparationRecord | undefined> {
+    const row = (await this.pool.query<{ record: unknown }>(`select record from ci_runtime_preparations
+      where device_id=$1 order by created_at desc,id desc limit 1`, [deviceId])).rows[0]
+    return row ? CiPreparationRecordSchema.parse(row.record) : undefined
   }
 
   async save(sql: JobSql, record: CiPreparationRecord): Promise<void> {

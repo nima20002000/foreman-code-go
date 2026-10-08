@@ -20,6 +20,8 @@ export function ciPreparationMemory() {
     get: async id => structuredClone(records.get(id)!),
     latest: async (workspaceId, deviceId) => structuredClone([...records.values()].reverse()
       .find(record => record.input.workspaceId === workspaceId && record.status.deviceId === deviceId)),
+    latestForDevice: async deviceId => structuredClone([...records.values()].reverse()
+      .find(record => record.status.deviceId === deviceId)),
     pending: async () => [...records.values()].filter(record => !['qualified', 'failed'].includes(record.status.state))
       .map(record => structuredClone(record)),
     save: async (_sql, record) => { records.set(record.id, structuredClone(CiPreparationRecordSchema.parse(record))) },

@@ -69,11 +69,15 @@ export class CiRuntimeProvisioner {
       await this.commands.recordDenied(principal.id, source, 'build_computer_prepare', `workspace:${input.workspaceId}`)
       throw error
     }
+    let preparedTarget!: { profile: JobVerificationProfile; deviceId: string }
     const result = await this.commands.execute({ principal, source, operation: 'build_computer_prepare',
       commandId: input.commandId, targetKey: input.workspaceId, payload: input,
       authorize: async sql => { await this.livePrincipal(principal, input.workspaceId, sql) },
+      prepare: async () => {
+        preparedTarget = await this.target(principal, input.workspaceId, input.profileId)
+      },
       perform: async sql => {
-        const { profile, deviceId } = await this.target(principal, input.workspaceId, input.profileId)
+        const { profile, deviceId } = preparedTarget
         await this.requireEnabled(profile, sql)
         const now = this.timing.now().toISOString()
         const record = CiPreparationRecordSchema.parse({ id: randomUUID(), input, principal, source, profile,
@@ -121,15 +125,15 @@ export class CiRuntimeProvisioner {
       if (preference.buildEnabled) devices.set(hostRef.deviceId, profile)
     }
     for (const [deviceId, profile] of devices) {
-      const latest = await this.repository.latest(workspaceId, deviceId)
-      if (latest?.status.commit === commit) {
+      const latest = await this.repository.latestForDevice(deviceId)
+      if (latest?.input.workspaceId === workspaceId && latest.status.commit === commit) {
         if (latest.status.state === 'qualified' || latest.status.state === 'failed') continue
         this.launch(latest)
         continue
       }
       try {
         await this.start(principal, 'mcp', { workspaceId, profileId: profile.id, commit,
-          commandId: `auto-${jobDigest({ workspaceId, commit, deviceId })}` })
+          commandId: `auto-${jobDigest({ workspaceId, commit, deviceId, previousOperationId: latest?.id ?? null })}` })
       } catch (error) {
         if (!(error instanceof DomainError) || error.code !== 'CI_RUNTIME_BUSY') throw error
         // The blocked ticket remains scheduled and retries after the computer's current operation finishes.
