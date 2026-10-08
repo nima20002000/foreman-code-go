@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { chmod, copyFile, cp, mkdir, mkdtemp, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, cp, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
@@ -60,15 +60,22 @@ export async function deployProductionApi(run, destination) {
   const failures = []
   try {
     await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod', '--legacy', destination])
-    // Workspace output can be hard-linked by deployment and rewritten by later builds.
-    const temporary = await mkdtemp(join(dirname(destination), '.production-api-copy-'))
-    try {
-      const snapshot = join(temporary, 'api')
-      await cp(destination, snapshot, { recursive: true, verbatimSymlinks: true })
-      await rm(destination, { recursive: true })
-      await rename(snapshot, destination)
-    } finally {
-      await rm(temporary, { recursive: true, force: true })
+    // Freeze mutable workspace files; pnpm already isolates installed dependencies.
+    const contracts = await realpath(join(destination, 'node_modules/@foreman-code/contracts'))
+    for (const packageDirectory of [destination, contracts]) {
+      const temporary = await mkdtemp(join(dirname(packageDirectory), '.production-package-copy-'))
+      try {
+        const snapshot = join(temporary, 'package')
+        const dependencies = join(packageDirectory, 'node_modules')
+        const entries = await readdir(packageDirectory)
+        await cp(packageDirectory, snapshot, { recursive: true, verbatimSymlinks: true,
+          filter: source => source !== dependencies })
+        if (entries.includes('node_modules')) await rename(dependencies, join(snapshot, 'node_modules'))
+        await rm(packageDirectory, { recursive: true })
+        await rename(snapshot, packageDirectory)
+      } finally {
+        await rm(temporary, { recursive: true, force: true })
+      }
     }
   } catch (error) {
     failures.push(error)

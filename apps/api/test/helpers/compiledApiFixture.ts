@@ -12,9 +12,10 @@ export async function compileApiFixture(directory: string): Promise<string> {
   await mkdir(fixture, { recursive: true })
   await cp(join(api, 'package.json'), join(fixture, 'package.json'))
   await symlink(join(api, 'node_modules'), join(fixture, 'node_modules'), 'dir')
+  // Runtime fixtures consume JavaScript; source types are validated by the repository typecheck.
   await promisify(execFile)('corepack', [
     'pnpm', '--filter', '@foreman-code/api', 'exec', 'tsc',
-    '-p', 'tsconfig.build.json', '--outDir', output,
+    '-p', 'tsconfig.build.json', '--noCheck', '--declaration', 'false', '--outDir', output,
   ], { cwd: repository, env: process.env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 })
   return output
 }

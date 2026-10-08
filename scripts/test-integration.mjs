@@ -21,6 +21,11 @@ const exclusiveFiles = [startupFile,
   'apps/api/test/operator-chat.integration.test.ts',
   'apps/api/test/native-stream-lifecycle.integration.test.ts',
   'apps/api/test/production-lifecycle.integration.test.ts',
+  'apps/api/test/local-production-deployment.integration.test.ts',
+  'apps/api/test/production-mcp-upgrade.integration.test.ts',
+  'apps/api/test/operator-file-delivery.integration.test.ts',
+  'apps/api/test/operator-management-file-authority.integration.test.ts',
+  'apps/api/test/r2-2-inherited-references.integration.test.ts',
 ]
 
 export function partitionIntegrationFiles(files) {
