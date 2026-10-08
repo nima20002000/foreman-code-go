@@ -44,10 +44,7 @@ export const HarnessCompatibilitySchema = z.object({
 export type HarnessCompatibility = z.infer<typeof HarnessCompatibilitySchema>
 export const HarnessCompatibilityListSchema = z.object({
   canRetry: z.boolean(),
-  harnesses: z.array(HarnessCompatibilitySchema).length(2).refine(
-    (rows) => new Set(rows.map((row) => row.harness)).size === 2,
-    'The compatibility report must contain both harnesses exactly once.',
-  ),
+  harnesses: z.array(HarnessCompatibilitySchema).length(1),
 }).strict()
 export type HarnessCompatibilityList = z.infer<typeof HarnessCompatibilityListSchema>
 export const HarnessCompatibilityRetryParamsSchema = z.object({ harness: CompatibilityHarnessSchema }).strict()

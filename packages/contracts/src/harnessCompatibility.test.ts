@@ -6,7 +6,7 @@ describe('compatibility diagnostic contracts', () => {
     expect(HarnessCompatibilityRetryBodySchema.safeParse({}).success).toBe(true)
     expect(HarnessCompatibilityRetryBodySchema.safeParse({ binary: '/arbitrary', forceQualification: true }).success).toBe(false)
   })
-  it('only links to the two official release repositories', () => {
+  it('only links to the official Codex release repository', () => {
     const release = { version: '0.154.0', repository: 'openai/codex', tag: 'rust-v0.154.0',
       releaseUrl: 'https://github.com/openai/codex/releases/tag/rust-v0.154.0',
       commit: 'a'.repeat(40), recordedAt: '2026-09-19T00:00:00.000Z' }
@@ -15,5 +15,22 @@ describe('compatibility diagnostic contracts', () => {
   })
   it('does not accept an incomplete catalog as an empty success', () => {
     expect(HarnessCompatibilityListSchema.safeParse({ canRetry: false, harnesses: [] }).success).toBe(false)
+  })
+  it('accepts the supported diagnostic report and rejects duplicate entries', () => {
+    const release = { version: '0.154.0', repository: 'openai/codex', tag: 'rust-v0.154.0',
+      releaseUrl: 'https://github.com/openai/codex/releases/tag/rust-v0.154.0',
+      commit: 'a'.repeat(40), recordedAt: '2026-09-19T00:00:00.000Z' }
+    const report = {
+      harness: 'codex', checkId: '11111111-1111-4111-8111-111111111111', installedVersion: null,
+      status: 'not-checked', checkedAt: null, source: 'none', checkerRevision: 'diagnostic-revision',
+      qualifiedRelease: release, knownRelease: null, matchesQualifiedVersion: false,
+      reason: null, schemaSha256: null, cacheWarning: null, scope: 'protocol-settings-diagnostic-only',
+    }
+    const response = { canRetry: false, harnesses: [report] }
+    expect(HarnessCompatibilityListSchema.parse(response)).toEqual(response)
+    expect(HarnessCompatibilityListSchema.safeParse({ ...response, harnesses: [report, report] }).success).toBe(false)
+    expect(HarnessCompatibilityListSchema.safeParse({
+      ...response, harnesses: [{ ...report, harness: 'opencode' }],
+    }).success).toBe(false)
   })
 })
