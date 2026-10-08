@@ -9,6 +9,11 @@ import { buildApp } from '../src/app.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
+import { RunPlacementReadService } from '../src/modules/placement/readService.js'
+import { PostgresScheduleDispatcher } from '../src/modules/schedules/postgresDispatcher.js'
+import { WorkflowScheduleService } from '../src/modules/schedules/service.js'
+import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
+import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
 import type { NativeSessionStart, NativeSteerInput } from '../src/modules/harnesses/port.js'
 import { AgentChatF5Native, eventually } from './helpers/agentChatF5.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
@@ -72,7 +77,8 @@ async function setup() {
   // The shared current-Run fixture already owns its production app. Compose chat on
   // another real authenticated app using the same services/database/native Run reader.
   const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
-    operator: { access: f.access, services: { ...f.services, agentChat: chat } } })
+    operator: { access: f.access, services: { ...f.services, agentChat: chat,
+      runPlacements: new RunPlacementReadService(f.db.pool, async () => []) } } })
   const clients: Client[] = []
   try {
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -132,6 +138,86 @@ async function oldRunRows(f: Fixture['f'], runIds: string[]) {
 // Real PostgreSQL, common Run admission, immutable snapshots, current Save, authenticated
 // HTTP and Operator MCP, existing chat admission/receipts/queue. Only native providers are fixtures.
 describe.skipIf(!postgresEnabled)('SCH-06 selected historical Run chat PostgreSQL / HTTP / MCP', () => {
+  it('reads scheduled Run computer evidence and a persisted execution chat through HTTP and MCP', async () => {
+    const test = await setup()
+    const f = test.f
+    try {
+      const { workspaceId, workflowId } = f.f.scope
+      const due = new Date()
+      due.setUTCSeconds(0, 0)
+      due.setUTCMinutes(due.getUTCMinutes() + 1)
+      const time = { now: new Date(due.getTime() - 1) }
+      const clock = () => time.now
+      const schedules = new WorkflowScheduleService(f.db.pool, f.commands, clock)
+      const saved = await schedules.save(f.writer.principal, 'http', {
+        workspaceId, workflowId, commandId: randomUUID(), expectedRevision: 0,
+        schedule: { mode: 'once', timezone: 'UTC', localDate: due.toISOString().slice(0, 10),
+          time: due.toISOString().slice(11, 16), enabled: true, policy: 'latest_saved' },
+      })
+      let runId = ''
+      const dispatcher = new PostgresScheduleDispatcher(f.db.pool, async (principal, input, schedule) => {
+        const accepted = await admitRepeatRun(f.db.pool, f.locations, principal, 'schedule', input,
+          repeatStartPublication, { schedule })
+        runId = accepted.value.id
+      }, clock)
+      time.now = new Date(due.getTime() + 1_000)
+      await dispatcher.dispatch(saved.value)
+      expect(runId).not.toBe('')
+      const summaries = await f.services.runs.history.list(f.writer.principal, { workspaceId, workflowId })
+      expect(summaries.items.find(item => item.runId === runId)?.trigger).toBe('schedule')
+      await f.engine.start(runId)
+      await terminal(f, runId)
+      const source = (await executions(f, runId))[0]!
+      expect(source.nativeSessionId).toBeTruthy()
+      const placementScope = { workspaceId, workflowId, runId, nodeId: source.workflowNodeId }
+      const placementPath = `/api/management/workspaces/${workspaceId}/workflows/${workflowId}`
+        + `/runs/${runId}/nodes/${source.workflowNodeId}/placement`
+      const headers = { authorization: `Bearer ${f.writer.token}` }
+      const placement = await test.app.inject({ method: 'GET', url: placementPath, headers })
+      expect(placement.statusCode, placement.body).toBe(200)
+      expect(placement.json()).toEqual({ ...placementScope,
+        readback: { evidence: 'legacy_missing', originalMainInstallationId: null } })
+      expect(body(await test.mcp.callTool({ name: 'run_node_placement_get', arguments: placementScope })))
+        .toEqual(placement.json())
+      const target = { workspaceId, workflowId, runId, workflowNodeId: source.workflowNodeId }
+      const initial = await read(test, target, source.id)
+      expect(initial.kind).toBe('selected')
+      const sent = SendAgentChatMessageResponseSchema.parse(body(await test.mcp.callTool({
+        name: 'agent_chat_send', arguments: { workspaceId,
+          selection: { workflowId, runId, workflowNodeId: source.workflowNodeId, executionId: source.id },
+          message: { requestId: randomUUID(), expectedConversationId: null, content: 'Scheduled Run follow-up.' } },
+      })))
+      const conversationId = sent.state.conversation!.id
+      await eventually(() => (test.native.get(conversationId)?.prompts.length ?? 0) > 0)
+      const native = test.native.get(conversationId)!
+      expect(native.forks[0]?.source.nativeSessionId).toBe(source.nativeSessionId)
+      native.finish({ outcome: 'succeeded', output: { text: 'Scheduled reply.' } })
+      await eventually(async () => (await test.repository.turn(conversationId, sent.turn.requestId))?.delivery === 'completed')
+      const persisted = await read(test, target, source.id)
+      expect(persisted.kind).toBe('selected')
+      if (persisted.kind !== 'selected') throw new Error('Expected selected execution chat.')
+      expect(persisted.key?.conversationId).toBe(conversationId)
+      expect(persisted.state.messages.some(message => message.content === 'Scheduled Run follow-up.')).toBe(true)
+      expect(persisted.state.messages.some(message => message.content === 'Scheduled reply.')).toBe(true)
+      const denied = await f.access.issue({ name: 'Other workspace reader', audience: 'operator',
+        expiresAt: new Date(Date.now() + 60_000),
+        grants: [{ actions: ['runs:read', 'workspace_locations:read', 'agent_chat:read'],
+          scope: { workspaceIds: ['other-workspace'] } }],
+      })
+      const deniedMcp = await test.connect(denied.token)
+      for (const [name, input] of [
+        ['run_node_placement_get', placementScope],
+        ['agent_chat_read', { workspaceId, selection: { workflowId, runId,
+          workflowNodeId: source.workflowNodeId, executionId: source.id } }],
+      ] as const) {
+        const result = await deniedMcp.callTool({ name, arguments: input })
+        expect(result.isError).toBe(true)
+        expect(JSON.stringify(result.content)).toContain('ACCESS_DENIED')
+      }
+      expect(await read(test, target, source.id)).toEqual(persisted)
+    } finally { await test.close() }
+  }, 90_000)
+
   it('removed Agent, two Runs, exact child forks, wrong-target receipts, read-only missing sessions, revoked caller, and immutable Run results', async () => {
     const test = await setup(), f = test.f
     try {

@@ -19,7 +19,7 @@ export function registerRunPlacementRoutes(app: FastifyInstance, reads: RunPlace
 
 export function registerRunPlacementTool(server: McpServer, reads: RunPlacementReadService, principal: ManagementPrincipal, commands: Pick<PostgresCommandCoordinator, 'recordDenied'>): void {
   server.registerTool('run_node_placement_get', {
-    description: 'Read exact admission-time host/configuration/root/source binding for one Run node. Requires live scoped runs:read and workspace_locations:read because the exact binding includes canonical destination paths. Never reads current Board placement or launches work. Acceptance is distinct from native execution evidence.',
+    description: 'Read admission-time host/configuration/root/source binding for one Run node. Inherited Main nodes without a per-node binding return legacy_missing evidence; the Run still exists. Requires live scoped runs:read and workspace_locations:read because the binding includes canonical destination paths. Never reads current Board placement or launches work. Acceptance is distinct from native execution evidence.',
     inputSchema: RunPlacementGetInputSchema, outputSchema: RunPlacementGetResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => {
