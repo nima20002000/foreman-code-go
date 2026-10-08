@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.0.53] - 2026-10-08
 
 Claude and OpenCode workflows across two computers remain untested. The available laptop provider logins support Codex only. Installed OpenCode workers refuse declared artifact outputs. Claude Agents run on Main only; laptops run Codex.
 
@@ -66,6 +66,44 @@ Claude and OpenCode workflows across two computers remain untested. The availabl
 
 - Retain sandbox permissions, scoped credentials, assignment checks and owner fences across local and remote artifact and review paths.
 - Preserve kernel-backed native closure evidence and revalidate authenticated reconnects without authorizing replacement launches.
+
+### Known issues
+
+Released as is at the owner's request; these are open and will be fixed later.
+
+- Integration: 7 files fail on this release (full run at 481740c4b: 237 of 272 files passed under heavy load; 13 failed twice, 7 of those still failed in a quieter rerun). Fixes for the first three are on branch `integ/crosscomputer-integfix3` (not included):
+  - `workflow-schedule-placement`: `RUNNER_UNSUPPORTED` ("Runner 'local' is not supported by this API instance").
+  - `job-queue-configuration`: duplicate key (23505) when restoring persisted runtime profiles.
+  - `handoff-approval`: review resumes return `blocked_disconnected REVIEW_SESSION_DISCONNECTED` before the publication cut.
+  - `remote-review-production`: times out waiting for the routed native interaction.
+  - `computer-workflow-save.regression`: production runtime shutdown leaves runtime ownership unreleased.
+  - `job-admission-queue` (five concurrent requests on one heavy slot) and `agent-chat-f5` (A-R15) time out.
+- `scripts/test-integration.test.mjs` (part of `pnpm test:scripts`) fails to load: it imports `adminDatabaseUrl`, which `scripts/test-integration.mjs` no longer exports.
+- The full integration suite and acceptance tests were not rerun after the last PR 59 review-fix merges.
+- A failed or uncertain source activation can leave a materialization reservation with no owner. It counts against the computer's CI slots forever, so that computer reports `busy` and Agent `ci_run` Jobs wait indefinitely (seen on a paired laptop). A partial fix is on branch `integ/crosscomputer-reservleak` (uncommitted, not included).
+- Main logs a `qualification-validation-debug` line on every runtime revalidation, which floods its log.
+- Several PR 59 review findings are still open; their fix branches are not merged: `fix/pr59-accountsui`, `fix/pr59-buildsave`, `fix/pr59-compaction`, `fix/pr59-drive`, `fix/pr59-github`, `fix/pr59-launch`, `fix/pr59-sesssettings`.
+- Browser journey tests of the CI and multi-computer workflow UI (Computers settings, adding Agents, running multi-computer workflows, Agent CI) have not been run.
+- The integration runner in this release is the PR 59 one: the 0.0.51 and 0.0.52 changes (slowest-first scheduling with per-machine durations, launching Vitest directly) conflicted and are not in it yet.
+- Google Drive sign-in uses rclone's shared Google OAuth client ID, which Google is retiring.
+
+## [0.0.52] - 2026-10-08
+
+### Changed
+
+- Integration file durations now live in `~/.cache/graphql-disposable-tests/integration-durations.json` on each machine, so fresh snapshot checkouts (Dexter lanes) keep the slowest-first schedule.
+
+## [0.0.51] - 2026-10-08
+
+### Changed
+
+- Integration runs start the slowest recorded files first, using per-file durations kept in the Git common directory (`graphql-integration-durations.json`); unmeasured files run first.
+- Integration files launch the workspace Vitest binary directly instead of through `corepack pnpm exec`, removing about 2.4 s of startup per file.
+
+### Verification
+
+- Runner unit tests (30) and lint passed; a focused two-file integration run passed and recorded durations.
+- not verified: full `test:integration` timing comparison.
 
 ## [0.0.50] - 2026-10-06
 

@@ -19,6 +19,32 @@ function capacityRows(profile: ReturnType<typeof verificationCapacityFixture>, c
 }
 
 describe('reviewed verification admission capacity', () => {
+  it('reports held source storage as busy', () => {
+    expect(jobEligibilityReason('SOURCE_CAPACITY')).toBe('busy')
+    expect(jobEligibilityReason('SOURCE_DISK_CAPACITY')).toBe('busy')
+  })
+  it('reports busy for a ready computer without adding setup reasons from its unused profiles', async () => {
+    const profile = verificationCapacityFixture('device')
+    const { spec } = verificationFixture()
+    const definition = JobDefinitionRecordSchema.parse({ schemaVersion: 2, id: 'queued-verification',
+      workspaceId: profile.workspaceId, name: 'Waiting verification', revision: 1, versionId: 'queued-version',
+      createdAt: profile.createdAt, updatedAt: profile.updatedAt,
+      spec: { ...spec, target: { kind: 'auto' }, policy: jobPolicyRequirementsRecord(spec.policy),
+        limits: profile.spec.resources.limits } })
+    const sourceReservation = { scopeId: 'approved-source', reservedBytes: 1024 * 1024 }
+    const ready = { spec, profile, ready: true, reasons: [], sourceReservation }
+    const unqualified = { ...ready, ready: false, reasons: ['runtime_setup_required'] }
+    const preference = { target: buildComputerTarget(spec.target), revision: 1, buildEnabled: true,
+      buildPriority: 100, buildRole: 'primary' as const, buildAllowancePercent: 100 }
+    const settings = { preference: async () => preference, requireEnabled: async () => preference } as unknown as BuildComputerSettings
+    const selection = new JobComputerSelection(settings, {
+      candidates: async () => ({ candidates: [unqualified, ready], diagnosticCodes: [] }),
+    }, { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
+    const sql = { query: async () => ({ rowCount: 0, rows: [{ bytes: '0', verification_bytes: '0', materializations: '2' }] }) } as unknown as JobSql
+    expect(await selection.claim(sql, {} as ManagementPrincipal, definition,
+      { executionId: 'waiting', attemptId: 'attempt', operationId: 'source-operation' }))
+      .toMatchObject({ spec: null, reasons: ['busy'] })
+  })
   it.each(['unqualified', 'qualifying'] as const)('waits for a %s profile instead of treating missing measurements as a zero maximum', async status => {
     const measured = verificationCapacityFixture('main')
     const profile = { ...measured, status, measurement: null }
@@ -58,6 +84,14 @@ describe('reviewed verification admission capacity', () => {
     expect(await jobComputerCapacityDecision(capacityRows(profile, 1), target, profile, undefined, percent))
       .toEqual({ fits: false, reason: 'busy' })
     expect(await jobComputerCapacityDecision(capacityRows(profile, 1), target, profile)).toEqual({ fits: true })
+  })
+  it('reports a request that cannot fit even an empty computer at the saved allowance', async () => {
+    const profile = verificationCapacityFixture('main')
+    profile.measurement!.fingerprint.deviceLimits!.cpuLimit = 4
+    const target = { mainId, hostRef: profile.root.selection.hostRef }
+    expect(await jobComputerCapacityDecision(capacityRows(profile, 0), target, profile, undefined, 10))
+      .toEqual({ fits: false, reason: 'request_exceeds_maximum' })
+    expect(await jobComputerCapacityDecision(capacityRows(profile, 0), target, profile)).toEqual({ fits: true })
   })
   it('accounts for the provisioned independent byte and inode quotas, including closed retained owners', async () => {
     const profile = verificationCapacityFixture('main')

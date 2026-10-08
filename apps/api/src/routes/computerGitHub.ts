@@ -12,6 +12,10 @@ export function registerComputerGitHubRoutes(app: FastifyInstance, service: Comp
     const input = ComputerGitHubStatusInputSchema.parse(request.body)
     return service.handle(requirePrincipal(request), 'http', input.target, { operation: 'login-status', loginId: input.loginId })
   })
+  app.post('/api/management/computers/github/setup-git', request => {
+    const input = ComputerGitHubStatusInputSchema.parse(request.body)
+    return service.handle(requirePrincipal(request), 'http', input.target, { operation: 'setup-git', loginId: input.loginId })
+  })
   app.post('/api/management/computers/github/logout', request => {
     const input = ComputerGitHubInputSchema.parse(request.body)
     return service.handle(requirePrincipal(request), 'http', input.target, { operation: 'logout' })

@@ -1,11 +1,13 @@
+import { QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { expect, it } from 'vitest'
-import type { BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
+import type { BuildComputerBatchUpdate, BuildComputerBatchResult, BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
 import { server } from '../../mocks/server'
 import { computerKey } from '../../shared/api/computerActivity'
 import { ComputerRows } from './ComputerRows'
+import { useComputerUi } from './computerUiStore'
 import { computersFixture, deviceName, deviceTarget, mainId, mainTarget, registration } from './computersTestFixture'
 
 function rows() {
@@ -50,11 +52,13 @@ it('optimistically reorders with keyboard controls and persists higher priority 
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
   let release!: () => void
   const held = new Promise<void>(resolve => { release = resolve })
-  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
-    const input = await request.json() as BuildComputerUpdate
-    f.writes.push(input)
+  server.use(http.post('*/api/management/settings/build-computers/batch-update', async ({ request }) => {
+    const input = await request.json() as BuildComputerBatchUpdate
+    f.batches.push(input)
     await held
-    return HttpResponse.json(f.update(input))
+    const changes = input.updates.map(change => ({ ...change, commandId: input.commandId }))
+    f.writes.push(...changes)
+    return HttpResponse.json({ computers: changes.map(f.update) })
   }))
   await ready()
   const button = screen.getByRole('button', { name: `Move ${deviceName} up` })
@@ -72,17 +76,17 @@ it('optimistically reorders with keyboard controls and persists higher priority 
   expect(f.statuses.get(computerKey(deviceTarget))?.preference.buildRole).toBe('primary')
   expect(screen.getByRole('combobox', { name: `Build role for ${deviceName}` })).toHaveValue('primary')
 })
-it('reorders by dragging and reuses command IDs after an uncertain response', async () => {
+it('reorders by dragging and reuses the whole command after an uncertain response', async () => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
-  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
-    const input = await request.json() as BuildComputerUpdate
-    f.writes.push(input)
-    if (f.writes.length === 1) {
-      f.update(input)
+  let saved: BuildComputerBatchResult | undefined
+  server.use(http.post('*/api/management/settings/build-computers/batch-update', async ({ request }) => {
+    const input = await request.json() as BuildComputerBatchUpdate
+    f.batches.push(input)
+    if (f.batches.length === 1) {
+      saved = { computers: input.updates.map(change => f.update({ ...change, commandId: input.commandId })) }
       return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Try again' } }, { status: 503 })
     }
-    if (f.writes.length === 2) return HttpResponse.json(f.statuses.get(computerKey(input.target)))
-    return HttpResponse.json(f.update(input))
+    return HttpResponse.json(saved)
   }))
   await ready()
   const handle = within(rows()[1]!).getByTitle('Drag to reorder')
@@ -91,30 +95,78 @@ it('reorders by dragging and reuses command IDs after an uncertain response', as
   fireEvent.drop(rows()[0]!)
   await waitFor(() => expect(rows()[0]).toHaveAccessibleName(deviceName))
   await ready()
-  expect(f.writes).toHaveLength(3)
-  expect(f.writes[0]?.commandId).toBe(f.writes[1]?.commandId)
+  expect(f.batches).toHaveLength(2)
+  expect(f.batches[0]).toEqual(f.batches[1])
 })
-it('rolls back optimistic order and completed writes when another computer conflicts', async () => {
+it.each(['removed', 'revoked'] as const)('cancels a drop when the dragged computer is %s', async state => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
-  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
-    const input = await request.json() as BuildComputerUpdate
-    f.writes.push(input)
-    if (f.writes.length === 2) return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Changed elsewhere' } }, { status: 409 })
-    return HttpResponse.json(f.update(input))
+  await ready()
+  const before = structuredClone([...f.statuses.values()])
+  fireEvent.dragStart(within(rows()[1]!).getByTitle('Drag to reorder'),
+    { dataTransfer: { setData() {}, effectAllowed: '' } })
+  f.rendered.rerender(<QueryClientProvider client={f.client}><ComputerRows mainId={mainId}
+    devices={state === 'removed' ? [] : [{ ...registration, status: 'revoked' }]} /></QueryClientProvider>)
+  fireEvent.dragOver(rows()[0]!)
+  fireEvent.drop(rows()[0]!)
+  await waitFor(() => expect(f.client.isMutating()).toBe(0))
+  expect(f.batches).toHaveLength(0)
+  expect(f.writes).toHaveLength(0)
+  expect([...f.statuses.values()]).toEqual(before)
+  expect(useComputerUi.getState().draggedKey).toBeUndefined()
+})
+it('reconciles a committed reorder after both acknowledgements are lost without partial or duplicate writes', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  const calls: BuildComputerBatchUpdate[] = []
+  let saved: BuildComputerBatchResult | undefined
+  server.use(http.post('*/api/management/settings/build-computers/batch-update', async ({ request }) => {
+    const input = await request.json() as BuildComputerBatchUpdate
+    calls.push(input)
+    saved ??= { computers: input.updates.map(change => f.update({ ...change, commandId: input.commandId })) }
+    if (calls.length <= 2) {
+      return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Response lost' } }, { status: 503 })
+    }
+    return HttpResponse.json(saved)
   }))
   await ready()
   await userEvent.setup().click(screen.getByRole('button', { name: `Move ${deviceName} up` }))
-  expect(await screen.findByText('Settings changed elsewhere. Order restored; try again.')).toBeVisible()
+  const retry = await screen.findByRole('button', { name: 'Retry original save' })
+  expect(calls).toHaveLength(2)
+  expect(calls[0]?.updates).toHaveLength(2)
+  expect(calls[1]).toEqual(calls[0])
+  expect(rows()[0]).toHaveAccessibleName(deviceName)
+  expect(screen.getByRole('switch', { name: 'Builds on Main PC' })).toBeDisabled()
+  expect(f.statuses.get(computerKey(mainTarget))?.preference).toMatchObject({ revision: 2, buildPriority: 0 })
+  expect(f.statuses.get(computerKey(deviceTarget))?.preference).toMatchObject({ revision: 2, buildPriority: 100 })
+  await userEvent.setup().click(retry)
+  await ready()
+  expect(calls).toHaveLength(3)
+  expect(calls[2]).toEqual(calls[0])
+  expect([...f.statuses.values()].map(status => status.preference.revision)).toEqual([2, 2])
+  expect(screen.queryByRole('button', { name: 'Retry original save' })).not.toBeInTheDocument()
+})
+it('restores optimistic order without changing any computer when one revision conflicts', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  await ready()
+  const before = structuredClone([...f.statuses.values()])
+  const conflicting = f.statuses.get(computerKey(mainTarget))!
+  f.statuses.set(computerKey(mainTarget), { ...conflicting,
+    preference: { ...conflicting.preference, revision: conflicting.preference.revision + 1 } })
+  await userEvent.setup().click(screen.getByRole('button', { name: `Move ${deviceName} up` }))
+  expect(await screen.findByText('Settings changed elsewhere. No changes were saved; try again.')).toBeVisible()
   await ready()
   expect(rows()[0]).toHaveAccessibleName('Main PC')
-  expect(f.writes).toHaveLength(3)
-  expect(f.writes[2]).toMatchObject({ target: deviceTarget, expectedRevision: 2, buildPriority: 50 })
-  expect(f.statuses.get(computerKey(deviceTarget))?.preference.buildPriority).toBe(50)
+  expect(f.batches).toHaveLength(1)
+  expect(f.writes).toHaveLength(0)
+  for (const status of before) {
+    expect(f.statuses.get(computerKey(status.preference.target))?.preference).toMatchObject({
+      buildPriority: status.preference.buildPriority, buildRole: status.preference.buildRole,
+    })
+  }
 })
 it('restores row controls when a save is denied', async () => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
   await ready()
-  server.use(http.post('*/api/management/settings/build-computers/update', () => HttpResponse.json({
+  server.use(http.post('*/api/management/settings/build-computers/batch-update', () => HttpResponse.json({
     error: { code: 'ACCESS_DENIED', message: 'Settings permission is required.' },
   }, { status: 403 })))
   await userEvent.setup().click(screen.getByRole('switch', { name: 'Builds on Main PC' }))
@@ -123,20 +175,21 @@ it('restores row controls when a save is denied', async () => {
   expect(f.statuses.get(computerKey(mainTarget))?.preference.buildEnabled).toBe(true)
 })
 
-it('reports a failed compensation and refreshes persisted priorities instead of hiding partial saves', async () => {
+it('sends one batch and no compensation writes when the reorder is rejected', async () => {
   const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
-  server.use(http.post('*/api/management/settings/build-computers/update', async ({ request }) => {
-    const input = await request.json() as BuildComputerUpdate
-    f.writes.push(input)
-    if (f.writes.length > 1) return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Changed elsewhere' } }, { status: 409 })
-    return HttpResponse.json(f.update(input))
+  const before = structuredClone([...f.statuses.values()])
+  server.use(http.post('*/api/management/settings/build-computers/batch-update', async ({ request }) => {
+    f.batches.push(await request.json() as BuildComputerBatchUpdate)
+    return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Changed elsewhere' } }, { status: 409 })
   }))
   await ready()
   await userEvent.setup().click(screen.getByRole('button', { name: `Move ${deviceName} up` }))
-  expect(await screen.findByText('Some changes could not be restored. Refresh to see the saved order.')).toBeVisible()
+  expect(await screen.findByText('Settings changed elsewhere. No changes were saved; try again.')).toBeVisible()
   await ready()
-  expect(f.writes).toHaveLength(3)
-  expect(f.statuses.get(computerKey(deviceTarget))?.preference).toMatchObject({ buildPriority: 100, revision: 2 })
+  expect(f.batches).toHaveLength(1)
+  expect(f.batches[0]?.updates).toHaveLength(2)
+  expect([...f.statuses.values()]).toEqual(before)
+  expect(f.writes).toHaveLength(0)
 })
 
 it('shows which accounts each computer is signed in to without listing offline computers as signed out', async () => {
@@ -154,7 +207,8 @@ it('connects GitHub on a computer with a one-time code and shows the signed-in a
   const user = userEvent.setup()
   const state = { polls: 0 }
   const waiting = { loginId: '66666666-6666-4666-8666-666666666666', state: 'waiting', code: 'AB12-CD34',
-    verificationUrl: 'https://github.com/login/device', expiresAt: '2026-10-07T00:15:00.000Z', account: null, message: null }
+    verificationUrl: 'https://github.com/login/device', expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+    account: null, message: null }
   const bodies: unknown[] = []
   server.use(
     http.post('*/api/management/computers/github/login', async ({ request }) => { bodies.push(await request.json()); return HttpResponse.json(waiting) }),
@@ -197,3 +251,117 @@ it('connects Google Drive on a computer through a Google sign-in link and shows 
   await waitFor(() => expect(within(dialog).getByText('owner@gmail.com')).toBeInTheDocument(), { timeout: 8000 })
   expect(within(dialog).getByText('/home/owner/Foreman Code Drive')).toBeInTheDocument()
 }, 15_000)
+
+it('shows Main build readiness, failure reasons and the remote execution warning', async () => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  f.statuses.set(computerKey(mainTarget), { ...f.statuses.get(computerKey(mainTarget))!,
+    state: 'busy', reasons: ['More available memory is required before another build can start.'],
+    remoteExecutionEnabled: false })
+  await ready()
+  const main = rows()[0]!
+  expect(within(main).getByText('Build status')).toBeVisible()
+  await userEvent.setup().click(within(main).getByText('Build status'))
+  expect(within(main).getByText(/Busy · More available memory is required/)).toBeVisible()
+  expect(within(main).getByText('Remote execution disabled on Main')).toBeVisible()
+})
+it.each(['Main PC', deviceName])('keeps expanded diagnostics below the compact controls for %s', async (name) => {
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  const target = name === 'Main PC' ? mainTarget : deviceTarget
+  f.statuses.set(computerKey(target), { ...f.statuses.get(computerKey(target))!,
+    state: 'setup-required', reasons: ['Job execution is not installed on this computer.'],
+    remoteExecutionEnabled: false })
+  await ready()
+  const row = screen.getByRole('listitem', { name })
+  const identity = within(row).getByRole('button', { name: `Activity on ${name}` })
+  const compactRow = identity.parentElement!
+  const summary = within(row).getByText('Build status')
+  const disclosure = summary.parentElement!
+  expect(within(identity).getByText(name)).toBeVisible()
+  expect(disclosure).not.toHaveAttribute('open')
+
+  const user = userEvent.setup()
+  await user.click(summary)
+  expect(disclosure).toHaveAttribute('open')
+  expect(disclosure.parentElement).toBe(row)
+  expect(compactRow.parentElement).toBe(row)
+  expect(compactRow).not.toContainElement(disclosure)
+  expect(compactRow.nextElementSibling).toBe(disclosure)
+  expect(within(identity).getByText(name)).toBeVisible()
+  expect(within(compactRow).getByRole('switch', { name: `Builds on ${name}` })).toBeEnabled()
+  expect(within(compactRow).getByRole('group', { name: `Build allowance for ${name}` })).toBeVisible()
+  expect(within(disclosure).getByText(/Setup required · Job execution is not installed/)).toBeVisible()
+  expect(within(disclosure).getByText('Remote execution disabled on Main')).toBeVisible()
+
+  await user.click(summary)
+  expect(disclosure).not.toHaveAttribute('open')
+  expect(within(identity).getByText(name)).toBeVisible()
+})
+it('explains the preferred computer before fallback priority order', async () => {
+  computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
+  await ready()
+  expect(screen.getByText('Auto placement · Preferred computer first · Fallback: Primary before Backup, then top priority')).toBeVisible()
+})
+
+it('reads later account pages and explains direct priorities for more than 100 paired computers', async () => {
+  const devices = Array.from({ length: 101 }, (_, index) => ({ ...registration,
+    deviceId: `22222222-2222-4222-8222-${String(index + 1).padStart(12, '0')}`,
+    workerInstallationId: `33333333-3333-4333-8333-${String(index + 1).padStart(12, '0')}` }))
+  const last = devices.at(-1)!
+  const cursor = devices[99]!.deviceId
+  const lastTarget = { ...deviceTarget, hostRef: { kind: 'device' as const, mainId, deviceId: last.deviceId },
+    applicationInstallationId: last.workerInstallationId }
+  const requests: (string | null)[] = []
+  const priorities = new Map<string, number>()
+  const writes: BuildComputerUpdate[] = []
+  const statusFor = (target: BuildComputerUpdate['target']) => ({
+    preference: { target, revision: priorities.has(computerKey(target)) ? 2 : 1,
+      buildEnabled: true, buildPriority: priorities.get(computerKey(target)) ?? 50,
+      buildRole: 'primary', buildAllowancePercent: 100 }, state: 'ready', reasons: [], remoteExecutionEnabled: true,
+  })
+  computersFixture(<ComputerRows mainId={mainId} devices={devices} />, [
+    http.post('*/api/management/settings/build-computers/read', async ({ request }) => {
+      const { target } = await request.json() as BuildComputerUpdate
+      return HttpResponse.json(statusFor(target))
+    }),
+    http.post('*/api/management/settings/build-computers/batch-update', async ({ request }) => {
+      const input = await request.json() as BuildComputerBatchUpdate
+      const changes = input.updates.map(change => ({ ...change, commandId: input.commandId }))
+      writes.push(...changes)
+      for (const change of changes) priorities.set(computerKey(change.target), change.buildPriority)
+      return HttpResponse.json({ computers: changes.map(change => statusFor(change.target)) })
+    }),
+    http.get('*/api/management/computers/accounts', ({ request }) => {
+      const after = new URL(request.url).searchParams.get('cursor')
+      requests.push(after)
+      return HttpResponse.json(after ? { computers: [{ target: lastTarget, accounts: {
+        observedAt: new Date().toISOString(), accounts: [{ tool: 'github', installed: true, signedIn: true,
+          account: 'last-worker', details: [] }] } }], nextCursor: null } : { computers: [], nextCursor: cursor })
+    }),
+  ])
+  const accountButton = await screen.findByTitle('GitHub: last-worker', {}, { timeout: 15000 })
+  expect(accountButton).toHaveAccessibleName('GitHub: last-worker. Manage GitHub')
+  expect(accountButton).toBeVisible()
+  expect(requests).toEqual([null, cursor])
+  expect(screen.getByText(/With more than 101 computers, set priorities directly/)).toBeVisible()
+  const fields = await waitFor(() => {
+    const values = screen.getAllByDisplayValue('50')
+    expect(values).toHaveLength(102)
+    return values
+  }, { timeout: 15000 })
+  expect(fields[0]).toHaveAccessibleName(/^Build priority for/)
+  const moves = document.querySelectorAll<HTMLButtonElement>('button[aria-label^="Move "]')
+  expect(moves).toHaveLength(204)
+  expect([...moves].every(button => button.disabled)).toBe(true)
+  const lastRow = accountButton.closest('li')!
+  const priority = within(lastRow).getByRole('spinbutton', { name: /^Build priority for/ })
+  fireEvent.change(priority, { target: { value: '60' } })
+  fireEvent.blur(priority)
+  await waitFor(() => expect(writes).toHaveLength(1), { timeout: 5000 })
+  expect(writes[0]).toMatchObject({ target: lastTarget, buildPriority: 60, expectedRevision: 1 })
+  expect(priorities.get(computerKey(lastTarget))).toBe(60)
+  await waitFor(() => {
+    const saved = within(lastRow).getByRole('spinbutton', { name: /^Build priority for/ })
+    expect(saved).toHaveValue(60)
+    expect(saved).toBeEnabled()
+  }, { timeout: 5000 })
+}, 30000)

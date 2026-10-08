@@ -5,7 +5,7 @@ import { it } from 'vitest'
 import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { nativeMessageId, nativePolicy, normalizedHistory, object, OPENCODE_EVENT_LIMIT, OPENCODE_ID_LIMIT } from '../src/modules/harnesses/opencodeProtocol.js'
-import type { NativeHarnessEvent } from '@foreman-code/contracts'
+import type { CompactionState, NativeHarnessEvent } from '@foreman-code/contracts'
 import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation,
   matchesOpenCodeHistorySource } from '../src/modules/harnesses/opencodeReconciliation.js'
 import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
@@ -61,6 +61,51 @@ it('refuses manual compaction with an owned pending approval before native dispa
     await native.dispose()
   }
 })
+
+it.each(['rejection', 'declined', 'timeout', 'disconnect'] as const)(
+  'preserves the OpenCode compaction %s outcome and recovers without another summarize', async outcome => {
+    const server = new FixtureServer()
+    const native = manager(server)
+    let cold: OpenCodeNativeSessionManager | undefined
+    try {
+      const session = await sessionFor(native)
+      const previous = server.user('before-compact', 'retained context', session.nativeSessionId)
+      server.assistant(String(previous.info.id), 'remembered context', 'stop', true, session.nativeSessionId)
+      server.beforeRequest = path => {
+        if (!new URL(path, 'http://fixture.invalid').pathname.endsWith('/summarize')) return undefined
+        if (outcome === 'rejection') return json({ error: 'Provider rejected the command' }, 400)
+        if (outcome === 'declined') return json(false)
+        if (outcome === 'timeout') throw new DOMException('Native response timed out', 'TimeoutError')
+        throw new Error('Connection closed after dispatch')
+      }
+      let progress: CompactionState | undefined
+      const operation = native.compactSession(session, { requestId: 'outcome-control',
+        clientCorrelationId: 'outcome-control', onProgress: async state => { progress = state } })
+      if (outcome === 'declined') assert.equal((await operation).status, 'failed')
+      else await assert.rejects(operation)
+      const pending = { ...progress!, status: 'uncertain' as const }
+      const definite = outcome === 'rejection' || outcome === 'declined'
+      const beforeRead = server.calls.length
+      const recovered = await native.reconcileCompaction(session, pending)
+      assert.equal(recovered.status, definite ? 'failed' : 'uncertain')
+      if (definite) {
+        assert.equal(server.calls.length, beforeRead)
+      } else {
+        const manual = server.user('manual-control', '', session.nativeSessionId)
+        manual.parts = [{ type: 'compaction', auto: false }]
+        server.assistant(String(manual.info.id), 'retained summary', 'stop', true, session.nativeSessionId).info.summary = true
+      }
+      await native.dispose()
+      cold = manager(server)
+      const final = await cold.readCompaction(session, { request: request(), environment: environment() }, recovered)
+      assert.equal(final.status, definite ? 'failed' : 'completed')
+      assert.equal(server.calls.filter(call => call.path.includes('/summarize')).length, 1)
+    } finally {
+      await native.dispose()
+      await cold?.dispose()
+    }
+  },
+)
 
 it('carries confirmed non-creation from MCP preflight and permits an explicit retry after cleanup', async () => {
   const server = new FixtureServer()
