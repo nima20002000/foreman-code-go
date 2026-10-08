@@ -1,9 +1,8 @@
-import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { COMPUTER_DRIVE_NAMESPACE, DriveComputerStateSchema, DriveLoginStateSchema,
   type DriveComputerRequest, type DriveComputerState, type DriveLoginState } from '@foreman-code/contracts/computer-accounts'
-import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
+import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -13,64 +12,69 @@ import { DriveComputer } from './driveComputer.js'
 import { assertCurrentComputer } from './github.js'
 
 const LOGIN_LIFETIME_MS = 10 * 60_000
-const URL_WAIT_MS = 30_000
+const SCOPE = Buffer.from(JSON.stringify({ scope: 'drive.file' })).toString('base64url')
 
-export interface DriveAuthorizer {
-  /** rclone's Google sign-in on Main: resolves with the URL to open, then with the authorization token. */
-  start(rclone: string): { url: Promise<string>; token: Promise<string>; cancel(): void }
+interface Intent { id: string; sequence: number }
+
+interface Session {
+  id: string
+  principalId: string
+  target: DeviceProvisioningTarget
+  state: DriveLoginState
 }
 
-interface Session { id: string; target: DeviceProvisioningTarget; cancel(): void; state: DriveLoginState }
-
-/** Connects Google Drive on Main or a paired computer. The owner signs in to Google in a browser on Main; the
- * resulting authorization goes straight to that computer's rclone config, which mounts Drive. Main keeps no token. */
+/** rclone authorization runs beside the owner's browser. Main forwards the pasted token to the selected computer. */
 export class ComputerDriveService {
-  private session: Session | undefined
+  private readonly sessions = new Map<string, Session>()
+  private readonly current = new Map<string, Intent>()
+  private sequence = 0
+  private pending: Promise<unknown> = Promise.resolve()
+  private readonly local: Pick<DriveComputer, 'handle'>
+  private readonly now: () => number
+  private readonly changed: (target: DeviceProvisioningTarget) => void
+
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
     private readonly endpoint: () => ComputerAccountsEndpoint | undefined,
     private readonly commands: PostgresCommandCoordinator,
-    private readonly local: DriveComputer = new DriveComputer(),
-    private readonly authorizer: DriveAuthorizer = rcloneAuthorizer(),
-    private readonly now: () => number = Date.now,
-  ) {}
+    options: {
+      local?: Pick<DriveComputer, 'handle'>
+      now?: () => number
+      changed?: (target: DeviceProvisioningTarget) => void
+    } = {},
+  ) {
+    this.local = options.local ?? new DriveComputer()
+    this.now = options.now ?? Date.now
+    this.changed = options.changed ?? (() => {})
+  }
 
   async connectStart(principal: ManagementPrincipal, source: 'http' | 'mcp', target: DeviceProvisioningTarget): Promise<DriveLoginState> {
+    const intent = this.reserveIntent()
     return this.audited(principal, source, target, 'computer_drive_connect_start', async () => {
-      // rclone on this computer for the sign-in, and on the target for the mount.
-      await this.local.install()
-      await this.computer(target, { operation: 'install' })
-      this.session?.cancel()
-      const flow = this.authorizer.start(this.local.rclone)
-      const session: Session = { id: randomUUID(), target, cancel: flow.cancel, state: { loginId: null, state: 'waiting',
-        authorizationUrl: null, expiresAt: new Date(this.now() + LOGIN_LIFETIME_MS).toISOString(), account: null, mountPath: null, message: null } }
-      session.state.loginId = session.id
-      this.session = session
-      const timer = setTimeout(() => {
-        if (session.state.state !== 'waiting') return
-        session.state = { ...session.state, state: 'expired', authorizationUrl: null, message: 'Google sign-in expired. Start again.' }
-        flow.cancel()
-      }, LOGIN_LIFETIME_MS)
-      timer.unref?.()
-      void flow.token.then(async token => {
-        clearTimeout(timer)
-        if (session.state.state !== 'waiting') return
-        session.state = { ...session.state, state: 'connecting', authorizationUrl: null }
-        try {
-          const result = await this.computer(target, { operation: 'connect', token })
-          session.state = { ...session.state, state: 'connected', account: result.account, mountPath: result.mountPath }
-        } catch (error) {
-          session.state = { ...session.state, state: 'failed', message: error instanceof Error ? error.message.slice(0, 500) : 'Drive could not be connected.' }
+      this.prune()
+      if (!this.activate(target, intent, 'This sign-in was replaced. Start again.')) return this.cancelled()
+      const id = intent.id
+      const session: Session = { id, principalId: principal.id, target: structuredClone(target), state: {
+        loginId: id, state: 'waiting', authorizationUrl: null, authorizationCommand: `rclone authorize drive ${SCOPE}`,
+        expiresAt: new Date(this.now() + LOGIN_LIFETIME_MS).toISOString(), account: null, mountPath: null, message: null,
+      } }
+      this.sessions.set(id, session)
+      try {
+        await this.computer(target, { operation: 'intent', operationId: id })
+        if (!this.isCurrent(target, id)) return session.state
+        const existing = await this.computer(target, { operation: 'install' })
+        if (this.isCurrent(target, id)) {
+          session.state = { ...session.state, account: existing.connected && existing.mounted
+            ? existing.account ?? 'Google Drive' : null, mountPath: existing.mounted ? existing.mountPath : null }
         }
-      }, () => {
-        clearTimeout(timer)
-        if (session.state.state === 'waiting') session.state = { ...session.state, state: 'failed', authorizationUrl: null, message: 'Google sign-in did not complete.' }
-      })
-      const url = await Promise.race([flow.url, new Promise<never>((_, reject) => setTimeout(() =>
-        reject(new DomainError('DRIVE_LOGIN_FAILED', 'rclone did not offer a Google sign-in link in time.', 504)), URL_WAIT_MS).unref?.())])
-        .catch(error => { flow.cancel(); this.session = undefined; throw error })
-      session.state = { ...session.state, authorizationUrl: url }
+      } catch (error) {
+        if (this.isCurrent(target, session.id)) {
+          this.current.delete(this.key(target))
+          session.state = { ...session.state, state: 'failed', message: 'Drive setup failed. Start again.' }
+        }
+        throw error
+      }
       return DriveLoginStateSchema.parse(session.state)
     })
   }
@@ -78,23 +82,136 @@ export class ComputerDriveService {
   async connectStatus(principal: ManagementPrincipal, source: 'http' | 'mcp', target: DeviceProvisioningTarget, loginId: string) {
     await assertCurrentComputer(this.pool, this.mainId, principal, target)
     void source
-    if (this.session?.id !== loginId || JSON.stringify(this.session.target) !== JSON.stringify(target)) {
-      throw new DomainError('DRIVE_LOGIN_NOT_FOUND', 'This Google sign-in is no longer active.', 404)
-    }
-    return DriveLoginStateSchema.parse(this.session.state)
+    return DriveLoginStateSchema.parse(this.session(principal, target, loginId).state)
+  }
+
+  async connectComplete(principal: ManagementPrincipal, source: 'http' | 'mcp', target: DeviceProvisioningTarget,
+    loginId: string, pasted: string): Promise<DriveLoginState> {
+    return this.audited(principal, source, target, 'computer_drive_connect_complete', () => this.exclusive(async () => {
+      const session = this.session(principal, target, loginId)
+      if (session.state.state === 'connected') return session.state
+      if (session.state.state !== 'waiting' || !this.isCurrent(target, session.id)) {
+        throw new DomainError('DRIVE_LOGIN_INACTIVE', 'This Google sign-in is no longer active. Start again.', 409)
+      }
+      const token = rcloneToken(pasted)
+      if (!token) throw new DomainError('DRIVE_TOKEN_INVALID', 'Paste the authorization result printed by rclone.', 400)
+      // Pairing and access may have changed while authorization or another mount was in progress.
+      await assertCurrentComputer(this.pool, this.mainId, principal, target)
+      if (!this.isCurrent(target, session.id)) {
+        throw new DomainError('DRIVE_LOGIN_INACTIVE', 'This Google sign-in was cancelled. Start again.', 409)
+      }
+      session.state = { ...session.state, state: 'connecting' }
+      try {
+        const result = await this.computer(target, { operation: 'connect', operationId: session.id, token })
+        if (!result.connected || !result.mounted) {
+          throw new DomainError('DRIVE_MOUNT_FAILED', 'Google Drive did not mount on this computer.', 502)
+        }
+        if (this.isCurrent(target, session.id)) {
+          session.state = { ...session.state, state: 'connected', account: result.account, mountPath: result.mountPath }
+        }
+        return DriveLoginStateSchema.parse(session.state)
+      } catch (error) {
+        if (this.isCurrent(target, session.id)) {
+          session.state = { ...session.state, state: 'failed',
+            message: error instanceof Error ? error.message.slice(0, 500) : 'Drive could not be connected.' }
+        }
+        throw error
+      } finally {
+        this.changed(target)
+      }
+    }))
+  }
+
+  async cancel(principal: ManagementPrincipal, source: 'http' | 'mcp', target: DeviceProvisioningTarget,
+    loginId: string): Promise<DriveLoginState> {
+    const intent = this.reserveIntent()
+    return this.audited(principal, source, target, 'computer_drive_connect_cancel', async () => {
+      const session = this.session(principal, target, loginId)
+      if (!this.isCurrent(target, loginId) || session.state.state === 'connected') return session.state
+      if (this.activate(target, intent, 'Google sign-in was cancelled.')) {
+        await this.computer(target, { operation: 'intent', operationId: intent.id })
+      }
+      return session.state
+    })
   }
 
   async disconnect(principal: ManagementPrincipal, source: 'http' | 'mcp', target: DeviceProvisioningTarget): Promise<DriveLoginState> {
+    const intent = this.reserveIntent()
     return this.audited(principal, source, target, 'computer_drive_disconnect', async () => {
-      await this.computer(target, { operation: 'disconnect' })
-      return DriveLoginStateSchema.parse({ loginId: null, state: 'disconnected', authorizationUrl: null, expiresAt: null,
-        account: null, mountPath: null, message: null })
+      if (!this.activate(target, intent, 'Sign-in was cancelled by disconnecting Drive.')) return this.cancelled()
+      await this.computer(target, { operation: 'intent', operationId: intent.id })
+      return this.exclusive(async () => {
+        await assertCurrentComputer(this.pool, this.mainId, principal, target)
+        if (!this.isCurrent(target, intent.id)) return this.cancelled()
+        try {
+          const result = await this.computer(target, { operation: 'disconnect', operationId: intent.id })
+          if (!this.isCurrent(target, intent.id)) return this.cancelled()
+          if (result.connected || result.mounted) {
+            throw new DomainError('DRIVE_DISCONNECT_FAILED', 'Google Drive is still connected on this computer.', 502)
+          }
+          return DriveLoginStateSchema.parse({ ...this.cancelled(), state: 'disconnected', message: null })
+        } finally {
+          this.changed(target)
+        }
+      })
     })
+  }
+
+  private reserveIntent(): Intent {
+    return { id: randomUUID(), sequence: ++this.sequence }
+  }
+
+  private isCurrent(target: DeviceProvisioningTarget, id: string): boolean {
+    return this.current.get(this.key(target))?.id === id
+  }
+
+  private activate(target: DeviceProvisioningTarget, intent: Intent, message: string): boolean {
+    const previous = this.current.get(this.key(target))
+    if (previous && previous.sequence > intent.sequence) return false
+    const session = previous && this.sessions.get(previous.id)
+    if (session) session.state = { ...session.state, state: 'cancelled', message }
+    this.current.set(this.key(target), intent)
+    return true
+  }
+
+  private cancelled(): DriveLoginState {
+    return { loginId: null, state: 'cancelled', authorizationUrl: null, authorizationCommand: null,
+      expiresAt: null, account: null, mountPath: null, message: 'A newer Drive request replaced this request.' }
+  }
+
+  private key(target: DeviceProvisioningTarget): string {
+    return target.hostRef.kind === 'main' ? `main:${this.mainId}` : `device:${target.hostRef.deviceId}`
+  }
+
+  private session(principal: ManagementPrincipal, target: DeviceProvisioningTarget, id: string): Session {
+    const session = this.sessions.get(id)
+    if (!session || session.principalId !== principal.id || !sameDeviceProvisioningTarget(session.target, target)) {
+      throw new DomainError('DRIVE_LOGIN_NOT_FOUND', 'This Google sign-in is no longer active. Start again.', 404)
+    }
+    if (session.state.state === 'waiting' && Date.parse(session.state.expiresAt!) <= this.now()) {
+      session.state = { ...session.state, state: 'expired', message: 'Google sign-in expired. Start again.' }
+    }
+    return session
+  }
+
+  private prune() {
+    for (const [id, session] of this.sessions) {
+      if (Date.parse(session.state.expiresAt!) > this.now() || session.state.state === 'connecting') continue
+      this.sessions.delete(id)
+      if (this.isCurrent(session.target, session.id)) this.current.delete(this.key(session.target))
+    }
+  }
+
+  /** Main serializes folder lookup/creation across its computers, and disconnect waits for any active switch. */
+  private exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.pending.then(work)
+    this.pending = result.then(() => undefined, () => undefined)
+    return result
   }
 
   private async audited(principal: ManagementPrincipal, source: 'http' | 'mcp', target: DeviceProvisioningTarget, action: string,
     work: () => Promise<DriveLoginState>) {
-    const targetKey = target.hostRef.kind === 'main' ? `main:${this.mainId}` : `device:${target.hostRef.deviceId}`
+    const targetKey = this.key(target)
     try { requireAuthorization(principal, 'settings:update') } catch (error) {
       await this.commands.recordDenied(principal.id, source, action, targetKey)
       throw error
@@ -119,46 +236,16 @@ export class ComputerDriveService {
       throw new DomainError('COMPUTER_OFFLINE', 'This computer is offline or its app is too old for Google Drive.', 409)
     }
     return DriveComputerStateSchema.parse((await endpoint.request(deviceId, COMPUTER_DRIVE_NAMESPACE, request,
-      // Connecting finds or creates the app folder and waits for the mount; both can be slow on a laptop.
       { signal: AbortSignal.timeout(request.operation === 'install' ? 300_000 : request.operation === 'connect' ? 240_000 : 90_000) })).payload)
   }
 }
 
-/** `rclone authorize drive` listens on 127.0.0.1:53682 on Main and prints the token once Google redirects back. */
-export function rcloneAuthorizer(environment: NodeJS.ProcessEnv = process.env): DriveAuthorizer {
-  return {
-    start(rclone) {
-      // Only files the app creates (drive.file), not the owner's whole Drive.
-      const scope = Buffer.from(JSON.stringify({ scope: 'drive.file' })).toString('base64url')
-      const child: ChildProcess = spawn(rclone, ['authorize', 'drive', scope, '--auth-no-open-browser'],
-        { stdio: ['ignore', 'pipe', 'pipe'], env: { ...environment, NO_COLOR: '1' } })
-      let output = ''
-      let resolveUrl!: (value: string) => void, rejectUrl!: (error: Error) => void
-      const url = new Promise<string>((resolve, reject) => { resolveUrl = resolve; rejectUrl = reject })
-      const token = new Promise<string>((resolve, reject) => {
-        const read = (chunk: Buffer) => {
-          output = (output + chunk.toString('utf8')).slice(-65_536)
-          const link = /(http:\/\/127\.0\.0\.1:53682\/auth\?state=[A-Za-z0-9_-]+)/u.exec(output)?.[1]
-          if (link) resolveUrl(link)
-        }
-        child.stdout?.on('data', read)
-        child.stderr?.on('data', read)
-        child.once('error', error => { rejectUrl(error); reject(error) })
-        child.once('exit', code => {
-          const pasted = code === 0 ? rcloneToken(/--->\s*(\S[\s\S]*?)\s*<---End paste/u.exec(output)?.[1]) : undefined
-          if (pasted) resolve(pasted)
-          else { const error = new Error('rclone authorize did not complete.'); rejectUrl(error); reject(error) }
-        })
-      })
-      return { url, token, cancel: () => child.kill('SIGTERM') }
-    },
-  }
-}
-
-/** rclone prints the token as JSON, or (when given a config blob) as base64url JSON carrying it under `token`. */
+/** rclone prints JSON, or base64url JSON carrying the token under `token`. */
 export function rcloneToken(pasted: string | undefined): string | undefined {
   if (!pasted) return undefined
-  const parse = (text: string) => { try { return JSON.parse(text) as unknown } catch { return undefined } }
+  const parse = (text: string): unknown => {
+    try { return JSON.parse(text) as unknown } catch { return undefined }
+  }
   const value = parse(pasted) ?? parse(Buffer.from(pasted.trim(), 'base64url').toString('utf8'))
   if (!value || typeof value !== 'object') return undefined
   const record = value as { token?: unknown; access_token?: unknown }

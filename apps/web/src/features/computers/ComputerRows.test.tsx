@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { expect, it } from 'vitest'
 import type { BuildComputerBatchUpdate, BuildComputerBatchResult, BuildComputerUpdate } from '@foreman-code/contracts/build-computers'
+import type { DriveLoginState } from '@foreman-code/contracts/computer-accounts'
 import { server } from '../../mocks/server'
 import { computerKey } from '../../shared/api/computerActivity'
 import { ComputerRows } from './ComputerRows'
@@ -228,27 +229,34 @@ it('connects GitHub on a computer with a one-time code and shows the signed-in a
   await waitFor(() => expect(within(dialog).getByText('new-owner')).toBeInTheDocument(), { timeout: 8000 })
 }, 15_000)
 
-it('connects Google Drive on a computer through a Google sign-in link and shows the mounted account', async () => {
+it('connects Google Drive on a computer through remote authorization and shows the mounted account', async () => {
   const user = userEvent.setup()
-  const state = { polls: 0 }
-  const waiting = { loginId: '77777777-7777-4777-8777-777777777777', state: 'waiting',
-    authorizationUrl: 'http://127.0.0.1:53682/auth?state=abc', expiresAt: '2026-10-07T00:10:00.000Z', account: null, mountPath: null, message: null }
+  const waiting: DriveLoginState = { loginId: '77777777-7777-4777-8777-777777777777', state: 'waiting',
+    authorizationUrl: null, authorizationCommand: 'rclone authorize drive e30',
+    expiresAt: '2099-01-01T00:00:00.000Z', account: null, mountPath: null, message: null }
+  let state = waiting
   const bodies: unknown[] = []
+  const completions: unknown[] = []
   server.use(
     http.post('*/api/management/computers/drive/connect', async ({ request }) => { bodies.push(await request.json()); return HttpResponse.json(waiting) }),
-    http.post('*/api/management/computers/drive/connect/status', () => {
-      state.polls++
-      return HttpResponse.json(state.polls < 2 ? waiting : { ...waiting, state: 'connected', authorizationUrl: null,
-        account: 'owner@gmail.com', mountPath: '/home/owner/Foreman Code Drive' })
+    http.post('*/api/management/computers/drive/connect/status', () => HttpResponse.json(state)),
+    http.post('*/api/management/computers/drive/connect/complete', async ({ request }) => {
+      completions.push(await request.json())
+      state = { ...waiting, state: 'connected', account: 'owner@gmail.com',
+        mountPath: '/home/owner/Foreman Code Drive' }
+      return HttpResponse.json(state)
     }),
   )
   computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
   await user.click(await screen.findByRole('button', { name: 'Google Drive: not installed. Manage Google Drive' }))
   const dialog = await screen.findByRole('dialog', { name: 'Google Drive on Main PC' })
   await user.click(within(dialog).getByRole('button', { name: 'Connect Google Drive' }))
-  expect(await within(dialog).findByRole('link', { name: /Open Google sign-in/ })).toHaveAttribute('href', waiting.authorizationUrl)
+  expect(await within(dialog).findByText(waiting.authorizationCommand!)).toBeInTheDocument()
   expect(bodies).toEqual([{ target: mainTarget }])
-  await waitFor(() => expect(within(dialog).getByText('owner@gmail.com')).toBeInTheDocument(), { timeout: 8000 })
+  await user.type(within(dialog).getByLabelText('Authorization result'), 'authorization-result')
+  await user.click(within(dialog).getByRole('button', { name: 'Finish connecting' }))
+  expect(await within(dialog).findByText('owner@gmail.com')).toBeInTheDocument()
+  expect(completions).toEqual([{ target: mainTarget, loginId: waiting.loginId, token: 'authorization-result' }])
   expect(within(dialog).getByText('/home/owner/Foreman Code Drive')).toBeInTheDocument()
 }, 15_000)
 
