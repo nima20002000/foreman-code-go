@@ -30,7 +30,7 @@ function fixture() {
   for (const harness of ['codex', 'opencode', 'claude']) for (const kind of ['main', 'device']) {
     const configuration = harness === 'claude' ? { harness, model: 'claude-haiku-4-5-20251001',
       authMode: 'subscription', configDirectory: '/owned/recorded-profile', permissionMode: 'default',
-      sandbox: 'read-only', tools: [], permissionRules: [], instructions: '', mcpServers: {} }
+      sandbox: 'danger-full-access', tools: ['Write'], permissionRules: [], instructions: '', mcpServers: {} }
       : structuredClone(contracts.DEFAULT_HARNESS_DEFAULTS[harness])
     if (harness === 'codex') configuration.reasoningEffort = 'medium'
     const hostRef = kind === 'main' ? { kind, mainId } : { kind, mainId, deviceId }
@@ -260,6 +260,15 @@ test('rejects changed Main identity and forbidden native models before product w
   f.input.subjects.find(value => value.configuration.harness === 'claude').configuration.model = 'claude-opus-5-5'
   await assert.rejects(provisionSessionControlSubjects(f.input, f.ports), /explicit Haiku/)
   assert.equal(f.calls.length, 0)
+})
+
+test('rejects unsupported Claude access before any product call', async () => {
+  for (const sandbox of ['read-only', 'workspace-write']) {
+    const f = fixture()
+    f.input.subjects.find(value => value.configuration.harness === 'claude').configuration.sandbox = sandbox
+    await assert.rejects(provisionSessionControlSubjects(f.input, f.ports), /Claude requires Full access/)
+    assert.equal(f.calls.length, 0)
+  }
 })
 
 test('provisions only the selected providers on Main and the paired Worker', async () => {

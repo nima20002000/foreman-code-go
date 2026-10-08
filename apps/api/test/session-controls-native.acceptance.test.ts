@@ -181,7 +181,7 @@ describe('native session controls through the production Main and installed Work
         const hostRef = hostKind === 'main' ? { kind: 'main' as const, mainId: f.identity.installationId } : f.hostRef
         const configuration = harness === 'claude' ? { harness, model: 'claude-haiku-4-5-20251001',
           authMode: 'subscription', configDirectory: hostKind === 'main' ? f.mainProfile : f.workerProfile,
-          permissionMode: 'default', sandbox: 'read-only', tools: ['mcp__foreman-code__workspace_list'],
+          permissionMode: 'default', sandbox: 'danger-full-access', tools: ['Write', 'mcp__foreman-code__workspace_list'],
           permissionRules: [], instructions: '', mcpServers: { 'foreman-code': { type: 'http', url: `${f.baseUrl}/mcp` } } }
           : structuredClone(contracts.DEFAULT_HARNESS_DEFAULTS[harness])
         if (configuration.harness === 'codex') {

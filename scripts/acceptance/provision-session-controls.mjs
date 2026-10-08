@@ -15,7 +15,7 @@ function validateSubjects(input, contracts, profiles, roots, identity) {
   assert.equal(input.subjects.length, harnesses.length * 2, 'Provide each selected harness on Main and Worker.')
   const keys = new Set()
   const subjects = input.subjects.map(subject => {
-    const configuration = contracts.HarnessConfigurationSchema.parse(subject.configuration)
+    const configuration = contracts.SupportedHarnessConfigurationSchema.parse(subject.configuration)
     assert.ok(harnesses.includes(configuration.harness), 'The subject uses an unselected harness.')
     const hostRef = profiles.HarnessHostReferenceSchema.parse(subject.hostRef)
     assert.equal(hostRef.mainId, identity.installationId, 'The installation belongs to another Main.')
