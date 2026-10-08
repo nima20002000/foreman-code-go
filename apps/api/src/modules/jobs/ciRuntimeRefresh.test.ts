@@ -43,7 +43,7 @@ function fixture() {
   const tools = [
     { kind: 'postgresql', executable: '/usr/lib/postgresql/17/bin/postgres', version: '17.1', binarySha256: '1'.repeat(64) },
     { kind: 'browser', executable: '/usr/bin/chromium', version: 'Chromium 1', binarySha256: '2'.repeat(64) },
-    { kind: 'opencode', executable: '/usr/bin/opencode', version: '1.0', binarySha256: '3'.repeat(64) },
+    { kind: 'claude', executable: '/usr/bin/claude', version: '1.0', binarySha256: '3'.repeat(64) },
     ...fingerprint.tools,
   ]
   const current = InstalledVerificationRuntimeConfigurationSchema.parse({ schemaVersion: 2, root: fingerprint.root,
@@ -73,7 +73,7 @@ describe('CI runtime refresh', () => {
     const next = nextCaptureInput(f.current, f.prepared, { root: f.current.root,
       manifest: f.current.qualificationSource.manifest, seedReceiptPath: f.prepared.seedReceiptPath,
       resources: f.current.machine.resources })
-    expect(next.toolSources.map(tool => tool.kind).sort()).toEqual(['browser', 'codex', 'opencode', 'postgresql'])
+    expect(next.toolSources.map(tool => tool.kind).sort()).toEqual(['browser', 'claude', 'codex', 'postgresql'])
     expect(next.toolSources.find(tool => tool.kind === 'codex')).toMatchObject({ version: 'new-codex',
       sourceExecutable: '/ci/prepared-codex' })
   })
@@ -89,7 +89,7 @@ describe('CI runtime refresh', () => {
       return ''
     })
     const sources = await recaptureCiTools(f.current.machine.tools, f.prepared, directory, process.env)
-    expect(sources.map(tool => tool.kind).sort()).toEqual(['browser', 'codex', 'opencode', 'postgresql'])
+    expect(sources.map(tool => tool.kind).sort()).toEqual(['browser', 'claude', 'codex', 'postgresql'])
     expect(sources.find(tool => tool.kind === 'postgresql')?.version).toBe('17.2')
     for (const tool of sources.filter(value => value.kind !== 'codex')) {
       const bytes = await readFile(tool.sourceExecutable)

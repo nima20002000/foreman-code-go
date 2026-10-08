@@ -18,7 +18,7 @@ import { jobDigest } from './service.js'
 import { readJobRuntimeProfileVersion } from './runtimeProfileVersion.js'
 import type { JobRuntimeInventory } from './sourcePreparation.js'
 import type { JobRuntimeQualificationProducer, JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
-import { JobVerificationProfileSchema, JobVerificationRuntimeFingerprintSchema,
+import { JobVerificationProfileSchema, JobVerificationRuntimeFingerprintSchema, JobVerificationRuntimeMeasurementSchema,
   JobRuntimeProfileRecordSchema, JobRuntimeProfileSaveRecordSchema, JobRuntimeApprovalRecordSchema,
   JobRuntimeFingerprintRecordSchema, JobRuntimeMeasurementRecordSchema, JobRuntimeNativeAdmissionRecordSchema,
   jobRuntimeProfilePolicy, jobRuntimeProfileLimits, type JobRuntimeApprovalRecord,
@@ -29,6 +29,12 @@ import type { z } from 'zod'
 import { verificationDependencyBasis } from './dependencyBasis.js'
 import { runtimeQualificationFacts, validateRuntimeQualification, qualificationTimeoutMs, qualificationDeadline }
   from './runtimeQualificationFacts.js'
+import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
+
+function usesRetiredHarness(profile: JobRuntimeProfileRecord): boolean {
+  return profile.schemaVersion === 2
+    && profile.measurement?.fingerprint.tools.some(tool => tool.kind === 'opencode') === true
+}
 
 /** Main CI policy metadata; machine/root identity continues to come from W07/W09/W12. */
 export class JobRuntimeProfiles implements JobRuntimeInventory {
@@ -118,6 +124,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         if (profile.schemaVersion === 1) JobRuntimeProfileInputSchema.parse({rootId:profile.root.binding.rootId,bindingRevision:profile.root.binding.bindingRevision,limits:profile.limits,policy})
         if(isolationPolicyId!==profile.id||isolationPolicyRevision!==profile.revision)throw new DomainError('JOB_RUNTIME_PROFILE_SCOPE_CONFLICT','The policy differs from its exact profile revision.',409)
         const fingerprint=JobRuntimeFingerprintRecordSchema.parse(await this.producer.capture(profile))
+        if (profile.schemaVersion === 2) JobVerificationRuntimeFingerprintSchema.parse(fingerprint)
         if (profile.schemaVersion === 2 && (fingerprint.schemaVersion !== 3
           || fingerprint.sourceCommit !== profile.sourceCommit)) {
           throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED',
@@ -166,6 +173,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
             const live = await readLiveManagementPrincipal(sql, principal.id)
             requireAuthorization(live, 'jobs:start', { workspaceId })
             requireAuthorization(live, 'job_artifacts:read', { workspaceId })
+            JobVerificationRuntimeFingerprintSchema.parse(value.fingerprint)
           }
           const owner=(await sql.query<{run_command_id:string|null;run_principal_id:string|null;measurement:unknown;run_result:JobRuntimeQualificationResult|null}>('select run_command_id,run_principal_id,measurement,run_result from job_runtime_qualification_approvals where id=$1 for update',[approvalId])).rows[0]!
           if(owner.run_command_id&&(owner.run_command_id!==commandId||owner.run_principal_id!==principal.id))throw new DomainError('JOB_RUNTIME_QUALIFICATION_IN_PROGRESS','Reconcile the original qualification command.',409)
@@ -193,6 +201,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         }
         if(result.outcome==='qualified') {
           measurement=JobRuntimeMeasurementRecordSchema.parse(result.measurement)
+          if (measurement.schemaVersion === 2) JobVerificationRuntimeMeasurementSchema.parse(measurement)
           validateRuntimeQualification(approval,measurement)
         }
         await this.transaction(async sql=>{await this.authorize(sql,principal,workspaceId,true);await sql.query('update job_runtime_qualification_approvals set measurement=$2::jsonb,run_result=$5::jsonb where id=$1 and run_command_id=$3 and run_principal_id=$4',[approvalId,measurement?JSON.stringify(measurement):null,commandId,principal.id,JSON.stringify(result)])})
@@ -240,7 +249,15 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
       const approval=await this.approval(sql,workspaceId,id),profile=await this.record(sql,workspaceId,approval.profileId)
       const row=(await sql.query<{measurement:unknown;run_result:JobRuntimeQualificationResult|null;native_admission:unknown}>('select measurement,run_result,native_admission from job_runtime_qualification_approvals where id=$1',[id])).rows[0]!
       const measurement=row.measurement?JobRuntimeMeasurementRecordSchema.parse(row.measurement):null
-      const readiness=profile.status==='qualified'&&measurement&&Date.parse(measurement.expiresAt)>Date.now()?await this.producer.revalidate(sql,profile):{ready:false,reasons:row.run_result?.outcome==='denied'?row.run_result.reasons:[`RUNTIME_${profile.status.toUpperCase().replaceAll('-','_')}`]}
+      let readiness: { ready: boolean; reasons: string[] }
+      if (usesRetiredHarness(profile)) readiness = { ready: false, reasons: ['HARNESS_RETIRED'] }
+      else if (profile.status === 'qualified' && measurement && Date.parse(measurement.expiresAt) > Date.now()) {
+        readiness = await this.producer.revalidate(sql, profile)
+      } else {
+        const reasons = row.run_result?.outcome === 'denied' ? row.run_result.reasons
+          : [`RUNTIME_${profile.status.toUpperCase().replaceAll('-', '_')}`]
+        readiness = { ready: false, reasons }
+      }
       await this.authorize(sql,principal,workspaceId)
       return {approval,measurement,nativeAdmission:row.native_admission?JobRuntimeNativeAdmissionRecordSchema.parse(row.native_admission):null,profile,readiness:{...readiness,sideEffects:false as const}}
     })
@@ -254,11 +271,16 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
   async choices(sql:JobSql,principal:ManagementPrincipal,workspaceId:string) {
     await this.authorize(sql,principal,workspaceId)
     const rows=await sql.query<{record:unknown}>('select record from job_runtime_profiles where workspace_id=$1 and record->>\'status\'=\'qualified\' order by id limit 100',[workspaceId])
-    const profiles=rows.rows.map(row=>JobRuntimeProfileRecordSchema.parse(row.record)),policies=[]
-    for(const profile of profiles)if(profile.measurement&&Date.parse(profile.measurement.expiresAt)>Date.now()&&(await this.producer.revalidate(sql,profile)).ready)policies.push(jobRuntimeProfilePolicy(profile))
+    const profiles = rows.rows.map(row => JobRuntimeProfileRecordSchema.parse(row.record))
+    const policies = []
+    for (const profile of profiles) {
+      if (profile.measurement && Date.parse(profile.measurement.expiresAt) > Date.now()
+        && (await this.readiness(sql, profile)).ready) policies.push(jobRuntimeProfilePolicy(profile))
+    }
     return policies
   }
   readiness(sql: JobSql, profile: JobRuntimeProfileRecord) {
+    if (usesRetiredHarness(profile)) return Promise.resolve({ ready: false, reasons: ['HARNESS_RETIRED'] })
     if (profile.schemaVersion === 2 && (!profile.approvalConfig.review || !profile.sourceCommit)) {
       return Promise.resolve({ ready: false, reasons: ['runtime_configuration_changed'] })
     }
@@ -272,6 +294,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     requireAuthorization(await readLiveManagementPrincipal(sql,principal.id),'source_roots:read',{workspaceId:root.binding.workspaceId})
     const profile = await readJobRuntimeProfileVersion(sql, root.binding.workspaceId,
       spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision)
+    if (usesRetiredHarness(profile)) throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     const sameNamespace=canonical(profile.root.selection.hostRef)===canonical(root.selection.hostRef)&&canonical(profile.root.registration)===canonical(root.registration)&&profile.root.selection.rootPolicyId===root.selection.rootPolicyId&&profile.root.selection.rootPolicyRevision===root.selection.rootPolicyRevision&&canonical(profile.root.binding.filesystem)===canonical(root.binding.filesystem)&&profile.root.binding.canonicalPath===root.binding.canonicalPath
     if(profile.status!=='qualified'||!profile.measurement||profile.revision!==spec.policy.isolationPolicyRevision||canonical(jobRuntimeProfilePolicy(profile))!==canonical(spec.policy)||!sameNamespace)throw new DomainError('JOB_RUNTIME_UNQUALIFIED','The exact policy/root/host has no current actual qualification.',409)
     if ('verification' in spec) {
@@ -301,6 +324,7 @@ export function verificationProfileReadiness(input: {
 }): { ready: boolean; reasons: string[]; sideEffects: false } {
   const profile = JobVerificationProfileSchema.parse(input.profile)
   const measurement = profile.measurement
+  if (usesRetiredHarness(profile)) return { ready: false, reasons: ['HARNESS_RETIRED'], sideEffects: false }
   const now = input.now ?? Date.now()
   const denied = (reason: string) => ({ ready: false, reasons: [reason], sideEffects: false as const })
   if (!profile.approvalConfig.review || !profile.sourceCommit) return denied('runtime_configuration_changed')

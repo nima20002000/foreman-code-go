@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   JobVerificationProfileInputSchema, JobVerificationRuntimeMeasurementSchema,
+  JobRuntimeMeasurementRecordSchema, JobRuntimeFingerprintRecordSchema,
   JOB_VERIFICATION_BASE_CHECKS, JOB_VERIFICATION_EGRESS_CHECKS,
 } from './jobVerificationRuntime.js'
 import { verificationFixture, verificationMeasurementFixture, verificationId, verificationDigest }
@@ -87,9 +88,12 @@ describe('verification profile qualification contracts', () => {
         ...native, fingerprint: { ...native.fingerprint, tools: tools.filter(tool => tool.kind !== harness) },
       }).success).toBe(false)
     }
-    expect(JobVerificationRuntimeMeasurementSchema.safeParse({
+    const historical = {
       ...native, fingerprint: { ...native.fingerprint,
         tools: tools.map(tool => tool.kind === 'claude' ? { ...tool, kind: 'opencode' } : tool) },
-    }).success).toBe(false)
+    }
+    expect(JobVerificationRuntimeMeasurementSchema.safeParse(historical).success).toBe(false)
+    expect(JobRuntimeMeasurementRecordSchema.parse(historical)).toEqual(historical)
+    expect(JobRuntimeFingerprintRecordSchema.parse(historical.fingerprint)).toEqual(historical.fingerprint)
   })
 })

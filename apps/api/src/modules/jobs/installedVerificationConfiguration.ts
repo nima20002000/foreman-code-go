@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { SourceManifestSchema } from '@foreman-code/contracts/source-materialization'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
-import { JobVerificationRuntimeFingerprintSchema, JobVerificationInstalledRuntimeDescriptorSchema }
+import { JobVerificationRuntimeFingerprintSchema, JobVerificationInstalledRuntimeDescriptorSchema, VerificationToolKindSchema }
   from '@foreman-code/contracts/job-verification-runtime'
 
 export const MAX_VERIFICATION_CONFIGURATION_BYTES = 2 * 1024 * 1024 + 65536
@@ -10,7 +10,9 @@ export const MAX_VERIFICATION_CONFIGURATION_BYTES = 2 * 1024 * 1024 + 65536
 const machine = z.object({ ...JobVerificationRuntimeFingerprintSchema.shape }).omit({
   schemaVersion: true, profileId: true, profileRevision: true, specDigest: true,
   hostRef: true, registration: true, mainInstallationId: true, root: true,
-})
+}).extend({ tools: z.array(JobVerificationRuntimeFingerprintSchema.shape.tools.element.extend({
+  kind: VerificationToolKindSchema,
+})).max(16) })
 const InstalledVerificationRuntimeConfigurationFields = z.object({
   schemaVersion: z.literal(2), root: SourceRootRecordSchema,
   descriptor: JobVerificationInstalledRuntimeDescriptorSchema,
@@ -42,7 +44,7 @@ export const InstalledVerificationRuntimeCaptureInputSchema = InstalledVerificat
   machine: machine.omit({ bootId: true, runtimeBinarySha256: true, ociBinarySha256: true,
     configurationDigest: true, seedReceiptSha256: true, tools: true }),
   toolSources: z.array(z.object({
-    kind: JobVerificationRuntimeFingerprintSchema.shape.tools.element.shape.kind,
+    kind: VerificationToolKindSchema,
     executable: z.string().startsWith('/').max(1024),
     sourceExecutable: z.string().startsWith('/').max(2048),
     version: z.string().min(1).max(200),

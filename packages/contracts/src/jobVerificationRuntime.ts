@@ -90,8 +90,9 @@ export const JobVerificationProfileSaveSchema = z.object({
   name: z.string().trim().min(1).max(200), spec: JobVerificationProfileInputSchema,
 }).strict()
 
-const ToolIdentity = z.object({
-  kind: z.enum(['postgresql', 'browser', 'codex', 'claude']),
+export const VerificationToolKindSchema = z.enum(['postgresql', 'browser', 'codex', 'claude'])
+const RecordedToolIdentity = z.object({
+  kind: z.enum(['postgresql', 'browser', 'codex', 'claude', 'opencode']),
   executable: z.string().startsWith('/').max(1024),
   version: IdSchema,
   binarySha256: DeviceDigestSchema,
@@ -109,7 +110,7 @@ export const JobVerificationQuotaPoolSchema = z.object({
   }
 })
 export type JobVerificationQuotaPool = z.infer<typeof JobVerificationQuotaPoolSchema>
-export const JobVerificationRuntimeFingerprintSchema = z.object({
+export const RecordedJobVerificationRuntimeFingerprintSchema = z.object({
   ...ProvisionedJobRuntimeFingerprintSchema.shape,
   schemaVersion: z.literal(3),
   workspaceLayout: z.literal(JOB_RUNTIME_WORKSPACE_LAYOUT),
@@ -117,7 +118,7 @@ export const JobVerificationRuntimeFingerprintSchema = z.object({
   resources: JobResourceRequestSchema,
   quotaPool: JobVerificationQuotaPoolSchema.optional(),
   approvalConfig: JobVerificationApprovalConfigSchema,
-  tools: z.array(ToolIdentity).max(16),
+  tools: z.array(RecordedToolIdentity).max(16),
   seedReceiptSha256: DeviceDigestSchema,
   sourceCommit: JobVerificationPrivateGitSchema.shape.sourceCommit.optional(),
 }).strict().superRefine((value, context) => {
@@ -146,6 +147,12 @@ export const JobVerificationRuntimeFingerprintSchema = z.object({
   }
 })
 
+export const JobVerificationRuntimeFingerprintSchema = RecordedJobVerificationRuntimeFingerprintSchema.superRefine((value, context) => {
+  if (value.tools.some(tool => tool.kind === 'opencode')) {
+    context.addIssue({ code: 'custom', path: ['tools'], message: 'OpenCode is retired and cannot qualify new runtimes.' })
+  }
+})
+
 export const JOB_VERIFICATION_BASE_CHECKS = [
   'rootless', 'cgroup-v2', 'filesystem-quota', 'descendant-containment', 'image-toolchain',
   'credential-isolation', 'private-git-scheduler', 'executable-scratch', 'private-shm',
@@ -161,10 +168,10 @@ const CheckId = z.enum([
   'network-none', 'registry-allowlist', 'public-egress-policy', 'postgres-isolation', 'browser-sandbox',
   'native-containment', 'credential-redaction',
 ])
-export const JobVerificationRuntimeMeasurementSchema = z.object({
+export const RecordedJobVerificationRuntimeMeasurementSchema = z.object({
   schemaVersion: z.literal(2),
   identity: JobVerificationProfileIdentitySchema,
-  fingerprint: JobVerificationRuntimeFingerprintSchema,
+  fingerprint: RecordedJobVerificationRuntimeFingerprintSchema,
   origin: z.literal('real-runtime'),
   approvedAt: TimestampSchema,
   checkedAt: TimestampSchema,
@@ -218,7 +225,8 @@ export const JobVerificationRuntimeMeasurementSchema = z.object({
     if (suite.suite === 'browser') required.push('browser-sandbox')
     if (suite.suite === 'native-acceptance' || suite.suite === 'full-gate-local') {
       required.push('native-containment', 'credential-redaction')
-      if (!['codex', 'claude'].every(kind => fingerprint.tools.some(tool => tool.kind === kind))) {
+      if (!fingerprint.tools.some(tool => tool.kind === 'codex')
+        || !fingerprint.tools.some(tool => tool.kind === 'claude' || tool.kind === 'opencode')) {
         context.addIssue({ code: 'custom', message: 'Native acceptance requires both pinned harness binaries.' })
       }
     }
@@ -238,14 +246,17 @@ export const JobVerificationRuntimeMeasurementSchema = z.object({
     context.addIssue({ code: 'custom', message: 'Every declared suite and network mode requires its measured checks.' })
   }
 })
+export const JobVerificationRuntimeMeasurementSchema = RecordedJobVerificationRuntimeMeasurementSchema.safeExtend({
+  fingerprint: JobVerificationRuntimeFingerprintSchema,
+})
 export type JobVerificationRuntimeMeasurement = z.infer<typeof JobVerificationRuntimeMeasurementSchema>
 export type JobVerificationProfileInput = z.infer<typeof JobVerificationProfileInputSchema>
 export const JobRuntimeMeasurementRecordSchema = z.union([
-  JobRuntimeMeasurementSchema, JobVerificationRuntimeMeasurementSchema,
+  JobRuntimeMeasurementSchema, RecordedJobVerificationRuntimeMeasurementSchema,
 ])
 export type JobRuntimeMeasurementRecord = z.infer<typeof JobRuntimeMeasurementRecordSchema>
 export const JobRuntimeFingerprintRecordSchema = z.union([
-  JobRuntimeFingerprintSchema, JobVerificationRuntimeFingerprintSchema,
+  JobRuntimeFingerprintSchema, RecordedJobVerificationRuntimeFingerprintSchema,
 ])
 export type JobRuntimeFingerprintRecord = z.infer<typeof JobRuntimeFingerprintRecordSchema>
 export const JobVerificationProfileSchema = z.object({
@@ -258,7 +269,7 @@ export const JobVerificationProfileSchema = z.object({
   specDigest: DeviceDigestSchema,
   approvalConfig: JobVerificationApprovalConfigSchema,
   status: JobRuntimeProfileSchema.shape.status,
-  measurement: JobVerificationRuntimeMeasurementSchema.nullable(),
+  measurement: RecordedJobVerificationRuntimeMeasurementSchema.nullable(),
   createdAt: TimestampSchema, updatedAt: TimestampSchema,
 }).strict().superRefine((value, context) => {
   if (value.root.binding.rootId !== value.spec.rootId
@@ -308,7 +319,7 @@ export type JobRuntimeProfileSaveRecord = z.infer<typeof JobRuntimeProfileSaveRe
 export const JobVerificationRuntimeApprovalSchema = z.object({
   ...JobRuntimeApprovalSchema.shape,
   schemaVersion: z.literal(2),
-  fingerprint: JobVerificationRuntimeFingerprintSchema,
+  fingerprint: RecordedJobVerificationRuntimeFingerprintSchema,
   requestedAt: TimestampSchema,
 }).strict().superRefine((value, context) => {
   const fingerprint = value.fingerprint
