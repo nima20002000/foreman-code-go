@@ -41,7 +41,7 @@ describe.skipIf(!postgresEnabled)('Drive authorization through authenticated Ope
     const credentials = new Map<string, string>()
     const requests: DriveComputerRequest[] = []
     const endpoint = {
-      capabilities: () => ['computer-drive-v1', 'computer-accounts-v1'].map(namespace => ({ namespace, mainCanRequest: true })),
+      capabilities: () => ['computer-drive-v2', 'computer-accounts-v1'].map(namespace => ({ namespace, mainCanRequest: true })),
       request: async (device: string, namespace: string, payload: unknown) => {
         if (namespace === 'computer-accounts-v1') return { payload: { observedAt: new Date().toISOString(), accounts: [{
           tool: 'drive', installed: true, signedIn: credentials.has(device),
@@ -115,6 +115,28 @@ describe.skipIf(!postgresEnabled)('Drive authorization through authenticated Ope
     } finally { await f.close() }
   })
 
+  it('cancels through authenticated MCP without allowing a read-only caller or a later token to reconnect', async () => {
+    const f = await fixture()
+    try {
+      const client = await f.connect(f.writer.token)
+      const reader = await f.connect(f.reader.token)
+      const started = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_start',
+        arguments: { target: f.target } })).structuredContent)
+      const input = { target: f.target, loginId: started.loginId }
+      expect((await reader.callTool({ name: 'computer_drive_connect_cancel', arguments: input })).isError).toBe(true)
+      const cancelled = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_cancel',
+        arguments: input })).structuredContent)
+      expect(cancelled.state).toBe('cancelled')
+      expect((await client.callTool({ name: 'computer_drive_connect_complete', arguments: { ...input, token } })).isError).toBe(true)
+      expect(f.credentials.size).toBe(0)
+      expect(DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_status',
+        arguments: input })).structuredContent)).toEqual(cancelled)
+      const audits = await database.pool.query<{ outcome: string }>(
+        "select outcome from management_audit where principal_id=$1 and action='computer_drive_connect_cancel'", [f.writer.principal.id])
+      expect(audits.rows).toEqual([{ outcome: 'succeeded' }])
+    } finally { await f.close() }
+  })
+
   it('does not send credentials to a re-paired computer when Google authorization finishes', async () => {
     const f = await fixture()
     try {
@@ -125,7 +147,7 @@ describe.skipIf(!postgresEnabled)('Drive authorization through authenticated Ope
       expect((await client.callTool({ name: 'computer_drive_connect_complete',
         arguments: { target: f.target, loginId: started.loginId, token } })).isError).toBe(true)
       expect(f.credentials.size).toBe(0)
-      expect(f.requests.map(request => request.operation)).toEqual(['install'])
+      expect(f.requests.map(request => request.operation)).toEqual(['intent', 'install'])
     } finally { await f.close() }
   })
 
@@ -139,7 +161,7 @@ describe.skipIf(!postgresEnabled)('Drive authorization through authenticated Ope
       expect((await client.callTool({ name: 'computer_drive_connect_complete',
         arguments: { target: f.target, loginId: started.loginId, token } })).isError).toBe(true)
       expect(f.credentials.size).toBe(0)
-      expect(f.requests.map(request => request.operation)).toEqual(['install'])
+      expect(f.requests.map(request => request.operation)).toEqual(['intent', 'install'])
     } finally { await f.close() }
   })
 })

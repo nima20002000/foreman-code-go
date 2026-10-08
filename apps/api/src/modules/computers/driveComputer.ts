@@ -16,7 +16,7 @@ export interface DriveComputerPorts {
   run(file: string, args: string[], options?: { input?: string; timeoutMs?: number }): Promise<{ code: number; stdout: string; stderr: string }>
   fetch(url: string, headers?: Record<string, string>): Promise<Buffer>
   readText(path: string): Promise<string | null>
-  writePrivate(path: string, data: string | Buffer): Promise<void>
+  writePrivate(path: string, data: string | Buffer, options?: { beforeCommit(): void }): Promise<void>
   /** Moves an unpacked executable into place atomically. */
   install(path: string, source: string): Promise<void>
   mkdir(path: string): Promise<void>
@@ -28,6 +28,7 @@ export interface DriveComputerPorts {
 /** Google Drive on one computer through rclone: installs rclone for this user, keeps the app's Drive remote in
  * this user's rclone config and mounts it at ~/Foreman Code Drive as a user service. Runs on Main and Workers. */
 export class DriveComputer {
+  private operationId: string | undefined
   private pending: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly ports: DriveComputerPorts = systemDrivePorts()) {}
@@ -53,10 +54,14 @@ export class DriveComputer {
 
   handle(raw: unknown): Promise<DriveComputerState> {
     const request = DriveComputerRequestSchema.parse(raw)
+    if (request.operation === 'intent') {
+      this.operationId = request.operationId
+      return this.readStatus()
+    }
     return this.exclusive(async () => {
       if (request.operation === 'install') await this.install()
-      if (request.operation === 'connect') await this.connect(request.token)
-      if (request.operation === 'disconnect') await this.disconnect()
+      if (request.operation === 'connect') await this.connect(request.token, request.operationId)
+      if (request.operation === 'disconnect') await this.disconnect(request.operationId)
       return this.readStatus()
     })
   }
@@ -117,7 +122,14 @@ export class DriveComputer {
     return this.rclone
   }
 
-  private async connect(token: string) {
+  private assertOperation(operationId: string) {
+    if (this.operationId !== operationId) {
+      throw new DomainError('DRIVE_LOGIN_INACTIVE', 'This Drive operation was replaced or cancelled.', 409)
+    }
+  }
+
+  private async connect(token: string, operationId: string) {
+    this.assertOperation(operationId)
     let parsed: { access_token?: unknown; refresh_token?: unknown }
     try {
       parsed = JSON.parse(token) as typeof parsed
@@ -141,7 +153,8 @@ export class DriveComputer {
       const email = await this.account(remote)
       const replacement = `[${DRIVE_REMOTE}]\n${email ? `description = ${email}\n` : ''}`
         + `type = drive\nscope = drive.file\nroot_folder_id = ${folder}\ntoken = ${JSON.stringify(parsed)}\n`
-      await this.switchMount({ binary, configPath, replacement, previousUnit, wasMounted })
+      this.assertOperation(operationId)
+      await this.switchMount({ binary, configPath, replacement, previousUnit, wasMounted, operationId })
     } finally {
       await this.ports.remove(staged)
     }
@@ -149,8 +162,9 @@ export class DriveComputer {
 
   private async switchMount(input: {
     binary: string; configPath: string; replacement: string;
-    previousUnit: string | null; wasMounted: boolean
+    previousUnit: string | null; wasMounted: boolean; operationId: string
   }) {
+    this.assertOperation(input.operationId)
     if (input.previousUnit !== null || input.wasMounted) {
       await this.systemctl(['stop', UNIT])
       if (await this.ports.mounted(this.mountPath)) {
@@ -161,17 +175,24 @@ export class DriveComputer {
     const stoppedConfig = await this.ports.readText(input.configPath)
     try {
       const otherRemotes = withoutSection(stoppedConfig ?? '', DRIVE_REMOTE).trimEnd()
-      await this.ports.writePrivate(input.configPath, `${otherRemotes}\n\n${input.replacement}`)
+      this.assertOperation(input.operationId)
+      await this.ports.writePrivate(input.configPath, `${otherRemotes}\n\n${input.replacement}`,
+        { beforeCommit: () => this.assertOperation(input.operationId) })
       await this.ports.mkdir(this.mountPath)
       await this.ports.mkdir(dirname(this.unitPath))
       await this.ports.writePrivate(this.unitPath, this.unit(input.binary, input.configPath))
       await this.systemctl(['daemon-reload'])
       await this.systemctl(['enable', UNIT])
+      this.assertOperation(input.operationId)
       await this.systemctl(['restart', UNIT])
       await this.waitForMount()
+      this.assertOperation(input.operationId)
     } catch (error) {
       try {
-        await this.systemctl(['stop', UNIT])
+        if (await this.ports.readText(this.unitPath) !== null) {
+          await this.systemctl(['stop', UNIT])
+          if (input.previousUnit === null) await this.systemctl(['disable', UNIT])
+        }
         if (await this.ports.mounted(this.mountPath)) throw new Error('The failed mount is still active.')
         await this.restoreFile(input.configPath, stoppedConfig)
         await this.restoreFile(this.unitPath, input.previousUnit)
@@ -179,8 +200,6 @@ export class DriveComputer {
         if (input.wasMounted) {
           await this.systemctl(['restart', UNIT])
           await this.waitForMount()
-        } else if (input.previousUnit === null) {
-          await this.systemctl(['disable', UNIT])
         }
       } catch {
         throw new DomainError('DRIVE_RESTORE_FAILED', 'Account switch failed and the previous Drive mount could not be restored. Check Drive on this computer.', 502)
@@ -233,12 +252,14 @@ export class DriveComputer {
     return id
   }
 
-  private async disconnect() {
+  private async disconnect(operationId: string) {
+    this.assertOperation(operationId)
     const binary = await this.binary()
     const configPath = binary ? await this.configPath(binary) : null
     const config = configPath ? await this.ports.readText(configPath) : null
     const mounted = await this.ports.mounted(this.mountPath)
     if (!mounted && !sections(config ?? '').has(DRIVE_REMOTE) && await this.ports.readText(this.unitPath) === null) return
+    this.assertOperation(operationId)
     const result = await this.ports.run('systemctl', ['--user', 'disable', '--now', UNIT], { timeoutMs: 60_000 })
     if (result.code !== 0 || await this.ports.mounted(this.mountPath)) {
       throw new DomainError('DRIVE_DISCONNECT_FAILED', 'Google Drive could not be unmounted. Its credentials have been kept; retry disconnect on this computer.', 502)
@@ -246,8 +267,19 @@ export class DriveComputer {
     if (!configPath) {
       throw new DomainError('DRIVE_DISCONNECT_FAILED', 'Drive was stopped, but rclone is missing. Install rclone and retry to remove its credentials.', 502)
     }
-    const stoppedConfig = await this.ports.readText(configPath)
-    if (stoppedConfig !== null) await this.ports.writePrivate(configPath, withoutSection(stoppedConfig, DRIVE_REMOTE))
+    try {
+      const stoppedConfig = await this.ports.readText(configPath)
+      this.assertOperation(operationId)
+      if (stoppedConfig !== null) await this.ports.writePrivate(configPath, withoutSection(stoppedConfig, DRIVE_REMOTE),
+        { beforeCommit: () => this.assertOperation(operationId) })
+    } catch (error) {
+      if (this.operationId !== operationId && mounted) {
+        await this.systemctl(['enable', UNIT])
+        await this.systemctl(['restart', UNIT])
+        await this.waitForMount()
+      }
+      throw error
+    }
   }
 
   private async systemctl(args: string[]) {
@@ -316,10 +348,11 @@ export function systemDrivePorts(environment: NodeJS.ProcessEnv = process.env): 
         throw error
       }
     },
-    writePrivate: async (path, data) => {
+    writePrivate: async (path, data, options) => {
       const temporary = `${path}.${randomUUID()}.tmp`
       try {
         await writeFile(temporary, data, { mode: 0o600 })
+        options?.beforeCommit()
         await rename(temporary, path)
       } finally {
         await rm(temporary, { force: true })

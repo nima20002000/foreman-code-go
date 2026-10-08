@@ -288,7 +288,7 @@ it('connects Google Drive on a paired computer through remote authorization, sen
       arguments: { target, loginId: started.loginId } })).structuredContent)
     expect(persisted).toEqual(done)
     expect(done).toMatchObject({ state: 'connected', account: 'owner@gmail.com', mountPath: '/home/laptop/Foreman Code Drive' })
-    expect(f.driveCalls).toEqual([{ where: 'device', operation: 'install' },
+    expect(f.driveCalls).toEqual([{ where: 'device', operation: 'intent' }, { where: 'device', operation: 'install' },
       { where: 'device', operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' }])
     const http = await f.app.inject({ method: 'POST', url: '/api/management/computers/drive/disconnect',
       headers: { authorization: 'Bearer owner' }, payload: { target } })
@@ -299,8 +299,28 @@ it('connects Google Drive on a paired computer through remote authorization, sen
     expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_drive_connect_complete')
     expect((await reader.callTool({ name: 'computer_drive_connect_complete',
       arguments: { target, loginId: started.loginId, token: '{\"access_token\":\"a\",\"refresh_token\":\"r\"}' } })).isError).toBe(true)
-    expect(f.driveCalls).toHaveLength(3)
+    expect(f.driveCalls).toHaveLength(5)
     expect(f.audited.mock.calls.map(call => [call[2], call[4]])).toEqual([
       ['computer_drive_connect_start', 'succeeded'], ['computer_drive_connect_complete', 'succeeded'], ['computer_drive_disconnect', 'succeeded']])
+  } finally { await f.close() }
+})
+
+
+it('cancels Drive sign-in through authenticated MCP, denies readers and preserves persisted status', async () => {
+  const f = await fixture()
+  try {
+    const client = await f.connect('owner')
+    const reader = await f.connect('settings-reader')
+    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('computer_drive_connect_cancel')
+    expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_drive_connect_cancel')
+    const start = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_start', arguments: { target } })).structuredContent)
+    const input = { target, loginId: start.loginId }
+    expect((await reader.callTool({ name: 'computer_drive_connect_cancel', arguments: input })).isError).toBe(true)
+    const cancel = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_cancel', arguments: input })).structuredContent)
+    expect(cancel.state).toBe('cancelled')
+    expect(DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_status', arguments: input })).structuredContent)).toEqual(cancel)
+    expect((await client.callTool({ name: 'computer_drive_connect_complete', arguments: { ...input,
+      token: '{"access_token":"a","refresh_token":"r"}' } })).isError).toBe(true)
+    expect(f.driveCalls.map(call => call.operation)).toEqual(['intent', 'install', 'intent'])
   } finally { await f.close() }
 })

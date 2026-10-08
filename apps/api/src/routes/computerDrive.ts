@@ -14,6 +14,10 @@ export function registerComputerDriveRoutes(app: FastifyInstance, service: Compu
     const input = ComputerDriveCompleteInputSchema.parse(request.body)
     return service.connectComplete(requirePrincipal(request), 'http', input.target, input.loginId, input.token)
   })
+  app.post('/api/management/computers/drive/connect/cancel', request => {
+    const input = ComputerDriveStatusInputSchema.parse(request.body)
+    return service.cancel(requirePrincipal(request), 'http', input.target, input.loginId)
+  })
   app.post('/api/management/computers/drive/disconnect', request =>
     service.disconnect(requirePrincipal(request), 'http', ComputerDriveInputSchema.parse(request.body).target))
 }

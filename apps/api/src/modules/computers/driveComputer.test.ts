@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -42,7 +42,7 @@ function computer(options: { checksum?: string; systemBinary?: boolean; fail?: s
       : url.endsWith('SHA256SUMS') ? Buffer.from(`${options.checksum ?? createHash('sha256').update(zip).digest('hex')}  rclone-v1.75.1-linux-amd64.zip\n`)
         : zip,
     readText: async path => { const value = files.get(path); return value === undefined ? null : value.toString() },
-    writePrivate: async (path, data) => { files.set(path, data) },
+    writePrivate: async (path, data, options) => { options?.beforeCommit(); files.set(path, data) },
     install: async (path, source) => { files.set(path, files.get(source)!); files.delete(source) },
     mkdir: async () => {},
     remove: async path => { for (const key of [...files.keys()]) if (key.startsWith(path)) files.delete(key) },
@@ -52,10 +52,21 @@ function computer(options: { checksum?: string; systemBinary?: boolean; fail?: s
   return { drive: new DriveComputer(ports), files, commands, mounts, ports, options }
 }
 
+async function connect(drive: DriveComputer, token: string) {
+  const operationId = randomUUID()
+  await drive.handle({ operation: 'intent', operationId })
+  return drive.handle({ operation: 'connect', operationId, token })
+}
+async function disconnect(drive: DriveComputer) {
+  const operationId = randomUUID()
+  await drive.handle({ operation: 'intent', operationId })
+  return drive.handle({ operation: 'disconnect', operationId })
+}
+
 describe('Google Drive on one computer', () => {
   it('installs a checksum-verified rclone, connects the app remote beside existing remotes and mounts it', async () => {
     const { drive, files, commands } = computer()
-    const state = await drive.handle({ operation: 'connect', token: '{"access_token":"a","refresh_token":"r","expiry":"2026-10-07T00:00:00Z"}' })
+    const state = await connect(drive, '{"access_token":"a","refresh_token":"r","expiry":"2026-10-07T00:00:00Z"}')
     expect(state).toEqual({ installed: true, connected: true, account: 'owner@gmail.com', mountPath: '/home/u/Foreman Code Drive',
       mounted: true, message: null })
     expect(files.get('/home/u/.local/bin/rclone')).toBe('binary')
@@ -67,13 +78,13 @@ describe('Google Drive on one computer', () => {
       expect.stringMatching(/^\/home\/u\/\.local\/bin\/rclone mkdir foreman-drive:Foreman Code --config \/home\/u\/\.config\/rclone\/rclone\.conf\.[\w-]+\.tmp$/u),
     ])
     // A second computer finds the same folder instead of creating another.
-    await drive.handle({ operation: 'connect', token: '{"access_token":"b","refresh_token":"s"}' })
+    await connect(drive, '{"access_token":"b","refresh_token":"s"}')
     expect(commands.filter(command => command.includes(' mkdir '))).toHaveLength(1)
     expect(files.get('/home/u/.config/systemd/user/foreman-drive.service')!.toString())
       .toContain('ExecStart="/home/u/.local/bin/rclone" mount foreman-drive: "/home/u/Foreman Code Drive"')
     expect(commands).toContain('systemctl --user enable foreman-drive.service')
 
-    const disconnected = await drive.handle({ operation: 'disconnect' })
+    const disconnected = await disconnect(drive)
     expect(disconnected).toMatchObject({ connected: false, mounted: false, account: null })
     expect(files.get('/home/u/.config/rclone/rclone.conf')!.toString()).toBe('[work]\ntype = s3\nprovider = AWS\n')
   })
@@ -86,14 +97,14 @@ describe('Google Drive on one computer', () => {
 
   it('rejects an authorization without Drive tokens', async () => {
     const { drive } = computer()
-    await expect(drive.handle({ operation: 'connect', token: '{"error":"denied"}' })).rejects.toMatchObject({ code: 'DRIVE_TOKEN_INVALID' })
+    await expect(connect(drive, '{"error":"denied"}')).rejects.toMatchObject({ code: 'DRIVE_TOKEN_INVALID' })
   })
 
   it('keeps credentials and reports a failed service stop instead of claiming disconnection', async () => {
     const f = computer()
-    await f.drive.handle({ operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' })
+    await connect(f.drive, '{"access_token":"a","refresh_token":"r"}')
     f.options.fail = 'disable'
-    await expect(f.drive.handle({ operation: 'disconnect' })).rejects.toMatchObject({ code: 'DRIVE_DISCONNECT_FAILED' })
+    await expect(disconnect(f.drive)).rejects.toMatchObject({ code: 'DRIVE_DISCONNECT_FAILED' })
     expect(await f.drive.status()).toMatchObject({ connected: true, mounted: true })
   })
 
@@ -105,10 +116,10 @@ describe('Google Drive on one computer', () => {
 
   it.each(['lsjson', 'restart'])('restores the previous account and mount after a failed switch at %s', async fail => {
     const f = computer()
-    await f.drive.handle({ operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' })
+    await connect(f.drive, '{"access_token":"a","refresh_token":"r"}')
     const previous = f.files.get('/home/u/.config/rclone/rclone.conf')
     f.options.fail = fail
-    await expect(f.drive.handle({ operation: 'connect', token: '{"access_token":"b","refresh_token":"s"}' })).rejects.toThrow()
+    await expect(connect(f.drive, '{"access_token":"b","refresh_token":"s"}')).rejects.toThrow()
     expect(f.files.get('/home/u/.config/rclone/rclone.conf')).toEqual(previous)
     expect(f.mounts.has('/home/u/Foreman Code Drive')).toBe(true)
   })
@@ -116,15 +127,23 @@ describe('Google Drive on one computer', () => {
   it('preserves configuration when user systemd is unavailable', async () => {
     const f = computer({ fail: 'show-environment' })
     const config = f.files.get('/home/u/.config/rclone/rclone.conf')
-    await expect(f.drive.handle({ operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' }))
+    await expect(connect(f.drive, '{"access_token":"a","refresh_token":"r"}'))
       .rejects.toMatchObject({ code: 'DRIVE_MOUNT_FAILED' })
     expect(f.files.get('/home/u/.config/rclone/rclone.conf')).toEqual(config)
   })
 
   it('removes a failed first connection when FUSE never mounts', async () => {
     const f = computer({ fuseFailure: true })
+    const run = f.ports.run
+    f.ports.run = async (file, args, options) => {
+      if (file === 'systemctl' && args.includes('disable')
+        && !f.files.has('/home/u/.config/systemd/user/foreman-drive.service')) {
+        return { code: 1, stdout: '', stderr: 'Unit file does not exist.' }
+      }
+      return run(file, args, options)
+    }
     const config = f.files.get('/home/u/.config/rclone/rclone.conf')
-    await expect(f.drive.handle({ operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' }))
+    await expect(connect(f.drive, '{"access_token":"a","refresh_token":"r"}'))
       .rejects.toMatchObject({ code: 'DRIVE_MOUNT_FAILED' })
     expect(await f.drive.status()).toMatchObject({ connected: false, mounted: false })
     expect(f.files.get('/home/u/.config/rclone/rclone.conf')).toEqual(config)
@@ -132,30 +151,32 @@ describe('Google Drive on one computer', () => {
 
   it('serializes overlapping connect, status and disconnect writes without losing other remotes', async () => {
     const f = computer()
-    const connect = f.drive.handle({ operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' })
+    const operationId = randomUUID()
+    await f.drive.handle({ operation: 'intent', operationId })
+    const connecting = f.drive.handle({ operation: 'connect', operationId, token: '{"access_token":"a","refresh_token":"r"}' })
     const status = f.drive.status()
-    const disconnect = f.drive.handle({ operation: 'disconnect' })
-    expect(await connect).toMatchObject({ connected: true, mounted: true })
+    const disconnecting = f.drive.handle({ operation: 'disconnect', operationId })
+    expect(await connecting).toMatchObject({ connected: true, mounted: true })
     expect(await status).toMatchObject({ connected: true, mounted: true })
-    expect(await disconnect).toMatchObject({ connected: false, mounted: false })
+    expect(await disconnecting).toMatchObject({ connected: false, mounted: false })
     expect(f.files.get('/home/u/.config/rclone/rclone.conf')).toBe('[work]\ntype = s3\nprovider = AWS\n')
   })
 
   it('does not claim success when stopping succeeds but the mount stays active', async () => {
     const f = computer()
-    await f.drive.handle({ operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' })
+    await connect(f.drive, '{"access_token":"a","refresh_token":"r"}')
     const config = f.files.get('/home/u/.config/rclone/rclone.conf')
     const run = f.ports.run
     f.ports.run = async (file, args, options) => args.includes('disable')
       ? { code: 0, stdout: '', stderr: '' } : run(file, args, options)
-    await expect(f.drive.handle({ operation: 'disconnect' })).rejects.toMatchObject({ code: 'DRIVE_DISCONNECT_FAILED' })
+    await expect(disconnect(f.drive)).rejects.toMatchObject({ code: 'DRIVE_DISCONNECT_FAILED' })
     expect(await f.drive.status()).toMatchObject({ connected: true, mounted: true })
     expect(f.files.get('/home/u/.config/rclone/rclone.conf')).toEqual(config)
   })
 
   it('treats an already disconnected computer without a user service as disconnected', async () => {
     const f = computer({ systemBinary: true, fail: 'disable' })
-    expect(await f.drive.handle({ operation: 'disconnect' })).toMatchObject({ connected: false, mounted: false })
+    expect(await disconnect(f.drive)).toMatchObject({ connected: false, mounted: false })
   })
 
   it('roots two simultaneous first connections at the same shared folder', async () => {
@@ -170,7 +191,7 @@ describe('Google Drive on one computer', () => {
     const owner: ManagementPrincipal = { id: 'owner', name: 'Owner', audience: 'operator', expiresAt: '2099-01-01T00:00:00Z',
       revokedAt: null, grants: [{ actions: ['settings:update'], scope: {} }] }
     const service = new ComputerDriveService({} as pg.Pool, mainId, () => ({
-      capabilities: () => [{ namespace: 'computer-drive-v1', mainCanRequest: true }],
+      capabilities: () => [{ namespace: 'computer-drive-v2', mainCanRequest: true }],
       request: async (_device, _namespace, payload) => ({ payload: await worker.drive.handle(payload) }),
     }), { recordAudit: async () => {}, recordDenied: async () => {} } as unknown as PostgresCommandCoordinator, { local: main.drive })
     const a = await service.connectStart(owner, 'http', mainTarget)
@@ -187,7 +208,7 @@ describe('Google Drive on one computer', () => {
 
   it('preserves configuration updates made by the service while it is stopping', async () => {
     const f = computer()
-    await f.drive.handle({ operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' })
+    await connect(f.drive, '{"access_token":"a","refresh_token":"r"}')
     const path = '/home/u/.config/rclone/rclone.conf'
     const run = f.ports.run
     f.ports.run = async (file, args, options) => {
@@ -196,8 +217,56 @@ describe('Google Drive on one computer', () => {
       }
       return run(file, args, options)
     }
-    await f.drive.handle({ operation: 'disconnect' })
+    await disconnect(f.drive)
     expect(f.files.get(path)).toBe('[work]\ntype = s3\nprovider = Updated\n')
+  })
+
+  it.each(['main', 'device'])('checks the latest intent on %s before installing a staged authorization', async kind => {
+    const f = computer({ systemBinary: true })
+    const mainId = '11111111-1111-4111-8111-111111111111'
+    const target = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+      keyRevision: null, authorizationRevision: null }
+    const owner: ManagementPrincipal = { id: 'owner', name: 'Owner', audience: 'operator', expiresAt: '2099-01-01T00:00:00Z',
+      revokedAt: null, grants: [{ actions: ['settings:update'], scope: {} }] }
+    const selected = kind === 'main' ? target : { hostRef: { kind: 'device' as const, mainId,
+      deviceId: '22222222-2222-4222-8222-222222222222' }, applicationInstallationId: mainId,
+    keyRevision: 1, authorizationRevision: 1 }
+    const service = new ComputerDriveService({} as pg.Pool, mainId, () => ({
+      capabilities: () => [{ namespace: 'computer-drive-v2', mainCanRequest: true }],
+      request: async (_device, _namespace, payload) => ({ payload: await f.drive.handle(payload) }),
+    }), { recordAudit: async () => {}, recordDenied: async () => {} } as unknown as PostgresCommandCoordinator,
+    { local: f.drive })
+    const started = await service.connectStart(owner, 'http', selected)
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let reading = false
+    const run = f.ports.run
+    f.ports.run = async (file, args, options) => {
+      if (args[0] === 'lsjson' && !reading) {
+        reading = true
+        await gate
+      }
+      return run(file, args, options)
+    }
+    const installedTokens: string[] = []
+    const write = f.ports.writePrivate
+    f.ports.writePrivate = async (path, data, options) => {
+      if (path === '/home/u/.config/rclone/rclone.conf' && data.toString().includes('access_token')) {
+        installedTokens.push(data.toString())
+      }
+      await write(path, data, options)
+    }
+    const mounting = service.connectComplete(owner, 'http', selected, started.loginId!, '{"access_token":"a","refresh_token":"r"}')
+    const completion = mounting.catch(error => error as unknown)
+    await vi.waitFor(() => expect(reading).toBe(true))
+    const disconnected = service.disconnect(owner, 'http', selected)
+    await vi.waitFor(async () => expect(await service.connectStatus(owner, 'http', selected, started.loginId!))
+      .toMatchObject({ state: 'cancelled' }))
+    release()
+    await completion
+    expect(await disconnected).toMatchObject({ state: 'disconnected' })
+    expect(installedTokens).toEqual([])
+    expect(f.commands.filter(command => command.includes(' restart '))).toEqual([])
   })
 
   it('returns the installed system executable for authorization', async () => {
@@ -208,12 +277,12 @@ describe('Google Drive on one computer', () => {
   it('reads and changes the configured rclone path and passes it to the mount service', async () => {
     const f = computer({ systemBinary: true, configPath: '/home/u/custom/rclone.conf' })
     f.files.set('/home/u/custom/rclone.conf', '[work]\ntype = s3\n')
-    await f.drive.handle({ operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' })
+    await connect(f.drive, '{"access_token":"a","refresh_token":"r"}')
     expect(f.files.get('/home/u/custom/rclone.conf')?.toString()).toContain('[work]\ntype = s3')
     expect(f.files.get('/home/u/custom/rclone.conf')?.toString()).toContain('[foreman-drive]')
     expect(f.files.get('/home/u/.config/systemd/user/foreman-drive.service')?.toString())
       .toContain('--config "/home/u/custom/rclone.conf"')
-    await f.drive.handle({ operation: 'disconnect' })
+    await disconnect(f.drive)
     expect(f.files.get('/home/u/custom/rclone.conf')).toBe('[work]\ntype = s3\n')
   })
 })

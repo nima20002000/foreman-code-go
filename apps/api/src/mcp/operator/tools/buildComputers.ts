@@ -76,6 +76,12 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
   }, input => invokeOperatorTool(context, 'computer_drive_connect_status',
     () => drive.connectStatus(context.principal, 'mcp', input.target, input.loginId)))
+  if (drive && operatorToolAvailable(context, 'computer_drive_connect_cancel')) server.registerTool('computer_drive_connect_cancel', {
+    description: 'Cancel a pending Drive sign-in on its selected computer without disconnecting an existing account. '
+      + 'Invalidates its operation before credential installation and mounting. Requires global settings:update.',
+    inputSchema: ComputerDriveStatusInputSchema, outputSchema: DriveLoginStateSchema, annotations: writeAnnotations,
+  }, input => invokeOperatorTool(context, 'computer_drive_connect_cancel',
+    () => drive.cancel(context.principal, 'mcp', input.target, input.loginId)))
   if (drive && operatorToolAvailable(context, 'computer_drive_disconnect')) server.registerTool('computer_drive_disconnect', {
     description: 'Unmount Google Drive on that computer and remove the app\'s rclone remote. Files stay in Google Drive. Requires global settings:update.',
     inputSchema: ComputerDriveInputSchema, outputSchema: DriveLoginStateSchema,

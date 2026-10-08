@@ -30,7 +30,7 @@ function fixture() {
   const changed = vi.fn()
   let now = Date.now()
   const service = new ComputerDriveService({} as pg.Pool, mainId, () => ({
-    capabilities: () => [{ namespace: 'computer-drive-v1', mainCanRequest: true }],
+    capabilities: () => [{ namespace: 'computer-drive-v2', mainCanRequest: true }],
     request: async (_device, _namespace, request) => ({ payload: await handle(request as { operation: string }) }),
   }), commands as unknown as PostgresCommandCoordinator, { local: { handle }, now: () => now, changed })
   return { service, handle, changed, commands, advance: () => { now += 11 * 60_000 } }
@@ -56,7 +56,7 @@ describe('Drive connection sessions', () => {
     await expect(f.service.connectComplete(owner, 'http', target, start.loginId!, token))
       .rejects.toMatchObject({ code: 'DRIVE_LOGIN_INACTIVE' })
     expect(await f.service.connectStatus(owner, 'http', target, start.loginId!)).toMatchObject({ state: 'cancelled' })
-    expect(f.handle.mock.calls.map(([request]) => request.operation)).toEqual(['install', 'disconnect'])
+    expect(f.handle.mock.calls.map(([request]) => request.operation)).toEqual(['intent', 'install', 'intent', 'disconnect'])
   })
 
   it('keeps a newer session when an older setup fails late', async () => {
@@ -80,16 +80,16 @@ describe('Drive connection sessions', () => {
     const mount = deferred<ReturnType<typeof state>>()
     f.handle.mockImplementationOnce(() => mount.promise)
     const first = f.service.connectComplete(owner, 'http', target, a.loginId!, token)
-    await vi.waitFor(() => expect(f.handle).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(f.handle).toHaveBeenCalledTimes(5))
     const second = f.service.connectComplete(owner, 'http', worker, b.loginId!, token)
     const disconnect = f.service.disconnect(owner, 'http', target)
     await vi.waitFor(() => expect(binding.check).toHaveBeenCalledTimes(6))
-    expect(f.handle).toHaveBeenCalledTimes(3)
+    expect(f.handle.mock.calls.filter(([request]) => request.operation === 'connect')).toHaveLength(1)
     mount.resolve(state(true))
     expect(await first).toMatchObject({ state: 'cancelled' })
     expect(await second).toMatchObject({ state: 'connected' })
     expect(await disconnect).toMatchObject({ state: 'disconnected' })
-    expect(f.handle.mock.calls.map(([request]) => request.operation)).toEqual(['install', 'install', 'connect', 'connect', 'disconnect'])
+    expect(f.handle.mock.calls.map(([request]) => request.operation)).toEqual(['intent', 'install', 'intent', 'install', 'connect', 'intent', 'connect', 'disconnect'])
   })
 
   it('expires old authorization and reports missing sessions', async () => {
@@ -107,9 +107,58 @@ describe('Drive connection sessions', () => {
     const start = await f.service.connectStart(owner, 'http', worker)
     binding.check.mockRejectedValueOnce(new DomainError('COMPUTER_NOT_FOUND', 'Registration changed.', 404))
     await expect(f.service.connectComplete(owner, 'http', worker, start.loginId!, token)).rejects.toMatchObject({ code: 'COMPUTER_NOT_FOUND' })
-    expect(f.handle).toHaveBeenCalledOnce()
+    expect(f.handle.mock.calls.map(([request]) => request.operation)).toEqual(['intent', 'install'])
     await f.service.connectComplete(owner, 'http', worker, start.loginId!, token)
     await f.service.disconnect(owner, 'http', worker)
     expect(f.changed.mock.calls).toEqual([[worker], [worker]])
   })
+})
+
+
+it.each(['disconnect-first', 'start-first'])('preserves a newer sign-in when %s resolves after overlapping requests', async order => {
+  const f = fixture()
+  const stop = deferred<ReturnType<typeof state>>()
+  const install = deferred<ReturnType<typeof state>>()
+  f.handle.mockImplementation(request => {
+    if (request.operation === 'disconnect') return stop.promise
+    if (request.operation === 'install') return install.promise
+    return Promise.resolve(state())
+  })
+  const disconnecting = f.service.disconnect(owner, 'http', target)
+  await vi.waitFor(() => expect(f.handle.mock.calls.some(([request]) => request.operation === 'disconnect')).toBe(true))
+  const starting = f.service.connectStart(owner, 'http', target)
+  await vi.waitFor(() => expect(f.handle.mock.calls.some(([request]) => request.operation === 'install')).toBe(true))
+  if (order === 'disconnect-first') {
+    stop.resolve(state())
+    expect(await disconnecting).toMatchObject({ state: 'cancelled' })
+    install.resolve(state())
+  } else {
+    install.resolve(state())
+    await starting
+    stop.resolve(state())
+  }
+  const latest = await starting
+  await disconnecting
+  expect(await f.service.connectStatus(owner, 'http', target, latest.loginId!)).toMatchObject({ state: 'waiting' })
+})
+
+it('does not let an earlier request with delayed authorization replace a newer intent', async () => {
+  const f = fixture()
+  const authorization = deferred<void>()
+  binding.check.mockImplementationOnce(() => authorization.promise)
+  const older = f.service.disconnect(owner, 'http', target)
+  const newer = await f.service.connectStart(owner, 'http', target)
+  authorization.resolve()
+  expect(await older).toMatchObject({ state: 'cancelled' })
+  expect(f.handle.mock.calls.map(([request]) => request.operation)).toEqual(['intent', 'install'])
+  expect(await f.service.connectStatus(owner, 'http', target, newer.loginId!)).toMatchObject({ state: 'waiting' })
+})
+
+it('cancels sign-in through its target generation while preserving another computer session', async () => {
+  const f = fixture()
+  const a = await f.service.connectStart(owner, 'mcp', target)
+  const b = await f.service.connectStart(owner, 'mcp', worker)
+  expect(await f.service.cancel(owner, 'mcp', target, a.loginId!)).toMatchObject({ state: 'cancelled' })
+  await expect(f.service.connectComplete(owner, 'mcp', target, a.loginId!, token)).rejects.toMatchObject({ code: 'DRIVE_LOGIN_INACTIVE' })
+  expect(await f.service.connectStatus(owner, 'mcp', worker, b.loginId!)).toMatchObject({ state: 'waiting' })
 })

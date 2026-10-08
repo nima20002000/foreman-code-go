@@ -52,7 +52,7 @@ export const ComputerGitHubStatusInputSchema = ComputerGitHubInputSchema.extend(
 export type GitHubLoginRequest = z.infer<typeof GitHubLoginRequestSchema>
 export type GitHubLoginState = z.infer<typeof GitHubLoginStateSchema>
 
-export const COMPUTER_DRIVE_NAMESPACE = 'computer-drive-v1'
+export const COMPUTER_DRIVE_NAMESPACE = 'computer-drive-v2'
 /** The rclone remote and user service the app manages on each computer. */
 export const DRIVE_REMOTE = 'foreman-drive'
 export const DRIVE_MOUNT_DIRECTORY = 'Foreman Code Drive'
@@ -62,8 +62,9 @@ export const DRIVE_APP_FOLDER = 'Foreman Code'
 export const DriveComputerRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status') }).strict(),
   z.object({ operation: z.literal('install') }).strict(),
-  z.object({ operation: z.literal('connect'), token: z.string().min(2).max(8192) }).strict(),
-  z.object({ operation: z.literal('disconnect') }).strict(),
+  z.object({ operation: z.literal('intent'), operationId: z.uuid() }).strict(),
+  z.object({ operation: z.literal('connect'), operationId: z.uuid(), token: z.string().min(2).max(8192) }).strict(),
+  z.object({ operation: z.literal('disconnect'), operationId: z.uuid() }).strict(),
 ])
 export const DriveComputerStateSchema = z.object({
   installed: z.boolean(), connected: z.boolean(), account: z.string().max(320).nullable(),
