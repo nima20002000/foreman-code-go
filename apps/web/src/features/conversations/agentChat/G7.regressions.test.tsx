@@ -26,9 +26,11 @@ it('keeps locally retained text readable for a retired chat outside the current 
   state.messages = []
   const turn = state.turns[0]!
   const mounted = await mount(state)
-  const mutation = mounted.client.getMutationCache().build(mounted.client, {
+  const mutation = mounted.client.getMutationCache().build<
+    ReturnType<typeof compactAgentChatResult>, Error, unknown, unknown
+  >(mounted.client, {
     mutationKey: ['agent-chat', 0, agentChatContextKey(state.context), 'command'],
-    mutationFn: async (_input: unknown) => compactAgentChatResult({ state, turn, replayed: false }),
+    mutationFn: async () => compactAgentChatResult({ state, turn, replayed: false }),
   })
   await act(async () => {
     await mutation.execute({ kind: 'send', clearDraft: true,

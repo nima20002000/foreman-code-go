@@ -94,9 +94,6 @@ export async function createInstalledWorkerConversations(input: {
       await reader.capture()
       signal?.throwIfAborted()
     }
-    let manager: NativeHarnessSessionManager
-    let inspector: NativeMcpInspector
-    let codexDiagnostics: CodexDiagnostics | undefined
     if (configuration.harness.harness !== 'codex') unavailable('The selected Codex configuration changed.')
     const fileStorageRoot = join(input.stateDirectory, 'conversation-file-storage')
     const assertFileHost = async (signal: AbortSignal) => {
@@ -136,11 +133,10 @@ export async function createInstalledWorkerConversations(input: {
         if (!await input.registry.closeOwner(recovery.owner)) unavailable('Native diagnostic closure is unconfirmed.')
       },
     })
-    codexDiagnostics = diagnostics
     const native = new CodexAppServerSessionManager(binary, original.qualification.version, undefined, scope, appMcpAccess,
       chatFiles, { ...operations, withDiagnostics: (pin, run) => diagnostics.run(pin, run, scope) })
-    manager = native
-    inspector = codexMcpInspectorAdapter(native)
+    const manager: NativeHarnessSessionManager = native
+    const inspector: NativeMcpInspector = codexMcpInspectorAdapter(native)
     let mcp: Awaited<ReturnType<typeof createWorkerMcpEndpoint>> | undefined
     let launch: NativeLaunchObservation | undefined
     const nativeOwner = async (session: NativeSessionReference) => {
@@ -180,9 +176,9 @@ export async function createInstalledWorkerConversations(input: {
       } satisfies Pick<WorkerConversationAllocation, 'recoverFiles'> : {}),
       async close() {
         const errors: unknown[] = []
-        codexDiagnostics?.stop()
+        diagnostics.stop()
         try { await manager.dispose?.() } catch (error) { errors.push(error) }
-        try { await codexDiagnostics?.dispose() } catch (error) { errors.push(error) }
+        try { await diagnostics.dispose() } catch (error) { errors.push(error) }
         if (scope.launchId) await input.registry.abandonReservedLaunch(scope)
         if (!await input.registry.closeOwner(scope.owner)) unavailable('Native chat closure is unconfirmed.')
         if (purpose === 'chat') {
