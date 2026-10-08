@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
 
 import {
-  SupportedHarnessConfigurationSchema,
+  HarnessConfigurationSchema,
   RETIRED_OPENCODE_MESSAGE,
   OperatorAgentSchema,
   OperatorConfigurationVersionSchema,
@@ -34,9 +34,10 @@ function canonical(value: unknown): unknown {
 }
 function hash(value: unknown) { return `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}` }
 
-function executableConfiguration(value: HarnessConfiguration): HarnessConfiguration {
+function acceptedConfiguration(value: HarnessConfiguration): HarnessConfiguration {
   if (value.harness === 'opencode') throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
-  return SupportedHarnessConfigurationSchema.parse(value)
+  // Persisted settings do not grant execution; admission validates the selected native profile.
+  return HarnessConfigurationSchema.parse(value)
 }
 
 /** Pins exact skill snapshots for the Operator. Previously pinned references stay valid if archived later. */
@@ -92,7 +93,7 @@ export class PostgresOperatorRepository {
     }
     const createdAt = new Date().toISOString()
     const defaults = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)).value.operator
-    const harness = executableConfiguration(defaults.harness)
+    const harness = acceptedConfiguration(defaults.harness)
     const profile = defaults.harnessProfileSelection ? { harnessProfileSelection: defaults.harnessProfileSelection } : {}
     // Saved defaults were authorized and resolved when saved; keep those exact references.
     const skills = await operatorSkillContent(client, defaults.assignedSkills, defaults.assignedSkills)
@@ -118,13 +119,13 @@ export class PostgresOperatorRepository {
   }
 
   async update(input: HarnessConfiguration, expectedConfigurationVersionId: string, supplied?: pg.ClientBase) {
-    const harness = executableConfiguration(input)
+    const harness = acceptedConfiguration(input)
     return inTransaction(this.pool, supplied, (client) => this.updateWithClient(client, harness, expectedConfigurationVersionId))
   }
 
   async updateWithClient(client: pg.ClientBase, harness: HarnessConfiguration, expectedConfigurationVersionId: string, showThinking = false,
     assignedSkills?: readonly WorkspaceSkillReference[], harnessProfileSelection?: HarnessProfileSelection | null) {
-      harness = executableConfiguration(harness)
+      harness = acceptedConfiguration(harness)
       await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
       const row = await client.query<{ record: unknown; current_configuration_version_id: string }>(
         'select record, current_configuration_version_id from application_operators where id = $1 for update', [OPERATOR_ID],
