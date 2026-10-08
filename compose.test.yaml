@@ -2,7 +2,8 @@ name: graphql-tests
 services:
   postgres:
     image: postgres:17-alpine
-    # The disposable instance can be rebuilt from fixtures after a host crash.
+    # The disposable instance can be rebuilt from fixtures after a host crash. Its data lives in RAM:
+    # test databases are created and dropped constantly, and that churn should not wear the SSD.
     command: ["postgres", "-c", "max_connections=300", "-c", "max_locks_per_transaction=512",
       "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
     environment:
@@ -16,12 +17,9 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+    tmpfs:
+      - /var/lib/postgresql/data:size=6g
     volumes:
-      - graphql-test-data:/var/lib/postgresql/data
       - ./scripts/test-postgres-init.sql:/docker-entrypoint-initdb.d/test-ownership.sql:ro
-    labels:
-      graphql.test-owner: disposable-tests
-volumes:
-  graphql-test-data:
     labels:
       graphql.test-owner: disposable-tests

@@ -1,10 +1,12 @@
 # Disposable test resources
 
 Run `corepack pnpm db:up` before database-backed tests. It starts only
-`compose.test.yaml`, with the fixed Compose project `graphql-tests`, volume
-`graphql-tests_graphql-test-data`, loopback port 55439, and test-only credentials.
-The application Compose file and its database are independent. `db:down` checks
-test ownership labels before removing only this test project and its volume.
+`compose.test.yaml`, with the fixed Compose project `graphql-tests`, a RAM-backed
+(tmpfs) data directory, loopback port 55439, and test-only credentials. Test
+databases are created and dropped constantly; keeping them in memory spares the
+SSD that churn, and a stopped server starts empty. The application Compose file
+and its database are independent. `db:down` checks test ownership labels before
+removing only this test project and any volume left by an older configuration.
 `db:up` preserves the existing owned server across checkout and snapshot paths
 so another test request cannot replace it while clients are connected.
 An owned stopped server is recreated with the current configuration and its
