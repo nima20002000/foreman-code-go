@@ -27,7 +27,7 @@ const PACKAGES: Record<MaintainedHarness, string> = { codex: '@openai/codex', cl
 const LABELS: Record<MaintainedHarness, string> = { codex: 'Codex', claude: 'Claude' }
 const LATEST_MS = 60 * 60_000
 const LONG_MS = 20 * 60_000
-const APT = ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt-get', '-y', '-q',
+const APT = ['env', 'LC_ALL=C', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt-get', '-y', '-q',
   '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold']
 
 function tail(text: string, limit = 8000) { return text.length > limit ? text.slice(-limit) : text }
@@ -59,7 +59,7 @@ export class ComputerMaintenance {
     return MaintenanceStatusSchema.parse({
       harnesses: (['codex', 'claude'] as const).map((harness, index) => ({ harness, installed: versions[index] !== undefined,
         version: versions[index] ?? null, latest: latest[harness] ?? null })),
-      system: { packageUpdates, rebootRequired, sudo, disk },
+      system: { packageUpdates: packageUpdates?.pending ?? null, rebootRequired, sudo, disk },
       tasks: [...this.tasks].reverse(), observedAt: this.ports.now().toISOString(),
     })
   }
@@ -94,10 +94,16 @@ export class ComputerMaintenance {
     switch (request.kind) {
       case 'update-harnesses': {
         const changes: string[] = []
+        this.latest = undefined
+        const latest = await this.latestVersions(signal)
         for (const harness of request.harnesses) {
           const before = await this.installedVersion(harness, signal)
           await this.installLatest(harness, step)
           const after = await this.installedVersion(harness, signal)
+          if (!after || !latest[harness]) throw new Error(`${LABELS[harness]} update could not be verified.`)
+          if (after !== latest[harness]) {
+            throw new Error(`${LABELS[harness]} is still ${after}; latest published version is ${latest[harness]}.`)
+          }
           changes.push(`${LABELS[harness]} ${before ?? 'not installed'} → ${after ?? 'unknown'}`)
         }
         this.latest = undefined
@@ -106,10 +112,17 @@ export class ComputerMaintenance {
       case 'update-system': {
         await this.requireSudo(signal)
         await step('sudo', ['-n', ...APT, 'update'], 'apt-get update')
-        const upgrade = await step('sudo', ['-n', ...APT, 'upgrade'], 'apt-get upgrade')
-        const upgraded = upgrade.stdout.match(/(\d+) upgraded/u)?.[1] ?? '0'
+        const upgrade = await step('sudo', ['-n', ...APT, '--with-new-pkgs', 'upgrade'], 'apt-get upgrade --with-new-pkgs')
+        const upgraded = upgrade.stdout.match(/(\d+) upgraded/u)?.[1]
+        if (!upgraded) throw new Error('The package upgrade result could not be read; check pending updates before retrying.')
+        const remaining = await this.packageUpdates(signal)
+        if (!remaining) throw new Error(`${upgraded} packages upgraded, but remaining updates could not be verified.`)
+        if (remaining.installable > 0) {
+          throw new Error(`${upgraded} packages upgraded; ${remaining.installable} installable updates remain.`)
+        }
         const reboot = await this.ports.exists('/var/run/reboot-required')
-        return `${upgraded} packages upgraded${reboot ? ' · restart needed' : ''}`
+        const pending = remaining.pending ? ` · ${remaining.pending} updates pending (deferred or held by APT)` : ' · no pending updates'
+        return `${upgraded} packages upgraded${pending}${reboot ? ' · restart needed' : ''}`
       }
       case 'restart': {
         await this.requireSudo(signal)
@@ -280,11 +293,15 @@ export class ComputerMaintenance {
     return value
   }
 
-  private async packageUpdates(signal: AbortSignal): Promise<number | null> {
+  private async packageUpdates(signal: AbortSignal): Promise<{ pending: number; installable: number } | null> {
     const apt = await this.ports.find('apt-get')
     if (!apt) return null
-    const result = await this.ports.run(apt, ['-s', '-o', 'Debug::NoLocking=1', 'upgrade'], { signal, timeoutMs: 60_000 }).catch(() => null)
-    return result?.code === 0 ? result.stdout.split('\n').filter(line => line.startsWith('Inst ')).length : null
+    const result = await this.ports.run(apt, ['-s', '-o', 'Debug::NoLocking=1', '--with-new-pkgs', 'upgrade'],
+      { signal, timeoutMs: 60_000 }).catch(() => null)
+    if (result?.code !== 0) return null
+    const counts = result.stdout.match(/(\d+) upgraded, (\d+) newly installed, \d+ to remove and (\d+) not upgraded\./u)
+    if (!counts) return null
+    return { pending: Number(counts[1]) + Number(counts[3]), installable: Number(counts[1]) + Number(counts[2]) }
   }
 
   private async sudo(signal: AbortSignal): Promise<boolean> {
@@ -342,7 +359,7 @@ export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.
     },
     run: (binary, args, options) => new Promise(resolve => {
       execFile(binary, args, { signal: options.signal, timeout: options.timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8',
-        env: { ...environment, PATH: path, NO_COLOR: '1', CI: '1' } }, (error, stdout, stderr) => {
+        env: { ...environment, PATH: path, NO_COLOR: '1', CI: '1', LC_ALL: 'C' } }, (error, stdout, stderr) => {
         const code = error && typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : error ? null : 0
         resolve({ code, stdout, stderr })
       })

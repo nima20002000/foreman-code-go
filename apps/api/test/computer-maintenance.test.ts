@@ -3,10 +3,11 @@ import { ComputerMaintenance, type MaintenancePorts } from '../src/modules/compu
 import { syncableServers } from '../src/modules/computers/fleet.js'
 
 type Run = { binary: string; args: string[] }
-function ports(overrides: { versions?: Record<string, string | null>; sudo?: boolean; apt?: string; files?: Record<string, string>;
+function ports(overrides: { versions?: Record<string, string | null>; sudo?: boolean; apt?: string; afterUpgrade?: string; files?: Record<string, string>;
   codexMcp?: string[]; oauthMcp?: string[]; plugins?: string[]; marketplaces?: string[]; fail?: (run: Run) => boolean } = {}) {
   const marketplaces = [...overrides.marketplaces ?? ['openai']], plugins = [...overrides.plugins ?? []]
   const codexMcp = [...overrides.codexMcp ?? []]
+  let aptOutput = overrides.apt ?? '2 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.'
   const runs: Run[] = []
   const later: Array<() => void> = []
   const versions: Record<string, string | null> = { codex: 'codex-cli 0.160.0', claude: '2.1.19 (Claude Code)', ...overrides.versions }
@@ -21,9 +22,12 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
       if (name === 'npm' && args[0] === 'view') return { code: 0, stdout: args[1] === '@openai/codex' ? '0.161.0\n' : '2.1.294\n', stderr: '' }
       if (name === 'npm' && args[0] === 'install') { versions.codex = 'codex-cli 0.161.0'; return { code: 0, stdout: 'added 1 package', stderr: '' } }
       if (name === 'claude' && args[0] === 'update') { versions.claude = '2.1.294 (Claude Code)'; return { code: 0, stdout: 'updated', stderr: '' } }
-      if (name === 'apt-get') return { code: 0, stdout: overrides.apt ?? 'Inst libc6 [1]\nInst curl [2]\n', stderr: '' }
+      if (name === 'apt-get') return { code: 0, stdout: aptOutput, stderr: '' }
       if (binary === 'sudo' && args[1] === 'true') return { code: overrides.sudo === false ? 1 : 0, stdout: '', stderr: '' }
-      if (binary === 'sudo' && args.includes('upgrade')) return { code: 0, stdout: '2 upgraded, 0 newly installed', stderr: '' }
+      if (binary === 'sudo' && args.includes('upgrade')) {
+        aptOutput = overrides.afterUpgrade ?? '0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.'
+        return { code: 0, stdout: '2 upgraded, 0 newly installed', stderr: '' }
+      }
       if (name === 'codex' && args[0] === 'mcp' && args[1] === 'list') return { code: 0, stdout: JSON.stringify(codexMcp.map(name => ({ name }))), stderr: '' }
       if (name === 'codex' && args[0] === 'mcp' && args[1] === 'add') {
         codexMcp.push(args[2]!)
@@ -84,12 +88,49 @@ describe('computer maintenance', () => {
     const fake = ports()
     const maintenance = new ComputerMaintenance(fake.value)
     maintenance.start({ kind: 'update-system' })
-    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: '2 packages upgraded' })
+    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: '2 packages upgraded · no pending updates' })
     const upgrade = fake.runs.find(run => run.binary === 'sudo' && run.args.includes('upgrade'))!
-    expect(upgrade.args).toEqual(expect.arrayContaining(['-n', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', '-y', 'Dpkg::Options::=--force-confold']))
+    expect(upgrade.args).toEqual(expect.arrayContaining(['-n', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', '-y', 'Dpkg::Options::=--force-confold', '--with-new-pkgs']))
     const locked = new ComputerMaintenance(ports({ sudo: false }).value)
     locked.start({ kind: 'restart' })
     expect((await settle(locked)).tasks[0]).toMatchObject({ state: 'failed', summary: 'This computer needs passwordless sudo for OS updates and restarts.' })
+  })
+
+  it('keeps deferred and held packages visible instead of reporting up to date', async () => {
+    const fake = ports({ apt: '0 upgraded, 0 newly installed, 0 to remove and 23 not upgraded.' })
+    expect((await new ComputerMaintenance(fake.value).status(AbortSignal.timeout(1000))).system.packageUpdates).toBe(23)
+  })
+
+  it('reads package state after an upgrade and reports deferred updates still pending', async () => {
+    const maintenance = new ComputerMaintenance(ports({
+      afterUpgrade: '0 upgraded, 0 newly installed, 0 to remove and 23 not upgraded.',
+    }).value)
+    maintenance.start({ kind: 'update-system' })
+    const result = await settle(maintenance)
+    expect(result.system.packageUpdates).toBe(23)
+    expect(result.tasks[0]).toMatchObject({ state: 'succeeded',
+      summary: '2 packages upgraded · 23 updates pending (deferred or held by APT)' })
+  })
+
+  it('does not claim verified success when installable packages remain or readback fails', async () => {
+    for (const afterUpgrade of ['1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.', 'unreadable']) {
+      const maintenance = new ComputerMaintenance(ports({ afterUpgrade }).value)
+      maintenance.start({ kind: 'update-system' })
+      expect((await settle(maintenance)).tasks[0]?.state).toBe('failed')
+    }
+    const status = await new ComputerMaintenance(ports({ apt: 'unreadable' }).value).status(AbortSignal.timeout(1000))
+    expect(status.system.packageUpdates).toBeNull()
+  })
+
+  it('does not report a harness current when its updater left the old binary in place', async () => {
+    const fake = ports()
+    const run = fake.value.run
+    fake.value.run = async (binary, args, options) => args[0] === 'install'
+      ? { code: 0, stdout: 'updated', stderr: '' } : run(binary, args, options)
+    const maintenance = new ComputerMaintenance(fake.value)
+    maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
+    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
+      summary: 'Codex is still 0.160.0; latest published version is 0.161.0.' })
   })
 
   it('answers before restarting and never starts the same kind twice at once', async () => {

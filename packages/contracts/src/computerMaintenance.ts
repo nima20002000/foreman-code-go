@@ -67,7 +67,7 @@ export const HarnessVersionSchema = z.object({
 export const MaintenanceStatusSchema = z.object({
   harnesses: z.array(HarnessVersionSchema).max(2),
   system: z.object({
-    /** Number of upgradable OS packages, or null when unknown. */
+    /** Pending OS upgrades, including APT-held and phased updates; null when the count cannot be verified. */
     packageUpdates: z.number().int().nonnegative().nullable(),
     rebootRequired: z.boolean(),
     /** Passwordless sudo is available for OS updates and restarts. */

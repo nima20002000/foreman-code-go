@@ -9,7 +9,7 @@ import { useBuildComputers } from '../../shared/api/buildComputers'
 import { computerKey, useComputerActivity } from '../../shared/api/computerActivity'
 import { useComputerAccounts } from '../../shared/api/computerAccounts'
 import { useComputerMaintenance, useStartMaintenance } from '../../shared/api/computerMaintenance'
-import type { MaintenanceStatus } from '@foreman-code/contracts/computer-maintenance'
+import type { ComputerMaintenanceStartInput, MaintenanceStatus } from '@foreman-code/contracts/computer-maintenance'
 import { Badge, Button, IconButton } from '../../shared/ui/nocturne'
 import { askOperator } from '../operator-chat/operatorChatStore'
 import { MainRuntimeSetup } from '../runtime-qualification/MainRuntimeSetup'
@@ -49,15 +49,18 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
   return <>
     {only ? null : <div className="computer-fleet-actions" role="group" aria-label="All computers">
       <Button size="sm" disabled={start.isPending} onClick={() => {
-        start.mutate({ task: { kind: 'update-harnesses', harnesses: ['codex', 'claude'] } })
-        start.mutate({ task: { kind: 'update-system' } })
+        start.mutate([{ task: { kind: 'update-harnesses', harnesses: ['codex', 'claude'] } },
+          { task: { kind: 'update-system' } }])
       }}>Update computers</Button>
       <Button size="sm" variant="ghost" disabled={start.isPending} onClick={() => {
-        start.mutate({ task: { kind: 'sync-mcp' } })
-        start.mutate({ task: { kind: 'sync-plugins' } })
+        start.mutate([{ task: { kind: 'sync-mcp' } }, { task: { kind: 'sync-plugins' } }])
       }}>Sync MCP servers and plugins</Button>
-      {start.isError ? <small role="alert">{start.error.message}</small> : null}
     </div>}
+    {start.isError ? <small role="alert">{start.error.message}</small> : null}
+    {start.data?.flatMap(result => result.computers).filter(computer => computer.error).map((computer, index) =>
+      <small role="alert" key={`${computerKey(computer.target)}:${index}`}>
+        {computerDisplayName(computer.target.hostRef)}: {computer.error}
+      </small>)}
     <ul className="computer-card-grid" aria-label="Computers">
       {cards.map(card => {
         const observed = activity.data?.mainId === mainId && !activity.isError
@@ -87,13 +90,14 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
   </>
 }
 
-type Task = Parameters<ReturnType<typeof useStartMaintenance>['mutate']>[0]['task']
+type Task = ComputerMaintenanceStartInput['task']
 function ComputerCard({ card, observed, fresh, accounts, maintenance, onMaintain, maintaining, buildPosition, buildCount, onOpen }: {
   card: Card; observed: ComputerActivity | undefined; fresh: boolean; accounts: ComputerAccounts | null | undefined
   maintenance: MaintenanceStatus | null | undefined; onMaintain(task: Task): void; maintaining: boolean
   buildPosition: number; buildCount: number; onOpen: (() => void) | undefined
 }) {
   const name = observed?.name ?? computerDisplayName(card.target.hostRef)
+  const task = maintenance?.tasks.find(item => item.state === 'running') ?? maintenance?.tasks[0]
   const online = fresh && observed?.online === true
   const workflows = new Set(observed?.agents.map(agent => agent.workflowId) ?? []).size
   const account = (tool: ComputerAccount['tool']) => accounts?.accounts.find(value => value.tool === tool)
@@ -123,8 +127,8 @@ function ComputerCard({ card, observed, fresh, accounts, maintenance, onMaintain
       <div><dt>System</dt><dd><SystemState status={maintenance} busy={maintaining} onMaintain={onMaintain} agents={observed?.agents.length ?? 0} /></dd></div>
       <div><dt>Disk</dt><dd>{maintenance?.system.disk ? `${bytes(maintenance.system.disk.freeBytes)} free of ${bytes(maintenance.system.disk.totalBytes)}` : '—'}</dd></div>
     </dl>
-    {maintenance?.tasks[0] ? <p className="computer-card-task" data-state={maintenance.tasks[0].state} role="status">
-      {maintenance.tasks[0].state === 'running' ? `${taskLabel(maintenance.tasks[0].kind)}…` : `${taskLabel(maintenance.tasks[0].kind)}: ${maintenance.tasks[0].summary}`}</p> : null}
+    {task ? <p className="computer-card-task" data-state={task.state} role="status">
+      {task.state === 'running' ? `${taskLabel(task.kind)}…` : `${taskLabel(task.kind)}: ${task.summary}`}</p> : null}
     <footer className="computer-card-footer">
       <Button size="sm" variant="ghost" onClick={() => askOperator(`On ${name}: `, { send: false })}>Ask Operator to change…</Button>
     </footer>
@@ -164,7 +168,7 @@ function SystemState({ status, busy, onMaintain, agents }: { status: Maintenance
   if (!status) return <>—</>
   const updates = status.system.packageUpdates
   return <span className="computer-card-chip">
-    {updates === null ? 'Updates unknown' : updates ? `${count(updates, 'update')}` : 'Up to date'}
+    {updates === null ? 'Updates unknown' : updates ? `${count(updates, 'pending update')}` : 'Up to date'}
     {updates ? <Button size="sm" variant="ghost" disabled={busy || !status.system.sudo} title={status.system.sudo ? undefined : 'Needs passwordless sudo'}
       onClick={() => onMaintain({ kind: 'update-system' })}>Update</Button> : null}
     {status.system.rebootRequired ? <Badge tone="warning">Restart needed</Badge> : null}
