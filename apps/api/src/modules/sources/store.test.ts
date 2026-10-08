@@ -67,6 +67,26 @@ it('measures retained capture files without changing or deleting them', async ()
   expect(await f.store.retainedCaptureBytes(randomUUID())).toBe(0)
 })
 
+it('removes committed source bytes and can retry an already removed snapshot', async () => {
+  const f = await fixture()
+  await f.store.read(f.manifest, f.manifest.entries[0]!, f.signal)
+  await f.store.remove(f.manifest.snapshotId)
+  expect(await f.store.retainedCaptureBytes(f.manifest.snapshotId)).toBe(0)
+  await expect(f.store.manifest(f.manifest.snapshotId)).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(f.store.read(f.manifest, f.manifest.entries[0]!, f.signal))
+    .rejects.toMatchObject({ code: 'ENOENT' })
+  await f.store.remove(f.manifest.snapshotId)
+})
+
+it('refuses snapshot cleanup through a link and preserves the linked bytes', async () => {
+  const f = await fixture()
+  const outside = join(f.directory, 'outside.txt')
+  await writeFile(outside, 'outside bytes')
+  await symlink(outside, join(f.directory, f.manifest.snapshotId, 'external'))
+  await expect(f.store.remove(f.manifest.snapshotId)).rejects.toMatchObject({ code: 'SOURCE_BYTES_INVALID' })
+  expect(await readFile(outside, 'utf8')).toBe('outside bytes')
+})
+
 it('refuses to follow a link while measuring quarantined capture bytes', async () => {
   const f = await fixture()
   await symlink('/etc/passwd', join(f.directory, f.manifest.snapshotId, 'external'))

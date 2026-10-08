@@ -1,12 +1,39 @@
 import { constants } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
-import { mkdir, open, rename, type FileHandle } from 'node:fs/promises'
+import { lstat, mkdir, open, readdir, rename, rmdir, unlink, type FileHandle } from 'node:fs/promises'
 import { SourceManifestSchema, type SourceManifest, type SourceEntry, type RootBinding } from '@foreman-code/contracts/source-materialization'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import { SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import type { SourceSnapshotSink } from './capture.js'
 import type { SourceByteReader, SourceSnapshotPin } from './ports.js'
+
+async function removeSnapshotDirectory(parent: FileHandle, name: string): Promise<void> {
+  let directory: FileHandle
+  try {
+    directory = await openChildDirectory(parent, name)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+  try {
+    for (const entry of await readdir(anchored(directory), { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        await removeSnapshotDirectory(directory, entry.name)
+      } else {
+        const path = anchored(directory, entry.name)
+        const stat = await lstat(path)
+        if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.()) {
+          throw new SourceError('SOURCE_BYTES_INVALID', 'Snapshot cleanup requires private regular files.')
+        }
+        await unlink(path)
+      }
+    }
+    await directory.sync()
+  } finally { await directory.close() }
+  await rmdir(anchored(parent, name))
+  await parent.sync()
+}
 
 /** Dedicated main-owned source namespace. It is not FileByteStorage or a worker DB.
  * Failed/prepared snapshot directories remain quarantined and discoverable;
@@ -113,6 +140,16 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
   async storageIdentity(): Promise<RootBinding['filesystem']> {
     const root = await openPrivateRoot(this.canonicalRoot)
     try { return await identity(root) } finally { await root.close() }
+  }
+
+  /** The caller has persisted unavailability and holds the snapshot and storage locks. */
+  async remove(snapshotId: string): Promise<void> {
+    SourceManifestSchema.shape.snapshotId.parse(snapshotId)
+    const root = await openPrivateRoot(this.canonicalRoot)
+    try {
+      await removeSnapshotDirectory(root, snapshotId)
+      this.manifests.delete(snapshotId)
+    } finally { await root.close() }
   }
 
   /** Call only after holding the failed capture's command lock. Files remain quarantined. */

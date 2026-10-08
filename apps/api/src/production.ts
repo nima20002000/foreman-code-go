@@ -1811,6 +1811,7 @@ export function buildProductionApp(
     reconciliation = (async () => {
       if (jobRuntime) await jobRuntime.reconcileFailedCaptures(report)
       if (jobRuntime) await closeCompletedWorkflowSources(database.pool, jobRuntime.sources, report)
+      if (jobRuntime) await jobRuntime.sources.releaseUnusedSnapshots(report)
       await localNativeOutputMcp?.cleanupClosed()
       await engine.reconcile(report)
       if (closing) return

@@ -10,6 +10,23 @@ Every materialization reserves a new UUID directory. An exclusive-write binding 
 
 Source limits: 4,096 regular files, 16 MiB per file, 128 MiB expanded/package bytes, depth 32, 30 seconds preparation and two active materializations per service. Materialization space estimates include three byte copies plus entry overhead; retained directories still consume actual free space. `PostgresSourceReservations` serializes the aggregate host/filesystem budget across main processes (1 GiB charged physical copies, four preparing operations, two active/uncertain materializations); staging and retained copies remain charged. The host transfer composition consumes the original preparation reservation. No archive extractor or document upload-limit change is included.
 
+Approved canonical snapshots are released automatically before a capture reports
+capacity exhaustion and during the existing periodic reconciliation sweep.
+Active Jobs, queued tickets, source preparations, materializations, Runs and
+qualifications retain their snapshots. Current runtime profiles also retain
+their source, including qualified verification profiles, so qualification can
+still be requested. Historical profile revisions alone do not pin bytes.
+
+Retention starts at the latest recorded approval, binding, preparation, closure,
+Job or Run use. It uses the longest referencing Job policy's `retentionSeconds`,
+or one hour when no Job policy applies. Snapshot and storage locks fence
+admission while cleanup checks these references. Unavailability is committed
+before descriptor-anchored deletion; the capture reservation is reclaimed only
+after deletion succeeds. Interrupted cleanup retries on the next sweep. Saved
+source facts stay immutable: `source_list` reports `unavailable`, `source_get`
+returns `SOURCE_UNAVAILABLE`, and retrying the original `source_approve` command
+cannot restore the bytes. HTTP and authenticated Operator MCP share this behavior.
+
 `resolve` verifies the exact persisted receipt, root and complete accepted source again. Native launch must consume it immediately under the same reconciled ownership and enforce the binding's read-only/exclusive-write harness security. File modes alone do not grant or implement a same-UID sandbox. `createPrivateSourceRepository` generates a new private Git object store adjacent to the verified tree, with no copied hooks, config, credentials, shared `.git`, or source history. CI receives explicit workTree/gitDirectory; the generated commit is separate from sourceCommit and cannot masquerade as the original Git identity.
 
 The committed driver is `runSourceMaterializationFixture` in `acceptanceDriver.ts`. W09-C supplies its authenticated SourceByteReader and W07/W08 authorization callback. The runnable focused local fixture command is:
