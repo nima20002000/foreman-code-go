@@ -104,3 +104,90 @@ it('retries failed Git setup without requesting another login code', async () =>
   expect(screen.getByText('owner')).toBeVisible()
   expect(setups).toBe(1)
 })
+
+
+it.each([403, 404])('treats polling HTTP %s as terminal instead of offering a status retry', async statusCode => {
+  fixture()
+  let polls = 0
+  server.use(http.post('*/api/management/computers/github/login/status', () => {
+    polls++
+    return HttpResponse.json({ error: { code: statusCode === 403 ? 'ACCESS_DENIED' : 'GITHUB_LOGIN_NOT_FOUND',
+      message: statusCode === 403 ? 'Access was revoked.' : 'The session was removed.' } }, { status: statusCode })
+  }))
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Connect GitHub' }))
+  expect(await screen.findByText(statusCode === 403 ? 'Access was revoked.' : 'The session was removed.')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Retry status' })).not.toBeInTheDocument()
+  if (statusCode === 403) expect(screen.queryByRole('button', { name: 'Start again' })).not.toBeInTheDocument()
+  else expect(screen.getByRole('button', { name: 'Start again' })).toBeVisible()
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Close sign-in' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(polls).toBe(1)
+})
+
+it('expires the code after a temporary polling error without another HTTP request', async () => {
+  const state = { ...waiting, expiresAt: new Date(Date.now() + 3_000).toISOString() }
+  fixture(state)
+  let polls = 0
+  server.use(http.post('*/api/management/computers/github/login/status', () => {
+    polls++
+    return HttpResponse.json({ error: { code: 'COMPUTER_OFFLINE', message: 'Computer is offline.' } }, { status: 409 })
+  }))
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Connect GitHub' }))
+  expect(await screen.findByText('Computer is offline.')).toBeVisible()
+  expect(await screen.findByText('The one-time code expired. Start again.', {}, { timeout: 4_000 })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Retry status' })).not.toBeInTheDocument()
+  expect(polls).toBe(1)
+})
+
+function responseGate() {
+  let resolve!: (state: GitHubLoginState) => void
+  const promise = new Promise<GitHubLoginState>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+it.each(['logout-first', 'login-first'])('keeps the last requested account switch with %s responses', async order => {
+  fixture(waiting, true)
+  const logout = responseGate()
+  const login = responseGate()
+  let logoutRequests = 0
+  let loginRequests = 0
+  server.use(
+    http.post('*/api/management/computers/github/logout', async () => {
+      logoutRequests++
+      return HttpResponse.json(await logout.promise)
+    }),
+    http.post('*/api/management/computers/github/login', async () => {
+      loginRequests++
+      return HttpResponse.json(await login.promise)
+    }),
+  )
+  const user = userEvent.setup()
+  try {
+    await user.click(screen.getByRole('button', { name: 'Sign out' }))
+    await waitFor(() => expect(logoutRequests).toBe(1))
+    expect(screen.getByRole('button', { name: 'Switch account' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Switch account' }))
+    expect(await screen.findByText('Waiting for sign-out to finish…')).toBeVisible()
+    if (order === 'login-first') login.resolve(waiting)
+    expect(loginRequests).toBe(0)
+    await act(async () => { logout.resolve(signedOut) })
+    if (order === 'logout-first') login.resolve(waiting)
+    expect(await screen.findByText('AB12-CD34')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Connect GitHub' })).not.toBeInTheDocument()
+    expect(loginRequests).toBe(1)
+  } finally {
+    logout.resolve(signedOut)
+    login.resolve(waiting)
+  }
+})
+
+
+it('keeps checking a completed device code while the computer finishes account setup', async () => {
+  fixture({ ...waiting, code: null, expiresAt: new Date(Date.now() - 1).toISOString() })
+  server.use(http.post('*/api/management/computers/github/login/status', () => HttpResponse.json({
+    ...waiting, state: 'signed-in', code: null, account: 'owner',
+  })))
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Connect GitHub' }))
+  expect(await screen.findByText('owner')).toBeVisible()
+  expect(screen.queryByText('The one-time code expired. Start again.')).not.toBeInTheDocument()
+})

@@ -16,22 +16,26 @@ export function GitHubSignInDialog({ target, name, account }: {
   const open = key?.session === sessionGeneration() && key.key === `${target.hostRef.mainId}:${target.hostRef.kind === 'main' ? 'main' : target.hostRef.deviceId}`
   return <Dialog open={open} onOpenChange={value => { if (!value) close() }} title={`GitHub on ${name}`}
     headerLeading={<GitBranch size={20} aria-hidden="true" />} size="sm">
-    {open && <GitHubSignInBody target={target} account={account} />}
+    {open && <GitHubSignInBody target={target} account={account} close={close} />}
   </Dialog>
 }
 
-function GitHubSignInBody({ target, account }: { target: DeviceProvisioningTarget; account: ComputerAccount | undefined }) {
-  const { start, logout, setup, status, current } = useGitHubLogin(target)
+function GitHubSignInBody({ target, account, close }: {
+  target: DeviceProvisioningTarget; account: ComputerAccount | undefined; close(): void
+}) {
+  const { start, logout, setup, status, current, terminalError, accessDenied } = useGitHubLogin(target)
   let signedIn = account?.signedIn ? account.account : null
   if (current?.state === 'signed-out') signedIn = null
   if (current && ['signed-in', 'git-setup-failed'].includes(current.state)) signedIn = current.account
   if (account && !account.installed) return <Alert tone="warning" title="Install the GitHub CLI (gh) on this computer first." />
-  if (start.isPending) return <LoadingState label="Asking GitHub for a code…" />
+  if (start.isPending) return <LoadingState label={start.isPaused
+    ? 'Waiting for sign-out to finish…' : 'Asking GitHub for a code…'} />
   if (status.isError) return <div className="github-sign-in">
     <Alert tone="danger" title={status.error.message} />
     <div className="github-actions">
-      <Button onClick={() => void status.refetch()} disabled={status.isFetching}>Retry status</Button>
-      <Button onClick={() => start.mutate()}>Start again</Button>
+      {!terminalError && <Button onClick={() => void status.refetch()} disabled={status.isFetching}>Retry status</Button>}
+      {!accessDenied && <Button onClick={() => start.mutate()}>Start again</Button>}
+      <Button variant="ghost" onClick={close}>Close sign-in</Button>
     </div>
   </div>
   if (current?.state === 'waiting' && current.code) return <div className="github-sign-in">
@@ -53,12 +57,13 @@ function GitHubSignInBody({ target, account }: { target: DeviceProvisioningTarge
       <p>Signed in as <strong>{signedIn}</strong></p>
       {current?.state === 'signed-in' && current.message && <p role="status">{current.message}</p>}
       <div className="github-actions">
-        <Button size="sm" disabled={logout.isPending || setup.isPending} onClick={() => start.mutate()}>Switch account</Button>
+        <Button size="sm" disabled={setup.isPending} onClick={() => start.mutate()}>Switch account</Button>
         <Button size="sm" variant="ghost" disabled={logout.isPending || setup.isPending} onClick={() => logout.mutate()}>Sign out</Button>
       </div>
     </> : <Button variant="primary" onClick={() => start.mutate()}>
       {current && ['failed', 'expired'].includes(current.state) ? 'Start again' : 'Connect GitHub'}
     </Button>}
+    {current?.state === 'expired' && <Button variant="ghost" onClick={close}>Close sign-in</Button>}
   </div>
 }
 
