@@ -51,7 +51,8 @@ class ProviderFixture implements NativeHarnessSessionManager {
   async createSession() { this.creates++; return this.session }
   async attachSession() { return this.session }
   async forkSession() { this.creates++; return this.session }
-  async *startTurn(_session: NativeSessionReference, input: NativeTurnInput) {
+  async *startTurn(_session: NativeSessionReference, input: NativeTurnInput):
+    ReturnType<NativeHarnessSessionManager['startTurn']> {
     this.modes.push(input.sessionMode)
     this.prompts.push(input.prompt)
     const id = `fixture-turn-${this.prompts.length}`
