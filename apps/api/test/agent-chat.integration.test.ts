@@ -472,7 +472,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
   })
 
   it.each(['/plan Inspect the repository', 'Inspect the repository'])(
-    'queues one Plan turn instead of steering a regular turn for %s', async content => {
+    'queues one explicitly selected Plan turn after a regular turn for %s', async content => {
       const { service } = makeService()
       const workspace = fixture.scope.workspaceId
       const read = () => service.read(writer, workspace, query(codexNode))
@@ -484,7 +484,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
         await service.send(writer, workspace, request(codexNode, 'regular work', first.state.conversation!.id))
         const active = await settled(service, read, value => Boolean(value.activeTurn?.nativeTurnId))
         const input = request(codexNode, content, active.conversation!.id,
-          { intent: 'steer', sessionMode: 'plan', expectedNativeTurnId: active.activeTurn!.nativeTurnId! })
+          { intent: 'next_turn', sessionMode: 'plan' })
         const accepted = await service.send(writer, workspace, input)
         expect(accepted.turn).toMatchObject({ intent: 'next_turn', delivery: 'queued' })
         expect((await service.send(writer, workspace, input)).replayed).toBe(true)

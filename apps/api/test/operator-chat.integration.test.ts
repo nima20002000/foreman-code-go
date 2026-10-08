@@ -309,7 +309,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     }
   }, 30000)
 
-  it('saves future budgets through authenticated MCP independently of current history with denied readback', async () => {
+  it('saves future budgets through authenticated MCP independently of current history and denies callers without permission', async () => {
     const writer = await access.issue({ name: 'default settings owner', audience: 'operator', grants: owner.grants,
       expiresAt: new Date(Date.now() + 600000) })
     const denied = await access.issue({ name: 'chat writer without defaults permission', audience: 'operator',
@@ -350,10 +350,15 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const saved = SessionControlStateSchema.parse(result.structuredContent)
       expect(saved.defaults).toEqual(preferences)
       expect(saved.desired).toEqual(before.desired)
-      const refusal = await limited.callTool({ name: 'operator_chat_controls_update', arguments: { conversationId: deniedConversation.id,
+      const deniedBefore = SessionControlStateSchema.parse((await limited.callTool({
+        name: 'operator_chat_controls_get', arguments: { conversationId: deniedConversation.id } })).structuredContent)
+      await expectMcpAccessDenied(limited.callTool({ name: 'operator_chat_controls_update', arguments: { conversationId: deniedConversation.id,
         request: { ...request, expectedRevision: 0, requestId: randomUUID(),
-          preferences: SessionPreferencesSchema.parse({ contextBudget: 200000 }) } } })
-      expect(refusal.isError).toBe(true)
+          preferences: SessionPreferencesSchema.parse({ contextBudget: 200000 }) } } }))
+      const deniedAfter = SessionControlStateSchema.parse((await limited.callTool({
+        name: 'operator_chat_controls_get', arguments: { conversationId: deniedConversation.id } })).structuredContent)
+      expect(deniedAfter.defaults).toEqual(deniedBefore.defaults)
+      expect(deniedAfter.revision).toBe(deniedBefore.revision)
       const persisted = SessionControlStateSchema.parse((await client.callTool({
         name: 'operator_chat_controls_get', arguments: target })).structuredContent)
       expect(persisted.defaults).toEqual(preferences)
