@@ -139,7 +139,7 @@ describe('production remote review and native recovery through authenticated MCP
       const catalog = HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'codex' }))
       expect(catalog.capability).toBeNull()
       expect(catalog.discoveryError?.code).toBe('HARNESS_MODEL_DEFAULT_UNAVAILABLE')
-      const initialOptions = HarnessOptionsResultSchema.parse(await fixture.value('harness_options_get', { harness: 'codex' }))
+      const initialOptions = HarnessOptionsResultSchema.parse(fixture.startupCatalog)
       expect(initialOptions.models).toEqual([])
       const options = HarnessOptionsResultSchema.parse(await fixture.value('harness_options_refresh', { harness: 'codex' }))
       expect(options.models.map(model => model.id)).toContain('test-model')
