@@ -5,6 +5,7 @@ import { HostHarnessOverrideListInputSchema, HostHarnessOverrideListSchema, Host
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { hasAction } from '../../access/policy.js'
 import { toolFailure, toolResult } from '../../../mcp/shared/results.js'
+import { logOperatorToolFailure } from '../../../mcp/operator/invoke.js'
 import type { OperatorRequestContext } from '../../../mcp/operator/types.js'
 import { DomainError } from '../../errors.js'
 import type { HostHarnessOverrideService } from './service.js'
@@ -52,22 +53,27 @@ export function registerHostHarnessOverrideRoutes(app: FastifyInstance, service:
     await service.save(await authenticate(request), 'http', HostHarnessOverrideSaveSchema.parse(request.body))))
 }
 export function registerHostHarnessOverrideTools(server: McpServer, service: HostHarnessOverrideService, principal: ManagementPrincipal): void {
-  const invoke = async (operation: () => Promise<unknown>) => {
-    try { return toolResult(await operation()) } catch (error) { return toolFailure(error, 'Host harness settings failed.') }
+  const invoke = async (name: HostHarnessToolName, operation: () => Promise<unknown>) => {
+    try {
+      return toolResult(await operation())
+    } catch (error) {
+      logOperatorToolFailure(name, error)
+      return toolFailure(error, 'Host harness settings failed.')
+    }
   }
   if (hostHarnessToolAvailable(service, principal, 'harness_instances_list')) server.registerTool('harness_instances_list', {
     description: 'Read persisted host-instance overrides separately from global defaults. Qualification matches the current target installation, profile and connection generation. Previously qualified enabled Worker profiles are checked automatically after reconnect; failed checks remain unqualified. Listing never starts discovery or qualification.',
     inputSchema: HostHarnessOverrideListInputSchema, outputSchema: HostHarnessOverrideListSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, input => invoke(() => service.list(principal, input, 'mcp')))
+  }, input => invoke('harness_instances_list', () => service.list(principal, input, 'mcp')))
   if (hostHarnessToolAvailable(service, principal, 'harness_instance_check')) server.registerTool('harness_instance_check', {
     description: 'Explicitly qualify one exact saved host profile through its admitted native factory/worker. Claude runs a finite subscription conversation and tool-policy scenarios on disposable files; it consumes subscription capacity. Claude requires Full access and an available Write tool. Other access modes are rejected at save and Start; Full access does not bypass app grants or tool approval. This may start owned diagnostic native processes; listing settings never does. Requires read and update grants; retains idempotent check receipts and exact-target evidence.',
     inputSchema: HostHarnessInstanceCheckInputSchema, outputSchema: HostHarnessInstanceCheckResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, input => invoke(() => service.check(principal, 'mcp', input)))
+  }, input => invoke('harness_instance_check', () => service.check(principal, 'mcp', input)))
   if (hostHarnessToolAvailable(service, principal, 'harness_instance_save')) server.registerTool('harness_instance_save', {
     description: 'Create or revision-check a host-specific harness override. Claude requires Full access; unsupported modes return validation errors and are never upgraded. Writes preserve immutable history; installed/authenticated/qualified are separate and saved configuration is unavailable until exact-target qualification.',
     inputSchema: HostHarnessOverrideSaveSchema, outputSchema: HostHarnessOverrideSaveResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, input => invoke(() => service.save(principal, 'mcp', input)))
+  }, input => invoke('harness_instance_save', () => service.save(principal, 'mcp', input)))
 }

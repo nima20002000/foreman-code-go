@@ -2,6 +2,10 @@ import { expect, it, vi } from 'vitest'
 import { invokeOperatorTool } from '../src/mcp/operator/invoke.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 import { DomainError } from '../src/modules/errors.js'
+import type { McpServer } from '@modelcontextprotocol/server'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSettings/service.js'
+import { registerHostHarnessOverrideTools } from '../src/modules/harnesses/instanceSettings/management.js'
 
 const log = vi.hoisted(() => ({ error: vi.fn() }))
 vi.mock('../src/infrastructure/logger.js', () => ({ componentLogger: () => log }))
@@ -44,4 +48,33 @@ it('retains permission-denial audit and public domain errors', async () => {
     error: { code: 'ACCESS_DENIED', message: 'Required permission is missing.' },
   }) }] })
   expect(log.error).not.toHaveBeenCalled()
+})
+
+it('logs host-profile check failures without exposing private provider text', async () => {
+  log.error.mockClear()
+  const failure = new Error('private-native-credential')
+  let check: ((input: unknown) => Promise<unknown>) | undefined
+  const server = {
+    registerTool(name: string, _options: unknown, handler: (input: unknown) => Promise<unknown>) {
+      if (name === 'harness_instance_check') check = handler
+    },
+  } as unknown as McpServer
+  const service = {
+    qualificationSupported: true,
+    check: vi.fn(async () => { throw failure }),
+  } as unknown as HostHarnessOverrideService
+  const principal: ManagementPrincipal = { id: 'operator', name: 'Operator', audience: 'operator',
+    revokedAt: null, expiresAt: '9999-12-31T00:00:00.000Z',
+    grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }] }
+  registerHostHarnessOverrideTools(server, service, principal)
+  expect(check).toBeDefined()
+  const result = await check!({})
+  expect(result).toMatchObject({ isError: true, content: [{ type: 'text', text: JSON.stringify({
+    error: { code: 'INTERNAL_ERROR', message: 'Host harness settings failed.' },
+  }) }] })
+  expect(log.error).toHaveBeenCalledOnce()
+  const [diagnostic] = log.error.mock.calls[0]!
+  expect(diagnostic).toMatchObject({ tool: 'harness_instance_check', errorType: 'Error' })
+  expect(diagnostic.stackFrames.length).toBeGreaterThan(0)
+  expect(JSON.stringify(diagnostic)).not.toContain('private-native-credential')
 })
