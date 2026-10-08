@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
-import { ManagementActionSchema } from '@foreman-code/contracts/management'
+import { HarnessOptionsResultSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
 import { ClaudeHarnessConfigurationSchema } from '@foreman-code/contracts/claude'
 import { DevicePairingGrantResultSchema, DevicePairingResultSchema, MainDeviceIdentityPublicSchema,
   WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
@@ -236,11 +236,13 @@ export async function remoteReviewProduction(options: {
       }, value => value, 'production Main startup')
     }
     await startMain()
+    let startupCatalog: ReturnType<typeof HarnessOptionsResultSchema.parse> | undefined
     if (options.modelCatalog) {
       await waitForRemoteReview(async () => (await db.pool.query<{ record: unknown }>(
         "select record from application_settings where key='harness-default-model-unavailable'",
       )).rows[0]?.record, value => Array.isArray(value) && value.includes('codex'),
       'persisted unavailable startup model defaults')
+      startupCatalog = HarnessOptionsResultSchema.parse(await value('harness_options_get', { harness: 'codex' }))
       await provider.showModels()
     }
     async function call(name: string, args: Record<string, unknown>, token = writer.token) {
@@ -483,7 +485,7 @@ export async function remoteReviewProduction(options: {
     }
     const registry = new NativeProcessRegistry(join(stateDirectory, 'workflow-native-processes'))
     closes.push(() => stopMain())
-    return { db, directory, stateDirectory, provider, access, writer, hostRef, profiles, version,
+    return { db, directory, stateDirectory, provider, access, writer, hostRef, profiles, version, startupCatalog,
       start, call, value, details, reconcile, registry, close, origin: () => origin,
       failures: () => structuredClone(failures),
       entryCapture: (operationId: string) => new InstalledWorkflowRecovery(
