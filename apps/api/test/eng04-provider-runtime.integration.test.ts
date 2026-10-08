@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
-import { br1002OpenCodeRuntime, br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 
 describe.skipIf(!postgresEnabled)('Current provider runtime composition', () => {
   it('settles the deterministic checkpoint provider through original native captures', async () => {
@@ -10,23 +10,11 @@ describe.skipIf(!postgresEnabled)('Current provider runtime composition', () => 
       await fixture.engine.start(fixture.f.run.id)
       const [interaction] = await fixture.pending()
       expect(interaction?.graphInterruptId).toBeTruthy()
-      const response = await fixture.service.respond({ kind: 'user', principal: fixture.principal }, br1002Response(interaction!))
+      const response = await fixture.service.respond({ kind: 'user', principal: fixture.principal }, approvalResponse(interaction!))
       expect(response.interaction.deliveryState).toBe('delivered')
       expect((await fixture.runs.get(fixture.f.run.id))?.outcome).toBe('succeeded')
       expect(fixture.provider.counts).toMatchObject({ sessions: 2, starts: 2, responses: 1 })
     } finally { await fixture.close() }
   }, 60000)
 
-  it('persists a real OpenCode adapter approval and its terminal continuation', async () => {
-    const fixture = await br1002OpenCodeRuntime()
-    try {
-      await fixture.engine.start(fixture.f.run.id)
-      const [interaction] = await fixture.pending()
-      expect(interaction?.graphInterruptId).toBeTruthy()
-      const response = await fixture.service.respond({ kind: 'user', principal: fixture.principal }, br1002Response(interaction!))
-      expect(response.interaction.deliveryState).toBe('delivered')
-      expect((await fixture.runs.get(fixture.f.run.id))?.outcome).toBe('succeeded')
-      expect(fixture.counts()).toMatchObject({ sessions: 2, prompts: 2, responses: 1 })
-    } finally { await fixture.close() }
-  }, 60000)
 })

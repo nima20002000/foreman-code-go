@@ -17,12 +17,9 @@ import type { CodexFileCallResult, CodexFileHostLease } from '../src/modules/har
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { calls, emit, finish, fixtureQualification, input, until } from './fixtures/codex-test-helpers.js'
 import { fileRuntimeFixture } from './fixtures/codex-file-runtime-helpers.js'
-import { RecordedOpenCodeServer } from './support/opencodeRecordedServer.js'
-import { deferred } from './helpers/agentChatF5.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 
 // Codex uses a protocol fixture and a fail-closed materialization spy.
-// OpenCode runs its installed server and isolated host against a loopback model.
 vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   const actual = await vi.importActual<typeof import('../src/modules/harnesses/codexProtocol.js')>('../src/modules/harnesses/codexProtocol.js')
   return { ...actual, qualifyCodex: fixtureQualification, assertCodexUnchanged: async () => undefined }
@@ -38,11 +35,6 @@ const { CodexAppServerSessionManager } = await import('../src/modules/harnesses/
 const { postgresCodexChatFiles } = await import('../src/modules/harnesses/codexFiles/chatAdmission.js')
 const { codexChatHostDirectory } = await import('../src/modules/harnesses/codexFiles/localHost.js')
 const { productionCodexChatFiles } = await import('../src/modules/harnesses/codexFiles/production.js')
-const { NativeHarnessFactories } = await import('../src/modules/harnesses/runtimeFactory.js')
-const { nativeConfigurationFixture } = await import('./support/opencodeNativeConfiguration.js')
-const { childEnvironmentFingerprint } = await import('../src/modules/harnesses/opencodeTransport.js')
-const { productionOpenCodeChatFiles } = await import('../src/modules/harnesses/opencodeFiles/production.js')
-const { adoptOpenCodePublications } = await import('../src/modules/harnesses/opencodeFiles/postgres.js')
 const { PostgresWorkflowRepository } = await import('../src/modules/workflows/postgres.js')
 const { WorkflowManagementService } = await import('../src/modules/workflows/management.js')
 
@@ -52,30 +44,19 @@ const pin = (value: { file: { fileId: string }; revision: { revisionId: string }
   fileId: value.file.fileId, revisionId: value.revision.revisionId,
 })
 
-async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
+async function fixture({ readOnly }: { readOnly: boolean }) {
   const database = await agent3Database()
   const root = await mkdtemp(join(homedir(), '.r2-inherited-'))
   const f = await fileRuntimeFixture()
-  const finished = [deferred(), deferred()]
-  const nativeFixture = harness === 'opencode' ? await nativeConfigurationFixture({ files: true,
-    respond: async () => 'references read',
-    beforeFinish: async (_call, index) => {
-      const turn = finished[index - 1]
-      if (!turn) throw new Error('Unexpected native model submission')
-      await turn.promise
-    },
-  }) : undefined
   const app = Fastify({ logger: false })
   const managers = new Map<string, NativeHarnessSessionManager>()
   const chat: { current?: InstanceType<typeof AgentChatService> } = {}
   onTestFinished(async () => {
-    for (const turn of finished) turn.resolve()
     try { await chat.current?.shutdown() }
     finally {
       try { await app.close() }
       finally {
         await database.close()
-        await nativeFixture?.close()
         await removeFixtureDirectory(root)
         await removeFixtureDirectory(f.directory)
       }
@@ -94,8 +75,7 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
     host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
     database: { connectionString: process.env.TEST_DATABASE_URL!, maxConnections: 4, connectionTimeoutMs: 2000, queryTimeoutMs: 5000 },
     checkpoints: { schema: 'langgraph' }, fileStorageRoot: join(root, 'vault'), workspaceStorageRoot: join(root, 'projects'),
-    harnesses: { workspaceRoot: join(f.directory, 'runtime'), codexBinary: f.binary,
-      openCodeBinary: process.env.OPENCODE_BINARY ?? 'opencode', timeoutMs: 10000 },
+    harnesses: { workspaceRoot: join(f.directory, 'runtime'), codexBinary: f.binary, timeoutMs: 10000 },
   }
   const hostRoot = codexChatHostDirectory(config.fileStorageRoot!)
   await Promise.all([mkdir(config.workspaceStorageRoot!), mkdir(config.harnesses.workspaceRoot)])
@@ -107,11 +87,9 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
   const references = app.getDecorator<FileReferenceService>('fileReferenceService')
   const seed = makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential')
   for (const configuration of seed.configurations) {
-    if (harness === 'codex') {
-      const value = input(f.directory).request.configuration.harness
-      if (value.harness !== 'codex') throw new Error('Expected Codex fixture')
-      configuration.harness = { ...value, sandbox: readOnly ? 'read-only' : 'workspace-write' }
-    } else configuration.harness = { ...nativeFixture!.harness, nativeAgent: readOnly ? 'plan' : 'parent' }
+    const value = input(f.directory).request.configuration.harness
+    if (value.harness !== 'codex') throw new Error('Expected Codex fixture')
+    configuration.harness = { ...value, sandbox: readOnly ? 'read-only' : 'workspace-write' }
   }
   const seeded = await seedAgent3(database.pool, project, seed, { run: false })
   const foreign = await seedAgent3(database.pool, project,
@@ -138,23 +116,6 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
     await add({ kind: 'workspace_reference', workspaceId: foreign.scope.workspaceId }, '# Foreign workspace secret\n'),
     await add({ kind: 'workflow_reference', workspaceId: seeded.scope.workspaceId, workflowId: otherWorkflow }, '# Foreign workflow secret\n'),
   ]
-  let server: RecordedOpenCodeServer | undefined
-  let promptAccepted = deferred()
-  let credentialsBeforePrompt = 0
-  const nativeFactories = new NativeHarnessFactories({ ...config.harnesses,
-    openCodeFileStorageRoot: files.bytes.root,
-  }, { mode: 'native', openCodeServer: options => {
-    server = new RecordedOpenCodeServer({ ...options, pure: true })
-    server.onPromptAccepted = () => {
-      expect(issued).toHaveLength(credentialsBeforePrompt)
-      promptAccepted.resolve()
-    }
-    return server
-  } })
-  const nativeServer = () => {
-    assert(server)
-    return server
-  }
   const host: CodexFileHostLease = {
     executionHostId: 'reference-test-host', pathStyle: 'posix',
     materialize: vi.fn(async () => { throw new Error('Reference-only reads must not materialize a native input') }),
@@ -168,22 +129,17 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
   // the test does not call resolve/prepare/activate instead of native startTurn.
   chat.current = new AgentChatService(database.pool, repository, new PostgresOperatorConversationRepository(database.pool),
     new PostgresWorkflowRepository(database.pool), { getForWorkspace: async () => undefined, async *executionPages() {} },
-    (conversationId, configuration, workingDirectory) => {
+    (conversationId) => {
       const existing = managers.get(conversationId)
       if (existing) return existing
-      const manager = harness === 'codex'
-        ? new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none',
-          productionCodexChatFiles(() => app, conversationId, admission))
-        : nativeFactories.allocate({ harness: 'opencode', role: 'agent-chat', workingDirectory,
-          ownerAgentId: configuration.agentId, appMcpAccess: 'none',
-          chatFiles: native => productionOpenCodeChatFiles(() => app, database.pool, config,
-            conversationId, native, '127.0.0.1') }).manager
+      const manager = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none',
+        productionCodexChatFiles(() => app, conversationId, admission))
       managers.set(conversationId, manager)
       return manager
     }, config.harnesses.workspaceRoot)
   const issued: Array<{ context: FileToolContext; token: string }> = []
   const issue = tools.sessions.issueForAcceptedSession.bind(tools.sessions)
-  vi.spyOn(tools.sessions, 'issueForAcceptedSession').mockImplementation(async (context, expiry, transport) => {
+  vi.spyOn(tools.sessions, 'issueForAcceptedSession').mockImplementation(async (context, expiry) => {
     const row = (await database.pool.query<{ native_turn_id: string; message_id: string; sender: string; record: { attachmentRefs?: unknown[] } }>(`
       select t.native_turn_id,t.message_id,t.payload->>'ownerPrincipalId' as sender,m.record
       from operator_conversation_turns t join operator_conversation_messages m on m.id=t.message_id
@@ -192,7 +148,7 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
     expect(row.message_id).toBe(context.messageId)
     expect(row.sender).toBe(owner.principal.id)
     expect(row.record.attachmentRefs ?? []).toEqual([])
-    const token = await issue(context, expiry, transport)
+    const token = await issue(context, expiry)
     issued.push({ context: structuredClone(context), token })
     return token
   })
@@ -201,8 +157,6 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
   async function send(conversationId: string | null) {
     const requestId = randomUUID()
     const previous = issued.length
-    promptAccepted = deferred()
-    credentialsBeforePrompt = previous
     const result = await chat.current!.send(owner.principal, seeded.scope.workspaceId, {
       requestId, context, content: 'List and read the inherited workspace and workflow references.', intent: 'next_turn',
       expectedConversationId: conversationId,
@@ -212,7 +166,6 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
     const id = result.state.conversation!.id
     try {
       // Credential activation starts after the native acknowledgement, not while its process is starting.
-      if (harness === 'opencode') await promptAccepted.promise
       await until(async () => issued.length === previous + 1, 10000)
     } catch (error) {
       const state = await chat.current!.readConversation(owner.principal, seeded.scope.workspaceId, id)
@@ -222,54 +175,17 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
       throw new Error(`Inherited-file credential delivery failed: ${JSON.stringify(details)}`, { cause: error })
     }
     const active = issued.at(-1)!
-    if (harness === 'opencode') {
-      const native = nativeServer()
-      await native.assertFileSourceIsolation(files.bytes.root, AbortSignal.timeout(10000))
-      const registration = [...native.calls].reverse().find(call =>
-        new URL(call.path, 'http://native.invalid').pathname === '/mcp' && call.method === 'POST')!.body as {
-          name: string; config: { headers: { Authorization: string } }
-        }
-      expect(registration.config.headers.Authorization).toMatch(/^Bearer gql_file_/)
-      expect(registration.config.headers.Authorization).not.toBe(`Bearer ${active.token}`)
-      expect(registration.config.headers.Authorization).not.toBe(`Bearer ${owner.token}`)
-      const status = await native.request('/mcp')
-      expect((await status.json() as Record<string, { status: string }>)[registration.name]?.status).toBe('connected')
-    }
+
     expect(active.context.scope).toEqual({ kind: 'temporary', chat: { kind: 'agent',
       conversationId: id, agentId: node.agentId, workspaceId: seeded.scope.workspaceId, workflowId: seeded.scope.workflowId } })
     const complete = async () => {
-      if (harness === 'codex') await finish(f.directory, active.context.nativeSessionId)
-      else finished[previous]!.resolve()
+      await finish(f.directory, active.context.nativeSessionId)
       await until(async () => !(await repository.get(id))?.active_request_id, 10000)
       await expect(tools.sessions.authenticate(active.token)).rejects.toThrow()
     }
     return { id, requestId, ...active, complete }
   }
-  async function rpc(method: string, params: unknown) {
-    // Use ONLY the exact endpoint and short-lived token installed on the native server.
-    const registration = [...nativeServer().calls].reverse().find((call) => new URL(call.path, 'http://native.invalid').pathname === '/mcp'
-      && call.method === 'POST')?.body as { config?: { url: string; headers: { Authorization: string } } } | undefined
-    expect(registration?.config).toBeDefined()
-    const id = randomUUID()
-    const response = await fetch(registration!.config!.url, {
-      method: 'POST', headers: { authorization: registration!.config!.headers.Authorization,
-        accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
-    })
-    const responseBody = await response.text()
-    expect(response.status, responseBody).toBe(200)
-    const body = response.headers.get('content-type')?.includes('text/event-stream')
-      ? responseBody.split(/\r?\n/).filter((line) => line.startsWith('data:'))
-        .map((line) => JSON.parse(line.slice(5))).find((value: { id?: string }) => value.id === id)
-      : JSON.parse(responseBody)
-    return body as { error?: unknown; result?: { isError?: boolean; structuredContent?: unknown; tools?: Array<{ name: string }> } }
-  }
   async function call(active: Awaited<ReturnType<typeof send>>, name: string, arguments_: unknown): Promise<ToolReply> {
-    if (harness === 'opencode') {
-      const body = await rpc('tools/call', { name, arguments: arguments_ })
-      return { ok: !body.error && body.result?.isError !== true && body.result !== undefined,
-        value: body.result?.structuredContent, wire: body }
-    }
     const id = randomUUID()
     await emit(f.directory, { id, method: 'item/tool/call', params: {
       threadId: active.context.nativeSessionId, turnId: active.context.turnId, callId: id, namespace: null,
@@ -282,17 +198,17 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
     return { ok: result.success, value: result.success && text?.type === 'inputText' ? JSON.parse(text.text) : undefined, wire: result }
   }
   return { database, app, f, tools, references, owner, host, issued, inherited, excluded,
-    get server() { return nativeServer() }, send, call, rpc }
+    send, call }
 }
 
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled || process.platform !== 'linux')('R2-2 attachment-free Agent inherited references', { timeout: 90_000 }, () => {
-  for (const harness of ['codex', 'opencode'] as const) for (const readOnly of [true, false]) {
-    it(`${harness}: ${readOnly ? 'read' : 'write'} mode can read inherited scopes without acquiring permanent write or management authority`, async () => {
-      const f = await fixture(harness, readOnly)
+  for (const readOnly of [true, false]) {
+    it(`Codex: ${readOnly ? 'read' : 'write'} mode can read inherited scopes without acquiring permanent write or management authority`, async () => {
+      const f = await fixture({ readOnly })
       const active = await f.send(null)
       expect(active.context.allowMutation).toBe(!readOnly)
-      if (harness === 'codex' && !readOnly) {
+      if (!readOnly) {
         const conversation = (await f.database.pool.query<{ provider_version: string }>(
           'select provider_version from operator_conversations where id=$1', [active.id])).rows[0]!
         const unsafe = postgresCodexChatFiles(f.database.pool, () => { throw new Error('unused') },
@@ -341,29 +257,17 @@ describe.skipIf(!postgresEnabled || process.platform !== 'linux')('R2-2 attachme
         scope: f.inherited[0]!.scope, ...f.inherited[0]!.ref })).ok).toBe(false)
       expect((await f.database.pool.query('select count(*)::int as count from operator_chat_credentials')).rows[0].count).toBe(0)
       expect((await f.database.pool.query('select count(*)::int as count from file_tool_artifacts')).rows[0].count).toBe(0)
-      if (harness === 'codex') {
-        const audit = await calls(f.f.directory)
-        const thread = audit.map((entry) => entry.wire as { method?: string; params?: { dynamicTools?: Array<{ name: string }> } } | undefined)
-          .find((entry) => entry?.method === 'thread/start')
-        expect(thread?.params?.dynamicTools?.map((tool) => tool.name).sort()).toEqual(expected.map((name) => name.replaceAll('.', '_')).sort())
-        const environments = audit.filter((entry) => 'referenceCredentialKeys' in entry)
-        expect(environments.length).toBeGreaterThan(0)
-        expect(environments.every((entry) => (entry.referenceCredentialKeys as unknown[]).length === 0)).toBe(true)
-        expect(JSON.stringify(audit)).not.toContain(active.token)
-        expect(f.host.materialize).not.toHaveBeenCalled()
-      } else {
-        expect((await f.rpc('tools/list', {})).result?.tools?.map((tool) => tool.name).sort()).toEqual(expected)
-        // Credential-free chat can reuse an already isolated server without a restart.
-        expect(f.server.credentialEnvironmentFingerprint)
-          .toBe(childEnvironmentFingerprint({ agentId: active.context.scope.chat.kind === 'agent'
-            ? active.context.scope.chat.agentId : '', variables: {} }))
-        for (const environment of f.server.restartEnvironments) expect(environment.variables).toEqual({})
-        const prompt = f.server.calls.find((call) => call.path.includes('/prompt_async'))!.body!
-        expect(JSON.stringify(prompt)).not.toMatch(/gql_file_|GRAPHQL.*(?:TOKEN|CREDENTIAL)/)
-        expect(JSON.stringify(prompt)).not.toContain(f.owner.token)
-      }
+      const audit = await calls(f.f.directory)
+      const thread = audit.map((entry) => entry.wire as { method?: string; params?: { dynamicTools?: Array<{ name: string }> } } | undefined)
+        .find((entry) => entry?.method === 'thread/start')
+      expect(thread?.params?.dynamicTools?.map((tool) => tool.name).sort()).toEqual(expected.map((name) => name.replaceAll('.', '_')).sort())
+      const environments = audit.filter((entry) => 'referenceCredentialKeys' in entry)
+      expect(environments.length).toBeGreaterThan(0)
+      expect(environments.every((entry) => (entry.referenceCredentialKeys as unknown[]).length === 0)).toBe(true)
+      expect(JSON.stringify(audit)).not.toContain(active.token)
+      expect(f.host.materialize).not.toHaveBeenCalled()
       await active.complete()
-      if (harness === 'opencode') await adoptOpenCodePublications(f.database.pool, active.context)
+
       // Repeat terminal adoption with zero inputs, then a second empty-input turn
       // in the SAME native session. No stale token, mount or cleanup fence remains.
       const next = await f.send(active.id)

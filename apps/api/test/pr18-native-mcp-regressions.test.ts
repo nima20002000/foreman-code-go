@@ -22,7 +22,7 @@ describe('PR18 native MCP policy and provenance', () => {
     expect(userOwnsMcpEntry(current, 'linear_trial')).toBe(true)
     expect(publicMcpList(current).servers[0]).toMatchObject({ origin: 'user', editable: true })
   })
-  it.each(['codex', 'opencode'] as const)('repairs fixed-endpoint and disabled %s entries without dropping any restriction', (harness) => {
+  it.each(['codex'] as const)('repairs fixed-endpoint and disabled %s entries without dropping any restriction', (harness) => {
     for (const enabled of [true, false]) {
       const current = snapshot(harness, 'graphql', enabled ? 'http://127.0.0.1:9999/mcp' : endpoint)
       const policy = { enabled_tools: ['read'], disabled_tools: ['write'], default_tools_approval_mode: 'prompt',
@@ -37,14 +37,14 @@ describe('PR18 native MCP policy and provenance', () => {
       expect(next).toMatchObject(policy)
     }
   })
-  it.each(['codex', 'opencode'] as const)('rejects customized %s credentials rather than replacing their policies', (harness) => {
+  it.each(['codex'] as const)('rejects customized %s credentials rather than replacing their policies', (harness) => {
     const current = snapshot(harness)
     const entry = harness === 'codex' ? { url: endpoint, bearer_token_env_var: 'OTHER_TOKEN' }
       : { type: 'remote', url: endpoint, oauth: false, headers: { Authorization: 'Bearer {env:OTHER_TOKEN}' } }
     current.user['graphql'] = entry; current.effective['graphql'] = entry
     expect(() => replacement(current, managedChange('graphql', true, endpoint), { preset: 'graphql', endpoint })).toThrow()
   })
-  it.each(['codex', 'opencode'] as const)('requires explicit conversion of a full-access %s Linear endpoint', (harness) => {
+  it.each(['codex'] as const)('requires explicit conversion of a full-access %s Linear endpoint', (harness) => {
     const current = snapshot(harness, 'linear', 'https://mcp.linear.app/mcp')
     const entry = harness === 'codex' ? { url: 'https://mcp.linear.app/mcp', enabled: true, bearer_token_env_var: 'LINEAR_TOKEN', disabled_tools: ['delete'] }
       : { type: 'remote', url: 'https://mcp.linear.app/mcp', enabled: true, oauth: { scope: 'read write' } }
@@ -56,7 +56,7 @@ describe('PR18 native MCP policy and provenance', () => {
     expect(managedStatus(current, 'linear', endpoint)).toBe('installed')
     expect(() => assertManagedChange(current, managedChange('linear', false, endpoint), 'linear', endpoint)).not.toThrow()
   })
-  it.each(['codex', 'opencode'] as const)('refuses protected Linear removal through both %s paths', (harness) => {
+  it.each(['codex'] as const)('refuses protected Linear removal through both %s paths', (harness) => {
     const current = snapshot(harness, 'linear', LINEAR_MCP_ENDPOINT)
     const entry = harness === 'codex' ? { url: LINEAR_MCP_ENDPOINT, bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' }
       : { type: 'remote', url: LINEAR_MCP_ENDPOINT, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' } }
@@ -66,7 +66,7 @@ describe('PR18 native MCP policy and provenance', () => {
     expect(() => assertChange(current, { kind: 'remove', name: 'linear' })).toThrow()
     expect(() => assertManagedChange(current, managedChange('linear', false, endpoint), 'linear', endpoint)).toThrow()
   })
-  it.each(['codex', 'opencode'] as const)('detects same-URL %s transport, enable and ownership overrides', (harness) => {
+  it.each(['codex'] as const)('detects same-URL %s transport, enable and ownership overrides', (harness) => {
     for (const change of [{ enabled: false }, { type: 'local', command: ['/untrusted'] }]) {
       const current = snapshot(harness)
       current.effective['graphql'] = { ...current.effective['graphql'] as object, ...change }
@@ -83,15 +83,7 @@ describe('PR18 native MCP policy and provenance', () => {
     current.effective['graphql'] = { url: endpoint, type: 'streamable_http', enabled: true, bearer_token_env_var: 'OTHER_TOKEN' }
     expect(managedStatus(current, 'graphql', endpoint)).toBe('inherited')
   })
-  it('uses proven OpenCode references, never expanded secret equality', () => {
-    const current = snapshot('opencode')
-    current.effective['graphql'] = { type: 'remote', url: endpoint, enabled: true, oauth: false,
-      headers: { Authorization: 'Bearer never-return-this-secret' } }
-    expect(managedStatus(current, 'graphql', endpoint)).toBe('mismatch')
-    current.credentialReferences = {}
-    expect(managedStatus(current, 'graphql', endpoint)).toBe('inherited')
-    expect(JSON.stringify(publicMcpList(current))).not.toContain('never-return-this-secret')
-  })
+
   it('detects identical Codex entries with a second configuration source', () => {
     const current = snapshot('codex')
     const user = { name: { type: 'user' }, config: { mcp_servers: current.user } }

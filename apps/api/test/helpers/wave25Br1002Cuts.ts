@@ -3,9 +3,9 @@ import type { GraphFact } from '@foreman-code/contracts/wave25'
 import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import type { WorkflowNativeCaptureInput } from '../../src/modules/interactions/workflowNativeCapture.js'
 import { deferred } from './wave25Agent3.js'
-import type { br1002OpenCodeRuntime } from './wave25Br1002OpenCodeRuntime.js'
+import type { codexApprovalRuntime } from './codexApprovalRuntime.js'
 
-export type Br1002Runtime = Awaited<ReturnType<typeof br1002OpenCodeRuntime>>
+export type Br1002Runtime = Awaited<ReturnType<typeof codexApprovalRuntime>>
 export type Br1002NativeArgs = Parameters<PostgresRunRepository['updateExecution']>
 
 /** Pause outside publication transactions around the real original-history

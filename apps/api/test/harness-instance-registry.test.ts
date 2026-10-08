@@ -38,7 +38,7 @@ it('exposes a saved Claude preset for host configuration and keeps its revision 
   }
   const registry = new HarnessInstanceRegistry(localHarnessDrivers)
   registry.reload(localDefaultInstances(DEFAULT_HARNESS_DEFAULTS, 1))
-  expect(registry.list().map(value => value.driverId)).toEqual(['codex', 'opencode'])
+  expect(registry.list().map(value => value.driverId)).toEqual(['codex'])
   registry.reload(localDefaultInstances({ ...DEFAULT_HARNESS_DEFAULTS, claude: configuration }, 2))
   const saved = registry.select('local-default:claude')
   expect(saved).toMatchObject({ driverId: 'claude', instanceRevision: '2',
@@ -48,4 +48,21 @@ it('exposes a saved Claude preset for host configuration and keeps its revision 
   expect(registry.select('local-default:claude')).toMatchObject({ instanceRevision: '3',
     configuration: { configDirectory: '/different/profile' } })
   expect(saved.configuration).toEqual(configuration)
+})
+
+it('reads a retired OpenCode preset unchanged and refuses to select it for execution', () => {
+  const configuration = {
+    harness: 'opencode', model: 'saved-provider/model', variant: 'max', nativeAgent: 'build',
+    thinking: true, autoApprove: false,
+    advanced: { permissionRules: [{ permission: 'bash', pattern: '*', effect: 'deny' }] },
+  }
+  const saved = { instanceId: 'historical-preset', instanceRevision: 'saved-revision',
+    driverId: 'opencode', enabled: true, configuration }
+  const before = structuredClone(saved)
+  const registry = new HarnessInstanceRegistry(localHarnessDrivers)
+  registry.reload([saved])
+  expect(registry.list()).toEqual([expect.objectContaining({ ...before, availability: 'retired',
+    retirementMessage: expect.stringMatching(/retired/i) })])
+  expect(saved).toEqual(before)
+  expect(() => registry.select(saved.instanceId)).toThrow(expect.objectContaining({ code: 'HARNESS_RETIRED' }))
 })

@@ -54,7 +54,7 @@ for (const [label, alter, code] of [
   ['older unclosed generation', (f: ReturnType<typeof model>) => { f.state.closure.prior_unclosed = true }, 'REPEAT_CLEANUP_PENDING'],
   ['pending credential, budget or reviewer resource', (f: ReturnType<typeof model>) => { f.state.outstanding = true }, 'REPEAT_CLEANUP_PENDING'],
   ['physical node mismatch', (f: ReturnType<typeof model>) => { f.state.rowNodeId = 'other-node' }, 'REPEAT_CLEANUP_PENDING'],
-  ['wrong pinned harness', (f: ReturnType<typeof model>) => { f.state.configHarness = 'opencode' }, 'REPEAT_NATIVE_IDENTITY_CONFLICT'],
+  ['wrong pinned harness', (f: ReturnType<typeof model>) => { f.state.configHarness = 'claude' }, 'REPEAT_NATIVE_IDENTITY_CONFLICT'],
   ['unqualified configuration', (f: ReturnType<typeof model>) => { f.state.configPinned = false }, 'REPEAT_NATIVE_IDENTITY_CONFLICT'],
   ['different close session', (f: ReturnType<typeof model>) => { f.state.closure.closed_reference.nativeSessionId = 'other-session' }, 'NATIVE_WORKFLOW_CLOSURE_CONFLICT'],
   ['different expected provider version', (f: ReturnType<typeof model>) => { f.state.closure.expected_reference!.providerVersion = 'other-provider' }, 'NATIVE_WORKFLOW_CLOSURE_CONFLICT'],

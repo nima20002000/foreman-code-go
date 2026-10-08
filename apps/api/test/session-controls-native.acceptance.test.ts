@@ -14,7 +14,7 @@ import * as boundLocations from '@foreman-code/contracts/workspace-bound-locatio
 import { pairedWorkerApplication } from './helpers/pairedWorkerApplication.js'
 import { selectedNativeHarnesses } from './helpers/selectedNativeHarnesses.js'
 
-type Row = { harness: 'codex' | 'opencode' | 'claude'; role: 'operator' | 'agent'; hostKind: 'main' | 'device';
+type Row = { harness: 'codex' | 'claude'; role: 'operator' | 'agent'; hostKind: 'main' | 'device';
   conversationId: string; workspaceId?: string; readPath?: string; sendPath: string;
   sendRequest: Record<string, unknown>; nativeProfile: string; profileCheckRequest: Record<string, unknown> }
 
@@ -188,9 +188,7 @@ describe('native session controls through the production Main and installed Work
           configuration.model = process.env.CODEX_MODEL ?? 'gpt-5.6-luna'
           configuration.reasoningEffort = 'medium'
         }
-        if (configuration.harness === 'opencode' && process.env.ENG03_A_OPENCODE_MODEL) {
-          configuration.model = process.env.ENG03_A_OPENCODE_MODEL
-        }
+
         return { hostRef, configuration, parentPath: f.mainProjects,
           ...(hostKind === 'device' ? { rootSelection: { hostRef, allowedBaseId: f.roots.bases[0]!.baseId,
             configurationRevision: f.roots.configurationRevision, relativePath: '',

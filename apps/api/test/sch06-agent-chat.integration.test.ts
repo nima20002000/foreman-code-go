@@ -39,7 +39,7 @@ vi.mock('../src/infrastructure/migrations.js', async (importOriginal) => {
   } }
 })
 
-/** Native-port substitute, not a live Codex/OpenCode qualification. It records exact source/child identities. */
+/** Native-port substitute, not a live harness qualification. It records exact source/child identities. */
 class RunChatNative extends AgentChatF5Native {
   override readonly session: NativeSessionReference
   readonly forks: Array<{ source: NativeSessionReference; input: NativeSessionStart }> = []

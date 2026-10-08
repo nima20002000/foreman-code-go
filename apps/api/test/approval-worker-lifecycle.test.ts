@@ -22,11 +22,11 @@ const createdAt = '2026-09-16T00:00:00.000Z'
 afterEach(() => vi.restoreAllMocks())
 
 it('rejects unsupported Claude configuration before allocating worker fixture authority', () => {
-  expect(() => fixture('claude')).toThrow('supports only Codex and OpenCode')
+  expect(() => fixture('claude')).toThrow('supports only Codex')
 })
 
 function fixture(harness: AgentHarness = 'codex', started = true) {
-  if (harness === 'claude') throw new Error('Approval worker fixture supports only Codex and OpenCode')
+  if (harness === 'claude') throw new Error('Approval worker fixture supports only Codex')
   const configuration: AgentConfigurationVersion = {
     id: 'config-1', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
     prompt: {}, assignedSkills: [], contentHash: 'sha256:pinned', createdAt,
@@ -236,7 +236,7 @@ it('revokes resident credentials after attachment failure without preparing anot
   expect(resident.lifecycle).toBe('failed')
 })
 
-for (const harness of ['codex', 'opencode'] as const) {
+for (const harness of ['codex'] as const) {
   it(`renews ${harness} after a two-hour wait without changing its process, environment, or native identity`, async () => {
     const f = fixture(harness)
     await f.observeRequester()

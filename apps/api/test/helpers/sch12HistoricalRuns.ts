@@ -37,7 +37,7 @@ export type HistoricalApi = Awaited<ReturnType<typeof openHistoricalApi>>
 export type RunTarget = Pick<SelectedRunChatTarget, 'workspaceId' | 'workflowId' | 'runId'>
 
 /** Normal migrations, typed Save, common Run insertion and real engine; native ports
- * are the existing deterministic fixtures, not live Codex/OpenCode qualification. */
+ * are the existing deterministic fixtures, not live harness qualification. */
 export async function historicalFixture(form: 'sequential' | 'repeat' = 'sequential', ephemeral = false) {
   const fixture = makeCurrentWorkflowFixture(randomUUID(), form)
   const x = fixture.version.definition.nodes[0]!, y = fixture.version.definition.nodes[1]!
@@ -308,4 +308,3 @@ export async function historicalRows(pool: pg.Pool, runIds: string[]) {
       where e.run_id=any($1::text[]) order by n.execution_id,n.sequence`, [runIds])).rows,
   }
 }
-

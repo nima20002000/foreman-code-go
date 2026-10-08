@@ -43,11 +43,12 @@ describe('execution readiness', () => {
   })
   it('does not qualify a different Operator harness or configuration pin', async () => {
     const inspect = vi.fn(async () => ({ configurationVersionId: 'current-config', defaultsRevision: 4,
-      harness: { harness: 'opencode' as const, model: 'unit/model', variant: '', nativeAgent: 'build', thinking: false, autoApprove: false } }))
+      harness: { harness: 'codex' as const, model: 'unit/model', reasoningEffort: 'medium' as const,
+        sandbox: 'read-only' as const, serviceTier: 'standard' as const } }))
     const service = new ExecutionReadinessService(new NativeRollout({}), catalog(), inspect)
     expect(await service.get(principal, 'claude', 'operator-configuration')).toMatchObject({ status: 'blocked',
       reason: { code: 'OPERATOR_CONFIGURATION_CONFLICT' } })
-    expect(await service.get(principal, 'opencode', 'operator-configuration', 'historical-config')).toMatchObject({ status: 'blocked',
+    expect(await service.get(principal, 'codex', 'operator-configuration', 'historical-config')).toMatchObject({ status: 'blocked',
       reason: { code: 'OPERATOR_CONFIGURATION_CONFLICT' } })
   })
   it('returns an actionable blocked result for an absent Claude preset instead of a failed check', async () => {
@@ -60,20 +61,20 @@ describe('execution readiness', () => {
     const source = { get: vi.fn(async () => { throw new DomainError('ACCESS_DENIED', 'Denied', 403) }) }
     await expect(new ExecutionReadinessService(new NativeRollout({}), source).get(principal, 'claude')).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
   })
-  it('keeps Claude rollout independent from OpenCode and preserves its production restriction', async () => {
-    expect(new NativeRollout({ GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0' }).enabled('claude')).toBe(true)
+  it('preserves the Claude production rollout restriction', async () => {
+    expect(new NativeRollout({}).enabled('claude')).toBe(true)
     expect(new NativeRollout({ GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK: '0' }).enabled('claude')).toBe(false)
     expect(new NativeRollout({ NODE_ENV: 'production', GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK: '1' }).enabled('claude')).toBe(false)
     const result = await new ExecutionReadinessService(new NativeRollout({ GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK: '0' }), catalog()).get(principal, 'claude')
     expect(result.reason?.message).toContain('Claude execution')
   })
-  it.each(['codex', 'opencode'] as const)('reports explicitly disabled %s execution without probing', async (harness) => {
+  it.each(['codex'] as const)('reports explicitly disabled %s execution without probing', async (harness) => {
     const source = catalog()
-    const result = await new ExecutionReadinessService(new NativeRollout({ GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '0', GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0' }), source).get(principal, harness)
+    const result = await new ExecutionReadinessService(new NativeRollout({ GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '0' }), source).get(principal, harness)
     expect(result).toMatchObject({ status: 'blocked', rolloutEnabled: false, reason: { code: 'NATIVE_ROLLOUT_DISABLED' } })
     expect(source.get).not.toHaveBeenCalled()
   })
-  it.each(['codex', 'opencode'] as const)('enables supported local %s by default and still qualifies its saved configuration', async (harness) => {
+  it.each(['codex'] as const)('enables supported local %s by default and still qualifies its saved configuration', async (harness) => {
     const source = catalog()
     expect(await new ExecutionReadinessService(new NativeRollout({}), source).get(principal, harness)).toMatchObject({ status: 'eligible', rolloutEnabled: true })
     expect(source.get).toHaveBeenCalledWith(principal, harness)
@@ -81,12 +82,7 @@ describe('execution readiness', () => {
   it.each([{ HOST: '0.0.0.0' }, { GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: 'invalid' }, { NODE_ENV: 'production' }])('does not implicitly enable Codex for %j', (environment) => {
     expect(new NativeRollout(environment).enabled('codex')).toBe(false)
   })
-  it('keeps OpenCode production qualification explicit and rejects invalid or non-local automatic startup', () => {
-    expect(new NativeRollout({ NODE_ENV: 'production' }).enabled('opencode')).toBe(false)
-    expect(new NativeRollout({ NODE_ENV: 'production', GRAPHQL_OPENCODE_PARITY_QUALIFIED: '1' }).enabled('opencode')).toBe(true)
-    expect(new NativeRollout({ HOST: '0.0.0.0' }).enabled('opencode')).toBe(false)
-    expect(new NativeRollout({ GRAPHQL_OPENCODE_PARITY_QUALIFIED: 'invalid' }).enabled('opencode')).toBe(false)
-  })
+
   it.each(['CODEX_VERSION_UNQUALIFIED', 'CODEX_AUTH_UNAVAILABLE', 'CODEX_MODEL_UNAVAILABLE'])('reports existing qualification failure %s', async (code) => {
     const result = await new ExecutionReadinessService(new NativeRollout({ GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '1' }), catalog({ code, message: 'Safe diagnostic' })).get(principal, 'codex')
     expect(result).toMatchObject({ status: 'blocked', defaultsRevision: 7, reason: { code } })
@@ -104,7 +100,7 @@ describe('execution readiness', () => {
     expect((await service.get(principal, 'codex')).status).toBe('blocked')
     await expect(service.get({ ...principal, grants: [] }, 'codex')).rejects.toMatchObject({ status: 403 })
   })
-  it.each(['codex', 'opencode', 'claude'] as const)(
+  it.each(['codex', 'claude'] as const)(
     'qualifies local production %s through the normal admission checks', async harness => {
       const environment = { NODE_ENV: 'production', GRAPHQL_LOCAL_PRODUCTION: '1', HOST: '127.0.0.1',
         DATABASE_URL: 'postgresql://owner:password@127.0.0.1:55440/graphql_production' }
@@ -119,7 +115,7 @@ describe('execution readiness', () => {
         expect(new NativeRollout({ ...environment, ...override }).enabled(harness)).toBe(false)
       }
       const flag = harness === 'codex' ? 'GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER'
-        : harness === 'claude' ? 'GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK' : 'GRAPHQL_OPENCODE_PARITY_QUALIFIED'
+        : 'GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK'
       expect(new NativeRollout({ ...environment, [flag]: '0' }).enabled(harness)).toBe(false)
     })
 })

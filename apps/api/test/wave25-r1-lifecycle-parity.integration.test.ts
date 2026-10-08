@@ -3,7 +3,7 @@ import { graphParity } from './helpers/wave25R1GraphParity.js'
 import { agent3Database, candidateFor, postgresEnabled } from './helpers/wave25Agent3.js'
 import { currentRepositoryFixture } from './helpers/wave25CurrentRepository.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { repeatRuntimeDirectory } from '../src/modules/runs/repeatRepositoryHost.js'
 
 const closes: Array<() => Promise<void>> = []
@@ -82,7 +82,7 @@ describe.skipIf(!postgresEnabled)('Current lifecycle producers and complete grap
     const waiting = await compare()
     expect(waiting.state.interactions.some((item) => item.interactionId === interaction.id)).toBe(true)
     expect(waiting.state.run.pendingInteractionCount).toBe(1)
-    const result = await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(interaction))
+    const result = await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(interaction))
     expect(result.interaction.deliveryState).toBe('delivered')
     const completed = await compare()
     expect(completed.state.run.outcome).toBe('succeeded')

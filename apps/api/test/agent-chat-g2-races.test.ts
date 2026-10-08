@@ -102,7 +102,7 @@ describe('G2 A2-PF-04: a stable claim fence is not a canceled queue head', () =>
     f.manager.startTurn = async function* () {
       entered.resolve(); await release.promise
       yield* []
-      throw Object.assign(new Error('Fixture: exact session is missing'), { code: 'OPENCODE_SESSION_NOT_FOUND', certainty: 'definite' })
+      throw Object.assign(new Error('Fixture: exact session is missing'), { code: 'CODEX_SESSION_NOT_FOUND', certainty: 'definite' })
     }
     await f.send('A'); await entered.promise; await f.send('B')
     release.resolve()

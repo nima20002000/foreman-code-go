@@ -1,13 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import {
-  DEFAULT_HARNESS_DEFAULTS,
-  type Agent,
-} from '@foreman-code/contracts'
+import { type Agent } from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { configurationInput } from '../src/modules/workspaces/agentConfiguration.js'
+
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 
 const workspaceId = 'workspace-pr3'
@@ -41,13 +38,6 @@ describe('PR #3 agent persistence regressions', () => {
     expect(sql.findIndex((statement) => statement.includes('pg_advisory_xact_lock')))
       .toBeLessThan(sql.findIndex((statement) => statement.includes('from agents')))
     expect(sql.find((statement) => statement.includes('from agents'))).toContain('for update')
-  })
-
-  it('honors the nested-only OpenCode discriminator and rejects contradictory harnesses', () => {
-    const nested: Agent = { id: 'new-agent', name: 'OpenCode', harnessConfiguration: DEFAULT_HARNESS_DEFAULTS.opencode }
-    expect(configurationInput(workspaceId, nested).harness).toEqual(DEFAULT_HARNESS_DEFAULTS.opencode)
-    expect(() => configurationInput(workspaceId, { ...nested, harness: 'codex' }))
-      .toThrow(expect.objectContaining({ code: 'AGENT_HARNESS_MISMATCH', status: 400 }))
   })
 
 })

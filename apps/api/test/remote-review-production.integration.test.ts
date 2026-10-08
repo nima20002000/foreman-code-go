@@ -178,8 +178,11 @@ describe('production remote review and native recovery through authenticated MCP
       const selected = HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'codex' }))
       expect(selected.discoveryError).toBeNull()
       expect(selected.capability?.ready).toBe(true)
-      const unconfigured = HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'opencode' }))
-      expect(unconfigured.discoveryError?.code).toBe('HARNESS_MODEL_DEFAULT_UNAVAILABLE')
+      const unconfigured = await fixture.call('harness_get', { harness: 'claude' })
+      expect(unconfigured.isError).toBe(true)
+      expect(unconfigured.content).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'text', text: expect.stringContaining('HARNESS_PROFILE_REQUIRED') }),
+      ]))
       const deniedSave = await fixture.call('harness_defaults_update', { ...input, commandId: randomUUID() }, reader.token)
         .then(result => ({ result }), (error: unknown) => ({ error }))
       if ('error' in deniedSave) expect(deniedSave.error).toMatchObject({ code: -32602 })

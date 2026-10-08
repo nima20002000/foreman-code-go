@@ -14,7 +14,7 @@ describe.skipIf(!enabled)('PR12 authorized Inbox pagination in PostgreSQL', () =
     await client.query('create temporary table durable_interactions (id text primary key, workspace_id text, workflow_id text, run_id text, status text, record jsonb)')
     repository = new PostgresInteractionRepository({ query: client.query.bind(client) } as unknown as pg.Pool)
     const add = async (id: string, workspaceId: string, workflowId: string, handler: 'user' | 'orchestrator', runId = id) => {
-      const record: DurableInteraction = { ...NATIVE_INTERACTION_FIXTURES.opencode, id, workspaceId, workflowId, runId,
+      const record: DurableInteraction = { ...NATIVE_INTERACTION_FIXTURES.codex, id, workspaceId, workflowId, runId,
         approval: handler === 'orchestrator' ? { handler, designatedOrchestratorAgentId: 'reviewer' } : { handler } }
       await client.query('insert into durable_interactions values ($1,$2,$3,$4,$5,$6::jsonb)', [id, workspaceId, workflowId, runId, 'pending', JSON.stringify(record)])
     }

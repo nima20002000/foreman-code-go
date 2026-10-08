@@ -57,15 +57,15 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility as the local huma
     const commands = new PostgresCommandCoordinator(pool)
     const settings = new PostgresSettingsRepository(pool)
     const repository = new HarnessQualificationRepository(pool)
-    const registry = new HarnessQualificationRegistry(repository, { codex: 'fake-v1', opencode: 'fake-v1' })
+    const registry = new HarnessQualificationRegistry(repository, { codex: 'fake-v1' })
     const suite: QualificationSuite = { harness: 'codex', revision: 'fake-v1', run: vi.fn(async () => ({
       checks: [{ id: 'protocol', passed: true, detail: null }], evidence: { fixture: true },
     })) }
     const staticCheck = vi.fn(async () => 'a'.repeat(64))
-    const service = new HarnessQualificationService(repository, registry, { codex: suite, opencode: { ...suite, harness: 'opencode' } },
-      { codex: binary, opencode: binary }, commands, settings, staticCheck)
+    const service = new HarnessQualificationService(repository, registry, { codex: suite },
+      { codex: binary }, commands, settings, staticCheck)
     const compatibilityOptions = { commands, cache: new FileCompatibilityCache(join(home, 'compatibility-cache')),
-      probe: { inspect: async (harness: 'codex' | 'opencode') => ({ executable: binary,
+      probe: { inspect: async (harness: 'codex') => ({ executable: binary,
         identity: `${harness}-fixture-payload`, version: harness === 'codex' ? '0.160.0' : '2.0.0' }),
       probe: async () => 'a'.repeat(64), assertUnchanged: async () => undefined } }
     const initialCompatibility = new HarnessCompatibilityService(compatibilityOptions)
@@ -117,8 +117,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility as the local huma
     const localCompatibility = await app.inject({ method: 'GET', url: '/api/management/harnesses/compatibility' })
     expect(localCompatibility.statusCode).toBe(200)
     expect(HarnessCompatibilityListSchema.parse(localCompatibility.json())).toMatchObject({
-      canRetry: true, harnesses: [{ harness: 'codex', installedVersion: '0.160.0', status: 'probe-passed' },
-        { harness: 'opencode', installedVersion: '2.0.0', status: 'probe-passed' }],
+      canRetry: true, harnesses: [{ harness: 'codex', installedVersion: '0.160.0', status: 'probe-passed' }],
     })
     const localRetry = await app.inject({ method: 'POST',
       url: '/api/management/harnesses/codex/compatibility/retry', payload: {} })
@@ -136,9 +135,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility as the local huma
     const failedSuite: QualificationSuite = { harness: 'codex', revision: 'fake-v2', run: async () => ({
       checks: [{ id: 'protocol', passed: false, detail: 'fixture mismatch' }], evidence: { fixture: true },
     }) }
-    const failedRegistry = new HarnessQualificationRegistry(repository, { codex: 'fake-v2', opencode: 'fake-v1' })
-    const failedService = new HarnessQualificationService(repository, failedRegistry, { codex: failedSuite, opencode: { ...suite, harness: 'opencode' } },
-      { codex: binary, opencode: binary }, commands, settings, staticCheck)
+    const failedRegistry = new HarnessQualificationRegistry(repository, { codex: 'fake-v2' })
+    const failedService = new HarnessQualificationService(repository, failedRegistry, { codex: failedSuite },
+      { codex: binary }, commands, settings, staticCheck)
     await failedService.begin('codex')
     await viWaitFor(async () => expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v2')?.status).toBe('failed'))
     await expect(runWithReadOnlyQualification(failedRegistry, () => requireHarnessQualification('codex', 'codex-cli 0.158.0', binary))).rejects.toMatchObject({
@@ -146,9 +145,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility as the local huma
     })
     const skippedSuite: QualificationSuite = { ...suite, revision: 'fake-v3', run: vi.fn(async () => ({ checks: [], evidence: {} })) }
     const staticFailure = new HarnessQualificationService(repository,
-      new HarnessQualificationRegistry(repository, { codex: 'fake-v3', opencode: 'fake-v1' }),
-      { codex: skippedSuite, opencode: { ...suite, harness: 'opencode' } },
-      { codex: binary, opencode: binary }, commands, settings, async () => { throw new Error('schema missing required method') })
+      new HarnessQualificationRegistry(repository, { codex: 'fake-v3' }),
+      { codex: skippedSuite },
+      { codex: binary }, commands, settings, async () => { throw new Error('schema missing required method') })
     await staticFailure.begin('codex')
     await viWaitFor(async () => expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v3')).toMatchObject({
       status: 'failed', checks: [{ id: 'static-compatibility', passed: false, detail: 'schema missing required method' }],

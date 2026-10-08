@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 import type { DurableInteraction } from '@foreman-code/contracts'
 
@@ -17,7 +17,7 @@ async function fixture() {
   const crash = vi.spyOn(f.engine, 'resumeInteraction').mockRejectedValue(new Error('crash-after-delivery'))
   let delivered: DurableInteraction
   try {
-    delivered = (await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(interaction))).interaction
+    delivered = (await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(interaction))).interaction
     expect(delivered.deliveryState).toBe('delivered')
   } finally { crash.mockRestore() }
   expect(await f.receipts()).toEqual([])

@@ -161,7 +161,7 @@ export async function mixedComputerPlacement(f: Fixture, directory: string) {
       hostRef: value.target.hostRef, harnessInstallationId: value.target.harnessInstallationId,
       connectionGeneration: '1', environmentGeneration: '1' }),
   },
-    { codex: 'codex-live-4', opencode: 'opencode-live-4' }, new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
+    { codex: 'codex-live-4' }, new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
   return { producer, locationRevision, source, local: placements[0]!, remote: placements[1]!,
     reads: new RunPlacementReadService(f.db.pool, readRemoteObservations) }
 }

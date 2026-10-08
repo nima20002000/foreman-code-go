@@ -30,7 +30,7 @@ async function directory() {
   return path
 }
 const evidence: NativeResponseDeliveryEvidence = {
-  source: 'provider_acknowledgement', harness: 'opencode', providerVersion: '1.18.31',
+  source: 'provider_acknowledgement', harness: 'codex', providerVersion: '0.154.0',
   nativeSessionId: 'session-test', nativeRequestId: 'request-test', nativeRequestType: 'permission.asked',
   optionId: 'once-test', semantic: 'approve_once',
 }

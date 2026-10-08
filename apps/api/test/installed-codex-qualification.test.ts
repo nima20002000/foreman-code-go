@@ -46,7 +46,7 @@ const { startConfiguredWorker } = await import(factoryPath)
 function fixture(options: {
   suiteRevision?: string
   binding?: DeviceSessionBinding
-  harness?: 'codex' | 'opencode'
+  harness?: 'codex'
   assertResident?: Parameters<typeof createInstalledHarnessQualificationReader>[0]['assertResident']
 } = {}) {
   const harness = options.harness ?? 'codex'
@@ -75,7 +75,7 @@ function fixture(options: {
     driverId: harness, driverRevision: installation.driverRevision, protocolRevision: installation.protocolRevision,
     suiteRevision: `${harness}-profile-check-v1`, environmentGeneration: environment.generation, connectionGeneration: installation.connectionGeneration,
     authenticated: true, compatible: true, qualified: true, checkedAt: timestamp }
-  const qualification = { harness, version, binarySha256: sha, status: 'qualified', profile: harness === 'codex' ? 'codex-0.156' : 'opencode-1.18.31',
+  const qualification = { harness, version, binarySha256: sha, status: 'qualified', profile: 'codex-0.156',
     suiteRevision: `${harness}-live-4`, checks: [{ id: 'actual-native-qualification', passed: true, detail: null }], failureReason: null, startedAt: timestamp, checkedAt: timestamp }
   const placement = { schemaVersion: 1, mainId: binding.mainId, runId: 'run', nodeId: 'node', hostRef,
     registration: { workerInstallationId: binding.workerInstallationId, keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision },
@@ -189,48 +189,13 @@ describe('actual Main and installed Codex qualification read capability', () => 
   })
 })
 
-
-describe('installed OpenCode execution qualification reader', () => {
-  it('reads OpenCode installed bytes, selected profile and authenticated Main facts together', async () => {
-    const f = fixture({ harness: 'opencode' })
-    expect((await f.reader.capture()).qualification).toEqual(f.facts.harness.qualification)
-    expect(await f.reader.repository.find('opencode', '1.18.31', 'a'.repeat(64), 'opencode-live-4'))
-      .toEqual(f.facts.harness.qualification)
-    expect(await f.reader.repository.find('codex', '1.18.31', 'a'.repeat(64), 'opencode-live-4')).toBeNull()
-    f.facts.harness.qualification.status = 'unqualified'
-    await expect(f.reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
-  })
-
-  it('requires verified original residency to accept an authenticated replacement channel', async () => {
-    const assertResident = vi.fn(async () => undefined)
-    const f = fixture({ harness: 'opencode', assertResident })
-    await f.reader.capture()
-    const replacement = { ...f.binding, connectionGeneration: f.binding.connectionGeneration + 1,
-      connectionEpoch: randomUUID() }
-    f.setLive(replacement)
-    f.inspect.mockResolvedValue({ ...f.inspection,
-      currentTarget: { ...f.inspection.currentTarget!, binding: replacement,
-        installation: { ...f.inspection.currentTarget!.installation,
-          connectionGeneration: harnessConnectionGeneration(replacement) } } })
-    f.facts.harness.installation.connectionGeneration = harnessConnectionGeneration(replacement)
-    expect((await f.reader.capture()).binding).toEqual(replacement)
-    expect(assertResident).toHaveBeenCalledTimes(2)
-    expect(assertResident).toHaveBeenCalledWith(f.binding, replacement)
-    assertResident.mockRejectedValueOnce(new Error('The original native process changed.'))
-    await expect(f.reader.capture()).rejects.toThrow('The original native process changed.')
-    f.setLive({ ...replacement, bootId: randomUUID() })
-    await expect(f.reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
-  })
-})
-
-
 it('reads a renewed execution owner without admitting a different operation or configuration', async () => {
-  const f = fixture({ harness: 'opencode' })
+  const f = fixture({ harness: 'codex' })
   const originalIntent = structuredClone(f.facts.intent)
-  const reader = createInstalledHarnessQualificationReader({ harness: 'opencode', intent: originalIntent,
+  const reader = createInstalledHarnessQualificationReader({ harness: 'codex', intent: originalIntent,
     placement: f.facts.placement, trustedCurrentBinding: () => f.binding,
     trustedCurrentIntent: () => f.facts.intent, inspect: f.inspect, readFacts: f.readFacts,
-    suiteRevision: 'opencode-live-4', signal: f.controller.signal })
+    suiteRevision: 'codex-live-4', signal: f.controller.signal })
   await reader.capture()
   f.facts.intent.owner = { grantId: 'renewed-original-execution-grant', epoch: '2' }
   expect((await reader.capture()).facts.intent.owner).toEqual(f.facts.intent.owner)

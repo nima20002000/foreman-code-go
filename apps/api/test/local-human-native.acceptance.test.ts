@@ -3,10 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { OpenCodeHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
-import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
-import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { signalTree, spawnOwnedStdioProcess } from '../src/modules/harnesses/process.js'
 import { inheritedAgentEnvironment, redactSecretText } from '../src/modules/harnesses/secrets.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
@@ -15,7 +12,7 @@ import { nativeHttpIsolation, type NativeHttpIsolationInput } from './helpers/na
 const enabled = process.env.RUN_REAL_HARNESS_TESTS === '1' || process.env.RUN_ENG03_C_NATIVE_TESTS === '1'
 
 describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 180_000 }, () => {
-  it.each(['codex', 'opencode'] as const)(
+  it.each(['codex'] as const)(
     '%s protects human HTTP from a terminal-launched restricted MCP client without a registry or credential marker', async harness => {
     await nativeHttpIsolation(async input => {
       const { script, report, marker } = await installProbe(input)
@@ -25,8 +22,6 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
         .map(([, value]) => value).filter((value): value is string => Boolean(value))
       const redactor = nativePersistenceRedactor([...secrets, input.token])
       const binaries = harnessBinaries(process.env)
-      const openCodeModel = process.env.OPENCODE_TEST_MODEL ?? 'opencode-go/gpt-5.6-luna'
-      if (harness === 'opencode') await qualifyOpenCode(input, openCodeModel)
       const codexArguments = [
         'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
         '--model', process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
@@ -35,17 +30,8 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
         '-c', `mcp_servers.isolation.args=${JSON.stringify([script])}`,
         'Reply DONE.',
       ]
-      const openCodeArguments = ['--print-logs', '--log-level', 'ERROR', 'run', '--dir', input.directory,
-        '--agent', 'plan', '--format', 'json', '--model',
-        openCodeModel, 'Reply DONE.']
-      if (harness === 'opencode') {
-        environment.OPENCODE_CONFIG_CONTENT = JSON.stringify({
-          mcp: { isolation: { type: 'local', command: [process.execPath, script], enabled: true } },
-          permission: { '*': 'deny' },
-        })
-      }
-      const child = spawn(harness === 'codex' ? binaries.codexBinary : binaries.openCodeBinary,
-        harness === 'codex' ? codexArguments : openCodeArguments,
+      const child = spawn(binaries.codexBinary,
+        codexArguments,
         { cwd: input.directory, env: environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
       const exited = new Promise<void>((resolve, reject) => {
         child.once('error', reject)
@@ -124,27 +110,6 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
     }, process.env.ENG03_A_TEST_DATABASE_URL ?? process.env.WAVE25_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL)
   })
 })
-
-async function qualifyOpenCode(input: NativeHttpIsolationInput, model: string): Promise<void> {
-  const registry = new NativeProcessRegistry(input.recovery.root)
-  const factories = new NativeHarnessFactories({
-    ...harnessBinaries(process.env),
-    auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
-    admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
-    abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
-    closeRecovery: async recovery => {
-      if (!await registry.closeOwner(recovery.owner)) throw new Error('Native provider inspection closure is unconfirmed.')
-    },
-  })
-  try {
-    await factories.qualifyConfiguration(OpenCodeHarnessConfigurationSchema.parse({
-      harness: 'opencode', model, variant: '', nativeAgent: 'plan', thinking: false, autoApprove: false,
-    }), input.directory)
-  } finally {
-    factories.stopAuxiliaries()
-    await factories.disposeAuxiliaries()
-  }
-}
 
 /** Probe from the real harness's MCP child before initialization completes. */
 async function installProbe(input: NativeHttpIsolationInput) {

@@ -29,6 +29,8 @@ export class ActivityProductionReplay {
   nextResponse: 'acknowledged' | 'uncertain' = 'acknowledged'
   nextStart: 'active' | 'complete' | 'approval' | 'reject' | 'uncertain' = 'active'
 
+  constructor(private readonly threadIdPrefix = 'recorded-thread') {}
+
   private transport: NonNullable<Extract<CodexSessionDependencies, { mode: 'replay' }>['transport']> = (
     _binary, _cwd, _environment, _protocol, onRequest, onNotification, onDisconnect, _timeoutMs, _recovery, disabledMcpServerNames = [],
   ): CodexTransport => {
@@ -44,7 +46,7 @@ export class ActivityProductionReplay {
         if (method === 'thread/start' || method === 'thread/fork') {
           const original = method === 'thread/fork' ? this.threads.get(String(params.threadId)) : undefined
           if (method === 'thread/fork' && !original) throw new Error('Replay fork must identify the exact source session.')
-          const thread: Thread = { id: `recorded-thread-${++this.counter}`, turns: original ? structuredClone(original.turns) : [],
+          const thread: Thread = { id: `${this.threadIdPrefix}-${++this.counter}`, turns: original ? structuredClone(original.turns) : [],
             settings: this.settings(params), ephemeral: params.ephemeral === true }
           this.threads.set(thread.id, thread); bind(thread)
           return threadResponse(thread, params)
@@ -217,8 +219,8 @@ export class ActivityProductionReplay {
       transport: this.transport, id: randomUUID, now: () => new Date('2026-10-01T00:00:00Z'), schedule: setTimeout,
       cancelTimer: clearTimeout, withDiagnostics: async (_pin, run) => run(operations) }
     const unavailable = async (): Promise<never> => { throw new Error('Unrecorded auxiliary replay operation.') }
-    return { mode: 'replay', codex, openCodeServer: () => { throw new Error('Unexpected OpenCode replay allocation.') },
-      openCodeClient: () => { throw new Error('Unexpected OpenCode replay client.') },
+    return { mode: 'replay', codex,
+
       // Synthetic inventory enables the real defaults gate against recorded ports only.
       // These facts are protocol-fixture data, never installed/native qualification evidence.
       inventoryDiscovery: { launcher: async (requested, environment, _payloadPaths, signal) => {
@@ -239,7 +241,7 @@ export class ActivityProductionReplay {
         reserveLaunch: (owner) => { const launchId = randomUUID(); this.auxiliary.add(launchId); return { root: '/recorded-no-process-registry', owner, launchId } },
         abandonReservedLaunch: async (scope) => { if (!scope.launchId) return false; return this.auxiliary.delete(scope.launchId) },
         closeOwner: async () => true }, plugins: { recoveryIdentity: '', list: unavailable, detail: unavailable, change: unavailable },
-        mcp: { codex: { read: unavailable, apply: unavailable }, opencode: { read: unavailable, apply: unavailable } },
+        mcp: { codex: { read: unavailable, apply: unavailable } },
         compatibility: { probe: { inspect: unavailable, probe: unavailable, assertUnchanged: unavailable },
           cache: { load: async () => null, save: async () => {} } } } }
   }

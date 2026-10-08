@@ -1,6 +1,6 @@
 import { SessionControlStore } from '../src/modules/conversations/sessionControls/store.js'
 import { SessionPreferencesSchema } from '@foreman-code/contracts'
-import { CLAUDE_FULL_ACCESS_REQUIRED } from '@foreman-code/contracts/claude'
+import { CLAUDE_FULL_ACCESS_REQUIRED, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
@@ -41,14 +41,19 @@ import { createClaudeSdkRunner } from '../src/modules/harnesses/claudeSdk/runner
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
 import type { ClaudeSdkClient } from '../src/modules/harnesses/claudeSdk/port.js'
 import { CodexRpcError } from '../src/modules/harnesses/codexStdioTransport.js'
-import { OpenCodeNativeDeliveryError } from '../src/modules/harnesses/opencodeTransport.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
+
+const claudeConfiguration = {
+  harness: 'claude', model: 'fixture-model', effort: 'medium', authMode: 'subscription',
+  configDirectory: '/fixture/profile', permissionMode: 'default', sandbox: 'danger-full-access',
+  tools: [], permissionRules: [], instructions: '', mcpServers: {},
+} satisfies ClaudeHarnessConfiguration
 
 const connectionString = process.env.TEST_DATABASE_URL
 
 /** Only provider I/O is fake: these tests exercise real migrations, SQL, grants and service transitions. */
 class ChatManager implements NativeHarnessSessionManager {
-  constructor(readonly harness: 'codex' | 'opencode' | 'claude' = 'codex') {}
+  constructor(readonly harness: 'codex' | 'claude' = 'codex') {}
   sessions = 0; turns = 0; attachments = 0; closes = 0; disposals = 0
   modes: Array<string | undefined> = []
   prompts: string[] = []
@@ -76,13 +81,36 @@ class ChatManager implements NativeHarnessSessionManager {
     const correlation = input.clientCorrelationId
     const nativeTurnId = `turn-${this.turns}`
     this.active.set(session.nativeSessionId, correlation)
-    this.histories.set(correlation, { correlationId: correlation, nativeTurnId, events: [], pendingInteractions: [] })
-    await input.onSubmitted?.(nativeTurnId)
-    yield NativeHarnessEventSchema.parse({ sequence: this.turns, type: 'assistant.delta', occurredAt: new Date().toISOString(), payload: { text: 'partial' } })
-    for (const [index, text] of this.publicMessages.entries()) yield NativeHarnessEventSchema.parse({
-      sequence: this.turns * 100 + index, type: 'item.completed', occurredAt: new Date().toISOString(),
-      payload: { turnId: nativeTurnId, item: { id: `commentary-${index}`, type: 'agentMessage', text, phase: 'commentary' } },
-    })
+    const history: NativeHistory = { correlationId: correlation, events: [], pendingInteractions: [] }
+    this.histories.set(correlation, history)
+    if (this.harness === 'claude') {
+      history.nativeSubmission = { kind: 'message', nativeSessionId: session.nativeSessionId,
+        nativeMessageId: nativeTurnId, clientCorrelationId: correlation }
+      await input.onMessageSubmitted?.(history.nativeSubmission)
+    } else {
+      history.nativeTurnId = nativeTurnId
+      await input.onSubmitted?.(nativeTurnId)
+      yield NativeHarnessEventSchema.parse({ sequence: this.turns, type: 'assistant.delta',
+        occurredAt: new Date().toISOString(), payload: { text: 'partial' } })
+    }
+    for (const [index, text] of this.publicMessages.entries()) {
+      const itemId = `commentary-${index}`
+      if (this.harness === 'claude') {
+        yield NativeHarnessEventSchema.parse({ sequence: this.turns * 100 + index, type: 'claude.text',
+          occurredAt: new Date().toISOString(), payload: {
+            itemId, messageId: nativeTurnId, text, operation: 'replace', final: true,
+            nativeSessionId: session.nativeSessionId, clientCorrelationId: correlation,
+            nativeGeneration: 'fixture', source: { eventId: `${nativeTurnId}:${itemId}`, sequence: String(this.turns * 100 + index) },
+          },
+        })
+      } else {
+        yield NativeHarnessEventSchema.parse({ sequence: this.turns * 100 + index, type: 'item.completed',
+          occurredAt: new Date().toISOString(), payload: {
+            turnId: nativeTurnId, item: { id: itemId, type: 'agentMessage', text, phase: 'commentary' },
+          },
+        })
+      }
+    }
     if (this.autoFinish) this.finish(correlation)
     else if (!this.histories.get(correlation)?.terminalResult) await new Promise<void>((resolve) => {
       const done = () => { signal?.removeEventListener('abort', done); this.releases.delete(correlation); resolve() }
@@ -95,7 +123,9 @@ class ChatManager implements NativeHarnessSessionManager {
     const history = this.histories.get(correlation)
     if (history) {
       history.terminalResult = result
-      history.nativeMessageId = `answer:${history.nativeTurnId}`
+      history.nativeMessageId = `answer:${history.nativeSubmission?.nativeMessageId ?? history.nativeTurnId}`
+      if (history.nativeSubmission) history.terminalTurn = { correlationId: correlation,
+        providerId: history.nativeSubmission.nativeMessageId, result }
     }
     this.releases.get(correlation)?.()
   }
@@ -157,6 +187,8 @@ beforeEach(async () => {
   manager = new ChatManager()
   authority = { current: (id) => access.currentOperator(id), assertConfiguration() {},
     setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() }),
+    setupConfiguration: async (_principal, configuration) => ({ harness: configuration.harness.harness,
+      status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() }),
     prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {} }
   chat = new OperatorChatService(repository, operators, () => manager, runtimeDirectory, authority)
 }, 30_000)
@@ -176,7 +208,7 @@ afterEach(async () => {
 })
 
 describe.skipIf(!connectionString)('Operator chat persistence and native binding with stubbed authority', () => {
-  it.each(['codex', 'opencode', 'claude'] as const)('reads saved %s controls through HTTP and MCP after unload and restart', async harness => {
+  it.each(['codex', 'claude'] as const)('reads saved %s controls through HTTP and MCP after unload and restart', async harness => {
     const configuration = harness === 'claude' ? {
       harness: 'claude' as const, model: 'fixture-model', authMode: 'subscription' as const,
       configDirectory: '/fixture/profile', permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
@@ -189,8 +221,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const capabilities = { ...unavailableSessionControls('fixture'), model: 'fixture-model',
       plan: { supported: true, reason: null }, compact: { supported: true, reason: null } }
     const nativeCapabilities = vi.fn(async () => {
-      const code = { codex: 'CODEX_SESSION_UNAVAILABLE', claude: 'CLAUDE_SESSION_UNAVAILABLE',
-        opencode: 'OPENCODE_SESSION_CONTEXT_MISSING' }[harness]
+      const code = { codex: 'CODEX_SESSION_UNAVAILABLE', claude: 'CLAUDE_SESSION_UNAVAILABLE' }[harness]
       if (unloaded) throw new HarnessExecutionError(code, 'Native runtime unloaded')
       return capabilities
     })
@@ -533,8 +564,9 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect(manager.attachments).toBe(0)
   }, 30000)
 
-  it.each(['codex', 'opencode'] as const)(
+  it.each(['codex', 'claude'] as const)(
     'recovers cold %s compaction through authenticated reads without execution credentials', async harness => {
+      await operators.update(harness === 'claude' ? claudeConfiguration : DEFAULT_HARNESS_DEFAULTS.codex, (await operators.ensure()).configuration.id)
       manager = new ChatManager(harness)
       chat = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', authority)
       const conversation = await chat.create(owner)
@@ -647,8 +679,6 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     { outcome: 'success', status: 'completed', error: null },
     { outcome: 'Codex rejection', status: 'failed',
       error: new CodexRpcError('thread/compact/start', 'compact', false, 'REJECTED') },
-    { outcome: 'OpenCode rejection', status: 'failed',
-      error: new OpenCodeNativeDeliveryError('REJECTED', 'Provider refused compaction', 'definite') },
     { outcome: 'Claude non-delivery', status: 'failed',
       error: Object.assign(new Error('Not delivered'), { deliveryState: 'not-delivered' }) },
     { outcome: 'timeout', status: 'uncertain', error: new DOMException('Response timed out', 'TimeoutError') },
@@ -964,22 +994,22 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
   })
 
   it('changes harness in an empty conversation without a fork or inherited context', async () => {
-    const openCode = new ChatManager('opencode')
+    const claude = new ChatManager('claude')
     chat = new OperatorChatService(repository, operators,
-      (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
+      (configuration) => configuration.harness.harness === 'claude' ? claude : manager,
       runtimeDirectory, authority)
     const source = await chat.create(owner)
     const settings = new PostgresFoundationSettingsRepository(pool)
     const defaults = await settings.getAgentDefaults()
     await settings.updateAgentDefaults({ ...defaults.value, operator: { ...defaults.value.operator,
-      harness: DEFAULT_HARNESS_DEFAULTS.opencode } }, defaults.revision)
-    await operators.update(DEFAULT_HARNESS_DEFAULTS.opencode, (await operators.ensure()).configuration.id)
+      harness: claudeConfiguration } }, defaults.revision)
+    await operators.update(claudeConfiguration, (await operators.ensure()).configuration.id)
     const first = await chat.send(source.id, { requestId: 'empty-switch', content: 'First message.',
-      settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode), defaultsRevision: defaults.revision + 1, configurationVersionId: source.operatorConfigurationVersionId }, owner)
+      settings: operatorChatSettings(claudeConfiguration), defaultsRevision: defaults.revision + 1, configurationVersionId: source.operatorConfigurationVersionId }, owner)
     expect(first.state.conversation.id).toBe(source.id)
     expect(first.state.handoff).toBeUndefined()
     await waitFor(async () => (await chat.get(source.id, owner)).turnState === 'idle')
-    expect(openCode.prompts).toEqual(['First message.'])
+    expect(claude.prompts).toEqual(['First message.'])
   })
   it('keeps completed public messages through an active turn and final reconciliation', async () => {
     manager.autoFinish = false
@@ -997,9 +1027,9 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
   })
   it('forks the first cross-harness message with frozen context and idempotent retry', async () => {
     manager.publicMessages = ['First agent update.', 'Second agent update.']
-    const openCode = new ChatManager('opencode')
+    const claude = new ChatManager('claude')
     chat = new OperatorChatService(repository, operators,
-      (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
+      (configuration) => configuration.harness.harness === 'claude' ? claude : manager,
       runtimeDirectory, authority)
     const source = await chat.create(owner)
     await chat.send(source.id, { requestId: 'source-turn', content: 'Please inspect the release.' }, owner)
@@ -1018,18 +1048,18 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const before = await chat.get(source.id, owner)
     const settings = new PostgresFoundationSettingsRepository(pool)
     const defaults = await settings.getAgentDefaults()
-    const target = { ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: { ...DEFAULT_HARNESS_DEFAULTS.opencode.advanced!,
-      permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' as const }] } }
+    const target = { ...claudeConfiguration, tools: ['Bash'],
+      permissionRules: [{ tool: 'Bash', effect: 'deny' as const }] }
     await settings.updateAgentDefaults({ ...defaults.value, operator: { ...defaults.value.operator, harness: target } }, defaults.revision)
     await operators.update(target, (await operators.ensure()).configuration.id)
-    const input = { requestId: 'fork-turn', content: 'Continue with OpenCode.',
+    const input = { requestId: 'fork-turn', content: 'Continue with Claude.',
       settings: operatorChatSettings(target), forkExpectedRevision: before.revision, defaultsRevision: defaults.revision + 1, configurationVersionId: source.operatorConfigurationVersionId }
     const first = await chat.send(source.id, input, owner)
     expect(first.replayed).toBe(false)
     expect(first.state.conversation.id).toBe('operator-fork:fork-turn')
     expect(first.state.handoff).toMatchObject({ parentConversationId: source.id, sourceHarness: 'codex', omittedMessages: 0 })
     await waitFor(async () => (await chat.get(first.state.conversation.id, owner)).turnState === 'idle')
-    const prompt = openCode.prompts[0]!
+    const prompt = claude.prompts[0]!
     expect(prompt).toContain('Please inspect the release.')
     const history = ['User: "Please inspect the release."', 'Assistant: "First agent update."',
       'Assistant: "Second agent update."', 'Assistant: "final answer"']
@@ -1037,9 +1067,9 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect(history.every((line) => prompt.includes(line))).toBe(true)
     for (const excluded of ['TOOL_RESULT_MUST_NOT_TRANSFER', 'SYSTEM_TEXT_MUST_NOT_TRANSFER',
       'MCP_INPUT_MUST_NOT_TRANSFER', 'MCP_OUTPUT_MUST_NOT_TRANSFER']) expect(prompt).not.toContain(excluded)
-    expect(openCode.prompts[0]).toContain('Current user message:\nContinue with OpenCode.')
+    expect(claude.prompts[0]).toContain('Current user message:\nContinue with Claude.')
     expect((await repository.configuration(first.state.conversation.operatorConfigurationVersionId!))?.harness).toMatchObject({
-      harness: 'opencode', advanced: { permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' }] },
+      harness: 'claude', tools: ['Bash'], permissionRules: [{ tool: 'Bash', effect: 'deny' }],
     })
     expect((await chat.get(source.id, owner)).conversation.operatorConfigurationVersionId).toBe(before.conversation.operatorConfigurationVersionId)
     expect((await chat.send(source.id, input, owner)).replayed).toBe(true)
@@ -1069,9 +1099,9 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     let get: (id: string) => Promise<OperatorConversationState>
     let source: OperatorConversationState
     beforeEach(async () => {
-      const openCode = new ChatManager('opencode')
+      const claude = new ChatManager('claude')
       chat = new OperatorChatService(repository, operators,
-        (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
+        (configuration) => configuration.harness.harness === 'claude' ? claude : manager,
         runtimeDirectory, authority)
       const service = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(pool),
         new PostgresCommandCoordinator(pool), { qualifyConfiguration: async () => ({} as never) }, operators)
@@ -1101,16 +1131,16 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     it('offers the same fork through authenticated MCP with persisted readback and denied callers', async () => {
       expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['operator_chat_create', 'operator_chat_get', 'operator_chat_send']))
       const defaults = (await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent as { revision: number; value: typeof DEFAULT_AGENT_DEFAULTS }
-      const target = { ...DEFAULT_HARNESS_DEFAULTS.opencode }
+      const target = { ...claudeConfiguration }
       const changed = await client.callTool({ name: 'agent_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: defaults.revision,
         value: { ...defaults.value, operator: { ...defaults.value.operator, harness: target } } } })
       expect(changed.isError).not.toBe(true)
-      const request = { requestId: 'mcp-fork', content: 'Continue with OpenCode.', settings: operatorChatSettings(target), forkExpectedRevision: source.revision, defaultsRevision: defaults.revision + 1, configurationVersionId: source.conversation.operatorConfigurationVersionId }
+      const request = { requestId: 'mcp-fork', content: 'Continue with Claude.', settings: operatorChatSettings(target), forkExpectedRevision: source.revision, defaultsRevision: defaults.revision + 1, configurationVersionId: source.conversation.operatorConfigurationVersionId }
       const fork = (await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).structuredContent as { state: OperatorConversationState; replayed: boolean }
       expect(fork.state.handoff?.parentConversationId).toBe(sourceId)
       expect(fork.state.conversation.id).toBe('operator-fork:mcp-fork')
       await waitFor(async () => (await get(fork.state.conversation.id)).turnState === 'idle')
-      expect((await get(fork.state.conversation.id)).messages.some((message) => message.content === 'Continue with OpenCode.')).toBe(true)
+      expect((await get(fork.state.conversation.id)).messages.some((message) => message.content === 'Continue with Claude.')).toBe(true)
       expect((await get(sourceId)).conversation.operatorConfigurationVersionId).toBe(source.conversation.operatorConfigurationVersionId)
       expect(((await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).structuredContent as { replayed: boolean }).replayed).toBe(true)
       const delegated = await access.issue({ name: 'Bound handoff reader', audience: 'operator',
@@ -1325,7 +1355,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect(manager.sessions).toBe(0)
     await expect(chat.setup(owner, { conversationId: source.id, requestId: pending.requestId,
       configurationVersionId: sourcePin, harness: 'claude' })).rejects.toMatchObject({ code: 'OPERATOR_CONFIGURATION_CONFLICT' })
-    await expect(chat.setup(owner, { ...pending, configurationVersionId: targetPin, harness: 'opencode' })).rejects.toMatchObject({ code: 'OPERATOR_CONFIGURATION_CONFLICT' })
+    await expect(chat.setup(owner, { ...pending, configurationVersionId: targetPin, harness: 'codex' })).rejects.toMatchObject({ code: 'OPERATOR_CONFIGURATION_CONFLICT' })
     await settings.updateAgentDefaults(saved.value, saved.revision)
     await expect(chat.setup(owner, pending)).rejects.toMatchObject({ code: 'OPERATOR_DEFAULTS_CHANGED' })
     expect(inspections).toBe(1)
@@ -1336,23 +1366,23 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const sourcePin = source.operatorConfigurationVersionId!
     const settings = new PostgresFoundationSettingsRepository(pool)
     const saved = await settings.updateAgentDefaults({ ...DEFAULT_AGENT_DEFAULTS,
-      operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } }, 0)
-    await operators.update(DEFAULT_HARNESS_DEFAULTS.opencode, (await operators.ensure()).configuration.id)
-    const openCode = new ChatManager('opencode')
-    chat = new OperatorChatService(repository, operators, (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
+      operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: claudeConfiguration } }, 0)
+    await operators.update(claudeConfiguration, (await operators.ensure()).configuration.id)
+    const claude = new ChatManager('claude')
+    chat = new OperatorChatService(repository, operators, (configuration) => configuration.harness.harness === 'claude' ? claude : manager,
       runtimeDirectory, authority)
     const request = { requestId: 'accepted-change', content: 'Synthetic receipt fixture', configurationVersionId: sourcePin,
-      defaultsRevision: saved.revision, settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode) }
+      defaultsRevision: saved.revision, settings: operatorChatSettings(claudeConfiguration) }
     await chat.send(source.id, request, owner)
     await waitFor(async () => (await chat.get(source.id, owner)).turnState === 'idle')
     const accepted = await repository.acceptedConfiguration(source.id, request.requestId)
-    expect(accepted?.harness.harness).toBe('opencode')
+    expect(accepted?.harness.harness).toBe('claude')
     await settings.updateAgentDefaults({ ...saved.value, operator: { ...saved.value.operator, harness: DEFAULT_HARNESS_DEFAULTS.codex } }, saved.revision)
     await operators.update(DEFAULT_HARNESS_DEFAULTS.codex, (await operators.ensure()).configuration.id)
     expect(await chat.setup(owner, { conversationId: source.id, requestId: request.requestId, configurationVersionId: sourcePin,
-      harness: 'opencode', expectedDefaultsRevision: saved.revision })).toMatchObject({ harness: 'opencode', status: 'configured', configurationVersionId: accepted!.id })
+      harness: 'claude', expectedDefaultsRevision: saved.revision })).toMatchObject({ harness: 'claude', status: 'configured', configurationVersionId: accepted!.id })
     expect(await repository.acceptedConfiguration(source.id, request.requestId)).toEqual(accepted)
-    expect(openCode.turns).toBe(1)
+    expect(claude.turns).toBe(1)
   })
 
   it('shares saved chat defaults with future sessions through authenticated MCP, preserving conflicts and denied callers', async () => {
@@ -1562,12 +1592,12 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const current = await settings.getAgentDefaults()
     await service.updateAgentDefaults(owner, 'http', {
       commandId: 'change-operator-harness', expectedRevision: current.revision,
-      value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } },
+      value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: claudeConfiguration } },
     })
     const after = await chat.create(owner, 'After defaults change')
     expect(after.operatorConfigurationVersionId).not.toBe(before.operatorConfigurationVersionId)
     expect((await repository.configuration(before.operatorConfigurationVersionId!))?.harness.harness).toBe('codex')
-    expect((await repository.configuration(after.operatorConfigurationVersionId!))?.harness.harness).toBe('opencode')
+    expect((await repository.configuration(after.operatorConfigurationVersionId!))?.harness.harness).toBe('claude')
   })
 
   it('keeps empty history native-free; replay and later sends reuse one durable session with a one-slot pool', async () => {

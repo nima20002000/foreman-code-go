@@ -1,3 +1,4 @@
+import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
 import { mkdtemp } from 'node:fs/promises'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
@@ -33,6 +34,12 @@ import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman
 import { SavedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
 import { workspaceRootHostScope } from '../src/modules/sources/rootPolicies.js'
 
+const claudeConfiguration = {
+  harness: 'claude', model: 'fixture-model', effort: 'medium', authMode: 'subscription',
+  configDirectory: '/fixture/profile', permissionMode: 'default', sandbox: 'danger-full-access',
+  tools: [], permissionRules: [], instructions: '', mcpServers: {},
+} satisfies ClaudeHarnessConfiguration
+
 const connectionString = process.env.TEST_DATABASE_URL!
 
 /** Only provider I/O is fake. Migrations, SQL, receipts, authorization, HTTP and MCP are real. */
@@ -46,7 +53,7 @@ class FakeNative implements NativeHarnessSessionManager {
   private turn = 0
   private readonly histories = new Map<string, NativeHistory>()
   private active: { id: string; correlation: string; release: () => void } | undefined
-  constructor(readonly harness: 'codex' | 'opencode' | 'claude', private readonly steering: boolean) { FakeNative.all.push(this) }
+  constructor(readonly harness: 'codex' | 'claude') { FakeNative.all.push(this) }
   async capabilities() {
     return { provider: this.harness, providerVersion: 'fixture-1', persistentSessions: true, reconnect: true, sameRequestResponses: true,
       cancellation: true, history: true, configurationInspection: false, mcpDetection: false, supportedInteractionKinds: [] }
@@ -61,15 +68,36 @@ class FakeNative implements NativeHarnessSessionManager {
     this.forked.push({ source: source.nativeSessionId, input })
     return { harness: this.harness, providerVersion: 'fixture-1', nativeSessionId: `fork-${randomUUID()}` }
   }
-  async *startTurn(_session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
+  async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.prompts.push(input.prompt)
     this.modes.push(input.sessionMode)
     await input.onSettingsApplied?.()
     const id = `turn-${++this.turn}`
-    this.histories.set(input.clientCorrelationId, { correlationId: input.clientCorrelationId, nativeTurnId: id, events: [], pendingInteractions: [] })
-    await input.onSubmitted?.(id)
-    yield NativeHarnessEventSchema.parse({ sequence: this.turn * 10, type: 'item.completed', occurredAt: new Date().toISOString(),
-      payload: { turnId: id, item: { id: `answer-${randomUUID()}`, type: 'agentMessage', text: `reply to ${input.prompt.slice(-20)}`, phase: 'final_answer' } } })
+    const history: NativeHistory = { correlationId: input.clientCorrelationId, events: [], pendingInteractions: [] }
+    this.histories.set(input.clientCorrelationId, history)
+    if (this.harness === 'claude') {
+      history.nativeSubmission = { kind: 'message', nativeSessionId: session.nativeSessionId,
+        nativeMessageId: id, clientCorrelationId: input.clientCorrelationId }
+      await input.onMessageSubmitted?.(history.nativeSubmission)
+    } else {
+      history.nativeTurnId = id
+      await input.onSubmitted?.(id)
+    }
+    const itemId = `answer-${randomUUID()}`
+    const text = `reply to ${input.prompt.slice(-20)}`
+    if (this.harness === 'claude') {
+      yield NativeHarnessEventSchema.parse({ sequence: this.turn * 10, type: 'claude.text',
+        occurredAt: new Date().toISOString(), payload: {
+          itemId, messageId: id, text, operation: 'replace', final: true,
+          nativeSessionId: session.nativeSessionId, clientCorrelationId: input.clientCorrelationId,
+          nativeGeneration: 'fixture', source: { eventId: `answer-${id}`, sequence: String(this.turn * 10) },
+        } })
+    } else {
+      yield NativeHarnessEventSchema.parse({ sequence: this.turn * 10, type: 'item.completed',
+        occurredAt: new Date().toISOString(), payload: {
+          turnId: id, item: { id: itemId, type: 'agentMessage', text, phase: 'final_answer' },
+        } })
+    }
     if (this.hold) {
       await new Promise<void>((resolve) => {
         this.active = { id, correlation: input.clientCorrelationId, release: resolve }
@@ -79,8 +107,9 @@ class FakeNative implements NativeHarnessSessionManager {
       if (signal?.aborted) throw new Error('stream aborted by shutdown')
     }
     this.active = undefined
-    const history = this.histories.get(input.clientCorrelationId)!
     history.terminalResult ??= { outcome: 'succeeded', output: { text: 'done' } }
+    if (history.nativeSubmission) history.terminalTurn = { correlationId: input.clientCorrelationId,
+      providerId: history.nativeSubmission.nativeMessageId, result: history.terminalResult }
   }
   get activeTurn() { return this.active?.id }
   finish(result: ExecutionResult = { outcome: 'succeeded' }) {
@@ -90,7 +119,6 @@ class FakeNative implements NativeHarnessSessionManager {
     active.release()
   }
   async steerTurn(_session: NativeSessionReference, input: NativeSteerInput) {
-    if (!this.steering) throw new Error('unused')
     if (!this.active || this.active.id !== input.expectedTurnId) throw new NativeTurnNotActiveError()
     this.steers.push(input)
     return { nativeTurnId: this.active.id }
@@ -109,9 +137,6 @@ class FakeNative implements NativeHarnessSessionManager {
   }
   async close() {}
 }
-// OpenCode has no steerTurn: the optional method is absent, exactly like the production adapter.
-class FakeOpenCode extends FakeNative { constructor() { super('opencode', false) } }
-Object.defineProperty(FakeOpenCode.prototype, 'steerTurn', { value: undefined })
 
 let pool: pg.Pool
 let access: PostgresAccessService
@@ -121,7 +146,7 @@ let writerToken: string
 let root: string
 let fixture: ReturnType<typeof makeCurrentWorkflowFixture>
 let codexNode: { id: string; agentId: string }
-let openCodeNode: { id: string; agentId: string }
+let claudeNode: { id: string; agentId: string }
 let runExecutions: HarnessExecution[] = []
 let runState = 'completed'
 let runSourceFixture: ReturnType<typeof makeCurrentWorkflowFixture>
@@ -129,9 +154,9 @@ const runReads: string[] = []
 
 function makeService() {
   const managers = new Map<string, FakeNative>()
-  const factory = Object.assign((id: string, configuration: { harness: { harness: 'codex' | 'opencode' | 'claude' } }) => {
+  const factory = Object.assign((id: string, configuration: { harness: { harness: 'codex' | 'claude' } }) => {
     const harness = configuration.harness.harness
-    const manager = managers.get(id) ?? (harness === 'opencode' ? new FakeOpenCode() : new FakeNative(harness, true))
+    const manager = managers.get(id) ?? new FakeNative(harness)
     managers.set(id, manager); return manager
   }, { release: (id: string) => { managers.delete(id) } })
   const runs = {
@@ -173,11 +198,11 @@ beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), 'agent-chat-test-'))
   fixture = makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential')
   fixture.configurations = fixture.configurations.map((configuration, index) => AgentConfigurationVersionSchema.parse({ ...configuration,
-    ...(index === 1 ? { harness: { harness: 'opencode', model: 'fixture/model', variant: 'low', nativeAgent: 'build', thinking: false, autoApprove: false } } : {}),
+    ...(index === 1 ? { harness: { ...claudeConfiguration, model: 'fixture-model' } } : {}),
     prompt: { system: `SYSTEM-${index}` } }))
   fixture = await seedAgent3(pool, root, fixture, { run: false })
   codexNode = fixture.version.definition.nodes[0]!
-  openCodeNode = fixture.version.definition.nodes[1]!
+  claudeNode = fixture.version.definition.nodes[1]!
   access = new PostgresAccessService(pool)
   const issued = await access.issue({ name: 'agent chat writer', audience: 'operator', expiresAt: new Date(Date.now() + 600_000),
     grants: [{ actions: [...ManagementActionSchema.options], scope: {} }] })
@@ -337,7 +362,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     }
   })
 
-  it.each(['codex', 'opencode', 'claude'] as const)('reads saved %s Agent controls through HTTP and MCP after unload and restart', async harness => {
+  it.each(['codex', 'claude'] as const)('reads saved %s Agent controls through HTTP and MCP after unload and restart', async harness => {
     const configuration = harness === 'claude' ? {
       harness: 'claude' as const, model: 'fixture-model', authMode: 'subscription' as const,
       configDirectory: '/fixture/profile', permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
@@ -360,8 +385,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     const capabilities = { ...unavailableSessionControls('fixture'), model: 'fixture-model',
       plan: { supported: true, reason: null }, compact: { supported: true, reason: null } }
     const nativeCapabilities = vi.fn(async () => {
-      const code = { codex: 'CODEX_SESSION_UNAVAILABLE', claude: 'CLAUDE_SESSION_UNAVAILABLE',
-        opencode: 'OPENCODE_SESSION_CONTEXT_MISSING' }[harness]
+      const code = { codex: 'CODEX_SESSION_UNAVAILABLE', claude: 'CLAUDE_SESSION_UNAVAILABLE' }[harness]
       if (unloaded) throw new HarnessExecutionError(code, 'Native runtime unloaded')
       return capabilities
     })
@@ -642,26 +666,6 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     expect(AgentChatStateSchema.parse(second).conversation?.id).toBe(done.conversation!.id)
   })
 
-  it('sends OpenCode startup instructions once and resumes without them after restart', async () => {
-    const first = makeService()
-    const read = (service: AgentChatService) => () => service.read(writer, fixture.scope.workspaceId, query(openCodeNode))
-    await first.service.send(writer, fixture.scope.workspaceId, request(openCodeNode, 'one', null))
-    const one = await settled(first.service, read(first.service))
-    await first.service.send(writer, fixture.scope.workspaceId, request(openCodeNode, 'two', one.conversation!.id))
-    await settled(first.service, read(first.service))
-    expect(FakeNative.all[0]!.prompts[0]).toContain('SYSTEM-1')
-    expect(FakeNative.all[0]!.prompts[1]).toBe('two')
-    await first.service.shutdown()
-    const restarted = makeService()
-    await restarted.service.send(writer, fixture.scope.workspaceId, request(openCodeNode, 'three', one.conversation!.id))
-    await settled(restarted.service, read(restarted.service))
-    const resumed = FakeNative.all.at(-1)!
-    expect(resumed.created).toHaveLength(0)
-    expect(resumed.attached).toHaveLength(1)
-    expect(resumed.attached[0]).toMatchObject({ instructionsDelivered: true })
-    expect(resumed.prompts).toEqual(['three'])
-  })
-
   it('queues next turns FIFO, cancels a queued turn and runs interrupt-and-send once ahead of the queue', async () => {
     const { service } = makeService()
     const read = () => service.read(writer, fixture.scope.workspaceId, query(codexNode))
@@ -741,13 +745,6 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       } finally { await service.shutdown() }
     })
 
-  it('reports OpenCode steering as unavailable and refuses it honestly', async () => {
-    const { service } = makeService()
-    const state = await service.read(writer, fixture.scope.workspaceId, query(openCodeNode))
-    expect(state.capabilities).toMatchObject({ steer: 'unavailable', interruptAndSend: true })
-    expect(state.capabilities.unavailable.steer).toBeTruthy()
-  })
-
   it('replays an identical request, rejects a conflicting one and a stale conversation expectation', async () => {
     const { service } = makeService()
     const workspace = fixture.scope.workspaceId
@@ -766,13 +763,13 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     const { service } = makeService()
     const workspace = fixture.scope.workspaceId
     await Promise.all([service.send(writer, workspace, request(codexNode, 'for codex', null)),
-      service.send(writer, workspace, request(openCodeNode, 'for opencode', null))])
-    const [codex, opencode] = await Promise.all([settled(service, () => service.read(writer, workspace, query(codexNode))),
-      settled(service, () => service.read(writer, workspace, query(openCodeNode)))])
-    expect(codex.conversation!.id).not.toBe(opencode.conversation!.id)
-    expect(codex.conversation!.nativeSession!.nativeSessionId).not.toBe(opencode.conversation!.nativeSession!.nativeSessionId)
-    expect(codex.messages.map((message) => message.content)).not.toContain('for opencode')
-    expect(opencode.messages.map((message) => message.content)).not.toContain('for codex')
+      service.send(writer, workspace, request(claudeNode, 'for claude', null))])
+    const [codex, claude] = await Promise.all([settled(service, () => service.read(writer, workspace, query(codexNode))),
+      settled(service, () => service.read(writer, workspace, query(claudeNode)))])
+    expect(codex.conversation!.id).not.toBe(claude.conversation!.id)
+    expect(codex.conversation!.nativeSession!.nativeSessionId).not.toBe(claude.conversation!.nativeSession!.nativeSessionId)
+    expect(codex.messages.map((message) => message.content)).not.toContain('for claude')
+    expect(claude.messages.map((message) => message.content)).not.toContain('for codex')
   })
 
   it('blocks chat for an active Run and forks a finished Run session without writing the Run', async () => {
@@ -866,7 +863,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     // Model the old acknowledgement-boundary crash: the provider accepted, but the app saved no answer/startup flag.
     await pool.query(`update operator_conversations set record=record-'startupDelivered'-'startupReceipt' where id=$1`, [id])
     const { service, managers } = makeService()
-    const native = new FakeNative('codex', true)
+    const native = new FakeNative('codex')
     const correlationId = agentChatCorrelation(id, input.requestId)
     native.reconcile = async (_session, correlation) => correlation === correlationId
       ? { correlationId, nativeTurnId: 'recovered-turn', nativeMessageId: 'recovered-answer', events: [], pendingInteractions: [],

@@ -14,7 +14,6 @@ import { HarnessQualificationRepository } from '../../src/modules/harnesses/qual
 import { HarnessQualificationRegistry } from '../../src/modules/harnesses/qualification/registry.js'
 import { HarnessQualificationService } from '../../src/modules/harnesses/qualification/service.js'
 import { codexQualificationSuite } from '../../src/modules/harnesses/qualification/suites/codex.js'
-import { opencodeQualificationSuite } from '../../src/modules/harnesses/qualification/suites/opencode.js'
 import { withNativeQualificationOwnership } from '../../src/modules/harnesses/qualification/nativeOwnership.js'
 import { withQualificationIdentity } from '../../src/modules/harnesses/qualification/identity.js'
 import { runWithReadOnlyQualification } from '../../src/modules/harnesses/qualification/gate.js'
@@ -58,7 +57,7 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     }
   }
   const factories = new NativeHarnessFactories({
-    codexBinary: registry.pinDefault('codex').installation.launcher.resolvedLauncher!, openCodeBinary: 'opencode',
+    codexBinary: registry.pinDefault('codex').installation.launcher.resolvedLauncher!,
     instances: registry.instances, installations: registry.installations,
     selectDefault: harness => registry.pinDefault(harness),
     auxiliaryRecovery: role => processes.scope(`${role}:${randomUUID()}`),
@@ -76,12 +75,12 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
       const binding = registry.pinDefault(suite.harness)
       return signal => assertInstallation(binding, signal)
     }), registry.installations, () => registry.pinDefault(suite.harness))
-  const suites = { codex: wrap(codexQualificationSuite), opencode: wrap(opencodeQualificationSuite) }
+  const suites = { codex: wrap(codexQualificationSuite) }
   const repository = new HarnessQualificationRepository(f.database.pool)
   const qualifications = new HarnessQualificationRegistry(repository,
-    { codex: suites.codex.revision, opencode: suites.opencode.revision })
+    { codex: suites.codex.revision })
   const service = new HarnessQualificationService(repository, qualifications, suites,
-    { codex: registry.pinDefault('codex').installation.launcher.resolvedLauncher!, opencode: 'opencode' },
+    { codex: registry.pinDefault('codex').installation.launcher.resolvedLauncher! },
     f.commands, defaults, undefined, undefined,
     (_harness, _binary, timeoutMs) => {
       const probe = scopedCompatibilityProbe({ registry: processes,

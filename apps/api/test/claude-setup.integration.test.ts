@@ -18,7 +18,7 @@ import { initializeNativeDefaults } from '../src/modules/harnesses/initializeDef
  * blocks qualification before native effects; no fabricated proof/model turn. */
 it.skipIf(!postgresEnabled)('configures Claude MCP through authenticated HTTP/MCP with denied writes, persisted readback and truthful blocked readiness', async () => {
   const f = await currentOperatorIntegration()
-  const catalog = new HarnessCatalogService(new NativeHarnessConfigurationQualifier('codex', 'opencode'),
+  const catalog = new HarnessCatalogService(new NativeHarnessConfigurationQualifier('codex'),
     new PostgresSettingsRepository(f.db.pool), f.commands, f.db.directory, new URL('/mcp', f.address).href)
   const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
     operator: { access: f.access, services: { ...f.services, harnesses: catalog, executionReadiness: new ExecutionReadinessService(new NativeRollout({}), catalog) } } })
@@ -80,7 +80,7 @@ it.skipIf(!postgresEnabled)('configures Claude MCP through authenticated HTTP/MC
 it.skipIf(!postgresEnabled)('keeps fresh Claude board defaults incomplete until an authorized explicit Full access save', async () => {
   const f = await currentOperatorIntegration()
   const repository = new PostgresSettingsRepository(f.db.pool)
-  const catalog = new HarnessCatalogService(new NativeHarnessConfigurationQualifier('codex', 'opencode'),
+  const catalog = new HarnessCatalogService(new NativeHarnessConfigurationQualifier('codex'),
     repository, f.commands, f.db.directory)
   const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
     operator: { access: f.access, services: { ...f.services, harnesses: catalog,
@@ -99,7 +99,7 @@ it.skipIf(!postgresEnabled)('keeps fresh Claude board defaults incomplete until 
     nativeAgents: ['build'], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
   })
   try {
-    // Only Claude requires discovery in this fixture; existing Codex/OpenCode defaults are explicit.
+    // Only Claude requires discovery in this fixture; existing Codex defaults are explicit.
     await initializeNativeDefaults({ pool: f.db.pool, options, appMcpEndpoint: new URL('/mcp', address).href })
     const original = await repository.getManagedHarnessDefaults()
     expect(original.defaults.claude?.sandbox).toBe('read-only')
@@ -168,13 +168,12 @@ it.skipIf(!postgresEnabled)('saves other provider defaults through HTTP and MCP 
     })).structuredContent)).toEqual({ ...saved, replayed: true })
     const http = await fetch(new URL('/api/management/harnesses/defaults', f.address), { method: 'PUT',
       headers: { authorization: `Bearer ${f.writer.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ commandId: randomUUID(), expectedRevision: saved.value.revision, configure: ['opencode'],
-        defaults: { ...saved.value.defaults, opencode: { ...saved.value.defaults.opencode,
-          thinking: !saved.value.defaults.opencode.thinking } } }),
+      body: JSON.stringify({ commandId: randomUUID(), expectedRevision: saved.value.revision, configure: ['codex'],
+        defaults: { ...saved.value.defaults, codex: { ...saved.value.defaults.codex, model: 'http-selected-model' } } }),
     })
     expect(http.status).toBe(200)
     const httpSaved = HarnessDefaultsUpdateResultSchema.parse(await http.json())
-    expect(httpSaved.value.defaults.opencode.thinking).toBe(!saved.value.defaults.opencode.thinking)
+    expect(httpSaved.value.defaults.codex.model).toBe('http-selected-model')
     const persisted = await repository.getManagedHarnessDefaults()
     expect(persisted.defaults).toEqual(httpSaved.value.defaults)
     expect(persisted.defaults.claude).toEqual(original.defaults.claude)

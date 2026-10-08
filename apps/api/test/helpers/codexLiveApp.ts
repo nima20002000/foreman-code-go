@@ -14,7 +14,7 @@ import { PostgresOperatorChatAuthority } from '../../src/modules/conversations/o
 import { PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
 import { CodexAppServerSessionManager } from '../../src/modules/harnesses/codexAppServer.js'
 import { CodexMcpConnections } from '../../src/modules/harnesses/codexMcpConnections.js'
-import { OpenCodeMcpConnections } from '../../src/modules/harnesses/openCodeMcpConnections.js'
+
 import { HarnessMcpSettingsService } from '../../src/modules/harnesses/mcpSettings.js'
 import { codexMcpInspectorAdapter } from '../../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { NativeRollout } from '../../src/modules/harnesses/nativeRollout.js'
@@ -92,10 +92,7 @@ export async function createCodexLiveApplication(binary: string, directory: stri
       checkpoints: { ping: async () => undefined },
     }, localHuman, operator: { access, services } })
     const endpoint = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp`
-    settings = new HarnessMcpSettingsService(pool, services.commands, {
-      codex: new CodexMcpConnections(binary, directory),
-      opencode: new OpenCodeMcpConnections(process.env.OPENCODE_BINARY ?? 'opencode', directory),
-    }, () => {}, async () => {}, endpoint)
+    settings = new HarnessMcpSettingsService(pool, services.commands, { codex: new CodexMcpConnections(binary, directory) }, () => {}, async () => {}, endpoint)
     const before = await settings.list(owner, 'codex')
     const installed = await settings.applyManaged(owner, { harness: 'codex', preset: 'graphql',
       installed: true, expectedRevision: before.revision, commandId: randomUUID() })

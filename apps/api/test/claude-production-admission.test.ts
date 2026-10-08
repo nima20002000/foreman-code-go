@@ -148,7 +148,6 @@ describe('common admitted production Claude four-surface replay', () => {
   })
 })
 
-
 describe('actual common owned Claude version command', () => {
   function ownedVersion() {
     const f = productionClaudeFixture('operator')
@@ -157,7 +156,7 @@ describe('actual common owned Claude version command', () => {
     const close = vi.fn(async () => {})
     const abandon = vi.fn(async () => {})
     const admit = vi.fn()
-    const factories = new NativeHarnessFactories({ codexBinary: '/forbidden', openCodeBinary: '/forbidden',
+    const factories = new NativeHarnessFactories({ codexBinary: '/forbidden',
       instances: f.factories.instances, installations: f.installations, installationDiscovery: async () => f.launcher,
       auxiliaryRecovery: () => recovery, admitRecovery: admit, abandonRecovery: abandon, closeRecovery: close, claudeVersionCommand: command })
     return { ...f, factories, recovery, command, close, abandon, admit }

@@ -25,10 +25,10 @@ afterEach(() => vi.restoreAllMocks())
 
 describe('selected Claude native metadata producer', () => {
   function fixture(port?: ClaudeNativeConfigurationPort) {
-    const factories = new NativeHarnessFactories({ codexBinary: 'unused-codex', openCodeBinary: 'unused-opencode' })
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused-codex',  })
     const allocate = vi.spyOn(factories, 'allocate')
     const command = vi.fn<typeof runCommand>(async () => { throw new Error('No native command may run') })
-    return { allocate, command, service: new NativeConfigurationService('unused-codex', 'unused-opencode', '/selected-workspace', factories, port, command) }
+    return { allocate, command, service: new NativeConfigurationService('unused-codex', '/selected-workspace', factories, port, command) }
   }
 
   it('requires actual selected-profile discovery instead of falling through to another provider', async () => {
@@ -74,7 +74,7 @@ describe('selected Claude native metadata producer', () => {
   })
 
   it('refuses another harness qualification and unsupported upstream refresh before commands', async () => {
-    const qualify = vi.fn<ClaudeNativeConfigurationPort['qualify']>().mockResolvedValue({ ...qualification, harness: 'opencode' })
+    const qualify = vi.fn<ClaudeNativeConfigurationPort['qualify']>().mockResolvedValue({ ...qualification, harness: 'codex' })
     const discover = vi.fn<ClaudeNativeConfigurationPort['discover']>()
     const f = fixture({ discover, qualify })
     try {
@@ -103,8 +103,8 @@ describe('workspace diagnostics exact-profile boundary', () => {
       await expect(controls.diagnostics(owner, { workspaceId: 'other-workspace', harness: 'claude' })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
       await expect(controls.diagnostics(owner, { workspaceId: 'workspace', harness: 'claude' })).rejects.toMatchObject({ code: 'CLAUDE_PROFILE_SELECTION_REQUIRED', status: 409 })
       expect(connect).not.toHaveBeenCalled(); expect(inspect).not.toHaveBeenCalled()
-      for (const harness of ['codex', 'opencode'] as const) await expect(controls.diagnostics(owner, { workspaceId: 'workspace', harness })).rejects.toThrow('Reached existing workspace snapshot')
-      expect(connect).toHaveBeenCalledTimes(2); expect(inspect).not.toHaveBeenCalled()
+      for (const harness of ['codex'] as const) await expect(controls.diagnostics(owner, { workspaceId: 'workspace', harness })).rejects.toThrow('Reached existing workspace snapshot')
+      expect(connect).toHaveBeenCalledTimes(1); expect(inspect).not.toHaveBeenCalled()
     } finally { await pool.end() }
   })
 })

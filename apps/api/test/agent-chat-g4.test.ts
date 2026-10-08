@@ -241,8 +241,7 @@ describe('G4 unknown activity and App environment classification', () => {
     assert.match(calls.find((sql) => sql.startsWith('update operator_conversation_activity'))!, /delivery='unknown'/)
   })
 
-  for (const code of ['CODEX_MCP_CONFIG_INVALID', 'CODEX_ENVIRONMENT_INVALID',
-    'OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'OPENCODE_CREDENTIAL_CONTEXT_MISMATCH']) {
+  for (const code of ['CODEX_MCP_CONFIG_INVALID', 'CODEX_ENVIRONMENT_INVALID']) {
     it(`A-R01 classification: ${code} is harness unavailable, not a missing native session`, async () => {
       const captured: unknown[][] = []
       const pool = poolFor(async (sql, values) => {
@@ -260,7 +259,7 @@ describe('G4 unknown activity and App environment classification', () => {
 
   it('does not classify an arbitrary transport timeout or absent optional MCP entry as permanent unavailability', async () => {
     const chat = service(poolFor(async () => { throw new Error('No permanent state may be written.') }))
-    for (const error of [new Error('transport timeout'), { code: 'CODEX_MCP_INSPECTION_FAILED' }, { code: 'CODEX_MCP_NOT_CONFIGURED' }, { code: 'OPENCODE_NATIVE_DELIVERY_UNCERTAIN' }]) {
+    for (const error of [new Error('transport timeout'), { code: 'CODEX_MCP_INSPECTION_FAILED' }, { code: 'CODEX_MCP_NOT_CONFIGURED' }, { code: 'CLAUDE_NATIVE_DELIVERY_UNCERTAIN' }]) {
       assert.equal(await chat['markNativeUnavailable']('chat-g4', error), false)
     }
   })

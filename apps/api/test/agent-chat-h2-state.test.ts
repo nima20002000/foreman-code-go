@@ -21,12 +21,11 @@ function service() {
 }
 
 describe('H2 A-R01: truthful chat availability without changing the frozen contract', () => {
-  for (const harness of ['codex', 'opencode'] as const) {
+  for (const harness of ['codex'] as const) {
     it(`${harness}: an unopened chat states the workflow-tool restriction without blocking ordinary chat`, async () => {
       const fixture = makeCurrentWorkflowFixture('h2-state', 'single')
       const configuration = structuredClone(fixture.configurations[0]!)
-      if (harness === 'opencode') configuration.harness = { harness, model: 'opencode-go/deepseek-v4.1-flash',
-        variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: false }
+
       const context = { workspaceId: configuration.workspaceId, workflowId: fixture.scope.workflowId,
         workflowNodeId: fixture.version.definition.nodes[0]!.id, agentId: configuration.agentId }
       const chat = service()

@@ -32,7 +32,7 @@ describe('ENG04 native evidence and first-terminal immutability', () => {
   it('rejects another attempt, provider or provider version without changing evidence', () => {
     const execution = nativeCompleted(nativeFixture().execution), { session, proof } = closure(execution)
     expect(() => assertRepeatNativeClosure(execution, session, { ...proof, execution: { ...proof.execution, attempt: 2 } })).toThrow()
-    expect(() => assertRepeatNativeClosure(execution, session, { ...proof, session: { ...session, harness: 'opencode' } })).toThrow()
+    expect(() => assertRepeatNativeClosure(execution, session, { ...proof, session: { ...session, harness: 'claude' } })).toThrow()
     expect(() => assertRepeatNativeClosure(execution, session, { ...proof, session: { ...session, providerVersion: 'different' } })).toThrow()
   })
   it('preserves exact valid native text bytes at the first durable terminal', () => {

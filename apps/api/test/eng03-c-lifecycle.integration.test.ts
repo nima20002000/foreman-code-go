@@ -2,7 +2,7 @@ import { isWorkflowStart } from '../src/modules/harnesses/sessionStart.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { deferred, postgresEnabled, readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { graphParity } from './helpers/wave25R1GraphParity.js'
 import { ApprovalTransportFaults } from './helpers/eng06ApprovalFaults.js'
@@ -116,7 +116,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durabl
     await f.engine.start(f.f.run.id)
     const [first, sibling] = await f.pending()
     if (!first || !sibling) throw new Error('Expected both native waits')
-    await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(first))
+    await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(first))
     const accepted = (await readCurrentExecutions(f.runs, f.f.run.id)).find((item) => item.id === first.executionId)!
     expect(accepted.result?.outcome).toBe('succeeded')
     const exact = await f.runs.getExecution(sibling.executionId!)
@@ -156,10 +156,10 @@ describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durabl
     await f.engine.start(f.f.run.id)
     const [first, sibling] = await f.pending()
     if (!first || !sibling) throw new Error('Expected parallel native requests')
-    await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(first))
+    await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(first))
     expect((await compare()).state.run.pendingInteractionCount).toBe(1)
     expect((await f.repository.get(sibling.id))?.status).toBe('pending')
-    const completed = await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(sibling))
+    const completed = await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(sibling))
     expect((await compare()).state.run.outcome).toBe('succeeded')
     const receipts = await f.receipts()
     expect(receipts).toHaveLength(2)

@@ -41,7 +41,6 @@ it('saves Claude templates through authenticated MCP while unavailable API-key d
   vi.stubEnv('ANTHROPIC_API_KEY', 'synthetic-inherited-key')
   vi.stubEnv('NODE_ENV', 'test')
   vi.stubEnv('HOST', '127.0.0.1')
-  vi.stubEnv('GRAPHQL_OPENCODE_PARITY_QUALIFIED', '1')
   const allocation = vi.spyOn(NativeHarnessFactories.prototype, 'allocateAdmittedClaude')
   try {
     await database.migrate()

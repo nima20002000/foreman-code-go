@@ -8,7 +8,7 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 describe('local binary selection', () => {
   it('falls back to bundled Codex when PATH has no native installation', () => {
     const bundled = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js')
-    expect(harnessBinaries({ PATH: '/unrelated' })).toEqual({ codexBinary: bundled, openCodeBinary: 'opencode' })
+    expect(harnessBinaries({ PATH: '/unrelated' })).toEqual({ codexBinary: bundled,  })
     expect(harnessBinaries({ CODEX_BINARY: 'codex', PATH: '/unrelated' }).codexBinary).toBe('codex')
   })
   it('prefers a computer-local native installation for the default command', async () => {
@@ -35,8 +35,7 @@ describe('local binary selection', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
   it('keeps explicit overrides authoritative and rejects empty selections', () => {
-    expect(harnessBinaries({ CODEX_BINARY: '/a path/codex', OPENCODE_BINARY: '/another/opencode' })).toEqual({ codexBinary: '/a path/codex', openCodeBinary: '/another/opencode' })
+    expect(harnessBinaries({ CODEX_BINARY: '/a path/codex',  })).toEqual({ codexBinary: '/a path/codex',  })
     expect(() => harnessBinaries({ CODEX_BINARY: ' ' })).toThrow('empty')
-    expect(() => harnessBinaries({ OPENCODE_BINARY: '' })).toThrow('empty')
   })
 })

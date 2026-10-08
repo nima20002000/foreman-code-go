@@ -96,18 +96,16 @@ describe('disposable test resources', () => {
     'isolates storage and harness homes and uses only explicit test authentication through %s settings', async prefix => {
     const resource = createTestRoot()
     const auth = join(resource.directory, 'test-auth.json')
-    const opencodeAuth = join(resource.directory, 'test-opencode-auth.json')
     await writeFile(auth, '{"test":"credential"}', { mode: 0o600 })
-    await writeFile(opencodeAuth, '{"test":"opencode-credential"}', { mode: 0o600 })
     try {
       const source = { HOME: '/real/home', CODEX_HOME: '/real/codex', PGHOST: 'app',
-        OPENAI_API_KEY: 'real-key', OPENCODE_API_KEY: 'real-opencode-key',
+        OPENAI_API_KEY: 'real-key',
         FOREMAN_CODE_MCP_TOKEN: 'real-token', LOG_FILE: '/real/log', WORKSPACE_STORAGE_ROOT: '/real/projects',
         FOREMAN_CODE_APP_MCP_DIRECTORY: '/real/mcp', FOREMAN_CODE_WEB_DIST: '/real/web',
         FOREMAN_CODE_PRODUCTION_DB_PASSWORD: 'real-production-password',
         FOREMAN_CODE_API_ENV_FILE: '/real/api.env',
         FOREMAN_CODE_TEST_CODEX_AUTH_FILE: auth, FOREMAN_CODE_TEST_OPENAI_API_KEY: 'test-key',
-        FOREMAN_CODE_TEST_OPENCODE_AUTH_FILE: opencodeAuth, FOREMAN_CODE_TEST_OPENCODE_API_KEY: 'test-opencode-key' }
+          }
       const environment = testEnvironment(Object.fromEntries(Object.entries(source).map(([key, value]) =>
         [key.replace(/^FOREMAN_CODE_/, prefix), value])),
       { ...resource, name: 'graphql_test_unit', databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })
@@ -126,19 +124,12 @@ describe('disposable test resources', () => {
       expect(environment.TMPDIR).toBe(join(resource.directory, 'tmp'))
       expect(environment.FILE_STORAGE_ROOT!.startsWith(environment.TMPDIR! + '/')).toBe(false)
       expect(environment.OPENAI_API_KEY).toBe('test-key')
-      expect(environment.OPENCODE_API_KEY).toBe('test-opencode-key')
       const nested = testEnvironment(environment, { ...resource, name: 'graphql_test_unit',
         databaseUrl: new URL('/graphql_test_unit', testAdminUrl).toString() })
       expect(nested.OPENAI_API_KEY).toBe('test-key')
-      expect(nested.OPENCODE_API_KEY).toBe('test-opencode-key')
       expect(await readFile(join(environment.CODEX_HOME!, 'auth.json'), 'utf8')).toBe('{"test":"credential"}')
-      expect(await readFile(join(environment.XDG_DATA_HOME!, 'opencode', 'auth.json'), 'utf8'))
-        .toBe('{"test":"opencode-credential"}')
       await writeFile(auth, '{"test":"renewed-credential"}')
-      await writeFile(opencodeAuth, '{"test":"renewed-opencode-credential"}')
       expect(await readFile(join(environment.CODEX_HOME!, 'auth.json'), 'utf8')).toBe('{"test":"renewed-credential"}')
-      expect(await readFile(join(environment.XDG_DATA_HOME!, 'opencode', 'auth.json'), 'utf8'))
-        .toBe('{"test":"renewed-opencode-credential"}')
     } finally { removeTestRoot(resource) }
   })
 

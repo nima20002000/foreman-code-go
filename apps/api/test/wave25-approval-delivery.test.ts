@@ -50,7 +50,7 @@ describe('Exact native approval delivery evidence', () => {
     expect(matchingDeliveryEvidence(f.interaction, f.session, f.history)).toBeUndefined()
   })
   const mismatches: Array<[string, Partial<NativeResponseDeliveryEvidence>]> = [
-    ['provider', { harness: 'opencode' }], ['version', { providerVersion: 'other-version' }],
+    ['provider', { harness: 'claude' }], ['version', { providerVersion: 'other-version' }],
     ['session', { nativeSessionId: 'other-session' }], ['request', { nativeRequestId: 'other-request' }],
     ['request type', { nativeRequestType: 'other-type' }], ['option', { optionId: 'other-option' }], ['decision', { semantic: 'reject' }],
   ]

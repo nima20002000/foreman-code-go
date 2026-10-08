@@ -1,10 +1,4 @@
-import {
-  CODEX_APPROVAL_OPTIONS_FIXTURE,
-  DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DEFAULT_HARNESS_DEFAULTS,
-  DurableInteractionSchema,
-  type AgentConfigurationVersion,
-  type DurableInteraction,
-} from '@foreman-code/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_HARNESS_DEFAULTS, DurableInteractionSchema, type AgentConfigurationVersion, type DurableInteraction } from '@foreman-code/contracts'
 import { ManagementPrincipalSchema, type ManagementAction, type ManagementScope } from '@foreman-code/contracts/management'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -16,7 +10,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
-import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
+
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
 import type { NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
@@ -156,37 +150,27 @@ it('retains Worker qualification against the outgoing profile-check channel', as
   vi.spyOn(ProductionDeviceRuntime.prototype, 'endpointForDomains').mockReturnValue(
     { captureRequest, currentBinding } as unknown as DeviceEndpoint)
   const run = vi.fn(async () => { throw new Error('Construction must not qualify a native runtime') })
-  production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, {
-    codex: { harness: 'codex', revision: 'fixture', run },
-    opencode: { harness: 'opencode', revision: 'fixture', run },
-  })
+  production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, { codex: { harness: 'codex', revision: 'fixture', run } })
   expect(retained.mock.calls[0]![0].currentBinding(binding.deviceId)).toEqual(binding)
   expect(captureRequest).toHaveBeenCalledExactlyOnceWith(binding.deviceId, 'host-harness-check-v1')
   expect(currentBinding).not.toHaveBeenCalled()
   expect(run).not.toHaveBeenCalled()
 })
 
-it.each(['codex', 'opencode'] as const)('constructs separate native %s managers for each accepted execution', (harness) => {
+it.each(['codex'] as const)('constructs separate native %s managers for each accepted execution', (harness) => {
   const approvals: object = Reflect.get(production.engine, 'nativeExecutions') as object
   const managers = Reflect.get(approvals, 'managers') as NativeSessionManagerResolver
   // The factory consumes the harness portion; the execution coordinator validates
   // the complete durable configuration before it calls this factory.
   const configuration = {
     id: 'config-1', agentId: 'agent-1',
-    harness: harness === 'opencode'
-      ? { ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: DEFAULT_OPENCODE_ADVANCED_CONFIGURATION }
-      : DEFAULT_HARNESS_DEFAULTS.codex,
+    harness: DEFAULT_HARNESS_DEFAULTS.codex,
   } as AgentConfigurationVersion
   const context = { executionId: 'execution-1', agentId: 'agent-1', workingDirectory: '/accepted/project', harness, configuration }
   const first = managers.resolve(context)
-  expect(first.manager).toBeInstanceOf(harness === 'codex' ? CodexAppServerSessionManager : OpenCodeNativeSessionManager)
+  expect(first.manager).toBeInstanceOf(CodexAppServerSessionManager)
   expect(first.processState).toBe('needs_start')
-  if (harness === 'opencode') {
-    if (configuration.harness.harness !== 'opencode') throw new Error('OpenCode composition fixture requires its actual provider configuration')
-    expect(first.manager).toHaveProperty('options.ownerAgentId', context.agentId)
-    expect(first.manager).toHaveProperty('options.server.options.workingDirectory', context.workingDirectory)
-    expect(first.manager).toHaveProperty('options.server.advancedConfiguration', configuration.harness.advanced)
-  }
+
   expect(managers.resolve(context)).toMatchObject({ manager: first.manager, processState: 'needs_start', lifecycle: 'allocated' })
   const second = managers.resolve({ ...context, executionId: 'execution-2' })
   expect(second.manager).not.toBe(first.manager)

@@ -347,7 +347,7 @@ it('rejects receipts for another provider version, session, request, response, o
   const h = harness()
   await h.respond()
   const changes: Array<Partial<NativeResponseDeliveryEvidence>> = [
-    { providerVersion: 'different' }, { harness: 'opencode' }, { nativeSessionId: 'different' },
+    { providerVersion: 'different' }, { harness: 'claude' }, { nativeSessionId: 'different' },
     { nativeRequestId: 'different' }, { nativeRequestType: 'different' }, { optionId: 'different' }, { semantic: 'reject' },
     { source: 'local_pending_eviction' as NativeResponseDeliveryEvidence['source'] },
   ]
@@ -432,7 +432,6 @@ it('rejects conflicting options rather than reusing another durable decision', a
   assert.equal(h.calls.sends, 1)
 })
 
-
 it('keeps duplicate delivery and graph-resume ownership separate (#7/#11)', async () => {
   const h = harness()
   const entered = deferred()
@@ -460,7 +459,6 @@ it('treats the legacy pendingInteraction observation as a conflicting receipt (#
     },
   }), undefined)
 })
-
 
 it('a void atomic consumer cannot be mistaken for a checkpoint receipt', async () => {
   const h = harness(); h.control.commitResume = false

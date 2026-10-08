@@ -63,7 +63,7 @@ export function reviewCoordination(initial = reviewJob()) {
       job = { ...job, attempt: job.attempt + 1, leaseToken: token, leaseOwner: owner, leaseExpiresAt: expires }
       return structuredClone(job)
     },
-    async getReviewJobContext() { return { executionId: 'execution', workingDirectory: '/tmp/reviewer', providerVersion: initial.provider === 'opencode' ? '1.18.31' : reviewSession.providerVersion } },
+    async getReviewJobContext() { return { executionId: 'execution', workingDirectory: '/tmp/reviewer', providerVersion: reviewSession.providerVersion } },
     async assertReviewJobLease(_id: string, token: string) { assert.equal(token, job.leaseToken) },
     async renewReviewJob() { return new Date(Date.now() + 60_000).toISOString() },
     async isReviewPending() { return true },

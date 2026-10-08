@@ -67,7 +67,7 @@ describe('ENG06-C native response evidence after reconnect/replay', () => {
   for (const [name, change] of [
     ['session', { nativeSessionId: 'different-session' }],
     ['provider version', { providerVersion: 'different-version' }],
-    ['harness', { harness: 'opencode' as const }],
+    ['harness', { harness: 'claude' as const }],
   ] as const) {
     it(`rejects an ACK read through a mismatched ${name}`, () => {
       const f = fixture()

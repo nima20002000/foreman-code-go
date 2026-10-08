@@ -26,7 +26,7 @@ export function recoveryDatabase(options: { bound?: boolean; detached?: boolean;
   const state = {
     execution: recoveryExecution(),
     others: new Map<string, HarnessExecution>(),
-    session: { harness: 'opencode', providerVersion: '1.0.0', nativeSessionId: 'session-a' } as NativeSessionReference | null,
+    session: { harness: 'codex', providerVersion: '1.0.0', nativeSessionId: 'session-a' } as NativeSessionReference | null,
     entryPhase: 'entered', finalized: false,
     semantics: '3', fenced: true, active: false, lost: false, fence: '9001',
     inserts: 0, commits: 0, rollbacks: 0,

@@ -28,7 +28,7 @@ it.skipIf(process.env.NIM2691_POSTGRES !== '1').each(['pending', 'uncertain', 'c
       for (let i = 0; i <= 200; i++) {
         const control = { schemaVersion: 1, kind: 'respond', conversationId: scope.conversationId,
           modelRequestId: `model-${i}`, scope,
-          native: { harness: 'opencode', providerVersion: '1.18.31', sessionId: 'session', turnId: `turn-${i}`,
+          native: { harness: 'codex', providerVersion: '0.154.0', sessionId: 'session', turnId: `turn-${i}`,
             requestId: `approval-${i}`, requestType: 'permission.asked' }, choice: { optionId: 'once', semantic: 'approve_once' } }
         await pool.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result,created_at)
           values($1,'operator_chat_control',$2,$3,'hash',$4::jsonb,'2026-10-02T00:00:00Z'::timestamptz+$5*interval '1 second')`,
@@ -58,7 +58,6 @@ it.skipIf(process.env.NIM2691_POSTGRES !== '1').each(['pending', 'uncertain', 'c
       } finally { await app.close(); await chat.shutdown() }
     })
   }, 120000)
-
 
 it.skipIf(process.env.NIM2691_POSTGRES !== '1')('backfills compact receipt activity and follows result updates without changing stored outcomes', async () => {
   await nim2691TaskDatabase(async pool => {

@@ -9,15 +9,16 @@ import { PostgresAppInteractionService } from '../src/modules/interactions/app.j
 import { assertOrchestratorGraphAuthority } from '../src/modules/interactions/graphAuthority.js'
 import { PostgresRepeatReviewerBindings } from '../src/modules/interactions/repeatReviewer.js'
 import { deliverApproval } from '../src/modules/interactions/wave25/service.js'
-import { object } from '../src/modules/harnesses/opencodeProtocol.js'
+import { object } from '../src/modules/harnesses/codexStdioTransport.js'
 import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
 import { ApprovalPostgresSaver } from '../src/infrastructure/approvalCheckpointSaver.js'
-import { br1002OpenCodeRuntime, br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { br1002At } from './helpers/wave25Br1002Cuts.js'
 import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 
-type Fixture = Awaited<ReturnType<typeof br1002OpenCodeRuntime>>
+type Fixture = Awaited<ReturnType<typeof codexApprovalRuntime>>
 type Runtime = ReturnType<Fixture['compose']>
 afterEach(() => vi.restoreAllMocks())
 
@@ -30,7 +31,7 @@ async function fixture() {
   entry.choice = { outcomes: [{ outcome: 'delegate', target: { kind: 'edge', relationshipId: edge.id } }] }
   let revision = 0
   const revisions = new Map<string, number>()
-  const runtime: Fixture = await br1002OpenCodeRuntime('orchestrator', {
+  const runtime: Fixture = await codexApprovalRuntime('orchestrator', {
     fixture: definition,
     async workflowOutput(executionId) {
       const execution = await runtime.runs.getExecution(executionId)
@@ -73,7 +74,8 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
   const append = runtime.repository.coordination.appendReviewNativeEvent.bind(runtime.repository.coordination)
   const capture = vi.spyOn(runtime.repository.coordination, 'appendReviewNativeEvent').mockImplementation(async (...args) => {
     await append(...args)
-    if (args[2]?.live && args[1].type === 'message.updated' && object(args[1].payload.info).role === 'user') {
+    if (args[2]?.live && args[1].type === 'turn.started'
+      && args[1].payload.turnId === args[0].providerTurnOrMessageId) {
       live.resolve()
     }
   })
@@ -106,7 +108,7 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
         workflowIds: [f.f.run.workflowId], runIds: [f.f.run.id] } }])])
     const denied = await connect(readOnlyCredential.environment.variables.GRAPHQL_MCP_TOKEN!)
     expect((await denied.listTools()).tools.some((tool) => tool.name === 'interaction_respond')).toBe(false)
-    const input = br1002Response(interaction)
+    const input = approvalResponse(interaction)
     await expect(denied.callTool({ name: 'interaction_respond', arguments: input })).rejects.toThrow('not found')
     expect((await runtime.repository.get(interaction.id))?.status).toBe('pending')
     await runtime.credentials.revoke({ principalId: readOnlyPrincipalId })
@@ -120,8 +122,8 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
     expect(readback.isError).not.toBe(true)
     expect(JSON.stringify(readback.structuredContent)).toContain(input.optionId)
     expect(f.counts().responses).toBe(previousReviewerId ? 1 : 0)
-    const server = f.servers.get(binding.execution.id)!
-    server.complete(job!.correlationId, 'Review complete', job!.nativeSessionId)
+    const provider = f.providers.get(binding.execution.id)!
+    provider.completeReview(job!.correlationId, job!.nativeSessionId)
     await dispatch
     const delivered = await deliverApproval({ repository: runtime.repository, nativeRuntime: runtime.native }, interaction.id)
     expect(delivered.deliveryState).toBe('delivered')

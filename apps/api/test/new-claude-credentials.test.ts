@@ -95,7 +95,7 @@ function fixture(surface: 'workflow' | 'operator' | 'agent' | 'selected-run', sh
   const sdk: ClaudeSdkClient = { sdkVersion: pin.sdkVersion, query: sdkQuery, getSessionInfo: async sessionId => ({ sessionId }),
     getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'recorded-fork' }) }
   const loadClient = vi.fn(async () => sdk)
-  const factories = sharedFactories ?? new NativeHarnessFactories({ codexBinary: '/forbidden-codex', openCodeBinary: '/forbidden-opencode', instances, installations,
+  const factories = sharedFactories ?? new NativeHarnessFactories({ codexBinary: '/forbidden-codex', instances, installations,
     installationDiscovery: async () => launcher })
   const result = productionClaudeManager({ pool, factories, registry: { pinOverride: () => binding } as unknown as ProductionHarnessRegistry,
     profiles, selector: { instanceId: override.instanceId, instanceRevision: override.instanceRevision, target }, binding: domain,

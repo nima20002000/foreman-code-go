@@ -4,7 +4,7 @@ import { appLauncherConnection, isAppLauncher } from '../src/modules/harnesses/a
 
 afterEach(() => vi.unstubAllEnvs())
 
-it.each(['codex', 'opencode'] as const)('production routing recognizes the reviewed %s launcher', async harness => {
+it.each(['codex'] as const)('production routing recognizes the reviewed %s launcher', async harness => {
   vi.stubEnv('GRAPHQL_APP_MCP_DIRECTORY', undefined)
   vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', undefined)
   const reviewed = appLauncherConnection()

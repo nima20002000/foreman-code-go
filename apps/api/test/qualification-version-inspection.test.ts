@@ -19,8 +19,8 @@ function service(binary: string, factory: (timeoutMs: number) => CompatibilityPr
   const qualification = new HarnessQualificationService({ find: async () => null, save } as never,
     { inspectBinary: async () => ({ binary, sha256: createHash('sha256')
       .update(await readFile(binary)).digest('hex') }), trusted: async () => true } as never,
-    { codex: { harness: 'codex', revision: 'recorded', run }, opencode: { harness: 'opencode', revision: 'recorded', run } },
-    { codex: binary, opencode: binary }, {} as never,
+    { codex: { harness: 'codex', revision: 'recorded', run } },
+    { codex: binary }, {} as never,
     { getManagedHarnessDefaults: async () => ({ revision: 0, defaults: DEFAULT_HARNESS_DEFAULTS }) },
     async () => 'recorded-schema', undefined, (_harness, _binary, timeoutMs) => factory(timeoutMs))
   return { qualification, run, save }
@@ -41,7 +41,7 @@ it('keeps installation verification and closure outside the native version-comma
   const closing = gate()
   const closed = gate()
   const instance = service(f.binary, timeoutMs => {
-    const raw = nativeCompatibilityProbe({ codex: f.binary, opencode: f.binary }, f.directory, process.env, timeoutMs)
+    const raw = nativeCompatibilityProbe({ codex: f.binary }, f.directory, process.env, timeoutMs)
     return { ...raw, async inspect(harness, signal) {
       verifying.release()
       await verified.promise
@@ -81,7 +81,7 @@ it('keeps installation verification and closure outside the native version-comma
 it('refuses a binary replacement after version inspection before admitting its suite', async () => {
   const f = await binaryFixture("console.log('codex-cli 0.160.1')")
   const instance = service(f.binary, timeoutMs => {
-    const raw = nativeCompatibilityProbe({ codex: f.binary, opencode: f.binary }, f.directory, process.env, timeoutMs)
+    const raw = nativeCompatibilityProbe({ codex: f.binary }, f.directory, process.env, timeoutMs)
     return { ...raw, async inspect(harness, signal) {
       const result = await raw.inspect(harness, signal)
       await appendFile(f.binary, '\n// replacement payload\n')
@@ -103,7 +103,7 @@ it('refuses a binary replacement after version inspection before admitting its s
 it('still stops a stalled version command at the native deadline without admitting a suite', async () => {
   const f = await binaryFixture('setInterval(() => {}, 1000)')
   const instance = service(f.binary, timeoutMs => nativeCompatibilityProbe(
-    { codex: f.binary, opencode: f.binary }, f.directory, process.env, timeoutMs))
+    { codex: f.binary }, f.directory, process.env, timeoutMs))
   try {
     await expect(instance.qualification.begin('codex')).rejects.toMatchObject({ name: 'TimeoutError' })
     await instance.qualification.join()

@@ -65,7 +65,6 @@ describe('current Agent-only consumer boundaries', () => {
 
   it('keeps the deterministic permission fixture limited to its real provider profiles', () => {
     expect(new DeterministicNativeSessionManager('codex').harness).toBe('codex')
-    expect(new DeterministicNativeSessionManager('opencode').harness).toBe('opencode')
     expect(() => new DeterministicNativeSessionManager('claude', '2.1.284')).toThrow('FIXTURE_PROVIDER_UNSUPPORTED')
   })
 })

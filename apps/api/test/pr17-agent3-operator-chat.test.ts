@@ -317,7 +317,6 @@ describe('PR17 Agent3: durable Operator chat recovery', () => {
 
 })
 
-
 it('W05 does not advertise authoritative final text when its repository mutation was declined', async () => {
   const f = fixture(), deltas: unknown[] = []
   f.repository.appendAssistantTextOperation = async () => ({ status: 'ignored', revision: String(f.row.revision) })
@@ -355,70 +354,4 @@ it('mounts exact transport fences and authoritative same-status history in Opera
       authoritativeReconciliation: true, source: { system: 'codex_history' } })
     expect((calls[2]?.[3] as { source: { sequence?: string } }).source.sequence).toBeUndefined()
   } finally { await f.chat.shutdown() }
-})
-
-it('retains OpenCode prefix-before-metadata and later suffix through the mounted Operator consumer', async () => {
-  const f = fixture(), deltas: Array<{ text: unknown; mode: unknown }> = [], committed: string[] = []
-  Object.defineProperty(f.manager, 'harness', { value: 'opencode' })
-  f.manager.session.harness = 'opencode'; f.row.harness = 'opencode'
-  f.repository.appendAssistantTextOperation = async (_id, _request, operation) => { committed.push(operation.text); return { status: 'committed', revision: String(f.row.revision), messageRevision: String(f.row.revision) } }
-  const base = { connectionId: 'operator-connection', occurredAt: '2026-10-01T00:00:00Z' }
-  f.manager.emitted = [
-    { ...base, sequence: 1, type: 'message.part.updated', payload: { part: { sessionID: f.manager.session.nativeSessionId,
-      messageID: 'assistant', id: 'text-part', type: 'text', text: 'prefix ' } } },
-    { ...base, sequence: 2, type: 'message.updated', payload: { info: { sessionID: f.manager.session.nativeSessionId,
-      id: 'assistant', role: 'assistant', parentID: 'review-turn-1' } } },
-    { ...base, sequence: 3, type: 'message.part.delta', payload: { sessionID: f.manager.session.nativeSessionId,
-      messageID: 'assistant', partID: 'text-part', field: 'text', delta: 'suffix' } },
-  ]
-  f.manager.finish = true
-  const unsubscribe = f.chat.events.subscribe(f.row.id, (event) => {
-    if (event.type === 'delta') deltas.push({ text: (event.data.activityChange as { change: { text: string } }).change.text, mode: (event.data.activityChange as { change: { kind: string } }).change.kind === 'text.append' ? 'append' : 'replace' })
-  })
-  try {
-    await f.chat.send(f.row.id, { requestId: 'operator-prefix', content: 'Use native stream' }, f.owner)
-    await eventually(() => f.finishResults.length === 1)
-    expect(committed).toEqual(['prefix ', 'suffix'])
-    expect(deltas).toEqual([{ text: 'prefix ', mode: 'replace' }, { text: 'suffix', mode: 'append' }])
-  } finally { unsubscribe(); await f.chat.shutdown() }
-})
-
-it('buffers OpenCode text until exact parent metadata, then publishes prefix and suffix through the mounted Operator', async () => {
-  const f = fixture(), committed: string[] = [], deltas: Array<{ text: unknown; mode: unknown }> = []
-  const checkpoints: Array<{ committed: string[]; deltas: Array<{ text: unknown; mode: unknown }> }> = []
-  Object.defineProperty(f.manager, 'harness', { value: 'opencode' })
-  f.manager.session.harness = 'opencode'; f.row.harness = 'opencode'
-  f.repository.appendAssistantTextOperation = async (_id, _request, operation) => { committed.push(operation.text); return { status: 'committed', revision: String(f.row.revision), messageRevision: String(f.row.revision) } }
-  const base = { connectionId: 'operator-connection', occurredAt: '2026-10-01T00:00:00Z' }
-  const prefix: NativeHarnessEvent = { ...base, sequence: 1, type: 'message.part.updated', payload: { part: {
-    sessionID: f.manager.session.nativeSessionId, messageID: 'assistant', id: 'text-part', type: 'text', text: 'prefix ',
-  } } }
-  f.manager.startTurn = async function* (_session, input) {
-    f.manager.nativeHistory = { correlationId: input.clientCorrelationId, nativeTurnId: 'review-turn-1',
-      events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded' } }
-    await input.onSubmitted?.('review-turn-1')
-    yield { ...prefix, payload: { part: { ...prefix.payload.part as object, sessionID: 'foreign', text: 'foreign' } } }
-    yield prefix
-    checkpoints.push({ committed: [...committed], deltas: [...deltas] })
-    yield { ...base, sequence: 2, type: 'message.updated', payload: { info: {
-      sessionID: f.manager.session.nativeSessionId, id: 'assistant', role: 'assistant', parentID: 'review-turn-1',
-    } } }
-    checkpoints.push({ committed: [...committed], deltas: [...deltas] })
-    yield { ...base, sequence: 3, type: 'message.part.delta', payload: {
-      sessionID: f.manager.session.nativeSessionId, messageID: 'assistant', partID: 'text-part', field: 'text', delta: 'suffix',
-    } }
-  }
-  const unsubscribe = f.chat.events.subscribe(f.row.id, event => {
-    if (event.type === 'delta') deltas.push({ text: (event.data.activityChange as { change: { text: string } }).change.text, mode: (event.data.activityChange as { change: { kind: string } }).change.kind === 'text.append' ? 'append' : 'replace' })
-  })
-  try {
-    await f.chat.send(f.row.id, { requestId: 'operator-prefix', content: 'Use native stream' }, f.owner)
-    await eventually(() => f.finishResults.length === 1)
-    expect(checkpoints).toEqual([
-      { committed: [], deltas: [] },
-      { committed: ['prefix '], deltas: [{ text: 'prefix ', mode: 'replace' }] },
-    ])
-    expect(committed).toEqual(['prefix ', 'suffix'])
-    expect(deltas).toEqual([{ text: 'prefix ', mode: 'replace' }, { text: 'suffix', mode: 'append' }])
-  } finally { unsubscribe(); await f.chat.shutdown() }
 })

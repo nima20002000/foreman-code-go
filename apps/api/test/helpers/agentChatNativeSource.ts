@@ -3,7 +3,6 @@ import type { NativeSessionReference } from '@foreman-code/contracts'
 import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
 import { canonical, qualifyCodex } from '../../src/modules/harnesses/codexProtocol.js'
 import { CodexStdioTransport, object, type JsonObject } from '../../src/modules/harnesses/codexStdioTransport.js'
-import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeTransport.js'
 
 /** Full persisted records, not notification counts or a resident manager's event cache.
  * Canonicalize object keys and top-level record order ONLY: keep all message/part
@@ -36,7 +35,7 @@ export async function readNativeSource(session: NativeSessionReference, director
   const records: JsonObject[] = []
   const cursors = new Set<string>()
   let cursor: string | undefined
-  if (session.harness === 'codex') {
+  {
     // Retain native storage locations, not worker/App MCP or database credentials.
     const environment: NodeJS.ProcessEnv = { NO_COLOR: '1' }
     for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'CODEX_HOME', 'SystemRoot']) {
@@ -61,26 +60,6 @@ export async function readNativeSource(session: NativeSessionReference, director
         if (cursor) cursors.add(cursor)
       } while (cursor)
     } finally { await observer.close() }
-  } else {
-    const observer = new ManagedOpenCodeServer({ binary: binaries.openCodeBinary, workingDirectory: directory, ownerAgentId })
-    const get = async (path: string) => {
-      const response = await observer.request(`${path}${path.includes('?') ? '&' : '?'}directory=${encodeURIComponent(directory)}`, { method: 'GET' }, signal)
-      if (!response.ok) throw new Error(`Source storage read failed (${response.status}).`)
-      return response
-    }
-    try {
-      const stored = object(await (await get(`/session/${encodeURIComponent(session.nativeSessionId)}`)).json())
-      if (stored.id !== session.nativeSessionId) throw new Error('Source observer read another native session.')
-      do {
-        const response = await get(`/session/${encodeURIComponent(session.nativeSessionId)}/message?limit=100${cursor ? `&before=${encodeURIComponent(cursor)}` : ''}`)
-        const page: unknown = await response.json()
-        if (!Array.isArray(page)) throw new Error('Source message page is invalid.')
-        records.push(...page.map((value: unknown) => object(value)))
-        cursor = response.headers.get('x-next-cursor') || undefined
-        if (cursor && cursors.has(cursor)) throw new Error('Source observer repeated a cursor.')
-        if (cursor) cursors.add(cursor)
-      } while (cursor)
-    } finally { await observer.dispose() }
   }
   return nativeSourceContent(session, records)
 }

@@ -51,11 +51,10 @@ describe('F1 exact Claude publication query fixture', () => {
     if (fault === 'binding') f.publication.binding = 'other-message-binding'
     expect(await f.read()).toEqual([])
   })
-  it.each(['codex', 'opencode', 'deleted', 'steer', 'missingMessage', 'assistant', 'otherConversation', 'otherRequest',
-    'missingOwner', 'wrongKind', 'missingSession', 'missingNativeMessage', 'missingCorrelation'] as const)(
+  it.each(['codex', 'deleted', 'steer', 'missingMessage', 'assistant', 'otherConversation', 'otherRequest', 'missingOwner', 'wrongKind', 'missingSession', 'missingNativeMessage', 'missingCorrelation'] as const)(
     'does not admit a Claude publication candidate for %s', async fault => {
       const f = seeded(), message = f.store.messages.get(f.receipt.message_id)!
-      if (fault === 'codex' || fault === 'opencode') f.store.row.harness = fault
+      if (fault === 'codex') f.store.row.harness = fault
       if (fault === 'deleted') f.store.row.deleted_at = new Date()
       if (fault === 'steer') f.store.turns.get(f.receipt.request_id)!.intent = 'steer'
       if (fault === 'missingMessage') f.store.messages.clear()

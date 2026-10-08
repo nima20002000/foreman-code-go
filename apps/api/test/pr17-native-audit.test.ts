@@ -3,8 +3,6 @@ import { join } from 'node:path'
 import { rm, writeFile } from 'node:fs/promises'
 import { afterEach, describe, it, vi } from 'vitest'
 import type { OperatorNativeSessionStart } from '../src/modules/harnesses/port.js'
-import { nativeMessageId } from '../src/modules/harnesses/opencodeProtocol.js'
-import { FixtureServer, configuration, environment, manager as openCodeManager, permission, request, sessionFor } from './opencode-fixtures.js'
 import { calls, collect, errorCode, fixture, fixtureQualification, input, until, type Fixture } from './fixtures/codex-test-helpers.js'
 
 // Replace binary/schema qualification only. Lifecycle and transport code remain real.
@@ -13,7 +11,6 @@ vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   return { ...actual, qualifyCodex: fixtureQualification, assertCodexUnchanged: async () => undefined }
 })
 const { CodexAppServerSessionManager } = await import('../src/modules/harnesses/codexAppServer.js')
-const { OpenCodeNativeDeliveryError } = await import('../src/modules/harnesses/opencodeServer.js')
 const cleanups: Array<() => Promise<unknown>> = []
 afterEach(async () => {
   const errors: unknown[] = []
@@ -29,13 +26,6 @@ function codexManager(f: Fixture) {
   const native = new CodexAppServerSessionManager(f.binary)
   cleanups.push(() => native.dispose())
   return native
-}
-function openCodeFixture(cold = false) {
-  const server = new FixtureServer()
-  if (cold) server.environment = environment()
-  const native = openCodeManager(server)
-  cleanups.push(() => native.dispose())
-  return { server, native }
 }
 
 describe.skipIf(process.platform === 'win32')('PR17 Codex native recovery', () => {
@@ -112,80 +102,5 @@ describe.skipIf(process.platform === 'win32')('PR17 Codex native recovery', () =
     await native.dispose()
     await assert.rejects(creating)
     await until(async () => { try { process.kill(pid as number, 0); return false } catch { return true } })
-  })
-})
-
-describe('PR17 OpenCode native recovery', () => {
-  it('F05/F06: history replay and cached success preserve identity without exposing a scoped token', async () => {
-    const { server, native } = openCodeFixture(); const session = await sessionFor(native)
-    const root = server.user('first')
-    const answer = server.assistant(String(root.info.id), 'output fixture-owner-token')
-    const first = await native.reconcile(session, 'first')
-    assert.equal(first.nativeMessageId, answer.info.id)
-    assert(!JSON.stringify(first).includes('fixture-owner-token'))
-    const replay = await native.reconcile(session, 'first')
-    assert.equal(replay.nativeMessageId, answer.info.id)
-    assert.equal(replay.terminalResult?.outcome, 'succeeded')
-    assert(!JSON.stringify(await native.historyPage(session)).includes('fixture-owner-token'))
-  })
-
-  it('F09: cold attachment can cancel its verified active turn without submitting a prompt', async () => {
-    const { server, native } = openCodeFixture(true)
-    server.addSession('ses_test', undefined, configuration())
-    server.user('active'); server.statuses.set('ses_test', { type: 'busy' }); server.permissions = [permission('request-1')]
-    const session = { harness: 'opencode' as const, providerVersion: '1.18.31', nativeSessionId: 'ses_test' }
-    await native.attachSession(session, { request: request(), correlationId: 'active', nativeTurnId: nativeMessageId('active') })
-    assert.equal(await native.cancel(session, undefined, nativeMessageId('active')), true)
-    assert.equal(server.calls.filter((call) => call.path.includes('/abort')).length, 1)
-    assert.equal(server.calls.filter((call) => call.path.includes('/prompt_async')).length, 0)
-  })
-
-  it('F09: targeted cancellation cannot abort a newer real user turn', async () => {
-    const { server, native } = openCodeFixture(true)
-    server.addSession('ses_test'); server.user('older'); server.user('newer')
-    server.statuses.set('ses_test', { type: 'busy' })
-    const session = { harness: 'opencode' as const, providerVersion: '1.18.31', nativeSessionId: 'ses_test' }
-    await native.attachSession(session, { request: request(), correlationId: 'older', nativeTurnId: nativeMessageId('older') })
-    assert.equal(await native.cancel(session, undefined, nativeMessageId('older')), false)
-    assert.equal(server.calls.filter((call) => call.path.includes('/abort')).length, 0)
-  })
-
-  it('F10: an exact provider event recovers a lost HTTP acknowledgement without another reply', async () => {
-    const { server, native } = openCodeFixture(); const session = await sessionFor(native)
-    server.permissions = [permission('request-1')]
-    const pending = (await native.pending(session))!
-    const option = pending.responseOptions.find((value) => value.semantic === 'approve_once')!
-    server.beforeRequest = (path) => {
-      if (!path.includes('/permission/request-1/reply')) return undefined
-      server.permissions = []
-      server.emit('permission.replied', { sessionID: 'ses_test', requestID: 'request-1', reply: 'once' })
-      throw new OpenCodeNativeDeliveryError('LOST_ACK', 'fixture response lost after acceptance', 'uncertain')
-    }
-    await native.respond(session, 'request-1', option)
-    const recovered = await native.reconcileResponse(session, { nativeRequestId: 'request-1', nativeRequestType: pending.nativeRequestType, option })
-    assert.equal(recovered.responseDeliveries?.[0]?.optionId, option.optionId)
-    assert.equal(server.calls.filter((call) => call.path.includes('/permission/request-1/reply')).length, 1)
-  })
-
-  it('F10: a saved native acknowledgement can repair failed caller persistence without a model-turn lookup', async () => {
-    const { server, native } = openCodeFixture(); const session = await sessionFor(native)
-    server.permissions = [permission('request-1')]
-    const pending = (await native.pending(session))!; const option = pending.responseOptions[0]!
-    await native.respond(session, 'request-1', option)
-    // The caller failed to commit its delivered marker. It now uses only response reconciliation.
-    const before = server.calls.length
-    const recovered = await native.reconcileResponse(session, { nativeRequestId: 'request-1', nativeRequestType: pending.nativeRequestType, option })
-    assert.equal(recovered.responseDeliveries?.length, 1)
-    assert(!server.calls.slice(before).some((call) => call.path.includes('/message/') || call.method === 'POST'))
-  })
-
-  it('F10: disappearance alone and mismatched choices never produce delivery evidence', async () => {
-    const { server, native } = openCodeFixture(); const session = await sessionFor(native)
-    server.permissions = [permission('request-1')]
-    const pending = (await native.pending(session))!; const option = pending.responseOptions[0]!
-    server.permissions = []
-    const unknown = await native.reconcileResponse(session, { nativeRequestId: 'request-1', nativeRequestType: pending.nativeRequestType, option })
-    assert.deepEqual(unknown.responseDeliveries, [])
-    assert.equal(server.calls.filter((call) => call.path.includes('/reply')).length, 0)
   })
 })

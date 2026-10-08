@@ -61,7 +61,7 @@ for (const field of ['session', 'configuration', 'closure', 'generation', 'token
   it(`still rejects replaced physical ${field}`, async () => {
     const f = fixture()
     if (field === 'session') f.records.session.reference.nativeSessionId = 'different-session'
-    if (field === 'configuration') f.records.configuration.harness = 'opencode'
+    if (field === 'configuration') f.records.configuration.harness = 'claude'
     if (field === 'closure') f.records.closure.closed = true
     if (field === 'generation') f.records.lane.generation = '2'
     if (field === 'token') f.records.lane.token = 'different-token'

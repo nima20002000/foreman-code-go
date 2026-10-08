@@ -17,7 +17,7 @@ function principal(update = true): ManagementPrincipal {
 }
 function fixture(identity = principal()) {
   const app = Fastify(); apps.push(app)
-  const inspect = vi.fn(async (harness: 'codex' | 'opencode') => ({ executable: '/fake/cli', identity: harness, version: '99.0.0' }))
+  const inspect = vi.fn(async (harness: 'codex') => ({ executable: '/fake/cli', identity: harness, version: '99.0.0' }))
   const service = new HarnessCompatibilityService({
     probe: { inspect, probe: async () => 'f'.repeat(64), assertUnchanged: async () => undefined },
     cache: { load: async () => null, save: async () => undefined },

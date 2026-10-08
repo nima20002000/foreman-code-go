@@ -131,7 +131,7 @@ export async function remoteReviewProduction(options: {
     const saved = await seedAgent3(db.pool, project, seed, { run: false })
     const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, PORT: String(await freePort()),
       HARNESS_WORKSPACE_ROOT: runtime, FILE_STORAGE_ROOT: join(directory, 'files'),
-      CODEX_BINARY: provider.binary, OPENCODE_BINARY: join(directory, 'missing-opencode'),
+      CODEX_BINARY: provider.binary,
       DATABASE_QUERY_TIMEOUT_MS: '10000', FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: '1' })
     config.workspaceStorageRoot = join(directory, 'projects')
     const checkpointSchema = `${db.schema}_checkpoints`

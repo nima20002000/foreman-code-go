@@ -76,8 +76,7 @@ describe('exact accepted Claude profile admission', () => {
   })
 })
 
-
-it.each(['codex', 'opencode'] as const)('admits the exact selected %s profile without manufacturing a Claude pin', async driver => {
+it.each(['codex'] as const)('admits the exact selected %s profile without manufacturing a Claude pin', async driver => {
   const { DEFAULT_HARNESS_DEFAULTS } = await import('@foreman-code/contracts')
   const f = fixture()
   const configuration = DEFAULT_HARNESS_DEFAULTS[driver]

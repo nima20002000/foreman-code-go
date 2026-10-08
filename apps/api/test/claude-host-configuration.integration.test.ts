@@ -58,7 +58,7 @@ it('discovers a saved Claude preset and configures and checks its host profile t
           diagnostics: [], environment, checkedAt: new Date().toISOString() },
       })),
     }
-    registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex', openCodeBinary: 'opencode' },
+    registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex',  },
       client => settings.getManagedHarnessDefaults(client), profiles, () => null, { PATH: '/recorded' }, discovery)
     await registry.initialize(mainId)
     const authority = { authorize: async (principal: ManagementPrincipal,
@@ -106,7 +106,7 @@ it('discovers a saved Claude preset and configures and checks its host profile t
       expect(response.statusCode).toBe(200)
       return HarnessRegistryReadbackSchema.parse(response.json())
     }
-    expect((await httpInventory()).instances.map(item => item.driverId)).toEqual(['codex', 'opencode'])
+    expect((await httpInventory()).instances.map(item => item.driverId)).toEqual(['codex'])
     const configuration: ClaudeHarnessConfiguration = {
       harness: 'claude', model: 'recorded-haiku', authMode: 'subscription', configDirectory: '/recorded/profile',
       permissionMode: 'default', sandbox: 'danger-full-access', tools: ['Write'],

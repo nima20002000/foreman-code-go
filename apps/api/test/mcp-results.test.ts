@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { TEXT_MIRROR_BYTES, toolFailure, toolResult } from '../src/mcp/shared/results.js'
+import { toolFailure, toolResult } from '../src/mcp/shared/results.js'
 import { DomainError } from '../src/modules/errors.js'
 
 describe('MCP result envelopes', () => {
@@ -13,18 +13,6 @@ describe('MCP result envelopes', () => {
     expect(toolResult(input)).toEqual({
       content: [{ type: 'text', text: JSON.stringify(expected) }], structuredContent: expected,
     })
-  })
-
-  it.each([TEXT_MIRROR_BYTES - 1, TEXT_MIRROR_BYTES, TEXT_MIRROR_BYTES + 1])(
-    'keeps %i-byte JSON readable through text or the OpenCode empty-content fallback', (bytes) => {
-    const value = { input: 'x'.repeat(bytes - JSON.stringify({ input: '' }).length) }
-    const result = toolResult(value)
-    expect(result.structuredContent).toBe(value)
-    if (bytes <= TEXT_MIRROR_BYTES) {
-      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(value) }])
-    } else {
-      expect(result.content).toEqual([])
-    }
   })
 
   it.each([undefined, { revision: 2 }])('preserves domain failures and optional details: %j', (details) => {

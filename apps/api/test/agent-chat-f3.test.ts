@@ -16,7 +16,6 @@ import { AgentChatService, type AgentChatManagerFactory } from '../src/modules/c
 import { agentChatKey, type AgentConversationRow, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import type { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { HarnessExecutionError, NativeDeliveryError } from '../src/modules/harnesses/errors.js'
-import { OpenCodeNativeDeliveryError } from '../src/modules/harnesses/opencodeServer.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
 
 // Isolated service regressions. SQL persistence and provider I/O are deliberately substituted here.
@@ -110,7 +109,7 @@ class NativeFixture implements NativeHarnessSessionManager {
   failure: Error | undefined
   failDispose = false
   disposals = 0
-  constructor(readonly harness: 'codex' | 'opencode') {}
+  readonly harness = 'codex' as const
   async capabilities() { return { provider: this.harness, providerVersion: 'fixture-only', persistentSessions: true, reconnect: true,
     sameRequestResponses: true, cancellation: true, history: true, configurationInspection: false, mcpDetection: false, supportedInteractionKinds: [] } }
   inspectMcp(): ReturnType<NativeHarnessSessionManager['inspectMcp']> { throw new Error('No MCP authority in this fixture') }
@@ -143,14 +142,13 @@ class NativeFixture implements NativeHarnessSessionManager {
   async dispose() { this.disposals++; if (this.failDispose) throw new Error('fixture disposal not proven') }
 }
 
-async function setup(options: { harness?: 'codex' | 'opencode'; ephemeral?: boolean; stored?: boolean; origin?: AgentChatOrigin; repeat?: boolean } = {}) {
+async function setup(options: { ephemeral?: boolean; stored?: boolean; origin?: AgentChatOrigin; repeat?: boolean } = {}) {
   const fixture = makeCurrentWorkflowFixture('f3', options.repeat ? 'repeat' : 'single')
   const configuration = structuredClone(fixture.configurations[0]!)
-  if (options.harness === 'opencode') configuration.harness = { harness: 'opencode', model: 'fixture/model', variant: '', nativeAgent: 'build', thinking: false, autoApprove: false }
-  else if (options.ephemeral && configuration.harness.harness === 'codex') {
+  if (options.ephemeral && configuration.harness.harness === 'codex') {
     configuration.harness.advanced = { ...structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION), sessionPersistence: 'ephemeral' }
   }
-  if (configuration.harness.harness === 'claude') throw new Error('F3 fixture supports only Codex and OpenCode')
+  if (configuration.harness.harness === 'claude') throw new Error('The fixture must select Codex.')
   const node = fixture.version.definition.nodes[0]!
   const context: AgentChatContext = { workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
     workflowNodeId: node.id, agentId: node.agentId }
@@ -169,7 +167,7 @@ async function setup(options: { harness?: 'codex' | 'opencode'; ephemeral?: bool
     created_at: new Date(fixture.createdAt), updated_at: new Date(fixture.createdAt) }
   const root = await mkdtemp(join(tmpdir(), 'agent-chat-f3-'))
   cleanups.push(() => rm(root, { recursive: true, force: true }))
-  const native = new NativeFixture(configuration.harness.harness)
+  const native = new NativeFixture()
   const owners = new Map<string, NativeFixture>()
   let allocations = 0, sourceReads = 0
   const factory: AgentChatManagerFactory = Object.assign((id: string) => { allocations++; owners.set(id, native); return native },
@@ -273,34 +271,6 @@ describe('F3 native availability and ownership', () => {
       }
     })
   }
-
-  for (const mode of ['attach', 'fork'] as const) {
-    it(`A-R13: top-level OpenCode session-not-found during ${mode} becomes unavailable without replacement`, async () => {
-      const f = await setup({ harness: 'opencode', stored: mode === 'attach', ...(mode === 'fork' ? { origin } : {}) })
-      f.native.failure = new OpenCodeNativeDeliveryError('OPENCODE_SESSION_NOT_FOUND', 'missing session', 'definite')
-      const turn = f.repository.begin()
-      await f.chat['runTurn'](f.repository.row!.id, turn)
-      assert.equal(turn.delivery, 'failed'); assert.equal(f.repository.abandonments, 0)
-      const state = await f.chat.readConversation(principal, f.context.workspaceId, f.repository.row!.id)
-      assert.equal(state.sessionState, 'unavailable'); assert.equal(state.availability.reason, 'native_session_missing')
-      assert.equal(state.capabilities.resume, false); assert.deepEqual(f.native.calls.map((call) => call.kind), [mode])
-      assert.equal(f.native.prompts.length, 0)
-    })
-  }
-  it('A-R13: transient OpenCode attach failure remains uncertain, not permanently missing', async () => {
-    const f = await setup({ harness: 'opencode', stored: true })
-    f.native.failure = new OpenCodeNativeDeliveryError('OPENCODE_SERVER_REQUEST_FAILED', 'temporary outage', 'uncertain')
-    const turn = f.repository.begin(); await f.chat['runTurn'](f.repository.row!.id, turn)
-    assert.equal(turn.delivery, 'unknown'); assert.equal(f.repository.unavailable.length, 0)
-    assert.equal(f.native.calls.length, 1); assert.equal(f.native.prompts.length, 0)
-  })
-  it('A-R13: recovery of a missing OpenCode session marks unavailable but cannot disprove earlier delivery', async () => {
-    const f = await setup({ harness: 'opencode', stored: true })
-    f.native.failure = new OpenCodeNativeDeliveryError('OPENCODE_SESSION_NOT_FOUND', 'missing session', 'definite')
-    const turn = f.repository.begin(); await f.chat.recover()
-    assert.equal(turn.delivery, 'unknown'); assert.equal(f.repository.unavailable[0]!.reason, 'native_session_missing')
-    assert.deepEqual(f.native.calls.map((call) => call.kind), ['attach'])
-  })
 
   it('A-R16: live ephemeral Codex continues twice; a cold owner exposes unavailable and never replaces it', async () => {
     const f = await setup({ ephemeral: true })

@@ -2,17 +2,19 @@ import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 
-export const br2001Providers = ['codex', 'opencode'] as const
+export const br2001Providers = ['codex', 'claude'] as const
 export type Br2001Provider = typeof br2001Providers[number]
 
 /** Synthetic immutable records only; no model, permission or rollout settings are written. */
 export function br2001Fixture(provider: Br2001Provider, suffix: string) {
   const fixture = makeCurrentWorkflowFixture(suffix)
-  if (provider === 'opencode') fixture.configurations = fixture.configurations.map((configuration) =>
+  if (provider === 'claude') fixture.configurations = fixture.configurations.map(configuration =>
     AgentConfigurationVersionSchema.parse({ ...configuration, harness: {
-      harness: 'opencode', model: 'synthetic-no-native-call', variant: '', nativeAgent: 'build',
-      thinking: false, autoApprove: false,
+      harness: 'claude', model: 'synthetic-model', authMode: 'subscription',
+      permissionMode: 'default', sandbox: 'danger-full-access', configDirectory: '/fixture/profile',
+      tools: [], permissionRules: [], instructions: '', mcpServers: {},
     } }))
+
   fixture.version = agentWorkflowVersion(ExecutableWorkflowV3Schema.parse({
     configurations: fixture.configurations,
     version: { ...fixture.version, definition: { ...fixture.version.definition,
@@ -36,10 +38,6 @@ export function br2001Text(outcome = 'pass', data: unknown = null): string {
   return JSON.stringify({ routing: { outcome }, data })
 }
 
-/** Exact successful carrier shape from the pinned adapters, NOT a native adapter
- * execution: codexAppServer.ts applyTurn (1232-1233); opencodeProtocol.ts
- * assistantResult (201-203). Never fabricate provider events or unwrap text here.
- */
 export function br2001Terminal(execution: HarnessExecution, provider: Br2001Provider, text: string) {
   const session = { harness: provider, providerVersion: 'synthetic-br2-001-no-native-call',
     nativeSessionId: `${provider}-${execution.id}` }

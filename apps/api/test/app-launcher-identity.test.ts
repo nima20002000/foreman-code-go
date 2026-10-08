@@ -100,7 +100,7 @@ describe('managed launcher installation identity', () => {
     expect(isManagedLauncherCommand([nodeA, launcher], launcher)).toBe(true)
   })
 
-  it.each(['codex', 'opencode'] as const)('retains %s command and authentication restrictions', (harness) => {
+  it.each(['codex'] as const)('retains %s command and authentication restrictions', (harness) => {
     const entry = harness === 'codex'
       ? { command: process.execPath, args: [appLauncherPath()], env_vars: [APP_MCP_TOKEN] }
       : { type: 'local', command: [process.execPath, appLauncherPath()], environment: { [APP_MCP_TOKEN]: `{env:${APP_MCP_TOKEN}}` } }

@@ -423,7 +423,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     expect(stale.isError).toBe(true)
     expect(JSON.stringify(stale)).toContain('OPERATOR_DEFAULTS_CHANGED')
     const mismatch = await inspect({ conversationId: conversation.id, configurationVersionId: original.configuration.id,
-      harness: 'opencode' })
+      harness: 'claude' })
     expect(mismatch.isError).toBe(true)
     expect(JSON.stringify(mismatch)).toContain('OPERATOR_CONFIGURATION_CONFLICT')
 

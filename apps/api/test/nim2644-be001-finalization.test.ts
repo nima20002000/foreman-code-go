@@ -92,7 +92,7 @@ it('BE-001 rejects changed execution, session, provider, configuration and path 
     (p: ClosedWorkflowSession) => { p.execution.workingDirectory = '/other' },
     (p: ClosedWorkflowSession) => { p.session.nativeSessionId = 'other-session' },
     (p: ClosedWorkflowSession) => { p.session.providerVersion = 'other-provider-version' },
-    (p: ClosedWorkflowSession) => { p.session.harness = 'opencode' },
+    (p: ClosedWorkflowSession) => { p.session.harness = 'claude' },
   ]) {
     const f = fixture(); change(f.proof())
     await assert.rejects(f.finalize(), /exact native closure/)

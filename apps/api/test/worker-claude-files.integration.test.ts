@@ -39,8 +39,7 @@ async function fixture(readOnly: boolean) {
     database: { connectionString: process.env.TEST_DATABASE_URL!, maxConnections: 4,
       connectionTimeoutMs: 2000, queryTimeoutMs: 5000 }, checkpoints: { schema: 'langgraph' },
     fileStorageRoot: join(db.directory, 'vault'), workspaceStorageRoot: join(db.directory, 'projects'),
-    harnesses: { workspaceRoot: join(db.directory, 'runtime'), codexBinary: 'recorded',
-      openCodeBinary: 'recorded', timeoutMs: 5000 } }
+    harnesses: { workspaceRoot: join(db.directory, 'runtime'), codexBinary: 'recorded', timeoutMs: 5000 } }
   await mkdir(config.harnesses.workspaceRoot)
   await mkdir(config.workspaceStorageRoot!)
   const storage = registerProductionFileStorage(app, db.pool, config)

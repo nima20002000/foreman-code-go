@@ -59,7 +59,7 @@ it.each([
         database: { connectionString: 'postgresql://graphql:graphql@127.0.0.1/graphql_test',
           maxConnections: 4, connectionTimeoutMs: 2_000, queryTimeoutMs: 5_000 }, checkpoints: { schema: 'langgraph' },
         fileStorageRoot: vault, workspaceStorageRoot: join(directory, 'workspaces'),
-        harnesses: { workspaceRoot: join(directory, 'runtime'), codexBinary: 'unused', openCodeBinary: 'unused', timeoutMs: 10_000 },
+        harnesses: { workspaceRoot: join(directory, 'runtime'), codexBinary: 'unused', timeoutMs: 10_000 },
       })
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
       const endpoint = `${address}/mcp`

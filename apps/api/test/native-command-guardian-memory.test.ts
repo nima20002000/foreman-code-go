@@ -21,7 +21,6 @@ vi.mock('../src/modules/harnesses/recovery/cgroupBoundary.js', () => ({
 }))
 vi.mock('../src/modules/harnesses/qualification/gate.js', () => ({ requireHarnessQualification: seams.qualify }))
 
-import { ManagedOpenCodeServer } from '../src/modules/harnesses/opencodeTransport.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
 import { NATIVE_GUARDIAN_SOURCE } from '../src/modules/harnesses/recovery/nativeGuardian.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
@@ -54,7 +53,7 @@ function fixture(outcome: 0 | 7 | 'missing' | 'stale') {
           id: recovery.launchId, owner: recovery.owner, boot: '22222222-2222-2222-2222-222222222222',
           guardian: { pid: 501, startTicks: outcome === 'stale' ? '101' : '100' },
           nativePid: 902, exitCode: typeof outcome === 'number' ? outcome : 0, exitSignal: null })
-        wrapper.stdout.end('1.18.31\n'); wrapper.stderr.end()
+        wrapper.stdout.end('codex-cli 0.154.0\n'); wrapper.stderr.end()
         callback()
         wrapper.signalCode = 'SIGKILL'
         wrapper.emit('exit', null, 'SIGKILL')
@@ -68,11 +67,11 @@ function fixture(outcome: 0 | 7 | 'missing' | 'stale') {
   return { root, registry, recovery, wrapper }
 }
 
-describe('combined command outcome and OpenCode version gate', () => {
+describe('combined native command outcome and cleanup', () => {
   for (const code of [0, 7] as const) it(`returns native ${code} through the actual reader after positive cleanup`, async () => {
     const f = fixture(code)
-    const result = await runCommand('mock-opencode', ['--version'], f.root, undefined, undefined, { recovery: f.recovery })
-    expect(result).toMatchObject({ exitCode: code, stdout: '1.18.31\n', stderr: '' })
+    const result = await runCommand('mock-codex', ['--version'], f.root, undefined, undefined, { recovery: f.recovery })
+    expect(result).toMatchObject({ exitCode: code, stdout: 'codex-cli 0.154.0\n', stderr: '' })
     expect(f.wrapper.signalCode).toBe('SIGKILL')
     expect(seams.spawn.mock.calls[0]?.slice(0, 2)).toEqual([process.execPath, ['-e', NATIVE_GUARDIAN_SOURCE]])
     expect(seams.populated).toHaveBeenCalled()
@@ -83,28 +82,11 @@ describe('combined command outcome and OpenCode version gate', () => {
   it('does not return a valid native success when containment closure fails', async () => {
     const f = fixture(0)
     seams.populated.mockImplementation(() => { throw new Error('containment closure unavailable') })
-    await expect(runCommand('mock-opencode', ['--version'], f.root, undefined, undefined, { recovery: f.recovery }))
+    await expect(runCommand('mock-codex', ['--version'], f.root, undefined, undefined, { recovery: f.recovery }))
       .rejects.toThrow('containment closure unavailable')
     expect(seams.retire).not.toHaveBeenCalled()
     seams.populated.mockReturnValue(false)
     expect(await f.registry.closeOwner(f.recovery.owner)).toBe(true)
   })
 
-  for (const outcome of [0, 7, 'missing', 'stale'] as const) it(`keeps the actual managed version gate strict for ${outcome}`, async () => {
-    const f = fixture(outcome)
-    // Stop at the qualification boundary rather than fabricate qualification or
-    // dispatch a resident provider. Reaching it proves the actual version gate.
-    seams.qualify.mockRejectedValue(new Error('qualification boundary reached'))
-    const server = new ManagedOpenCodeServer({ binary: 'mock-opencode', workingDirectory: f.root,
-      ownerAgentId: 'version-owner', processRecovery: f.recovery })
-    try {
-      await expect(server.ensure()).rejects.toThrow(outcome === 0 ? 'qualification boundary reached'
-        : outcome === 'stale' ? 'Invalid native exit receipt' : 'installed OpenCode version could not be read')
-      if (outcome === 0) expect(seams.qualify).toHaveBeenCalledExactlyOnceWith('opencode', '1.18.31', 'mock-opencode')
-      else expect(seams.qualify).not.toHaveBeenCalled()
-      expect(seams.spawn).toHaveBeenCalledOnce()
-      expect(seams.retire).toHaveBeenCalledOnce()
-      expect(await f.registry.closeOwner(f.recovery.owner)).toBe(true)
-    } finally { await server.dispose() }
-  })
 })

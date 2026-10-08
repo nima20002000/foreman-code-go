@@ -17,11 +17,6 @@ const tool = (id: string, position: number | string, type = 'commandExecution', 
 const step = (events: readonly ProjectionEvent[], owner = binding) => events.reduce<NativeProjectionState | undefined>(
   (state, observation) => projectNativeEvidence(state, owner, observation).state, undefined)!
 const view = (events: readonly ProjectionEvent[], owner = binding) => nativeProjectionActivity(step(events, owner), owner)
-const opencode = { ...binding, provider: 'opencode' as const }
-const metadata = (position: number, parent = 'turn-a', id = 'message-a') => event('message.updated', position,
-  { info: { id, parentID: parent, sessionID: 'session-a', role: 'assistant' } })
-const part = (position: number, status = 'running', id = 'part-a') => event('message.part.updated', position,
-  { part: { id, messageID: 'message-a', sessionID: 'session-a', type: 'tool', tool: 'read', state: { status } } })
 
 function legacy(events: readonly ProjectionEvent[], reviewState?: 'leased' | 'submitted') {
   const now = '2026-09-21T00:00:00.000Z'
@@ -59,21 +54,6 @@ export const nativeProjectionCases: { name: string; run: () => void }[] = [
     assert.equal(view(events).action, 'reading_file')
     assert.equal(view(events).action, legacy(events).action?.kind)
   } },
-  { name: 'OpenCode late identity matches the history oracle without replay', run: () => {
-    assert.equal(view([part(1)], opencode).status, 'unknown')
-    const events = [part(1), metadata(2)]
-    assert.equal(view(events, opencode).action, legacy(events).action?.kind)
-    assert.equal(view(events, opencode).acknowledgementId, 'source-1')
-  } },
-  { name: 'metadata-first and part-first produce equivalent native work', run: () => {
-    assert.equal(view([metadata(1), part(2)], opencode).action, view([part(1), metadata(2)], opencode).action)
-  } },
-  { name: 'identity metadata without actual work never acknowledges a turn', run: () => {
-    assert.equal(view([metadata(1)], opencode).status, 'unknown')
-  } },
-  { name: 'conflicting late assistant parent identities fail uncertain', run: () => {
-    assert.equal(view([metadata(1), part(2), metadata(3, 'other-turn')], opencode).status, 'unknown')
-  } },
   { name: 'completed-before-start is a permanent item tombstone', run: () => {
     const result = view([event('item.completed', 9, { item: { id: 'read-a', type: 'commandExecution' } }), tool('read-a', 1), tool('read-a', 20)])
     assert.equal(result.status, 'unknown')
@@ -88,7 +68,7 @@ export const nativeProjectionCases: { name: string; run: () => void }[] = [
     assert.equal(result.disposition, 'ignored'); assert.deepEqual(result.state, state)
   } },
   { name: 'keepalive, ping, health, transport-open and token prose never become progress', run: () => {
-    for (const type of ['ping', 'keepalive', 'transport.open', 'session.status', 'message.part.delta', 'item.agentMessage.delta']) {
+    for (const type of ['ping', 'keepalive', 'transport.open', 'item.agentMessage.delta']) {
       const result = projectNativeEvidence(undefined, binding, event(type, 1, { text: 'Successfully completed everything' }))
       assert.equal(result.activity.status, 'unknown'); assert.equal(result.disposition, 'ignored')
     }
@@ -112,10 +92,10 @@ export const nativeProjectionCases: { name: string; run: () => void }[] = [
     const result = projectNativeEvidence(state, current, tool('write-b', 2, 'fileChange'))
     assert.equal(result.disposition, 'ignored'); assert.equal(result.reason, 'generation')
   } },
-  { name: 'a new generation needs its own native evidence, not old metadata', run: () => {
-    const old = step([metadata(1), part(2)], opencode)
-    const next = projectNativeEvidence(old, { ...opencode, connectionGeneration: '2' },
-      { ...metadata(3), connectionGeneration: '2' })
+  { name: 'a new generation needs its own native evidence', run: () => {
+    const old = step([tool('read-a', 1)])
+    const next = projectNativeEvidence(old, { ...binding, connectionGeneration: '2' },
+      { ...event('item.agentMessage.delta', 3, { text: 'Working' }), connectionGeneration: '2' })
     assert.equal(next.activity.status, 'unknown')
   } },
   { name: 'session and host mismatches cannot reuse acknowledgement', run: () => {
@@ -123,8 +103,9 @@ export const nativeProjectionCases: { name: string; run: () => void }[] = [
     const wrong = { ...binding, nativeSessionId: 'other-session' }
     const result = projectNativeEvidence(state, wrong, tool('read-b', 2))
     assert.equal(result.disposition, 'rejected'); assert.equal(result.activity.status, 'unknown')
-    const hostile = metadata(2); (hostile.payload.info as Record<string, unknown>).sessionID = 'other-session'
-    assert.equal(projectNativeEvidence(undefined, opencode, hostile).reason, 'identity')
+    const hostile = tool('read-b', 2)
+    hostile.payload.threadId = 'other-session'
+    assert.equal(projectNativeEvidence(undefined, binding, hostile).reason, 'identity')
   } },
   { name: 'a pinned turn cannot be privately rebound', run: () => {
     assert.equal(projectNativeEvidence(step([tool('read-a', 1)]), { ...binding, nativeTurnId: 'other-turn' }, tool('read-b', 2)).disposition, 'rejected')

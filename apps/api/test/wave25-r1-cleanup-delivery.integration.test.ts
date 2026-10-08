@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { currentRepositoryFixture } from './helpers/wave25CurrentRepository.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 
 const closes: Array<() => Promise<void>> = []
 afterEach(async () => { while (closes.length) await closes.pop()!(); vi.restoreAllMocks() })
@@ -28,7 +28,7 @@ describe.skipIf(!postgresEnabled)('BR1-005/006: current PostgreSQL cleanup and d
     const owner = await f.runs.acquireOwnership(f.f.run.id, () => undefined)
     if (!owner) throw new Error('Expected Run owner')
     try { await f.runs.requestCleanup(f.f.run.id, owner) } finally { await owner.release() }
-    await expect(f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(f.interaction))).rejects.toBeDefined()
+    await expect(f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(f.interaction))).rejects.toBeDefined()
     await f.engine.cancel(f.f.run.id)
     expect((await f.repository.get(f.interaction.id))?.status).toBe('canceled')
     expect((await f.runs.get(f.f.run.id))?.outcome).toBe('failed')
@@ -59,7 +59,7 @@ describe.skipIf(!postgresEnabled)('BR1-005/006: current PostgreSQL cleanup and d
   it('Stop commits independently while the actual provider response remains unresolved', async () => {
     const f = await fixture(), entered = deferred(), release = deferred()
     f.provider.beforeRespond = async () => { entered.resolve(); await release.promise }
-    const operation = f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(f.interaction))
+    const operation = f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(f.interaction))
     const observed = operation.then((value) => ({ value }), (error: unknown) => ({ error }))
     try {
       await within(entered.promise)
@@ -75,7 +75,7 @@ describe.skipIf(!postgresEnabled)('BR1-005/006: current PostgreSQL cleanup and d
   it('a changed native generation cannot consume the old provider response', async () => {
     const f = await fixture(), entered = deferred(), release = deferred()
     f.provider.beforeRespond = async () => { entered.resolve(); await release.promise }
-    const operation = f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(f.interaction))
+    const operation = f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(f.interaction))
     const observed = operation.then(() => undefined, (error: unknown) => error)
     try {
       await within(entered.promise)

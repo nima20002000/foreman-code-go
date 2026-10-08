@@ -11,8 +11,7 @@ it('recognizes direct executable payloads without executing arbitrary launcher s
     const shim = join(root, 'shim')
     await writeFile(image, Buffer.from('7f454c46', 'hex'))
     await writeFile(shim, '#!/bin/sh\nexit 99\n')
-    expect(await passiveDriverPayloads('opencode', image)).toEqual({ complete: true, paths: [] })
-    expect(await passiveDriverPayloads('opencode', shim)).toEqual({ complete: false, paths: [] })
+    expect(await passiveDriverPayloads('codex', image)).toEqual({ complete: true, paths: [] })
     expect(await passiveDriverPayloads('codex', shim)).toEqual({ complete: false, paths: [] })
   } finally { await rm(root, { recursive: true, force: true }) }
 })

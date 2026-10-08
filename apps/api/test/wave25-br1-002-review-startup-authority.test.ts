@@ -1,10 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture, AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { candidateFor } from './helpers/wave25Agent3.js'
 import type { GraphSqlClient } from '../src/modules/run-graph/connection.js'
 import { assertOrchestratorGraphAuthority } from '../src/modules/interactions/graphAuthority.js'
-import { advanced, configuration } from './opencode-fixtures.js'
 
 type AuthorityRequest = Parameters<typeof assertOrchestratorGraphAuthority>[1]
 
@@ -17,13 +16,11 @@ function authorityFixture() {
   const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: entry.agentId }
   const configurations = f.configurations.map((c) => AgentConfigurationVersionSchema.parse({
     ...c, productRole: c.agentId === entry.agentId ? 'orchestrator' : 'coder',
-    harness: c.agentId === entry.agentId ? { ...configuration(), advanced: {
-      ...advanced(), permissionRules: [
-        { permission: '*', pattern: '*', effect: 'deny' },
-        { permission: 'graphql_interaction_get', pattern: '*', effect: 'allow' },
-        { permission: 'graphql_interaction_respond', pattern: '*', effect: 'allow' },
-      ],
-    } } : configuration(),
+    harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, advanced: {
+      ...DEFAULT_HARNESS_DEFAULTS.codex.advanced!,
+      approvalsReviewer: c.agentId === entry.agentId ? 'auto_review' : 'user',
+      approvalPolicy: 'on-request',
+    } },
   }))
   const relationshipId = `approval-${worker.id}`
   const version = ExecutableWorkflowV3Schema.parse({ configurations, version: {
@@ -39,7 +36,7 @@ function authorityFixture() {
   const client = { query } as unknown as GraphSqlClient
   const request: AuthorityRequest = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
     executionId: execution.id, requestingAgentId: execution.agentId, approval,
-    nativeSessionId: execution.nativeSessionId!, harness: 'opencode' }
+    nativeSessionId: execution.nativeSessionId!, harness: 'codex' }
   return { client, query, request, relationshipId, entry, worker }
 }
 
@@ -74,9 +71,4 @@ describe('BR1-002 reviewer startup: native authority is not optional for V3', ()
       .rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED', status: 403 })
   })
 
-  it('rejects another harness rather than reinterpreting the pinned OpenCode configuration', async () => {
-    const f = authorityFixture()
-    await expect(assertOrchestratorGraphAuthority(f.client, { ...f.request, harness: 'codex' }))
-      .rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED', status: 403 })
-  })
 })

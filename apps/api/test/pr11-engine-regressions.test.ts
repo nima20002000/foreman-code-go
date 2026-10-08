@@ -29,7 +29,7 @@ async function createFixture(placement?: AcceptedNodePlacement) {
     id: 'config-1', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
     prompt: { system: 'Test' }, assignedSkills: [],
     // Explicit native handling: no inferred authority and no routed reviewer.
-    harness: { harness: 'opencode', model: 'opencode-go/deepseek-v4.1-flash', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: false },
+    harness: { harness: 'codex', model: 'test-model', reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' },
     contentHash: 'sha256:fixture', createdAt: now,
   }
   const run = {
@@ -49,10 +49,10 @@ async function createFixture(placement?: AcceptedNodePlacement) {
   let expiresIn = 60_000, creates = 0, starts = 0, cancels = 0, disposals = 0
   let native: (signal: AbortSignal) => Promise<ExecutionResult> = async () => ({ outcome: 'succeeded', output: { text: `done ${secret}` } })
   let terminal: ExecutionResult | undefined, correlation: string | undefined
-  const session: NativeSessionReference = { harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: 'native-exact' }
+  const session: NativeSessionReference = { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'native-exact' }
   const manager: NativeHarnessSessionManager = {
-    harness: 'opencode',
-    capabilities: async () => ({ provider: 'opencode', providerVersion: '1.18.31', persistentSessions: true, reconnect: true,
+    harness: 'codex',
+    capabilities: async () => ({ provider: 'codex', providerVersion: '0.154.0', persistentSessions: true, reconnect: true,
       sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true,
       mcpDetection: true, supportedInteractionKinds: ['approval'] }),
     inspectMcp: async () => { throw new Error('Not part of this fixture') },
@@ -192,7 +192,7 @@ describe('native launch, outcome and credential lifecycle', () => {
     const f = await createFixture({ hostRef: { kind: 'main' } } as AcceptedNodePlacement)
     let observed = false
     f.onPublished(async execution => {
-      const lane = await f.coordination.getLane('opencode', execution.nativeSessionId!)
+      const lane = await f.coordination.getLane('codex', execution.nativeSessionId!)
       assert.equal(lane?.correlationId, `execution:${execution.id}`)
       assert.ok(lane?.leaseToken)
       assert.equal(f.counters().starts, 0)

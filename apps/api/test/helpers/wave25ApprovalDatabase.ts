@@ -1,13 +1,11 @@
 import { vi } from 'vitest'
-import { object } from '../../src/modules/harnesses/opencodeProtocol.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
-import { br1002OpenCodeRuntime } from './wave25Br1002OpenCodeRuntime.js'
+import { codexApprovalRuntime } from './codexApprovalRuntime.js'
 import { deferred } from './wave25Agent3.js'
 
-/** Current typed Save/Start and real OpenCode adapter capture. Only external
- * HTTP/SSE transport and filesystem qualification are deterministic fixtures. */
-export async function approvalDatabase(options: { permissionPatterns?: string[] } = {}) {
-  const runtime = await br1002OpenCodeRuntime('orchestrator', options)
+/** Shared Save/Start and Codex adapter capture with replayed provider IO. */
+export async function approvalDatabase(options: { command?: string } = {}) {
+  const runtime = await codexApprovalRuntime('orchestrator', options)
   const reconcile = vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
   const live = deferred<void>(), release = deferred<void>()
   const issuance = vi.spyOn(runtime.credentials, 'issueForReviewer')
@@ -15,7 +13,8 @@ export async function approvalDatabase(options: { permissionPatterns?: string[] 
   const append = runtime.repository.coordination.appendReviewNativeEvent.bind(runtime.repository.coordination)
   const capture = vi.spyOn(runtime.repository.coordination, 'appendReviewNativeEvent').mockImplementation(async (...args) => {
     await append(...args)
-    if (args[2]?.live && !args[1].connectionId?.startsWith('history-') && args[1].type === 'message.updated' && object(args[1].payload.info).role === 'user') {
+    if (args[2]?.live && args[1].type === 'turn.started'
+      && args[1].payload.turnId === args[0].providerTurnOrMessageId) {
       live.resolve(); await release.promise
     }
   })
@@ -47,9 +46,10 @@ export async function approvalDatabase(options: { permissionPatterns?: string[] 
       commands: new PostgresCommandCoordinator(runtime.db.pool),
       version: runtime.f.version, run: runtime.f.run, scope: runtime.f.scope,
       async settle() {
-        const server = runtime.servers.get(reviewer.id)!
-        server.finishFromHistory(job.correlationId, job.nativeSessionId)
-        server.emit('session.idle', { sessionID: job.nativeSessionId }); release.resolve(); await dispatch
+        const provider = runtime.providers.get(reviewer.id)!
+        provider.completeReview(job.correlationId, job.nativeSessionId)
+        release.resolve()
+        await dispatch
       },
     }
   } catch (error) { await close(); throw error }

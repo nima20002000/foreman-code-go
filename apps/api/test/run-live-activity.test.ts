@@ -75,27 +75,21 @@ describe('safe structured native actions', () => {
     assert.equal(codex('interaction_respond'), 'responding_approval')
     assert.equal(codex('workspace_folder_create'), 'creating_folder')
     assert.equal(codex('workflow_list'), 'using_operator_mcp')
-    const opencode = (tool: string) => nativeAction('message.part.updated', { part: { id: 'p', type: 'tool', tool, state: { status: 'running' } } })?.kind
-    assert.equal(opencode('graphql_context_get'), 'using_app_mcp')
-    assert.equal(opencode('graphql_workflow_list'), 'using_operator_mcp')
   })
   it('does not call an undecided response an approval', () => assert.equal(nativeAction('item.started', {
     item: { id: 'i', type: 'mcpToolCall', server: 'graphql-app', tool: 'interaction_respond', arguments: { optionId: 'opaque' } },
   })?.kind, 'responding_approval'))
-  it('supports both normalized OpenCode MCP prefixes', () => {
-    for (const tool of ['graphql_interaction_get', 'graphql_app_interaction_get', 'foreman-code_interaction_get', 'foreman_code_interaction_get']) {
-      assert.equal(nativeAction('message.part.updated', { part: { id: 'p', type: 'tool', tool, state: { status: 'running' } } })?.kind, 'using_app_mcp')
-    }
-  })
+
   it('ignores missing identities, unqualified snapshots and model text', () => {
     assert.equal(nativeAction('item.started', { item: { type: 'fileChange' } }), undefined)
     assert.equal(nativeAction('item.snapshot', { item: { id: 'p', type: 'fileChange' } }), undefined)
-    assert.equal(nativeAction('message.part.updated', { part: { id: 'p', type: 'text', text: 'Reading file…' } }), undefined)
-    assert.equal(nativeAction('message.part.updated', { part: { id: 'p', type: 'tool', tool: 'read', state: { title: 'Working' } } }), undefined)
+    assert.equal(nativeAction('item.started', { item: { id: 'p', type: 'agentMessage', text: 'Reading file…' } }), undefined)
+    assert.equal(nativeAction('item.snapshot', { item: { id: 'p', type: 'commandExecution', commandActions: [{ type: 'read' }], title: 'Working' } }), undefined)
   })
   it('never includes tool arguments, paths, output or hostile titles in a label', () => {
-    const value = nativeAction('message.part.updated', { part: { id: 'p', type: 'tool', tool: 'read',
-      state: { status: 'running', title: 'sk-super-secret', input: { path: '/secret/.env' }, output: 'password=private' } } })!
+    const value = nativeAction('item.started', { item: { id: 'p', type: 'commandExecution',
+      commandActions: [{ type: 'read' }], status: 'inProgress', title: 'sk-super-secret',
+      input: { path: '/secret/.env' }, aggregatedOutput: 'password=private' } })!
     assert.equal(nodeAction(value.kind).label, 'Reading file…')
     for (const name of ['token abc', 'sk-super-secret', '/private/path', 'Luna\u202eexe', 'a'.repeat(65)]) assert.equal(safeNodeName(name), undefined)
     assert.equal(nodeAction('waiting_approval', 'token abc').label, 'Waiting for approval…')
@@ -211,25 +205,7 @@ describe('one event-backed per-node live projection', () => {
     })]
     assert.equal(node(events).action, null)
   })
-  it('binds OpenCode parts to an assistant message in the exact owned session', () => {
-    const events = [state(1, 'worker', 'running'), native(2, 'worker', 'message.updated', {
-      info: { id: 'message', parentID: 'worker-turn', sessionID: 'session-worker', role: 'assistant' },
-    }), native(3, 'worker', 'message.part.updated', {
-      part: { id: 'part', messageID: 'message', type: 'tool', tool: 'read', state: { status: 'running' } },
-    })]
-    assert.equal(node(events).action?.kind, 'reading_file')
-    const wrong = structuredClone(events)
-    wrong[1]!.native!.payload.info = { id: 'message', parentID: 'worker-turn', sessionID: 'child-session', role: 'assistant' }
-    assert.equal(node(wrong).action, null)
-  })
-  it('supports OpenCode metadata that commits after its part', () => {
-    const events = [state(1, 'worker', 'running'), native(2, 'worker', 'message.part.updated', {
-      part: { id: 'part', messageID: 'message', type: 'tool', tool: 'write', state: { status: 'running' } },
-    }), native(3, 'worker', 'message.updated', {
-      info: { id: 'message', parentID: 'worker-turn', sessionID: 'session-worker', role: 'assistant' },
-    })]
-    assert.equal(node(events).action?.kind, 'writing_file')
-  })
+
   it('does not let a queued review override a simultaneous active review', () => {
     const two = [...reviews, { executionId: 'exec-review', job: { id: 'job2', reviewerAgentId: 'orchestrator', interactionId: 'ask2' } }]
     const value = project([...handoff(), review(5, 'pending', 'job2')], { reviews: two })

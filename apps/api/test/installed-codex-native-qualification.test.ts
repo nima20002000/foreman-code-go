@@ -10,7 +10,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { inspectInstalledCodex } from '../src/modules/harnesses/installedCodexInspection.js'
 import { createInstalledNativeQualifier, CODEX_COMPLETED_QUALIFICATION_CHECKS, completedNativeQualificationChecks } from '../src/modules/harnesses/installedNativeQualification.js'
-import { inspectInstalledOpenCode } from '../src/modules/harnesses/installedOpenCodeInspection.js'
+
 import { createInstalledNativeQualificationRetention } from '../src/modules/harnesses/installedNativeQualificationRetention.js'
 import { requireHarnessQualification } from '../src/modules/harnesses/qualification/gate.js'
 import { runWithReadOnlyQualification } from '../src/modules/harnesses/qualification/gate.js'
@@ -26,18 +26,18 @@ import type { QualificationSuite } from '../src/modules/harnesses/qualification/
 
 /** Genuine gate/ownership/profile/transaction code with model-free native port
  * fixtures. No binary is executed and no PostgreSQL connection is opened. */
-async function fixture(harness: 'codex' | 'opencode' = 'codex') {
+async function fixture(harness: 'codex' = 'codex') {
   const version = harness === 'codex' ? '0.132.0' : '1.18.33'
   const directory = await mkdtemp(join(tmpdir(), 'remote-qualification-'))
   const binary = join(directory, 'codex'), path = join(directory, 'selection.json')
   await writeFile(binary, Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.from('fixture-native-image')]), { mode: 0o700 })
   await writeFile(path, JSON.stringify({ schemaVersion: 1, codexBinary: binary, expectedVersion: '0.132.0',
     appMcpLauncher: '/installed/app-mcp-launcher', payloadPaths: [],
-    ...(harness === 'opencode' ? { opencode: { binary, expectedVersion: version, payloadPaths: [] } } : {}) }), { mode: 0o600 })
+    ...({}) }), { mode: 0o600 })
   const binding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
     connectionEpoch: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
   let current = binding
-  const inspect = async (_binding: typeof binding, signal: AbortSignal) => (harness === 'codex' ? inspectInstalledCodex : inspectInstalledOpenCode)({ binding: _binding,
+  const inspect = async (_binding: typeof binding, signal: AbortSignal) => (inspectInstalledCodex)({ binding: _binding,
     configuration: { path, ownerUid: process.getuid!() }, environment: { PATH: '/usr/bin' }, cwd: directory, signal })
   const installation = (await inspect(binding, new AbortController().signal)).currentTarget!
   const configuration = DEFAULT_HARNESS_DEFAULTS[harness]
@@ -68,25 +68,7 @@ async function fixture(harness: 'codex' | 'opencode' = 'codex') {
 async function release(f: Awaited<ReturnType<typeof fixture>>) { await f.qualifier.close(); await rm(f.directory, { recursive: true, force: true }) }
 
 describe('explicit actual-suite worker qualification adapter', () => {
-  it('keeps OpenCode candidate admission and retained proof on its selected installed bytes and host', async () => {
-    const f = await fixture('opencode')
-    try {
-      const proof = await f.qualifier.qualify(f.value, { checkId: f.checkId, signal: new AbortController().signal })
-      expect(proof).toMatchObject({ driverId: 'opencode', suiteRevision: 'opencode-profile-check-v1',
-        completedNativeQualification: { record: { harness: 'opencode', version: '1.18.33', status: 'qualified' } } })
-      const save = vi.fn(async () => {})
-      const retention = createInstalledNativeQualificationRetention({ repository: { save }, suiteRevision: 'codex-live-4+identity-v1',
-        opencodeSuiteRevision: 'opencode-live-4+identity-v1', currentBinding: () => f.binding,
-        currentInstallation: () => f.installation.installation, refreshInstallation: async () => {} })
-      const fence = await retention.retain({} as pg.PoolClient, f.value, proof, f.checkId, new AbortController().signal)
-      await fence()
-      expect(save).toHaveBeenCalledOnce()
-      await expect(retention.retain({} as pg.PoolClient, f.value, { ...proof,
-        completedNativeQualification: { ...proof.completedNativeQualification!, record: {
-          ...proof.completedNativeQualification!.record, harness: 'codex' } } }, f.checkId, new AbortController().signal))
-        .rejects.toMatchObject({ code: 'HARNESS_PROFILE_EVIDENCE_MISMATCH' })
-    } finally { await release(f) }
-  })
+
   it('keeps Worker execution denied until completed native qualification is retained by Main', async () => {
     const f = await fixture()
     const reader = new HarnessQualificationRegistry({ list: async () => [], find: async () => null },

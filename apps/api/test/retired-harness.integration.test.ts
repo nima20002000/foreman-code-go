@@ -48,7 +48,8 @@ it('rejects OpenCode creation through authenticated HTTP and MCP without persist
       expiresAt: new Date(Date.now() + 600_000),
       grants: [{ actions: ['agents:read', 'harnesses:read'], scope: { workspaceIds: [workspaceId] } }] })
     const readClient = await f.connect(reader.token)
-    await expectMcpAccessDenied(readClient.callTool({ name: 'agent_create', arguments: input }))
+    await expectMcpAccessDenied(readClient.callTool({ name: 'agent_create',
+      arguments: { ...input, configuration: DEFAULT_HARNESS_DEFAULTS.codex } }))
     const denied = await f.app.inject({ method: 'POST',
       url: `/api/management/workspaces/${workspaceId}/agents`,
       headers: { authorization: `Bearer ${reader.token}` },

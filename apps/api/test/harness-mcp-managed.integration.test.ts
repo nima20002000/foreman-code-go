@@ -22,9 +22,9 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
   await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const endpoint = 'http://127.0.0.1:3000/mcp'
-  const snapshots = Object.fromEntries((['codex', 'opencode'] as const).map((harness) => [harness,
-    { harness, revision: fingerprint({}), effective: {}, user: {}, userConfig: {}, file: '/tmp/config', version: '1' }])) as Record<'codex' | 'opencode', NativeMcpSnapshot>
-  const adapter = (harness: 'codex' | 'opencode'): NativeMcpAdapter => ({
+  const snapshots = Object.fromEntries((['codex'] as const).map((harness) => [harness,
+    { harness, revision: fingerprint({}), effective: {}, user: {}, userConfig: {}, file: '/tmp/config', version: '1' }])) as Record<'codex', NativeMcpSnapshot>
+  const adapter = (harness: 'codex'): NativeMcpAdapter => ({
     read: async () => structuredClone(snapshots[harness]),
     apply: async (snapshot, change, _signal, managed) => {
       const user = applyMcpEdits(snapshot.user, mcpEdits(snapshot, change, managed))
@@ -32,7 +32,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
         credentialReferences: user['foreman-code'] ? { 'foreman-code': 'FOREMAN_CODE_MCP_TOKEN' } : {} }
     },
   })
-  const adapters = { codex: adapter('codex'), opencode: adapter('opencode') }
+  const adapters = { codex: adapter('codex') }
   const access = new PostgresAccessService(pool)
   const commands = new PostgresCommandCoordinator(pool)
   const mcp = new HarnessMcpSettingsService(pool, commands, adapters, () => {}, async () => {}, endpoint)
@@ -60,9 +60,9 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     const deniedRequest = await denied.callTool({ name: 'harness_mcp_managed_request', arguments: {} })
     expect(deniedRequest.isError).toBe(true)
     expect(JSON.stringify(deniedRequest.content)).toContain('ACCESS_DENIED')
-    const listed = async (harness: 'codex' | 'opencode') => HarnessMcpListResultSchema.parse(
+    const listed = async (harness: 'codex') => HarnessMcpListResultSchema.parse(
       (await client.callTool({ name: 'harness_mcp_servers_list', arguments: { harness } })).structuredContent)
-    for (const harness of ['codex', 'opencode'] as const) {
+    for (const harness of ['codex'] as const) {
       for (const preset of ['graphql', 'linear'] as const) {
         const before = await listed(harness)
         expect(before.presets?.[preset]).toBe('missing')

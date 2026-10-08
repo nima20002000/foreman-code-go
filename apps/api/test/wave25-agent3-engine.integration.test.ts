@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RepeatGraphBatchV3Schema, reduceRepeatGraphPageV3 } from '@foreman-code/contracts/wave25'
 import { readRepeatGraphPage, readRepeatGraphSnapshot } from '../src/modules/run-graph/repeatReader.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { DomainError } from '../src/modules/errors.js'
 import { REPEAT_NATIVE_PENDING_MESSAGE, isSettlementPendingCheckpointError } from '../src/modules/interactions/repeatNativeEvidence.js'
@@ -19,7 +19,7 @@ describe.skipIf(!postgresEnabled)('Current production engine provider wiring', (
       await t.engine.start(t.f.run.id)
       expect((await t.runs.get(t.f.run.id))?.executionState).toBe('waiting')
       const pending = await t.pending(); expect(pending).toHaveLength(branches)
-      for (const interaction of pending) await t.service.respond({ kind: 'user', principal: t.principal }, br1002Response(interaction))
+      for (const interaction of pending) await t.service.respond({ kind: 'user', principal: t.principal }, approvalResponse(interaction))
       await expect.poll(async () => (await t.runs.get(t.f.run.id))?.outcome).toBe('succeeded')
       expect(t.provider.counts).toMatchObject({ sessions: branches + 1, starts: branches + 1, responses: branches })
       const effects = await t.db.pool.query<{ effect_kind: string; count: string }>(
@@ -57,7 +57,7 @@ describe.skipIf(!postgresEnabled)('Current production engine provider wiring', (
           return settle.call(this, id)
         })
       releaseSettlement = () => obstruction.mockRestore()
-      await t.service.respond({ kind: 'user', principal: t.principal }, br1002Response(first))
+      await t.service.respond({ kind: 'user', principal: t.principal }, approvalResponse(first))
       expect((await t.runs.getExecution(first.executionId))?.state).toBe('completed')
       const checkpoint = await readWorkflowCheckpoint(t.f.run.id, t.f.version, t.saver)
       expect(checkpoint.tasks.some((task) => isSettlementPendingCheckpointError(task.error))).toBe(true)
@@ -101,7 +101,7 @@ describe.skipIf(!postgresEnabled)('Current production engine provider wiring', (
           }
           return resume(interaction, claim)
         })
-        await t.service.respond({ kind: 'user', principal: t.principal }, br1002Response(sibling))
+        await t.service.respond({ kind: 'user', principal: t.principal }, approvalResponse(sibling))
         expect(checkedDelivered).toBe(true)
         await expect.poll(async () => (await t.runs.get(t.f.run.id))?.outcome).toBe('succeeded')
         const resumes = await t.db.pool.query<{ state: string; approval_native_ack_id: string | null }>(
@@ -137,7 +137,7 @@ describe.skipIf(!postgresEnabled)('Current production engine provider wiring', (
         })
       releaseSettlement = () => obstruction.mockRestore()
       const cancel = vi.spyOn(t.native, 'cancelRun')
-      await t.service.respond({ kind: 'user', principal: t.principal }, br1002Response(interaction))
+      await t.service.respond({ kind: 'user', principal: t.principal }, approvalResponse(interaction))
       // The callback returns after bounded same-checkpoint retries; it must not
       // wait for a reviewer whose own MCP call could be awaiting this callback.
       const checkpoint = await readWorkflowCheckpoint(t.f.run.id, t.f.version, t.saver)
@@ -161,7 +161,7 @@ describe.skipIf(!postgresEnabled)('Current production engine provider wiring', (
     const t = await checkpointRuntimeFixture()
     try {
       await t.engine.start(t.f.run.id)
-      await t.service.respond({ kind: 'user', principal: t.principal }, br1002Response((await t.pending())[0]!))
+      await t.service.respond({ kind: 'user', principal: t.principal }, approvalResponse((await t.pending())[0]!))
       await expect.poll(() => t.runs.hasPendingCleanup(t.f.run.id)).toBe(false)
       const accepted = () => t.db.pool.query("select entity_id,effect_digest,first_sequence::text from run_graph_effects where run_id=$1 and effect_kind='result.accept' order by entity_id", [t.f.run.id]).then((result) => result.rows)
       const receipts = await accepted(), counts = { ...t.provider.counts }

@@ -6,7 +6,9 @@ import { NativeHarnessConfigurationQualifier } from '../src/modules/harnesses/na
 
 const configurations: HarnessConfiguration[] = [
   { harness: 'codex', model: 'fixture', reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' },
-  { harness: 'opencode', model: 'opencode-go/fixture', variant: 'max', nativeAgent: 'build', thinking: false, autoApprove: true },
+  { harness: 'claude', model: 'fixture', effort: 'high', authMode: 'subscription',
+    permissionMode: 'default', sandbox: 'danger-full-access', configDirectory: '/fixture-profile',
+    tools: [], permissionRules: [], instructions: '', mcpServers: {} },
 ]
 function request(harness: HarnessConfiguration, input: HarnessExecutionRequest['input']): HarnessExecutionRequest {
   return { executionId: 'execution', runId: 'run', workspaceId: 'workspace', workflowNodeId: 'node',
@@ -30,6 +32,6 @@ for (const harness of configurations) {
   })
 }
 it('missing native Codex binaries fail qualification rather than selecting another execution runtime', async () => {
-  await assert.rejects(new NativeHarnessConfigurationQualifier('/not/a/codex-binary', '/not/an/opencode-binary')
+  await assert.rejects(new NativeHarnessConfigurationQualifier('/not/a/codex-binary')
     .qualify(configurations[0]!, process.cwd()))
 })

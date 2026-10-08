@@ -6,7 +6,6 @@ import {
   HarnessCatalogSchema, HarnessDefaultsUpdateResultSchema, ManagedAgentDetailSchema,
 } from '@foreman-code/contracts/management'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
-import { OperatorAgentMutationService } from '../src/modules/workspaces/operatorAgents.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
@@ -17,7 +16,7 @@ const savedConfiguration = {
 }
 
 it('reports Claude preset availability equally through HTTP/MCP and preserves a saved Claude Agent on rename', async () => {
-  const f = await currentOperatorIntegration()
+  const f = await currentOperatorIntegration({ agentManagement: true })
   const call = async (name: string, input: Record<string, unknown>) => {
     const result = await f.client.callTool({ name, arguments: input })
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
@@ -29,9 +28,6 @@ it('reports Claude preset availability equally through HTTP/MCP and preserves a 
     return response.json()
   }
   try {
-    Object.assign(f.services, { extensions: {
-      agents: new OperatorAgentMutationService(f.db.pool, f.commands, f.services.harnesses),
-    } })
     const workspaceId = f.f.scope.workspaceId
     const agentId = randomUUID()
     const created = AgentMutationResultSchema.parse(await call('agent_create', {
@@ -40,7 +36,7 @@ it('reports Claude preset availability equally through HTTP/MCP and preserves a 
     const repository = new PostgresSettingsRepository(f.db.pool)
     await repository.saveHarnessDefaults(DEFAULT_HARNESS_DEFAULTS)
     const missing = HarnessCatalogResultSchema.parse(await call('harness_list', {}))
-    expect(missing.items.map(entry => entry.harness)).toEqual(['codex', 'opencode'])
+    expect(missing.items.map(entry => entry.harness)).toEqual(['codex'])
     expect(HarnessCatalogSchema.parse(await http('/api/management/harnesses'))).toEqual(missing.items)
     const missingClaude = await f.client.callTool({ name: 'harness_get', arguments: { harness: 'claude' } })
     expect(missingClaude).toMatchObject({ isError: true,

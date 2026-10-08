@@ -1,163 +1,158 @@
-import { input } from './fixtures/codex-test-helpers.js'
+import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import { NativeHarnessFactories, type NativeFactoryInfrastructure } from '../src/modules/harnesses/runtimeFactory.js'
-import type { ManagedOpenCodeServerOptions, OpenCodeServerController } from '../src/modules/harnesses/opencodeTransport.js'
+import type { CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
+import { APP_MCP_SERVER_NAME, appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
 import { HarnessInstallationRegistry, type HarnessInstallationRecord } from '../src/modules/harnesses/installationRegistry.js'
 
-describe('native runtime construction', () => {
-  it.each([false, true])('keeps OpenCode configuration inspection separate from its writer; failure=%s', async fails => {
-    const writer = { root: '/recorded-registry', owner: 'conversation:writer' }
-    const diagnostic = { root: writer.root, owner: 'diagnostics:configuration' }
-    const closed = vi.fn(async () => undefined)
-    const admit = vi.fn()
-    const abandon = vi.fn(async () => undefined)
-    const servers: { options: ManagedOpenCodeServerOptions; dispose: ReturnType<typeof vi.fn> }[] = []
-    const factories = new NativeHarnessFactories({
-      codexBinary: 'unused', openCodeBinary: '/recorded-opencode',
-      auxiliaryRecovery: () => diagnostic, admitRecovery: admit,
-      abandonRecovery: abandon, closeRecovery: closed,
-    }, { mode: 'native', openCodeServer: options => {
-      const dispose = vi.fn(async () => undefined)
-      servers.push({ options, dispose })
-      return {
-        expectedVersion: '1.18.31', ownerAgentId: options.ownerAgentId,
-        ensure: vi.fn(), request: vi.fn(), dispose,
-        inspectMcpConfiguration: async () => {
-          if (options.processRecovery?.owner === writer.owner) throw new Error('Writer is already active.')
-          if (fails) throw new Error('Configuration read failed.')
-          return { name: 'foreman-code', transport: 'stdio', automaticEndpoint: true,
-            enabled: true, credentialEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN' }
-        },
+function codexInfrastructure() {
+  const transports: Array<{ close: ReturnType<typeof vi.fn>; closed: () => boolean }> = []
+  const qualify = vi.fn<NonNullable<CodexSessionDependencies['qualify']>>(async (binary) => ({
+    binary, identity: 'fixture', protocol: fixtureProtocol, providerVersion: 'codex-cli 0.154.0',
+    schemaManifestSha256: 'fixture', stableSchemaGitBlob: 'fixture', referenceSchemaManifestSha256: 'fixture',
+  }))
+  const transport = vi.fn<NonNullable<CodexSessionDependencies['transport']>>(() => {
+    let closed = false
+    const close = vi.fn(async () => { closed = true })
+    const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'config/read') return { config: { mcp_servers: {
+        [APP_MCP_SERVER_NAME]: { enabled: false },
+      } } }
+      if (method === 'thread/start') return {
+        thread: { id: 'fixture-thread', turns: [], ephemeral: false }, model: params.model,
+        cwd: params.cwd, reasoningEffort: 'medium', serviceTier: null,
+        approvalPolicy: params.approvalPolicy, approvalsReviewer: params.approvalsReviewer,
+        sandbox: { type: 'readOnly', networkAccess: false },
       }
-    } })
-    const allocation = factories.allocate({
-      harness: 'opencode', role: 'operator', workingDirectory: '/recorded-workspace',
-      ownerAgentId: 'operator', processRecovery: writer, appMcpAccess: 'scoped',
+      throw new Error('Unexpected native method: ' + method)
     })
+    transports.push({ close, closed: () => closed })
+    return { start: vi.fn(async () => undefined), request, close,
+      respond: vi.fn(async () => undefined), reject: vi.fn(async () => undefined) }
+  })
+  const runCommand = vi.fn<NonNullable<CodexSessionDependencies['runCommand']>>(async (_binary, args) => {
+    if (args[1] === 'get' && args[2] !== APP_MCP_SERVER_NAME) return {
+      exitCode: 1, stdout: '', stderr: "Error: No MCP server named '" + args[2] + "' found.",
+    }
+    const launcher = appLauncherConnection()
+    const entry = { name: APP_MCP_SERVER_NAME, enabled: true, required: true, transport: {
+      type: 'stdio', command: launcher.executable, args: launcher.arguments,
+      env_vars: launcher.environmentVariables,
+    } }
+    return { exitCode: 0, stdout: JSON.stringify(args[1] === 'list' ? [entry] : entry), stderr: '' }
+  })
+  const codex: CodexSessionDependencies = {
+    mode: 'native', qualify, transport, runCommand, environment: () => ({}),
+    assertUnchanged: vi.fn(async () => undefined), qualifyModel: vi.fn(async () => undefined),
+  }
+  return { infrastructure: { mode: 'native' as const, codex }, qualify, transport, transports }
+}
+
+describe('native runtime construction', () => {
+  it('allocates diagnostics against the canonical default and fences changed payload bytes before native startup', async () => {
+    const instances = new HarnessInstanceRegistry(localHarnessDrivers)
+    instances.reload([{ instanceId: 'local-default:codex', instanceRevision: '8', driverId: 'codex',
+      enabled: true, configuration: DEFAULT_HARNESS_DEFAULTS.codex }])
+    const installations = new HarnessInstallationRegistry(instances)
+    const installation: HarnessInstallationRecord = { hostRef: { kind: 'main', mainId: 'recorded-main' },
+      harnessInstallationId: 'recorded-installation', installationFingerprint: 'original-payload', driverId: 'codex',
+      driverRevision: '1', protocolRevision: 'recorded-protocol', environmentGeneration: 'env', connectionGeneration: 'connection',
+      launcher: { requested: 'codex', resolvedLauncher: '/recorded/selected-codex', fingerprint: 'original-payload',
+        status: 'installed', interpreter: null, diagnostics: [], checkedAt: '2026-10-01T00:00:00.000Z',
+        environment: { generation: 'env', provenance: 'worker', cwd: '/recorded', path: '/recorded' },
+        payloadFingerprints: [{ path: '/recorded/selected-codex', fingerprint: 'original-payload' }] },
+      installed: true, observedVersion: null, authenticated: null, compatible: null, qualified: null }
+    installations.refresh([installation])
+    const discovery = vi.fn(async () => ({ ...installation.launcher }))
+    const native = codexInfrastructure()
+    const factories = new NativeHarnessFactories({ codexBinary: '/unused',
+      instances, installations, installationDiscovery: discovery,
+      selectDefault: () => installations.pin({ instanceId: 'local-default:codex', hostRef: installation.hostRef,
+        harnessInstallationId: installation.harnessInstallationId, connectionGeneration: 'connection', environmentGeneration: 'env' }),
+    }, native.infrastructure)
+    const allocation = factories.allocate({ harness: 'codex', role: 'diagnostics',
+      workingDirectory: '/recorded', ownerAgentId: 'diagnostic-owner', appMcpAccess: 'none' })
+    expect(discovery).not.toHaveBeenCalled()
+    await allocation.manager.capabilities()
+    expect(native.qualify.mock.calls[0]![0]).toBe('/recorded/selected-codex')
+    discovery.mockResolvedValue({ ...installation.launcher, fingerprint: 'changed-payload' })
+    await expect(allocation.manager.capabilities()).rejects.toThrow('payload changed')
+    expect(native.qualify).toHaveBeenCalledTimes(1)
+    expect(native.transport).not.toHaveBeenCalled()
+    await factories.disposeAuxiliary(allocation.manager)
+  })
+
+  it('allocates real role-isolated managers without starting infrastructure and disposes only its own child', async () => {
+    const native = codexInfrastructure()
+    const factories = new NativeHarnessFactories({ codexBinary: 'fixture-codex' }, native.infrastructure)
+    const configured = { instanceId: 'agent-1', instanceRevision: 'configuration-1', driverId: 'codex', enabled: true,
+      configuration: DEFAULT_HARNESS_DEFAULTS.codex }
+    const roles = ['workflow', 'operator', 'agent-chat'] as const
+    const bindings = roles.map((role) => factories.allocate({ harness: 'codex', role, configured,
+      workingDirectory: '/project', ownerAgentId: role, appMcpAccess: role === 'agent-chat' ? 'none' : 'scoped',
+      processRecovery: { root: '/unused-registry', owner: role + ':owner' },
+    }))
+    expect(new Set(bindings.map(({ manager }) => manager)).size).toBe(3)
+    expect(native.qualify).not.toHaveBeenCalled()
+    expect(native.transport).not.toHaveBeenCalled()
+    expect(factories.instances.select('agent-1').instanceRevision).toBe('configuration-1')
+    expect(factories.inspector(bindings[0]!.manager)).toBe(bindings[0]!.inspector)
     try {
-      const inspected = allocation.inspector.inspect({
-        harness: 'opencode', runnerId: 'runner-local', workingDirectory: '/recorded-workspace',
-        serverName: 'foreman-code', phase: 'configuration',
-      })
-      if (fails) await expect(inspected).rejects.toThrow('Configuration read failed.')
-      else expect((await inspected).entry).toMatchObject({ name: 'foreman-code', enabled: true })
-      expect(admit).toHaveBeenCalledExactlyOnceWith(diagnostic)
-      expect(abandon).toHaveBeenCalledExactlyOnceWith(diagnostic)
-      expect(closed).toHaveBeenCalledExactlyOnceWith(diagnostic)
-      expect(servers[0]!.dispose).not.toHaveBeenCalled()
-      expect(servers[1]!.dispose).toHaveBeenCalledTimes(1)
+      for (const [index, binding] of bindings.entries()) {
+        const start = input('/project', roles[index])
+        if (roles[index] === 'agent-chat') delete start.environment
+        await binding.manager.createSession(start)
+      }
+      expect(native.transport.mock.calls.map(args => args[8]?.owner)).toEqual(roles.map(role => role + ':owner'))
+      await bindings[2]!.manager.dispose()
+      expect(native.transports[2]!.closed()).toBe(true)
+      expect(native.transports[0]!.closed()).toBe(false)
+      expect(native.transports[1]!.closed()).toBe(false)
     } finally {
-      await allocation.manager.dispose()
-      await factories.disposeAuxiliaries()
+      await Promise.all(bindings.map(binding => binding.manager.dispose()))
     }
   })
 
-  it('allocates diagnostics against the canonical default and fences changed payload bytes before native startup', async () => {
-    const instances = new HarnessInstanceRegistry(localHarnessDrivers)
-    instances.reload([{ instanceId: 'local-default:opencode', instanceRevision: '8', driverId: 'opencode',
-      enabled: true, configuration: DEFAULT_HARNESS_DEFAULTS.opencode }])
-    const installations = new HarnessInstallationRegistry(instances)
-    const installation: HarnessInstallationRecord = { hostRef: { kind: 'main', mainId: 'recorded-main' },
-      harnessInstallationId: 'recorded-installation', installationFingerprint: 'original-payload', driverId: 'opencode',
-      driverRevision: '1', protocolRevision: 'recorded-protocol', environmentGeneration: 'env', connectionGeneration: 'connection',
-      launcher: { requested: 'opencode', resolvedLauncher: '/recorded/selected-opencode', fingerprint: 'original-payload',
-        status: 'installed', interpreter: null, diagnostics: [], checkedAt: '2026-10-01T00:00:00.000Z',
-        environment: { generation: 'env', provenance: 'worker', cwd: '/recorded', path: '/recorded' },
-        payloadFingerprints: [{ path: '/recorded/selected-opencode', fingerprint: 'original-payload' }] },
-      installed: true, observedVersion: null, authenticated: null, compatible: null, qualified: null }
-    installations.refresh([installation])
-    const discovery = vi.fn(async () => ({ ...installation.launcher, fingerprint: 'changed-payload' }))
-    let options!: ManagedOpenCodeServerOptions
-    const factories = new NativeHarnessFactories({ codexBinary: '/unused', openCodeBinary: '/forbidden-path-fallback',
-      instances, installations, installationDiscovery: discovery,
-      selectDefault: () => installations.pin({ instanceId: 'local-default:opencode', hostRef: installation.hostRef,
-        harnessInstallationId: installation.harnessInstallationId, connectionGeneration: 'connection', environmentGeneration: 'env' }),
-    }, { mode: 'native', openCodeServer: (input) => {
-      options = input
-      return { expectedVersion: '1.18.31', ownerAgentId: input.ownerAgentId,
-        ensure: vi.fn(), request: vi.fn(), dispose: vi.fn(async () => undefined) }
-    } })
-    const allocation = factories.allocate({ harness: 'opencode', role: 'diagnostics',
-      workingDirectory: '/recorded', ownerAgentId: 'diagnostic-owner', appMcpAccess: 'none' })
-    expect(options.binary).toBe('/recorded/selected-opencode')
-    expect(discovery).not.toHaveBeenCalled()
-    await expect(options.assertInstallation!()).rejects.toThrow('payload changed')
-    await factories.disposeAuxiliary(allocation.manager)
-  })
-  it('allocates real role-isolated managers without starting infrastructure and disposes only its own child', async () => {
-    const servers: OpenCodeServerController[] = []
-    const serverFactory = vi.fn((options: ManagedOpenCodeServerOptions) => {
-      const server = { expectedVersion: '1.18.31', ownerAgentId: options.ownerAgentId,
-        ensure: vi.fn(), request: vi.fn(), dispose: vi.fn().mockResolvedValue(undefined) }
-      servers.push(server)
-      return server
-    })
-    const factories = new NativeHarnessFactories({ codexBinary: 'unused-codex', openCodeBinary: 'unused-opencode' },
-      { mode: 'native', openCodeServer: serverFactory })
-    const configured = { instanceId: 'agent-1', instanceRevision: 'configuration-1', driverId: 'opencode', enabled: true,
-      configuration: DEFAULT_HARNESS_DEFAULTS.opencode }
-    const roles = ['workflow', 'operator', 'agent-chat'] as const
-    const bindings = roles.map((role) => factories.allocate({ harness: 'opencode', role, configured,
-      workingDirectory: '/project', ownerAgentId: role, appMcpAccess: role === 'agent-chat' ? 'none' : 'scoped',
-      processRecovery: { root: '/unused-registry', owner: `${role}:owner` },
-    }))
-    expect(new Set(bindings.map(({ manager }) => manager)).size).toBe(3)
-    expect(serverFactory.mock.calls.map(([options]) => options.processRecovery?.owner)).toEqual(roles.map((role) => `${role}:owner`))
-    expect(servers.every((server) => vi.mocked(server.ensure).mock.calls.length === 0
-      && vi.mocked(server.request).mock.calls.length === 0)).toBe(true)
-    expect(factories.instances.select('agent-1').instanceRevision).toBe('configuration-1')
-    expect(factories.inspector(bindings[0]!.manager)).toBe(bindings[0]!.inspector)
-    await bindings[2]!.manager.dispose()
-    expect(servers[2]!.dispose).toHaveBeenCalledTimes(1)
-    expect(servers[0]!.dispose).not.toHaveBeenCalled()
-    expect(servers[1]!.dispose).not.toHaveBeenCalled()
-  })
-
   it.each(['agent-chat', 'diagnostics', 'qualification'] as const)('rejects scoped application authority for %s before allocation', (role) => {
-    const server = vi.fn()
-    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' },
-      { mode: 'native', openCodeServer: server })
-    expect(() => factories.allocate({ harness: 'opencode', role, workingDirectory: '/project',
+    const native = codexInfrastructure()
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused' }, native.infrastructure)
+    expect(() => factories.allocate({ harness: 'codex', role, workingDirectory: '/project',
       ownerAgentId: role, appMcpAccess: 'scoped' })).toThrow('no application MCP credentials')
-    expect(server).not.toHaveBeenCalled()
+    expect(native.qualify).not.toHaveBeenCalled()
+    expect(native.transport).not.toHaveBeenCalled()
   })
 
-  it.each(['codex', 'opencode'] as const)('%s keeps combined file and management capabilities limited to Operator chat', async (harness) => {
-    const server = { expectedVersion: '1.18.31', ownerAgentId: 'agent-a',
-      ensure: vi.fn(), request: vi.fn(), dispose: vi.fn(async () => undefined) }
-    const serverFactory = vi.fn(() => server)
-    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' },
-      { mode: 'native', openCodeServer: serverFactory })
-    const common = { workingDirectory: '/project', ownerAgentId: 'agent-a', appMcpAccess: 'scoped' as const }
+  it('keeps combined file and management capabilities limited to Operator chat', async () => {
+    const native = codexInfrastructure()
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused' }, native.infrastructure)
+    const common = { harness: 'codex' as const, workingDirectory: '/project',
+      ownerAgentId: 'agent-a', appMcpAccess: 'scoped' as const }
     const prepare = vi.fn(async () => undefined)
-    const resolve = vi.fn(async () => undefined)
-    const files = harness === 'codex' ? { harness, chatFiles: { prepare } }
-      : { harness, chatFiles: () => ({ resolve }) }
-    expect(() => factories.allocate({ ...common, ...files, role: 'workflow' })).toThrow('Only Operator chat')
-    expect(() => factories.allocate({ ...common, ...files, role: 'agent-chat' })).toThrow('no application MCP credentials')
-    expect(serverFactory).not.toHaveBeenCalled()
-    const { manager } = factories.allocate({ ...common, ...files, role: 'operator' })
+    const chatFiles = { prepare }
+    expect(() => factories.allocate({ ...common, chatFiles, role: 'workflow' })).toThrow('Only Operator chat')
+    expect(() => factories.allocate({ ...common, chatFiles, role: 'agent-chat' })).toThrow('no application MCP credentials')
+    expect(native.qualify).not.toHaveBeenCalled()
+    expect(native.transport).not.toHaveBeenCalled()
+    const { manager } = factories.allocate({ ...common, chatFiles, role: 'operator' })
     const start = input('/project')
-    start.request.configuration.harness = DEFAULT_HARNESS_DEFAULTS[harness]
     await expect(manager.createSession(start)).rejects.toMatchObject({
-      result: { error: { code: harness === 'codex' ? 'CODEX_FILE_CHAT_ISOLATION_REQUIRED' : 'OPENCODE_APP_MCP_UNAVAILABLE' } },
+      result: { error: { code: 'CODEX_FILE_CHAT_ISOLATION_REQUIRED' } },
     })
     expect(prepare).not.toHaveBeenCalled()
-    expect(resolve).not.toHaveBeenCalled()
-    expect(server.ensure).not.toHaveBeenCalled()
-    expect(server.request).not.toHaveBeenCalled()
-    await manager.dispose?.()
+    expect(native.qualify).not.toHaveBeenCalled()
+    expect(native.transport).not.toHaveBeenCalled()
+    await manager.dispose()
   })
 
   it('fails closed for incomplete replay infrastructure rather than constructing native clients', () => {
-    expect(() => new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' },
+    expect(() => new NativeHarnessFactories({ codexBinary: 'unused' },
       { mode: 'replay' } as NativeFactoryInfrastructure)).toThrow('every provider infrastructure port')
   })
 
   it('rejects mutation of a pinned configured revision', () => {
-    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' })
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused' })
     const input = { harness: 'codex' as const, role: 'workflow' as const, workingDirectory: '/project',
       ownerAgentId: 'agent-1', appMcpAccess: 'scoped' as const,
       configured: { instanceId: 'agent-1', instanceRevision: 'configuration-1', driverId: 'codex', enabled: true,
@@ -171,11 +166,9 @@ describe('native runtime construction', () => {
     const recovery = { root: '/unused-registry', owner: 'diagnostics:recorded' }
     const closeRecovery = vi.fn<(scope: typeof recovery) => Promise<void>>()
       .mockRejectedValueOnce(new Error('Closure is unconfirmed.')).mockResolvedValue(undefined)
-    const server = { expectedVersion: '1.18.31', ownerAgentId: 'diagnostics',
-      ensure: vi.fn(), request: vi.fn(), dispose: vi.fn().mockResolvedValue(undefined) }
-    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused',
-      auxiliaryRecovery: () => recovery, closeRecovery }, { mode: 'native', openCodeServer: () => server })
-    const allocation = factories.allocate({ harness: 'opencode', role: 'diagnostics',
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused',
+      auxiliaryRecovery: () => recovery, closeRecovery }, { mode: 'native' })
+    const allocation = factories.allocate({ harness: 'codex', role: 'diagnostics',
       ownerAgentId: 'diagnostics', workingDirectory: '/project', appMcpAccess: 'none' })
     factories.admitAuxiliary(allocation.manager)
     await expect(factories.disposeAuxiliary(allocation.manager)).rejects.toThrow('unconfirmed')
@@ -185,7 +178,7 @@ describe('native runtime construction', () => {
     await factories.disposeAuxiliaries()
     expect(closeRecovery).toHaveBeenCalledTimes(2)
     expect(closeRecovery.mock.calls.every(([scope]) => scope === recovery)).toBe(true)
-    expect(server.dispose).toHaveBeenCalledTimes(1)
+    await expect(allocation.manager.capabilities()).rejects.toThrow('shutting down')
     await factories.disposeAuxiliaries()
     expect(closeRecovery).toHaveBeenCalledTimes(2)
   })
@@ -194,7 +187,7 @@ describe('native runtime construction', () => {
     const recovery = { root: '/unused-registry', owner: 'diagnostics:partial' }
     const admitRecovery = vi.fn(() => { throw new Error('Reservation failed partway through.') })
     const closeRecovery = vi.fn<(scope: typeof recovery) => Promise<void>>().mockResolvedValue(undefined)
-    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused',
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused',
       auxiliaryRecovery: () => recovery, admitRecovery, closeRecovery })
     const allocation = factories.allocate({ harness: 'codex', role: 'diagnostics', ownerAgentId: 'diagnostics',
       workingDirectory: '/project', appMcpAccess: 'none' })
@@ -210,20 +203,20 @@ describe('native runtime construction', () => {
 
 describe('original Codex lifetime factory capability', () => {
   it('never admits an unopened wrapper or an unowned manager through passive lookup', async () => {
-    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' })
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused' })
     const prepare = vi.fn()
     const wrapped = factories.allocateAdmitted('codex', prepare)
     const source = input('/recorded')
     const session = { harness: 'codex' as const, providerVersion: '0.154.0', nativeSessionId: 'original' }
     expect(factories.originalCodexSession(wrapped.manager, session, source, () => {})).toBeUndefined()
     expect(prepare).not.toHaveBeenCalled()
-    const foreign = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' })
+    const foreign = new NativeHarnessFactories({ codexBinary: 'unused' })
       .allocate({ harness: 'codex', role: 'workflow', workingDirectory: '/recorded', ownerAgentId: 'owner', appMcpAccess: 'scoped' })
     expect(factories.originalCodexSession(foreign.manager, session, source, () => {})).toBeUndefined()
   })
 
   it('composes the actual adapter pin with the caller fence before and after awaits', async () => {
-    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' })
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused' })
     const allocation = factories.allocate({ harness: 'codex', role: 'workflow', workingDirectory: '/recorded', ownerAgentId: 'owner', appMcpAccess: 'scoped' })
     if (allocation.harness !== 'codex') throw new Error('Wrong test allocation')
     const source = input('/recorded'), session = { harness: 'codex' as const, providerVersion: '0.154.0', nativeSessionId: 'original' }
@@ -243,7 +236,7 @@ describe('original Codex lifetime factory capability', () => {
   })
 
   it('withdraws an admitted wrapper capability on disposal without reallocation', async () => {
-    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' })
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused' })
     const allocation = factories.allocate({ harness: 'codex', role: 'workflow', workingDirectory: '/recorded', ownerAgentId: 'owner', appMcpAccess: 'scoped' })
     if (allocation.harness !== 'codex') throw new Error('Wrong test allocation')
     const source = input('/recorded'), session = { harness: 'codex' as const, providerVersion: '0.154.0', nativeSessionId: 'original' }

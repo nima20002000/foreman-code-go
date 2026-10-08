@@ -1,14 +1,21 @@
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GetOperatorConversationResponseSchema, SessionControlStateSchema } from '@foreman-code/contracts'
 import { buildApp } from '../src/app.js'
+import { loadConfig } from '../src/config.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
+import { productionOperatorManagers } from '../src/modules/harnesses/operatorFiles/managers.js'
+import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
+import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
@@ -24,14 +31,16 @@ describe.skipIf(!postgresEnabled)('Retired Operator conversation history', () =>
   let denied: Awaited<ReturnType<PostgresAccessService['issue']>>
   let conversationId: string
   let configurationId: string
+  let nativeFactories: NativeHarnessFactories
+  let processRegistry: NativeProcessRegistry
   const clients: Client[] = []
-  const allocateManager = vi.fn(() => { throw new Error('Retired history allocated a native manager') })
+  const managers = new Map<string, NativeHarnessSessionManager>()
   const prepare = vi.fn(async () => { throw new Error('Retired history issued execution credentials') })
   const setup = vi.fn(async () => { throw new Error('Retired history inspected a native manager') })
   const timestamp = '2026-09-01T12:00:00.000Z'
 
   beforeEach(async () => {
-    allocateManager.mockClear()
+    managers.clear()
     prepare.mockClear()
     setup.mockClear()
     database = await agent3Database()
@@ -73,7 +82,20 @@ describe.skipIf(!postgresEnabled)('Retired Operator conversation history', () =>
         JSON.stringify(message), timestamp])
     }
     repository = new PostgresOperatorConversationRepository(database.pool)
-    chat = new OperatorChatService(repository, operators, allocateManager, database.directory, {
+    const config = loadConfig({ DATABASE_URL: 'postgresql://test:test@127.0.0.1:5432/retired_conversation_test',
+      HARNESS_WORKSPACE_ROOT: database.directory, FILE_STORAGE_ROOT: join(database.directory, 'files') })
+    nativeFactories = new NativeHarnessFactories(config.harnesses)
+    vi.spyOn(nativeFactories, 'allocate').mockImplementation(() => {
+      throw new Error('Retired history allocated a native adapter')
+    })
+    processRegistry = new NativeProcessRegistry(join(database.directory, 'processes'))
+    vi.spyOn(processRegistry, 'scope').mockImplementation(() => {
+      throw new Error('Retired history acquired a native process scope')
+    })
+    const resolveManager = productionOperatorManagers({ app: () => app, pool: database.pool, config,
+      workingDirectory: database.directory, processRegistry,
+      responseJournal: new NativeResponseJournal(join(database.directory, 'responses')), managers, nativeFactories })
+    chat = new OperatorChatService(repository, operators, resolveManager, database.directory, {
       current: id => access.currentOperator(id), assertConfiguration() {}, setup, prepare, release: async () => {},
     })
     app = buildApp({ logger: false,
@@ -89,6 +111,7 @@ describe.skipIf(!postgresEnabled)('Retired Operator conversation history', () =>
     await chat?.shutdown()
     await app?.close()
     await database?.close()
+    vi.restoreAllMocks()
   })
 
   async function connect(token: string) {
@@ -139,7 +162,9 @@ describe.skipIf(!postgresEnabled)('Retired Operator conversation history', () =>
     expect(mcpControls.isError, JSON.stringify(mcpControls.content)).not.toBe(true)
     expect(SessionControlStateSchema.parse(mcpControls.structuredContent)).toEqual(controls)
     expect(await savedFacts()).toEqual(before)
-    expect(allocateManager).not.toHaveBeenCalled()
+    expect(nativeFactories.allocate).not.toHaveBeenCalled()
+    expect(processRegistry.scope).not.toHaveBeenCalled()
+    expect(managers.size).toBe(0)
     expect(prepare).not.toHaveBeenCalled()
     expect(setup).not.toHaveBeenCalled()
   })
@@ -174,7 +199,9 @@ describe.skipIf(!postgresEnabled)('Retired Operator conversation history', () =>
     }
     expect(await savedFacts()).toEqual(before)
     expect((await database.pool.query('select count(*)::int as count from operator_conversation_turns')).rows[0]!.count).toBe(0)
-    expect(allocateManager).not.toHaveBeenCalled()
+    expect(nativeFactories.allocate).not.toHaveBeenCalled()
+    expect(processRegistry.scope).not.toHaveBeenCalled()
+    expect(managers.size).toBe(0)
     expect(prepare).not.toHaveBeenCalled()
     expect(setup).not.toHaveBeenCalled()
   })

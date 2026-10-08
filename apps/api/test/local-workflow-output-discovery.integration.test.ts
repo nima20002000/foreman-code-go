@@ -27,7 +27,7 @@ it.runIf(Boolean(process.env.TEST_DATABASE_URL))(
     try {
       const f = makeCurrentWorkflowFixture(randomUUID(), 'single')
       f.configurations = f.configurations.map(configuration => AgentConfigurationVersionSchema.parse({
-        ...configuration, harness: { ...DEFAULT_HARNESS_DEFAULTS.opencode, nativeAgent: 'build' },
+        ...configuration, harness: structuredClone(DEFAULT_HARNESS_DEFAULTS.codex),
       }))
       f.version.definition.nodes[0]!.artifactOutputs = { version: 1, outputKeys: ['report'] }
       await seedAgent3(db.pool, db.directory, f, { run: false })
@@ -57,7 +57,7 @@ it.runIf(Boolean(process.env.TEST_DATABASE_URL))(
       const artifacts = new LocalWorkflowArtifacts(db.pool, authority,
         () => { throw new Error('Discovery cannot open artifact storage') })
       const nativeCall = vi.fn(async () => {
-        throw new DomainError('OPENCODE_NATIVE_OUTPUT_CALL_UNAVAILABLE', 'No original native call is running.', 409)
+        throw new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE', 'No original native call is running.', 409)
       })
       const commands = new PostgresCommandCoordinator(db.pool)
       const extension = new LocalWorkflowNativeOutputMcp({ pool: db.pool, commands, artifacts: () => artifacts,
