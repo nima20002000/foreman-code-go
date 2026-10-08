@@ -37,10 +37,11 @@ export const GitHubLoginRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('login-start') }).strict(),
   z.object({ operation: z.literal('login-status'), loginId: z.uuid() }).strict(),
   z.object({ operation: z.literal('logout') }).strict(),
+  z.object({ operation: z.literal('setup-git'), loginId: z.uuid() }).strict(),
 ])
 export const GitHubLoginStateSchema = z.object({
   loginId: z.uuid().nullable(),
-  state: z.enum(['waiting', 'signed-in', 'signed-out', 'failed', 'expired']),
+  state: z.enum(['waiting', 'signed-in', 'signed-out', 'git-setup-failed', 'failed', 'expired']),
   code: z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/).nullable(),
   verificationUrl: z.url().nullable(),
   expiresAt: z.string().datetime().nullable(),

@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import { execFile } from 'node:child_process'
 import { access, readFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
@@ -19,7 +20,7 @@ const plain = (value: string) => value.replace(ansi, '')
 
 /** Passive sign-in facts for this computer. Reads identity only; tokens never leave the probe. */
 export async function probeComputerAccounts(ports: AccountProbePorts = systemPorts(), signal = AbortSignal.timeout(20_000)): Promise<ComputerAccounts> {
-  const accounts = await Promise.all([codex(ports), claude(ports, signal), opencode(ports, signal), github(ports, signal), drive(ports, signal)]
+  const accounts = await Promise.all([codex(ports), claude(ports, signal), opencode(ports, signal), probeGitHubAccount(ports, signal), drive(ports, signal)]
     .map(probe => probe.catch((): null => null)))
   const tools = ['codex', 'claude', 'opencode', 'github', 'drive'] as const
   return ComputerAccountsSchema.parse({ observedAt: new Date().toISOString(),
@@ -79,13 +80,48 @@ async function opencode(ports: AccountProbePorts, signal: AbortSignal): Promise<
   return { tool: 'opencode', installed: true, signedIn: providers.length > 0, account: null, details: providers }
 }
 
-async function github(ports: AccountProbePorts, signal: AbortSignal): Promise<ComputerAccount> {
+const githubStatusSchema = z.object({
+  hosts: z.record(z.string(), z.array(z.object({
+    active: z.boolean(), login: z.string().min(1).max(320), state: z.enum(['success', 'error', 'timeout']),
+  }))),
+})
+
+export async function probeGitHubAccount(ports: AccountProbePorts, signal = AbortSignal.timeout(20_000)): Promise<ComputerAccount> {
   const binary = await ports.find('gh')
   if (!binary) return missing('github')
-  const result = await ports.run(binary, ['auth', 'status', '--hostname', 'github.com'], signal)
+  const args = ['auth', 'status', '--active', '--hostname', 'github.com']
+  let result = await ports.run(binary, [...args, '--json', 'hosts'], signal)
+  const unsupported = (flag: string) => new RegExp(`unknown flag: --${flag}\\b`, 'u').test(result.stderr)
+  if (!unsupported('json') && !unsupported('active')) {
+    const parsed = githubStatusSchema.safeParse(parseJson(result.stdout))
+    if (result.code === 0 && parsed.success) {
+      const entries = parsed.data.hosts['github.com'] ?? []
+      if (!entries.length) return { ...unknown('github'), signedIn: false }
+      const active = entries.filter(entry => entry.active)
+      if (active.length !== 1) return unknown('github')
+      return { ...unknown('github'), signedIn: active[0]!.state === 'success' ? true : null, account: active[0]!.login }
+    }
+    if (result.code === 1 && /You are not logged into any GitHub hosts/iu.test(result.stderr)) {
+      return { ...unknown('github'), signedIn: false }
+    }
+    return unknown('github')
+  }
+  result = await ports.run(binary, args, signal)
+  if (unsupported('active')) result = await ports.run(binary, ['auth', 'status', '--hostname', 'github.com'], signal)
   const output = plain(`${result.stdout}\n${result.stderr}`)
-  const user = /Logged in to github\.com account (\S+)/u.exec(output)?.[1] ?? null
-  return { tool: 'github', installed: true, signedIn: user !== null, account: user, details: [] }
+  if (result.code === 1 && /You are not logged into any GitHub hosts/iu.test(output)) {
+    return { ...unknown('github'), signedIn: false }
+  }
+  const accounts = [...output.matchAll(/Logged in to github\.com account (\S+)([\s\S]*?)(?=Logged in to github\.com account|$)/gu)]
+  const active = accounts.filter(match => /Active account:\s*true/u.test(match[2]!))
+  let user = active.length === 1 ? active[0]?.[1] : undefined
+  if (active.length === 0 && accounts.length === 1 && !/Active account:\s*false/u.test(output)) user = accounts[0]?.[1]
+  if (result.code !== 0 || !user) return unknown('github')
+  return { ...unknown('github'), signedIn: true, account: user }
+}
+
+function parseJson(value: string): unknown {
+  try { return JSON.parse(value) } catch { return null }
 }
 
 async function drive(ports: AccountProbePorts, signal: AbortSignal): Promise<ComputerAccount> {

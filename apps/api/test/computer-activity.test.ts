@@ -39,7 +39,7 @@ const job = (id: string, workspaceId: string) => ({ target, activity: { id, name
 const agent = (id: string, workspaceId: string) => ({ target, activity: { id, workspaceId, workflowId: 'workflow',
   workflowName: 'Website', runId: 'run', nodeId: 'review', agentName: 'Reviewer', state: 'waiting' } })
 
-async function fixture() {
+async function fixture(options: { githubSetupFails?: boolean } = {}) {
   const pool = new pg.Pool()
   const jobs = [job('visible', 'allowed'), job('secret', 'private')]
   const agents = [agent('visible', 'allowed'), agent('secret', 'private')]
@@ -88,30 +88,43 @@ async function fixture() {
     return principal
   })
   const buildComputers = new BuildComputerSettings(pool, commands, async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
-  const accountsOf = (email: string): ComputerAccounts => ({ observedAt: '2026-10-07T00:00:00.000Z', accounts: [
+  const accountsOf = (email: string, githubAccount: string | null = 'octo-owner'): ComputerAccounts => ({ observedAt: '2026-10-07T00:00:00.000Z', accounts: [
     { tool: 'codex', installed: true, signedIn: true, account: email, details: ['ChatGPT'] },
-    { tool: 'github', installed: true, signedIn: true, account: 'octo-owner', details: [] },
+    { tool: 'github', installed: true, signedIn: githubAccount !== null, account: githubAccount, details: [] },
   ] })
-  const deviceAnswers = { calls: 0, email: 'laptop@example.com' }
-  const mainProbes = { calls: 0 }
+  const deviceAnswers = { calls: 0, email: 'laptop@example.com', githubAccount: 'octo-owner' as string | null }
+  const mainProbes = { calls: 0, githubAccount: 'octo-owner' as string | null }
   const computerAccounts = new ComputerAccountsService(pool, mainId, () => ({
     capabilities: () => observed ? [{ namespace: COMPUTER_ACCOUNTS_NAMESPACE, mainCanRequest: true }] : [],
-    request: async () => { deviceAnswers.calls++; return { payload: accountsOf(deviceAnswers.email) } },
-  }), commands, async () => { mainProbes.calls++; return accountsOf('main@example.com') })
+    request: async () => { deviceAnswers.calls++; return { payload: accountsOf(deviceAnswers.email, deviceAnswers.githubAccount) } },
+  }), commands, async () => { mainProbes.calls++; return accountsOf('main@example.com', mainProbes.githubAccount) })
   const githubCalls: { where: string; request: GitHubLoginRequest }[] = []
-  const githubState = (request: GitHubLoginRequest) => GitHubLoginStateSchema.parse(request.operation === 'logout'
+  const githubState = (request: GitHubLoginRequest) => {
+    if (request.operation === 'setup-git') options.githubSetupFails = false
+    let state = options.githubSetupFails ? 'git-setup-failed' : 'signed-in'
+    if (request.operation === 'login-start') state = 'waiting'
+    return GitHubLoginStateSchema.parse(request.operation === 'logout'
     ? { loginId: null, state: 'signed-out', code: null, verificationUrl: null, expiresAt: null, account: null, message: null }
-    : { loginId: '66666666-6666-4666-8666-666666666666', state: request.operation === 'login-start' ? 'waiting' : 'signed-in',
+    : { loginId: '66666666-6666-4666-8666-666666666666', state,
       code: request.operation === 'login-start' ? 'AB12-CD34' : null,
       verificationUrl: request.operation === 'login-start' ? 'https://github.com/login/device' : null,
       expiresAt: '2026-10-07T00:15:00.000Z', account: request.operation === 'login-start' ? null : 'octo-owner', message: null })
+  }
   const computerGitHub = new ComputerGitHubService(pool, mainId, () => ({
     capabilities: () => observed ? [{ namespace: COMPUTER_GITHUB_NAMESPACE, mainCanRequest: true }] : [],
     request: async (_device, _namespace, payload) => {
       githubCalls.push({ where: 'device', request: payload as GitHubLoginRequest })
+      deviceAnswers.githubAccount = (payload as GitHubLoginRequest).operation === 'logout' ? null : 'signed-in-owner'
       return { payload: githubState(payload as GitHubLoginRequest) }
     },
-  }), commands, { handle: async request => { githubCalls.push({ where: 'main', request }); return githubState(request) } })
+  }), commands, {
+    local: { handle: async request => {
+      githubCalls.push({ where: 'main', request })
+      mainProbes.githubAccount = request.operation === 'logout' ? null : 'signed-in-owner'
+      return githubState(request)
+    } },
+    accountChanged: target => computerAccounts.invalidate(target),
+  })
   const driveCalls: { where: string; operation: string; token?: string }[] = []
   const driveState = (connected: boolean) => ({ installed: true, connected, account: connected ? 'owner@gmail.com' : null,
     mountPath: connected ? '/home/laptop/Foreman Code Drive' : null, mounted: connected, message: null })
@@ -149,6 +162,7 @@ it('serves authenticated HTTP and MCP activity with persisted readback and permi
     const client = await f.connect('owner')
     expect((await client.listTools()).tools.map(tool => tool.name)).toContain('computer_activity_list')
     const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {} })
+    expect(capabilities.isError, JSON.stringify(capabilities)).not.toBe(true)
     expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining(['computer_activity_list']) })
     const read = await client.callTool({ name: 'computer_activity_list', arguments: {} })
     expect(read.isError).not.toBe(true)
@@ -306,5 +320,52 @@ it('connects Google Drive on a paired computer through a sign-in on Main, sendin
     expect(f.driveCalls).toHaveLength(4)
     expect(f.audited.mock.calls.map(call => [call[2], call[4]])).toEqual([
       ['computer_drive_connect_start', 'succeeded'], ['computer_drive_disconnect', 'succeeded']])
+  } finally { await f.close() }
+})
+
+
+it('refreshes the server account cache after GitHub account changes through authenticated MCP', async () => {
+  const f = await fixture()
+  const mainTarget = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+    keyRevision: null, authorizationRevision: null }
+  try {
+    const client = await f.connect('owner')
+    const read = async () => ComputerAccountsListSchema.parse((await client.callTool({
+      name: 'computer_accounts_list', arguments: {},
+    })).structuredContent)
+    expect((await read()).computers[0]!.accounts!.accounts.find(value => value.tool === 'github')?.account).toBe('octo-owner')
+    await client.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })
+    await client.callTool({ name: 'computer_github_login_status', arguments: {
+      target: mainTarget, loginId: '66666666-6666-4666-8666-666666666666',
+    } })
+    expect((await read()).computers[0]!.accounts!.accounts.find(value => value.tool === 'github')?.account).toBe('signed-in-owner')
+    await client.callTool({ name: 'computer_github_logout', arguments: { target } })
+    expect((await read()).computers[1]!.accounts!.accounts.find(value => value.tool === 'github')?.signedIn).toBe(false)
+    const reader = await f.connect('settings-reader')
+    expect((await reader.callTool({ name: 'computer_github_logout', arguments: { target: mainTarget } })).isError).toBe(true)
+    expect((await read()).computers[0]!.accounts!.accounts.find(value => value.tool === 'github')?.signedIn).toBe(true)
+  } finally { await f.close() }
+})
+
+
+it('discovers Git setup retry through MCP and preserves write permission checks', async () => {
+  const f = await fixture({ githubSetupFails: true })
+  const mainTarget = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+    keyRevision: null, authorizationRevision: null }
+  try {
+    const client = await f.connect('owner')
+    const tools = (await client.listTools()).tools.map(tool => tool.name)
+    expect(tools).toContain('computer_github_setup_git')
+    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {} })
+    expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining(['computer_github_setup_git']) })
+    const input = { target: mainTarget, loginId: '66666666-6666-4666-8666-666666666666' }
+    const status = await client.callTool({ name: 'computer_github_login_status', arguments: input })
+    expect(GitHubLoginStateSchema.parse(status.structuredContent)).toMatchObject({ state: 'git-setup-failed', account: 'octo-owner' })
+    const reader = await f.connect('settings-reader')
+    expect((await reader.callTool({ name: 'computer_github_setup_git', arguments: input })).isError).toBe(true)
+    expect(f.githubCalls).toHaveLength(1)
+    const retry = await client.callTool({ name: 'computer_github_setup_git', arguments: input })
+    expect(GitHubLoginStateSchema.parse(retry.structuredContent)).toMatchObject({ state: 'signed-in', account: 'octo-owner' })
+    expect(f.audited).toHaveBeenCalledWith('owner', 'mcp', 'computer_github_setup_git', `main:${mainId}`, 'succeeded', { state: 'signed-in' })
   } finally { await f.close() }
 })
